@@ -20,6 +20,8 @@ Check STATE.md for `mode: greenfield` or `mode: existing`. Adapt accordingly.
 
 ## Greenfield Mode
 
+> **Note:** In greenfield mode, the forge-new skill handles classification and discovery directly. The planner is spawned only if the lead explicitly delegates planning. This section provides guidance for when that happens.
+
 1. Read `${CLAUDE_PLUGIN_ROOT}/data/project-types.csv` and `${CLAUDE_PLUGIN_ROOT}/data/domain-complexity.csv`
 2. Classify the project: match the user's description against `detection_signals` in project-types.csv
 3. Auto-inject domain requirements: if the domain matches domain-complexity.csv, surface ALL `key_concerns` to the user. Do NOT wait for them to ask about compliance — they may not know they need it.
@@ -46,10 +48,10 @@ Check STATE.md for `mode: greenfield` or `mode: existing`. Adapt accordingly.
 ## Universal Rules
 
 - Scale planning depth to project complexity:
-  - Bug fix: 2-3 sentences of context, skip to build
+  - Bug fix: 2-3 sentences of context, skip to build (existing codebase mode only)
   - Single feature: 1 paragraph plan with acceptance criteria
   - Multi-feature: Full plan with phases and waves
   - New subsystem: Full PRD (greenfield) or full exploration (existing)
-- Never specify: file paths for new code, function names, code patterns
+- Never specify: file paths for new code. For existing codebase mode, DO specify which existing files/modules the change touches. Never specify: function names, code patterns
 - Always specify: deliverables, acceptance criteria, user-facing behavior
 - Use `[NEEDS CLARIFICATION]` for anything you're uncertain about

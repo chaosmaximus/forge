@@ -33,6 +33,8 @@ You MUST create a TaskCreate item for each phase and complete them in order:
 
 This is NOT a separate agent or 4-phase pipeline. The planner uses graph tools directly.
 
+0. Create STATE.md from the template at `${CLAUDE_PLUGIN_ROOT}/templates/STATE.md`. Set mode to 'existing' and phase to 'explore'.
+
 1. Check graph index: call `mcp__forge_forge-graph__index_status`
    - If status is "not_indexed": call `mcp__forge_forge-graph__index_repository` with current directory. Wait for completion before proceeding.
    - If status is "indexed": proceed (SessionStart hook keeps it current)
@@ -73,6 +75,14 @@ This is NOT a separate agent or 4-phase pipeline. The planner uses graph tools d
    **What to do with the output:** Build a dependency map of everything that calls this symbol. These callers are the blast radius — any change to the symbol's contract affects all of them.
 
    Only read the actual function bodies you need. Do NOT read entire files.
+
+### If Serena is not available
+
+If `mcp__plugin_serena_serena__find_symbol` is not available (Serena plugin not installed):
+- Use `Grep` with function/class name patterns to find symbols
+- Use `Read` with specific line ranges to examine function bodies
+- Use `Glob` to find files by naming conventions
+- Warn the user: "Serena is not installed. Exploration will be less precise. Consider installing: /plugin install serena@claude-plugins-official"
 
 5. Check recent changes in the area:
    ```
@@ -139,8 +149,15 @@ For each wave:
 4. **Enter delegate mode:**
    "You are the team coordinator. You NEVER write code, edit files, or implement features.
    You delegate to generator teammates, monitor progress, relay evaluator feedback, and
-   manage the task list. Use delegate mode (Shift+Tab)."
+   manage the task list. Enter delegate mode. Tell the user: 'I recommend enabling delegate mode to restrict me to coordination only. Press Shift+Tab in your terminal to activate it.'"
 5. **Monitor:** Check task progress. If a generator reports BLOCKED or NEEDS_CONTEXT, provide the needed context or escalate to the user.
+
+**Circuit breaker:** If a generator fails evaluation 3 times for the same task, STOP retrying. Present the findings to the user and ask:
+  1. Provide additional context and retry (recommended)
+  2. Simplify the task scope
+  3. Skip this task and continue with the next wave
+  4. Take over implementation manually
+
 6. **Review:** When generators complete, evaluator reviews each. On FAIL, relay findings back to generator. Present findings to user before requesting generator rework.
 7. **Merge:** On PASS, merge generator worktrees to main branch.
 8. **Advance:** Update STATE.md. Move to next wave.

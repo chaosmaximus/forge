@@ -34,6 +34,8 @@ You MUST create a TaskCreate item for each phase and complete them in order:
 
 ## Phase 1: Classify
 
+0. Create STATE.md from the template at `${CLAUDE_PLUGIN_ROOT}/templates/STATE.md`. Set mode to 'greenfield' and phase to 'classify'. This tracks session state for handoff/resume.
+
 1. Read `${CLAUDE_PLUGIN_ROOT}/data/project-types.csv`
 2. Match the user's description against `detection_signals`. If ambiguous, ask:
    "This sounds like a [type]. Is that right, or is it more of a:
@@ -78,7 +80,7 @@ Minimum discovery (even for "simple" projects):
    (d) Accessibility — WCAG level, i18n requirements
    (e) None of these are critical right now"
 6. Include domain-specific sections from domain-complexity.csv `special_sections`
-7. Present the PRD to the user section by section. Ask after each: "Does this look right?"
+7. Present the FULL PRD to the user at once. Ask: "Here is the complete PRD. Does everything look right, or would you like to discuss any specific section?" Only go section-by-section if the user requests it.
 
 ---
 
@@ -102,6 +104,8 @@ Do NOT interpret silence or partial acknowledgment as approval. Wait for an expl
 
 ## Phase 5: Visual Design (Optional)
 
+First, check if `ui_design` is in the `skip_sections` for the matched project type (from Phase 1). If `ui_design` is skipped, this project has no frontend — skip Phase 5 entirely and note in STATE.md: "Visual design skipped (no UI for this project type)."
+
 If Stitch MCP is available (`stitch_enabled` in userConfig):
 1. Announce: "I can generate visual UI mockups using Google Stitch before we build. Want me to? This helps ensure the UI matches your vision before writing code."
 2. If yes: use Stitch MCP tools to generate designs from the PRD's user journeys
@@ -123,6 +127,8 @@ If Stitch is not available:
    - Wave 2: features that depend on Wave 1
    - Wave 3: integration, UI, cross-cutting concerns
 3. Present wave plan to user for approval. Do NOT start build without user sign-off on the plan.
+
+<HARD-GATE>Do NOT start building until the user has approved the wave plan. Even for simple projects.</HARD-GATE>
 
 ---
 
@@ -148,7 +154,7 @@ For each wave:
 4. **Enter delegate mode:**
    "You are the team coordinator. You NEVER write code, edit files, or implement features.
    You delegate to generator teammates, monitor progress, relay evaluator feedback, and
-   manage the task list. Use delegate mode (Shift+Tab)."
+   manage the task list. Enter delegate mode. Tell the user: 'I recommend enabling delegate mode to restrict me to coordination only. Press Shift+Tab in your terminal to activate it.'"
 5. **Monitor:** Check task progress. If a generator reports BLOCKED or NEEDS_CONTEXT, provide the needed context or escalate to the user.
 6. **Review:** When generators complete, evaluator reviews each. On FAIL, relay findings back to generator. Present findings to user before requesting generator rework.
 7. **Merge:** On PASS, merge generator worktrees to main branch.

@@ -63,6 +63,6 @@ NO MERGE TO PROD PATHS WITHOUT CODEX SIGN-OFF.
 
 ## When Codex Plugin Is Not Installed
 
-- For prod paths: WARN the user explicitly: "Codex plugin not installed. Cannot run adversarial review on production code. STRONGLY recommend installing: `/plugin marketplace add openai/codex-plugin-cc`"
-- For non-prod: proceed with evaluator review only
+- For prod paths: BLOCK the workflow. Tell the user: "Codex plugin is required for production path changes. Install it with `/plugin marketplace add openai/codex-plugin-cc` and restart the session. Cannot proceed without adversarial review on production code."
+- For non-prod: WARN but proceed with evaluator review only.
 - NEVER silently skip the Codex gate for prod paths

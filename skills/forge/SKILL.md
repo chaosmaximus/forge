@@ -12,7 +12,7 @@ You are using Forge to orchestrate a production-grade development workflow.
 Check the current directory:
 1. Is there existing source code (beyond config files)? → **Existing Codebase Mode**
 2. Is this a new/empty project? → **Greenfield Mode**
-3. Is there a STATE.md with an in-progress session? → **Resume** (read STATE.md, continue from last phase)
+3. Is there a STATE.md with an in-progress session? → **Resume**: read STATE.md, determine the mode (greenfield or existing) and current phase. If in greenfield, invoke forge-new (it will detect the phase from STATE.md). If in existing, invoke forge-feature. Tell the lead to spawn fresh teammates if needed — do NOT try to reconnect to old teammates.
 
 Announce: "I'm using Forge in [greenfield/existing codebase] mode."
 
@@ -24,6 +24,7 @@ Announce: "I'm using Forge in [greenfield/existing codebase] mode."
 3. Check if codebase-memory-mcp graph exists (for existing codebase mode):
    Call `mcp__forge_forge-graph__index_status`. If not indexed: "Indexing your codebase for the first time. This runs in the background."
 4. Check Codex plugin: if not found, warn: "Codex plugin not installed. Adversarial review will be unavailable. Install: `/plugin marketplace add openai/codex-plugin-cc`"
+5. Check Serena plugin: if `mcp__plugin_serena_serena__find_symbol` is not available, note: "Serena plugin not installed. Code exploration will use basic search. For better results, install Serena."
 
 ## Step 3: Route
 

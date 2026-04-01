@@ -1,7 +1,6 @@
 ---
 name: forge-setup
 description: Use on first run in a new project directory, or when Forge prerequisites need checking
-disable-model-invocation: true
 ---
 
 # Forge Setup

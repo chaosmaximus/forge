@@ -8,7 +8,7 @@ description: Use when pausing work or before ending a session with in-progress F
 ## Save State
 
 1. Update STATE.md with:
-   - Current phase (classify/discover/prd/design/plan/build/review/ship)
+   - Current phase: [explore|classify|discover|prd|design|plan|build|review|ship]
    - Current wave (if in build)
    - Decisions made so far
    - Blockers encountered
@@ -19,7 +19,7 @@ description: Use when pausing work or before ending a session with in-progress F
    - Active branch names
    - Any critical context that STATE.md doesn't capture
 
-3. Commit all work-in-progress to branches: `git add -A && git commit -m "wip: forge handoff checkpoint"`
+3. Stage only tracked files and new source files: `git add -u && git add '*.py' '*.ts' '*.js' '*.go' '*.rs' '*.tf' '*.md' 2>/dev/null; git commit -m 'wip: forge handoff checkpoint'`. Do NOT use `git add -A` which may stage sensitive files.
 
 4. Shut down agent team gracefully:
    - Ask each teammate to shut down (one by one)
