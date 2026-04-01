@@ -221,8 +221,10 @@ Set in `userConfig` when enabling the plugin:
 |--------|---------|-------------|
 | `codex_enabled` | `true` | Enable Codex adversarial review |
 | `stitch_enabled` | `false` | Enable Google Stitch for visual design |
-| `prod_paths` | `infrastructure/**,terraform/**,...` | Glob patterns requiring hard Codex gate |
+| `prod_paths` | `infrastructure/**,terraform/**,k8s/**,helm/**,production/**` | Glob patterns requiring hard Codex gate. Customize for your project -- common additions: `prod/**`, `deploy/**`, `live/**`, or project-specific patterns like `hive_production/**`. |
 | `default_generator_model` | `opus` | Model for generator agents |
+
+The `.mcp.json` file configures optional Stitch MCP for visual design. Delete it if you don't use Stitch to avoid unnecessary MCP server loading.
 
 ## Evaluation Rubrics
 
