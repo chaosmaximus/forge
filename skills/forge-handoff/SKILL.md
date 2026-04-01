@@ -19,7 +19,15 @@ description: Use when pausing work or before ending a session with in-progress F
    - Active branch names
    - Any critical context that STATE.md doesn't capture
 
-3. Stage only tracked files and new source files: `git add -u && git add '*.py' '*.ts' '*.js' '*.go' '*.rs' '*.tf' '*.md' 2>/dev/null; git commit -m 'wip: forge handoff checkpoint'`. Do NOT use `git add -A` which may stage sensitive files.
+3. Stage source files and forge state files separately:
+   ```
+   git add -u                    # tracked files with changes
+   git add '*.py' '*.ts' '*.js' '*.go' '*.rs' '*.tf' 2>/dev/null  # new source files
+   git add STATE.md HANDOFF.md 2>/dev/null  # forge state (needed for resume)
+   git commit -m 'wip: forge handoff checkpoint'
+   ```
+   Do NOT use `git add -A` which may stage sensitive files.
+   Note: STATE.md and HANDOFF.md contain project context. If your repo is public, add them to `.gitignore` and track state externally.
 
 4. Shut down agent team gracefully:
    - Ask each teammate to shut down (one by one)

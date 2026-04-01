@@ -59,6 +59,11 @@ Pass thresholds:
   infrastructure >= 4.0
 
 Fail: Return specific findings with file:line references
+
+IMPORTANT: Each rubric also defines auto-fail rules (e.g., any criterion = 1,
+specific criteria below threshold). Apply ALL pass criteria from the rubric
+files including auto-fail rules. A passing weighted average does NOT override
+an auto-fail condition.
 ```
 
 ## Iron Law

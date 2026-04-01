@@ -99,13 +99,30 @@ If `mcp__plugin_serena_serena__find_symbol` is not available (Serena plugin not 
    - Existing patterns to follow: [list]
    - Recent changes that may interact: [list or 'none']"
 
-   Wait for user acknowledgment before proceeding to planning.
+   Wait for user acknowledgment before proceeding.
+
+---
+
+## Phase 1b: Clarify Requirements
+
+Before planning, ask 2-3 targeted clarifying questions about the feature. The exploration tells us WHAT EXISTS. Now we need to understand WHAT THE USER WANTS.
+
+1. Based on the exploration findings, identify the key decision points for this feature. Ask ONE question at a time, multiple choice preferred, lead with your recommendation.
+
+2. Minimum questions:
+   - "What is the expected behavior?" (if not fully clear from the initial request)
+   - "Are there constraints I should know about?" (performance targets, compatibility, etc.)
+   - "What should happen in error/edge cases?"
+
+3. Skip this phase ONLY if the user's initial request was already specific enough (e.g., "fix the null pointer at line 42 in auth.py"). For feature additions, always clarify.
+
+4. Use `[NEEDS CLARIFICATION]` for anything still ambiguous after asking.
 
 ---
 
 ## Phase 2: Plan
 
-1. Spawn the forge-planner agent with mode=existing and the exploration findings
+1. Spawn the forge-planner agent with mode=existing and the exploration findings AND the clarified requirements
 2. Planner produces:
    - What to change and why
    - Wave groupings for parallel execution

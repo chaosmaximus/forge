@@ -100,6 +100,8 @@ Present the complete PRD and ask for explicit approval:
 
 Do NOT interpret silence or partial acknowledgment as approval. Wait for an explicit "yes" or "approved."
 
+If the user chooses "Start over": reset STATE.md to phase=classify, delete the draft PRD, and return to Phase 1. The user can start fresh with a different direction.
+
 ---
 
 ## Phase 5: Visual Design (Optional)

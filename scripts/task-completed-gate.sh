@@ -59,7 +59,9 @@ fi
 
 # Check if changed files match prod_paths (surface Codex recommendation)
 PROD_PATHS="${CLAUDE_PLUGIN_OPTION_PROD_PATHS:-infrastructure/**,terraform/**,k8s/**,helm/**,production/**}"
-CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+# Check all changes on this branch (not just last commit) for prod path detection
+BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+CHANGED_FILES=$(git diff --name-only "$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || echo HEAD~1)..HEAD" 2>/dev/null || git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
 
 if [ -n "$CHANGED_FILES" ]; then
   IFS=',' read -ra PATTERNS <<< "$PROD_PATHS"
