@@ -1,71 +1,41 @@
-# Known Issues — Forge v0.1.0
+# Known Issues — Forge v0.1.x
 
-Issues identified during smoke testing. Tracked for v0.2.0.
+## Fixed in v0.1.1
 
-## Critical (fixed in v0.1.1)
+- [x] PRD template missing CSV-referenced sections — expanded with all 25+ section IDs + mapping
+- [x] Test detection fails for monorepos — added conftest.py/pytest subdirectory search
+- [x] Missing .tfstate protection — added to blocked list
+- [x] Missing Terraform formatter — added tf/tfvars support
+- [x] Evaluator scoring mismatch — now rubric-file-driven with weighted averages
+- [x] Evaluator can't access prod_paths — explicit defaults embedded
+- [x] Generator doesn't check CONSTITUTION.md — step 0 added
+- [x] Planner role confusion in greenfield — clarified as delegation-only
+- [x] default_generator_model has no effect — model: inherit in agent frontmatter
+- [x] Visual design triggers for non-UI projects — checks skip_sections first
+- [x] Section-by-section PRD approval too slow — presents full PRD at once
+- [x] Plan approval lacks HARD-GATE — added
+- [x] No Serena fallback — Grep/Read tertiary fallback added
+- [x] No BLOCKED/FAIL circuit breaker — 3-retry limit then escalate
+- [x] Phase names inconsistent — unified across both modes
+- [x] Router doesn't check Serena — added to prerequisite checks
+- [x] Codex not-installed contradiction — blocks for prod, warns for non-prod
+- [x] forge-setup disable-model-invocation — removed for interactivity
+- [x] STATE.md never created in workflows — both modes create it at start
+- [x] git add -A in handoff — safe staging with specific extensions
+- [x] Resume mode lacks specificity — expanded with mode detection and fresh teammates
+- [x] Bug fix "skip to build" contradicts HARD-GATE — scoped to existing mode only
+- [x] "Never specify file paths" too broad — carve-out for existing codebase
 
-- [x] Test detection fails for monorepos — added pytest/conftest.py subdirectory search
-- [x] PRD template missing CSV-referenced sections — needs section mapping (partial: documented below)
-- [x] Missing .tfstate protection — added to protect-sensitive-files.sh
-- [x] Missing Terraform formatter — added tf/tfvars case to post-edit-format.sh
+## Remaining Minor Items (v0.2.0)
 
-## Important (v0.2.0)
-
-### PRD Template & CSV Alignment
-- PRD template uses generic section headers but CSVs reference specific IDs (api_design, multi_tenancy, etc.)
-- Need: either a section ID-to-header mapping table, or expand PRD template with all referenced sections
-- Workaround: Claude infers section content from the ID name (works reasonably well)
-
-### Evaluator Scoring Alignment
-- Evaluator inline criteria (Correctness, Test Coverage, etc.) don't exactly match rubric file criteria
-- Need: evaluator should reference rubric files exclusively, remove inline criteria
-- Include weighted average formula: `weighted_avg = sum(score * weight) / sum(weights)`
-
-### Build Phase Duplication
-- forge-new and forge-feature contain near-identical build phase instructions
-- Need: extract shared build workflow to a separate reference file
-
-### CONSTITUTION.md Enforcement
-- Generator and evaluator agents don't check for or read CONSTITUTION.md
-- Need: add "If CONSTITUTION.md exists, read it first" to both agents
-
-### Planner Role Clarity (Greenfield)
-- Planner agent has greenfield logic but forge-new never spawns it
-- Resolution: forge-new does classification/discovery itself (correct), planner is only spawned for existing codebase mode. Remove or clearly mark greenfield section in planner as "reference only."
-
-### Visual Design for Non-UI Projects
-- forge-new Phase 5 offers Stitch even for api_backend (no frontend)
-- Need: check if ui_design is in skip_sections, auto-skip Phase 5
-
-### default_generator_model Config
-- Hardcoded model: opus in agent frontmatter overrides userConfig
-- Need: either use model: inherit and let skill specify, or document that model is set via spawn prompt
-
-### Phase Names Inconsistency
-- STATE.md uses greenfield phases only (classify/discover/prd/design/plan/build/review/ship)
-- Existing mode uses different phases (explore/plan/build/review/ship)
-- Need: universal phase enum covering both modes
-
-### No Serena Fallback
-- If Serena is not installed, forge-feature Phase 1 has no tertiary fallback
-- Need: "If both graph and Serena unavailable, use Grep/Read with warning"
-
-### BLOCKED/FAIL Circuit Breaker
-- No retry limit for generators that fail evaluation or report BLOCKED
-- Need: max 3 retries, then escalate to user
-
-### Session Timer
-- 90/120 minute guards have no timing mechanism
-- Workaround: Claude estimates from turn count and tool call duration
-
-## Minor (v0.2.0)
-
-- Delegate mode references Shift+Tab (user keybinding, not agent action)
-- git add -A in handoff could stage sensitive files
+- Session timer (90/120 min) has no timing mechanism — Claude estimates from context
+- Delegate mode references Shift+Tab keybinding — should say "enter delegate mode" generically
+- Build phase partially duplicated between forge-new and forge-feature — extract to shared reference
 - Codex invocation syntax should be validated against actual plugin API
-- Companion plugin install commands need validation
-- forge-setup disable-model-invocation conflicts with interactive steps
-- Evaluator Codex gate overlaps with forge-review Codex gate
-- No weighted average formula specified in rubrics
-- Resume mode lacks specificity on how to re-establish teams
-- Base branch placeholder not auto-resolved for greenfield
+- Companion plugin install commands need end-to-end validation
+- No restart path after Phase 4 in greenfield mode
+- No escape hatch for minimal discovery (user wants to skip questions)
+- No wave granularity decision framework for greenfield
+- No guidance for partial wave success (2 of 3 tasks pass, 1 fails)
+- Merge strategy (rebase vs merge commit) unspecified for worktree merges
+- Stitch MCP loaded globally even when not needed in existing mode
