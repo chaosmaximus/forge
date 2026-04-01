@@ -1,0 +1,20 @@
+# Bundled binary (downloaded at install time)
+servers/codebase-memory-mcp
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

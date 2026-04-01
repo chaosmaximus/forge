@@ -1,0 +1,47 @@
+{
+  "name": "forge",
+  "version": "0.1.0",
+  "description": "Production-grade agent team orchestration with two modes: greenfield (PRD + design + build) and existing codebase (explore + plan + build). Cross-model adversarial review via Codex.",
+  "author": {
+    "name": "DurgaSaiK"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agent-teams",
+    "production",
+    "adversarial-review",
+    "code-intelligence",
+    "PRD",
+    "planner-generator-evaluator"
+  ],
+  "agents": "./agents/",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": {
+    "forge-graph": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/servers/codebase-memory-mcp",
+      "args": ["serve"],
+      "env": {
+        "FORGE_DATA_DIR": "${CLAUDE_PLUGIN_DATA}/graph"
+      }
+    }
+  },
+  "userConfig": {
+    "codex_enabled": {
+      "description": "Enable Codex adversarial review (requires codex-plugin-cc installed). Default: true",
+      "sensitive": false
+    },
+    "stitch_enabled": {
+      "description": "Enable Google Stitch MCP for visual design generation in greenfield mode. Default: false",
+      "sensitive": false
+    },
+    "prod_paths": {
+      "description": "Comma-separated glob patterns for paths requiring hard Codex gate. Default: infrastructure/**,terraform/**,k8s/**,helm/**,production/**. Available as CLAUDE_PLUGIN_OPTION_PROD_PATHS env var.",
+      "sensitive": false
+    },
+    "default_generator_model": {
+      "description": "Model for generator agents: opus (quality) or sonnet (speed/cost). Default: opus",
+      "sensitive": false
+    }
+  }
+}

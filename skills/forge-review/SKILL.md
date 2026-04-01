@@ -1,0 +1,68 @@
+---
+name: forge-review
+description: Use after forge-build completes all waves, before merging or shipping any code
+---
+
+# Forge Review
+
+## Step 1: Run Evaluator
+
+If not already done per-wave, spawn forge-evaluator on the full changeset.
+The evaluator performs two-stage review (spec compliance, then code quality).
+
+## Step 2: Present Findings
+
+Show the evaluator's structured review to the user:
+- Spec compliance checklist
+- Code quality scores
+- Critical findings (must fix)
+- Suggestions (optional)
+
+## Step 3: Codex Gate
+
+Determine gate level:
+1. Check changed files against `prod_paths` (from CLAUDE_PLUGIN_OPTION_PROD_PATHS):
+   - Match → HARD GATE. Run Codex. Must pass.
+   - No match but shared modules → AUTO-REVIEW. Run Codex. Surface findings.
+   - No match → ON-DEMAND. Ask user: "Want a Codex adversarial review? Recommended for [reason]."
+
+2. To run Codex:
+   ```
+   Run /codex:adversarial-review --background --base [base-branch]
+   Focus areas: auth, data loss, rollback safety, race conditions, idempotency
+   ```
+
+3. Wait for result. Present findings with options:
+   ```
+   Codex adversarial review complete:
+   Verdict: [approve/needs-attention]
+
+   [If needs-attention:]
+   CRITICAL: [finding with file:line]
+   HIGH: [finding with file:line]
+
+   Options:
+   1. Fix critical issues and re-review (recommended)
+   2. Fix all issues and re-review
+   3. Override and proceed (NOT for prod paths)
+   4. Revise the plan
+   ```
+
+## Step 4: Loop Until Pass
+
+- If fixes needed: send findings to generators, re-review
+- If Codex blocks: fix and re-run Codex
+- If user overrides (non-prod only): log the override in STATE.md
+
+## Iron Law
+```
+NO MERGE WITHOUT EVALUATOR SIGN-OFF.
+NO MERGE TO PROD PATHS WITHOUT CODEX SIGN-OFF.
+"It passed locally" is not sufficient. Run the full gate.
+```
+
+## When Codex Plugin Is Not Installed
+
+- For prod paths: WARN the user explicitly: "Codex plugin not installed. Cannot run adversarial review on production code. STRONGLY recommend installing: `/plugin marketplace add openai/codex-plugin-cc`"
+- For non-prod: proceed with evaluator review only
+- NEVER silently skip the Codex gate for prod paths

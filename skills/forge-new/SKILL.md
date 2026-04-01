@@ -1,0 +1,223 @@
+---
+name: forge-new
+description: Use when building a new project from scratch in an empty or near-empty directory
+---
+
+# Forge — Greenfield Mode
+
+Building something new. Focus: understand WHAT to build before building it.
+
+**Proactive-but-user-guided principle:** Forge is proactive in COMMUNICATION — it announces phases, explains what is happening, presents clear options with recommendations. But it NEVER acts autonomously on decisions that affect the user's project. The user is always the guide.
+- ALWAYS present options with a recommendation, then WAIT for the user's choice
+- ALWAYS ask before: starting a build, merging code, creating PRs, modifying architecture
+- ALWAYS surface findings and let the user decide the response
+- NEVER skip a user approval gate because "it's obvious"
+- NEVER auto-fix evaluator findings without presenting them first
+- Proactive = "Here's what I found, here's what I recommend, what do you want to do?"
+- NOT proactive = "I found an issue and fixed it for you"
+
+## Checklist
+
+You MUST create a TaskCreate item for each phase and complete them in order:
+
+1. **Classify project** — match against project-types.csv and domain-complexity.csv
+2. **Discover requirements** — structured questioning, one at a time
+3. **Draft PRD** — using template + CSV-driven sections
+4. **User approves PRD**
+5. **Visual design** (if Stitch available) — generate UI mockups
+6. **Create build plan** — wave groupings from PRD deliverables
+7. **Build** — agent team execution
+8. **Review** — invoke forge-review
+9. **Ship** — invoke forge-ship
+
+---
+
+## Phase 1: Classify
+
+1. Read `${CLAUDE_PLUGIN_ROOT}/data/project-types.csv`
+2. Match the user's description against `detection_signals`. If ambiguous, ask:
+   "This sounds like a [type]. Is that right, or is it more of a:
+   (a) [alternative 1]
+   (b) [alternative 2]
+   (c) Something else"
+3. Read `${CLAUDE_PLUGIN_ROOT}/data/domain-complexity.csv`
+4. If the domain matches an entry, IMMEDIATELY surface `key_concerns`:
+   "Since this is a [domain] project, we need to address: [key_concerns].
+   I'll make sure the PRD covers these."
+   Do NOT wait for the user to ask about compliance. They may not know they need it.
+
+---
+
+## Phase 2: Discover
+
+Use `key_questions` from the matched project type. Ask ONE question at a time.
+- Prefer multiple choice with your recommendation first
+- Lead with why your recommendation makes sense
+- Use `[NEEDS CLARIFICATION]` if the user's answer is ambiguous
+- Do NOT generate any content yet — this is pure conversation
+
+Minimum discovery (even for "simple" projects):
+- What problem does this solve?
+- Who are the users? (all types: primary, admin, API consumers)
+- What does success look like? (user success + business success)
+- What is out of scope for v1?
+
+---
+
+## Phase 3: Draft PRD
+
+1. Read `${CLAUDE_PLUGIN_ROOT}/templates/PRD.md`
+2. Include ONLY `required_sections` for the matched project type
+3. Skip `skip_sections` — do not include them even as empty headers
+4. Frame functional requirements as capability contracts: "FR#: [Actor] can [capability]"
+5. For NFRs: only include categories that MATTER for this product. Ask:
+   "Which of these are critical for your project?
+   (a) Performance — response time, throughput targets
+   (b) Security — auth, data protection, compliance
+   (c) Scalability — expected load, growth projections
+   (d) Accessibility — WCAG level, i18n requirements
+   (e) None of these are critical right now"
+6. Include domain-specific sections from domain-complexity.csv `special_sections`
+7. Present the PRD to the user section by section. Ask after each: "Does this look right?"
+
+---
+
+## Phase 4: User Approves PRD
+
+<HARD-GATE>
+Do NOT proceed to design or build until the user has approved the PRD.
+No "this is simple enough to skip PRD" exceptions.
+The PRD can be 1 page for a simple project. But it must exist and be approved.
+</HARD-GATE>
+
+Present the complete PRD and ask for explicit approval:
+"Here's the complete PRD. Please review it and let me know:
+(a) Approved — let's proceed
+(b) Changes needed — tell me what to adjust
+(c) Start over — the direction is wrong"
+
+Do NOT interpret silence or partial acknowledgment as approval. Wait for an explicit "yes" or "approved."
+
+---
+
+## Phase 5: Visual Design (Optional)
+
+If Stitch MCP is available (`stitch_enabled` in userConfig):
+1. Announce: "I can generate visual UI mockups using Google Stitch before we build. Want me to? This helps ensure the UI matches your vision before writing code."
+2. If yes: use Stitch MCP tools to generate designs from the PRD's user journeys
+3. Present designs to user for approval/iteration
+4. Export design tokens / design.md for the generator to reference
+
+If Stitch is not available:
+1. Check if `frontend-design` plugin is installed
+2. If yes: "I'll use the frontend-design skill during build to ensure high-quality UI code."
+3. If no: skip visual design, note the skip in STATE.md, and recommend setting it up for next time. Proceed to plan.
+
+---
+
+## Phase 6: Create Build Plan
+
+1. Extract deliverables from the approved PRD
+2. Group into dependency-aware waves:
+   - Wave 1: independent foundational pieces (models, auth, core APIs)
+   - Wave 2: features that depend on Wave 1
+   - Wave 3: integration, UI, cross-cutting concerns
+3. Present wave plan to user for approval. Do NOT start build without user sign-off on the plan.
+
+---
+
+## Phase 7: Build
+
+### Step 1: Prepare
+
+1. Read the approved plan
+2. Identify waves and task-per-wave groupings
+3. Verify agent teams are enabled
+
+### Step 2: Execute Waves
+
+For each wave:
+
+1. **Create tasks** via TaskCreate — one per parallel task in this wave
+2. **Spawn generator teammates:**
+   - One forge-generator per parallel task (max 4 per wave)
+   - Each in `isolation: worktree`
+   - Each receives: the specific task description, acceptance criteria, relevant context from exploration/PRD
+   - Model: use `default_generator_model` from userConfig (opus or sonnet)
+3. **Spawn evaluator teammate** — one forge-evaluator that waits for generators
+4. **Enter delegate mode:**
+   "You are the team coordinator. You NEVER write code, edit files, or implement features.
+   You delegate to generator teammates, monitor progress, relay evaluator feedback, and
+   manage the task list. Use delegate mode (Shift+Tab)."
+5. **Monitor:** Check task progress. If a generator reports BLOCKED or NEEDS_CONTEXT, provide the needed context or escalate to the user.
+6. **Review:** When generators complete, evaluator reviews each. On FAIL, relay findings back to generator. Present findings to user before requesting generator rework.
+7. **Merge:** On PASS, merge generator worktrees to main branch.
+8. **Advance:** Update STATE.md. Move to next wave.
+
+### Step 3: Session Guard
+
+- At 90 minutes: "We've been running for 90 minutes. Recommend checkpointing. Run /forge:handoff?"
+- At 120 minutes: "Session limit reached. Auto-checkpointing to STATE.md."
+  Save state and recommend starting a fresh session.
+
+### Wave Execution Diagram
+
+```
+Wave 1: [Task A, Task B, Task C] — independent, parallel generators
+  | all complete + evaluator approved
+Wave 2: [Task D, Task E] — depend on Wave 1
+  | all complete + evaluator approved
+Wave 3: [Task F] — depends on Wave 2
+```
+
+### Team Size Guidelines
+
+- 1-2 tasks: 1 generator + 1 evaluator (skip agent team, use subagents)
+- 3-4 tasks: 2-3 generators + 1 evaluator
+- 5+ tasks: 3-4 generators + 1 evaluator (max 5 teammates total)
+
+<HARD-GATE>
+Do NOT merge any generator output without evaluator review passing.
+No "looks fine to me" overrides from the lead. The evaluator must run.
+Exception: if the task is trivial (1-2 files, < 50 lines changed), the lead
+can review directly instead of spawning an evaluator agent.
+</HARD-GATE>
+
+---
+
+## Phase 8: Review
+
+Invoke `forge-review` skill.
+
+The review skill runs a two-stage evaluation:
+1. Internal evaluator (forge-evaluator) reviews for code quality, architecture, and security
+2. Cross-model adversarial review via Codex for different-perspective analysis
+
+Present all findings to the user. Let the user decide which findings to address.
+
+---
+
+## Phase 9: Ship
+
+Invoke `forge-ship` skill.
+
+The ship skill handles:
+1. PR creation with structured summary
+2. Final gate verification
+3. Episodic memory save for future sessions
+
+---
+
+## Rationalization Prevention
+
+| If you're thinking... | The answer is... |
+|----------------------|-----------------|
+| "The user knows what they want, skip discovery" | Discovery surfaces what they DON'T know they need. Run it. |
+| "This domain doesn't need compliance checks" | Check the CSV. If it lists key_concerns, surface them. |
+| "PRD is overkill for this project" | A 1-page PRD is not overkill. It's a 5-minute investment that prevents hours of rework. |
+| "Let's just start building" | <HARD-GATE> prevents this. Follow the process. |
+| "Stitch isn't set up, skip design entirely" | Note the skip in STATE.md. Recommend setting it up for next time. |
+| "The evaluator is slowing us down" | The evaluator catches bugs before users do. It stays. |
+| "I can review this myself, no need for evaluator" | Self-review has blind spots. The evaluator uses different criteria. No merge without it. |
+| "This is just a prototype, quality doesn't matter" | Prototypes become production code. Build it right or mark it explicitly disposable in the PRD. |
+| "The user seems impatient, skip the approval gate" | Skipping approval leads to rework. A 30-second approval saves hours. |
