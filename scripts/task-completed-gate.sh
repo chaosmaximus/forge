@@ -5,6 +5,8 @@
 set -euo pipefail
 
 INPUT=$(cat)
+# TASK_SUBJECT available for future use in logging
+export TASK_SUBJECT
 TASK_SUBJECT=$(echo "$INPUT" | jq -r '.task_subject // empty' 2>/dev/null || echo "")
 
 # Auto-detect and run test suite
