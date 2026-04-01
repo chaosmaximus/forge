@@ -1,7 +1,7 @@
 # Forge State
 
 **Last updated:** [timestamp]
-**Current phase:** [classify|discover|prd|design|plan|build|review|ship]
+**Current phase:** [explore|clarify|classify|discover|prd|design|plan|build|review|ship]
 **Mode:** [greenfield|existing]
 **Active branch:** [branch-name]
 

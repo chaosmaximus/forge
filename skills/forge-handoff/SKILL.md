@@ -22,7 +22,7 @@ description: Use when pausing work or before ending a session with in-progress F
 3. Stage source files and forge state files separately:
    ```
    git add -u                    # tracked files with changes
-   git add '*.py' '*.ts' '*.js' '*.go' '*.rs' '*.tf' 2>/dev/null  # new source files
+   git add '*.py' '*.ts' '*.js' '*.jsx' '*.tsx' '*.go' '*.rs' '*.tf' '*.java' '*.kt' '*.c' '*.cpp' '*.h' '*.rb' '*.swift' '*.dart' '*.css' '*.scss' '*.html' 2>/dev/null  # new source files
    git add STATE.md HANDOFF.md 2>/dev/null  # forge state (needed for resume)
    git commit -m 'wip: forge handoff checkpoint'
    ```

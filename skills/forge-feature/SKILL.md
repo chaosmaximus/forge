@@ -29,6 +29,14 @@ You MUST create a TaskCreate item for each phase and complete them in order:
 
 ---
 
+## Resume Detection
+
+Before starting Phase 1, check if STATE.md already exists with `mode: existing`:
+- Read STATE.md and check the `Current phase` field
+- Skip all phases that are already marked complete (phases before the current one)
+- Announce: "Resuming from phase: [phase]. Previous phases already complete."
+- If STATE.md does not exist or has no in-progress session, start from Phase 1 normally
+
 ## Phase 1: Explore
 
 If any graph tool call (`mcp__forge_forge-graph__*`) fails during exploration, fall back to Serena tools and basic Grep/Read. Warn the user: "Code graph server is not responding. Using fallback exploration. Results may be less comprehensive."

@@ -32,9 +32,17 @@ You MUST create a TaskCreate item for each phase and complete them in order:
 
 ---
 
+## Resume Detection
+
+Before starting Phase 1, check if STATE.md already exists with `mode: greenfield`:
+- Read STATE.md and check the `Current phase` field
+- Skip all phases that are already marked complete (phases before the current one)
+- Announce: "Resuming from phase: [phase]. Previous phases already complete."
+- If STATE.md does not exist or has no in-progress session, start from Phase 1 normally
+
 ## Phase 1: Classify
 
-0. Create STATE.md from the template at `${CLAUDE_PLUGIN_ROOT}/templates/STATE.md`. Set mode to 'greenfield' and phase to 'classify'. This tracks session state for handoff/resume.
+0. Create STATE.md from the template at `${CLAUDE_PLUGIN_ROOT}/templates/STATE.md` (if it doesn't exist). Set mode to 'greenfield' and phase to 'classify'. This tracks session state for handoff/resume.
 
 1. Read `${CLAUDE_PLUGIN_ROOT}/data/project-types.csv`
 2. Match the user's description against `detection_signals`. If ambiguous, ask:
