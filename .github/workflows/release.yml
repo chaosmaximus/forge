@@ -1,0 +1,31 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run full test suite
+        run: |
+          sudo apt-get install -y jq shellcheck
+          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats
+          sudo /tmp/bats/install.sh /usr/local
+          bash tests/run-all.sh
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Installation
+            ```
+            claude plugin marketplace add DurgaSaiK/forge
+            claude plugin install forge@DurgaSaiK-forge
+            ```
+            Or install from local path:
+            ```
+            claude plugin install /path/to/forge
+            ```

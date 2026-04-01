@@ -1,0 +1,84 @@
+name: Forge Plugin CI
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq
+        run: sudo apt-get install -y jq
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: Validate plugin.json
+        run: bash tests/static/validate-plugin.sh
+      - name: Validate hooks.json
+        run: bash tests/static/validate-hooks.sh
+      - name: Validate skills
+        run: bash tests/static/validate-skills.sh
+      - name: Validate agents
+        run: bash tests/static/validate-agents.sh
+      - name: Validate CSV data
+        run: bash tests/static/validate-csv.sh
+      - name: Validate rubrics
+        run: bash tests/static/validate-rubrics.sh
+      - name: Validate templates
+        run: bash tests/static/validate-templates.sh
+      - name: ShellCheck
+        run: bash tests/static/run-shellcheck.sh
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install BATS
+        run: |
+          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats
+          sudo /tmp/bats/install.sh /usr/local
+      - name: Install jq
+        run: sudo apt-get install -y jq
+      - name: Run BATS tests
+        run: bats tests/unit/
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq
+        run: sudo apt-get install -y jq
+      - name: Plugin loading test
+        run: bash tests/integration/test-plugin-loading.sh
+      - name: Hook behavior test
+        run: bash tests/integration/test-hook-behavior.sh
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: ShellCheck with error severity
+        run: shellcheck -S error scripts/*.sh
+      - name: Check for hardcoded secrets
+        run: |
+          echo "=== Scanning for potential secrets ==="
+          if grep -rn "password\|secret\|api_key\|token" --include="*.sh" --include="*.json" scripts/ .claude-plugin/ hooks/ | grep -v "CLAUDE_PLUGIN_OPTION\|jq\|description\|sensitive\|Protected\|credentials\*\|secrets\*"; then
+            echo "[WARN] Potential secrets found — review above matches"
+          else
+            echo "[PASS] No hardcoded secrets detected"
+          fi
+      - name: Check for dangerous shell patterns
+        run: |
+          echo "=== Scanning for dangerous patterns ==="
+          ISSUES=0
+          # Check for eval
+          if grep -rn 'eval ' scripts/*.sh; then echo "[FAIL] eval found"; ISSUES=1; fi
+          # Check for unquoted variables in dangerous positions
+          if grep -rn 'rm -rf \$' scripts/*.sh; then echo "[FAIL] unquoted rm -rf found"; ISSUES=1; fi
+          # Check for curl | bash patterns
+          if grep -rn 'curl.*|.*bash\|curl.*|.*sh' scripts/*.sh; then echo "[FAIL] curl pipe to shell found"; ISSUES=1; fi
+          if [ $ISSUES -eq 0 ]; then echo "[PASS] No dangerous patterns found"; fi

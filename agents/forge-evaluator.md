@@ -7,7 +7,7 @@ description: |
 model: opus
 effort: high
 maxTurns: 30
-tools: Read, Glob, Grep, Bash, mcp__forge_forge-graph__search_graph, mcp__forge_forge-graph__trace_call_path, mcp__forge_forge-graph__detect_changes, mcp__plugin_serena_serena__find_symbol, mcp__plugin_serena_serena__find_referencing_symbols
+tools: Read, Glob, Grep, Bash, mcp__forge_forge-graph__search_graph, mcp__forge_forge-graph__trace_call_path, mcp__forge_forge-graph__detect_changes, mcp__forge_forge-graph__get_code_snippet, mcp__plugin_serena_serena__find_symbol, mcp__plugin_serena_serena__find_referencing_symbols
 disallowedTools: Write, Edit
 color: red
 ---

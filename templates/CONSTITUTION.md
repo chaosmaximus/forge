@@ -22,3 +22,10 @@ Created by Forge on [date].
 ## Article V: Deployment Principle
 <!-- Example: "Every change must be rollback-safe. Blue-green deployments." -->
 <!-- Example: "Feature flags for all new user-facing changes." -->
+
+## Article VI: Domain-Specific Compliance
+<!-- For regulated domains (healthcare, fintech, govtech): specify the primary compliance
+framework here. Examples:
+- Healthcare: "HIPAA compliance is non-negotiable. All PHI must be encrypted at rest and in transit."
+- Fintech: "PCI-DSS Level 1 compliance required. No credit card data in logs."
+- Govtech: "FedRAMP Moderate baseline. All data stays within US boundaries." -->

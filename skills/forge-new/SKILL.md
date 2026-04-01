@@ -81,6 +81,7 @@ If the user says "just build it" or "skip the questions", present ONLY the 4 min
 1. Read `${CLAUDE_PLUGIN_ROOT}/templates/PRD.md`
 2. Include ONLY `required_sections` for the matched project type
 3. Skip `skip_sections` — do not include them even as empty headers
+   Note: some skip_section IDs (like `user_journeys_visual`) are skip-only signals that share a header with another section. If a skip ID has no dedicated header in the template, it means the visual/extended variant is suppressed while the base section remains.
 4. Frame functional requirements as capability contracts: "FR#: [Actor] can [capability]"
 5. For NFRs: only include categories that MATTER for this product. Ask:
    "Which of these are critical for your project?

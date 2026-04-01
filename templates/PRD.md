@@ -398,6 +398,7 @@ Define regulatory compliance requirements:
   - Data residency and sovereignty requirements
   - Incident reporting obligations and timelines
 -->
+<!-- For healthcare: include HIPAA compliance matrix (Administrative Safeguards, Physical Safeguards, Technical Safeguards), FDA device classification if applicable, state-specific health data laws -->
 
 ---
 
@@ -449,6 +450,7 @@ Define clinical and healthcare-specific requirements:
   - Patient safety considerations
   - Clinical staff training requirements
 -->
+<!-- Include: clinical workflow integration points, EHR/EMR compatibility, HL7 FHIR resource mapping, clinical validation approach -->
 
 ---
 

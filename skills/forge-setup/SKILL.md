@@ -56,6 +56,10 @@ If no: skip.
 
 Create STATE.md with initial state.
 
+## Stitch MCP (Optional)
+
+Stitch MCP is configured in the plugin's .mcp.json. If you don't use visual design, you can delete that file from the plugin directory to avoid loading it: `rm ${CLAUDE_PLUGIN_ROOT}/.mcp.json`
+
 ## Done
 
 "Forge is set up. Run `/forge:new` for a new project or `/forge:feature` for existing code."

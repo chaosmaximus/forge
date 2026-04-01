@@ -46,6 +46,7 @@ This is NOT a separate agent or 4-phase pipeline. The planner uses graph tools d
 0. Create STATE.md from the template at `${CLAUDE_PLUGIN_ROOT}/templates/STATE.md`. Set mode to 'existing' and phase to 'explore'.
 
 1. Check graph index: call `mcp__forge_forge-graph__index_status`
+   <!-- Note: index_status and index_repository are called by the lead directly (not by spawned agents). The lead has access to all registered MCP tools. -->
    - If status is "not_indexed": call `mcp__forge_forge-graph__index_repository` with current directory. Wait for completion before proceeding.
    - If status is "indexed": proceed (SessionStart hook keeps it current)
    - If status is "stale": call `mcp__forge_forge-graph__index_repository` to refresh, then proceed
