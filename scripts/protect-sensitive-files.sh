@@ -19,7 +19,7 @@ fi
 BASENAME=$(basename "$FILE_PATH")
 
 case "$BASENAME" in
-  .env|.env.*|credentials*|secrets*|*.key|*.pem|poetry.lock|package-lock.json|yarn.lock)
+  .env|.env.*|credentials*|secrets*|*.key|*.pem|*.tfstate|*.tfstate.backup|poetry.lock|package-lock.json|yarn.lock)
     echo "Protected file: $BASENAME. Edit manually or use the appropriate package manager." >&2
     exit 2
     ;;

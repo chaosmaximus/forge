@@ -29,6 +29,9 @@ case "$EXT" in
   go)
     command -v gofmt &>/dev/null && gofmt -w "$FILE_PATH" 2>/dev/null || true
     ;;
+  tf|tfvars)
+    command -v terraform &>/dev/null && terraform fmt "$FILE_PATH" 2>/dev/null || true
+    ;;
 esac
 
 exit 0

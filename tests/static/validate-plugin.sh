@@ -31,13 +31,27 @@ else
   echo "[PASS] version: $VERSION"
 fi
 
-# 5. Component paths exist
+# 5. Component paths exist (agents can be array of files or directory string)
 for field in agents skills; do
-  path=$(jq -r ".$field // empty" "$PLUGIN_JSON")
-  if [ -n "$path" ] && [ ! -d "$PLUGIN_ROOT/$path" ]; then
-    echo "[FAIL] $field path not found: $path"; errors=$((errors + 1))
+  field_type=$(jq -r ".$field | type" "$PLUGIN_JSON" 2>/dev/null)
+  if [ "$field_type" = "array" ]; then
+    # Array of file paths — check each file exists
+    all_exist=true
+    for file in $(jq -r ".$field[]" "$PLUGIN_JSON"); do
+      if [ ! -f "$PLUGIN_ROOT/$file" ]; then
+        echo "[FAIL] $field file not found: $file"; errors=$((errors + 1)); all_exist=false
+      fi
+    done
+    [ "$all_exist" = "true" ] && echo "[PASS] $field files all exist"
+  elif [ "$field_type" = "string" ]; then
+    path=$(jq -r ".$field" "$PLUGIN_JSON")
+    if [ -n "$path" ] && [ ! -d "$PLUGIN_ROOT/$path" ]; then
+      echo "[FAIL] $field path not found: $path"; errors=$((errors + 1))
+    else
+      echo "[PASS] $field directory exists"
+    fi
   else
-    echo "[PASS] $field directory exists"
+    echo "[PASS] $field not specified (auto-discovery)"
   fi
 done
 
