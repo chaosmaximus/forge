@@ -7,8 +7,8 @@ description: |
 model: opus
 effort: high
 maxTurns: 30
-tools: Read, Glob, Grep, Bash, WebFetch, WebSearch, mcp__forge_forge-graph__get_architecture, mcp__forge_forge-graph__search_graph, mcp__forge_forge-graph__trace_call_path, mcp__forge_forge-graph__detect_changes
-disallowedTools: Write, Edit
+tools: Read, Glob, Grep, WebFetch, WebSearch, mcp__forge_forge-graph__get_architecture, mcp__forge_forge-graph__search_graph, mcp__forge_forge-graph__trace_call_path, mcp__forge_forge-graph__detect_changes
+disallowedTools: Write, Edit, Bash
 color: blue
 ---
 

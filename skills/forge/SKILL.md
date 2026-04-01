@@ -19,8 +19,9 @@ Announce: "I'm using Forge in [greenfield/existing codebase] mode."
 ## Step 2: Check Prerequisites
 
 1. Verify agent teams are enabled: check for `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` in settings
-2. If not: "Agent teams are required. Add this to your settings.json:
-   `{ "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }`"
+2. If not: "Agent teams are recommended for multi-task builds. Add this to your settings.json:
+   `{ "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }`
+   For simple 1-2 task changes, Forge can work with subagents instead."
 3. Check if codebase-memory-mcp graph exists (for existing codebase mode):
    Call `mcp__forge_forge-graph__index_status`. If not indexed: "Indexing your codebase for the first time. This runs in the background."
 4. Check Codex plugin: if not found, warn: "Codex plugin not installed. Adversarial review will be unavailable. Install: `/plugin marketplace add openai/codex-plugin-cc`"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Forge: PreToolUse hook for Edit|Write
 # Blocks edits to sensitive files
+# Security: resolves symlinks, checks canonical path
 set -euo pipefail
 
 # Security hook: fail closed if jq is unavailable
@@ -16,11 +17,17 @@ if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
 
-BASENAME=$(basename "$FILE_PATH")
+# Resolve symlinks to get canonical path (prevents symlink bypass)
+RESOLVED_PATH="$FILE_PATH"
+if command -v readlink &>/dev/null; then
+  RESOLVED_PATH=$(readlink -f "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
+fi
+
+BASENAME=$(basename "$RESOLVED_PATH")
 
 case "$BASENAME" in
-  .env|.env.*|credentials*|secrets*|*.key|*.pem|*.tfstate|*.tfstate.backup|poetry.lock|package-lock.json|yarn.lock)
-    echo "Protected file: $BASENAME. Edit manually or use the appropriate package manager." >&2
+  .env|.env.*|credentials*|secrets*|*.key|*.pem|*.tfstate|*.tfstate.backup|poetry.lock|package-lock.json|yarn.lock|*.p12|*.pfx|*.jks|*.keystore|.npmrc|.pypirc|id_rsa|id_ed25519|*.pub)
+    echo "Protected file: $BASENAME (resolved from $(basename "$FILE_PATH")). Edit manually or use the appropriate tool." >&2
     exit 2
     ;;
 esac
