@@ -14,7 +14,11 @@
     "PRD",
     "planner-generator-evaluator"
   ],
-  "agents": "./agents/",
+  "agents": [
+    "./agents/forge-planner.md",
+    "./agents/forge-generator.md",
+    "./agents/forge-evaluator.md"
+  ],
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
   "mcpServers": {
@@ -28,19 +32,27 @@
   },
   "userConfig": {
     "codex_enabled": {
-      "description": "Enable Codex adversarial review (requires codex-plugin-cc installed). Default: true",
+      "title": "Codex Adversarial Review",
+      "description": "Enable Codex adversarial review (requires codex-plugin-cc installed)",
+      "type": "boolean",
       "sensitive": false
     },
     "stitch_enabled": {
-      "description": "Enable Google Stitch MCP for visual design generation in greenfield mode. Default: false",
+      "title": "Google Stitch Design",
+      "description": "Enable Google Stitch MCP for visual design generation in greenfield mode",
+      "type": "boolean",
       "sensitive": false
     },
     "prod_paths": {
-      "description": "Comma-separated glob patterns for paths requiring hard Codex gate. Default: infrastructure/**,terraform/**,k8s/**,helm/**,production/**. Available as CLAUDE_PLUGIN_OPTION_PROD_PATHS env var.",
+      "title": "Production Paths",
+      "description": "Comma-separated glob patterns for paths requiring hard Codex gate (e.g. infrastructure/**,terraform/**)",
+      "type": "string",
       "sensitive": false
     },
     "default_generator_model": {
-      "description": "Model for generator agents: opus (quality) or sonnet (speed/cost). Default: opus",
+      "title": "Generator Model",
+      "description": "Model for generator agents: opus (quality) or sonnet (speed/cost)",
+      "type": "string",
       "sensitive": false
     }
   }
