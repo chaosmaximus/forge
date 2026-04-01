@@ -26,11 +26,11 @@ Determine gate level:
    - No match but shared modules → AUTO-REVIEW. Run Codex. Surface findings.
    - No match → ON-DEMAND. Ask user: "Want a Codex adversarial review? Recommended for [reason]."
 
+When spawning the evaluator, include the custom prod_paths in the spawn prompt if they differ from defaults. Example: "Review this changeset. Custom production paths: [paths from userConfig]." The evaluator cannot read environment variables directly.
+
 2. To run Codex:
-   ```
-   Run /codex:adversarial-review --background --base [base-branch]
+   Run `/codex:adversarial-review`. If the Codex plugin supports background mode, add `--background`. Specify the base branch for comparison. If the exact syntax differs from what's documented here, follow the Codex plugin's own help output (`/codex` to see available commands).
    Focus areas: auth, data loss, rollback safety, race conditions, idempotency
-   ```
 
 3. Wait for result. Present findings with options:
    ```
@@ -53,6 +53,10 @@ Determine gate level:
 - If fixes needed: send findings to generators, re-review
 - If Codex blocks: fix and re-run Codex
 - If user overrides (non-prod only): log the override in STATE.md
+
+## Transition to Ship
+
+When all reviews pass (evaluator + Codex if applicable), announce: "Review complete. All gates passed." Then return control to the lead skill (forge-new or forge-feature) which will invoke forge-ship as the next phase.
 
 ## Iron Law
 ```

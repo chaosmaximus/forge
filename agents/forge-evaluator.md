@@ -106,6 +106,9 @@ RUBRIC SCORES:
     - ...
     Weighted Average: [X.X]/5  (threshold: 4.0)
 
+AUTO-FAIL CONDITIONS:
+- [List any auto-fail conditions triggered, or "None"]
+
 CRITICAL FINDINGS (must fix):
 - [finding with file:line and recommendation]
 

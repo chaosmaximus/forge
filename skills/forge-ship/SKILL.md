@@ -33,6 +33,8 @@ If option 1: generate PR with:
 
 ## Step 4: Save to Memory
 
+Before writing to MEMORY.md, check if it is gitignored (`git check-ignore MEMORY.md`). If it IS tracked in git, warn the user: "MEMORY.md is tracked in git. Session notes will be committed. Add it to .gitignore if this is a public repo."
+
 1. Write a session summary to project MEMORY.md (if it exists):
    ```
    ## [date] — Forge: [feature name]

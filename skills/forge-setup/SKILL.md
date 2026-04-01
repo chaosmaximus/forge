@@ -27,6 +27,8 @@ Run through this checklist and report status:
 
 ## Companion Plugins (check and recommend)
 
+> Install commands below are based on standard Claude Code plugin syntax. If a command fails, check the plugin's documentation for updated install instructions.
+
 | Plugin | Status | Purpose | Install Command |
 |--------|--------|---------|----------------|
 | codex-plugin-cc | [check] | Cross-model adversarial review | `/plugin marketplace add openai/codex-plugin-cc` |
@@ -36,6 +38,12 @@ Run through this checklist and report status:
 | frontend-design | [check] | Production-grade UI code | `/plugin install frontend-design@claude-plugins-official` |
 | stitch-mcp | [check] | Visual design generation | Configure in .mcp.json (see README) |
 | mcp2cli | [optional] | Token optimization for MCP-heavy projects | See github.com/myeolinmalchi/mcp2cli |
+
+## Production Path Configuration
+
+Your project may use non-standard production directory names. Would you like to customize the production path patterns for Codex hard gating? Current defaults: `infrastructure/**`, `terraform/**`, `k8s/**`, `helm/**`, `production/**`.
+
+Common additions: `prod/**`, `deploy/**`, `live/**`, or project-specific patterns.
 
 ## Initial Project Files
 

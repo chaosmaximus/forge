@@ -1,6 +1,10 @@
 {
+  "_note": "Stitch MCP is optional. Remove this file if you do not use visual design generation.",
   "stitch": {
     "command": "npx",
-    "args": ["-y", "stitch-mcp@latest"]
+    "args": [
+      "-y",
+      "stitch-mcp@latest"
+    ]
   }
 }

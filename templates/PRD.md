@@ -21,6 +21,9 @@ domain-complexity.csv) to the actual headers in this template.
   success_criteria          -> ## Success Criteria
   user_journeys             -> ## User Journeys
   user_journeys_visual      -> ## User Journeys (visual/diagram variant)
+                               NOTE: user_journeys_visual is a skip-only signal
+                               (used in skip_sections to suppress visual journey
+                               diagrams). It shares the User Journeys header.
   functional_reqs           -> ## Functional Requirements
   nfr_performance           -> ### Performance (under Non-Functional Requirements)
   nfr_security              -> ### Security (under Non-Functional Requirements)

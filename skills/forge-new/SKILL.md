@@ -64,6 +64,8 @@ Minimum discovery (even for "simple" projects):
 - What does success look like? (user success + business success)
 - What is out of scope for v1?
 
+If the user says "just build it" or "skip the questions", present ONLY the 4 minimum discovery questions above (not the CSV key_questions). If they still want to skip, acknowledge and proceed with `[NEEDS CLARIFICATION]` markers for anything unresolved. Never force the full question set on an impatient user — but always get the minimum 4.
+
 ---
 
 ## Phase 3: Draft PRD
@@ -128,6 +130,15 @@ If Stitch is not available:
    - Wave 1: independent foundational pieces (models, auth, core APIs)
    - Wave 2: features that depend on Wave 1
    - Wave 3: integration, UI, cross-cutting concerns
+
+Wave sizing guidelines:
+- Each wave should produce a testable increment (something you can verify works)
+- Wave 1 is always: data models + core business logic (the foundation)
+- Wave 2 is typically: API/interface layer (depends on Wave 1)
+- Wave 3 is typically: integration, UI, cross-cutting concerns
+- Maximum 4 tasks per wave (more than 4 parallel generators causes diminishing returns)
+- If a single feature is complex enough for 3+ waves, consider decomposing it
+
 3. Present wave plan to user for approval. Do NOT start build without user sign-off on the plan.
 
 <HARD-GATE>Do NOT start building until the user has approved the wave plan. Even for simple projects.</HARD-GATE>
@@ -136,53 +147,7 @@ If Stitch is not available:
 
 ## Phase 7: Build
 
-### Step 1: Prepare
-
-1. Read the approved plan
-2. Identify waves and task-per-wave groupings
-3. Verify agent teams are enabled
-
-### Step 2: Execute Waves
-
-For each wave:
-
-1. **Create tasks** via TaskCreate — one per parallel task in this wave
-2. **Spawn generator teammates:**
-   - One forge-generator per parallel task (max 4 per wave)
-   - Each in `isolation: worktree`
-   - Each receives: the specific task description, acceptance criteria, relevant context from exploration/PRD
-   - Model: use `default_generator_model` from userConfig (opus or sonnet)
-3. **Spawn evaluator teammate** — one forge-evaluator that waits for generators
-4. **Enter delegate mode:**
-   "You are the team coordinator. You NEVER write code, edit files, or implement features.
-   You delegate to generator teammates, monitor progress, relay evaluator feedback, and
-   manage the task list. Enter delegate mode. Tell the user: 'I recommend enabling delegate mode to restrict me to coordination only. Press Shift+Tab in your terminal to activate it.'"
-5. **Monitor:** Check task progress. If a generator reports BLOCKED or NEEDS_CONTEXT, provide the needed context or escalate to the user.
-6. **Review:** When generators complete, evaluator reviews each. On FAIL, relay findings back to generator. Present findings to user before requesting generator rework.
-7. **Merge:** On PASS, merge generator worktrees to main branch.
-8. **Advance:** Update STATE.md. Move to next wave.
-
-### Step 3: Session Guard
-
-- At 90 minutes: "We've been running for 90 minutes. Recommend checkpointing. Run /forge:handoff?"
-- At 120 minutes: "Session limit reached. Auto-checkpointing to STATE.md."
-  Save state and recommend starting a fresh session.
-
-### Wave Execution Diagram
-
-```
-Wave 1: [Task A, Task B, Task C] — independent, parallel generators
-  | all complete + evaluator approved
-Wave 2: [Task D, Task E] — depend on Wave 1
-  | all complete + evaluator approved
-Wave 3: [Task F] — depends on Wave 2
-```
-
-### Team Size Guidelines
-
-- 1-2 tasks: 1 generator + 1 evaluator (skip agent team, use subagents)
-- 3-4 tasks: 2-3 generators + 1 evaluator
-- 5+ tasks: 3-4 generators + 1 evaluator (max 5 teammates total)
+Follow the build workflow defined in `${CLAUDE_PLUGIN_ROOT}/skills/forge-build-workflow.md`. Read that file and execute its steps.
 
 <HARD-GATE>
 Do NOT merge any generator output without evaluator review passing.
