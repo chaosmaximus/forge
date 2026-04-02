@@ -19,6 +19,16 @@
 | `forge:forge-setup` | First-time prerequisite checks |
 | `forge:forge-agents` | View detailed status of running Forge agents |
 
+### Skill Development
+
+Use `skill-creator:skill-creator` for creating and improving skills within Forge. This skill provides:
+- Structured skill creation workflow (intent → interview → draft → test → iterate)
+- Automated evaluation with test cases and benchmark comparison
+- Description optimization for better skill triggering
+- Blind A/B comparison between skill versions
+
+**When to use:** Creating new `forge:*` skills, improving existing skill descriptions for better triggering, evaluating skill quality with quantitative benchmarks.
+
 ### Agent Team
 
 For multi-file tasks, Forge dispatches an agent team:
@@ -82,10 +92,15 @@ This makes the HUD show real memory counts and enables context injection in futu
 
 ```
 forge-core (Rust, 4.3MB)     — CLI: index, scan, hook, research, review
-forge-graph (Python, 113 tests) — MCP server: 12 tools backed by LadybugDB 0.15.3
+forge-graph (Python, 117 tests) — MCP server: 12 tools backed by LadybugDB 0.15.3
 forge-hud (Rust, 476KB)      — StatusLine: <2ms render, real-time stats
 forge-channel (TS/Bun)       — Telegram + iMessage bridges via MCP channels API
 ```
+
+**Key architecture: `app.py` breaks circular imports.**
+- `forge_graph/app.py` owns the `mcp` FastMCP instance and `get_db()`/`set_db()` functions
+- `server.py`, `memory/tools.py`, `security/tools.py` all import from `app.py`
+- Tool modules register at module import time (not in `main()`) so MCP `tools/list` returns all 12 tools
 
 **Data flow:**
 - `forge-core` handles hot paths (called every edit, every session start/end)
@@ -117,13 +132,14 @@ cargo build --release
 - **LadybugDB** — use `current_timestamp()` not `timestamp()`. Secret table uses `status` column, not `invalid_at`.
 - **Codex** — use `codex exec --model gpt-5.2` (default o4-mini broken on ChatGPT auth)
 - **Plugin cache** — stale copy at `~/.claude/plugins/cache/forge-marketplace/forge/0.2.0/`. After changes, sync with: `rsync -a forge-graph/src/ "$CACHE/forge-graph/src/"`
+- **Circular imports** — `mcp` instance lives in `app.py`, NOT `server.py`. All tool modules import from `app.py`.
 
 ### CI Pipeline (6 jobs, all green)
 
 - static-validation (shellcheck, plugin/hooks/skills/agents validation)
 - unit-tests (BATS)
 - integration-tests (hook behavior)
-- python-tests (113 tests + adversarial suite)
+- python-tests (117 tests + adversarial suite)
 - rust-build (forge-core + forge-hud)
 - security-scan (hardcoded secrets, dangerous patterns)
 
@@ -148,3 +164,8 @@ cargo build --release
 - Council review: wire multi-model dispatch in the skill
 - HUD: update on ALL tool calls (currently only remember/forget)
 - Full Rust MCP server when kuzu crate reaches v0.15+ compatibility
+- `forge-core doctor` — system health checks wired to HUD
+- Shannon integration — `forge:forge-pentest` security pentesting skill
+- CLI-Anything patterns — agent-native CLI wrapper generation
+- XML context injection — structured context for agent spawn (decisions, architecture, task)
+- Agent team overhaul — wave-to-wave handoff, context passing, AgentRun population
