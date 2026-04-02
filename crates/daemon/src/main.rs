@@ -1,4 +1,5 @@
 mod db;
+mod graph;
 mod vector;
 
 fn main() {
