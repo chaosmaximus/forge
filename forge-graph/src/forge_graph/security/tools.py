@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 from forge_graph.auth import check_access
 from forge_graph.meta import ToolMeta
@@ -42,7 +43,7 @@ def _scan_directory(path: Path, depth: str = "shallow") -> list:
 
 @mcp.tool()
 async def forge_scan(
-    path: str | None = None, depth: str = "shallow", agent_id: str | None = None
+    path: Optional[str] = None, depth: str = "shallow", agent_id: Optional[str] = None
 ) -> str:
     """Scan directory for exposed secrets. NEVER stores actual secret values."""
     if not check_access(agent_id, "forge_scan"):
@@ -63,11 +64,16 @@ async def forge_scan(
     # Store as Secret nodes (no actual secret values)
     db = get_db()
     for f in findings:
+        import hashlib
+        sid = "secret-" + hashlib.sha256(
+            f"{f.file_path}:{f.line_number}:{f.fingerprint}".encode()
+        ).hexdigest()[:12]
         db.conn.execute(
-            "MERGE (s:Secret {file_path: $fp, line_number: $ln}) "
-            "SET s.type = $type, s.provider = $prov, s.discovered_at = current_timestamp(), "
+            "MERGE (s:Secret {id: $sid}) "
+            "SET s.file_path = $fp, s.line_number = $ln, "
+            "s.type = $type, s.provider = $prov, s.discovered_at = current_timestamp(), "
             "s.risk_level = $risk, s.status = 'active', s.fingerprint = $fp2",
-            parameters={"fp": f.file_path, "ln": f.line_number,
+            parameters={"sid": sid, "fp": f.file_path, "ln": f.line_number,
                         "type": f.type, "prov": f.provider,
                         "risk": f.risk_level, "fp2": f.fingerprint})
     return json.dumps({

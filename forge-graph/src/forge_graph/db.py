@@ -35,13 +35,15 @@ class GraphDB:
     async def write(self, query: str, parameters: dict | None = None) -> lb.QueryResult:
         """Run a write query under the write lock, off the event loop."""
         try:
-            async with asyncio.timeout(5):
-                async with self._write_lock:
-                    return await asyncio.to_thread(
-                        self._conn.execute, query, parameters or {}
-                    )
+            acquired = await asyncio.wait_for(self._write_lock.acquire(), timeout=5)
         except asyncio.TimeoutError:
             raise TimeoutError("Write lock timeout (5s)")
+        try:
+            return await asyncio.to_thread(
+                self._conn.execute, query, parameters or {}
+            )
+        finally:
+            self._write_lock.release()
 
     def close(self) -> None:
         self._db.close()
