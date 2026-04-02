@@ -57,8 +57,3 @@ if [ -d "${SCRIPT_DIR_PARENT}/forge-graph/src" ] && [ -n "$FILE_PATH" ]; then
         echo "$DECISION_OUTPUT"
     fi
 fi
-
-# Run existing formatter if available
-if [ -f "${SCRIPT_DIR}/post-edit-format.sh" ]; then
-    echo "$INPUT" | bash "${SCRIPT_DIR}/post-edit-format.sh" 2>/dev/null || true
-fi
