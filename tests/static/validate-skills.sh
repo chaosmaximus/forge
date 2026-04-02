@@ -45,6 +45,6 @@ for skill_file in "$PLUGIN_ROOT"/skills/*/SKILL.md; do
 done
 
 echo "[INFO] Found $SKILL_COUNT skills"
-[ "$SKILL_COUNT" -eq 7 ] || { echo "[WARN] Expected 7 skills, found $SKILL_COUNT"; }
+[ "$SKILL_COUNT" -eq 8 ] || { echo "[WARN] Expected 8 skills, found $SKILL_COUNT"; }
 
 [ $errors -eq 0 ] && echo "=== All skills checks passed ===" || { echo "=== $errors error(s) ==="; exit 1; }

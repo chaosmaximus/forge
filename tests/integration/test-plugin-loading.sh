@@ -16,10 +16,10 @@ done
 
 # 2. Expected skill count
 SKILL_COUNT=$(find "$PLUGIN_ROOT/skills" -name "SKILL.md" | wc -l)
-if [ "$SKILL_COUNT" -eq 7 ]; then
+if [ "$SKILL_COUNT" -eq 8 ]; then
   echo "[PASS] Found $SKILL_COUNT skills"
 else
-  echo "[FAIL] Expected 7 skills, found $SKILL_COUNT"; errors=$((errors + 1))
+  echo "[FAIL] Expected 8 skills, found $SKILL_COUNT"; errors=$((errors + 1))
 fi
 
 # 3. Expected agent count
