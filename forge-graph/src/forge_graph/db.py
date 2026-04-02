@@ -1,4 +1,15 @@
-"""LadybugDB connection manager with write serialization."""
+"""LadybugDB connection manager with write serialization.
+
+Provides both synchronous and async access to the database:
+
+- ``db.conn`` — the raw synchronous ``lb.Connection`` escape hatch.
+  Use this when calling from synchronous code or when the MCP tool
+  handler is already managing the async boundary.
+
+- ``await db.execute(...)`` / ``await db.write(...)`` — async wrappers
+  that run the synchronous DB calls via ``asyncio.to_thread()``,
+  preventing event-loop blocking.  Prefer these in new async code.
+"""
 import asyncio
 from pathlib import Path
 import real_ladybug as lb
@@ -14,16 +25,21 @@ class GraphDB:
 
     @property
     def conn(self) -> lb.Connection:
+        """Synchronous connection — use for direct DB access outside async paths."""
         return self._conn
 
     async def execute(self, query: str, parameters: dict | None = None) -> lb.QueryResult:
-        return self._conn.execute(query, parameters=parameters or {})
+        """Run a read query off the event loop via ``asyncio.to_thread``."""
+        return await asyncio.to_thread(self._conn.execute, query, parameters or {})
 
     async def write(self, query: str, parameters: dict | None = None) -> lb.QueryResult:
+        """Run a write query under the write lock, off the event loop."""
         try:
             async with asyncio.timeout(5):
                 async with self._write_lock:
-                    return self._conn.execute(query, parameters=parameters or {})
+                    return await asyncio.to_thread(
+                        self._conn.execute, query, parameters or {}
+                    )
         except asyncio.TimeoutError:
             raise TimeoutError("Write lock timeout (5s)")
 
