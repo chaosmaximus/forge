@@ -1,16 +1,97 @@
 # Forge — Agentic OS for Claude Code
 
-## Project Overview
+## How to Use Forge
 
-Forge is a Claude Code plugin providing production-grade agent team orchestration with a unified knowledge graph (code + memory + secrets), Rust-powered hot paths, and session channels (Telegram/iMessage).
+**Forge is the master orchestrator.** When working in this repo or any project with Forge installed, USE Forge's skills and agents — don't do raw work.
+
+### Skills (Applications)
+
+| Skill | When to Use |
+|-------|------------|
+| `forge:forge` | **Start here.** Auto-detects whether to use forge:new or forge:feature |
+| `forge:forge-new` | Building a new project from scratch (PRD → design → agent team build) |
+| `forge:forge-feature` | Modifying existing code (explore → plan → agent team build) |
+| `forge:forge-review` | Code review — standard or council mode (multi-reviewer with Codex) |
+| `forge:forge-ship` | Final verification, PR creation |
+| `forge:forge-research` | Autonomous research loop — bounded exploration with git checkpoints |
+| `forge:forge-security` | Security scanning — `forge-core scan .` or always-on `--watch` mode |
+| `forge:forge-handoff` | Pause/resume work across sessions |
+| `forge:forge-setup` | First-time prerequisite checks |
+| `forge:forge-agents` | View detailed status of running Forge agents |
+
+### Agent Team
+
+For multi-file tasks, Forge dispatches an agent team:
+
+| Agent | Role | Tools |
+|-------|------|-------|
+| **forge-planner** | Architecture, exploration, planning | forge_recall, forge_decisions, forge_patterns, forge_cypher |
+| **forge-generator** | Implementation in isolated worktrees | forge_recall, forge_decisions, forge_index |
+| **forge-evaluator** | Spec compliance + code quality review | forge_recall, forge_cypher, forge_decisions |
+
+**USE THESE AGENTS** for implementation work. Don't use raw subagents when Forge agents are available.
+
+### CLI-First Commands
+
+`forge-core` is a Rust binary with subcommands. Use these directly when appropriate:
+
+```bash
+forge-core index .                    # Parse Python/TS/JS → code graph (NDJSON)
+forge-core scan .                     # Detect exposed secrets (regex + entropy)
+forge-core scan . --watch --interval 30  # Always-on security monitor
+forge-core research "topic" --max-iterations 5  # AutoResearch loop
+forge-core review . --base HEAD~3     # Generate diff context for council review
+forge-core hook session-start         # Hook handler (<5ms)
+forge-core hook post-edit <file>      # Secret scan single file (<5ms)
+forge-core hook session-end           # Update HUD state (<5ms)
+```
+
+### MCP Tools (12)
+
+These are available via the forge-graph MCP server:
+
+| Tool | Purpose | Path |
+|------|---------|------|
+| `forge_remember` | Store decisions, patterns, lessons, preferences | Deterministic (structured) or Agent (NL) |
+| `forge_recall` | Search memory by keyword | Deterministic (FTS) |
+| `forge_link` | Create edges between any nodes | Deterministic |
+| `forge_decisions` | Query active decisions, filter by code path | Deterministic |
+| `forge_patterns` | Query learned patterns | Deterministic |
+| `forge_timeline` | Follow SUPERSEDES/EVOLVED_FROM chains | Deterministic |
+| `forge_forget` | Soft-delete a memory node | Deterministic |
+| `forge_usage` | Token usage statistics | Deterministic |
+| `forge_scan` | Scan for secrets (delegates to forge-core) | Deterministic |
+| `forge_index` | Index codebase (delegates to forge-core) | Deterministic |
+| `forge_cypher` | Sandboxed read-only Cypher queries on code nodes | Deterministic |
+| `forge_health` | Graph health check | Deterministic |
+
+### Storing Memory
+
+**ALWAYS store important decisions in the graph.** When you make an architectural choice, run:
+```
+forge_remember type=decision structured={"title": "...", "rationale": "...", "status": "active", "confidence": 0.9}
+```
+
+This makes the HUD show real memory counts and enables context injection in future sessions.
+
+---
 
 ## Architecture
 
 **Hybrid Rust + Python + TypeScript:**
-- **forge-core** (Rust): tree-sitter code indexer, HUD renderer, hook handlers, security scanner. Single binary, <5ms hot paths.
-- **forge-graph** (Python): MCP server backed by LadybugDB 0.15.3. Memory tools (8), security scanner, evolution engine. 101+ tests.
-- **forge-channel** (TypeScript/Bun): MCP channel servers for Telegram/iMessage.
-- **forge-hud** (Rust): StatusLine binary, <2ms render, reads hud-state.json.
+
+```
+forge-core (Rust, 4.3MB)     — CLI: index, scan, hook, research, review
+forge-graph (Python, 113 tests) — MCP server: 12 tools backed by LadybugDB 0.15.3
+forge-hud (Rust, 476KB)      — StatusLine: <2ms render, real-time stats
+forge-channel (TS/Bun)       — Telegram + iMessage bridges via MCP channels API
+```
+
+**Data flow:**
+- `forge-core` handles hot paths (called every edit, every session start/end)
+- `forge-graph` MCP server handles graph operations (long-running, C++ LadybugDB does the work)
+- MCP tools delegate non-graph work to `forge-core` CLI via subprocess
+- HUD reads `hud-state.json` written by the MCP server (updates on every `forge_remember`/`forge_forget`)
 
 ## Development
 
@@ -20,86 +101,50 @@ Forge is a Claude Code plugin providing production-grade agent team orchestratio
 # Python tests (ALWAYS use PYTHONPATH=src)
 cd forge-graph && PYTHONPATH=src python3 -m pytest tests/ -v --tb=short
 
-# Rust build
-cargo build --release -p forge-core
-cargo build --release -p forge-hud
+# Rust build (full workspace)
+cargo build --release
 
-# Run forge-core indexer
+# Test CLI
 ./target/release/forge-core index forge-graph/src/
+./target/release/forge-core scan .
+./target/release/forge-core review . --base HEAD~3
 ```
 
-### Critical: Python Version
+### Critical Rules
 
-This system runs on **Python 3.10**. ALWAYS use `python3`, never `python`.
+- **Python 3.10** — always `python3`, never `python`
+- **MCP tool type hints** — use `Optional[str]`, `Dict[str, Any]` from typing (not `str | None`, `dict[str, Any]`) in `@mcp.tool()` signatures
+- **LadybugDB** — use `current_timestamp()` not `timestamp()`. Secret table uses `status` column, not `invalid_at`.
+- **Codex** — use `codex exec --model gpt-5.2` (default o4-mini broken on ChatGPT auth)
+- **Plugin cache** — stale copy at `~/.claude/plugins/cache/forge-marketplace/forge/0.2.0/`. After changes, sync with: `rsync -a forge-graph/src/ "$CACHE/forge-graph/src/"`
 
-Type hints in `@mcp.tool()` decorated functions MUST use `Optional[str]` and `Dict[str, Any]` from typing — NOT `str | None` or `dict[str, Any]`. The MCP SDK's `issubclass()` check fails on PEP 604/585 syntax with `from __future__ import annotations`.
+### CI Pipeline (6 jobs, all green)
 
-Internal (non-MCP-decorated) functions can use modern syntax freely.
-
-### LadybugDB Notes
-
-- `real_ladybug` 0.15.3 — Python bindings. Use `current_timestamp()` not `timestamp()`.
-- `kuzu` Rust crate is v0.11.3 — INCOMPATIBLE with v0.15.3 databases (storage format mismatch, C++ simsimd build failure). Do NOT attempt Rust graph DB access until the crate catches up.
-- Schema uses `IF NOT EXISTS` for idempotency.
-- The Secret table uses `status` column (active/rotated/revoked), NOT `invalid_at` like other memory nodes.
-
-### Hook Scripts
-
-Scripts in `scripts/` are called by Claude Code via `hooks/hooks.json`. They delegate to Python:
-```
-scripts/forge-graph-start.sh    → python3 -m forge_graph.hooks.session_start
-scripts/session-end-graph.sh    → python3 -m forge_graph.hooks.session_end
-scripts/post-edit-enhanced.sh   → python3 -m forge_graph.hooks.post_edit + regex secret scan + code formatting
-```
-
-### Plugin Cache
-
-The installed plugin cache at `~/.claude/plugins/cache/forge-marketplace/forge/0.2.0/` is a STALE COPY. Changes to repo scripts don't take effect until the plugin is reinstalled. For development, test scripts directly from the repo.
-
-## File Structure
-
-```
-forge-core/          Rust binary (tree-sitter indexer + future hot paths)
-forge-graph/         Python MCP server (LadybugDB, memory, security, evolution)
-forge-hud/           Rust HUD binary (statusLine renderer)
-forge-channel/       TypeScript channel bridges (Telegram, iMessage)
-hooks/               hooks.json (Claude Code hook configuration)
-scripts/             Bash hook scripts (thin wrappers to Python/Rust)
-agents/              Agent definitions (.md) for planner/generator/evaluator
-skills/              Skill definitions (.md) for forge workflows
-```
-
-## Design Documents
-
-- Spec: `docs/superpowers/specs/2026-04-02-forge-v0.2.0-unified-graph-design.md`
-- Plan: `docs/superpowers/plans/2026-04-02-forge-v0.2.0-agentic-os.md`
-
-## Known Issues (Resolved)
-
-- ~~`axoniq` in pyproject.toml~~ — Removed. Replaced by forge-core Rust indexer.
-- ~~task-completed-gate.sh PYTHONPATH~~ — Fixed. Auto-detects src-layout monorepos.
-- ~~servers/forge-graph missing~~ — Fixed. Launcher script with PYTHONPATH.
-
-## Codex Integration
-
-Codex CLI is authenticated via ChatGPT account (`auth_mode: chatgpt`). The default model (`o4-mini`) does NOT work with this auth type.
-
-**Working model:** `gpt-5.2` — use `codex exec --model gpt-5.2` for all Codex operations.
-
-**Known Codex issues (upstream):**
-- ChatGPT auth rejects most models (o4-mini, gpt-4.1, gpt-4o, o3-mini). Only `gpt-5.2` confirmed working.
-- The `codex:codex-rescue` agent may return before Codex finishes — run `codex exec` directly for critical reviews.
-- See: https://github.com/openai/codex/issues/12295
+- static-validation (shellcheck, plugin/hooks/skills/agents validation)
+- unit-tests (BATS)
+- integration-tests (hook behavior)
+- python-tests (113 tests + adversarial suite)
+- rust-build (forge-core + forge-hud)
+- security-scan (hardcoded secrets, dangerous patterns)
 
 ## Security
 
-- All Cypher queries use parameterized `$param` syntax — never string interpolation
-- `forge_link` property keys validated against `^[A-Za-z_][A-Za-z0-9_]{0,63}$` regex (P0 fix)
-- `axon_cypher` sandbox blocks memory node labels + write keywords
+- Parameterized Cypher queries (`$param` syntax, never string interpolation)
+- Property key validation regex `^[A-Za-z_][A-Za-z0-9_]{0,63}$`
+- axon_cypher sandbox blocks memory node labels + write keywords
 - Per-agent ACL enforcement via `agent_id`
-- Hook scripts derive PLUGIN_ROOT from script location (not env var), validate paths, resolve symlinks, reject shell metacharacters, check workspace boundaries with trailing `/`
-- Session context injection filtered by `trust_level = 'user'` and sanitized via `sanitize_for_context()`
-- `forge_scan` skips symlinks to prevent reading outside workspace
-- Secret scanner NEVER stores actual secret values — fingerprint only
-- Secret `forge_forget` sets `status = 'revoked'` (not `invalid_at`)
-- Evolution engine writes to isolated git worktrees, path-restricted to skills/
+- Hook scripts derive paths from script location (not env vars)
+- Trust-level filtering on session context injection (`trust_level = 'user'`)
+- Symlink defense in scanner and workspace boundary checks
+- Secret scanner NEVER stores actual values — SHA256 fingerprint only
+- 3 adversarial reviews completed (Forge evaluator + Codex gpt-5.2 x2)
+- 15 adversarial tests in CI
+
+## Remaining Work
+
+- Use Forge agents (planner/generator/evaluator) for building features — dogfood
+- Live Telegram channel test with real bot
+- AutoResearch: flesh out the explore/measure/keep/discard loop with Claude driving
+- Council review: wire multi-model dispatch in the skill
+- HUD: update on ALL tool calls (currently only remember/forget)
+- Full Rust MCP server when kuzu crate reaches v0.15+ compatibility
