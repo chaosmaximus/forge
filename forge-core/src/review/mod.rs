@@ -3,6 +3,12 @@ use std::process::Command;
 
 pub fn run(path: &str, base: &str, format: &str) {
     eprintln!("=== Council Review ===");
+    // P2 fix: reject base values that look like git options (prevent option injection)
+    if base.starts_with('-') && !base.starts_with("--") {
+        eprintln!("Error: base '{}' looks like a git option, not a commit ref", base);
+        println!("{{\"error\":\"Invalid base ref\"}}");
+        return;
+    }
     let diff = get_diff(path, base);
     if diff.is_empty() {
         println!("{{\"status\":\"no_changes\",\"message\":\"No changes to review\"}}");
