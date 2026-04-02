@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "forge",
-      "source": ".",
+      "source": "chaosmaximus/forge",
       "description": "Production-grade agent team orchestration with two modes (greenfield/existing), cross-model Codex adversarial review, and bundled code intelligence",
       "version": "0.2.0"
     }
