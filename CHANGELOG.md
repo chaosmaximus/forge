@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.2.0 (2026-04-02)
+
+### Added
+- Unified knowledge graph (LadybugDB): code + memory + secrets in one graph
+- forge-core Rust binary: tree-sitter code indexer + security scanner + hook handlers
+- forge-hud Rust binary: <2ms StatusLine dashboard
+- forge-channel: Telegram + iMessage bridges via MCP channels API
+- 12 MCP tools: remember, recall, link, decisions, patterns, timeline, forget, usage, scan, index, cypher, health
+- Session lifecycle hooks: session_start, session_end, post_edit
+- 109 Python tests + 15 adversarial security tests
+- CLAUDE.md project guide
+
+### Security
+- 2 adversarial reviews (Forge evaluator + Codex gpt-5.2)
+- P0 Cypher injection fix, P1 trust/sanitization, P2 path hardening
+- Parameterized Cypher queries, property key validation, trust_level filtering
+- Symlink defense, workspace boundary checks, shell metacharacter rejection
+
+### Removed
+- codebase-memory-mcp binary (replaced by forge-graph + forge-core)
+- session-start.sh, session-end-memory.sh, post-edit-format.sh (replaced by graph-aware hooks)
+- axoniq dependency (replaced by vendored Rust tree-sitter)
+
+---
+
 ## 0.1.4 (2026-04-01)
 
 ### Security (Codex adversarial review findings)

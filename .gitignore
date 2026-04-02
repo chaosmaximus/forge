@@ -1,5 +1,5 @@
-# Bundled binary (downloaded at install time)
-servers/codebase-memory-mcp
+# Bundled binaries
+servers/forge-core
 
 # Node
 node_modules/

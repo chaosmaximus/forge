@@ -18,7 +18,7 @@ Production-grade agent team orchestration for Claude Code.
 
 Two modes. Three agents. Cross-model adversarial review. Bundled code intelligence.
 
-<sub>**Built on the shoulders of:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code) · [Codex](https://github.com/openai/codex) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [Serena](https://github.com/oraios/serena) · [episodic-memory](https://github.com/anthropics/superpowers-marketplace) · [Superpowers](https://github.com/anthropics/superpowers-marketplace) · [Google Stitch](https://stitch.withgoogle.com/) · [LadybugDB](https://github.com/LadybugDB/ladybug) · [Axon](https://github.com/harshkedia177/axon) · [claude-hud](https://github.com/jarrodwatts/claude-hud) — and every dependency beneath them. Thank you.</sub>
+<sub>**Built on the shoulders of:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code) · [Codex](https://github.com/openai/codex) · [Serena](https://github.com/oraios/serena) · [episodic-memory](https://github.com/anthropics/superpowers-marketplace) · [Superpowers](https://github.com/anthropics/superpowers-marketplace) · [Google Stitch](https://stitch.withgoogle.com/) · [LadybugDB](https://github.com/LadybugDB/ladybug) · [tree-sitter](https://tree-sitter.github.io/) · [claude-hud](https://github.com/jarrodwatts/claude-hud) — and every dependency beneath them. Thank you.</sub>
 
 ## Requirements
 
@@ -176,7 +176,7 @@ tmux kill-session -t <name>      # Kill specific session
 - Team size guidelines in the build phase: 1-2 tasks use subagents (no team), 3-4 tasks use 2-3 generators + 1 evaluator, 5+ tasks use 3-4 generators + 1 evaluator (max 5 teammates)
 - Never exceeds 5 teammates per wave
 - Generators use focused single-task prompts to minimize token usage per teammate
-- codebase-memory-mcp provides 99% token reduction for code exploration
+- forge-graph provides 99% token reduction for code exploration
 
 **What you should do:** For small tasks (1-2 files), skip agent teams entirely — use a single session. Forge's router skill detects task size and recommends appropriately.
 
@@ -216,18 +216,27 @@ Install companions:
 /codex:setup
 ```
 
-## Bundled Code Intelligence
+### Unified Knowledge Graph (forge-graph)
 
-Forge bundles [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) — a code graph database supporting 66 languages with sub-millisecond queries.
+Forge includes a unified knowledge graph powered by LadybugDB that connects code structure, architectural decisions, and session memory in one queryable graph.
 
-Auto-indexes on session start. Provides:
-- `get_architecture` — codebase overview (languages, routes, hotspots, clusters)
-- `search_graph` — find symbols by name, label, or file pattern
-- `trace_call_path` — bidirectional call chain traversal
-- `detect_changes` — map git diffs to affected symbols
-- `get_code_snippet` — retrieve source by qualified name
+**Code Intelligence** (via forge-core, Rust):
+- tree-sitter parsing of Python, TypeScript, JavaScript
+- File, Function, Class, Method nodes with CONTAINS edges
+- `forge-core index .` -- indexes a codebase in seconds
 
-99% token reduction compared to file-by-file grep.
+**Memory Tools** (12 MCP tools):
+- `forge_remember` / `forge_recall` -- store and search decisions, patterns, lessons
+- `forge_decisions` / `forge_patterns` / `forge_timeline` -- query the knowledge graph
+- `forge_scan` -- detect exposed secrets (regex + entropy, never stores values)
+- `forge_index` -- index code structure into the graph
+- `forge_cypher` -- sandboxed read-only Cypher queries against code nodes
+
+**Session Lifecycle**:
+- Automatic Session node creation/closure
+- Decision-awareness on file edits
+- Secret scanning on every edit
+- HUD dashboard with real-time stats
 
 ## Configuration
 
