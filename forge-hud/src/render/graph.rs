@@ -1,77 +1,47 @@
 use crate::render::colors::*;
-use crate::state::HudState;
 use crate::stdin::StdinData;
 
-pub fn render_graph_line(stdin: &StdinData, state: &HudState, width: usize) -> String {
-    let sec = &state.security;
-    let sc = security_color(sec.stale, sec.exposed);
-    let m = &state.memory;
-
-    // Model name (short)
-    let model = if !stdin.model.display_name.is_empty() {
-        sanitize(&stdin.model.display_name)
-    } else {
-        "forge".to_string()
-    };
-
-    // Context window bar
-    let ctx = render_context_bar(stdin.context_window.used_percentage);
-
-    // Git branch
-    let branch = crate::stdin::git_branch(&stdin.cwd);
+/// Line 1: Model, context bar, git branch, rate limits
+/// This line is about Claude Code state — same info claude-hud showed
+pub fn render_line1(stdin: &StdinData, width: usize) -> String {
+    let model = sanitize(&stdin.model_name());
+    let ctx = render_context_bar(stdin.context_pct());
+    let branch = crate::stdin::git_branch(stdin.cwd_str());
     let git_seg = if !branch.is_empty() {
         let b = sanitize(&branch);
         format!(" {DIM}git:{RESET}{CYAN}{b}{RESET}")
     } else {
         String::new()
     };
+    let rate = render_rate(stdin.rate_5h(), stdin.rate_7d());
 
-    // Session mode
-    let session = render_session_info(&state.session);
-
-    if width >= 160 {
-        format!(
-            "{BOLD}[{model}]{RESET} {ctx}{git_seg} {DIM}|{RESET} {CYAN}{}n {}e{RESET} {DIM}|{RESET} {BLUE}{}d {}p {}l{RESET} {DIM}|{RESET} {sc}{}sec{RESET} {DIM}|{RESET} {session}",
-            state.graph.nodes, state.graph.edges, m.decisions, m.patterns, m.lessons, sec.total
-        )
+    if width >= 140 {
+        format!("{BOLD}[{model}]{RESET} {ctx}{git_seg} {DIM}|{RESET} {rate}")
     } else if width >= 100 {
-        format!(
-            "{BOLD}[{model}]{RESET} {ctx}{git_seg} {DIM}|{RESET} {BLUE}{}d/{}p{RESET} {DIM}|{RESET} {sc}{}s{RESET} {DIM}|{RESET} {session}",
-            m.decisions, m.patterns, sec.total
-        )
+        format!("{BOLD}[{model}]{RESET} {ctx}{git_seg}")
     } else {
-        format!("{BOLD}[{model}]{RESET} {ctx} {DIM}|{RESET} {session}")
+        format!("{BOLD}[{model}]{RESET} {ctx}")
     }
 }
 
-/// Render a context window usage bar like: Context [████████░░] 78%
 fn render_context_bar(pct: f64) -> String {
-    let pct_clamped = pct.clamp(0.0, 100.0);
-    let filled = (pct_clamped / 10.0).round() as usize;
+    let p = pct.clamp(0.0, 100.0);
+    let filled = (p / 10.0).round() as usize;
     let empty = 10_usize.saturating_sub(filled);
-    let color = if pct_clamped >= 85.0 {
-        RED
-    } else if pct_clamped >= 60.0 {
-        YELLOW
-    } else {
-        GREEN
-    };
-    let bar_filled = "█".repeat(filled);
-    let bar_empty = "░".repeat(empty);
-    format!("{DIM}Ctx{RESET} {color}[{bar_filled}{DIM}{bar_empty}{color}]{RESET} {color}{:.0}%{RESET}", pct_clamped)
+    let color = if p >= 85.0 { RED } else if p >= 60.0 { YELLOW } else { GREEN };
+    format!(
+        "{DIM}Context{RESET} {color}[{}{}]{RESET} {color}{:.0}%{RESET}",
+        "█".repeat(filled),
+        format!("{DIM}{}{}", "░".repeat(empty), color),
+        p
+    )
 }
 
-fn render_session_info(s: &crate::state::SessionInfo) -> String {
-    match (&s.mode, &s.phase) {
-        (Some(m), Some(p)) => {
-            let m = sanitize(m);
-            let p = sanitize(p);
-            format!("{MAGENTA}{m} . {p}{RESET}")
-        }
-        (Some(m), None) => {
-            let m = sanitize(m);
-            format!("{MAGENTA}{m}{RESET}")
-        }
-        _ => format!("{DIM}idle{RESET}"),
+fn render_rate(five: f64, seven: f64) -> String {
+    if five <= 0.0 && seven <= 0.0 {
+        return String::new();
     }
+    let fc = if five >= 80.0 { RED } else if five >= 50.0 { YELLOW } else { GREEN };
+    let sc = if seven >= 80.0 { RED } else if seven >= 50.0 { YELLOW } else { GREEN };
+    format!("{DIM}Usage{RESET} {fc}{:.0}%{RESET} {DIM}(5h){RESET} {sc}{:.0}%{RESET} {DIM}(7d){RESET}", five, seven)
 }

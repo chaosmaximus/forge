@@ -4,47 +4,111 @@ use std::io::{self, Read};
 #[derive(Deserialize, Default)]
 pub struct StdinData {
     #[serde(default)]
-    pub model: ModelInfo,
+    pub model: Option<ModelInfo>,
     #[serde(default)]
-    pub context_window: ContextWindow,
+    pub context_window: Option<ContextWindow>,
     #[serde(default)]
-    pub rate_limits: RateLimits,
+    pub rate_limits: Option<RateLimits>,
     #[serde(default)]
-    pub cwd: String,
+    pub cwd: Option<String>,
     #[serde(default)]
-    pub transcript_path: String,
+    pub transcript_path: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
 pub struct ModelInfo {
     #[serde(default)]
-    pub display_name: String,
+    pub display_name: Option<String>,
     #[serde(default)]
-    pub id: String,
+    pub id: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
 pub struct ContextWindow {
     #[serde(default)]
-    pub used_percentage: f64,
+    pub context_window_size: Option<u64>,
     #[serde(default)]
-    pub context_window_size: u64,
+    pub used_percentage: Option<f64>,
+    #[serde(default)]
+    pub remaining_percentage: Option<f64>,
+    #[serde(default)]
+    pub current_usage: Option<CurrentUsage>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct CurrentUsage {
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<u64>,
 }
 
 #[derive(Deserialize, Default)]
 pub struct RateLimits {
     #[serde(default)]
-    pub five_hour: RateLimit,
+    pub five_hour: Option<RateLimit>,
     #[serde(default)]
-    pub seven_day: RateLimit,
+    pub seven_day: Option<RateLimit>,
 }
 
 #[derive(Deserialize, Default)]
 pub struct RateLimit {
     #[serde(default)]
-    pub used_percentage: f64,
+    pub used_percentage: Option<f64>,
     #[serde(default)]
-    pub resets_at: String,
+    pub resets_at: Option<f64>,
+}
+
+impl StdinData {
+    pub fn model_name(&self) -> String {
+        self.model.as_ref()
+            .and_then(|m| m.display_name.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "Claude".to_string())
+    }
+
+    pub fn context_pct(&self) -> f64 {
+        // Prefer native used_percentage (v2.1.6+)
+        if let Some(cw) = &self.context_window {
+            if let Some(pct) = cw.used_percentage {
+                if pct > 0.0 {
+                    return pct.clamp(0.0, 100.0);
+                }
+            }
+            // Fallback: manual calc from token counts
+            if let (Some(size), Some(usage)) = (cw.context_window_size, &cw.current_usage) {
+                if size > 0 {
+                    let total = usage.input_tokens.unwrap_or(0)
+                        + usage.cache_creation_input_tokens.unwrap_or(0)
+                        + usage.cache_read_input_tokens.unwrap_or(0);
+                    return ((total as f64 / size as f64) * 100.0).clamp(0.0, 100.0);
+                }
+            }
+        }
+        0.0
+    }
+
+    pub fn rate_5h(&self) -> f64 {
+        self.rate_limits.as_ref()
+            .and_then(|r| r.five_hour.as_ref())
+            .and_then(|r| r.used_percentage)
+            .unwrap_or(0.0)
+    }
+
+    pub fn rate_7d(&self) -> f64 {
+        self.rate_limits.as_ref()
+            .and_then(|r| r.seven_day.as_ref())
+            .and_then(|r| r.used_percentage)
+            .unwrap_or(0.0)
+    }
+
+    pub fn cwd_str(&self) -> &str {
+        self.cwd.as_deref().unwrap_or("")
+    }
 }
 
 pub fn read_stdin() -> StdinData {
@@ -58,16 +122,12 @@ pub fn read_stdin() -> StdinData {
 
 /// Get short git branch name from cwd
 pub fn git_branch(cwd: &str) -> String {
-    if cwd.is_empty() {
-        return String::new();
-    }
+    if cwd.is_empty() { return String::new(); }
     let output = std::process::Command::new("git")
         .args(["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"])
         .output();
     match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => String::new(),
     }
 }
