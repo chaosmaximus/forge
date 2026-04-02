@@ -20,7 +20,6 @@
     "./agents/forge-evaluator.md"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
   "mcpServers": {
     "forge-graph": {
       "command": "${CLAUDE_PLUGIN_ROOT}/servers/forge-graph",
