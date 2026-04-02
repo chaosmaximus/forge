@@ -1,4 +1,4 @@
-"""Memory tools — forge_remember, forge_recall, forge_link.
+"""Memory tools — forge_remember, forge_recall, forge_link, and deterministic query tools.
 
 Registered as MCP tools on the shared ``mcp`` instance from server.py.
 """
@@ -23,6 +23,12 @@ _ALLOWED_EDGE_TYPES = frozenset({
     "SUPERSEDES", "MOTIVATED_BY", "FOLLOWS", "CONTRADICTS",
     "LEARNED_IN", "DECIDED_IN", "EVOLVED_FROM", "APPLIED_IN",
 })
+
+# Labels that support soft-delete via forge_forget
+_FORGETTABLE_LABELS = frozenset({"Decision", "Pattern", "Lesson", "Preference"})
+
+# Labels that support timeline traversal
+_TIMELINE_LABELS = frozenset({"Decision", "Skill"})
 
 # Mapping from type name to (label, searchable text fields)
 _TYPE_INFO: dict[str, tuple[str, list[str]]] = {
@@ -179,6 +185,317 @@ async def _link_impl(
     return json.dumps({"status": "linked", "_meta": meta.finish()})
 
 
+async def _patterns_impl(
+    db: GraphDB,
+    domain: str | None = None,
+    min_confidence: float | None = None,
+    agent_id: str | None = None,
+) -> str:
+    meta = ToolMeta()
+
+    if not check_access(agent_id, "forge_patterns"):
+        raise PermissionError(
+            f"Agent '{agent_id}' does not have access to forge_patterns"
+        )
+
+    params: dict[str, Any] = {}
+    filters = ["n.invalid_at IS NULL"]
+
+    if domain is not None:
+        filters.append("n.domain = $domain")
+        params["domain"] = domain
+    if min_confidence is not None:
+        filters.append("n.confidence >= $min_conf")
+        params["min_conf"] = min_confidence
+
+    where_clause = " AND ".join(filters)
+    cypher = (
+        f"MATCH (n:Pattern) WHERE {where_clause} "
+        f"RETURN n.id, n.name, n.description, n.domain, n.confidence"
+    )
+
+    result = await db.execute(cypher, parameters=params)
+    results: list[dict[str, Any]] = []
+    while result.has_next():
+        row = result.get_next()
+        results.append({
+            "id": row[0],
+            "name": row[1],
+            "description": row[2],
+            "domain": row[3],
+            "confidence": row[4],
+        })
+
+    return json.dumps({"results": results, "_meta": meta.finish()})
+
+
+async def _forget_impl(
+    db: GraphDB,
+    node_id: str,
+    node_label: str,
+    reason: str,
+    agent_id: str | None = None,
+) -> str:
+    meta = ToolMeta()
+
+    if not check_access(agent_id, "forge_forget"):
+        raise PermissionError(
+            f"Agent '{agent_id}' does not have access to forge_forget"
+        )
+
+    if node_label not in _FORGETTABLE_LABELS:
+        raise ValueError(
+            f"Invalid node_label '{node_label}'. "
+            f"Allowed: {sorted(_FORGETTABLE_LABELS)}"
+        )
+
+    cypher = (
+        f"MATCH (n:{node_label}) WHERE n.id = $id "
+        f"SET n.invalid_at = current_timestamp(), n.updated_at = current_timestamp()"
+    )
+    await db.write(cypher, parameters={"id": node_id})
+
+    return json.dumps({
+        "status": "forgotten",
+        "node_id": node_id,
+        "reason": reason,
+        "_meta": meta.finish(),
+    })
+
+
+async def _usage_impl(
+    db: GraphDB,
+    session_id: str | None = None,
+    last_n_sessions: int | None = None,
+    agent_id: str | None = None,
+) -> str:
+    meta = ToolMeta()
+
+    if not check_access(agent_id, "forge_usage"):
+        raise PermissionError(
+            f"Agent '{agent_id}' does not have access to forge_usage"
+        )
+
+    if session_id is not None:
+        cypher = (
+            "MATCH (s:Session) WHERE s.id = $sid "
+            "RETURN s.total_tokens_input, s.total_tokens_output, "
+            "s.total_llm_calls, s.total_tool_calls, s.deterministic_ratio"
+        )
+        result = await db.execute(cypher, parameters={"sid": session_id})
+        if result.has_next():
+            row = result.get_next()
+            return json.dumps({
+                "session_id": session_id,
+                "total_tokens_input": row[0],
+                "total_tokens_output": row[1],
+                "total_llm_calls": row[2],
+                "total_tool_calls": row[3],
+                "deterministic_ratio": row[4],
+                "_meta": meta.finish(),
+            })
+        else:
+            return json.dumps({
+                "session_id": session_id,
+                "error": "session not found",
+                "_meta": meta.finish(),
+            })
+    else:
+        # Aggregate across all sessions
+        cypher = (
+            "MATCH (s:Session) "
+            "RETURN SUM(s.total_tokens_input), SUM(s.total_tokens_output), "
+            "SUM(s.total_llm_calls), SUM(s.total_tool_calls), "
+            "AVG(s.deterministic_ratio)"
+        )
+        result = await db.execute(cypher, parameters={})
+        if result.has_next():
+            row = result.get_next()
+            # LadybugDB aggregates may return Decimal; coerce to native types
+            return json.dumps({
+                "total_tokens_input": int(row[0]) if row[0] is not None else 0,
+                "total_tokens_output": int(row[1]) if row[1] is not None else 0,
+                "total_llm_calls": int(row[2]) if row[2] is not None else 0,
+                "total_tool_calls": int(row[3]) if row[3] is not None else 0,
+                "avg_deterministic_ratio": float(row[4]) if row[4] is not None else None,
+                "_meta": meta.finish(),
+            })
+        else:
+            return json.dumps({
+                "total_tokens_input": 0,
+                "total_tokens_output": 0,
+                "total_llm_calls": 0,
+                "total_tool_calls": 0,
+                "avg_deterministic_ratio": None,
+                "_meta": meta.finish(),
+            })
+
+
+async def _decisions_impl(
+    db: GraphDB,
+    code_path: str | None = None,
+    symbol: str | None = None,
+    agent_id: str | None = None,
+) -> str:
+    meta = ToolMeta()
+
+    if not check_access(agent_id, "forge_decisions"):
+        raise PermissionError(
+            f"Agent '{agent_id}' does not have access to forge_decisions"
+        )
+
+    results: list[dict[str, Any]] = []
+
+    if code_path is not None:
+        # Simple approximation: search Decision title/rationale for the path string
+        cypher = (
+            "MATCH (d:Decision) WHERE d.invalid_at IS NULL "
+            "AND (d.title CONTAINS $path OR d.rationale CONTAINS $path) "
+            "RETURN d.id, d.title, d.rationale, d.status"
+        )
+        result = await db.execute(cypher, parameters={"path": code_path})
+        while result.has_next():
+            row = result.get_next()
+            results.append({
+                "id": row[0],
+                "title": row[1],
+                "rationale": row[2],
+                "status": row[3],
+            })
+    elif symbol is not None:
+        # Same approach for symbol: search title/rationale
+        cypher = (
+            "MATCH (d:Decision) WHERE d.invalid_at IS NULL "
+            "AND (d.title CONTAINS $sym OR d.rationale CONTAINS $sym) "
+            "RETURN d.id, d.title, d.rationale, d.status"
+        )
+        result = await db.execute(cypher, parameters={"sym": symbol})
+        while result.has_next():
+            row = result.get_next()
+            results.append({
+                "id": row[0],
+                "title": row[1],
+                "rationale": row[2],
+                "status": row[3],
+            })
+    else:
+        # No filter: return all active decisions
+        cypher = (
+            "MATCH (d:Decision) WHERE d.invalid_at IS NULL "
+            "RETURN d.id, d.title, d.rationale, d.status"
+        )
+        result = await db.execute(cypher, parameters={})
+        while result.has_next():
+            row = result.get_next()
+            results.append({
+                "id": row[0],
+                "title": row[1],
+                "rationale": row[2],
+                "status": row[3],
+            })
+
+    return json.dumps({"results": results, "_meta": meta.finish()})
+
+
+async def _timeline_impl(
+    db: GraphDB,
+    node_id: str,
+    node_label: str,
+    depth: int | None = None,
+    agent_id: str | None = None,
+) -> str:
+    meta = ToolMeta()
+
+    if not check_access(agent_id, "forge_timeline"):
+        raise PermissionError(
+            f"Agent '{agent_id}' does not have access to forge_timeline"
+        )
+
+    if node_label not in _TIMELINE_LABELS:
+        raise ValueError(
+            f"Invalid node_label '{node_label}'. "
+            f"Allowed: {sorted(_TIMELINE_LABELS)}"
+        )
+
+    max_depth = depth if depth is not None else 10
+    chain: list[dict[str, Any]] = []
+
+    if node_label == "Decision":
+        # Try variable-length path first; fall back to iterative single-hop
+        try:
+            cypher = (
+                f"MATCH (start:Decision {{id: $nid}})"
+                f"-[:SUPERSEDES*1..{max_depth}]->"
+                f"(older:Decision) "
+                f"RETURN older.id, older.title, older.status"
+            )
+            result = await db.execute(cypher, parameters={"nid": node_id})
+            while result.has_next():
+                row = result.get_next()
+                chain.append({
+                    "id": row[0],
+                    "title": row[1],
+                    "status": row[2],
+                })
+        except Exception:
+            # Fallback: iterative single-hop traversal
+            current_id = node_id
+            for _ in range(max_depth):
+                cypher = (
+                    "MATCH (a:Decision {id: $cid})-[:SUPERSEDES]->(b:Decision) "
+                    "RETURN b.id, b.title, b.status"
+                )
+                result = await db.execute(cypher, parameters={"cid": current_id})
+                if result.has_next():
+                    row = result.get_next()
+                    chain.append({
+                        "id": row[0],
+                        "title": row[1],
+                        "status": row[2],
+                    })
+                    current_id = row[0]
+                else:
+                    break
+
+    elif node_label == "Skill":
+        try:
+            cypher = (
+                f"MATCH (start:Skill {{id: $nid}})"
+                f"-[:EVOLVED_FROM*1..{max_depth}]->"
+                f"(older:Skill) "
+                f"RETURN older.id, older.name, older.generation"
+            )
+            result = await db.execute(cypher, parameters={"nid": node_id})
+            while result.has_next():
+                row = result.get_next()
+                chain.append({
+                    "id": row[0],
+                    "name": row[1],
+                    "generation": row[2],
+                })
+        except Exception:
+            # Fallback: iterative single-hop traversal
+            current_id = node_id
+            for _ in range(max_depth):
+                cypher = (
+                    "MATCH (a:Skill {id: $cid})-[:EVOLVED_FROM]->(b:Skill) "
+                    "RETURN b.id, b.name, b.generation"
+                )
+                result = await db.execute(cypher, parameters={"cid": current_id})
+                if result.has_next():
+                    row = result.get_next()
+                    chain.append({
+                        "id": row[0],
+                        "name": row[1],
+                        "generation": row[2],
+                    })
+                    current_id = row[0]
+                else:
+                    break
+
+    return json.dumps({"chain": chain, "_meta": meta.finish()})
+
+
 # ---------------------------------------------------------------------------
 # MCP tool registrations
 # ---------------------------------------------------------------------------
@@ -220,3 +537,55 @@ async def forge_link(
         get_db(), from_id, to_id, edge_type,
         from_label, to_label, properties, agent_id,
     )
+
+
+@mcp.tool()
+async def forge_patterns(
+    domain: str | None = None,
+    min_confidence: float | None = None,
+    agent_id: str | None = None,
+) -> str:
+    """Query Pattern nodes, optionally filtered by domain and confidence."""
+    return await _patterns_impl(get_db(), domain, min_confidence, agent_id)
+
+
+@mcp.tool()
+async def forge_forget(
+    node_id: str,
+    node_label: str,
+    reason: str,
+    agent_id: str | None = None,
+) -> str:
+    """Soft-delete a memory node by setting invalid_at timestamp."""
+    return await _forget_impl(get_db(), node_id, node_label, reason, agent_id)
+
+
+@mcp.tool()
+async def forge_usage(
+    session_id: str | None = None,
+    last_n_sessions: int | None = None,
+    agent_id: str | None = None,
+) -> str:
+    """Query token usage statistics for sessions."""
+    return await _usage_impl(get_db(), session_id, last_n_sessions, agent_id)
+
+
+@mcp.tool()
+async def forge_decisions(
+    code_path: str | None = None,
+    symbol: str | None = None,
+    agent_id: str | None = None,
+) -> str:
+    """Query Decision nodes, optionally filtered by code path or symbol."""
+    return await _decisions_impl(get_db(), code_path, symbol, agent_id)
+
+
+@mcp.tool()
+async def forge_timeline(
+    node_id: str,
+    node_label: str,
+    depth: int | None = None,
+    agent_id: str | None = None,
+) -> str:
+    """Follow SUPERSEDES (Decision) or EVOLVED_FROM (Skill) chains."""
+    return await _timeline_impl(get_db(), node_id, node_label, depth, agent_id)
