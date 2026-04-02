@@ -1,14 +1,12 @@
 # Forge
 
-> I googled "two men touching fingers painting." Google knew exactly what I meant.
-
 <p align="center">
   <img src="docs/images/creation-of-adam.jpg" alt="The Creation of Adam — Michelangelo, Sistine Chapel, c. 1512" width="720" />
 </p>
 
 The gap between the fingers — that's where Forge lives. Human intent meets machine execution. You decide what's worth building. Agent teams execute in parallel, review across model boundaries, remember what they learned. The spark happens in the space between.
 
-P.S. — Yes, Forge uses OpenAI to grade Anthropic's homework. The future is weird and I love it.
+<sub>Yes, Forge uses OpenAI to grade Anthropic's homework. The future is weird and I love it.</sub>
 
 ---
 
