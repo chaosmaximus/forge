@@ -89,6 +89,33 @@ class TestCreateSchema:
         for table in NODE_TABLES:
             assert _table_exists(conn, table), f"Node table {table} should still exist"
 
+    def test_create_schema_creates_code_node_tables(self, tmp_db):
+        """Code intelligence node tables (File, Function, Class, Method) should exist."""
+        from forge_graph.memory.schema import create_schema
+
+        conn, db_path = tmp_db
+        create_schema(conn)
+        for label in ["File", "Function", "Class", "Method"]:
+            conn.execute(f"MATCH (n:{label}) RETURN count(n)")
+
+    def test_create_schema_creates_code_edge_tables(self, tmp_db):
+        """Code intelligence edge tables (CONTAINS, CALLS, IMPORTS) should exist."""
+        from forge_graph.memory.schema import create_schema
+
+        conn, db_path = tmp_db
+        create_schema(conn)
+        conn.execute(
+            "CREATE (f:File {id: 'f1', file_path: 'test.py', name: 'test.py'})"
+        )
+        conn.execute(
+            "CREATE (fn:Function {id: 'fn1', name: 'foo', file_path: 'test.py', "
+            "line_start: 1, line_end: 5, signature: 'def foo()'})"
+        )
+        conn.execute(
+            "MATCH (f:File {id: 'f1'}), (fn:Function {id: 'fn1'}) "
+            "CREATE (f)-[:CONTAINS]->(fn)"
+        )
+
 
 class TestMigrationFramework:
     """Tests for the migration framework."""

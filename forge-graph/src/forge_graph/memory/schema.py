@@ -1,4 +1,7 @@
-"""LadybugDB schema definition — 7 memory node tables + 8 edge tables.
+"""LadybugDB schema definition — 11 node tables + 11 edge tables.
+
+Memory tables: Decision, Pattern, Lesson, Preference, Session, Skill, Secret
+Code tables:   File, Function, Class, Method
 
 All CREATE statements use IF NOT EXISTS for idempotency.
 """
@@ -130,6 +133,57 @@ _NODE_TABLES: list[str] = [
         PRIMARY KEY (id)
     )
     """,
+    # -----------------------------------------------------------------------
+    # Code intelligence node tables
+    # -----------------------------------------------------------------------
+    # 8. File
+    """
+    CREATE NODE TABLE IF NOT EXISTS File (
+        id STRING,
+        file_path STRING,
+        name STRING,
+        language STRING DEFAULT 'unknown',
+        size_bytes INT64 DEFAULT 0,
+        indexed_at STRING,
+        PRIMARY KEY (id)
+    )
+    """,
+    # 9. Function
+    """
+    CREATE NODE TABLE IF NOT EXISTS Function (
+        id STRING,
+        name STRING,
+        file_path STRING,
+        line_start INT64,
+        line_end INT64,
+        signature STRING DEFAULT '',
+        PRIMARY KEY (id)
+    )
+    """,
+    # 10. Class
+    """
+    CREATE NODE TABLE IF NOT EXISTS Class (
+        id STRING,
+        name STRING,
+        file_path STRING,
+        line_start INT64,
+        line_end INT64,
+        PRIMARY KEY (id)
+    )
+    """,
+    # 11. Method
+    """
+    CREATE NODE TABLE IF NOT EXISTS Method (
+        id STRING,
+        name STRING,
+        class_id STRING DEFAULT '',
+        file_path STRING,
+        line_start INT64,
+        line_end INT64,
+        signature STRING DEFAULT '',
+        PRIMARY KEY (id)
+    )
+    """,
 ]
 
 # ---------------------------------------------------------------------------
@@ -197,10 +251,39 @@ _EDGE_TABLES: list[str] = [
         llm_calls INT64 DEFAULT 0
     )
     """,
-    # NOTE: AFFECTS, AFFECTS_CLASS, AFFECTS_FILE, LOCATED_IN edges to Axon code
-    # node tables (Function, Class, File) are intentionally omitted here.
-    # Those edge tables can only be created AFTER Axon indexes the codebase and
-    # creates those node tables. They will be added in the Axon integration task.
+    # -----------------------------------------------------------------------
+    # Code intelligence edge tables
+    # -----------------------------------------------------------------------
+    # File -> Function, File -> Class, File -> Method
+    """
+    CREATE REL TABLE IF NOT EXISTS CONTAINS (
+        FROM File TO Function,
+        FROM File TO Class,
+        FROM File TO Method
+    )
+    """,
+    # Function -> Function, Method -> Function, Method -> Method
+    """
+    CREATE REL TABLE IF NOT EXISTS CALLS (
+        FROM Function TO Function,
+        FROM Method TO Function,
+        FROM Method TO Method,
+        confidence FLOAT DEFAULT 0.5
+    )
+    """,
+    # File -> File
+    """
+    CREATE REL TABLE IF NOT EXISTS IMPORTS (
+        FROM File TO File
+    )
+    """,
+    # Decision -> File (used by post_edit hook for decision-awareness)
+    """
+    CREATE REL TABLE IF NOT EXISTS AFFECTS (
+        FROM Decision TO File,
+        impact STRING DEFAULT 'medium'
+    )
+    """,
 ]
 
 # ---------------------------------------------------------------------------
