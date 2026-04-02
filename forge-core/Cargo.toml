@@ -1,0 +1,16 @@
+[package]
+name = "forge-core"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+tree-sitter = "0.24"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+ignore = "0.4"
+clap = { version = "4", features = ["derive"] }
