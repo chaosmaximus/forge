@@ -1,3 +1,4 @@
+mod agent;
 mod hook;
 pub mod hud_state;
 mod index;
@@ -58,6 +59,12 @@ enum Commands {
         #[arg(long, default_value = "json")]
         format: String,
     },
+    /// Handle agent lifecycle events (reads hook payload from stdin)
+    Agent {
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -99,5 +106,6 @@ fn main() {
         Commands::Review { path, base, format } => {
             review::run(&path, &base, &format);
         }
+        Commands::Agent { state_dir } => agent::run(&state_dir),
     }
 }
