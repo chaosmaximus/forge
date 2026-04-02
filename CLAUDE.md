@@ -4,6 +4,16 @@
 
 **Forge is the master orchestrator.** When working in this repo or any project with Forge installed, USE Forge's skills and agents — don't do raw work.
 
+### Skill Priority (IMPORTANT)
+
+When BOTH Forge and Superpowers skills could apply to a development task:
+1. **Always use `forge:forge` as the entry point** — it routes to the right workflow
+2. **Forge skills delegate to Superpowers internally** — brainstorming for design, TDD for testing, subagent-driven for execution
+3. **NEVER skip Forge and go directly to Superpowers** for building, planning, or reviewing code
+4. **Superpowers skills are helpers, Forge is the orchestrator** — Forge decides WHEN to use brainstorming, TDD, etc. based on the lifecycle phase
+
+Example: User says "build X" → invoke `forge:forge` (NOT `superpowers:brainstorming`). Forge will invoke brainstorming itself during the Think phase if needed.
+
 ### Skills (Applications)
 
 | Skill | When to Use |
