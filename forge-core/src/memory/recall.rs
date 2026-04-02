@@ -1,4 +1,4 @@
-//! `forge-core recall` — search memory from the local cache.
+//! `forge recall` — search memory from the local cache.
 //!
 //! Reads from cache.json (written by remember + MCP server sync).
 //! No DB access needed — pure file read, <5ms.

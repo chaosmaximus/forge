@@ -1,7 +1,18 @@
 [package]
-name = "forge-core"
-version = "0.2.0"
+name = "forge-agentic-os"
+version = "0.3.0"
 edition = "2021"
+description = "Agentic OS for Claude Code — agent teams, knowledge graph, security scanning, HUD"
+license = "MIT"
+repository = "https://github.com/chaosmaximus/forge"
+homepage = "https://github.com/chaosmaximus/forge"
+readme = "../README.md"
+keywords = ["ai", "agent", "claude-code", "llm", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
 
 [dependencies]
 tree-sitter = "0.24"

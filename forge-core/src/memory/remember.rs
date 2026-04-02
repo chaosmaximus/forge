@@ -1,4 +1,4 @@
-//! `forge-core remember` — append a memory entry to pending.jsonl.
+//! `forge remember` — append a memory entry to pending.jsonl.
 //!
 //! The MCP server picks these up on startup and writes them to the graph.
 //! This avoids DB lock issues and keeps the CLI fast (<5ms).

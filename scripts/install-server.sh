@@ -7,8 +7,7 @@ INSTALL_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}/servers"
 mkdir -p "$INSTALL_DIR"
 
 # Pin version for reproducibility and supply chain safety
-# TODO: update hash for forge-graph release
-VERSION="v0.2.0"
+VERSION="v0.3.0"
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
@@ -25,10 +24,10 @@ case "$OS-$ARCH" in
     ;;
 esac
 
-DOWNLOAD_URL="https://github.com/chaosmaximus/forge/releases/download/${VERSION}/forge-graph-${PLATFORM}"
-TARGET="$INSTALL_DIR/forge-graph"
+DOWNLOAD_URL="https://github.com/chaosmaximus/forge/releases/download/${VERSION}/forge-${PLATFORM}"
+TARGET="$INSTALL_DIR/forge"
 
-echo "Downloading forge-graph ${VERSION} for ${PLATFORM}..."
+echo "Downloading forge ${VERSION} for ${PLATFORM}..."
 curl -fsSL --connect-timeout 10 --max-time 60 "$DOWNLOAD_URL" -o "$TARGET.tmp" || {
   echo "Download failed. Please download manually from https://github.com/chaosmaximus/forge/releases"
   rm -f "$TARGET.tmp"
@@ -36,11 +35,10 @@ curl -fsSL --connect-timeout 10 --max-time 60 "$DOWNLOAD_URL" -o "$TARGET.tmp" |
 }
 
 # Verify checksum — fetch from release checksums file
-# TODO: update hash for forge-graph release
 EXPECTED_SHA=""
 CHECKSUMS_URL="https://github.com/chaosmaximus/forge/releases/download/${VERSION}/checksums.txt"
 if curl -fsSL --connect-timeout 10 --max-time 15 "$CHECKSUMS_URL" -o "$TARGET.checksums" 2>/dev/null; then
-  EXPECTED_SHA=$(grep "forge-graph-${PLATFORM}" "$TARGET.checksums" | awk '{print $1}')
+  EXPECTED_SHA=$(grep "forge-${PLATFORM}" "$TARGET.checksums" | awk '{print $1}')
   rm -f "$TARGET.checksums"
 fi
 

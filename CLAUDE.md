@@ -14,7 +14,7 @@
 | `forge:forge-review` | Code review — standard or council mode (multi-reviewer with Codex) |
 | `forge:forge-ship` | Final verification, PR creation |
 | `forge:forge-research` | Autonomous research loop — bounded exploration with git checkpoints |
-| `forge:forge-security` | Security scanning — `forge-core scan .` or always-on `--watch` mode |
+| `forge:forge-security` | Security scanning — `forge scan .` or always-on `--watch` mode |
 | `forge:forge-handoff` | Pause/resume work across sessions |
 | `forge:forge-setup` | First-time prerequisite checks |
 | `forge:forge-agents` | View detailed status of running Forge agents |
@@ -35,50 +35,53 @@ For multi-file tasks, Forge dispatches an agent team:
 
 | Agent | Role | Tools |
 |-------|------|-------|
-| **forge-planner** | Architecture, exploration, planning | Bash (forge-core recall/query) |
-| **forge-generator** | Implementation in isolated worktrees | Full suite + Bash (forge-core) |
-| **forge-evaluator** | Spec compliance + code quality review | Read-only + Bash (forge-core) |
+| **forge-planner** | Architecture, exploration, planning | Bash (forge recall/query) |
+| **forge-generator** | Implementation in isolated worktrees | Full suite + Bash (forge) |
+| **forge-evaluator** | Spec compliance + code quality review | Read-only + Bash (forge) |
 
 **USE THESE AGENTS** for implementation work. Don't use raw subagents when Forge agents are available.
 
 ### CLI-First Commands (v0.3.0 — no MCP)
 
-`forge-core` is a Rust binary with subcommands. **This is the only interface** — no MCP server.
+`forge` is a Rust binary with subcommands. **This is the only interface** — no MCP server.
 
 ```bash
 # Memory (fast path — Rust cache, <5ms)
-forge-core remember --type decision --title "..." --content "..."  # Store memory
-forge-core recall "keyword"                    # Search memory cache
-forge-core recall --list --type decision       # List all decisions
-forge-core recall --graph "keyword"            # Search graph DB (slower, ~200ms)
+forge remember --type decision --title "..." --content "..."  # Store memory
+forge recall "keyword"                    # Search memory cache
+forge recall --list --type decision       # List all decisions
+forge recall --graph "keyword"            # Search graph DB (slower, ~200ms)
 
 # Memory (graph operations — Rust + Python, <200ms)
-forge-core forget <node_id> --label Decision   # Soft-delete
-forge-core sync                                # Sync pending → graph DB
-forge-core health                              # Graph node/edge counts
-forge-core query "MATCH (f:File) RETURN f.name LIMIT 10"  # Cypher query
+forge forget <node_id> --label Decision   # Soft-delete
+forge sync                                # Sync pending → graph DB
+forge health                              # Graph node/edge counts
+forge query "MATCH (f:File) RETURN f.name LIMIT 10"  # Cypher query
 
 # Code intelligence
-forge-core index .                             # Parse Python/TS/JS → NDJSON
-forge-core scan .                              # Detect exposed secrets
-forge-core scan . --watch --interval 30        # Always-on security monitor
+forge index .                             # Parse Python/TS/JS → NDJSON
+forge scan .                              # Detect exposed secrets
+forge scan . --watch --interval 30        # Always-on security monitor
 
 # Hooks (<5ms, called by Claude Code automatically)
-forge-core hook session-start                  # Context injection
-forge-core hook post-edit <file>               # Secret scan per file
-forge-core hook session-end                    # Update HUD state
-forge-core agent                               # Agent lifecycle tracking
+forge hook session-start                  # Context injection
+forge hook post-edit <file>               # Secret scan per file
+forge hook session-end                    # Update HUD state
+forge agent                               # Agent lifecycle tracking
 
 # Research & Review
-forge-core research "topic" --max-iterations 5 # AutoResearch loop
-forge-core review . --base HEAD~3              # Diff context for council review
+forge research "topic" --max-iterations 5 # AutoResearch loop
+forge review . --base HEAD~3              # Diff context for council review
+
+# System health
+forge doctor --format text                # 13 health checks
 ```
 
 ### Storing Memory
 
 **ALWAYS store important decisions.** When you make an architectural choice:
 ```bash
-forge-core remember --type decision --title "..." --content "..." --sync
+forge remember --type decision --title "..." --content "..." --sync
 ```
 Use `--sync` to write immediately to graph DB. Without it, writes to cache only (fast, synced later).
 
@@ -89,18 +92,18 @@ Use `--sync` to write immediately to graph DB. Without it, writes to cache only 
 **CLI-first. No MCP server.**
 
 ```
-forge-core (Rust, 4.3MB)     — CLI: all operations, <5ms for cache, <200ms for graph
-forge-graph (Python, 115 tests) — Graph library: LadybugDB 0.15.3, called by forge-core
+forge (Rust, 4.3MB)          — CLI: all operations, <5ms for cache, <200ms for graph
+forge-graph (Python, 115 tests) — Graph library: LadybugDB 0.15.3, called by forge
 forge-hud (Rust, 476KB)      — StatusLine: <2ms render, real-time stats
 forge-channel (TS/Bun)       — Telegram + iMessage bridges
 ```
 
 **Key architecture: No persistent Python process.**
-- `forge-core` handles everything via CLI subcommands
+- `forge` handles everything via CLI subcommands
 - For graph operations, Rust shells out to `python3 -m forge_graph.cli`
 - Python opens DB, operates, closes, exits — no lock contention
 - Dual storage: `cache.json` (instant reads) + LadybugDB (durable graph)
-- HUD reads `hud-state.json` written by forge-core (updated on remember/forget/agent events)
+- HUD reads `hud-state.json` written by forge (updated on remember/forget/agent events)
 
 ## Development
 
@@ -112,21 +115,21 @@ cd forge-graph && PYTHONPATH=src python3 -m pytest tests/ -v --tb=short
 
 # Rust build + tests
 cargo build --release
-cargo test -p forge-core
+cargo test -p forge-agentic-os
 
 # Test CLI
-./target/release/forge-core index forge-graph/src/
-./target/release/forge-core scan .
-./target/release/forge-core recall --list
+./target/release/forge index forge-graph/src/
+./target/release/forge scan .
+./target/release/forge recall --list
 ```
 
 ### Critical Rules
 
 - **Python 3.10** — always `python3`, never `python`
-- **No MCP** — removed in v0.3.0. All ops via `forge-core` CLI
+- **No MCP** — removed in v0.3.0. All ops via `forge` CLI
 - **LadybugDB** — use `current_timestamp()` not `timestamp()`. Secret table uses `status` column, not `invalid_at`.
 - **Codex** — use `codex exec --model gpt-5.2` (default o4-mini broken on ChatGPT auth)
-- **Plugin cache** — `~/.claude/plugins/cache/forge-marketplace/forge/0.3.0/`. After changes, sync with: `rsync -a forge-graph/src/ "$CACHE/forge-graph/src/" && cp target/release/forge-core "$CACHE/servers/forge-core"`
+- **Plugin cache** — `~/.claude/plugins/cache/forge-marketplace/forge/0.3.0/`. After changes, sync with: `rsync -a forge-graph/src/ "$CACHE/forge-graph/src/" && cp target/release/forge "$CACHE/servers/forge"`
 - **Circular imports** — `app.py` removed. `memory/tools.py` uses local stubs. `cli.py` is the Python entry point.
 
 ### CI Pipeline (6 jobs, all green)
@@ -135,7 +138,7 @@ cargo test -p forge-core
 - unit-tests (BATS)
 - integration-tests (hook behavior)
 - python-tests (115 tests + adversarial suite)
-- rust-build (forge-core + forge-hud)
+- rust-build (forge + forge-hud)
 - security-scan (hardcoded secrets, dangerous patterns)
 
 ## Security
@@ -159,7 +162,7 @@ cargo test -p forge-core
 - Council review: wire multi-model dispatch in the skill
 - HUD: update on ALL tool calls (currently only remember/forget)
 - Full Rust MCP server when kuzu crate reaches v0.15+ compatibility
-- `forge-core doctor` — system health checks wired to HUD
+- `forge doctor` — system health checks wired to HUD
 - Shannon integration — `forge:forge-pentest` security pentesting skill
 - CLI-Anything patterns — agent-native CLI wrapper generation
 - XML context injection — structured context for agent spawn (decisions, architecture, task)
