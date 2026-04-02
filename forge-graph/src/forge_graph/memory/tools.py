@@ -3,8 +3,12 @@
 Registered as MCP tools on the shared ``mcp`` instance from server.py.
 """
 import json
+import re
 import uuid
 from typing import Any, Dict, Optional
+
+# P0: Strict regex for Cypher property keys — prevents injection via dict keys
+_SAFE_KEY = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,63}$')
 
 from forge_graph.auth import check_access
 from forge_graph.db import GraphDB
@@ -246,6 +250,10 @@ async def _link_impl(
     params: dict[str, Any] = {"from_id": from_id, "to_id": to_id}
 
     if properties:
+        # P0: Validate property keys against strict regex to prevent Cypher injection
+        for k in properties.keys():
+            if not _SAFE_KEY.match(k):
+                raise ValueError(f"Invalid property key: {k!r}")
         prop_parts = [f"{k}: ${k}" for k in properties]
         props_str = " {" + ", ".join(prop_parts) + "}"
         params.update(properties)

@@ -4,7 +4,7 @@ set -euo pipefail
 
 cat > /dev/null 2>/dev/null || true
 
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+PLUGIN_ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 FORGE_GRAPH="$PLUGIN_ROOT/forge-graph"
 
 # Drain barrier: wait for pending async writes (max 5s)

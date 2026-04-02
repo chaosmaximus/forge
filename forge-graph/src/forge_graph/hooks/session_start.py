@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from forge_graph.db import GraphDB
+from forge_graph.memory.trust import sanitize_for_context
 
 
 def run_session_start(db: GraphDB) -> str:
@@ -18,15 +19,19 @@ def run_session_start(db: GraphDB) -> str:
         parameters={"sid": session_id, "proj": os.getcwd()},
     )
 
-    # Active decisions (max 10, user trust only)
+    # Active decisions (max 10, user trust only — P1: filter by trust_level)
     r = db.conn.execute(
         "MATCH (d:Decision) WHERE d.status = 'active' AND d.invalid_at IS NULL "
+        "AND d.trust_level = 'user' "
         "RETURN d.title AS title, d.rationale AS rationale LIMIT 10"
     )
     decisions = []
     rows = r.get_as_pl()
     for i in range(len(rows)):
-        decisions.append(f"- {rows['title'][i]}: {rows['rationale'][i]}")
+        # P1: Sanitize content before injecting into session context
+        title = sanitize_for_context(str(rows['title'][i]))
+        rationale = sanitize_for_context(str(rows['rationale'][i]))
+        decisions.append(f"- {title}: {rationale}")
 
     # Recent lessons (max 5)
     r2 = db.conn.execute(
@@ -36,7 +41,9 @@ def run_session_start(db: GraphDB) -> str:
     lessons = []
     rows2 = r2.get_as_pl()
     for i in range(len(rows2)):
-        lessons.append(f"- {rows2['insight'][i]}")
+        # P1: Sanitize lesson content before injecting into session context
+        insight = sanitize_for_context(str(rows2['insight'][i]))
+        lessons.append(f"- {insight}")
 
     parts = [f"[Forge v0.2.0] Session {session_id}."]
     if decisions:
