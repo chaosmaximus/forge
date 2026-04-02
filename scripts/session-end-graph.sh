@@ -1,31 +1,23 @@
 #!/usr/bin/env bash
-# SessionEnd hook — close session, update HUD state
+# SessionEnd hook — delegates to Python for graph operations
 set -euo pipefail
 
-PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugin-data/forge}"
+cat > /dev/null 2>/dev/null || true
+
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+FORGE_GRAPH="$PLUGIN_ROOT/forge-graph"
 
 # Drain barrier: wait for pending async writes (max 5s)
+PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugin-data/forge}"
 DRAIN_START=$(date +%s)
 while [ -f "${PLUGIN_DATA}/.async-pending" ]; do
     ELAPSED=$(( $(date +%s) - DRAIN_START ))
-    if [ "$ELAPSED" -ge 5 ]; then
-        break
-    fi
+    if [ "$ELAPSED" -ge 5 ]; then break; fi
     sleep 0.5
 done
 
-# Update HUD state to show session ended
-if [ -f "${PLUGIN_DATA}/hud/hud-state.json" ]; then
-    python3 -c "
-import json
-try:
-    with open('${PLUGIN_DATA}/hud/hud-state.json', 'r') as f:
-        data = json.load(f)
-    data['session']['phase'] = 'ended'
-    with open('${PLUGIN_DATA}/hud/hud-state.json', 'w') as f:
-        json.dump(data, f)
-except: pass
-" 2>/dev/null || true
+if [ -d "$FORGE_GRAPH/src" ]; then
+    PYTHONPATH="$FORGE_GRAPH/src" python3 -m forge_graph.hooks.session_end 2>/dev/null
+else
+    echo '{"hookSpecificOutput":{"additionalContext":"Session ended."}}'
 fi
-
-echo '{"hookSpecificOutput":{"additionalContext":"Session ended. Memory saved to graph."}}'
