@@ -74,17 +74,32 @@ skills/              Skill definitions (.md) for forge workflows
 - Spec: `docs/superpowers/specs/2026-04-02-forge-v0.2.0-unified-graph-design.md`
 - Plan: `docs/superpowers/plans/2026-04-02-forge-v0.2.0-agentic-os.md`
 
-## Known Issues
+## Known Issues (Resolved)
 
-- `axoniq` listed in pyproject.toml dependencies but doesn't exist on PyPI (replaced by forge-core Rust indexer)
-- task-completed-gate.sh fails when run from monorepo root (PYTHONPATH not set)
-- servers/forge-graph binary referenced in plugin.json doesn't exist yet (needs PyInstaller or pip install)
+- ~~`axoniq` in pyproject.toml~~ — Removed. Replaced by forge-core Rust indexer.
+- ~~task-completed-gate.sh PYTHONPATH~~ — Fixed. Auto-detects src-layout monorepos.
+- ~~servers/forge-graph missing~~ — Fixed. Launcher script with PYTHONPATH.
+
+## Codex Integration
+
+Codex CLI is authenticated via ChatGPT account (`auth_mode: chatgpt`). The default model (`o4-mini`) does NOT work with this auth type.
+
+**Working model:** `gpt-5.2` — use `codex exec --model gpt-5.2` for all Codex operations.
+
+**Known Codex issues (upstream):**
+- ChatGPT auth rejects most models (o4-mini, gpt-4.1, gpt-4o, o3-mini). Only `gpt-5.2` confirmed working.
+- The `codex:codex-rescue` agent may return before Codex finishes — run `codex exec` directly for critical reviews.
+- See: https://github.com/openai/codex/issues/12295
 
 ## Security
 
 - All Cypher queries use parameterized `$param` syntax — never string interpolation
+- `forge_link` property keys validated against `^[A-Za-z_][A-Za-z0-9_]{0,63}$` regex (P0 fix)
 - `axon_cypher` sandbox blocks memory node labels + write keywords
 - Per-agent ACL enforcement via `agent_id`
-- Hook scripts validate paths, resolve symlinks, check workspace boundaries
+- Hook scripts derive PLUGIN_ROOT from script location (not env var), validate paths, resolve symlinks, reject shell metacharacters, check workspace boundaries with trailing `/`
+- Session context injection filtered by `trust_level = 'user'` and sanitized via `sanitize_for_context()`
+- `forge_scan` skips symlinks to prevent reading outside workspace
 - Secret scanner NEVER stores actual secret values — fingerprint only
+- Secret `forge_forget` sets `status = 'revoked'` (not `invalid_at`)
 - Evolution engine writes to isolated git worktrees, path-restricted to skills/
