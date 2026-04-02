@@ -2,7 +2,7 @@
 
 > This prompt is designed to be passed to `/codex:adversarial-review`.
 > It instructs Codex to perform a multi-dimensional adversarial analysis of the
-> Forge plugin at `/mnt/colab-disk/DurgaSaiK/forge/`.
+> Forge plugin at the current repository.
 
 ---
 

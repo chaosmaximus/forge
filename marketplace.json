@@ -1,7 +1,7 @@
 {
   "name": "forge-marketplace",
   "owner": {
-    "name": "DurgaSaiK"
+    "name": "chaosmaximus"
   },
   "metadata": {
     "description": "Forge: Production-grade agent team orchestration for Claude Code",
@@ -12,7 +12,7 @@
       "name": "forge",
       "source": ".",
       "description": "Production-grade agent team orchestration with two modes (greenfield/existing), cross-model Codex adversarial review, and bundled code intelligence",
-      "version": "0.1.4"
+      "version": "0.1.5"
     }
   ]
 }

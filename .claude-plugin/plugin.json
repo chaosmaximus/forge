@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Production-grade agent team orchestration with two modes: greenfield (PRD + design + build) and existing codebase (explore + plan + build). Cross-model adversarial review via Codex.",
   "author": {
-    "name": "DurgaSaiK"
+    "name": "chaosmaximus"
   },
   "license": "MIT",
   "keywords": [

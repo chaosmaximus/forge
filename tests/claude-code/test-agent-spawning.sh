@@ -10,13 +10,13 @@
 #
 # Prerequisites:
 #   - claude CLI installed and authenticated
-#   - Forge plugin installed: claude plugin install /mnt/colab-disk/DurgaSaiK/forge
+#   - Forge plugin installed: claude plugin install /path/to/forge
 #
 # Usage:
-#   bash /mnt/colab-disk/DurgaSaiK/forge/tests/claude-code/test-agent-spawning.sh
+#   bash tests/claude-code/test-agent-spawning.sh
 set -euo pipefail
 
-PLUGIN_DIR="/mnt/colab-disk/DurgaSaiK/forge"
+PLUGIN_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 AGENTS_DIR="$PLUGIN_DIR/agents"
 RESULTS_DIR="${PLUGIN_DIR}/tests/claude-code/results"
 mkdir -p "$RESULTS_DIR"

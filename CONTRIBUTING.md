@@ -2,7 +2,7 @@
 
 ## Development Setup
 
-1. Clone the repo: `git clone https://github.com/DurgaSaiK/forge.git`
+1. Clone the repo: `git clone https://github.com/chaosmaximus/forge.git`
 2. Install test dependencies: `sudo apt install jq shellcheck` and install BATS
 3. Run tests: `bash tests/run-all.sh`
 4. Test with Claude Code: `claude --plugin-dir /path/to/forge`

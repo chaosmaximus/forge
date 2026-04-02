@@ -4,16 +4,16 @@
 #
 # Prerequisites:
 #   - claude CLI installed and authenticated
-#   - Forge plugin installed: claude plugin install /mnt/colab-disk/DurgaSaiK/forge
+#   - Forge plugin installed: claude plugin install /path/to/forge
 #
 # Usage:
-#   bash /mnt/colab-disk/DurgaSaiK/forge/tests/claude-code/test-skill-invocation.sh
+#   bash tests/claude-code/test-skill-invocation.sh
 #
 # Each test runs claude in non-interactive mode with --max-turns to prevent runaway.
 # Output is captured and checked for expected keywords.
 set -euo pipefail
 
-PLUGIN_DIR="/mnt/colab-disk/DurgaSaiK/forge"
+PLUGIN_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 RESULTS_DIR="${PLUGIN_DIR}/tests/claude-code/results"
 mkdir -p "$RESULTS_DIR"
 
