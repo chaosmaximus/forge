@@ -35,6 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@forge-plugin.dev"
+          git config --global user.name "Forge CI"
       - name: Install BATS
         run: |
           git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats
@@ -48,6 +52,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@forge-plugin.dev"
+          git config --global user.name "Forge CI"
       - name: Install jq
         run: sudo apt-get install -y jq
       - name: Plugin loading test
