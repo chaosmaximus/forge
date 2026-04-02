@@ -1,4 +1,5 @@
 """Tests for the axon_cypher sandbox — blocks memory nodes + write operations."""
+import json
 import pytest
 
 from forge_graph.axon_proxy import validate_cypher_query
@@ -83,3 +84,42 @@ def test_blocks_remove():
 def test_blocks_case_insensitive():
     assert validate_cypher_query("match (d:decision) return d") is False
     assert validate_cypher_query("MATCH (d:DECISION) RETURN d") is False
+
+
+# ── Integration tests for forge_cypher MCP tool ────────────────────────────
+
+@pytest.fixture
+def graph_db_with_schema(tmp_path):
+    """Initialize a GraphDB with full schema and wire it into server._db."""
+    from forge_graph.db import GraphDB
+    from forge_graph.memory.schema import create_schema
+    import forge_graph.server as srv
+
+    db = GraphDB(tmp_path / "test.lbdb")
+    create_schema(db.conn)
+    old_db = srv._db
+    srv._db = db
+    yield db
+    srv._db = old_db
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_forge_cypher_returns_results(graph_db_with_schema):
+    """forge_cypher executes valid code queries."""
+    graph_db_with_schema.conn.execute(
+        "CREATE (f:File {id: 'f1', file_path: 'test.py', name: 'test.py'})"
+    )
+    from forge_graph.server import forge_cypher
+    result = json.loads(await forge_cypher("MATCH (f:File) RETURN f.name AS name"))
+    assert result["count"] == 1
+    assert result["results"][0]["name"] == "test.py"
+
+
+@pytest.mark.asyncio
+async def test_forge_cypher_blocks_memory_query(graph_db_with_schema):
+    """forge_cypher rejects queries accessing memory nodes."""
+    from forge_graph.server import forge_cypher
+    result = json.loads(await forge_cypher("MATCH (d:Decision) RETURN d"))
+    assert "error" in result
+    assert "rejected" in result["error"].lower()

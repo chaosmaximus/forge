@@ -58,6 +58,37 @@ async def forge_index(path: Optional[str] = None) -> str:
     return json.dumps({"error": "forge-core binary not found. Build with: cargo build --release -p forge-core", "_meta": {"path": "deterministic"}})
 
 
+@mcp.tool()
+async def forge_cypher(query: str, agent_id: Optional[str] = None) -> str:
+    """Execute a read-only Cypher query against code nodes. Memory nodes are blocked for security."""
+    from forge_graph.auth import check_access
+    from forge_graph.axon_proxy import validate_cypher_query
+    from forge_graph.meta import ToolMeta
+
+    if not check_access(agent_id, "forge_cypher"):
+        raise PermissionError(f"Agent '{agent_id}' does not have access to forge_cypher")
+
+    meta = ToolMeta()
+
+    if not validate_cypher_query(query):
+        return json.dumps({
+            "error": "Query rejected: only read-only queries against code nodes (File, Function, Class, Method) are allowed. Memory nodes (Decision, Pattern, Lesson, etc.) and write operations are blocked.",
+            "_meta": meta.finish()
+        })
+
+    db = get_db()
+    try:
+        result = db.conn.execute(query)
+        rows = result.get_as_pl()
+        # Convert polars DataFrame to list of dicts
+        if len(rows) == 0:
+            return json.dumps({"results": [], "_meta": meta.finish()})
+        records = rows.to_dicts()
+        return json.dumps({"results": records, "count": len(records), "_meta": meta.finish()}, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e), "_meta": meta.finish()})
+
+
 def _init_on_startup(db_path: str) -> None:
     """Initialize DB schema and write initial HUD state on server start."""
     import os

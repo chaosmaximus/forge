@@ -13,7 +13,7 @@ class AgentRole(Enum):
 
 _READ_TOOLS = frozenset({
     "forge_recall", "forge_decisions", "forge_patterns", "forge_timeline",
-    "forge_usage", "forge_health", "forge_scan",
+    "forge_usage", "forge_health", "forge_scan", "forge_cypher",
     "axon_query", "axon_context", "axon_impact", "axon_dead_code",
     "axon_detect_changes", "axon_cypher", "axon_communities", "axon_coupling",
     "axon_call_path", "axon_cycles", "axon_file_context", "axon_test_impact",
