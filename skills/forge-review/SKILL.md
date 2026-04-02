@@ -28,7 +28,11 @@ Determine gate level:
 
 When spawning the evaluator, include the custom prod_paths in the spawn prompt if they differ from defaults. Example: "Review this changeset. Custom production paths: [paths from userConfig]." The evaluator cannot read environment variables directly.
 
-2. To run Codex:
+2. Before running Codex for the FIRST TIME in a session, inform the user:
+   "Codex adversarial review will send code diffs to OpenAI's API for analysis. Proceed?"
+   Wait for confirmation. If the user declines, skip Codex and proceed with evaluator review only.
+
+   To run Codex:
    Run `/codex:adversarial-review`. If the Codex plugin supports background mode, add `--background`. Specify the base branch for comparison. If the exact syntax differs from what's documented here, follow the Codex plugin's own help output (`/codex` to see available commands).
    Focus areas: auth, data loss, rollback safety, race conditions, idempotency
 

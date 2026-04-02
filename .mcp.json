@@ -1,10 +1,10 @@
 {
-  "_note": "Stitch MCP is optional. Remove this file if you do not use visual design generation.",
+  "_note": "Stitch MCP is optional. Remove this file if you do not use visual design generation. Pin the version for supply chain safety.",
   "stitch": {
     "command": "npx",
     "args": [
       "-y",
-      "stitch-mcp@latest"
+      "stitch-mcp@0.3.0"
     ]
   }
 }

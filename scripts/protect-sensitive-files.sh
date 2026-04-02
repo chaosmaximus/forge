@@ -26,7 +26,7 @@ fi
 BASENAME=$(basename "$RESOLVED_PATH")
 
 case "$BASENAME" in
-  .env|.env.*|credentials*|secrets*|*.key|*.pem|*.tfstate|*.tfstate.backup|poetry.lock|package-lock.json|yarn.lock|*.p12|*.pfx|*.jks|*.keystore|.npmrc|.pypirc|id_rsa|id_ed25519|*.pub)
+  .env|.env.*|credentials*|secrets*|*.key|*.pem|*.tfstate|*.tfstate.backup|poetry.lock|package-lock.json|yarn.lock|*.p12|*.pfx|*.jks|*.keystore|.npmrc|.pypirc|id_rsa|id_ed25519|*.pub|kubeconfig|.git-credentials|service-account.json|*-sa-key.json|token.json|*.gpg)
     echo "Protected file: $BASENAME (resolved from $(basename "$FILE_PATH")). Edit manually or use the appropriate tool." >&2
     exit 2
     ;;
