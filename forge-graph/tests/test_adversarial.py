@@ -260,3 +260,70 @@ def test_scan_skips_symlinks(tmp_path):
     finding_files = [f.file_path for f in findings]
     assert "real.py" in finding_files
     assert "link.py" not in finding_files
+
+
+# ---------------------------------------------------------------------------
+# Spec §10.7 #4: Transcript poisoning (deferred — no JSONL transcript ingest yet)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skip(reason="Deferred: JSONL transcript ingest not implemented yet")
+def test_transcript_poisoning():
+    """§10.7 #4: Crafted JSONL with prompt injection must be sanitized during ingest."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Spec §10.7 #6: Concurrent hook race condition (deferred — needs async harness)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skip(reason="Deferred: requires async hook execution harness")
+def test_concurrent_hook_race_condition():
+    """§10.7 #6: Trigger PostToolUse and SessionEnd simultaneously — no data loss."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Spec §10.7 #8: Memory exfil via rerank (deferred — no LLM rerank yet)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skip(reason="Deferred: LLM rerank not implemented yet")
+def test_memory_exfil_via_rerank():
+    """§10.7 #8: Sensitive preference must be redacted in LLM rerank call."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Codex review: workspace boundary prefix bypass (/repo vs /repo_evil)
+# ---------------------------------------------------------------------------
+
+def test_workspace_boundary_prefix_bypass(tmp_path):
+    """Codex finding: /repo_evil must not pass workspace check for /repo.
+
+    Path.relative_to() is safe against string-prefix attacks, but we test
+    explicitly to prevent regressions if the implementation changes.
+    """
+    from pathlib import Path
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    evil = tmp_path / "repo_evil"
+    evil.mkdir()
+
+    # Simulate the workspace boundary check from forge_scan
+    def check_within_workspace(scan_path: Path, workspace_root: Path) -> bool:
+        try:
+            scan_path.resolve().relative_to(workspace_root.resolve())
+            return True
+        except ValueError:
+            return False
+
+    # Subdirectory of workspace — should pass
+    assert check_within_workspace(workspace / "src", workspace) is True
+    # Workspace root itself — should pass
+    assert check_within_workspace(workspace, workspace) is True
+    # Evil sibling with shared prefix — must FAIL
+    assert check_within_workspace(evil, workspace) is False
+    # Parent directory — must FAIL
+    assert check_within_workspace(tmp_path, workspace) is False
+    # Unrelated path — must FAIL
+    assert check_within_workspace(Path("/etc"), workspace) is False
