@@ -37,24 +37,41 @@ fi
 
 # Monorepo fallback: search for pytest in subdirectories
 if [ "$TEST_RAN" = "false" ]; then
-  # Look for conftest.py or pytest.ini as markers of a pytest project
-  if find . -maxdepth 3 -name "conftest.py" -o -name "pytest.ini" 2>/dev/null | grep -q .; then
-    if command -v pytest &>/dev/null; then
-      TEST_OUTPUT=$(pytest 2>&1) || {
-        echo "Tests failed (pytest detected in subdirectory). Fix before completing task:" >&2
-        echo "$TEST_OUTPUT" | tail -20 >&2
-        exit 2
-      }
+  for conftest in $(find . -maxdepth 3 -name "conftest.py" 2>/dev/null); do
+    TEST_DIR=$(dirname "$conftest")
+    # Walk up to find pyproject.toml
+    PROJECT_DIR="$TEST_DIR"
+    for _ in 1 2 3; do
+      if [ -f "$PROJECT_DIR/pyproject.toml" ]; then
+        break
+      fi
+      PROJECT_DIR=$(dirname "$PROJECT_DIR")
+    done
+
+    if [ -f "$PROJECT_DIR/pyproject.toml" ]; then
+      # Set PYTHONPATH if src/ layout exists (resolve to absolute path)
+      PYPATH=""
+      if [ -d "$PROJECT_DIR/src" ]; then
+        PYPATH="$(cd "$PROJECT_DIR/src" && pwd)"
+      fi
+
+      if [ -n "$PYPATH" ]; then
+        TEST_OUTPUT=$(cd "$PROJECT_DIR" && PYTHONPATH="$PYPATH" python3 -m pytest 2>&1) || {
+          echo "Tests failed in $PROJECT_DIR. Fix before completing task:" >&2
+          echo "$TEST_OUTPUT" | tail -20 >&2
+          exit 2
+        }
+      else
+        TEST_OUTPUT=$(cd "$PROJECT_DIR" && python3 -m pytest 2>&1) || {
+          echo "Tests failed in $PROJECT_DIR. Fix before completing task:" >&2
+          echo "$TEST_OUTPUT" | tail -20 >&2
+          exit 2
+        }
+      fi
       TEST_RAN=true
-    elif command -v python3 &>/dev/null; then
-      TEST_OUTPUT=$(python3 -m pytest 2>&1) || {
-        echo "Tests failed (pytest detected in subdirectory). Fix before completing task:" >&2
-        echo "$TEST_OUTPUT" | tail -20 >&2
-        exit 2
-      }
-      TEST_RAN=true
+      break
     fi
-  fi
+  done
 fi
 
 # Check if changed files match prod_paths (surface Codex recommendation)
