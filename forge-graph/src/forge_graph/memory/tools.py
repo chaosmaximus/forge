@@ -1,6 +1,7 @@
-"""Memory tools — forge_remember, forge_recall, forge_link, and deterministic query tools.
+"""Memory tools — pure graph logic for remember, recall, link, and deterministic queries.
 
-Registered as MCP tools on the shared ``mcp`` instance from server.py.
+These functions are called by forge_graph.cli and tests.
+MCP decorators removed — all operations are via CLI now.
 """
 import json
 import re
@@ -14,8 +15,24 @@ from forge_graph.auth import check_access
 from forge_graph.db import GraphDB
 from forge_graph.memory.temporal import CURRENT_VIEW
 from forge_graph.memory.trust import sanitize_for_context
-from forge_graph.meta import ToolMeta
-from forge_graph.app import mcp, get_db
+
+
+# Stubs for removed MCP modules — keeps existing _*_impl functions working
+class ToolMeta:
+    """Stub replacing forge_graph.meta.ToolMeta (removed with MCP server)."""
+    def finish(self):
+        return {"tokens_input": 0, "tokens_output": 0, "llm_calls": 0, "duration_ms": 0, "path": "deterministic"}
+
+def get_db():
+    """Stub — in CLI mode, DB is passed directly to _*_impl functions."""
+    raise RuntimeError("Use forge_graph.cli for DB access")
+
+# Noop MCP decorator — @mcp.tool() calls become passthrough
+class _NoopMcp:
+    def tool(self):
+        return lambda fn: fn
+
+mcp = _NoopMcp()
 
 # ---------------------------------------------------------------------------
 # Query-limit helpers (P2-1: prevent unbounded result sets)

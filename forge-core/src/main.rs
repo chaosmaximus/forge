@@ -80,6 +80,9 @@ enum Commands {
         /// Confidence (0.0 - 1.0)
         #[arg(long, default_value = "0.9")]
         confidence: f64,
+        /// Sync immediately to graph DB (slower, ~200ms)
+        #[arg(long)]
+        sync: bool,
         /// Plugin data directory
         #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
         state_dir: String,
@@ -94,6 +97,43 @@ enum Commands {
         /// List all (no search)
         #[arg(long)]
         list: bool,
+        /// Query graph DB directly (slower, ~200ms)
+        #[arg(long)]
+        graph: bool,
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+    },
+    /// Forget (soft-delete) a memory node
+    Forget {
+        /// Node ID
+        node_id: String,
+        /// Node label: Decision, Pattern, Lesson, Preference
+        #[arg(long)]
+        label: String,
+        /// Reason for deletion
+        #[arg(long, default_value = "")]
+        reason: String,
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+    },
+    /// Graph health check
+    Health {
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+    },
+    /// Execute read-only Cypher query on code graph
+    Query {
+        /// Cypher query string
+        cypher: String,
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+    },
+    /// Sync pending memory entries to graph DB
+    Sync {
         /// Plugin data directory
         #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
         state_dir: String,
@@ -140,16 +180,51 @@ fn main() {
             review::run(&path, &base, &format);
         }
         Commands::Agent { state_dir } => agent::run(&state_dir),
-        Commands::Remember { r#type, title, content, confidence, state_dir } => {
-            memory::remember::run(&state_dir, &r#type, &title, &content, confidence);
+        Commands::Remember { r#type, title, content, confidence, sync, state_dir } => {
+            memory::remember::run(&state_dir, &r#type, &title, &content, confidence, sync);
         }
-        Commands::Recall { query, r#type, list, state_dir } => {
-            if list {
+        Commands::Recall { query, r#type, list, graph, state_dir } => {
+            if graph {
+                // Direct graph query via Python
+                let q = query.as_deref().unwrap_or("");
+                let mut args = vec!["recall", q];
+                if let Some(t) = &r#type { args.extend(["--type", t]); }
+                match memory::python::call_graph(&state_dir, &args) {
+                    Ok(json) => println!("{}", json),
+                    Err(e) => eprintln!("{{\"error\":\"{}\"}}", e),
+                }
+            } else if list {
                 memory::recall::list(&state_dir, r#type.as_deref());
             } else if let Some(q) = &query {
                 memory::recall::run(&state_dir, q, r#type.as_deref());
             } else {
                 memory::recall::list(&state_dir, r#type.as_deref());
+            }
+        }
+        Commands::Forget { node_id, label, reason, state_dir } => {
+            let args = ["forget", &node_id, "--label", &label, "--reason", &reason];
+            match memory::python::call_graph(&state_dir, &args) {
+                Ok(json) => println!("{}", json),
+                Err(e) => eprintln!("{{\"error\":\"{}\"}}", e),
+            }
+        }
+        Commands::Health { state_dir } => {
+            match memory::python::call_graph(&state_dir, &["health"]) {
+                Ok(json) => println!("{}", json),
+                Err(e) => eprintln!("{{\"error\":\"{}\"}}", e),
+            }
+        }
+        Commands::Query { cypher, state_dir } => {
+            match memory::python::call_graph(&state_dir, &["query", &cypher]) {
+                Ok(json) => println!("{}", json),
+                Err(e) => eprintln!("{{\"error\":\"{}\"}}", e),
+            }
+        }
+        Commands::Sync { state_dir } => {
+            let pending = format!("{}/memory/pending.jsonl", state_dir);
+            match memory::python::call_graph(&state_dir, &["sync", "--pending-path", &pending]) {
+                Ok(json) => println!("{}", json),
+                Err(e) => eprintln!("{{\"error\":\"{}\"}}", e),
             }
         }
     }

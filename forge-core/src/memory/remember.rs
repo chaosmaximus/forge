@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::hud_state;
 
-/// Append a memory entry to pending.jsonl and update HUD state.
-pub fn run(state_dir: &str, mem_type: &str, title: &str, content: &str, confidence: f64) {
+/// Append a memory entry to pending.jsonl, update HUD, optionally sync to graph.
+pub fn run(state_dir: &str, mem_type: &str, title: &str, content: &str, confidence: f64, sync: bool) {
     let memory_dir = Path::new(state_dir).join("memory");
 
     // Create directory with 0o700
@@ -78,13 +78,32 @@ pub fn run(state_dir: &str, mem_type: &str, title: &str, content: &str, confiden
         }
     });
 
+    // Sync to graph DB if requested
+    let was_synced = if sync {
+        match crate::memory::python::call_graph(state_dir, &[
+            "remember",
+            "--type", mem_type,
+            "--data", &serde_json::to_string(&json!({
+                "id": id,
+                "title": title,
+                "content": content,
+                "confidence": confidence,
+                "status": "active"
+            })).unwrap_or_default(),
+        ]) {
+            Ok(_) => true,
+            Err(_) => false, // Cache still has it; will sync later
+        }
+    } else {
+        false
+    };
+
     // Output success
     println!("{}", json!({
         "status": "stored",
         "id": id,
         "type": mem_type,
-        "synced": false,
-        "note": "Pending sync to graph. MCP server will pick up on next startup."
+        "synced": was_synced
     }));
 }
 

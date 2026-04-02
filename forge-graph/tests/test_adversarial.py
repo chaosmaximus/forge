@@ -245,7 +245,7 @@ def test_session_start_sanitizes_decision_content(db_with_schema):
 
 def test_scan_skips_symlinks(tmp_path):
     """P2 fix: _scan_directory must skip symlinks to prevent reading outside workspace."""
-    from forge_graph.security.tools import _scan_directory
+    from forge_graph.security.tools import scan_directory as _scan_directory
 
     # Create a real file with a secret
     real_file = tmp_path / "real.py"

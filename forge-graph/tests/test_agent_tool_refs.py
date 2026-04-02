@@ -1,78 +1,47 @@
-"""Deterministic test: agent .md tool references must match actual MCP server tools.
+"""Deterministic test: agent .md files must not reference phantom MCP tools.
 
-This test prevents phantom tool references — agent definitions MUST only reference
-tools that the forge-graph MCP server actually provides. If a tool is renamed or
-removed, this test fails until the agent .md files are updated.
+Since MCP is removed (v0.3.0), agent definitions should reference Bash CLI
+commands, not mcp__forge_forge-graph__* tool names.
 """
-import json
-import os
 import re
 from pathlib import Path
 
 import pytest
 
-# Paths relative to repo root
 REPO_ROOT = Path(__file__).parent.parent.parent
 AGENTS_DIR = REPO_ROOT / "agents"
 PLUGIN_JSON = REPO_ROOT / ".claude-plugin" / "plugin.json"
 
 
-def _get_server_tools():
-    """Get actual tool names from the MCP server (same as runtime)."""
-    from forge_graph.server import mcp, init_db
-    from forge_graph.memory.schema import create_schema
-    import tempfile
-
-    db = init_db(os.path.join(tempfile.mkdtemp(), "test_validate.lbdb"))
-    create_schema(db.conn)
-
-    # Import tool modules (this is how main() registers them)
-    from forge_graph.memory import tools as _mt  # noqa: F401
-    from forge_graph.security import tools as _st  # noqa: F401
-
-    return set(mcp._tool_manager._tools.keys())
-
-
-def _get_agent_tool_refs():
-    """Extract all mcp__forge_forge-graph__* tool references from agent .md files."""
+def _get_agent_mcp_refs():
+    """Find any remaining mcp__forge_forge-graph__* refs in agent .md files."""
     refs = {}
     pattern = re.compile(r"mcp__forge_forge-graph__(\w+)")
-
     for md_file in AGENTS_DIR.glob("*.md"):
         content = md_file.read_text()
         tools_found = set(pattern.findall(content))
         if tools_found:
             refs[md_file.name] = tools_found
-
     return refs
 
 
-@pytest.fixture(scope="module")
-def server_tools():
-    return _get_server_tools()
+def test_no_mcp_tool_refs_in_agents():
+    """Agent .md files must NOT reference forge-graph MCP tools (MCP removed in v0.3.0)."""
+    refs = _get_agent_mcp_refs()
+    assert not refs, (
+        f"Agent files still reference MCP tools (MCP removed):\n"
+        + "\n".join(f"  {f}: {t}" for f, t in refs.items())
+    )
 
 
-def test_all_agent_tool_refs_exist_in_server(server_tools):
-    """Every forge-graph tool referenced in agent .md files must exist in the MCP server."""
-    agent_refs = _get_agent_tool_refs()
-    errors = []
-
-    for agent_file, tool_names in agent_refs.items():
-        for tool_name in tool_names:
-            if tool_name not in server_tools:
-                errors.append(
-                    f"{agent_file} references 'mcp__forge_forge-graph__{tool_name}' "
-                    f"but server only has: {sorted(server_tools)}"
-                )
-
-    assert not errors, "Phantom tool references found:\n" + "\n".join(errors)
-
-
-def test_server_has_minimum_tool_set(server_tools):
-    """Server must provide the core memory tools."""
-    required = {"forge_remember", "forge_recall", "forge_forget", "forge_health"}
-    missing = required - server_tools
-    assert not missing, f"Server missing required tools: {missing}"
+def test_agents_have_bash_tool():
+    """All agents must have Bash in their tools list (for forge-core CLI access)."""
+    for md_file in AGENTS_DIR.glob("*.md"):
+        content = md_file.read_text()
+        # Find tools: line in frontmatter
+        if "tools:" in content:
+            tools_line = [l for l in content.split("\n") if l.startswith("tools:")][0]
+            assert "Bash" in tools_line, f"{md_file.name} missing Bash in tools (needed for forge-core CLI)"
 
 
 def test_agent_files_exist():
@@ -81,43 +50,19 @@ def test_agent_files_exist():
         assert (AGENTS_DIR / name).exists(), f"Missing agent file: {name}"
 
 
-def test_agent_frontmatter_has_tools():
-    """Each agent .md must have a tools: line in YAML frontmatter."""
-    for md_file in AGENTS_DIR.glob("*.md"):
-        content = md_file.read_text()
-        # Check frontmatter exists
-        assert content.startswith("---"), f"{md_file.name}: missing YAML frontmatter"
-        # Find closing ---
-        end = content.index("---", 3)
-        frontmatter = content[3:end]
-        assert "tools:" in frontmatter, f"{md_file.name}: missing 'tools:' in frontmatter"
+def test_plugin_json_no_mcp_servers():
+    """plugin.json mcpServers must be empty (MCP removed)."""
+    import json
+    pj = json.loads(PLUGIN_JSON.read_text())
+    servers = pj.get("mcpServers", {})
+    assert servers == {}, f"mcpServers should be empty, got: {servers}"
 
 
 def test_plugin_json_agents_match_files():
     """plugin.json agents list must match actual agent files."""
+    import json
     pj = json.loads(PLUGIN_JSON.read_text())
-    registered = set()
-    for path in pj.get("agents", []):
-        # path is like "./agents/forge-planner.md"
-        registered.add(Path(path).name)
-
+    registered = {Path(p).name for p in pj.get("agents", [])}
     actual = {f.name for f in AGENTS_DIR.glob("*.md")}
-    missing_in_plugin = actual - registered
-    extra_in_plugin = registered - actual
-
-    assert not missing_in_plugin, f"Agent files not in plugin.json: {missing_in_plugin}"
-    assert not extra_in_plugin, f"plugin.json references missing files: {extra_in_plugin}"
-
-
-def test_no_phantom_tool_patterns(server_tools):
-    """Ensure known phantom patterns are gone."""
-    phantom_names = {
-        "get_architecture", "search_graph", "trace_call_path",
-        "detect_changes", "get_code_snippet",
-    }
-    agent_refs = _get_agent_tool_refs()
-    for agent_file, tool_names in agent_refs.items():
-        found_phantoms = tool_names & phantom_names
-        assert not found_phantoms, (
-            f"{agent_file} still references phantom tools: {found_phantoms}"
-        )
+    assert not (actual - registered), f"Agent files not in plugin.json: {actual - registered}"
+    assert not (registered - actual), f"plugin.json references missing files: {registered - actual}"

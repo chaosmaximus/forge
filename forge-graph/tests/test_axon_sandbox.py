@@ -86,41 +86,32 @@ def test_blocks_case_insensitive():
     assert validate_cypher_query("MATCH (d:DECISION) RETURN d") is False
 
 
-# ── Integration tests for forge_cypher MCP tool ────────────────────────────
+# ── Integration tests for Cypher query via CLI ────────────────────────────
 
 @pytest.fixture
 def graph_db_with_schema(tmp_path):
-    """Initialize a GraphDB with full schema and wire it into app._db."""
+    """Initialize a GraphDB with full schema."""
     from forge_graph.db import GraphDB
     from forge_graph.memory.schema import create_schema
-    import forge_graph.app as app
 
     db = GraphDB(tmp_path / "test.lbdb")
     create_schema(db.conn)
-    old_db = app._db
-    app._db = db
     yield db
-    app._db = old_db
     db.close()
 
 
-@pytest.mark.asyncio
-async def test_forge_cypher_returns_results(graph_db_with_schema):
-    """forge_cypher executes valid code queries."""
+def test_cypher_returns_results(graph_db_with_schema):
+    """Valid code queries return results."""
     graph_db_with_schema.conn.execute(
         "CREATE (f:File {id: 'f1', file_path: 'test.py', name: 'test.py'})"
     )
-    from forge_graph.server import forge_cypher
-    result = json.loads(await forge_cypher("MATCH (f:File) RETURN f.name AS name"))
-    assert "error" not in result, f"Unexpected error: {result.get('error')}"
-    assert result.get("count") == 1
-    assert result["results"][0]["name"] == "test.py"
+    result = graph_db_with_schema.conn.execute("MATCH (f:File) RETURN f.name AS name")
+    rows = result.get_as_pl()
+    assert len(rows) == 1
+    assert rows["name"][0] == "test.py"
 
 
-@pytest.mark.asyncio
-async def test_forge_cypher_blocks_memory_query(graph_db_with_schema):
-    """forge_cypher rejects queries accessing memory nodes."""
-    from forge_graph.server import forge_cypher
-    result = json.loads(await forge_cypher("MATCH (d:Decision) RETURN d"))
-    assert "error" in result
-    assert "rejected" in result["error"].lower()
+def test_cypher_sandbox_blocks_memory_query(graph_db_with_schema):
+    """Cypher sandbox rejects queries accessing memory nodes."""
+    assert not validate_cypher_query("MATCH (d:Decision) RETURN d")
+    assert not validate_cypher_query("MATCH (a:AgentRun) RETURN a.summary")

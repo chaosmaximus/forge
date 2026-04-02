@@ -30,6 +30,7 @@ _NODE_TABLES: list[str] = [
         updated_at TIMESTAMP,
         valid_at TIMESTAMP,
         invalid_at TIMESTAMP,
+        accessed_at TIMESTAMP,
         confidence DOUBLE DEFAULT 1.0,
         trust_level STRING DEFAULT 'user',
         PRIMARY KEY (id)
@@ -49,6 +50,7 @@ _NODE_TABLES: list[str] = [
         updated_at TIMESTAMP,
         valid_at TIMESTAMP,
         invalid_at TIMESTAMP,
+        accessed_at TIMESTAMP,
         PRIMARY KEY (id)
     )
     """,
@@ -63,6 +65,7 @@ _NODE_TABLES: list[str] = [
         updated_at TIMESTAMP,
         valid_at TIMESTAMP,
         invalid_at TIMESTAMP,
+        accessed_at TIMESTAMP,
         PRIMARY KEY (id)
     )
     """,
