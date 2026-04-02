@@ -46,6 +46,15 @@ if [ -n "$ALERTS" ]; then
     echo "{\"hookSpecificOutput\":{\"additionalContext\":\"SECRET ALERT in ${ESCAPED_PATH}: ${ESCAPED_ALERTS}Consider moving to .env or .gitignore.\"}}"
 fi
 
+# Decision-awareness check (async, non-blocking)
+SCRIPT_DIR_PARENT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+if [ -d "${SCRIPT_DIR_PARENT}/forge-graph/src" ] && [ -n "$FILE_PATH" ]; then
+    DECISION_OUTPUT=$(PYTHONPATH="${SCRIPT_DIR_PARENT}/forge-graph/src" python3 -m forge_graph.hooks.post_edit "$FILE_PATH" 2>/dev/null || echo "")
+    if [ -n "$DECISION_OUTPUT" ]; then
+        echo "$DECISION_OUTPUT"
+    fi
+fi
+
 # Run existing formatter if available
 if [ -f "${SCRIPT_DIR}/post-edit-format.sh" ]; then
     echo "$INPUT" | bash "${SCRIPT_DIR}/post-edit-format.sh" 2>/dev/null || true
