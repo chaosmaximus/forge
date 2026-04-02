@@ -112,7 +112,8 @@ async def test_forge_cypher_returns_results(graph_db_with_schema):
     )
     from forge_graph.server import forge_cypher
     result = json.loads(await forge_cypher("MATCH (f:File) RETURN f.name AS name"))
-    assert result["count"] == 1
+    assert "error" not in result, f"Unexpected error: {result.get('error')}"
+    assert result.get("count") == 1
     assert result["results"][0]["name"] == "test.py"
 
 
