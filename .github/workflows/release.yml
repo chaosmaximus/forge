@@ -9,6 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@forge-plugin.dev"
+          git config --global user.name "Forge CI"
       - name: Run full test suite
         run: |
           sudo apt-get install -y jq shellcheck

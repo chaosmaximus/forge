@@ -107,19 +107,18 @@ jobs:
       - name: Run adversarial tests
         run: cd forge-graph && python -m pytest tests/test_adversarial.py tests/test_integration.py -v
 
-  hud-build:
+  rust-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build forge-hud
-        run: cd forge-hud && cargo build --release
-      - name: Check binary size
+      - name: Build workspace
+        run: cargo build --release
+      - name: Check forge-core binary
         run: |
-          SIZE=$(stat -c%s forge-hud/target/release/forge-hud)
-          echo "Binary size: $((SIZE / 1024))KB"
-          if [ "$SIZE" -gt 10485760 ]; then
-            echo "[WARN] Binary >10MB"
-          fi
-      - name: Smoke test
-        run: echo '{}' | COLUMNS=120 CLAUDE_PLUGIN_DATA=/tmp ./forge-hud/target/release/forge-hud
+          ls -la target/release/forge-core
+          ls -la target/release/forge-hud
+      - name: Smoke test forge-core index
+        run: ./target/release/forge-core index forge-graph/src/ 2>/dev/null | wc -l
+      - name: Smoke test forge-hud
+        run: echo '{}' | COLUMNS=120 CLAUDE_PLUGIN_DATA=/tmp ./target/release/forge-hud
