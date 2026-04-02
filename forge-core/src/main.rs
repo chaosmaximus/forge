@@ -7,6 +7,8 @@ mod memory;
 mod research;
 mod review;
 mod scan;
+#[cfg(test)]
+mod security_tests;
 mod test_runner;
 mod verify;
 mod watch;
