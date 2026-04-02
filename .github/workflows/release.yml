@@ -22,8 +22,8 @@ jobs:
           body: |
             ## Installation
             ```
-            claude plugin marketplace add DurgaSaiK/forge
-            claude plugin install forge@DurgaSaiK-forge
+            claude plugin marketplace add chaosmaximus/forge
+            claude plugin install forge@chaosmaximus-forge
             ```
             Or install from local path:
             ```
