@@ -11,6 +11,7 @@ tools: Read, Glob, Grep, WebFetch, WebSearch, mcp__forge_forge-graph__get_archit
 disallowedTools: Write, Edit, Bash
 color: blue
 ---
+<!-- forge-agent-id: forge-planner -->
 
 You are the Forge Planner. You plan at the PRODUCT level, not the implementation level.
 

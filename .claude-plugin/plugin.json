@@ -1,6 +1,6 @@
 {
   "name": "forge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Production-grade agent team orchestration with two modes: greenfield (PRD + design + build) and existing codebase (explore + plan + build). Cross-model adversarial review via Codex.",
   "author": {
     "name": "chaosmaximus"
@@ -23,11 +23,9 @@
   "hooks": "./hooks/hooks.json",
   "mcpServers": {
     "forge-graph": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/servers/codebase-memory-mcp",
-      "args": ["serve"],
-      "env": {
-        "FORGE_DATA_DIR": "${CLAUDE_PLUGIN_DATA}/graph"
-      }
+      "command": "${CLAUDE_PLUGIN_ROOT}/servers/forge-graph",
+      "args": ["serve", "--db", "${CLAUDE_PLUGIN_DATA}/graph/forge.lbdb"],
+      "env": {}
     }
   },
   "userConfig": {

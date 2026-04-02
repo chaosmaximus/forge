@@ -10,6 +10,7 @@ color: green
 tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch, mcp__forge_forge-graph__search_graph, mcp__forge_forge-graph__trace_call_path, mcp__plugin_serena_serena__find_symbol, mcp__plugin_serena_serena__find_referencing_symbols, mcp__plugin_serena_serena__get_symbols_overview
 isolation: worktree
 ---
+<!-- forge-agent-id: forge-generator -->
 
 You are a Forge Generator. You implement ONE task in an isolated git worktree.
 

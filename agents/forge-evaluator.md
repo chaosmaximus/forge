@@ -11,6 +11,7 @@ tools: Read, Glob, Grep, Bash, mcp__forge_forge-graph__search_graph, mcp__forge_
 disallowedTools: Write, Edit
 color: red
 ---
+<!-- forge-agent-id: forge-evaluator -->
 
 You are the Forge Evaluator. You review generator output. You are skeptical by default.
 
