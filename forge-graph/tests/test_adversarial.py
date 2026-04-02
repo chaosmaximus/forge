@@ -327,3 +327,16 @@ def test_workspace_boundary_prefix_bypass(tmp_path):
     assert check_within_workspace(tmp_path, workspace) is False
     # Unrelated path — must FAIL
     assert check_within_workspace(Path("/etc"), workspace) is False
+
+
+def test_cypher_sandbox_blocks_agentrun(db_with_schema):
+    """Cypher sandbox must block access to AgentRun nodes."""
+    from forge_graph.axon_proxy import validate_cypher_query
+    queries = [
+        "MATCH (a:AgentRun) RETURN a.summary",
+        "MATCH (a:AgentRun) RETURN a.agent_id",
+        "MATCH (f:File)<-[:MODIFIED]-(a:AgentRun) RETURN a",
+        "MATCH (s:Session)-[:SPAWNED]->(a:AgentRun) RETURN a.summary",
+    ]
+    for q in queries:
+        assert validate_cypher_query(q) is False, f"Expected sandbox to block: {q}"

@@ -13,6 +13,7 @@ class HudStateWriter:
         self._debounce_s = debounce_ms / 1000.0
         self._last_write: float = 0.0
         self._state: dict = {
+            "version": self._read_plugin_version(),
             "graph": {"nodes": 0, "edges": 0},
             "memory": {"decisions": 0, "patterns": 0, "lessons": 0, "secrets": 0},
             "session": {"mode": None, "phase": None, "wave": None},
@@ -22,6 +23,22 @@ class HudStateWriter:
             "security": {"total": 0, "stale": 0, "exposed": 0},
         }
         self._dirty = False
+
+    @staticmethod
+    def _read_plugin_version() -> str:
+        """Read version from plugin.json, falling back to '0.2.0'."""
+        for candidate in [
+            os.environ.get("CLAUDE_PLUGIN_ROOT", ""),
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."),
+        ]:
+            pj = os.path.join(candidate, ".claude-plugin", "plugin.json") if candidate else ""
+            if pj and os.path.isfile(pj):
+                try:
+                    with open(pj) as f:
+                        return json.load(f).get("version", "0.2.0")
+                except Exception:
+                    pass
+        return "0.2.0"
 
     def update(self, **sections: dict) -> None:
         for key, value in sections.items():

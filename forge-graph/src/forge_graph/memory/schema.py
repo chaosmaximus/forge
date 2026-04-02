@@ -1,7 +1,8 @@
-"""LadybugDB schema definition — 11 node tables + 11 edge tables.
+"""LadybugDB schema definition — 12 node tables + 13 edge tables.
 
 Memory tables: Decision, Pattern, Lesson, Preference, Session, Skill, Secret
 Code tables:   File, Function, Class, Method
+Agent tables:  AgentRun
 
 All CREATE statements use IF NOT EXISTS for idempotency.
 """
@@ -184,6 +185,20 @@ _NODE_TABLES: list[str] = [
         PRIMARY KEY (id)
     )
     """,
+    # 12. AgentRun — tracks agent lifecycle (written on session end)
+    """
+    CREATE NODE TABLE IF NOT EXISTS AgentRun (
+        id STRING,
+        agent_id STRING,
+        agent_type STRING,
+        started_at TIMESTAMP,
+        ended_at TIMESTAMP,
+        tool_calls INT64 DEFAULT 0,
+        files_touched INT64 DEFAULT 0,
+        summary STRING,
+        PRIMARY KEY (id)
+    )
+    """,
 ]
 
 # ---------------------------------------------------------------------------
@@ -284,6 +299,19 @@ _EDGE_TABLES: list[str] = [
         FROM Decision TO Function,
         FROM Decision TO Class,
         impact STRING DEFAULT 'medium'
+    )
+    """,
+    # AgentRun -> Session
+    """
+    CREATE REL TABLE IF NOT EXISTS SPAWNED (
+        FROM Session TO AgentRun
+    )
+    """,
+    # AgentRun -> File
+    """
+    CREATE REL TABLE IF NOT EXISTS MODIFIED (
+        FROM AgentRun TO File,
+        tool_count INT64 DEFAULT 0
     )
     """,
 ]

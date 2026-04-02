@@ -1,5 +1,6 @@
 """forge-graph MCP server — unified code intelligence + memory."""
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -134,7 +135,12 @@ def _init_on_startup(db_path: str) -> None:
     if data_dir:
         from forge_graph.hud.state import HudStateWriter
         _hud = HudStateWriter(os.path.join(data_dir, "hud", "hud-state.json"))
-        _hud.update(skills={"active": 10, "fix_candidates": 0})
+        # Count actual skill files
+        skills_dir = os.path.join(os.environ.get("CLAUDE_PLUGIN_ROOT", ""), "skills")
+        skill_count = 0
+        if os.path.isdir(skills_dir):
+            skill_count = len([f for f in os.listdir(skills_dir) if f.endswith(".md")])
+        _hud.update(skills={"active": skill_count, "fix_candidates": 0})
         update_hud()  # Write initial state with real counts
         _hud.flush()
 
