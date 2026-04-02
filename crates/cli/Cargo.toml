@@ -1,0 +1,14 @@
+[package]
+name = "forge-v2-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "forge-v2"
+path = "src/main.rs"
+
+[dependencies]
+forge-v2-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "process", "time"] }
+serde_json = "1"

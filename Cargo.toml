@@ -1,5 +1,12 @@
 [workspace]
-members = ["forge-core", "forge-hud"]
+members = [
+    "forge-core",
+    "forge-hud",
+    "crates/core",
+    "crates/daemon",
+    "crates/cli",
+]
+exclude = ["spikes/*"]
 resolver = "2"
 
 [profile.release]
