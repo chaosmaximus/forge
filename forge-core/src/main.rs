@@ -1,4 +1,5 @@
 mod agent;
+mod doctor;
 mod hook;
 pub mod hud_state;
 mod index;
@@ -10,7 +11,7 @@ mod scan;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "forge-core", version, about = "Rust hot paths for Forge")]
+#[command(name = "forge", version, about = "Forge — Agentic OS for Claude Code")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -138,6 +139,15 @@ enum Commands {
         #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
         state_dir: String,
     },
+    /// System health checks — verify entire Forge installation
+    Doctor {
+        /// Output format: json (default) or text
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -226,6 +236,9 @@ fn main() {
                 Ok(json) => println!("{}", json),
                 Err(e) => eprintln!("{{\"error\":\"{}\"}}", e),
             }
+        }
+        Commands::Doctor { format, state_dir } => {
+            doctor::run(&state_dir, &format);
         }
     }
 }
