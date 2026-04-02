@@ -41,6 +41,7 @@ _ALLOWED_TYPES = frozenset({"decision", "pattern", "lesson", "preference"})
 _ALLOWED_EDGE_TYPES = frozenset({
     "SUPERSEDES", "MOTIVATED_BY", "FOLLOWS", "CONTRADICTS",
     "LEARNED_IN", "DECIDED_IN", "EVOLVED_FROM", "APPLIED_IN",
+    "AFFECTS", "LOCATED_IN", "CONTAINS",
 })
 
 # Labels that support soft-delete via forge_forget

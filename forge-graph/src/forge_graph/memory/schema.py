@@ -277,10 +277,12 @@ _EDGE_TABLES: list[str] = [
         FROM File TO File
     )
     """,
-    # Decision -> File (used by post_edit hook for decision-awareness)
+    # Decision -> File/Function/Class (used by post_edit hook for decision-awareness)
     """
     CREATE REL TABLE IF NOT EXISTS AFFECTS (
         FROM Decision TO File,
+        FROM Decision TO Function,
+        FROM Decision TO Class,
         impact STRING DEFAULT 'medium'
     )
     """,

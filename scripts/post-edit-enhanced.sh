@@ -12,6 +12,11 @@ if [ -z "$FILE_PATH" ]; then
     exit 0
 fi
 
+# Validate FILE_PATH doesn't contain shell metacharacters
+if [[ "$FILE_PATH" =~ [';|&$`\\'] ]] || [[ "$FILE_PATH" == *'$('* ]]; then
+    exit 0
+fi
+
 # Resolve canonical path (symlink defense)
 CANONICAL=$(readlink -f "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
 WORKSPACE=$(readlink -f "$(pwd)")
@@ -40,10 +45,8 @@ if [ -f "$CANONICAL" ]; then
 fi
 
 if [ -n "$ALERTS" ]; then
-    # Escape for JSON
-    ESCAPED_ALERTS=$(echo "$ALERTS" | sed 's/"/\\"/g')
-    ESCAPED_PATH=$(echo "$FILE_PATH" | sed 's/"/\\"/g')
-    echo "{\"hookSpecificOutput\":{\"additionalContext\":\"SECRET ALERT in ${ESCAPED_PATH}: ${ESCAPED_ALERTS}Consider moving to .env or .gitignore.\"}}"
+    jq -n --arg path "$FILE_PATH" --arg alerts "$ALERTS" \
+        '{"hookSpecificOutput":{"additionalContext":("SECRET ALERT in " + $path + ": " + $alerts + "Consider moving to .env or .gitignore.")}}'
 fi
 
 # Decision-awareness check (async, non-blocking)
