@@ -15,24 +15,31 @@ pub struct HudState {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct GraphStats { pub nodes: u64, pub edges: u64 }
 
 #[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct MemoryStats { pub decisions: u64, pub patterns: u64, pub lessons: u64, pub secrets: u64 }
 
 #[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct SessionInfo { pub mode: Option<String>, pub phase: Option<String>, pub wave: Option<String> }
 
 #[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct TokenStats { pub input: u64, pub output: u64, pub llm_calls: u64, pub deterministic_ratio: f64 }
 
 #[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct SkillStats { pub active: u64, pub fix_candidates: u64 }
 
 #[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct AgentInfo { pub status: Option<String>, pub last_tool: Option<String>, pub current_file: Option<String> }
 
 #[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct SecurityStats { pub total: u64, pub stale: u64, pub exposed: u64 }
 
 pub fn read_state(state_dir: &str) -> HudState {
