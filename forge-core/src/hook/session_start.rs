@@ -5,10 +5,15 @@ use std::time::{Duration, SystemTime};
 use crate::hud_state;
 
 pub fn run(state_dir: &str) {
-    // 1. Cleanup stale agents and JSONL files
+    // 1. Cleanup stale agents and set version
     cleanup_agents(state_dir);
 
-    // 2. Read current HUD state
+    // 2. Ensure version is set in HUD state
+    hud_state::update(state_dir, |s| {
+        s.version = Some(env!("CARGO_PKG_VERSION").to_string());
+    });
+
+    // 3. Read current HUD state
     let state = hud_state::read(state_dir);
 
     // 3. Build context output
