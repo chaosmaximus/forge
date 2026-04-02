@@ -17,18 +17,17 @@ pub fn run(state_dir: &str) {
         .as_deref()
         .unwrap_or(env!("CARGO_PKG_VERSION"));
 
-    let mut context_parts: Vec<String> = vec![format!("[Forge v{}]", version)];
+    // Build XML context from memory cache
+    let memory_xml = read_memory_context(state_dir, version);
+    let mut context_parts: Vec<String> = vec![memory_xml];
 
-    // Security/skill warnings from HUD state
+    // Warnings
     if state.security.stale > 0 {
         context_parts.push(format!("WARNING: {} secrets need rotation.", state.security.stale));
     }
-    if state.skills.fix_candidates > 0 {
-        context_parts.push(format!("{} skill(s) need attention.", state.skills.fix_candidates));
-    }
 
     context_parts.push(
-        "Tools: forge_remember, forge_recall, forge_link, forge_decisions, forge_patterns, forge_timeline, forge_forget, forge_usage, forge_scan, forge_index, forge_cypher.".to_string()
+        "CLI: forge remember, forge recall, forge index, forge scan, forge doctor, forge query, forge health, forge sync.".to_string()
     );
 
     let output = json!({
@@ -38,6 +37,71 @@ pub fn run(state_dir: &str) {
     });
 
     println!("{}", output);
+}
+
+/// Read memory cache and format as XML context for Claude.
+fn read_memory_context(state_dir: &str, version: &str) -> String {
+    let cache_path = Path::new(state_dir).join("memory").join("cache.json");
+    let cache: serde_json::Value = match std::fs::read_to_string(&cache_path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or(json!({"entries": []})),
+        Err(_) => return format!("<forge-context version=\"{}\"/>", version),
+    };
+
+    let entries = match cache.get("entries").and_then(|e| e.as_array()) {
+        Some(e) => e,
+        None => return format!("<forge-context version=\"{}\"/>", version),
+    };
+
+    // Collect active entries by type
+    let mut decisions = Vec::new();
+    let mut lessons = Vec::new();
+    let mut patterns = Vec::new();
+
+    for entry in entries {
+        if entry.get("status").and_then(|v| v.as_str()) != Some("active") {
+            continue;
+        }
+        let title = xml_escape(entry.get("title").and_then(|v| v.as_str()).unwrap_or(""));
+        let content = xml_escape(entry.get("content").and_then(|v| v.as_str()).unwrap_or(""));
+        let confidence = entry.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5);
+
+        match entry.get("type").and_then(|v| v.as_str()) {
+            Some("decision") => decisions.push(format!(
+                "    <decision title=\"{}\" confidence=\"{:.2}\">{}</decision>", title, confidence, content
+            )),
+            Some("lesson") => lessons.push(format!(
+                "    <lesson>{}: {}</lesson>", title, content
+            )),
+            Some("pattern") => patterns.push(format!(
+                "    <pattern name=\"{}\" confidence=\"{:.2}\">{}</pattern>", title, confidence, content
+            )),
+            _ => {}
+        }
+    }
+
+    let mut xml = vec![format!("<forge-context version=\"{}\">", version)];
+    if !decisions.is_empty() {
+        xml.push(format!("  <decisions count=\"{}\">", decisions.len()));
+        xml.extend(decisions.iter().take(10).cloned()); // Max 10
+        xml.push("  </decisions>".to_string());
+    }
+    if !lessons.is_empty() {
+        xml.push(format!("  <lessons count=\"{}\">", lessons.len()));
+        xml.extend(lessons.iter().take(5).cloned()); // Max 5
+        xml.push("  </lessons>".to_string());
+    }
+    if !patterns.is_empty() {
+        xml.push(format!("  <patterns count=\"{}\">", patterns.len()));
+        xml.extend(patterns.iter().take(5).cloned()); // Max 5
+        xml.push("  </patterns>".to_string());
+    }
+    xml.push("</forge-context>".to_string());
+    xml.join("\n")
+}
+
+/// Escape XML special characters.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 /// Clean up stale agent state and old transcript files at session start.
