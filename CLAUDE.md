@@ -35,6 +35,7 @@ Superpowers skills are still useful — Forge invokes them at the right lifecycl
 | `forge:forge-security` | Security scanning — `forge scan .` or always-on `--watch` mode |
 | `forge:forge-handoff` | Pause/resume work across sessions |
 | `forge:forge-setup` | First-time prerequisite checks |
+| `forge:forge-think` | Product discovery — BDD requirements, feature specs, acceptance criteria |
 | `forge:forge-agents` | View detailed status of running Forge agents |
 
 ### Skill Development
