@@ -23,7 +23,7 @@ fn render_team(team: &std::collections::HashMap<String, crate::state::AgentInfo>
     if team.is_empty() { return format!("{DIM}no team{RESET}"); }
     let mut parts = Vec::new();
     for (name, info) in team {
-        let short = name.strip_prefix("forge-").unwrap_or(name);
+        let short = sanitize(name.strip_prefix("forge-").unwrap_or(name));
         let icon = match info.status.as_deref() {
             Some("done") => format!("{GREEN}v{RESET}"),
             Some("running") => format!("{YELLOW}*{RESET}"),

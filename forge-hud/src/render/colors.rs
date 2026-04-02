@@ -14,3 +14,10 @@ pub fn security_color(stale: u64, exposed: u64) -> &'static str {
 pub fn ratio_color(ratio: f64) -> &'static str {
     if ratio >= 0.8 { GREEN } else if ratio >= 0.5 { YELLOW } else { RED }
 }
+
+/// Strip control characters and ANSI escape sequences from untrusted input.
+pub fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect()
+}
