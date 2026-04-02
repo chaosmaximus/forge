@@ -20,10 +20,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Index a codebase: parse with tree-sitter, output NDJSON
+    /// Index a codebase: parse with tree-sitter, output NDJSON + populate caches
     Index {
         #[arg(default_value = ".")]
         path: String,
+        /// Plugin data directory (for import + signature caches)
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA")]
+        state_dir: Option<String>,
     },
     /// Scan directory for exposed secrets
     Scan {
@@ -222,7 +225,9 @@ enum HookType {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Index { path } => index::run(&path),
+        Commands::Index { path, state_dir } => {
+            index::run_with_state(&path, state_dir.as_deref());
+        }
         Commands::Scan { path, watch, interval } => {
             if watch { scan::watch(&path, interval); } else { scan::run(&path); }
         }
