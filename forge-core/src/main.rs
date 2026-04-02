@@ -7,6 +7,7 @@ mod memory;
 mod research;
 mod review;
 mod scan;
+mod verify;
 
 use clap::{Parser, Subcommand};
 
@@ -148,6 +149,35 @@ enum Commands {
         #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
         state_dir: String,
     },
+    /// Lint a file or project (auto-detects language)
+    Lint {
+        /// File or directory to lint
+        #[arg(default_value = ".")]
+        path: String,
+        /// Output format: json (default) or text
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Format a file (auto-detects language)
+    Fmt {
+        /// File to format
+        path: String,
+        /// Check only, don't write
+        #[arg(long)]
+        check: bool,
+        /// Output format: json (default) or text
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Type check a file or project (auto-detects language)
+    Check {
+        /// File or directory to check
+        #[arg(default_value = ".")]
+        path: String,
+        /// Output format: json (default) or text
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -265,6 +295,15 @@ fn main() {
         }
         Commands::Doctor { format, state_dir } => {
             doctor::run(&state_dir, &format);
+        }
+        Commands::Lint { path, format } => {
+            verify::lint::run(&path, &format);
+        }
+        Commands::Fmt { path, check, format } => {
+            verify::fmt::run(&path, check, &format);
+        }
+        Commands::Check { path, format } => {
+            verify::check::run(&path, &format);
         }
     }
 }
