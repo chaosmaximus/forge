@@ -60,10 +60,24 @@ class EvolutionWorktree:
         """Apply worktree diff to the main repo tree.
 
         Returns True on success, False if the patch cannot be applied.
+        Validates diff size and all changed file paths before applying.
         """
+        import re as _re
+        from forge_graph.evolution.safety import validate_diff_size, validate_evolution_path
+
         diff = self.get_diff()
         if not diff.strip():
             return False
+
+        # Validate diff size
+        if not validate_diff_size(diff):
+            raise ValueError(f"Diff too large ({diff.count(chr(10))} lines)")
+
+        # Extract changed files from diff and validate paths
+        changed_files = _re.findall(r'^diff --git a/(.+?) b/', diff, _re.MULTILINE)
+        for f in changed_files:
+            if not validate_evolution_path(f):
+                raise ValueError(f"Evolution blocked: {f} is outside allowed paths")
 
         # Dry-run check
         check = subprocess.run(

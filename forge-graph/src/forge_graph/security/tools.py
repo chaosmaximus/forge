@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 
+from forge_graph.auth import check_access
 from forge_graph.meta import ToolMeta
 from forge_graph.security.scanner import scan_content
 from forge_graph.server import mcp, get_db
@@ -44,8 +45,20 @@ async def forge_scan(
     path: str | None = None, depth: str = "shallow", agent_id: str | None = None
 ) -> str:
     """Scan directory for exposed secrets. NEVER stores actual secret values."""
+    if not check_access(agent_id, "forge_scan"):
+        raise PermissionError(
+            f"Agent '{agent_id}' does not have access to forge_scan"
+        )
     meta = ToolMeta()
-    scan_path = Path(path) if path else Path.cwd()
+    scan_path = (Path(path) if path else Path.cwd()).resolve()
+    # Restrict scan path to cwd or subdirectories — reject paths outside workspace
+    cwd = Path.cwd().resolve()
+    try:
+        scan_path.relative_to(cwd)
+    except ValueError:
+        raise PermissionError(
+            f"Scan path '{scan_path}' is outside the workspace root '{cwd}'"
+        )
     findings = _scan_directory(scan_path, depth)
     # Store as Secret nodes (no actual secret values)
     db = get_db()
