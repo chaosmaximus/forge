@@ -21,8 +21,9 @@ pub fn run(file_path: &str) {
     };
 
     let mut alerts: Vec<String> = Vec::new();
+    let mut context_parts: Vec<String> = Vec::new();
 
-    // --- Secret scan ---
+    // --- Layer 1: Secret scan ---
     for line in content.lines() {
         for rule in RULES.iter() {
             if rule.regex.is_match(line) {
@@ -32,7 +33,7 @@ pub fn run(file_path: &str) {
         }
     }
 
-    // --- Syntax validation via tree-sitter ---
+    // --- Layer 2: Syntax validation via tree-sitter ---
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let syntax_errors = check_syntax(ext, &content);
     if !syntax_errors.is_empty() {
@@ -43,18 +44,126 @@ pub fn run(file_path: &str) {
         ));
     }
 
-    if !alerts.is_empty() {
-        let alert_str = alerts.join(" ");
+    // --- Layer 4: Cross-file breakage detection ---
+    let language = match ext {
+        "py" | "pyi" => "python",
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" | "mjs" => "javascript",
+        _ => "",
+    };
+
+    if !language.is_empty() {
+        let state_dir =
+            std::env::var("CLAUDE_PLUGIN_DATA").unwrap_or_else(|_| ".forge".to_string());
+        let breakages =
+            crate::verify::cross_file::check_file(file_path, &content, language, &state_dir);
+        for b in &breakages {
+            alerts.push(format!(
+                "BREAKAGE: {}() signature changed ({} -> {} params). Affects: {}",
+                b.function,
+                b.old_params,
+                b.new_params,
+                b.affected_files.join(", ")
+            ));
+        }
+    }
+
+    // --- Layer 6: Per-file decision injection ---
+    {
+        let state_dir =
+            std::env::var("CLAUDE_PLUGIN_DATA").unwrap_or_else(|_| ".forge".to_string());
+        let decisions = read_decisions_for_file(&state_dir, file_path);
+        for d in &decisions {
+            context_parts.push(d.clone());
+        }
+    }
+
+    if !alerts.is_empty() || !context_parts.is_empty() {
+        let mut parts = Vec::new();
+        if !alerts.is_empty() {
+            parts.push(format!(
+                "ALERT in {}: {} Consider reviewing before continuing.",
+                file_path,
+                alerts.join(" ")
+            ));
+        }
+        if !context_parts.is_empty() {
+            parts.push(format!("Context: {}", context_parts.join("; ")));
+        }
         let output = json!({
             "hookSpecificOutput": {
-                "additionalContext": format!(
-                    "ALERT in {}: {} Consider reviewing before continuing.",
-                    file_path, alert_str
-                )
+                "additionalContext": parts.join("\n")
             }
         });
         println!("{}", output);
     }
+}
+
+/// Read decisions from the memory cache that are relevant to the given file.
+///
+/// Filters `$STATE/memory/cache.json` entries of type "decision" whose title
+/// or content contains the filename or parent directory name.
+fn read_decisions_for_file(state_dir: &str, file_path: &str) -> Vec<String> {
+    let cache_path = Path::new(state_dir).join("memory").join("cache.json");
+    let content = match std::fs::read_to_string(&cache_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let cache: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let entries = match cache.get("entries").and_then(|e| e.as_array()) {
+        Some(arr) => arr,
+        None => return Vec::new(),
+    };
+
+    // Extract filename and parent dir name for matching
+    let path = Path::new(file_path);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let parent_name = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    let mut decisions = Vec::new();
+
+    for entry in entries {
+        // Only look at decisions
+        let entry_type = entry
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if entry_type != "decision" {
+            continue;
+        }
+
+        let title = entry
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let content_str = entry
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let matches_file = (!file_name.is_empty()
+            && (title.contains(file_name) || content_str.contains(file_name)))
+            || (!parent_name.is_empty()
+                && (title.contains(parent_name) || content_str.contains(parent_name)));
+
+        if matches_file {
+            decisions.push(format!("[Decision] {}", title));
+        }
+    }
+
+    decisions
 }
 
 /// Use tree-sitter to check for syntax errors. Returns a list of error descriptions.
@@ -113,16 +222,10 @@ fn collect_errors(
         };
 
         if node.is_missing() {
-            errors.push(format!(
-                "line {}:{} missing expected syntax",
-                row, col
-            ));
+            errors.push(format!("line {}:{} missing expected syntax", row, col));
         } else {
             let clean: String = short_snippet.chars().filter(|c| !c.is_control()).collect();
-            errors.push(format!(
-                "line {}:{} parse error near '{}'",
-                row, col, clean
-            ));
+            errors.push(format!("line {}:{} parse error near '{}'", row, col, clean));
         }
         return; // Don't recurse into error nodes
     }
@@ -187,5 +290,81 @@ mod tests {
         let bad_code = "def (\ndef (\ndef (\ndef (\ndef (\ndef (\ndef (\n";
         let errors = check_syntax("py", bad_code);
         assert!(errors.len() <= 5);
+    }
+
+    #[test]
+    fn test_read_decisions_for_file_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let decisions = read_decisions_for_file(dir.path().to_str().unwrap(), "src/main.py");
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn test_read_decisions_for_file_matching() {
+        let dir = tempfile::tempdir().unwrap();
+        let mem_dir = dir.path().join("memory");
+        std::fs::create_dir_all(&mem_dir).unwrap();
+
+        let cache = json!({
+            "entries": [
+                {
+                    "type": "decision",
+                    "title": "Use async in cli.py",
+                    "content": "All CLI handlers should be async"
+                },
+                {
+                    "type": "decision",
+                    "title": "Database schema v2",
+                    "content": "Switched to new schema"
+                },
+                {
+                    "type": "pattern",
+                    "title": "cli.py uses click",
+                    "content": "click framework in cli.py"
+                }
+            ]
+        });
+        std::fs::write(
+            mem_dir.join("cache.json"),
+            serde_json::to_string(&cache).unwrap(),
+        )
+        .unwrap();
+
+        let decisions =
+            read_decisions_for_file(dir.path().to_str().unwrap(), "src/forge_graph/cli.py");
+        // Should match "Use async in cli.py" (title contains "cli.py")
+        // Should NOT match "Database schema v2" (no file match)
+        // Should NOT match "cli.py uses click" (type is "pattern", not "decision")
+        assert_eq!(decisions.len(), 1);
+        assert!(decisions[0].contains("Use async in cli.py"));
+    }
+
+    #[test]
+    fn test_read_decisions_for_file_parent_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let mem_dir = dir.path().join("memory");
+        std::fs::create_dir_all(&mem_dir).unwrap();
+
+        let cache = json!({
+            "entries": [
+                {
+                    "type": "decision",
+                    "title": "forge_graph module architecture",
+                    "content": "All tools import from app.py in forge_graph"
+                }
+            ]
+        });
+        std::fs::write(
+            mem_dir.join("cache.json"),
+            serde_json::to_string(&cache).unwrap(),
+        )
+        .unwrap();
+
+        let decisions = read_decisions_for_file(
+            dir.path().to_str().unwrap(),
+            "src/forge_graph/server.py",
+        );
+        // Should match because parent dir "forge_graph" appears in both title and content
+        assert_eq!(decisions.len(), 1);
     }
 }
