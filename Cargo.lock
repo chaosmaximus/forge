@@ -209,6 +209,7 @@ dependencies = [
  "clap",
  "hex",
  "ignore",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

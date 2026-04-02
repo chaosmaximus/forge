@@ -1,4 +1,5 @@
 mod index;
+mod scan;
 
 use clap::{Parser, Subcommand};
 
@@ -16,11 +17,17 @@ enum Commands {
         #[arg(default_value = ".")]
         path: String,
     },
+    /// Scan directory for exposed secrets
+    Scan {
+        #[arg(default_value = ".")]
+        path: String,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
     match cli.command {
         Commands::Index { path } => index::run(&path),
+        Commands::Scan { path } => scan::run(&path),
     }
 }
