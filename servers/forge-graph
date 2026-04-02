@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# forge-graph server launcher — finds the venv and starts the MCP server
+# Forge-graph MCP server launcher
+# Finds Python (venv or system) and starts the MCP server
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-PLUGIN_ROOT="$(dirname "$SCRIPT_DIR")"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 
-# Try venv first (development), then system Python
-if [ -f "${PLUGIN_ROOT}/forge-graph/.venv/bin/python" ]; then
-    PYTHON="${PLUGIN_ROOT}/forge-graph/.venv/bin/python"
+# Try venv first, then system python3
+if [ -f "$SCRIPT_DIR/.venv/bin/python3" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python3"
 elif command -v python3 &>/dev/null; then
     PYTHON="python3"
 else
-    echo '{"error": "Python 3.11+ not found. Install via: uv venv --python 3.11"}' >&2
+    echo "Python 3 not found" >&2
     exit 1
 fi
 
-exec "$PYTHON" -m forge_graph.server "$@"
+PYTHONPATH="$SCRIPT_DIR/forge-graph/src" exec "$PYTHON" -m forge_graph.server "$@"

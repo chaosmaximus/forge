@@ -49,7 +49,7 @@ _ALLOWED_EDGE_TYPES = frozenset({
 })
 
 # Labels that support soft-delete via forge_forget
-_FORGETTABLE_LABELS = frozenset({"Decision", "Pattern", "Lesson", "Preference"})
+_FORGETTABLE_LABELS = frozenset({"Decision", "Pattern", "Lesson", "Preference", "Secret"})
 
 # All valid node labels for link validation (memory + code)
 ALLOWED_NODE_LABELS = frozenset({
@@ -338,10 +338,17 @@ async def _forget_impl(
             f"Allowed: {sorted(_FORGETTABLE_LABELS)}"
         )
 
-    cypher = (
-        f"MATCH (n:{node_label}) WHERE n.id = $id "
-        f"SET n.invalid_at = current_timestamp(), n.updated_at = current_timestamp()"
-    )
+    # Secret uses status='revoked' instead of invalid_at (different schema)
+    if node_label == "Secret":
+        cypher = (
+            "MATCH (n:Secret) WHERE n.id = $id "
+            "SET n.status = 'revoked'"
+        )
+    else:
+        cypher = (
+            f"MATCH (n:{node_label}) WHERE n.id = $id "
+            f"SET n.invalid_at = current_timestamp(), n.updated_at = current_timestamp()"
+        )
     await db.write(cypher, parameters={"id": node_id})
 
     return json.dumps({
