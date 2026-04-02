@@ -1,8 +1,9 @@
 """forge-graph MCP server — unified code intelligence + memory."""
+import json
 import sys
 from pathlib import Path
+from typing import Optional
 
-from forge_graph import kuzu_compat  # noqa: F401 — inject kuzu shim
 from mcp.server.fastmcp import FastMCP
 from forge_graph.db import GraphDB
 
@@ -31,6 +32,30 @@ async def forge_health() -> str:
     rows = result.get_as_pl()
     node_count = rows["nodes"][0] if len(rows) > 0 else 0
     return json.dumps({"status": "ok", "nodes": int(node_count)})
+
+
+@mcp.tool()
+async def forge_index(path: Optional[str] = None) -> str:
+    """Index a codebase with tree-sitter and store symbols in the graph."""
+    import subprocess
+    import os
+    scan_path = path or os.getcwd()
+
+    # Try forge-core binary
+    for candidate in ["forge-core", "./target/release/forge-core", "../forge-core/target/release/forge-core"]:
+        try:
+            result = subprocess.run(
+                [candidate, "index", scan_path],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                from forge_graph.code.ingest import ingest_symbols
+                count = ingest_symbols(get_db(), result.stdout)
+                return json.dumps({"indexed": count, "_meta": {"path": "deterministic", "duration_ms": 0}})
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+
+    return json.dumps({"error": "forge-core binary not found. Build with: cargo build --release -p forge-core", "_meta": {"path": "deterministic"}})
 
 
 def _init_on_startup(db_path: str) -> None:
