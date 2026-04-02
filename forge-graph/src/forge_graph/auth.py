@@ -43,6 +43,10 @@ _AGENT_ID_TO_ROLE: dict[str, AgentRole] = {
 }
 
 
+# Design note: agent_id=None -> LEAD is intentional. The MCP server runs as
+# a subprocess of Claude Code in the user's session. The human lead calls tools
+# directly (no agent_id). Subagents always set agent_id in their prompts.
+# In a multi-user scenario, identity should be bound to MCP session metadata.
 def get_role(agent_id: str | None) -> AgentRole:
     if agent_id is None:
         return AgentRole.LEAD

@@ -27,6 +27,12 @@ _ALLOWED_EDGE_TYPES = frozenset({
 # Labels that support soft-delete via forge_forget
 _FORGETTABLE_LABELS = frozenset({"Decision", "Pattern", "Lesson", "Preference"})
 
+# All valid node labels for link validation (memory + code)
+ALLOWED_NODE_LABELS = frozenset({
+    "Decision", "Pattern", "Lesson", "Preference", "Session", "Skill", "Secret",
+    "Function", "Class", "File", "Folder", "Method", "Interface", "TypeAlias", "Enum",
+})
+
 # Labels that support timeline traversal
 _TIMELINE_LABELS = frozenset({"Decision", "Skill"})
 
@@ -36,6 +42,14 @@ _TYPE_INFO: dict[str, tuple[str, list[str]]] = {
     "pattern":  ("Pattern",  ["name", "description"]),
     "lesson":   ("Lesson",   ["insight", "context"]),
     "preference": ("Preference", ["key", "value"]),
+}
+
+# Allowed fields per node type — prevents field injection via structured dict
+ALLOWED_FIELDS: dict[str, set[str]] = {
+    "decision": {"title", "rationale", "confidence"},
+    "pattern": {"name", "description", "domain", "confidence"},
+    "lesson": {"insight", "context", "severity"},
+    "preference": {"key", "value", "scope", "confidence"},
 }
 
 # ---------------------------------------------------------------------------
@@ -64,10 +78,20 @@ async def _remember_impl(
     label = _TYPE_INFO[type][0]
     node_id = f"{type}-{uuid.uuid4().hex[:12]}"
 
+    # Filter structured to only allowed fields — prevents field injection
+    allowed = ALLOWED_FIELDS.get(type, set())
+    extra_keys = set(structured.keys()) - allowed
+    if extra_keys:
+        import logging
+        logging.getLogger("forge_graph.memory").warning(
+            "Dropping disallowed fields from %s: %s", type, sorted(extra_keys)
+        )
+    filtered = {k: v for k, v in structured.items() if k in allowed}
+
     # Build parameter dict: always include id + timestamps
     params: dict[str, Any] = {
         "id": node_id,
-        **structured,
+        **filtered,
     }
 
     # Build the property list for the CREATE clause
@@ -162,6 +186,18 @@ async def _link_impl(
         raise ValueError(
             f"Invalid edge_type '{edge_type}'. "
             f"Allowed: {sorted(_ALLOWED_EDGE_TYPES)}"
+        )
+
+    # Validate labels against allowlist to prevent label injection
+    if from_label not in ALLOWED_NODE_LABELS:
+        raise ValueError(
+            f"Invalid from_label '{from_label}'. "
+            f"Allowed: {sorted(ALLOWED_NODE_LABELS)}"
+        )
+    if to_label not in ALLOWED_NODE_LABELS:
+        raise ValueError(
+            f"Invalid to_label '{to_label}'. "
+            f"Allowed: {sorted(ALLOWED_NODE_LABELS)}"
         )
 
     # Build property string for edge
