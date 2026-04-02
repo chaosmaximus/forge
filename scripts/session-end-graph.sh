@@ -17,7 +17,8 @@ while [ -f "${PLUGIN_DATA}/.async-pending" ]; do
 done
 
 if [ -d "$FORGE_GRAPH/src" ]; then
-    PYTHONPATH="$FORGE_GRAPH/src" python3 -m forge_graph.hooks.session_end 2>/dev/null
+    PYTHONPATH="$FORGE_GRAPH/src" python3 -m forge_graph.hooks.session_end 2>/dev/null \
+        || echo '{"hookSpecificOutput":{"additionalContext":"Session ended."}}'
 else
     echo '{"hookSpecificOutput":{"additionalContext":"Session ended."}}'
 fi
