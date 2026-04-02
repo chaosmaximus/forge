@@ -11,8 +11,29 @@ from typing import Any
 from forge_graph.auth import check_access
 from forge_graph.db import GraphDB
 from forge_graph.memory.temporal import CURRENT_VIEW
+from forge_graph.memory.trust import sanitize_for_context
 from forge_graph.meta import ToolMeta
 from forge_graph.server import mcp, get_db
+
+# ---------------------------------------------------------------------------
+# Query-limit helpers (P2-1: prevent unbounded result sets)
+# ---------------------------------------------------------------------------
+_DEFAULT_LIMIT = 20
+_MAX_LIMIT = 100
+
+
+def _clamp_limit(limit: int | None) -> int:
+    """Clamp a user-supplied limit to [1, 100], defaulting to 20."""
+    if limit is None:
+        return _DEFAULT_LIMIT
+    return min(max(limit, 1), _MAX_LIMIT)
+
+
+def _clamp_depth(depth: int | None, default: int = 10) -> int:
+    """Clamp a user-supplied depth to [1, 20]."""
+    if depth is None:
+        return default
+    return min(max(depth, 1), 20)
 
 # ---------------------------------------------------------------------------
 # Allowed types / edge labels
@@ -94,6 +115,10 @@ async def _remember_impl(
         **filtered,
     }
 
+    # P2-2: Ensure trust_level is set to 'user' for structured input (decisions)
+    if type == "decision":
+        params["trust_level"] = "user"
+
     # Build the property list for the CREATE clause
     prop_parts = [f"{k}: ${k}" for k in params]
     prop_parts.append("created_at: current_timestamp()")
@@ -112,9 +137,11 @@ async def _recall_impl(
     query: str,
     type: str | None = None,
     include_historical: bool = False,
+    limit: int | None = None,
     agent_id: str | None = None,
 ) -> str:
     meta = ToolMeta()
+    lim = _clamp_limit(limit)
 
     if not check_access(agent_id, "forge_recall"):
         raise PermissionError(
@@ -146,21 +173,37 @@ async def _recall_impl(
         else:
             temporal_clause = f"AND {CURRENT_VIEW('n')}"
 
+        # P2-2: Include trust_level for Decision nodes
+        extra_return = ", n.trust_level" if t == "decision" else ""
+
         cypher = (
             f"MATCH (n:{label}) "
             f"WHERE ({text_filter}) {temporal_clause} "
-            f"RETURN n.id, n.{fields[0]}, n.{fields[1]}"
+            f"RETURN n.id, n.{fields[0]}, n.{fields[1]}{extra_return} "
+            f"LIMIT $lim"
         )
 
-        result = await db.execute(cypher, parameters={"query": query})
+        result = await db.execute(cypher, parameters={"query": query, "lim": lim})
         while result.has_next():
             row = result.get_next()
-            results.append({
+            entry: dict[str, Any] = {
                 "id": row[0],
                 "type": t,
                 fields[0]: row[1],
                 fields[1]: row[2],
-            })
+            }
+            # P2-2: Expose trust_level for decisions
+            if t == "decision":
+                entry["trust_level"] = row[3]
+            results.append(entry)
+
+    # P2-2: Sanitize text fields before returning (defense against prompt injection)
+    for entry in results:
+        t = entry["type"]
+        _, fields = _TYPE_INFO[t]
+        for f in fields:
+            if f in entry and isinstance(entry[f], str):
+                entry[f] = sanitize_for_context(entry[f])
 
     return json.dumps({"results": results, "_meta": meta.finish()})
 
@@ -225,16 +268,18 @@ async def _patterns_impl(
     db: GraphDB,
     domain: str | None = None,
     min_confidence: float | None = None,
+    limit: int | None = None,
     agent_id: str | None = None,
 ) -> str:
     meta = ToolMeta()
+    lim = _clamp_limit(limit)
 
     if not check_access(agent_id, "forge_patterns"):
         raise PermissionError(
             f"Agent '{agent_id}' does not have access to forge_patterns"
         )
 
-    params: dict[str, Any] = {}
+    params: dict[str, Any] = {"lim": lim}
     filters = ["n.invalid_at IS NULL"]
 
     if domain is not None:
@@ -247,7 +292,8 @@ async def _patterns_impl(
     where_clause = " AND ".join(filters)
     cypher = (
         f"MATCH (n:Pattern) WHERE {where_clause} "
-        f"RETURN n.id, n.name, n.description, n.domain, n.confidence"
+        f"RETURN n.id, n.name, n.description, n.domain, n.confidence "
+        f"LIMIT $lim"
     )
 
     result = await db.execute(cypher, parameters=params)
@@ -337,14 +383,29 @@ async def _usage_impl(
                 "_meta": meta.finish(),
             })
     else:
-        # Aggregate across all sessions
-        cypher = (
-            "MATCH (s:Session) "
-            "RETURN SUM(s.total_tokens_input), SUM(s.total_tokens_output), "
-            "SUM(s.total_llm_calls), SUM(s.total_tool_calls), "
-            "AVG(s.deterministic_ratio)"
-        )
-        result = await db.execute(cypher, parameters={})
+        # Aggregate across sessions, optionally limited to most recent N
+        lim = _clamp_limit(last_n_sessions) if last_n_sessions is not None else None
+
+        if lim is not None:
+            # Subquery: pick the N most-recent sessions by started_at, then aggregate
+            cypher = (
+                "MATCH (s:Session) "
+                "WITH s ORDER BY s.started_at DESC LIMIT $lim "
+                "RETURN SUM(s.total_tokens_input), SUM(s.total_tokens_output), "
+                "SUM(s.total_llm_calls), SUM(s.total_tool_calls), "
+                "AVG(s.deterministic_ratio)"
+            )
+            params: dict[str, Any] = {"lim": lim}
+        else:
+            cypher = (
+                "MATCH (s:Session) "
+                "RETURN SUM(s.total_tokens_input), SUM(s.total_tokens_output), "
+                "SUM(s.total_llm_calls), SUM(s.total_tool_calls), "
+                "AVG(s.deterministic_ratio)"
+            )
+            params = {}
+
+        result = await db.execute(cypher, parameters=params)
         if result.has_next():
             row = result.get_next()
             # LadybugDB aggregates may return Decimal; coerce to native types
@@ -371,9 +432,11 @@ async def _decisions_impl(
     db: GraphDB,
     code_path: str | None = None,
     symbol: str | None = None,
+    limit: int | None = None,
     agent_id: str | None = None,
 ) -> str:
     meta = ToolMeta()
+    lim = _clamp_limit(limit)
 
     if not check_access(agent_id, "forge_decisions"):
         raise PermissionError(
@@ -387,9 +450,10 @@ async def _decisions_impl(
         cypher = (
             "MATCH (d:Decision) WHERE d.invalid_at IS NULL "
             "AND (d.title CONTAINS $path OR d.rationale CONTAINS $path) "
-            "RETURN d.id, d.title, d.rationale, d.status"
+            "RETURN d.id, d.title, d.rationale, d.status "
+            "LIMIT $lim"
         )
-        result = await db.execute(cypher, parameters={"path": code_path})
+        result = await db.execute(cypher, parameters={"path": code_path, "lim": lim})
         while result.has_next():
             row = result.get_next()
             results.append({
@@ -403,9 +467,10 @@ async def _decisions_impl(
         cypher = (
             "MATCH (d:Decision) WHERE d.invalid_at IS NULL "
             "AND (d.title CONTAINS $sym OR d.rationale CONTAINS $sym) "
-            "RETURN d.id, d.title, d.rationale, d.status"
+            "RETURN d.id, d.title, d.rationale, d.status "
+            "LIMIT $lim"
         )
-        result = await db.execute(cypher, parameters={"sym": symbol})
+        result = await db.execute(cypher, parameters={"sym": symbol, "lim": lim})
         while result.has_next():
             row = result.get_next()
             results.append({
@@ -418,9 +483,10 @@ async def _decisions_impl(
         # No filter: return all active decisions
         cypher = (
             "MATCH (d:Decision) WHERE d.invalid_at IS NULL "
-            "RETURN d.id, d.title, d.rationale, d.status"
+            "RETURN d.id, d.title, d.rationale, d.status "
+            "LIMIT $lim"
         )
-        result = await db.execute(cypher, parameters={})
+        result = await db.execute(cypher, parameters={"lim": lim})
         while result.has_next():
             row = result.get_next()
             results.append({
@@ -453,7 +519,7 @@ async def _timeline_impl(
             f"Allowed: {sorted(_TIMELINE_LABELS)}"
         )
 
-    max_depth = depth if depth is not None else 10
+    max_depth = _clamp_depth(depth)
     chain: list[dict[str, Any]] = []
 
     if node_label == "Decision":
@@ -555,7 +621,10 @@ async def forge_recall(
     agent_id: str | None = None,
 ) -> str:
     """Search memory nodes by keyword."""
-    return await _recall_impl(get_db(), query, type, include_historical, agent_id)
+    return await _recall_impl(
+        get_db(), query, type, include_historical,
+        agent_id=agent_id,
+    )
 
 
 @mcp.tool()
@@ -582,7 +651,9 @@ async def forge_patterns(
     agent_id: str | None = None,
 ) -> str:
     """Query Pattern nodes, optionally filtered by domain and confidence."""
-    return await _patterns_impl(get_db(), domain, min_confidence, agent_id)
+    return await _patterns_impl(
+        get_db(), domain, min_confidence, agent_id=agent_id,
+    )
 
 
 @mcp.tool()
@@ -613,7 +684,9 @@ async def forge_decisions(
     agent_id: str | None = None,
 ) -> str:
     """Query Decision nodes, optionally filtered by code path or symbol."""
-    return await _decisions_impl(get_db(), code_path, symbol, agent_id)
+    return await _decisions_impl(
+        get_db(), code_path, symbol, agent_id=agent_id,
+    )
 
 
 @mcp.tool()

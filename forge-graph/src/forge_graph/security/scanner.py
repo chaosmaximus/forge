@@ -54,7 +54,12 @@ def scan_content(content: str, file_path: str) -> list[SecretFinding]:
         for rule in RULES:
             if rule.pattern.search(line):
                 match = rule.pattern.search(line)
-                value = match.group(0) if match else ""
+                # P3-1: Prefer capture group 1 (the secret itself) over group 0
+                # (which may include surrounding context like key names)
+                if match and match.lastindex and match.lastindex >= 1:
+                    value = match.group(1)
+                else:
+                    value = match.group(0) if match else ""
                 findings.append(SecretFinding(
                     rule_id=rule.id, provider=rule.provider, type=rule.type,
                     file_path=file_path, line_number=line_idx,
