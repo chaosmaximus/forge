@@ -12,6 +12,13 @@ mcp = FastMCP("forge-graph")
 _db: GraphDB | None = None
 _hud = None  # HudStateWriter, initialized on startup
 
+# Register ALL tool modules at module import time, IMMEDIATELY after mcp creation.
+# This ensures tools/list returns all 12 tools from the first MCP handshake.
+# Import order matters: memory/tools.py and security/tools.py use @mcp.tool()
+# decorators that reference the `mcp` instance above.
+from forge_graph.memory import tools as _memory_tools  # noqa: F401, E402
+from forge_graph.security import tools as _security_tools  # noqa: F401, E402
+
 
 def get_db() -> GraphDB:
     if _db is None:
@@ -154,13 +161,6 @@ def main() -> None:
 
     _init_on_startup(args.db)
     mcp.run()
-
-
-# Register ALL tool modules at import time — not inside main().
-# This ensures tools are available for MCP tools/list regardless of
-# how the server is launched (direct, -m, or imported).
-from forge_graph.memory import tools as _mt  # noqa: F401, E402
-from forge_graph.security import tools as _st  # noqa: F401, E402
 
 
 if __name__ == "__main__":
