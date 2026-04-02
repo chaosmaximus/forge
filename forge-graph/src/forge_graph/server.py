@@ -153,12 +153,14 @@ def main() -> None:
     args = parser.parse_args()
 
     _init_on_startup(args.db)
-
-    # Import tool modules to register them
-    from forge_graph.memory import tools as _mt  # noqa: F401
-    from forge_graph.security import tools as _st  # noqa: F401
-
     mcp.run()
+
+
+# Register ALL tool modules at import time — not inside main().
+# This ensures tools are available for MCP tools/list regardless of
+# how the server is launched (direct, -m, or imported).
+from forge_graph.memory import tools as _mt  # noqa: F401, E402
+from forge_graph.security import tools as _st  # noqa: F401, E402
 
 
 if __name__ == "__main__":
