@@ -2,11 +2,9 @@
 
 Registered as MCP tools on the shared ``mcp`` instance from server.py.
 """
-from __future__ import annotations
-
 import json
 import uuid
-from typing import Any
+from typing import Any, Dict, Optional
 
 from forge_graph.auth import check_access
 from forge_graph.db import GraphDB
@@ -67,7 +65,7 @@ _TYPE_INFO: dict[str, tuple[str, list[str]]] = {
 
 # Allowed fields per node type — prevents field injection via structured dict
 ALLOWED_FIELDS: dict[str, set[str]] = {
-    "decision": {"title", "rationale", "confidence"},
+    "decision": {"title", "rationale", "confidence", "status"},
     "pattern": {"name", "description", "domain", "confidence"},
     "lesson": {"insight", "context", "severity"},
     "preference": {"key", "value", "scope", "confidence"},
@@ -606,8 +604,8 @@ async def _timeline_impl(
 @mcp.tool()
 async def forge_remember(
     type: str,
-    structured: dict[str, Any],
-    agent_id: str | None = None,
+    structured: Dict[str, Any],
+    agent_id: Optional[str] = None,
 ) -> str:
     """Store a memory node (decision, pattern, lesson, or preference)."""
     return await _remember_impl(get_db(), type, structured, agent_id)
@@ -616,9 +614,9 @@ async def forge_remember(
 @mcp.tool()
 async def forge_recall(
     query: str,
-    type: str | None = None,
+    type: Optional[str] = None,
     include_historical: bool = False,
-    agent_id: str | None = None,
+    agent_id: Optional[str] = None,
 ) -> str:
     """Search memory nodes by keyword."""
     return await _recall_impl(
@@ -634,8 +632,8 @@ async def forge_link(
     edge_type: str,
     from_label: str,
     to_label: str,
-    properties: dict[str, Any] | None = None,
-    agent_id: str | None = None,
+    properties: Optional[Dict[str, Any]] = None,
+    agent_id: Optional[str] = None,
 ) -> str:
     """Create an edge between two memory nodes."""
     return await _link_impl(
@@ -646,9 +644,9 @@ async def forge_link(
 
 @mcp.tool()
 async def forge_patterns(
-    domain: str | None = None,
-    min_confidence: float | None = None,
-    agent_id: str | None = None,
+    domain: Optional[str] = None,
+    min_confidence: Optional[float] = None,
+    agent_id: Optional[str] = None,
 ) -> str:
     """Query Pattern nodes, optionally filtered by domain and confidence."""
     return await _patterns_impl(
@@ -661,7 +659,7 @@ async def forge_forget(
     node_id: str,
     node_label: str,
     reason: str,
-    agent_id: str | None = None,
+    agent_id: Optional[str] = None,
 ) -> str:
     """Soft-delete a memory node by setting invalid_at timestamp."""
     return await _forget_impl(get_db(), node_id, node_label, reason, agent_id)
@@ -669,9 +667,9 @@ async def forge_forget(
 
 @mcp.tool()
 async def forge_usage(
-    session_id: str | None = None,
-    last_n_sessions: int | None = None,
-    agent_id: str | None = None,
+    session_id: Optional[str] = None,
+    last_n_sessions: Optional[int] = None,
+    agent_id: Optional[str] = None,
 ) -> str:
     """Query token usage statistics for sessions."""
     return await _usage_impl(get_db(), session_id, last_n_sessions, agent_id)
@@ -679,9 +677,9 @@ async def forge_usage(
 
 @mcp.tool()
 async def forge_decisions(
-    code_path: str | None = None,
-    symbol: str | None = None,
-    agent_id: str | None = None,
+    code_path: Optional[str] = None,
+    symbol: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> str:
     """Query Decision nodes, optionally filtered by code path or symbol."""
     return await _decisions_impl(
@@ -693,8 +691,8 @@ async def forge_decisions(
 async def forge_timeline(
     node_id: str,
     node_label: str,
-    depth: int | None = None,
-    agent_id: str | None = None,
+    depth: Optional[int] = None,
+    agent_id: Optional[str] = None,
 ) -> str:
     """Follow SUPERSEDES (Decision) or EVOLVED_FROM (Skill) chains."""
     return await _timeline_impl(get_db(), node_id, node_label, depth, agent_id)
