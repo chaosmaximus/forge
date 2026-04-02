@@ -1,8 +1,24 @@
 # Forge
 
+> I googled "two men touching fingers painting." Google knew exactly what I meant.
+
+<p align="center">
+  <img src="docs/images/creation-of-adam.jpg" alt="The Creation of Adam — Michelangelo, Sistine Chapel, c. 1512" width="720" />
+</p>
+
+Michelangelo painted the moment just before contact. The gap between the fingers — that's the whole painting. That's where Forge lives. A human decides what's worth building. Machines execute in parallel, review each other's work, argue across model boundaries. Neither side creates alone. The spark happens in the space between.
+
+Nothing here was built from nothing. Every piece of Forge rides on the shoulders of open source projects whose contributors chose to give their work away so that strangers could build on it. This foreword is my thank-you note.
+
+<sub>P.S. — Yes, Forge uses OpenAI to grade Anthropic's homework. The future is weird and I love it.</sub>
+
+---
+
 Production-grade agent team orchestration for Claude Code.
 
 Two modes. Three agents. Cross-model adversarial review. Bundled code intelligence.
+
+<sub>**Built on the shoulders of:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code) · [Codex](https://github.com/openai/codex) · [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) · [Serena](https://github.com/oraios/serena) · [episodic-memory](https://github.com/anthropics/superpowers-marketplace) · [Superpowers](https://github.com/anthropics/superpowers-marketplace) · [Google Stitch](https://stitch.withgoogle.com/) · [LadybugDB](https://github.com/LadybugDB/ladybug) · [Axon](https://github.com/harshkedia177/axon) · [claude-hud](https://github.com/jarrodwatts/claude-hud) — and every dependency beneath them. Thank you.</sub>
 
 ## Requirements
 
