@@ -9,6 +9,7 @@ mod review;
 mod scan;
 mod test_runner;
 mod verify;
+mod watch;
 
 use clap::{Parser, Subcommand};
 
@@ -212,6 +213,15 @@ enum Commands {
         #[command(subcommand)]
         test_type: TestType,
     },
+    /// Watch project for changes and run continuous verification
+    Watch {
+        /// Directory to watch
+        #[arg(default_value = ".")]
+        path: String,
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -403,5 +413,6 @@ fn main() {
                 test_runner::screenshot::run(&url, &output, full_page);
             }
         },
+        Commands::Watch { path, state_dir } => watch::run(&path, &state_dir),
     }
 }
