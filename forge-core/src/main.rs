@@ -7,6 +7,7 @@ mod memory;
 mod research;
 mod review;
 mod scan;
+mod test_runner;
 mod verify;
 
 use clap::{Parser, Subcommand};
@@ -42,9 +43,10 @@ enum Commands {
         #[command(subcommand)]
         hook_type: HookType,
     },
-    /// Autonomous research loop
+    /// Autonomous research loop with git-backed checkpoints
     Research {
-        /// Topic or question
+        /// Topic or question (ignored when --discard is used)
+        #[arg(default_value = "")]
         topic: String,
         /// Max iterations
         #[arg(long, default_value = "5")]
@@ -52,6 +54,9 @@ enum Commands {
         /// Working directory
         #[arg(long, default_value = ".")]
         workdir: String,
+        /// Discard the last research iteration (revert last commit)
+        #[arg(long)]
+        discard: bool,
     },
     /// Council review of code changes
     Review {
@@ -202,6 +207,11 @@ enum Commands {
         #[arg(long)]
         types: bool,
     },
+    /// Run tests, check page health, capture screenshots
+    Test {
+        #[command(subcommand)]
+        test_type: TestType,
+    },
 }
 
 #[derive(Subcommand)]
@@ -225,6 +235,41 @@ enum HookType {
     },
 }
 
+#[derive(Subcommand)]
+enum TestType {
+    /// Run project tests (auto-detects framework: pytest/vitest/jest/cargo/go)
+    Run {
+        /// File or directory to test
+        #[arg(default_value = ".")]
+        path: String,
+        /// Output format: json (default) or text
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Check page health (HTTP status, response time, error detection)
+    Check {
+        /// URL to check
+        url: String,
+        /// Save screenshot (requires Playwright)
+        #[arg(long)]
+        screenshot: Option<String>,
+        /// Output format: json (default) or text
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Capture screenshot via Playwright CLI
+    Screenshot {
+        /// URL to capture
+        url: String,
+        /// Output file path
+        #[arg(default_value = "screenshot.png")]
+        output: String,
+        /// Capture full page (not just viewport)
+        #[arg(long)]
+        full_page: bool,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -239,8 +284,15 @@ fn main() {
             HookType::PostEdit { file } => hook::post_edit::run(&file),
             HookType::SessionEnd { state_dir } => hook::session_end::run(&state_dir),
         },
-        Commands::Research { topic, max_iterations, workdir } => {
-            research::run(&topic, max_iterations, &workdir);
+        Commands::Research { topic, max_iterations, workdir, discard } => {
+            if discard {
+                research::discard(&workdir);
+            } else if topic.is_empty() {
+                eprintln!("Error: topic is required (unless --discard is used)");
+                println!("{{\"error\":\"Topic is required\"}}");
+            } else {
+                research::run(&topic, max_iterations, &workdir);
+            }
         }
         Commands::Review { path, base, format, council } => {
             review::run(&path, &base, &format, council);
@@ -340,5 +392,16 @@ fn main() {
         } => {
             verify::unified::run(&path, fix, &format, &state_dir, types);
         }
+        Commands::Test { test_type } => match test_type {
+            TestType::Run { path, format } => {
+                test_runner::run::run(&path, &format);
+            }
+            TestType::Check { url, screenshot, format } => {
+                test_runner::check::run(&url, screenshot.as_deref(), &format);
+            }
+            TestType::Screenshot { url, output, full_page } => {
+                test_runner::screenshot::run(&url, &output, full_page);
+            }
+        },
     }
 }
