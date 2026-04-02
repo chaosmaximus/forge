@@ -1,18 +1,26 @@
 # Forge — Agentic OS for Claude Code
 
+## CRITICAL: Forge is the Entry Point
+
+**For ANY development task — building, fixing, planning, reviewing — invoke `forge:forge` FIRST.**
+
+Forge orchestrates the full lifecycle and delegates to other skills (Superpowers, Codex) at the right phase. Do NOT invoke `superpowers:brainstorming`, `superpowers:writing-plans`, or `superpowers:subagent-driven-development` directly for development tasks. Forge calls them internally when needed.
+
+| User says | You invoke | NOT |
+|-----------|-----------|-----|
+| "build X" | `forge:forge` | ~~`superpowers:brainstorming`~~ |
+| "fix this bug" | `forge:forge` | ~~`superpowers:systematic-debugging`~~ |
+| "plan the implementation" | `forge:forge` | ~~`superpowers:writing-plans`~~ |
+| "review the code" | `forge:forge-review` | ~~`superpowers:requesting-code-review`~~ |
+| "add a feature" | `forge:forge` | ~~`superpowers:brainstorming`~~ |
+
+Superpowers skills are still useful — Forge invokes them at the right lifecycle phase:
+- Think phase → Forge invokes brainstorming
+- Plan phase → Forge invokes writing-plans
+- Build phase → Forge invokes subagent-driven-development + TDD
+- Debug → Forge invokes systematic-debugging
+
 ## How to Use Forge
-
-**Forge is the master orchestrator.** When working in this repo or any project with Forge installed, USE Forge's skills and agents — don't do raw work.
-
-### Skill Priority (IMPORTANT)
-
-When BOTH Forge and Superpowers skills could apply to a development task:
-1. **Always use `forge:forge` as the entry point** — it routes to the right workflow
-2. **Forge skills delegate to Superpowers internally** — brainstorming for design, TDD for testing, subagent-driven for execution
-3. **NEVER skip Forge and go directly to Superpowers** for building, planning, or reviewing code
-4. **Superpowers skills are helpers, Forge is the orchestrator** — Forge decides WHEN to use brainstorming, TDD, etc. based on the lifecycle phase
-
-Example: User says "build X" → invoke `forge:forge` (NOT `superpowers:brainstorming`). Forge will invoke brainstorming itself during the Think phase if needed.
 
 ### Skills (Applications)
 
