@@ -7,7 +7,7 @@ from typing import Optional
 from forge_graph.auth import check_access
 from forge_graph.meta import ToolMeta
 from forge_graph.security.scanner import scan_content
-from forge_graph.server import mcp, get_db
+from forge_graph.app import mcp, get_db
 
 _SCANNABLE = frozenset({
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",

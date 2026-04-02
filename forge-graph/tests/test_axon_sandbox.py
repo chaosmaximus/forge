@@ -90,17 +90,17 @@ def test_blocks_case_insensitive():
 
 @pytest.fixture
 def graph_db_with_schema(tmp_path):
-    """Initialize a GraphDB with full schema and wire it into server._db."""
+    """Initialize a GraphDB with full schema and wire it into app._db."""
     from forge_graph.db import GraphDB
     from forge_graph.memory.schema import create_schema
-    import forge_graph.server as srv
+    import forge_graph.app as app
 
     db = GraphDB(tmp_path / "test.lbdb")
     create_schema(db.conn)
-    old_db = srv._db
-    srv._db = db
+    old_db = app._db
+    app._db = db
     yield db
-    srv._db = old_db
+    app._db = old_db
     db.close()
 
 

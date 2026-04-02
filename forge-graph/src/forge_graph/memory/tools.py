@@ -15,7 +15,7 @@ from forge_graph.db import GraphDB
 from forge_graph.memory.temporal import CURRENT_VIEW
 from forge_graph.memory.trust import sanitize_for_context
 from forge_graph.meta import ToolMeta
-from forge_graph.server import mcp, get_db
+from forge_graph.app import mcp, get_db
 
 # ---------------------------------------------------------------------------
 # Query-limit helpers (P2-1: prevent unbounded result sets)
