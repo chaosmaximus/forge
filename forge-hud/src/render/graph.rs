@@ -20,8 +20,15 @@ pub fn render_graph_line(state: &HudState, width: usize) -> String {
 
 fn render_session_info(s: &crate::state::SessionInfo) -> String {
     match (&s.mode, &s.phase) {
-        (Some(m), Some(p)) => format!("{MAGENTA}{m} . {p}{RESET}"),
-        (Some(m), None) => format!("{MAGENTA}{m}{RESET}"),
+        (Some(m), Some(p)) => {
+            let m = sanitize(m);
+            let p = sanitize(p);
+            format!("{MAGENTA}{m} . {p}{RESET}")
+        }
+        (Some(m), None) => {
+            let m = sanitize(m);
+            format!("{MAGENTA}{m}{RESET}")
+        }
         _ => format!("{DIM}idle{RESET}"),
     }
 }
