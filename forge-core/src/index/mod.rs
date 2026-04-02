@@ -2,6 +2,7 @@ pub mod walker;
 pub mod parser;
 pub mod symbols;
 pub mod imports;
+pub mod signatures;
 
 use std::path::Path;
 
