@@ -119,4 +119,33 @@ mod tests {
         let req = read_request(&mut cursor).expect("read_request ok").expect("Some");
         assert_eq!(req, Request::Health);
     }
+
+    #[test]
+    fn test_stored_vs_forgotten_disambiguation() {
+        // This test verifies that Stored and Forgotten are distinguishable
+        // after the fix from untagged to internally tagged ResponseData.
+        let stored = Response::Ok {
+            data: ResponseData::Stored { id: "abc".to_string() },
+        };
+        let forgotten = Response::Ok {
+            data: ResponseData::Forgotten { id: "abc".to_string() },
+        };
+
+        let stored_json = encode_response(&stored);
+        let forgotten_json = encode_response(&forgotten);
+
+        // They must produce different JSON
+        assert_ne!(stored_json, forgotten_json);
+
+        // Both must round-trip correctly
+        let stored_decoded: Response = serde_json::from_str(&stored_json).unwrap();
+        let forgotten_decoded: Response = serde_json::from_str(&forgotten_json).unwrap();
+
+        assert_eq!(stored, stored_decoded);
+        assert_eq!(forgotten, forgotten_decoded);
+
+        // Verify the "kind" discriminator is present
+        assert!(stored_json.contains("\"kind\":\"stored\""));
+        assert!(forgotten_json.contains("\"kind\":\"forgotten\""));
+    }
 }

@@ -10,7 +10,7 @@ pub struct MemoryResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResponseData {
     Stored { id: String },
     Memories { results: Vec<MemoryResult>, count: usize },
