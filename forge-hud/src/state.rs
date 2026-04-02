@@ -5,6 +5,7 @@ use std::path::Path;
 
 #[derive(Deserialize, Default)]
 pub struct HudState {
+    #[serde(default)] pub version: Option<String>,
     #[serde(default)] pub graph: GraphStats,
     #[serde(default)] pub memory: MemoryStats,
     #[serde(default)] pub session: SessionInfo,
@@ -36,7 +37,20 @@ pub struct SkillStats { pub active: u64, pub fix_candidates: u64 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-pub struct AgentInfo { pub status: Option<String>, pub last_tool: Option<String>, pub current_file: Option<String> }
+pub struct AgentInfo {
+    #[serde(rename = "type", default)]
+    pub agent_type: Option<String>,
+    pub status: Option<String>,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    #[serde(default)]
+    pub tool_calls: u64,
+    #[serde(default)]
+    pub files: Vec<String>,
+    pub last_tool: Option<String>,
+    pub current_file: Option<String>,
+    pub transcript_path: Option<String>,
+}
 
 #[derive(Deserialize, Default)]
 #[serde(default)]

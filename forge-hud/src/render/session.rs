@@ -1,25 +1,49 @@
 use crate::render::colors::*;
 use crate::state::HudState;
 
-/// Line 2: Forge status — session, memory, security, agents, tokens
+/// Line 2: Forge status — version, session, memory, security, agents, tokens, skills.
+/// Only sections with real data are shown; empty sections are omitted entirely.
 pub fn render_line2(state: &HudState, width: usize) -> String {
-    let session = render_session(&state.session);
-    let mem = render_memory(&state.memory);
-    let sec = render_security(&state.security);
-    let team = render_team(&state.team);
-    let tokens = render_tokens(&state.tokens);
-    let skills = render_skills(&state.skills);
+    let sep = format!(" {DIM}|{RESET} ");
 
-    // Progressive disclosure based on terminal width
-    if width >= 180 {
-        format!("{session} {DIM}|{RESET} {mem} {DIM}|{RESET} {sec} {DIM}|{RESET} {team} {DIM}|{RESET} {tokens} {DIM}|{RESET} {skills}")
-    } else if width >= 140 {
-        format!("{session} {DIM}|{RESET} {mem} {DIM}|{RESET} {team} {DIM}|{RESET} {tokens}")
-    } else if width >= 100 {
-        format!("{session} {DIM}|{RESET} {mem} {DIM}|{RESET} {team}")
-    } else {
-        format!("{session} {DIM}|{RESET} {mem}")
+    // Version is always shown
+    let mut parts: Vec<String> = vec![render_version(&state.version)];
+
+    // Session: only if mode is set
+    if state.session.mode.is_some() {
+        parts.push(render_session(&state.session));
     }
+
+    // Memory: only if decisions + patterns + lessons > 0
+    let mem_total = state.memory.decisions + state.memory.patterns + state.memory.lessons;
+    if mem_total > 0 {
+        parts.push(render_memory(&state.memory));
+    }
+
+    // Security: always shown (even "✓ secure" is useful)
+    parts.push(render_security(&state.security));
+
+    // Team: only if non-empty
+    if !state.team.is_empty() {
+        parts.push(render_team(&state.team));
+    }
+
+    // Tokens: only if non-zero AND width >= 140
+    if width >= 140 && (state.tokens.input > 0 || state.tokens.output > 0) {
+        parts.push(render_tokens(&state.tokens));
+    }
+
+    // Skills: only if non-zero AND width >= 180
+    if width >= 180 && state.skills.active > 0 {
+        parts.push(render_skills(&state.skills));
+    }
+
+    parts.join(&sep)
+}
+
+fn render_version(v: &Option<String>) -> String {
+    let ver = v.as_deref().unwrap_or(env!("CARGO_PKG_VERSION"));
+    format!("{BOLD}{GREEN}Forge v{}{RESET}", sanitize(ver))
 }
 
 fn render_session(s: &crate::state::SessionInfo) -> String {
@@ -33,15 +57,11 @@ fn render_session(s: &crate::state::SessionInfo) -> String {
                 sanitize(m), sanitize(p))
         }
         (Some(m), None, _) => format!("{MAGENTA}{}{RESET}", sanitize(m)),
-        _ => format!("{DIM}idle{RESET}"),
+        _ => String::new(),
     }
 }
 
 fn render_memory(m: &crate::state::MemoryStats) -> String {
-    let total = m.decisions + m.patterns + m.lessons;
-    if total == 0 {
-        return format!("{DIM}no memory{RESET}");
-    }
     let mut parts = Vec::new();
     if m.decisions > 0 { parts.push(format!("{} decision{}", m.decisions, plural(m.decisions))); }
     if m.patterns > 0 { parts.push(format!("{} pattern{}", m.patterns, plural(m.patterns))); }
@@ -64,21 +84,25 @@ fn render_security(s: &crate::state::SecurityStats) -> String {
 }
 
 fn render_team(team: &std::collections::HashMap<String, crate::state::AgentInfo>) -> String {
-    if team.is_empty() {
-        return format!("{DIM}no agents{RESET}");
-    }
     let mut parts = Vec::new();
-    // Sort agents by name for consistent display
+    // Sort agents by key for consistent display
     let mut entries: Vec<_> = team.iter().collect();
-    entries.sort_by_key(|(k, _)| k.clone());
+    entries.sort_by_key(|(k, _)| (*k).clone());
 
-    for (name, info) in entries {
-        let short = sanitize(name.strip_prefix("forge-").unwrap_or(name));
+    for (agent_id, info) in entries {
+        // Display name: prefer agent_type, strip "forge-" prefix; fallback to agent_id
+        let display_name = info
+            .agent_type
+            .as_deref()
+            .unwrap_or(agent_id);
+        let short = sanitize(display_name.strip_prefix("forge-").unwrap_or(display_name));
+
         let (icon, color) = match info.status.as_deref() {
-            Some("done") => ("\u{2713}", GREEN),     // ✓
-            Some("running") => ("\u{25b6}", YELLOW),  // ▶
-            Some("pending") => ("\u{23f3}", DIM),     // ⏳
-            Some("blocked") => ("\u{2717}", RED),     // ✗
+            Some("done") => ("\u{2713}", GREEN),     // checkmark
+            Some("running") => ("\u{25b6}", YELLOW),  // play
+            Some("pending") => ("\u{23f3}", DIM),     // hourglass
+            Some("blocked") => ("\u{2717}", RED),     // x
+            Some("stale") => ("\u{26a0}", RED),       // warning
             _ => ("?", DIM),
         };
         let tool_info = if info.status.as_deref() == Some("running") {
@@ -94,9 +118,6 @@ fn render_team(team: &std::collections::HashMap<String, crate::state::AgentInfo>
 }
 
 fn render_tokens(t: &crate::state::TokenStats) -> String {
-    if t.input == 0 && t.output == 0 {
-        return format!("{DIM}0 tokens{RESET}");
-    }
     let rc = ratio_color(t.deterministic_ratio);
     let pct = (t.deterministic_ratio * 100.0) as u64;
     format!("{rc}{}K in \u{00b7} {}K out \u{00b7} {pct}% deterministic{RESET}", t.input / 1000, t.output / 1000)
@@ -106,10 +127,8 @@ fn render_skills(s: &crate::state::SkillStats) -> String {
     if s.fix_candidates > 0 {
         format!("{} skill{} {YELLOW}({} need{} fix){RESET}",
             s.active, plural(s.active), s.fix_candidates, if s.fix_candidates == 1 { "s" } else { "" })
-    } else if s.active > 0 {
-        format!("{} skill{}", s.active, plural(s.active))
     } else {
-        String::new()
+        format!("{} skill{}", s.active, plural(s.active))
     }
 }
 
