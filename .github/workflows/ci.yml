@@ -114,11 +114,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build workspace
         run: cargo build --release
-      - name: Check forge-core binary
+      - name: Check forge binary
         run: |
-          ls -la target/release/forge-core
+          ls -la target/release/forge
           ls -la target/release/forge-hud
-      - name: Smoke test forge-core index
-        run: ./target/release/forge-core index forge-graph/src/ 2>/dev/null | wc -l
+      - name: Smoke test forge index
+        run: ./target/release/forge index forge-graph/src/ 2>/dev/null | wc -l
       - name: Smoke test forge-hud
         run: echo '{}' | COLUMNS=120 CLAUDE_PLUGIN_DATA=/tmp ./target/release/forge-hud
