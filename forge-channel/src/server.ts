@@ -5,6 +5,7 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import * as telegram from "./platforms/telegram.js";
+import * as imessage from "./platforms/imessage.js";
 import { confirmPairing } from "./security/gate.js";
 
 export async function createServer(platform: string, token: string) {
@@ -61,6 +62,8 @@ export async function createServer(platform: string, token: string) {
     if (req.params.name === "reply") {
       if (platform === "telegram") {
         await telegram.sendReply(token, args.chat_id, args.text);
+      } else if (platform === "imessage") {
+        await imessage.sendReply(args.chat_id, args.text); // chat_id is the handle
       }
       return { content: [{ type: "text" as const, text: "Sent." }] };
     }
@@ -85,6 +88,10 @@ export async function createServer(platform: string, token: string) {
 
   if (platform === "telegram") {
     telegram.startPolling(token, notify);
+  }
+
+  if (platform === "imessage") {
+    imessage.startPolling(notify);
   }
 
   // Connect over stdio
