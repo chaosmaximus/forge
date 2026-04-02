@@ -161,3 +161,57 @@ fn shannon_entropy(s: &str) -> f64 {
     }
     entropy
 }
+
+pub fn watch(path: &str, interval_secs: u64) {
+    use std::collections::HashSet;
+    use std::thread;
+    use std::time::Duration;
+
+    eprintln!("=== Security Monitor: watching {} ({}s interval) ===", path, interval_secs);
+    let mut known: HashSet<String> = HashSet::new();
+
+    loop {
+        let root = std::path::Path::new(path);
+        let files = walk_scannable(root);
+        let mut new_count = 0;
+
+        for file_path in &files {
+            if file_path.is_symlink() { continue; }
+            let content = match std::fs::read_to_string(file_path) {
+                Ok(c) => c, Err(_) => continue,
+            };
+            let rel = file_path.strip_prefix(root).unwrap_or(file_path)
+                .to_string_lossy().to_string();
+
+            for (ln, line) in content.lines().enumerate() {
+                for rule in RULES.iter() {
+                    if rule.regex.is_match(line) {
+                        let fp = fingerprint(line);
+                        if known.insert(fp.clone()) {
+                            let f = Finding {
+                                rule_id: rule.id.to_string(),
+                                provider: rule.provider.to_string(),
+                                secret_type: rule.secret_type.to_string(),
+                                file_path: rel.clone(),
+                                line_number: ln + 1,
+                                risk_level: rule.risk_level.to_string(),
+                                description: rule.description.to_string(),
+                                fingerprint: fp,
+                            };
+                            if let Ok(json) = serde_json::to_string(&f) { println!("{}", json); }
+                            new_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if new_count > 0 {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            eprintln!("[{}] {} new secret(s)", ts, new_count);
+        }
+
+        thread::sleep(Duration::from_secs(interval_secs));
+    }
+}
