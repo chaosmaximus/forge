@@ -178,6 +178,24 @@ enum Commands {
         #[arg(long, default_value = "json")]
         format: String,
     },
+    /// Unified verification: syntax + format + lint + security + cross-file + types
+    Verify {
+        /// File or directory to verify
+        #[arg(default_value = ".")]
+        path: String,
+        /// Auto-fix formatting issues
+        #[arg(long)]
+        fix: bool,
+        /// Output format: json (default) or text
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+        /// Also run type checker (slower)
+        #[arg(long)]
+        types: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -304,6 +322,15 @@ fn main() {
         }
         Commands::Check { path, format } => {
             verify::check::run(&path, &format);
+        }
+        Commands::Verify {
+            path,
+            fix,
+            format,
+            state_dir,
+            types,
+        } => {
+            verify::unified::run(&path, fix, &format, &state_dir, types);
         }
     }
 }
