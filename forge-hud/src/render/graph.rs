@@ -1,15 +1,14 @@
 use crate::render::colors::*;
 use crate::stdin::StdinData;
 
-/// Line 1: Model, context bar, git branch, rate limits
-/// This line is about Claude Code state — same info claude-hud showed
+/// Line 1: Claude model, context usage, git branch, rate limits
 pub fn render_line1(stdin: &StdinData, width: usize) -> String {
     let model = sanitize(&stdin.model_name());
     let ctx = render_context_bar(stdin.context_pct());
     let branch = crate::stdin::git_branch(stdin.cwd_str());
     let git_seg = if !branch.is_empty() {
         let b = sanitize(&branch);
-        format!(" {DIM}git:{RESET}{CYAN}{b}{RESET}")
+        format!(" {DIM}on{RESET} {CYAN}{b}{RESET}")
     } else {
         String::new()
     };
@@ -29,10 +28,10 @@ fn render_context_bar(pct: f64) -> String {
     let filled = (p / 10.0).round() as usize;
     let empty = 10_usize.saturating_sub(filled);
     let color = if p >= 85.0 { RED } else if p >= 60.0 { YELLOW } else { GREEN };
+    let bar = format!("{}\u{2591}", "\u{2588}".repeat(filled));
+    let rest = "\u{2591}".repeat(empty.saturating_sub(1));
     format!(
-        "{DIM}Context{RESET} {color}[{}{}]{RESET} {color}{:.0}%{RESET}",
-        "█".repeat(filled),
-        format!("{DIM}{}{}", "░".repeat(empty), color),
+        "{DIM}Context{RESET} {color}[{bar}{rest}]{RESET} {color}{:.0}%{RESET}",
         p
     )
 }
@@ -43,5 +42,5 @@ fn render_rate(five: f64, seven: f64) -> String {
     }
     let fc = if five >= 80.0 { RED } else if five >= 50.0 { YELLOW } else { GREEN };
     let sc = if seven >= 80.0 { RED } else if seven >= 50.0 { YELLOW } else { GREEN };
-    format!("{DIM}Usage{RESET} {fc}{:.0}%{RESET} {DIM}(5h){RESET} {sc}{:.0}%{RESET} {DIM}(7d){RESET}", five, seven)
+    format!("{DIM}Rate{RESET} {fc}{:.0}%{RESET}{DIM}/5h{RESET} {sc}{:.0}%{RESET}{DIM}/7d{RESET}", five, seven)
 }

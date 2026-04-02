@@ -9,12 +9,47 @@ from forge_graph.db import GraphDB
 
 mcp = FastMCP("forge-graph")
 _db: GraphDB | None = None
+_hud = None  # HudStateWriter, initialized on startup
 
 
 def get_db() -> GraphDB:
     if _db is None:
         raise RuntimeError("Database not initialized")
     return _db
+
+
+def update_hud() -> None:
+    """Update HUD state file with current graph stats. Called after tool operations."""
+    if _hud is None or _db is None:
+        return
+    try:
+        counts = {}
+        for label in ("Decision", "Pattern", "Lesson"):
+            r = _db.conn.execute(f"MATCH (n:{label}) WHERE n.invalid_at IS NULL RETURN count(n) AS c")
+            rows = r.get_as_pl()
+            counts[label.lower()] = int(rows["c"][0]) if len(rows) > 0 else 0
+        # Secret uses status
+        r = _db.conn.execute("MATCH (n:Secret) WHERE n.status = 'active' RETURN count(n) AS c")
+        rows = r.get_as_pl()
+        counts["secret"] = int(rows["c"][0]) if len(rows) > 0 else 0
+
+        r = _db.conn.execute("MATCH (n) RETURN count(n) AS c")
+        nodes = int(r.get_as_pl()["c"][0])
+        r = _db.conn.execute("MATCH ()-[r]->() RETURN count(r) AS c")
+        edges = int(r.get_as_pl()["c"][0])
+
+        _hud.update(
+            graph={"nodes": nodes, "edges": edges},
+            memory={
+                "decisions": counts.get("decision", 0),
+                "patterns": counts.get("pattern", 0),
+                "lessons": counts.get("lesson", 0),
+                "secrets": counts.get("secret", 0),
+            },
+        )
+        _hud.maybe_flush()
+    except Exception:
+        pass  # HUD update is best-effort, never block tool operations
 
 
 def init_db(db_path: str | Path) -> GraphDB:
@@ -85,28 +120,23 @@ async def forge_cypher(query: str, agent_id: Optional[str] = None) -> str:
 
 
 def _init_on_startup(db_path: str) -> None:
-    """Initialize DB schema and write initial HUD state on server start."""
+    """Initialize DB schema, HUD writer, and write initial state."""
     import os
+    global _hud
     db = init_db(db_path)
 
     # Ensure schema exists
     from forge_graph.memory.schema import create_schema
     create_schema(db.conn)
 
-    # Write initial HUD state
+    # Initialize HUD writer (persists for the lifetime of the server)
     data_dir = os.environ.get("CLAUDE_PLUGIN_DATA", "")
     if data_dir:
         from forge_graph.hud.state import HudStateWriter
-        hud = HudStateWriter(os.path.join(data_dir, "hud", "hud-state.json"))
-        try:
-            r = db.conn.execute("MATCH (n) RETURN count(n) AS c")
-            nodes = r.get_next()[0] if r.has_next() else 0
-            r2 = db.conn.execute("MATCH ()-[r]->() RETURN count(r) AS c")
-            edges = r2.get_next()[0] if r2.has_next() else 0
-        except Exception:
-            nodes, edges = 0, 0
-        hud.update(graph={"nodes": int(nodes), "edges": int(edges)})
-        hud.flush()
+        _hud = HudStateWriter(os.path.join(data_dir, "hud", "hud-state.json"))
+        _hud.update(skills={"active": 10, "fix_candidates": 0})
+        update_hud()  # Write initial state with real counts
+        _hud.flush()
 
 
 def main() -> None:

@@ -12,4 +12,14 @@ for candidate in \
     fi
 done
 export CLAUDE_PLUGIN_DATA="${FORGE_DIR:-$HOME/.claude/plugins/data/forge-forge-marketplace}"
-exec "$(dirname "$(readlink -f "$0")")/target/release/forge-hud" "$@"
+# Try workspace binary first (development), then local target
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+WORKSPACE_DIR="$(dirname "$SCRIPT_DIR")"
+if [ -x "$WORKSPACE_DIR/target/release/forge-hud" ]; then
+    exec "$WORKSPACE_DIR/target/release/forge-hud" "$@"
+elif [ -x "$SCRIPT_DIR/target/release/forge-hud" ]; then
+    exec "$SCRIPT_DIR/target/release/forge-hud" "$@"
+else
+    echo "forge-hud binary not found" >&2
+    exit 1
+fi

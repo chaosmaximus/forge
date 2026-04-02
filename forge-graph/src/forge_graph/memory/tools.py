@@ -624,7 +624,10 @@ async def forge_remember(
     agent_id: Optional[str] = None,
 ) -> str:
     """Store a memory node (decision, pattern, lesson, or preference)."""
-    return await _remember_impl(get_db(), type, structured, agent_id)
+    result = await _remember_impl(get_db(), type, structured, agent_id)
+    from forge_graph.server import update_hud
+    update_hud()
+    return result
 
 
 @mcp.tool()
@@ -678,7 +681,10 @@ async def forge_forget(
     agent_id: Optional[str] = None,
 ) -> str:
     """Soft-delete a memory node by setting invalid_at timestamp."""
-    return await _forget_impl(get_db(), node_id, node_label, reason, agent_id)
+    result = await _forget_impl(get_db(), node_id, node_label, reason, agent_id)
+    from forge_graph.server import update_hud
+    update_hud()
+    return result
 
 
 @mcp.tool()
