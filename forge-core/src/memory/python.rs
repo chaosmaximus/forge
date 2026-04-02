@@ -8,18 +8,22 @@ use std::process::Command;
 
 /// Find the Python interpreter — prefer the plugin venv, fallback to system.
 fn find_python(state_dir: &str) -> String {
-    // Try plugin venv
+    let plugin_root = std::env::var("CLAUDE_PLUGIN_ROOT").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+
     let venv_candidates = [
-        // Plugin cache venv
-        format!(
-            "{}/../forge-graph/.venv/bin/python",
-            std::env::var("CLAUDE_PLUGIN_ROOT").unwrap_or_default()
-        ),
-        // Development venv
+        // Via CLAUDE_PLUGIN_ROOT (set by Claude Code for hooks)
+        format!("{}/forge-graph/.venv/bin/python", plugin_root),
+        // Via state_dir (CLAUDE_PLUGIN_DATA) — go up to plugin root
         format!("{}/../../forge-graph/.venv/bin/python", state_dir),
+        // Auto-detect from known cache paths
+        format!("{}/.claude/plugins/cache/forge-marketplace/forge/0.3.0/forge-graph/.venv/bin/python", home),
+        format!("{}/.claude/plugins/cache/forge-marketplace/forge/0.2.0/forge-graph/.venv/bin/python", home),
+        // Development: repo root
+        "forge-graph/.venv/bin/python".to_string(),
     ];
     for candidate in &venv_candidates {
-        if Path::new(candidate).exists() {
+        if !candidate.is_empty() && Path::new(candidate).exists() {
             return candidate.clone();
         }
     }
@@ -28,15 +32,18 @@ fn find_python(state_dir: &str) -> String {
 
 /// Find PYTHONPATH for forge_graph module.
 fn find_pythonpath(state_dir: &str) -> String {
+    let plugin_root = std::env::var("CLAUDE_PLUGIN_ROOT").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+
     let candidates = [
-        format!(
-            "{}/forge-graph/src",
-            std::env::var("CLAUDE_PLUGIN_ROOT").unwrap_or_default()
-        ),
+        format!("{}/forge-graph/src", plugin_root),
         format!("{}/../../forge-graph/src", state_dir),
+        format!("{}/.claude/plugins/cache/forge-marketplace/forge/0.3.0/forge-graph/src", home),
+        format!("{}/.claude/plugins/cache/forge-marketplace/forge/0.2.0/forge-graph/src", home),
+        "forge-graph/src".to_string(),
     ];
     for candidate in &candidates {
-        if Path::new(candidate).join("forge_graph").is_dir() {
+        if !candidate.is_empty() && Path::new(candidate).join("forge_graph").is_dir() {
             return candidate.clone();
         }
     }

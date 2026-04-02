@@ -35,78 +35,72 @@ For multi-file tasks, Forge dispatches an agent team:
 
 | Agent | Role | Tools |
 |-------|------|-------|
-| **forge-planner** | Architecture, exploration, planning | forge_recall, forge_decisions, forge_patterns, forge_cypher |
-| **forge-generator** | Implementation in isolated worktrees | forge_recall, forge_decisions, forge_index |
-| **forge-evaluator** | Spec compliance + code quality review | forge_recall, forge_cypher, forge_decisions |
+| **forge-planner** | Architecture, exploration, planning | Bash (forge-core recall/query) |
+| **forge-generator** | Implementation in isolated worktrees | Full suite + Bash (forge-core) |
+| **forge-evaluator** | Spec compliance + code quality review | Read-only + Bash (forge-core) |
 
 **USE THESE AGENTS** for implementation work. Don't use raw subagents when Forge agents are available.
 
-### CLI-First Commands
+### CLI-First Commands (v0.3.0 — no MCP)
 
-`forge-core` is a Rust binary with subcommands. Use these directly when appropriate:
+`forge-core` is a Rust binary with subcommands. **This is the only interface** — no MCP server.
 
 ```bash
-forge-core index .                    # Parse Python/TS/JS → code graph (NDJSON)
-forge-core scan .                     # Detect exposed secrets (regex + entropy)
-forge-core scan . --watch --interval 30  # Always-on security monitor
-forge-core research "topic" --max-iterations 5  # AutoResearch loop
-forge-core review . --base HEAD~3     # Generate diff context for council review
-forge-core hook session-start         # Hook handler (<5ms)
-forge-core hook post-edit <file>      # Secret scan single file (<5ms)
-forge-core hook session-end           # Update HUD state (<5ms)
+# Memory (fast path — Rust cache, <5ms)
+forge-core remember --type decision --title "..." --content "..."  # Store memory
+forge-core recall "keyword"                    # Search memory cache
+forge-core recall --list --type decision       # List all decisions
+forge-core recall --graph "keyword"            # Search graph DB (slower, ~200ms)
+
+# Memory (graph operations — Rust + Python, <200ms)
+forge-core forget <node_id> --label Decision   # Soft-delete
+forge-core sync                                # Sync pending → graph DB
+forge-core health                              # Graph node/edge counts
+forge-core query "MATCH (f:File) RETURN f.name LIMIT 10"  # Cypher query
+
+# Code intelligence
+forge-core index .                             # Parse Python/TS/JS → NDJSON
+forge-core scan .                              # Detect exposed secrets
+forge-core scan . --watch --interval 30        # Always-on security monitor
+
+# Hooks (<5ms, called by Claude Code automatically)
+forge-core hook session-start                  # Context injection
+forge-core hook post-edit <file>               # Secret scan per file
+forge-core hook session-end                    # Update HUD state
+forge-core agent                               # Agent lifecycle tracking
+
+# Research & Review
+forge-core research "topic" --max-iterations 5 # AutoResearch loop
+forge-core review . --base HEAD~3              # Diff context for council review
 ```
-
-### MCP Tools (12)
-
-These are available via the forge-graph MCP server:
-
-| Tool | Purpose | Path |
-|------|---------|------|
-| `forge_remember` | Store decisions, patterns, lessons, preferences | Deterministic (structured) or Agent (NL) |
-| `forge_recall` | Search memory by keyword | Deterministic (FTS) |
-| `forge_link` | Create edges between any nodes | Deterministic |
-| `forge_decisions` | Query active decisions, filter by code path | Deterministic |
-| `forge_patterns` | Query learned patterns | Deterministic |
-| `forge_timeline` | Follow SUPERSEDES/EVOLVED_FROM chains | Deterministic |
-| `forge_forget` | Soft-delete a memory node | Deterministic |
-| `forge_usage` | Token usage statistics | Deterministic |
-| `forge_scan` | Scan for secrets (delegates to forge-core) | Deterministic |
-| `forge_index` | Index codebase (delegates to forge-core) | Deterministic |
-| `forge_cypher` | Sandboxed read-only Cypher queries on code nodes | Deterministic |
-| `forge_health` | Graph health check | Deterministic |
 
 ### Storing Memory
 
-**ALWAYS store important decisions in the graph.** When you make an architectural choice, run:
+**ALWAYS store important decisions.** When you make an architectural choice:
+```bash
+forge-core remember --type decision --title "..." --content "..." --sync
 ```
-forge_remember type=decision structured={"title": "...", "rationale": "...", "status": "active", "confidence": 0.9}
-```
-
-This makes the HUD show real memory counts and enables context injection in future sessions.
+Use `--sync` to write immediately to graph DB. Without it, writes to cache only (fast, synced later).
 
 ---
 
-## Architecture
+## Architecture (v0.3.0)
 
-**Hybrid Rust + Python + TypeScript:**
+**CLI-first. No MCP server.**
 
 ```
-forge-core (Rust, 4.3MB)     — CLI: index, scan, hook, research, review
-forge-graph (Python, 117 tests) — MCP server: 12 tools backed by LadybugDB 0.15.3
+forge-core (Rust, 4.3MB)     — CLI: all operations, <5ms for cache, <200ms for graph
+forge-graph (Python, 115 tests) — Graph library: LadybugDB 0.15.3, called by forge-core
 forge-hud (Rust, 476KB)      — StatusLine: <2ms render, real-time stats
-forge-channel (TS/Bun)       — Telegram + iMessage bridges via MCP channels API
+forge-channel (TS/Bun)       — Telegram + iMessage bridges
 ```
 
-**Key architecture: `app.py` breaks circular imports.**
-- `forge_graph/app.py` owns the `mcp` FastMCP instance and `get_db()`/`set_db()` functions
-- `server.py`, `memory/tools.py`, `security/tools.py` all import from `app.py`
-- Tool modules register at module import time (not in `main()`) so MCP `tools/list` returns all 12 tools
-
-**Data flow:**
-- `forge-core` handles hot paths (called every edit, every session start/end)
-- `forge-graph` MCP server handles graph operations (long-running, C++ LadybugDB does the work)
-- MCP tools delegate non-graph work to `forge-core` CLI via subprocess
-- HUD reads `hud-state.json` written by the MCP server (updates on every `forge_remember`/`forge_forget`)
+**Key architecture: No persistent Python process.**
+- `forge-core` handles everything via CLI subcommands
+- For graph operations, Rust shells out to `python3 -m forge_graph.cli`
+- Python opens DB, operates, closes, exits — no lock contention
+- Dual storage: `cache.json` (instant reads) + LadybugDB (durable graph)
+- HUD reads `hud-state.json` written by forge-core (updated on remember/forget/agent events)
 
 ## Development
 
@@ -116,30 +110,31 @@ forge-channel (TS/Bun)       — Telegram + iMessage bridges via MCP channels AP
 # Python tests (ALWAYS use PYTHONPATH=src)
 cd forge-graph && PYTHONPATH=src python3 -m pytest tests/ -v --tb=short
 
-# Rust build (full workspace)
+# Rust build + tests
 cargo build --release
+cargo test -p forge-core
 
 # Test CLI
 ./target/release/forge-core index forge-graph/src/
 ./target/release/forge-core scan .
-./target/release/forge-core review . --base HEAD~3
+./target/release/forge-core recall --list
 ```
 
 ### Critical Rules
 
 - **Python 3.10** — always `python3`, never `python`
-- **MCP tool type hints** — use `Optional[str]`, `Dict[str, Any]` from typing (not `str | None`, `dict[str, Any]`) in `@mcp.tool()` signatures
+- **No MCP** — removed in v0.3.0. All ops via `forge-core` CLI
 - **LadybugDB** — use `current_timestamp()` not `timestamp()`. Secret table uses `status` column, not `invalid_at`.
 - **Codex** — use `codex exec --model gpt-5.2` (default o4-mini broken on ChatGPT auth)
-- **Plugin cache** — stale copy at `~/.claude/plugins/cache/forge-marketplace/forge/0.2.0/`. After changes, sync with: `rsync -a forge-graph/src/ "$CACHE/forge-graph/src/"`
-- **Circular imports** — `mcp` instance lives in `app.py`, NOT `server.py`. All tool modules import from `app.py`.
+- **Plugin cache** — `~/.claude/plugins/cache/forge-marketplace/forge/0.3.0/`. After changes, sync with: `rsync -a forge-graph/src/ "$CACHE/forge-graph/src/" && cp target/release/forge-core "$CACHE/servers/forge-core"`
+- **Circular imports** — `app.py` removed. `memory/tools.py` uses local stubs. `cli.py` is the Python entry point.
 
 ### CI Pipeline (6 jobs, all green)
 
 - static-validation (shellcheck, plugin/hooks/skills/agents validation)
 - unit-tests (BATS)
 - integration-tests (hook behavior)
-- python-tests (117 tests + adversarial suite)
+- python-tests (115 tests + adversarial suite)
 - rust-build (forge-core + forge-hud)
 - security-scan (hardcoded secrets, dangerous patterns)
 
