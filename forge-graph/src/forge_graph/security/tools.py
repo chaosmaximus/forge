@@ -28,6 +28,9 @@ def _scan_directory(path: Path, depth: str = "shallow") -> list:
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
         for fname in files:
             fpath = Path(root) / fname
+            # P2: Skip symlinks to prevent reading files outside workspace
+            if fpath.is_symlink():
+                continue
             if fpath.suffix not in _SCANNABLE and fpath.name not in {".env", ".npmrc", ".pypirc"}:
                 continue
             try:
