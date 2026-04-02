@@ -3,14 +3,21 @@ import json
 import pytest
 
 
+@pytest.mark.skipif(
+    not __import__("shutil").which("forge-core"),
+    reason="forge-core binary not on PATH"
+)
 def test_find_forge_core_returns_path():
     from forge_graph.cli_bridge import find_forge_core
     path = find_forge_core()
-    # Should find it in target/release/ since we built it
     assert path is not None
     assert "forge-core" in path
 
 
+@pytest.mark.skipif(
+    not __import__("shutil").which("forge-core"),
+    reason="forge-core binary not on PATH"
+)
 def test_run_forge_core_index():
     from forge_graph.cli_bridge import run_forge_core
     result = run_forge_core(["index", "src/forge_graph/hooks/"])
@@ -22,6 +29,10 @@ def test_run_forge_core_index():
         assert "kind" in data
 
 
+@pytest.mark.skipif(
+    not __import__("shutil").which("forge-core"),
+    reason="forge-core binary not on PATH"
+)
 def test_run_forge_core_scan():
     from forge_graph.cli_bridge import run_forge_core
     result = run_forge_core(["scan", "tests/"])
