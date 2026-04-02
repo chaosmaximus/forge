@@ -36,26 +36,21 @@ async def forge_health() -> str:
 
 @mcp.tool()
 async def forge_index(path: Optional[str] = None) -> str:
-    """Index a codebase with tree-sitter and store symbols in the graph."""
-    import subprocess
+    """Index a codebase with tree-sitter via forge-core and store symbols in the graph."""
     import os
+    from forge_graph.cli_bridge import run_forge_core
+    from forge_graph.code.ingest import ingest_symbols
+    from forge_graph.meta import ToolMeta
+
+    meta = ToolMeta()
     scan_path = path or os.getcwd()
 
-    # Try forge-core binary
-    for candidate in ["forge-core", "./target/release/forge-core", "../forge-core/target/release/forge-core"]:
-        try:
-            result = subprocess.run(
-                [candidate, "index", scan_path],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode == 0:
-                from forge_graph.code.ingest import ingest_symbols
-                count = ingest_symbols(get_db(), result.stdout)
-                return json.dumps({"indexed": count, "_meta": {"path": "deterministic", "duration_ms": 0}})
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
+    result = run_forge_core(["index", scan_path])
+    if result.returncode != 0:
+        return json.dumps({"error": result.stderr.strip(), "_meta": meta.finish()})
 
-    return json.dumps({"error": "forge-core binary not found. Build with: cargo build --release -p forge-core", "_meta": {"path": "deterministic"}})
+    count = ingest_symbols(get_db(), result.stdout)
+    return json.dumps({"indexed": count, "_meta": meta.finish()})
 
 
 @mcp.tool()
