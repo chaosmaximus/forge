@@ -2,6 +2,7 @@ mod agent;
 mod hook;
 pub mod hud_state;
 mod index;
+mod memory;
 mod research;
 mod review;
 mod scan;
@@ -65,6 +66,38 @@ enum Commands {
         #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
         state_dir: String,
     },
+    /// Store a memory (decision, pattern, lesson, preference)
+    Remember {
+        /// Memory type: decision, pattern, lesson, preference
+        #[arg(long, short = 't')]
+        r#type: String,
+        /// Title or name
+        #[arg(long)]
+        title: String,
+        /// Content / rationale / description
+        #[arg(long)]
+        content: String,
+        /// Confidence (0.0 - 1.0)
+        #[arg(long, default_value = "0.9")]
+        confidence: f64,
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+    },
+    /// Search memory by keyword
+    Recall {
+        /// Search query
+        query: Option<String>,
+        /// Filter by type: decision, pattern, lesson, preference
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+        /// List all (no search)
+        #[arg(long)]
+        list: bool,
+        /// Plugin data directory
+        #[arg(long, env = "CLAUDE_PLUGIN_DATA", default_value = ".forge")]
+        state_dir: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -107,5 +140,17 @@ fn main() {
             review::run(&path, &base, &format);
         }
         Commands::Agent { state_dir } => agent::run(&state_dir),
+        Commands::Remember { r#type, title, content, confidence, state_dir } => {
+            memory::remember::run(&state_dir, &r#type, &title, &content, confidence);
+        }
+        Commands::Recall { query, r#type, list, state_dir } => {
+            if list {
+                memory::recall::list(&state_dir, r#type.as_deref());
+            } else if let Some(q) = &query {
+                memory::recall::run(&state_dir, q, r#type.as_deref());
+            } else {
+                memory::recall::list(&state_dir, r#type.as_deref());
+            }
+        }
     }
 }
