@@ -12,12 +12,18 @@ mcp = FastMCP("forge-graph")
 _db: GraphDB | None = None
 _hud = None  # HudStateWriter, initialized on startup
 
-# Register ALL tool modules at module import time, IMMEDIATELY after mcp creation.
-# This ensures tools/list returns all 12 tools from the first MCP handshake.
-# Import order matters: memory/tools.py and security/tools.py use @mcp.tool()
-# decorators that reference the `mcp` instance above.
-from forge_graph.memory import tools as _memory_tools  # noqa: F401, E402
-from forge_graph.security import tools as _security_tools  # noqa: F401, E402
+
+def _register_all_tools() -> None:
+    """Import tool modules to register @mcp.tool() decorators.
+
+    Called from main() before mcp.run(), and also hooked into FastMCP's
+    list_tools to ensure all 12 tools are available from the first handshake.
+    """
+    from forge_graph.memory import tools as _mt  # noqa: F401
+    from forge_graph.security import tools as _st  # noqa: F401
+
+
+_tools_registered = False
 
 
 def get_db() -> GraphDB:
@@ -159,6 +165,7 @@ def main() -> None:
     parser.add_argument("--db", required=True, help="Path to .lbdb file")
     args = parser.parse_args()
 
+    _register_all_tools()
     _init_on_startup(args.db)
     mcp.run()
 
