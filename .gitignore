@@ -24,3 +24,22 @@ Thumbs.db
 
 # Spikes / experiments
 spikes/
+
+# Cache directories
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+*.pyc
+
+# Build artifacts
+target/
+dist/
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# Forge runtime state (not in repo)
+.forge/
