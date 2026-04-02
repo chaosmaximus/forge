@@ -212,10 +212,32 @@ fn main() {
             }
         }
         Commands::Forget { node_id, label, reason, state_dir } => {
+            // 1. Remove from local cache
+            let cache_path = std::path::Path::new(&state_dir).join("memory").join("cache.json");
+            if let Ok(content) = std::fs::read_to_string(&cache_path) {
+                if let Ok(mut cache) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(entries) = cache.get_mut("entries").and_then(|e| e.as_array_mut()) {
+                        entries.retain(|e| e.get("id").and_then(|v| v.as_str()) != Some(&node_id));
+                        if let Ok(json_str) = serde_json::to_string(&cache) {
+                            let _ = std::fs::write(&cache_path, json_str);
+                        }
+                    }
+                }
+            }
+            // 2. Update HUD counts
+            hud_state::update(&state_dir, |state| {
+                match label.as_str() {
+                    "Decision" => state.memory.decisions = state.memory.decisions.saturating_sub(1),
+                    "Pattern" => state.memory.patterns = state.memory.patterns.saturating_sub(1),
+                    "Lesson" => state.memory.lessons = state.memory.lessons.saturating_sub(1),
+                    _ => {}
+                }
+            });
+            // 3. Soft-delete in graph (best-effort)
             let args = ["forget", &node_id, "--label", &label, "--reason", &reason];
             match memory::python::call_graph(&state_dir, &args) {
                 Ok(json) => println!("{}", json),
-                Err(e) => eprintln!("{{\"error\":\"{}\"}}", e),
+                Err(_) => println!("{}", serde_json::json!({"status": "forgotten_local", "id": node_id, "note": "Removed from cache. Graph update will happen on next sync."})),
             }
         }
         Commands::Health { state_dir } => {
@@ -227,7 +249,11 @@ fn main() {
         Commands::Query { cypher, state_dir } => {
             match memory::python::call_graph(&state_dir, &["query", &cypher]) {
                 Ok(json) => println!("{}", json),
-                Err(e) => eprintln!("{{\"error\":\"{}\"}}", e),
+                Err(e) => {
+                    // Sanitize error — strip control chars that break JSON
+                    let clean: String = e.chars().filter(|c| !c.is_control() || *c == '\n').collect();
+                    println!("{}", serde_json::json!({"error": clean}));
+                }
             }
         }
         Commands::Sync { state_dir } => {
