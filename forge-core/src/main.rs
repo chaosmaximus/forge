@@ -64,6 +64,9 @@ enum Commands {
         /// Output format
         #[arg(long, default_value = "json")]
         format: String,
+        /// Council mode: produce structured review request for multi-model dispatch
+        #[arg(long)]
+        council: bool,
     },
     /// Handle agent lifecycle events (reads hook payload from stdin)
     Agent {
@@ -239,8 +242,8 @@ fn main() {
         Commands::Research { topic, max_iterations, workdir } => {
             research::run(&topic, max_iterations, &workdir);
         }
-        Commands::Review { path, base, format } => {
-            review::run(&path, &base, &format);
+        Commands::Review { path, base, format, council } => {
+            review::run(&path, &base, &format, council);
         }
         Commands::Agent { state_dir } => agent::run(&state_dir),
         Commands::Remember { r#type, title, content, confidence, sync, state_dir } => {

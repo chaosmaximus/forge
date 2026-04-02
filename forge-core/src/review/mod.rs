@@ -1,7 +1,7 @@
 pub mod report;
 use std::process::Command;
 
-pub fn run(path: &str, base: &str, format: &str) {
+pub fn run(path: &str, base: &str, format: &str, council: bool) {
     eprintln!("=== Council Review ===");
     // P2 fix: reject base values that look like git options (prevent option injection)
     if base.starts_with('-') && !base.starts_with("--") {
@@ -23,10 +23,16 @@ pub fn run(path: &str, base: &str, format: &str) {
         files,
         diff_preview: diff.chars().take(5000).collect(),
     };
-    println!("{}", match format {
-        "markdown" => report::to_markdown(&context),
-        _ => report::to_json(&context),
-    });
+
+    if council {
+        // Council mode: structured output with pre-built prompts for multi-model dispatch
+        println!("{}", report::to_council_json(&context));
+    } else {
+        println!("{}", match format {
+            "markdown" => report::to_markdown(&context),
+            _ => report::to_json(&context),
+        });
+    }
 }
 
 fn get_diff(path: &str, base: &str) -> String {
