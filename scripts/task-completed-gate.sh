@@ -20,7 +20,7 @@ if [ -f "package.json" ]; then
   }
   TEST_RAN=true
 elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
-  TEST_OUTPUT=$(python -m pytest 2>&1) || {
+  TEST_OUTPUT=$(python3 -m pytest 2>&1) || {
     echo "Tests failed. Fix before completing task:" >&2
     echo "$TEST_OUTPUT" | tail -20 >&2
     exit 2
@@ -46,8 +46,8 @@ if [ "$TEST_RAN" = "false" ]; then
         exit 2
       }
       TEST_RAN=true
-    elif command -v python &>/dev/null; then
-      TEST_OUTPUT=$(python -m pytest 2>&1) || {
+    elif command -v python3 &>/dev/null; then
+      TEST_OUTPUT=$(python3 -m pytest 2>&1) || {
         echo "Tests failed (pytest detected in subdirectory). Fix before completing task:" >&2
         echo "$TEST_OUTPUT" | tail -20 >&2
         exit 2
