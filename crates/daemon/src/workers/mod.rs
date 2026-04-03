@@ -8,6 +8,7 @@
 pub mod consolidator;
 pub mod embedder;
 pub mod extractor;
+pub mod indexer;
 pub mod watcher;
 
 use crate::config::ForgeConfig;
@@ -38,6 +39,9 @@ pub fn spawn_workers(
     let embedder_state = Arc::clone(&state);
     let consolidator_state = Arc::clone(&state);
 
+    let indexer_shutdown = shutdown_tx.subscribe();
+    let indexer_state = Arc::clone(&state);
+
     let extractor_config = config.clone();
     let embedder_config = config;
 
@@ -58,7 +62,11 @@ pub fn spawn_workers(
         consolidator::run_consolidator(consolidator_state, consolidator_shutdown).await;
     });
 
-    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator");
+    let indexer_handle = tokio::spawn(async move {
+        indexer::run_indexer(indexer_state, indexer_shutdown).await;
+    });
 
-    vec![watcher_handle, extractor_handle, embedder_handle, consolidator_handle]
+    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer");
+
+    vec![watcher_handle, extractor_handle, embedder_handle, consolidator_handle, indexer_handle]
 }
