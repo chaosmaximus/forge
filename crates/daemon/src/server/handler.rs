@@ -680,6 +680,31 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::PostEditCheck { file } => {
+            let result = crate::guardrails::check::post_edit_check(&state.conn, &file);
+
+            // Emit event if there are any warnings worth surfacing
+            if !result.dangerous_patterns.is_empty() || result.callers_count > 0 || !result.decisions_to_review.is_empty() {
+                crate::events::emit(&state.events, "post_edit_warning", serde_json::json!({
+                    "file": file,
+                    "callers": result.callers_count,
+                    "warnings": result.dangerous_patterns.len() + result.decisions_to_review.len(),
+                }));
+            }
+
+            Response::Ok {
+                data: ResponseData::PostEditChecked {
+                    file: result.file,
+                    callers_count: result.callers_count,
+                    calling_files: result.calling_files,
+                    relevant_lessons: result.relevant_lessons,
+                    dangerous_patterns: result.dangerous_patterns,
+                    applicable_skills: result.applicable_skills,
+                    decisions_to_review: result.decisions_to_review,
+                },
+            }
+        }
+
         Request::BlastRadius { file } => {
             let br = crate::guardrails::blast_radius::analyze_blast_radius(&state.conn, &file);
             let decisions: Vec<forge_core::protocol::BlastRadiusDecision> = br
@@ -1399,6 +1424,71 @@ mod tests {
 
         // Should NOT have emitted a guardrail_warning event
         assert!(rx.try_recv().is_err(), "should not emit event when check is safe");
+    }
+
+    #[test]
+    fn test_post_edit_check_clean_file() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::PostEditCheck {
+            file: "src/lib.rs".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::PostEditChecked {
+                file, callers_count, calling_files, relevant_lessons,
+                dangerous_patterns, applicable_skills, decisions_to_review,
+            } } => {
+                assert_eq!(file, "src/lib.rs");
+                assert_eq!(callers_count, 0);
+                assert!(calling_files.is_empty());
+                assert!(relevant_lessons.is_empty());
+                assert!(dangerous_patterns.is_empty());
+                assert!(applicable_skills.is_empty());
+                assert!(decisions_to_review.is_empty());
+            }
+            _ => panic!("expected PostEditChecked response"),
+        }
+    }
+
+    #[test]
+    fn test_post_edit_check_with_decision_emits_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+
+        // Store a decision linked to a file
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use JWT".into(),
+            content: "JWT tokens".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+        let _id = match resp {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            _ => panic!("expected Stored"),
+        };
+        crate::db::ops::store_edge(&state.conn, &_id, "file:src/auth.rs", "affects", "{}").unwrap();
+
+        // Drain prior events
+        while rx.try_recv().is_ok() {}
+
+        let resp = handle_request(&mut state, Request::PostEditCheck {
+            file: "src/auth.rs".into(),
+        });
+        match &resp {
+            Response::Ok { data: ResponseData::PostEditChecked {
+                decisions_to_review, ..
+            } } => {
+                assert!(!decisions_to_review.is_empty());
+                assert!(decisions_to_review[0].contains("Use JWT"));
+            }
+            _ => panic!("expected PostEditChecked response"),
+        }
+
+        // Should have emitted a post_edit_warning event
+        let event = rx.try_recv().expect("should have emitted post_edit_warning event");
+        assert_eq!(event.event, "post_edit_warning");
+        assert_eq!(event.data["file"], "src/auth.rs");
     }
 
     #[test]

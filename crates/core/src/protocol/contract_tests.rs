@@ -132,6 +132,12 @@ mod tests {
                 },
             ),
             (
+                "post_edit_check",
+                Request::PostEditCheck {
+                    file: "src/main.rs".into(),
+                },
+            ),
+            (
                 "blast_radius",
                 Request::BlastRadius {
                     file: "src/main.rs".into(),
@@ -342,6 +348,10 @@ mod tests {
                 r#"{"method":"guardrails_check","params":{"file":"src/main.rs","action":"edit"}}"#,
             ),
             (
+                "post_edit_check",
+                r#"{"method":"post_edit_check","params":{"file":"src/main.rs"}}"#,
+            ),
+            (
                 "blast_radius",
                 r#"{"method":"blast_radius","params":{"file":"src/main.rs"}}"#,
             ),
@@ -444,17 +454,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 37 Request variants.
+    /// Ensure we cover ALL 38 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
         // Unit variants: 11
         let unit_count = 11;
-        // Parameterized variants: 26
-        let param_count = 26;
-        // Total: 37
-        let expected_total = 37;
+        // Parameterized variants: 27
+        let param_count = 27;
+        // Total: 38
+        let expected_total = 38;
 
         assert_eq!(
             unit_count + param_count,
@@ -512,6 +522,7 @@ mod tests {
                     file: "f".into(),
                     action: "a".into(),
                 },
+                Request::PostEditCheck { file: "f".into() },
                 Request::BlastRadius { file: "f".into() },
                 Request::RegisterSession {
                     id: "s".into(),

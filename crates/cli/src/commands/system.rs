@@ -348,6 +348,51 @@ pub async fn check(file: String, action: String) {
     }
 }
 
+/// Post-edit check — surface callers, lessons, and warnings after a file edit.
+pub async fn post_edit_check(file: String) {
+    match client::send(&Request::PostEditCheck { file: file.clone() }).await {
+        Ok(Response::Ok {
+            data: ResponseData::PostEditChecked {
+                file: _,
+                callers_count,
+                calling_files,
+                relevant_lessons,
+                dangerous_patterns,
+                applicable_skills,
+                decisions_to_review,
+            },
+        }) => {
+            if callers_count > 0 {
+                println!("callers: {} file(s) call symbols in {file}", callers_count);
+                for cf in &calling_files {
+                    println!("  - {cf}");
+                }
+            }
+            for lesson in &relevant_lessons {
+                println!("Lesson: {lesson}");
+            }
+            for pattern in &dangerous_patterns {
+                println!("Dangerous: {pattern}");
+            }
+            for skill in &applicable_skills {
+                println!("Skill: {skill}");
+            }
+            for decision in &decisions_to_review {
+                println!("Decision to review: {decision}");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Blast radius analysis on a file.
 pub async fn blast_radius(file: String) {
     match client::send(&Request::BlastRadius { file: file.clone() }).await {

@@ -86,6 +86,15 @@ pub enum ResponseData {
         dangerous_patterns: Vec<String>,
         applicable_skills: Vec<String>,
     },
+    PostEditChecked {
+        file: String,
+        callers_count: usize,
+        calling_files: Vec<String>,
+        relevant_lessons: Vec<String>,
+        dangerous_patterns: Vec<String>,
+        applicable_skills: Vec<String>,
+        decisions_to_review: Vec<String>,
+    },
     BlastRadius {
         decisions: Vec<BlastRadiusDecision>,
         callers: usize,

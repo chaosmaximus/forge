@@ -60,6 +60,10 @@ pub enum Request {
         file: String,
         action: String,
     },
+    /// Post-edit check: surface callers, lessons, and patterns after a file edit
+    PostEditCheck {
+        file: String,
+    },
     /// Blast radius analysis: what is the impact of changing this file?
     BlastRadius {
         file: String,

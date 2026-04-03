@@ -90,6 +90,52 @@ pub fn check_action(conn: &Connection, file: &str, action: &str) -> GuardrailRes
     }
 }
 
+/// Result of a post-edit check for a file.
+/// Surfaces callers, lessons, patterns, skills, and decisions for review.
+#[derive(Debug, Clone)]
+pub struct PostEditResult {
+    pub file: String,
+    pub callers_count: usize,
+    pub calling_files: Vec<String>,
+    pub relevant_lessons: Vec<String>,
+    pub dangerous_patterns: Vec<String>,
+    pub applicable_skills: Vec<String>,
+    pub decisions_to_review: Vec<String>,
+}
+
+/// Post-edit check: after a file has been modified, surface relevant context
+/// from the knowledge graph so the agent is aware of callers, lessons,
+/// dangerous patterns, applicable skills, and linked decisions.
+///
+/// This does NOT parse the new file content. It uses the EXISTING code graph
+/// to surface what the agent should be aware of after editing.
+pub fn post_edit_check(conn: &Connection, file: &str) -> PostEditResult {
+    let file_target = format!("file:{}", file);
+
+    // Reuse the same helper functions from check_action
+    let (callers_count, calling_files) = count_callers(conn, file);
+    let relevant_lessons = find_relevant_lessons(conn, &file_target);
+    let dangerous_patterns = find_dangerous_patterns(conn);
+    let applicable_skills = find_applicable_skills(conn, file);
+
+    // Also find decisions linked to this file (for review reminder)
+    let decisions = find_decisions_for_file(conn, &file_target);
+    let decisions_to_review: Vec<String> = decisions
+        .iter()
+        .map(|(_, title, _)| title.clone())
+        .collect();
+
+    PostEditResult {
+        file: file.to_string(),
+        callers_count,
+        calling_files,
+        relevant_lessons,
+        dangerous_patterns,
+        applicable_skills,
+        decisions_to_review,
+    }
+}
+
 /// Find active decisions linked to a file target via "affects" edges.
 /// Returns (id, title, confidence) tuples ordered by confidence descending.
 fn find_decisions_for_file(conn: &Connection, file_target: &str) -> Vec<(String, String, f64)> {
@@ -635,6 +681,95 @@ mod tests {
         assert!(result.relevant_lessons.is_empty());
         assert!(result.dangerous_patterns.is_empty());
         assert!(result.applicable_skills.is_empty());
+    }
+
+    // ── Post-edit check tests ──
+
+    #[test]
+    fn test_post_edit_check_with_callers() {
+        let conn = setup();
+
+        // Store a symbol in src/auth.rs
+        store_symbol(&conn, &CodeSymbol {
+            id: "sym:auth:validate".into(),
+            name: "validate_token".into(),
+            kind: "function".into(),
+            file_path: "src/auth.rs".into(),
+            line_start: 10,
+            line_end: Some(20),
+            signature: Some("fn validate_token()".into()),
+        }).unwrap();
+
+        // Store a caller symbol in a different file
+        store_symbol(&conn, &CodeSymbol {
+            id: "sym:routes:handler".into(),
+            name: "handle_request".into(),
+            kind: "function".into(),
+            file_path: "src/routes.rs".into(),
+            line_start: 5,
+            line_end: Some(15),
+            signature: Some("fn handle_request()".into()),
+        }).unwrap();
+
+        // "calls" edge from routes to auth
+        store_edge(&conn, "sym:routes:handler", "sym:auth:validate", "calls", "{}").unwrap();
+
+        let result = post_edit_check(&conn, "src/auth.rs");
+        assert_eq!(result.file, "src/auth.rs");
+        assert!(result.callers_count > 0, "should detect callers");
+        assert!(result.calling_files.contains(&"src/routes.rs".to_string()));
+    }
+
+    #[test]
+    fn test_post_edit_check_surfaces_lessons() {
+        let conn = setup();
+
+        let lesson = Memory::new(MemoryType::Lesson, "Always test auth changes", "Auth is critical");
+        remember(&conn, &lesson).unwrap();
+        store_edge(&conn, &lesson.id, "file:src/auth.rs", "affects", "{}").unwrap();
+
+        let result = post_edit_check(&conn, "src/auth.rs");
+        assert!(!result.relevant_lessons.is_empty(), "should surface relevant lesson");
+        assert!(result.relevant_lessons[0].contains("Always test auth"));
+    }
+
+    #[test]
+    fn test_post_edit_check_surfaces_dangerous_patterns() {
+        let conn = setup();
+
+        let danger = Memory::new(MemoryType::Lesson, "send_raw bypasses type safety", "Use typed Request")
+            .with_valence("negative", 0.9);
+        remember(&conn, &danger).unwrap();
+
+        let result = post_edit_check(&conn, "src/any_file.rs");
+        assert!(!result.dangerous_patterns.is_empty(), "should flag dangerous pattern");
+        assert!(result.dangerous_patterns[0].contains("send_raw"));
+    }
+
+    #[test]
+    fn test_post_edit_check_surfaces_decisions_to_review() {
+        let conn = setup();
+
+        let decision = Memory::new(MemoryType::Decision, "Use JWT for auth", "JWT tokens chosen");
+        remember(&conn, &decision).unwrap();
+        store_edge(&conn, &decision.id, "file:src/auth.rs", "affects", "{}").unwrap();
+
+        let result = post_edit_check(&conn, "src/auth.rs");
+        assert!(!result.decisions_to_review.is_empty(), "should surface decisions for review");
+        assert!(result.decisions_to_review[0].contains("Use JWT"));
+    }
+
+    #[test]
+    fn test_post_edit_check_clean_file() {
+        let conn = setup();
+
+        let result = post_edit_check(&conn, "src/brand_new.rs");
+        assert_eq!(result.callers_count, 0);
+        assert!(result.calling_files.is_empty());
+        assert!(result.relevant_lessons.is_empty());
+        assert!(result.dangerous_patterns.is_empty());
+        assert!(result.applicable_skills.is_empty());
+        assert!(result.decisions_to_review.is_empty());
     }
 
     // ── Combined scenario test ──

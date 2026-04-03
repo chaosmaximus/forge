@@ -97,6 +97,13 @@ enum Commands {
         #[arg(long, default_value = "edit")]
         action: String,
     },
+    /// Post-edit check — surface callers, lessons, and warnings after editing a file
+    #[command(name = "post-edit-check")]
+    PostEditCheck {
+        /// File path that was edited
+        #[arg(long)]
+        file: String,
+    },
     /// Blast radius analysis for a file
     #[command(name = "blast-radius")]
     BlastRadius {
@@ -310,6 +317,9 @@ async fn main() {
         }
         Commands::Check { file, action } => {
             commands::system::check(file, action).await;
+        }
+        Commands::PostEditCheck { file } => {
+            commands::system::post_edit_check(file).await;
         }
         Commands::BlastRadius { file } => {
             commands::system::blast_radius(file).await;
