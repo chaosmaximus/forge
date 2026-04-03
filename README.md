@@ -4,9 +4,11 @@
   <img src="docs/images/creation-of-adam.jpg" alt="The Creation of Adam — Michelangelo, Sistine Chapel, c. 1512" width="720" />
 </p>
 
-**The terminal that remembers.**
+**The operating system for AI agents.**
 
-An 8-layer knowledge graph that auto-extracts decisions, patterns, and architecture from your coding sessions — packaged as a premium native terminal. Works with Claude, Gemini, Codex, or any AI agent. Everything runs locally. $9/mo.
+Multi-layered memory. Proactive perception. Universal tool abstraction. One daemon — any agent, any domain.
+
+Coding is the first vertical. The architecture is domain-agnostic. The same 8-layer memory system that makes a coding agent remember your architecture can make a medical agent remember patient history, a research agent track hypotheses, or a driving agent learn road patterns. We validate on coding because we eat our own dogfood — then we expand to everything.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-378%20passing-brightgreen)]()
@@ -16,9 +18,14 @@ An 8-layer knowledge graph that auto-extracts decisions, patterns, and architect
 
 ## Why Forge?
 
-AI coding agents forget everything between sessions. The agent that spent 30 minutes understanding your auth architecture yesterday has forgotten it today. It will break decisions it doesn't know about.
+AI agents are bare metal. They're powerful reasoning engines with no nervous system. Every capability must be manually wired — MCP servers for tools, skills for workflows, hooks for automation, plugins for memory. The agent spends half its cognitive budget figuring out *how* to do things instead of *doing* things.
 
-**Forge fixes this.** A daemon runs in the background, silently extracting what your agent learns into a knowledge graph. Next session, the agent recalls — instantly.
+**Forge changes this. The agent thinks. Forge does everything else.**
+
+- **Auto-extraction** — the daemon silently learns from every session
+- **Proactive context** — the right information surfaces *before* the agent asks
+- **Ambient intelligence** — memory, indexing, security scanning, all happening continuously
+- **Universal abstraction** — one daemon, any agent, any domain
 
 ```
 Session 1: Agent learns "Use JWT for auth, RS256 signing, rotating keys"
