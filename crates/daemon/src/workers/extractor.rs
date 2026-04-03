@@ -3,7 +3,7 @@
 // Receives file paths from the watcher, reads transcripts incrementally,
 // extracts memories via the configured LLM backend, and stores them.
 
-use crate::chunk::parse_transcript_incremental;
+use crate::adapters::{self, AgentAdapter};
 use crate::config::ForgeConfig;
 use crate::db::ops;
 use crate::events;
@@ -16,12 +16,13 @@ use tokio::sync::{mpsc, watch, Mutex};
 
 /// Receives file paths from the watcher, extracts memories, and stores them in the DB.
 ///
-/// Maintains per-file byte offsets for incremental parsing so each file is only
-/// processed from where it left off.
+/// Uses agent adapters to parse transcript files — each adapter handles its own format.
+/// Maintains per-file byte offsets for incremental parsing.
 pub async fn run_extractor(
     mut file_rx: mpsc::Receiver<PathBuf>,
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
     config: ForgeConfig,
+    agent_adapters: Arc<Vec<Box<dyn AgentAdapter>>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut offsets: HashMap<PathBuf, usize> = HashMap::new();
@@ -31,7 +32,7 @@ pub async fn run_extractor(
     loop {
         tokio::select! {
             Some(path) = file_rx.recv() => {
-                if let Err(e) = process_file(&path, &mut offsets, &state, &config).await {
+                if let Err(e) = process_file(&path, &mut offsets, &state, &config, &agent_adapters).await {
                     eprintln!("[extractor] error processing {}: {e}", path.display());
                 }
             }
@@ -51,7 +52,16 @@ async fn process_file(
     offsets: &mut HashMap<PathBuf, usize>,
     state: &Arc<Mutex<crate::server::handler::DaemonState>>,
     config: &ForgeConfig,
+    agent_adapters: &[Box<dyn AgentAdapter>],
 ) -> Result<(), String> {
+    // Find the adapter for this file
+    let adapter = match adapters::adapter_for_path(agent_adapters, path) {
+        Some(a) => a,
+        None => {
+            return Err(format!("no adapter for {}", path.display()));
+        }
+    };
+
     // Read the file
     let content = tokio::fs::read_to_string(path)
         .await
@@ -60,8 +70,8 @@ async fn process_file(
     // Get the last offset for this file (or 0 if first time)
     let last_offset = offsets.get(path).copied().unwrap_or(0);
 
-    // Parse incrementally
-    let (chunks, new_offset) = parse_transcript_incremental(&content, last_offset);
+    // Parse incrementally using the matched adapter
+    let (chunks, new_offset) = adapter.parse_incremental(&content, last_offset);
 
     // Always advance the offset after parsing. Title-based dedup at remember()
     // prevents duplicate memories if the same chunks are re-processed. This avoids
