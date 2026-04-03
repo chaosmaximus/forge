@@ -41,11 +41,11 @@ pub async fn status() {
     }
 }
 
-/// Send shutdown signal to the daemon.
+/// Send shutdown signal to the daemon (without auto-starting it).
 pub async fn stop() {
     let request = Request::Shutdown;
 
-    match client::send(&request).await {
+    match client::send_no_autostart(&request).await {
         Ok(Response::Ok {
             data: ResponseData::Shutdown,
         }) => {
@@ -59,9 +59,8 @@ pub async fn stop() {
             eprintln!("unexpected response: {other:?}");
             std::process::exit(1);
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
+        Err(_) => {
+            eprintln!("Daemon is not running.");
         }
     }
 }

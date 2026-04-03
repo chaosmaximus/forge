@@ -1,6 +1,6 @@
 use forge_daemon::server::{DaemonState, run_server};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 fn default_socket_path() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -33,6 +33,13 @@ async fn main() {
         std::process::exit(1);
     }
 
+    // I2: Set directory permissions to 0700 (owner-only access)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+
     // Write PID file
     let pid = std::process::id();
     let pid_path = pid_file_path();
@@ -53,28 +60,26 @@ async fn main() {
 
     let state = Arc::new(Mutex::new(state));
 
-    // Capture paths for signal handler cleanup
-    let socket_cleanup = socket_path.clone();
-    let pid_cleanup = pid_path.clone();
+    // C1: Create shutdown watch channel
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
 
-    // Spawn signal handler for graceful shutdown
+    // I3: Spawn signal handler that sends on shutdown channel instead of process::exit
+    let shutdown_for_signal = shutdown_tx.clone();
     tokio::spawn(async move {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            eprintln!("error: signal handler failed: {e}");
-        }
-        eprintln!("\nforge-daemon: shutting down...");
-        let _ = std::fs::remove_file(&socket_cleanup);
-        let _ = std::fs::remove_file(&pid_cleanup);
-        std::process::exit(0);
+        tokio::signal::ctrl_c().await.ok();
+        eprintln!("[daemon] shutting down (signal)");
+        let _ = shutdown_for_signal.send(true);
     });
 
     eprintln!("forge-daemon: pid={pid} socket={socket_path} db={db_path}");
 
-    // Run the server (blocks forever unless IO error)
-    if let Err(e) = run_server(&socket_path, state).await {
+    // Run the server (returns when shutdown signal received or IO error)
+    if let Err(e) = run_server(&socket_path, state, shutdown_tx).await {
         eprintln!("error: server failed: {e}");
-        let _ = std::fs::remove_file(&socket_path);
-        let _ = std::fs::remove_file(&pid_path);
-        std::process::exit(1);
     }
+
+    // Graceful cleanup after server stops
+    let _ = std::fs::remove_file(&socket_path);
+    let _ = std::fs::remove_file(&pid_path);
+    eprintln!("[daemon] stopped");
 }

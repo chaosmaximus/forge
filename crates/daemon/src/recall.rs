@@ -86,14 +86,16 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
 /// 3. RRF merge of both result lists (k=60)
 /// 4. Graph expansion: 1-hop neighbors of top 5 results
 /// 5. Fetch full Memory records from SQLite
-/// 6. Touch accessed_at for returned IDs
-/// 7. Return Vec<MemoryResult> with score and source="hybrid"
+/// 6. Filter by memory_type if specified
+/// 7. Touch accessed_at for returned IDs
+/// 8. Return Vec<MemoryResult> with score and source="hybrid"
 pub fn hybrid_recall(
     conn: &Connection,
     vector_idx: &VectorIndex,
     graph: &GraphStore,
     query: &str,
     query_embedding: Option<&[f32]>,
+    memory_type: Option<&MemoryType>,
     limit: usize,
 ) -> Vec<MemoryResult> {
     let mut ranked_lists: Vec<Vec<(String, f64)>> = Vec::new();
@@ -154,6 +156,11 @@ pub fn hybrid_recall(
         }
     }
 
+    // Filter by memory_type if specified
+    if let Some(mt) = memory_type {
+        results.retain(|r| &r.memory.memory_type == mt);
+    }
+
     // Sort by score descending
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     results.truncate(limit);
@@ -189,7 +196,7 @@ mod tests {
         );
         ops::remember(&conn, &m).unwrap();
 
-        let results = hybrid_recall(&conn, &vi, &gs, "JWT authentication", None, 10);
+        let results = hybrid_recall(&conn, &vi, &gs, "JWT authentication", None, None, 10);
 
         assert!(!results.is_empty(), "should find at least one result");
         assert!(
@@ -225,6 +232,7 @@ mod tests {
             &gs,
             "JWT",
             Some(&query_emb),
+            None,
             10,
         );
 

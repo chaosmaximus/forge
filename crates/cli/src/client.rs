@@ -8,6 +8,15 @@ pub fn default_socket_path() -> String {
     format!("{home}/.forge/forge.sock")
 }
 
+/// Connect to the daemon socket without auto-starting the daemon.
+/// Returns an error if the daemon is not running.
+pub async fn connect_no_autostart() -> Result<UnixStream, String> {
+    let socket_path = std::env::var("FORGE_SOCKET").unwrap_or_else(|_| default_socket_path());
+    UnixStream::connect(&socket_path)
+        .await
+        .map_err(|e| format!("daemon not running: {e}"))
+}
+
 /// Connect to the daemon socket, auto-starting the daemon if needed.
 ///
 /// 1. Try connecting to the socket.
@@ -36,13 +45,17 @@ pub async fn connect() -> Result<UnixStream, String> {
         ));
     }
 
-    // Spawn daemon as a detached background process
-    let _child = tokio::process::Command::new(&daemon_path)
+    // C3: Spawn daemon as a detached background process
+    // Use Stdio::null() for stderr to prevent the daemon from hanging on a broken pipe
+    let child = tokio::process::Command::new(&daemon_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("failed to start forge-daemon: {e}"))?;
+
+    // Explicitly drop the child handle so the CLI doesn't hold a reference
+    drop(child);
 
     // Poll for socket availability (up to 3 seconds, every 100ms)
     let max_attempts = 30;
@@ -58,11 +71,21 @@ pub async fn connect() -> Result<UnixStream, String> {
     ))
 }
 
-/// Send a request to the daemon and return the response.
+/// Send a request to the daemon (with auto-start) and return the response.
 ///
 /// Opens a connection, writes the request as JSON + newline, reads one response line, parses it.
 pub async fn send(request: &Request) -> Result<Response, String> {
-    let stream = connect().await?;
+    send_on_stream(connect().await?, request).await
+}
+
+/// Send a request to the daemon without auto-starting it.
+/// Returns an error if the daemon is not running.
+pub async fn send_no_autostart(request: &Request) -> Result<Response, String> {
+    send_on_stream(connect_no_autostart().await?, request).await
+}
+
+/// Internal: send a request on an already-connected stream and read the response.
+async fn send_on_stream(stream: UnixStream, request: &Request) -> Result<Response, String> {
     let (read_half, mut write_half) = tokio::io::split(stream);
 
     // Serialize and send request

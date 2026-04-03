@@ -3,7 +3,7 @@ use crate::graph::GraphStore;
 use crate::recall::hybrid_recall;
 use crate::vector::VectorIndex;
 use forge_v2_core::protocol::*;
-use forge_v2_core::types::{Memory, MemoryType};
+use forge_v2_core::types::Memory;
 use rusqlite::Connection;
 use std::time::Instant;
 
@@ -62,10 +62,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::Recall { query, limit, .. } => {
+        Request::Recall { query, memory_type, limit } => {
             let lim = limit.unwrap_or(10);
             let results =
-                hybrid_recall(&state.conn, &state.vector_idx, &state.graph, &query, None, lim);
+                hybrid_recall(&state.conn, &state.vector_idx, &state.graph, &query, None, memory_type.as_ref(), lim);
             let count = results.len();
             Response::Ok {
                 data: ResponseData::Memories { results, count },
@@ -122,6 +122,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_v2_core::types::MemoryType;
 
     #[test]
     fn test_remember_and_recall() {
