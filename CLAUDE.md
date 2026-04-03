@@ -88,59 +88,77 @@ For multi-file tasks, Forge dispatches an agent team:
 
 **USE THESE AGENTS** for implementation work. Don't use raw subagents when Forge agents are available.
 
-### CLI-First Commands (v0.3.0 — no MCP)
+### CLI-First Commands (v0.6.0 — Manas)
 
-`forge` is a Rust binary with subcommands. **This is the only interface** — no MCP server.
+`forge-next` is the Rust CLI client for the forge-daemon. **This is the only interface** — no MCP server.
 
 ```bash
-# Memory (fast path — Rust cache, <5ms)
-forge remember --type decision --title "..." --content "..."  # Store memory
-forge recall "keyword"                    # Search memory cache
-forge recall --list --type decision       # List all decisions
-forge recall --graph "keyword"            # Search graph DB (slower, ~200ms)
+# Memory
+forge-next remember --type decision --title "..." --content "..."
+forge-next recall "query" [--project P] [--type T] [--limit N] [--layer L]
+forge-next forget <id>
 
-# Memory (graph operations — Rust + Python, <200ms)
-forge forget <node_id> --label Decision   # Soft-delete
-forge sync                                # Sync pending → graph DB
-forge health                              # Graph node/edge counts
-forge query "MATCH (f:File) RETURN f.name LIMIT 10"  # Cypher query
+# Session lifecycle
+forge-next register-session --id <id> --agent <agent> [--project P] [--cwd D]
+forge-next end-session --id <id>
+forge-next sessions [--all]
+
+# Context & health
+forge-next compile-context --agent claude-code [--project P]
+forge-next health
+forge-next health-by-project
+forge-next doctor
+forge-next manas-health
+
+# Identity (Ahankara)
+forge-next identity list [--agent A]
+forge-next identity set --facet <facet> --description "..." [--agent A]
+forge-next identity remove <id>
+
+# Guardrails
+forge-next check --file <path> [--action edit]
+forge-next blast-radius --file <path>
+
+# Import/export
+forge-next export [--format json]
+forge-next import [--file F]
+forge-next ingest-claude
 
 # Code intelligence
-forge index .                             # Parse Python/TS/JS → NDJSON
 forge scan .                              # Detect exposed secrets
 forge scan . --watch --interval 30        # Always-on security monitor
+
+# Other
+forge-next platform
+forge-next tools
+forge-next perceptions [--project P] [--limit N]
+forge-next lsp-status
 
 # Hooks (<5ms, called by Claude Code automatically)
 forge hook session-start                  # Context injection
 forge hook post-edit <file>               # Secret scan per file
 forge hook session-end                    # Update HUD state
 forge agent                               # Agent lifecycle tracking
-
-# Research & Review
-forge research "topic" --max-iterations 5 # AutoResearch loop
-forge review . --base HEAD~3              # Diff context for council review
-
-# System health
-forge doctor --format text                # 13 health checks
 ```
 
 ### Storing Memory
 
 **ALWAYS store important decisions.** When you make an architectural choice:
 ```bash
-forge remember --type decision --title "..." --content "..." --sync
+forge-next remember --type decision --title "..." --content "..."
 ```
-Use `--sync` to write immediately to graph DB. Without it, writes to cache only (fast, synced later).
 
 ---
 
-## Architecture (v0.5.0)
+## Architecture (v0.6.0 — Manas)
 
-**Daemon-first. CLI-first. No MCP server.**
+**Daemon-first. CLI-first. No MCP server. 8-layer memory. 7 workers. 318 tests.**
 
 ```
 forge-daemon (Rust, single binary) — always-on daemon, Unix socket API
   ├── SQLite FTS5 + sqlite-vec (memory + vectors + edges, single file)
+  ├── 8-layer memory (episodic, semantic, procedural, decision, identity, perception, disposition, working)
+  ├── 7 background workers (extraction, embedding, compaction, sync, health, adapters, events)
   ├── Guardrails engine (check + blast_radius)
   ├── Multi-agent adapters (Claude Code + Cline + Codex CLI)
   ├── Auto-extraction (claude -p --model haiku / ollama qwen3:4b)
@@ -157,6 +175,8 @@ forge-hud (Rust)       — StatusLine rendering
 - sqlite-vec stores persistent embeddings (768-dim, cosine distance)
 - Graph traversal via SQL recursive CTEs on edge table
 - Guardrails query the knowledge graph before agent actions
+- Identity system (Ahankara) for per-agent personality facets
+- Proactive context compiler assembles from all 8 layers + identity + disposition
 - Security: umask 0177, 50MB file limit, symlink defense, parameterized SQL, UTF-8 safe truncation
 
 ## Development

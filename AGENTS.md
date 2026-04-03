@@ -89,19 +89,22 @@ Agent definitions in `agents/` require tools that support spawning subagents:
 
 If your tool doesn't support agents, execute the workflow manually using skills as guides.
 
-## Architecture
+## Architecture (v0.6.0 — Manas)
 
 ```
-forge (Rust binary)          — CLI: all operations
-├── remember/recall/forget   — Memory (cache + graph)
-├── index/scan               — Code intelligence
-├── doctor/health            — System diagnostics
-├── hook/agent               — Session lifecycle
-└── query/sync               — Graph operations
+forge-daemon (Rust, single binary) — always-on daemon, Unix socket API
+├── 8-layer memory             — episodic, semantic, procedural, decision,
+│                                identity, perception, disposition, working
+├── 7 background workers       — extraction, embedding, compaction, sync,
+│                                health, adapters, events
+├── guardrails engine          — check + blast_radius
+├── multi-agent adapters       — Claude Code + Cline + Codex CLI
+├── auto-extraction            — claude -p / ollama
+├── session tracking           — active agent sessions
+└── event bus                  — tokio::broadcast
 
-forge-graph (Python library)  — LadybugDB graph wrapper
-                                Called by forge via subprocess
-                                No persistent process
+forge-next (Rust CLI)          — client for daemon, auto-starts daemon
+forge-hud (Rust)               — StatusLine rendering
 ```
 
 ## Publishing
