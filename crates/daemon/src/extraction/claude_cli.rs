@@ -9,8 +9,8 @@ const EXTRACTION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Extract memories using the `claude` CLI tool.
 ///
-/// Shells out to: `claude -p --model {model} "{prompt}"`
-/// where prompt = system_prompt + separator + conversation text.
+/// Pipes prompt via stdin: `echo "{prompt}" | claude -p --model {model}`
+/// This avoids ARG_MAX limits on long conversation texts.
 ///
 /// The command is wrapped in a 60-second timeout to prevent hangs.
 pub async fn extract(model: &str, conversation_text: &str) -> ExtractionResult {
@@ -22,12 +22,21 @@ pub async fn extract(model: &str, conversation_text: &str) -> ExtractionResult {
 
     let mut cmd = tokio::process::Command::new("claude");
     cmd.args(["-p", "--model", model])
-        .arg(&full_prompt)
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true); // Kill child if future is dropped (e.g., timeout)
+        .kill_on_drop(true);
 
-    let result = timeout(EXTRACTION_TIMEOUT, cmd.output()).await;
+    let result = timeout(EXTRACTION_TIMEOUT, async {
+        let mut child = cmd.spawn()?;
+        // Write prompt to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(full_prompt.as_bytes()).await?;
+            drop(stdin); // Close stdin so claude reads EOF
+        }
+        child.wait_with_output().await
+    }).await;
 
     match result {
         Ok(Ok(output)) if output.status.success() => {

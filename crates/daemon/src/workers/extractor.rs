@@ -69,12 +69,18 @@ async fn process_file(
         return Ok(());
     }
 
-    // Combine chunk texts for extraction
-    let combined_text: String = chunks
+    // Combine chunk texts for extraction (limit to last 20 chunks / ~50KB to avoid oversized prompts)
+    let recent_chunks: Vec<&_> = chunks.iter().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect();
+    let combined_text: String = recent_chunks
         .iter()
         .map(|c| format!("[{}] {}", c.role, c.content))
         .collect::<Vec<_>>()
         .join("\n\n");
+    let combined_text = if combined_text.len() > 50_000 {
+        combined_text[combined_text.len() - 50_000..].to_string()
+    } else {
+        combined_text
+    };
 
     // Detect backend
     let backend = extraction::detect_backend(config).await;
