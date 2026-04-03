@@ -184,10 +184,42 @@ impl LspClient {
         Ok(client)
     }
 
+    /// Check if the server supports a capability.
+    pub fn supports_document_symbols(&self) -> bool {
+        self.server_caps
+            .as_ref()
+            .and_then(|c| c.capabilities.document_symbol_provider.as_ref())
+            .is_some()
+    }
+
+    /// Notify the server that a file has been opened.
+    /// Most servers REQUIRE didOpen before responding to symbol requests.
+    pub async fn did_open(&mut self, file_uri: &str, language_id: &str, content: &str) -> Result<(), String> {
+        let uri: Uri = file_uri.parse().map_err(|e| format!("Invalid URI: {e}"))?;
+        let params = lsp_types::DidOpenTextDocumentParams {
+            text_document: lsp_types::TextDocumentItem {
+                uri,
+                language_id: language_id.to_string(),
+                version: 1,
+                text: content.to_string(),
+            },
+        };
+        self.send_notification("textDocument/didOpen", params).await
+    }
+
+    /// Notify the server that a file has been closed.
+    pub async fn did_close(&mut self, file_uri: &str) -> Result<(), String> {
+        let uri: Uri = file_uri.parse().map_err(|e| format!("Invalid URI: {e}"))?;
+        let params = lsp_types::DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+        };
+        self.send_notification("textDocument/didClose", params).await
+    }
+
     /// Request document symbols for a file.
     ///
-    /// `file_uri` should be a `file://` URI, e.g. `file:///home/user/project/src/main.rs`.
-    /// Use `path_to_file_uri()` to convert a filesystem path.
+    /// The file should already be opened via `did_open()`. Use `path_to_file_uri()`
+    /// to convert a filesystem path.
     pub async fn document_symbols(
         &mut self,
         file_uri: &str,
@@ -208,7 +240,6 @@ impl LspClient {
 
         match response {
             Some(DocumentSymbolResponse::Flat(sym_infos)) => {
-                // Convert SymbolInformation to DocumentSymbol (lossy — no children).
                 Ok(sym_infos
                     .into_iter()
                     .map(|si| {

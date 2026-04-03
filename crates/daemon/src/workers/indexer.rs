@@ -224,13 +224,18 @@ async fn index_with_server(
     .map_err(|_| format!("{} timed out during spawn/initialize", config.command))?
     .map_err(|e| format!("{} spawn failed: {}", config.command, e))?;
 
+    // Check server capabilities before requesting symbols (Serena pattern)
+    if !client.supports_document_symbols() {
+        eprintln!("[indexer] {} does not support documentSymbol, skipping", config.command);
+        let _ = client.shutdown().await;
+        return Ok((Vec::new(), Vec::new()));
+    }
+
     let mut files = Vec::new();
     let mut symbols = Vec::new();
 
     for file_path in &source_files {
         let uri = file_uri(file_path);
-
-        // Compute a simple hash from file size + mtime for change detection
         let hash = file_hash(file_path);
 
         let file_record = CodeFile {
@@ -243,7 +248,14 @@ async fn index_with_server(
         };
         files.push(file_record);
 
-        // Request symbols with timeout (per-file, but bounded by the overall server timeout)
+        // Send didOpen before requesting symbols (required by LSP protocol)
+        let content = std::fs::read_to_string(file_path).unwrap_or_default();
+        if let Err(e) = client.did_open(&uri, &config.language, &content).await {
+            eprintln!("[indexer] didOpen failed for {}: {}", file_path, e);
+            continue;
+        }
+
+        // Request symbols with per-file timeout
         match tokio::time::timeout(
             Duration::from_secs(10),
             client.document_symbols(&uri),
@@ -261,6 +273,9 @@ async fn index_with_server(
                 eprintln!("[indexer] {} symbols timed out for {}", config.language, file_path);
             }
         }
+
+        // Close the document after processing (Serena pattern: didOpen/didClose lifecycle)
+        let _ = client.did_close(&uri).await;
     }
 
     // Shut down the server gracefully
