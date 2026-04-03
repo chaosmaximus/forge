@@ -89,6 +89,7 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
 /// 6. Filter by memory_type if specified
 /// 7. Touch accessed_at for returned IDs
 /// 8. Return Vec<MemoryResult> with score and source="hybrid"
+#[allow(clippy::too_many_arguments)] // Will shrink in Phase 2 when vector_idx and graph are removed
 pub fn hybrid_recall(
     conn: &Connection,
     vector_idx: &VectorIndex,
@@ -96,12 +97,13 @@ pub fn hybrid_recall(
     query: &str,
     query_embedding: Option<&[f32]>,
     memory_type: Option<&MemoryType>,
+    project: Option<&str>,
     limit: usize,
 ) -> Vec<MemoryResult> {
     let mut ranked_lists: Vec<Vec<(String, f64)>> = Vec::new();
 
-    // 1. BM25 search
-    match ops::recall_bm25(conn, query, limit * 3) {
+    // 1. BM25 search (project-scoped: includes global memories)
+    match ops::recall_bm25_project(conn, query, project, limit * 3) {
         Ok(bm25_results) => {
             let bm25_list: Vec<(String, f64)> = bm25_results
                 .into_iter()
@@ -212,7 +214,7 @@ mod tests {
         );
         ops::remember(&conn, &m).unwrap();
 
-        let results = hybrid_recall(&conn, &vi, &gs, "JWT authentication", None, None, 10);
+        let results = hybrid_recall(&conn, &vi, &gs, "JWT authentication", None, None, None, 10);
 
         assert!(!results.is_empty(), "should find at least one result");
         assert!(
@@ -249,6 +251,7 @@ mod tests {
             "JWT",
             Some(&query_emb),
             None,
+            None,
             10,
         );
 
@@ -280,7 +283,7 @@ mod tests {
 
         // Recall "JWT" — should find A directly via BM25
         // B should appear in results via graph expansion (1-hop neighbor of A)
-        let results = hybrid_recall(&conn, &vi, &gs, "JWT authentication", None, None, 10);
+        let results = hybrid_recall(&conn, &vi, &gs, "JWT authentication", None, None, None, 10);
 
         assert!(!results.is_empty(), "should find at least one result");
 
@@ -312,6 +315,7 @@ mod tests {
             &vi,
             &gs,
             "xyzzy nonexistent gibberish",
+            None,
             None,
             None,
             10,

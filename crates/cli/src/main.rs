@@ -19,6 +19,9 @@ enum Commands {
         /// Filter by memory type (decision, lesson, pattern, preference)
         #[arg(long)]
         r#type: Option<String>,
+        /// Filter by project (global memories always included)
+        #[arg(long)]
+        project: Option<String>,
         /// Maximum number of results
         #[arg(long, default_value = "10")]
         limit: usize,
@@ -100,9 +103,10 @@ async fn main() {
         Commands::Recall {
             query,
             r#type,
+            project,
             limit,
         } => {
-            commands::memory::recall(query, r#type, limit).await;
+            commands::memory::recall(query, r#type, project, limit).await;
         }
         Commands::Remember {
             r#type,

@@ -42,6 +42,7 @@ fn recall(state: &mut DaemonState, query: &str) -> Vec<MemoryResult> {
     let req = Request::Recall {
         query: query.to_string(),
         memory_type: None,
+        project: None,
         limit: None,
     };
     let resp = handle_request(state, req);

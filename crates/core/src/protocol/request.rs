@@ -15,6 +15,7 @@ pub enum Request {
     Recall {
         query: String,
         memory_type: Option<MemoryType>,
+        project: Option<String>,
         limit: Option<usize>,
     },
     Forget {

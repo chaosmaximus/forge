@@ -75,10 +75,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::Recall { query, memory_type, limit } => {
+        Request::Recall { query, memory_type, project, limit } => {
             let lim = limit.unwrap_or(10);
             let results =
-                hybrid_recall(&state.conn, &state.vector_idx, &state.graph, &query, None, memory_type.as_ref(), lim);
+                hybrid_recall(&state.conn, &state.vector_idx, &state.graph, &query, None, memory_type.as_ref(), project.as_deref(), lim);
             let count = results.len();
             Response::Ok {
                 data: ResponseData::Memories { results, count },
@@ -406,6 +406,7 @@ mod tests {
         let recall_req = Request::Recall {
             query: "JWT auth".to_string(),
             memory_type: None,
+            project: None,
             limit: None,
         };
         let response = handle_request(&mut state, recall_req);

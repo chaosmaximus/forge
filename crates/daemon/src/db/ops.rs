@@ -165,6 +165,53 @@ pub fn recall_bm25(conn: &Connection, query: &str, limit: usize) -> rusqlite::Re
     results.collect()
 }
 
+/// Full-text search using FTS5 BM25 scoring with optional project filter.
+///
+/// When `project` is `Some("X")`, returns only memories where `project = 'X'`
+/// OR `project IS NULL` OR `project = ''` (global memories visible in every project).
+/// When `project` is `None`, returns all active memories (existing behavior).
+pub fn recall_bm25_project(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<BM25Result>> {
+    let safe_query = sanitize_fts5_query(query);
+    if safe_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    match project {
+        Some(proj) => {
+            let mut stmt = conn.prepare(
+                "SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence
+                 FROM memory_fts
+                 JOIN memory m ON memory_fts.rowid = m.rowid
+                 WHERE memory_fts MATCH ?1
+                   AND m.status = 'active'
+                   AND (m.project = ?2 OR m.project IS NULL OR m.project = '')
+                 ORDER BY score
+                 LIMIT ?3"
+            )?;
+            let results = stmt.query_map(params![safe_query, proj, limit as i64], |row| {
+                Ok(BM25Result {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    score: {
+                        let raw: f64 = row.get(3)?;
+                        raw.abs()
+                    },
+                    memory_type: row.get(4)?,
+                    confidence: row.get(5)?,
+                })
+            })?;
+            results.collect()
+        }
+        None => recall_bm25(conn, query, limit),
+    }
+}
+
 /// Soft-delete a memory by setting status to 'superseded'.
 /// Returns true if a row was updated (was active before).
 pub fn forget(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
@@ -907,6 +954,70 @@ mod tests {
             "confidence should be max of old (0.9) and new (0.95), got {}",
             results[0].confidence
         );
+    }
+
+    #[test]
+    fn test_recall_project_scoped() {
+        let conn = open_db();
+
+        // Insert: 2 forge memories, 1 backend memory, 1 global (project=NULL)
+        let m1 = Memory::new(MemoryType::Decision, "JWT for forge", "auth")
+            .with_project("forge");
+        remember(&conn, &m1).unwrap();
+
+        let m2 = Memory::new(MemoryType::Decision, "CORS for forge", "cors")
+            .with_project("forge");
+        remember(&conn, &m2).unwrap();
+
+        let m3 = Memory::new(MemoryType::Decision, "REST for backend", "api")
+            .with_project("backend");
+        remember(&conn, &m3).unwrap();
+
+        let m4 = Memory::new(MemoryType::Decision, "Use conventional commits", "global rule");
+        // project is None by default — global
+        remember(&conn, &m4).unwrap();
+
+        // Project-scoped: forge → 2 forge + 1 global = 3
+        let results = recall_bm25_project(&conn, "forge backend global conventional JWT CORS REST commits", Some("forge"), 10).unwrap();
+        let titles: Vec<&str> = results.iter().map(|r| r.title.as_str()).collect();
+        assert!(titles.iter().any(|t| t.contains("JWT")), "should find forge memory JWT, got: {:?}", titles);
+        assert!(titles.iter().any(|t| t.contains("CORS")), "should find forge memory CORS, got: {:?}", titles);
+        assert!(titles.iter().any(|t| t.contains("conventional")), "should find global memory, got: {:?}", titles);
+        assert!(!titles.iter().any(|t| t.contains("REST")), "should NOT find backend memory, got: {:?}", titles);
+        assert_eq!(results.len(), 3, "forge scope should return 2 forge + 1 global = 3");
+
+        // No project filter → all 4
+        let all = recall_bm25_project(&conn, "forge backend global conventional JWT CORS REST commits", None, 10).unwrap();
+        assert_eq!(all.len(), 4, "no project filter should return all 4 memories");
+    }
+
+    #[test]
+    fn test_global_memory_in_all_projects() {
+        let conn = open_db();
+
+        let m = Memory::new(MemoryType::Pattern, "Always test first", "TDD everywhere");
+        remember(&conn, &m).unwrap(); // project = None → global
+
+        // Should appear in any project query
+        let r1 = recall_bm25_project(&conn, "test", Some("forge"), 10).unwrap();
+        assert_eq!(r1.len(), 1, "global memory should appear in forge project");
+        let r2 = recall_bm25_project(&conn, "test", Some("backend"), 10).unwrap();
+        assert_eq!(r2.len(), 1, "global memory should appear in backend project");
+    }
+
+    #[test]
+    fn test_recall_project_empty_string_is_global() {
+        let conn = open_db();
+
+        // Memory with empty string project should also be treated as global
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at)
+             VALUES ('empty-proj', 'decision', 'Empty project memory', 'content', 0.9, 'active', '', '[]', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let results = recall_bm25_project(&conn, "empty project memory", Some("anyproject"), 10).unwrap();
+        assert_eq!(results.len(), 1, "empty-string project memory should appear as global");
     }
 
     #[test]
