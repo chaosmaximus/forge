@@ -6,6 +6,7 @@ use forge_v2_core::types::{ConversationChunk, TranscriptLine};
 pub fn parse_transcript(content: &str) -> Vec<ConversationChunk> {
     let mut chunks = Vec::new();
     let mut counter = 0usize;
+    let mut skipped = 0u64;
 
     for line in content.lines() {
         let line = line.trim();
@@ -14,6 +15,7 @@ pub fn parse_transcript(content: &str) -> Vec<ConversationChunk> {
         }
 
         let Ok(tl) = serde_json::from_str::<TranscriptLine>(line) else {
+            skipped += 1;
             continue;
         };
 
@@ -47,6 +49,10 @@ pub fn parse_transcript(content: &str) -> Vec<ConversationChunk> {
         });
     }
 
+    if skipped > 0 {
+        eprintln!("[chunk] skipped {} unparseable lines", skipped);
+    }
+
     chunks
 }
 
@@ -56,14 +62,23 @@ pub fn parse_transcript_incremental(
     content: &str,
     last_offset: usize,
 ) -> (Vec<ConversationChunk>, usize) {
-    let slice = if last_offset >= content.len() {
-        ""
-    } else {
-        &content[last_offset..]
+    if last_offset >= content.len() {
+        return (Vec::new(), last_offset);
+    }
+
+    let new_content = &content[last_offset..];
+
+    // Find the last complete line (ending with \n).
+    // Only advance offset to the end of the last complete line so that
+    // a partial line being written is not skipped.
+    let safe_end = match new_content.rfind('\n') {
+        Some(pos) => pos + 1, // include the newline
+        None => return (Vec::new(), last_offset), // no complete line yet
     };
 
-    let new_chunks = parse_transcript(slice);
-    (new_chunks, content.len())
+    let complete_content = &new_content[..safe_end];
+    let chunks = parse_transcript(complete_content);
+    (chunks, last_offset + safe_end)
 }
 
 #[cfg(test)]
@@ -140,5 +155,40 @@ mod tests {
 
         // New offset should be total length
         assert_eq!(new_offset, full.len());
+    }
+
+    #[test]
+    fn test_incremental_partial_line() {
+        let complete_line = r#"{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","sessionId":"s1"}"#;
+        let partial = r#"{"type":"assistant","message":{"role":"assis"#; // incomplete
+
+        let content = format!("{}\n{}", complete_line, partial);
+
+        let (chunks, offset) = parse_transcript_incremental(&content, 0);
+        assert_eq!(chunks.len(), 1, "should parse the complete line");
+        // Offset should NOT include the partial line
+        assert!(
+            offset < content.len(),
+            "offset should not advance past partial line"
+        );
+        assert_eq!(
+            offset,
+            complete_line.len() + 1,
+            "offset should be at end of first line + newline"
+        );
+
+        // When more content arrives (partial line completed):
+        let completed = format!(
+            "{}\n{}\n",
+            complete_line,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"world"}]},"uuid":"a1","sessionId":"s1"}"#
+        );
+        let (chunks2, offset2) = parse_transcript_incremental(&completed, offset);
+        assert_eq!(
+            chunks2.len(),
+            1,
+            "should parse the now-complete second line"
+        );
+        assert_eq!(offset2, completed.len());
     }
 }

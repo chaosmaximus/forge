@@ -20,14 +20,14 @@ pub async fn extract(model: &str, conversation_text: &str) -> ExtractionResult {
         conversation_text
     );
 
-    let result = timeout(
-        EXTRACTION_TIMEOUT,
-        tokio::process::Command::new("claude")
-            .args(["-p", "--model", model])
-            .arg(&full_prompt)
-            .output(),
-    )
-    .await;
+    let mut cmd = tokio::process::Command::new("claude");
+    cmd.args(["-p", "--model", model])
+        .arg(&full_prompt)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true); // Kill child if future is dropped (e.g., timeout)
+
+    let result = timeout(EXTRACTION_TIMEOUT, cmd.output()).await;
 
     match result {
         Ok(Ok(output)) if output.status.success() => {

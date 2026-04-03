@@ -62,10 +62,10 @@ async fn process_file(
     // Parse incrementally
     let (chunks, new_offset) = parse_transcript_incremental(&content, last_offset);
 
-    // Update offset
-    offsets.insert(path.clone(), new_offset);
-
     if chunks.is_empty() {
+        // No new complete lines — still safe to update offset to new_offset
+        // because parse_transcript_incremental only advances to the last complete newline.
+        offsets.insert(path.clone(), new_offset);
         return Ok(());
     }
 
@@ -94,13 +94,17 @@ async fn process_file(
         }
         BackendChoice::None(reason) => {
             eprintln!("[extractor] no backend available: {reason}");
+            // Don't update offset — chunks will be re-attempted next time
             return Ok(());
         }
     };
 
-    // Process results
+    // Process results — only advance offset on successful extraction
     match result {
         ExtractionResult::Success(extracted) => {
+            // Extraction succeeded — safe to advance the offset now
+            offsets.insert(path.clone(), new_offset);
+
             if extracted.is_empty() {
                 return Ok(());
             }
@@ -136,10 +140,12 @@ async fn process_file(
             Ok(())
         }
         ExtractionResult::Unavailable(reason) => {
+            // Don't update offset — chunks will be re-attempted next time
             eprintln!("[extractor] backend unavailable: {reason}");
             Ok(())
         }
         ExtractionResult::Error(err) => {
+            // Don't update offset — chunks will be re-attempted next time
             eprintln!("[extractor] extraction error: {err}");
             Ok(())
         }
