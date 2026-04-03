@@ -91,6 +91,115 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_session_agent ON session(agent);
         CREATE INDEX IF NOT EXISTS idx_session_status ON session(status);
+
+        -- Manas Layer 0: Platform
+        CREATE TABLE IF NOT EXISTS platform (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            detected_at TEXT NOT NULL
+        );
+
+        -- Manas Layer 1: Tools
+        CREATE TABLE IF NOT EXISTS tool (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            capabilities TEXT NOT NULL DEFAULT '[]',
+            config TEXT,
+            health TEXT NOT NULL DEFAULT 'unknown',
+            last_used TEXT,
+            use_count INTEGER NOT NULL DEFAULT 0,
+            discovered_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tool_kind ON tool(kind);
+        CREATE INDEX IF NOT EXISTS idx_tool_health ON tool(health);
+
+        -- Manas Layer 2: Skills
+        CREATE TABLE IF NOT EXISTS skill (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            domain TEXT NOT NULL,
+            description TEXT NOT NULL,
+            steps TEXT NOT NULL DEFAULT '[]',
+            success_count INTEGER NOT NULL DEFAULT 0,
+            fail_count INTEGER NOT NULL DEFAULT 0,
+            last_used TEXT,
+            source TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_domain ON skill(domain);
+        CREATE INDEX IF NOT EXISTS idx_skill_source ON skill(source);
+
+        -- Manas Layer 3: Domain DNA
+        CREATE TABLE IF NOT EXISTS domain_dna (
+            id TEXT PRIMARY KEY,
+            project TEXT NOT NULL,
+            aspect TEXT NOT NULL,
+            pattern TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.5,
+            evidence TEXT NOT NULL DEFAULT '[]',
+            detected_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_domain_dna_project ON domain_dna(project);
+        CREATE INDEX IF NOT EXISTS idx_domain_dna_aspect ON domain_dna(aspect);
+
+        -- Manas Layer 4: Perception
+        CREATE TABLE IF NOT EXISTS perception (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            data TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            project TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            consumed INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_perception_kind ON perception(kind);
+        CREATE INDEX IF NOT EXISTS idx_perception_consumed ON perception(consumed);
+        CREATE INDEX IF NOT EXISTS idx_perception_project ON perception(project);
+
+        -- Manas Layer 5: Declared Knowledge
+        CREATE TABLE IF NOT EXISTS declared (
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            path TEXT,
+            content TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            project TEXT,
+            ingested_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_declared_source ON declared(source);
+        CREATE INDEX IF NOT EXISTS idx_declared_project ON declared(project);
+        CREATE INDEX IF NOT EXISTS idx_declared_hash ON declared(hash);
+
+        -- Manas Layer 6: Identity
+        CREATE TABLE IF NOT EXISTS identity (
+            id TEXT PRIMARY KEY,
+            agent TEXT NOT NULL,
+            facet TEXT NOT NULL,
+            description TEXT NOT NULL,
+            strength REAL NOT NULL DEFAULT 0.5,
+            source TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_identity_agent ON identity(agent);
+        CREATE INDEX IF NOT EXISTS idx_identity_facet ON identity(facet);
+        CREATE INDEX IF NOT EXISTS idx_identity_active ON identity(active);
+
+        -- Manas Layer 7: Disposition
+        CREATE TABLE IF NOT EXISTS disposition (
+            id TEXT PRIMARY KEY,
+            agent TEXT NOT NULL,
+            trait_name TEXT NOT NULL,
+            domain TEXT,
+            value REAL NOT NULL,
+            trend TEXT NOT NULL DEFAULT 'stable',
+            updated_at TEXT NOT NULL,
+            evidence TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS idx_disposition_agent ON disposition(agent);
+        CREATE INDEX IF NOT EXISTS idx_disposition_trait ON disposition(trait_name);
     ")
 }
 
@@ -132,5 +241,34 @@ mod tests {
         // Calling create_schema twice should not error
         create_schema(&conn).unwrap();
         create_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn test_manas_tables_exist() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let manas_tables = [
+            "platform",
+            "tool",
+            "skill",
+            "domain_dna",
+            "perception",
+            "declared",
+            "identity",
+            "disposition",
+        ];
+
+        for table_name in &manas_tables {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table_name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "manas table '{}' should exist", table_name);
+        }
     }
 }
