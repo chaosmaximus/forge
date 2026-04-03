@@ -134,6 +134,16 @@ enum Commands {
         #[arg(long, default_value = "20")]
         limit: usize,
     },
+    /// Compile optimized context from all Manas layers (for session-start)
+    #[command(name = "compile-context")]
+    CompileContext {
+        /// Agent name (default: claude-code)
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
+        /// Project name
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Register an active agent session
     #[command(name = "register-session")]
     RegisterSession {
@@ -272,6 +282,9 @@ async fn main() {
         }
         Commands::EndSession { id } => {
             commands::system::end_session(id).await;
+        }
+        Commands::CompileContext { agent, project } => {
+            commands::manas::compile_context(agent, project).await;
         }
         Commands::ManasHealth => {
             commands::manas::manas_health().await;

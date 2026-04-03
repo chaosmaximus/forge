@@ -412,3 +412,38 @@ pub async fn perceptions(project: Option<String>, limit: usize) {
         }
     }
 }
+
+/// Compile optimized context from all Manas layers (for session-start injection).
+pub async fn compile_context(agent: String, project: Option<String>) {
+    let mut params = serde_json::json!({
+        "agent": agent,
+    });
+    if let Some(ref p) = project {
+        params["project"] = serde_json::Value::String(p.clone());
+    }
+    let request = serde_json::json!({
+        "method": "compile_context",
+        "params": params,
+    });
+
+    match client::send_raw(&request).await {
+        Ok(resp) => {
+            if resp.get("status").and_then(|s| s.as_str()) == Some("error") {
+                let msg = resp.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error");
+                eprintln!("error: {msg}");
+                std::process::exit(1);
+            }
+            if let Some(data) = resp.get("data") {
+                if let Some(context) = data.get("context").and_then(|c| c.as_str()) {
+                    println!("{}", context);
+                } else {
+                    println!("<forge-context version=\"0.6.0\"/>");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
