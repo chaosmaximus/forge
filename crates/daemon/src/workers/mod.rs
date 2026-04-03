@@ -5,7 +5,7 @@
 //   extractor → parses transcripts via adapters and extracts memories via LLM
 //   embedder  → generates vector embeddings for unembedded memories
 //   consolidator → periodic dedup, linking, decay
-//   indexer   → code index via forge subprocess
+//   indexer   → code index via LSP language servers
 
 pub mod consolidator;
 pub mod embedder;

@@ -130,36 +130,55 @@ fn extensions_for_language(language: &str) -> &'static [&'static str] {
 }
 
 /// Walk the project directory and collect source files matching the given extensions.
+/// Skips symlinks, hidden directories, and known non-source directories.
+/// Limited to MAX_DEPTH levels to prevent stack overflow.
 fn collect_source_files(project_dir: &str, extensions: &[&str]) -> Vec<String> {
     let skip_dirs: HashSet<&str> = SKIP_DIRS.iter().copied().collect();
     let mut files = Vec::new();
-    walk_dir_recursive(Path::new(project_dir), &skip_dirs, extensions, &mut files);
+    walk_dir_recursive(Path::new(project_dir), &skip_dirs, extensions, &mut files, 0);
     files
 }
+
+const MAX_WALK_DEPTH: usize = 20;
 
 fn walk_dir_recursive(
     dir: &Path,
     skip_dirs: &HashSet<&str>,
     extensions: &[&str],
     out: &mut Vec<String>,
+    depth: usize,
 ) {
+    if depth > MAX_WALK_DEPTH {
+        return;
+    }
+
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
 
     for entry in entries.flatten() {
+        // Use file_type() which does NOT follow symlinks on DirEntry
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+
+        // Skip symlinks entirely (prevents loops and directory escape)
+        if ft.is_symlink() {
+            continue;
+        }
+
         let path = entry.path();
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
-        if path.is_dir() {
-            // Skip hidden directories and known skip dirs
+        if ft.is_dir() {
             if name_str.starts_with('.') || skip_dirs.contains(name_str.as_ref()) {
                 continue;
             }
-            walk_dir_recursive(&path, skip_dirs, extensions, out);
-        } else if path.is_file() {
+            walk_dir_recursive(&path, skip_dirs, extensions, out, depth + 1);
+        } else if ft.is_file() {
             if let Some(ext) = path.extension() {
                 let ext_str = ext.to_string_lossy();
                 if extensions.iter().any(|e| *e == ext_str.as_ref()) {

@@ -337,6 +337,15 @@ impl LspClient {
         let len =
             content_length.ok_or_else(|| "Missing Content-Length header".to_string())?;
 
+        // Guard against OOM from malicious/buggy language server
+        const MAX_LSP_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MB
+        if len > MAX_LSP_MESSAGE_BYTES {
+            return Err(format!(
+                "LSP message too large ({} bytes, max {})",
+                len, MAX_LSP_MESSAGE_BYTES
+            ));
+        }
+
         let mut buf = vec![0u8; len];
         self.stdout
             .read_exact(&mut buf)
