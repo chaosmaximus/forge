@@ -658,6 +658,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     "safe": false,
                     "warnings": result.warnings.clone(),
                     "decisions_affected": result.decisions_affected.clone(),
+                    "callers_count": result.callers_count,
+                    "calling_files": result.calling_files.clone(),
+                    "relevant_lessons": result.relevant_lessons.clone(),
+                    "dangerous_patterns": result.dangerous_patterns.clone(),
+                    "applicable_skills": result.applicable_skills.clone(),
                 }));
             }
 
@@ -667,6 +672,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     warnings: result.warnings,
                     decisions_affected: result.decisions_affected,
                     callers_count: result.callers_count,
+                    calling_files: result.calling_files,
+                    relevant_lessons: result.relevant_lessons,
+                    dangerous_patterns: result.dangerous_patterns,
+                    applicable_skills: result.applicable_skills,
                 },
             }
         }
@@ -1277,11 +1286,15 @@ mod tests {
             action: "edit".into(),
         });
         match resp {
-            Response::Ok { data: ResponseData::GuardrailsCheck { safe, warnings, decisions_affected, callers_count } } => {
+            Response::Ok { data: ResponseData::GuardrailsCheck { safe, warnings, decisions_affected, callers_count, calling_files, relevant_lessons, dangerous_patterns, applicable_skills } } => {
                 assert!(safe);
                 assert!(warnings.is_empty());
                 assert!(decisions_affected.is_empty());
                 assert_eq!(callers_count, 0);
+                assert!(calling_files.is_empty());
+                assert!(relevant_lessons.is_empty());
+                assert!(dangerous_patterns.is_empty());
+                assert!(applicable_skills.is_empty());
             }
             _ => panic!("expected GuardrailsCheck response"),
         }

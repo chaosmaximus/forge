@@ -6,21 +6,45 @@ pub struct GuardrailResult {
     pub safe: bool,
     pub warnings: Vec<String>,
     pub decisions_affected: Vec<String>,
-    /// Number of callers of symbols in this file. Currently always 0 —
-    /// will be populated when LSP-based indexing creates "calls" edges (Phase 4).
+    /// Number of files that call symbols defined in this file.
     pub callers_count: usize,
+    /// Paths of files that call symbols defined in this file.
+    pub calling_files: Vec<String>,
+    /// Lesson/pattern titles relevant to this file (via "affects" edges).
+    pub relevant_lessons: Vec<String>,
+    /// High-intensity negative-valence memory titles (universal warnings).
+    pub dangerous_patterns: Vec<String>,
+    /// Applicable skill names matched by file path or domain.
+    pub applicable_skills: Vec<String>,
 }
 
-/// Check whether an action on a file is safe by looking up linked decisions.
+/// Check whether an action on a file is safe by querying 4 layers of the
+/// knowledge graph:
 ///
-/// Queries the edge table for active decisions linked to the target file via
-/// "affects" edges. The `action` parameter is included in warning messages
-/// for context but does not affect the safety determination.
+/// 1. **Linked decisions** — active decisions linked via "affects" edges
+/// 2. **Blast radius** — how many other files call symbols in this file
+/// 3. **Relevant lessons** — lessons/patterns linked to this file + dangerous patterns
+/// 4. **Applicable skills** — tested workflows relevant to this file
+///
+/// A file is considered unsafe if there are linked decisions OR dangerous patterns.
 pub fn check_action(conn: &Connection, file: &str, action: &str) -> GuardrailResult {
     let file_target = format!("file:{}", file);
+
+    // Check 1: Linked decisions (existing)
     let decisions = find_decisions_for_file(conn, &file_target);
 
-    let warnings: Vec<String> = decisions
+    // Check 2: Blast radius (NEW)
+    let (callers_count, calling_files) = count_callers(conn, file);
+
+    // Check 3: Relevant lessons + dangerous patterns (NEW)
+    let relevant_lessons = find_relevant_lessons(conn, &file_target);
+    let dangerous_patterns = find_dangerous_patterns(conn);
+
+    // Check 4: Applicable skills (NEW)
+    let applicable_skills = find_applicable_skills(conn, file);
+
+    // Build warnings
+    let mut warnings: Vec<String> = decisions
         .iter()
         .map(|(id, title, confidence)| {
             format!(
@@ -29,15 +53,40 @@ pub fn check_action(conn: &Connection, file: &str, action: &str) -> GuardrailRes
         })
         .collect();
 
+    if callers_count > 0 {
+        let severity = if callers_count > 5 {
+            "HIGH"
+        } else if callers_count > 2 {
+            "MEDIUM"
+        } else {
+            "LOW"
+        };
+        warnings.push(format!(
+            "Blast radius: {} files call symbols from {} — {}",
+            callers_count, file, severity
+        ));
+    }
+
+    for lesson in &relevant_lessons {
+        warnings.push(format!("Lesson: {}", lesson));
+    }
+
+    for pattern in &dangerous_patterns {
+        warnings.push(format!("Dangerous pattern: {}", pattern));
+    }
+
     let decisions_affected: Vec<String> = decisions.iter().map(|(id, _, _)| id.clone()).collect();
-    let safe = decisions_affected.is_empty();
+    let safe = decisions_affected.is_empty() && dangerous_patterns.is_empty();
 
     GuardrailResult {
         safe,
         warnings,
         decisions_affected,
-        // No "calls" edges exist yet — LSP indexing (Phase 4) will populate these.
-        callers_count: 0,
+        callers_count,
+        calling_files,
+        relevant_lessons,
+        dangerous_patterns,
+        applicable_skills,
     }
 }
 
@@ -70,11 +119,188 @@ fn find_decisions_for_file(conn: &Connection, file_target: &str) -> Vec<(String,
     rows.filter_map(|r| r.ok()).collect()
 }
 
+/// Count how many OTHER files call symbols defined in the target file.
+///
+/// Looks up symbols in `code_symbol` whose `file_path` ends with the given
+/// file path, then finds "calls" edges pointing TO those symbols from symbols
+/// in other files. Uses LIKE matching because file_path may be absolute while
+/// the hook passes a relative path.
+///
+/// Returns (count_of_unique_calling_files, list_of_calling_file_paths).
+fn count_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
+    if file.is_empty() {
+        return (0, vec![]);
+    }
+
+    // Use LIKE %file to match both absolute and relative paths stored in code_symbol.
+    let like_pattern = format!("%{}", file);
+
+    let mut stmt = match conn.prepare(
+        "SELECT DISTINCT cs2.file_path
+         FROM code_symbol s
+         JOIN edge e ON e.to_id = s.id AND e.edge_type = 'calls'
+         JOIN code_symbol cs2 ON cs2.id = e.from_id
+         WHERE s.file_path LIKE ?1
+         AND cs2.file_path NOT LIKE ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return (0, vec![]),
+    };
+
+    let rows = match stmt.query_map(params![like_pattern], |row| {
+        row.get::<_, String>(0)
+    }) {
+        Ok(r) => r,
+        Err(_) => return (0, vec![]),
+    };
+
+    let calling_files: Vec<String> = rows.filter_map(|r| r.ok()).collect();
+    let count = calling_files.len();
+    (count, calling_files)
+}
+
+/// Find lessons/patterns linked to this file via "affects" edges.
+/// Returns lesson titles ordered by confidence descending.
+fn find_relevant_lessons(conn: &Connection, file_target: &str) -> Vec<String> {
+    let mut stmt = match conn.prepare(
+        "SELECT m.title FROM memory m
+         JOIN edge e ON e.from_id = m.id
+         WHERE e.to_id = ?1 AND e.edge_type = 'affects'
+         AND m.status = 'active' AND m.memory_type IN ('lesson', 'pattern')
+         ORDER BY m.confidence DESC
+         LIMIT 5",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let rows = match stmt.query_map(params![file_target], |row| {
+        row.get::<_, String>(0)
+    }) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    rows.filter_map(|r| r.ok()).collect()
+}
+
+/// Find high-intensity negative-valence memories (universal dangerous patterns).
+/// These apply to ALL files regardless of edge linkage.
+fn find_dangerous_patterns(conn: &Connection) -> Vec<String> {
+    let mut stmt = match conn.prepare(
+        "SELECT title FROM memory
+         WHERE valence = 'negative' AND intensity > 0.7
+         AND status = 'active'
+         ORDER BY intensity DESC
+         LIMIT 3",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let rows = match stmt.query_map([], |row| {
+        row.get::<_, String>(0)
+    }) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    rows.filter_map(|r| r.ok()).collect()
+}
+
+/// Find skills whose name, domain, or description mention any path segment
+/// of the file (filename, parent directories, or stem without extension).
+/// Only returns skills with at least one successful usage.
+fn find_applicable_skills(conn: &Connection, file: &str) -> Vec<String> {
+    if file.is_empty() {
+        return vec![];
+    }
+
+    // Collect unique search terms from path segments:
+    // For "src/auth/middleware.rs" we get: ["middleware.rs", "middleware", "auth"]
+    let mut search_terms: Vec<String> = Vec::new();
+
+    if let Some(filename) = file.rsplit('/').next() {
+        if !filename.is_empty() {
+            search_terms.push(filename.to_string());
+            // Also try without extension
+            if let Some(stem) = filename.rsplit_once('.').map(|(s, _)| s) {
+                if !stem.is_empty() && stem != filename {
+                    search_terms.push(stem.to_string());
+                }
+            }
+        }
+    }
+
+    // Add parent directory components (skip the filename itself and common dirs like "src")
+    let skip_dirs = ["src", "lib", "test", "tests", "spec", "pkg", "cmd", "internal"];
+    for segment in file.split('/').rev().skip(1) {
+        if !segment.is_empty() && !skip_dirs.contains(&segment) {
+            search_terms.push(segment.to_string());
+        }
+    }
+
+    if search_terms.is_empty() {
+        return vec![];
+    }
+
+    // Build an OR query for all search terms
+    let conditions: Vec<String> = search_terms
+        .iter()
+        .enumerate()
+        .flat_map(|(i, _)| {
+            let p = i + 1; // 1-indexed
+            vec![
+                format!("description LIKE ?{p}"),
+                format!("domain LIKE ?{p}"),
+                format!("name LIKE ?{p}"),
+            ]
+        })
+        .collect();
+
+    let sql = format!(
+        "SELECT name, domain FROM skill WHERE success_count > 0 AND ({}) ORDER BY success_count DESC LIMIT 2",
+        conditions.join(" OR ")
+    );
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let like_params: Vec<String> = search_terms
+        .iter()
+        .map(|t| format!("%{}%", t))
+        .collect();
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = like_params
+        .iter()
+        .map(|s| s as &dyn rusqlite::types::ToSql)
+        .collect();
+
+    let rows = match stmt.query_map(param_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+        ))
+    }) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    rows.filter_map(|r| r.ok())
+        .map(|(name, domain)| format!("Skill: {} ({})", name, domain))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::ops::{forget, remember, store_edge};
+    use crate::db::ops::{forget, remember, store_edge, store_symbol};
+    use crate::db::manas::store_skill;
     use crate::db::schema::create_schema;
+    use forge_core::types::code::CodeSymbol;
+    use forge_core::types::manas::Skill;
     use forge_core::types::{Memory, MemoryType};
 
     fn setup() -> Connection {
@@ -83,6 +309,8 @@ mod tests {
         create_schema(&conn).unwrap();
         conn
     }
+
+    // ── Existing tests (must still pass) ──
 
     #[test]
     fn test_guardrail_no_decisions() {
@@ -116,7 +344,6 @@ mod tests {
 
         let result = check_action(&conn, "src/auth.rs", "delete");
         assert!(!result.safe);
-        assert_eq!(result.warnings.len(), 2);
         assert_eq!(result.decisions_affected.len(), 2);
         assert!(result.warnings[0].contains("[delete]"));
         assert!(result.warnings[0].contains("src/auth.rs"));
@@ -151,12 +378,339 @@ mod tests {
     fn test_guardrail_only_decisions_not_lessons() {
         let conn = setup();
 
-        // A lesson linked to a file should NOT trigger guardrails
+        // A lesson linked to a file should NOT make the check unsafe (only decisions do),
+        // but it SHOULD appear in relevant_lessons.
         let lesson = Memory::new(MemoryType::Lesson, "Learned about auth", "Auth is tricky");
         remember(&conn, &lesson).unwrap();
         store_edge(&conn, &lesson.id, "file:src/auth.rs", "affects", "{}").unwrap();
 
         let result = check_action(&conn, "src/auth.rs", "edit");
         assert!(result.safe, "lessons should not trigger guardrails, only decisions");
+        // But the lesson should be surfaced
+        assert!(!result.relevant_lessons.is_empty(), "lesson should be surfaced in relevant_lessons");
+    }
+
+    // ── New tests for Check 2: Blast Radius ──
+
+    #[test]
+    fn test_blast_radius_with_callers() {
+        let conn = setup();
+
+        // Store a symbol in src/auth.rs
+        store_symbol(&conn, &CodeSymbol {
+            id: "sym:auth:validate".into(),
+            name: "validate_token".into(),
+            kind: "function".into(),
+            file_path: "src/auth.rs".into(),
+            line_start: 10,
+            line_end: Some(20),
+            signature: Some("fn validate_token()".into()),
+        }).unwrap();
+
+        // Store a caller symbol in a different file
+        store_symbol(&conn, &CodeSymbol {
+            id: "sym:routes:handler".into(),
+            name: "handle_request".into(),
+            kind: "function".into(),
+            file_path: "src/routes.rs".into(),
+            line_start: 5,
+            line_end: Some(15),
+            signature: Some("fn handle_request()".into()),
+        }).unwrap();
+
+        // Store a "calls" edge from routes to auth
+        store_edge(&conn, "sym:routes:handler", "sym:auth:validate", "calls", "{}").unwrap();
+
+        let result = check_action(&conn, "src/auth.rs", "edit");
+        assert!(result.callers_count > 0, "should detect callers");
+        assert!(!result.calling_files.is_empty(), "should list calling files");
+        assert!(result.calling_files.contains(&"src/routes.rs".to_string()));
+        assert!(result.warnings.iter().any(|w| w.contains("Blast radius")));
+    }
+
+    #[test]
+    fn test_blast_radius_excludes_same_file() {
+        let conn = setup();
+
+        // Two symbols in the same file
+        store_symbol(&conn, &CodeSymbol {
+            id: "sym:auth:validate".into(),
+            name: "validate_token".into(),
+            kind: "function".into(),
+            file_path: "src/auth.rs".into(),
+            line_start: 10,
+            line_end: Some(20),
+            signature: None,
+        }).unwrap();
+
+        store_symbol(&conn, &CodeSymbol {
+            id: "sym:auth:helper".into(),
+            name: "auth_helper".into(),
+            kind: "function".into(),
+            file_path: "src/auth.rs".into(),
+            line_start: 25,
+            line_end: Some(35),
+            signature: None,
+        }).unwrap();
+
+        // Call edge within the same file — should NOT count
+        store_edge(&conn, "sym:auth:helper", "sym:auth:validate", "calls", "{}").unwrap();
+
+        let result = check_action(&conn, "src/auth.rs", "edit");
+        assert_eq!(result.callers_count, 0, "same-file callers should not count");
+        assert!(result.calling_files.is_empty());
+    }
+
+    #[test]
+    fn test_blast_radius_severity_levels() {
+        let conn = setup();
+
+        // Target symbol
+        store_symbol(&conn, &CodeSymbol {
+            id: "sym:core:process".into(),
+            name: "process".into(),
+            kind: "function".into(),
+            file_path: "src/core.rs".into(),
+            line_start: 1,
+            line_end: Some(10),
+            signature: None,
+        }).unwrap();
+
+        // Create 6 callers from different files => HIGH severity
+        for i in 0..6 {
+            let caller_id = format!("sym:caller{}:fn", i);
+            let caller_file = format!("src/caller{}.rs", i);
+            store_symbol(&conn, &CodeSymbol {
+                id: caller_id.clone(),
+                name: format!("caller_{}", i),
+                kind: "function".into(),
+                file_path: caller_file,
+                line_start: 1,
+                line_end: Some(5),
+                signature: None,
+            }).unwrap();
+            store_edge(&conn, &caller_id, "sym:core:process", "calls", "{}").unwrap();
+        }
+
+        let result = check_action(&conn, "src/core.rs", "edit");
+        assert_eq!(result.callers_count, 6);
+        assert!(result.warnings.iter().any(|w| w.contains("HIGH")));
+    }
+
+    // ── New tests for Check 3: Relevant Lessons ──
+
+    #[test]
+    fn test_relevant_lessons_surfaced() {
+        let conn = setup();
+
+        let lesson = Memory::new(MemoryType::Lesson, "Always test auth changes", "Auth is critical");
+        remember(&conn, &lesson).unwrap();
+        store_edge(&conn, &lesson.id, "file:src/auth.rs", "affects", "{}").unwrap();
+
+        let result = check_action(&conn, "src/auth.rs", "edit");
+        assert!(!result.relevant_lessons.is_empty(), "should surface relevant lesson");
+        assert!(result.relevant_lessons[0].contains("Always test auth"));
+        assert!(result.warnings.iter().any(|w| w.contains("Lesson: Always test auth")));
+        // Lessons alone don't make it unsafe
+        assert!(result.safe);
+    }
+
+    #[test]
+    fn test_relevant_patterns_surfaced() {
+        let conn = setup();
+
+        let pattern = Memory::new(MemoryType::Pattern, "Auth middleware pattern", "Check token first");
+        remember(&conn, &pattern).unwrap();
+        store_edge(&conn, &pattern.id, "file:src/auth.rs", "affects", "{}").unwrap();
+
+        let result = check_action(&conn, "src/auth.rs", "edit");
+        assert!(!result.relevant_lessons.is_empty(), "patterns should also surface as lessons");
+        assert!(result.relevant_lessons[0].contains("Auth middleware pattern"));
+    }
+
+    #[test]
+    fn test_dangerous_patterns_flagged() {
+        let conn = setup();
+
+        let danger = Memory::new(MemoryType::Lesson, "send_raw bypasses type safety", "Use typed Request")
+            .with_valence("negative", 0.9);
+        remember(&conn, &danger).unwrap();
+
+        let result = check_action(&conn, "src/any_file.rs", "edit");
+        assert!(!result.dangerous_patterns.is_empty(), "should flag dangerous pattern");
+        assert!(result.dangerous_patterns[0].contains("send_raw"));
+        assert!(!result.safe, "should be unsafe when dangerous patterns exist");
+        assert!(result.warnings.iter().any(|w| w.contains("Dangerous pattern")));
+    }
+
+    #[test]
+    fn test_low_intensity_negative_not_flagged() {
+        let conn = setup();
+
+        // Negative valence but LOW intensity (0.3 < 0.7 threshold)
+        let mild = Memory::new(MemoryType::Lesson, "Minor style issue", "Prefer camelCase")
+            .with_valence("negative", 0.3);
+        remember(&conn, &mild).unwrap();
+
+        let result = check_action(&conn, "src/any_file.rs", "edit");
+        assert!(result.dangerous_patterns.is_empty(), "low intensity should not be flagged");
+        assert!(result.safe);
+    }
+
+    #[test]
+    fn test_superseded_negative_not_flagged() {
+        let conn = setup();
+
+        let danger = Memory::new(MemoryType::Lesson, "Old dangerous pattern", "Was dangerous")
+            .with_valence("negative", 0.95);
+        remember(&conn, &danger).unwrap();
+        forget(&conn, &danger.id).unwrap(); // superseded
+
+        let result = check_action(&conn, "src/any_file.rs", "edit");
+        assert!(result.dangerous_patterns.is_empty(), "superseded patterns should not be flagged");
+        assert!(result.safe);
+    }
+
+    // ── New tests for Check 4: Applicable Skills ──
+
+    #[test]
+    fn test_applicable_skills_found() {
+        let conn = setup();
+
+        let skill = Skill {
+            id: "s1".into(),
+            name: "Auth update workflow".into(),
+            domain: "auth".into(),
+            description: "Steps for updating auth middleware".into(),
+            steps: vec!["Step 1".into(), "Step 2".into()],
+            success_count: 3,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        store_skill(&conn, &skill).unwrap();
+
+        let result = check_action(&conn, "src/auth/middleware.rs", "edit");
+        assert!(!result.applicable_skills.is_empty(), "should find applicable skill");
+        assert!(result.applicable_skills[0].contains("Auth update workflow"));
+        assert!(result.applicable_skills[0].contains("auth"));
+    }
+
+    #[test]
+    fn test_skills_with_zero_success_excluded() {
+        let conn = setup();
+
+        let skill = Skill {
+            id: "s2".into(),
+            name: "Untested workflow".into(),
+            domain: "auth".into(),
+            description: "Never successfully used".into(),
+            steps: vec![],
+            success_count: 0,
+            fail_count: 2,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        store_skill(&conn, &skill).unwrap();
+
+        let result = check_action(&conn, "src/auth/middleware.rs", "edit");
+        assert!(result.applicable_skills.is_empty(), "skills with 0 success should be excluded");
+    }
+
+    // ── Clean file test ──
+
+    #[test]
+    fn test_clean_file_is_safe() {
+        let conn = setup();
+
+        let result = check_action(&conn, "src/new_file.rs", "edit");
+        assert!(result.safe);
+        assert!(result.warnings.is_empty());
+        assert_eq!(result.callers_count, 0);
+        assert!(result.calling_files.is_empty());
+        assert!(result.relevant_lessons.is_empty());
+        assert!(result.dangerous_patterns.is_empty());
+        assert!(result.applicable_skills.is_empty());
+    }
+
+    // ── Combined scenario test ──
+
+    #[test]
+    fn test_all_checks_combined() {
+        let conn = setup();
+
+        // Decision linked to file
+        let decision = Memory::new(MemoryType::Decision, "Use JWT", "JWT tokens");
+        remember(&conn, &decision).unwrap();
+        store_edge(&conn, &decision.id, "file:src/auth.rs", "affects", "{}").unwrap();
+
+        // Lesson linked to file
+        let lesson = Memory::new(MemoryType::Lesson, "Always test auth", "Important");
+        remember(&conn, &lesson).unwrap();
+        store_edge(&conn, &lesson.id, "file:src/auth.rs", "affects", "{}").unwrap();
+
+        // Dangerous pattern (global)
+        let danger = Memory::new(MemoryType::Lesson, "Never use eval()", "Security risk")
+            .with_valence("negative", 0.95);
+        remember(&conn, &danger).unwrap();
+
+        // Symbol + caller
+        store_symbol(&conn, &CodeSymbol {
+            id: "sym:auth:check".into(),
+            name: "check".into(),
+            kind: "function".into(),
+            file_path: "src/auth.rs".into(),
+            line_start: 1,
+            line_end: Some(10),
+            signature: None,
+        }).unwrap();
+        store_symbol(&conn, &CodeSymbol {
+            id: "sym:routes:index".into(),
+            name: "index".into(),
+            kind: "function".into(),
+            file_path: "src/routes.rs".into(),
+            line_start: 1,
+            line_end: Some(10),
+            signature: None,
+        }).unwrap();
+        store_edge(&conn, "sym:routes:index", "sym:auth:check", "calls", "{}").unwrap();
+
+        // Skill
+        let skill = Skill {
+            id: "s-auth".into(),
+            name: "Auth workflow".into(),
+            domain: "auth".into(),
+            description: "For auth.rs changes".into(),
+            steps: vec![],
+            success_count: 5,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        store_skill(&conn, &skill).unwrap();
+
+        let result = check_action(&conn, "src/auth.rs", "edit");
+
+        // Not safe (decision + dangerous pattern)
+        assert!(!result.safe);
+        assert_eq!(result.decisions_affected.len(), 1);
+        assert_eq!(result.callers_count, 1);
+        assert!(result.calling_files.contains(&"src/routes.rs".to_string()));
+        assert!(!result.relevant_lessons.is_empty());
+        assert!(!result.dangerous_patterns.is_empty());
+        assert!(!result.applicable_skills.is_empty());
+
+        // Warnings should contain entries from all checks
+        let all_warnings = result.warnings.join("\n");
+        assert!(all_warnings.contains("Use JWT"));
+        assert!(all_warnings.contains("Blast radius"));
+        assert!(all_warnings.contains("Lesson: Always test auth"));
+        assert!(all_warnings.contains("Dangerous pattern: Never use eval()"));
     }
 }

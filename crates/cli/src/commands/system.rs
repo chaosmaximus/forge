@@ -307,7 +307,10 @@ pub async fn backfill(path: String) {
 pub async fn check(file: String, action: String) {
     match client::send(&Request::GuardrailsCheck { file: file.clone(), action }).await {
         Ok(Response::Ok {
-            data: ResponseData::GuardrailsCheck { safe, warnings, decisions_affected, callers_count },
+            data: ResponseData::GuardrailsCheck {
+                safe, warnings, decisions_affected, callers_count,
+                calling_files, relevant_lessons, dangerous_patterns, applicable_skills,
+            },
         }) => {
             if safe {
                 println!("Safe to proceed — no decisions linked to {file}");
@@ -318,7 +321,19 @@ pub async fn check(file: String, action: String) {
                 }
             }
             if callers_count > 0 {
-                println!("  Note: {callers_count} caller(s) reference symbols in this file");
+                println!("  Blast radius: {callers_count} file(s) call symbols in this file");
+                for cf in &calling_files {
+                    println!("    - {cf}");
+                }
+            }
+            for lesson in &relevant_lessons {
+                println!("  Lesson: {lesson}");
+            }
+            for pattern in &dangerous_patterns {
+                println!("  Dangerous: {pattern}");
+            }
+            for skill in &applicable_skills {
+                println!("  {skill}");
             }
         }
         Ok(Response::Error { message }) => {

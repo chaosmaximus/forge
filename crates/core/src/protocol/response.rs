@@ -81,6 +81,10 @@ pub enum ResponseData {
         warnings: Vec<String>,
         decisions_affected: Vec<String>,
         callers_count: usize,
+        calling_files: Vec<String>,
+        relevant_lessons: Vec<String>,
+        dangerous_patterns: Vec<String>,
+        applicable_skills: Vec<String>,
     },
     BlastRadius {
         decisions: Vec<BlastRadiusDecision>,
