@@ -62,7 +62,12 @@ pub fn parse_transcript_incremental(
     content: &str,
     last_offset: usize,
 ) -> (Vec<ConversationChunk>, usize) {
-    if last_offset >= content.len() {
+    if last_offset > content.len() {
+        // File was truncated or rotated — reset offset to beginning
+        eprintln!("[chunk] file truncated (offset {} > len {}), resetting", last_offset, content.len());
+        return parse_transcript_incremental(content, 0);
+    }
+    if last_offset == content.len() {
         return (Vec::new(), last_offset);
     }
 
@@ -190,5 +195,28 @@ mod tests {
             "should parse the now-complete second line"
         );
         assert_eq!(offset2, completed.len());
+    }
+
+    #[test]
+    fn test_incremental_file_truncation() {
+        // Simulate a file that gets truncated (e.g., log rotation)
+        let line1 = r#"{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","sessionId":"s1"}"#;
+        let original = format!("{}\n", line1);
+
+        // First read: parse the full file
+        let (chunks, offset) = parse_transcript_incremental(&original, 0);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(offset, original.len());
+
+        // File gets truncated to something shorter
+        let truncated = r#"{"type":"user","message":{"role":"user","content":"new"},"uuid":"u2","sessionId":"s2"}"#;
+        let truncated_content = format!("{}\n", truncated);
+
+        // Old offset > new content length → should reset and parse from beginning
+        assert!(offset > truncated_content.len());
+        let (chunks2, offset2) = parse_transcript_incremental(&truncated_content, offset);
+        assert_eq!(chunks2.len(), 1, "should parse the new file from beginning");
+        assert_eq!(chunks2[0].content, "new");
+        assert_eq!(offset2, truncated_content.len());
     }
 }

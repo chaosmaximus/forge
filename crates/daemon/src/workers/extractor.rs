@@ -108,15 +108,15 @@ async fn process_file(
     // Process results — only advance offset on successful extraction
     match result {
         ExtractionResult::Success(extracted) => {
-            // Extraction succeeded — safe to advance the offset now
-            offsets.insert(path.clone(), new_offset);
-
             if extracted.is_empty() {
+                // Nothing extracted — safe to advance offset (extraction ran successfully)
+                offsets.insert(path.clone(), new_offset);
                 return Ok(());
             }
 
             let locked = state.lock().await;
             let mut stored = 0usize;
+            let mut failed = 0usize;
 
             for em in &extracted {
                 let memory_type = match em.memory_type.as_str() {
@@ -124,7 +124,7 @@ async fn process_file(
                     "lesson" => MemoryType::Lesson,
                     "pattern" => MemoryType::Pattern,
                     "preference" => MemoryType::Preference,
-                    _ => MemoryType::Lesson, // fallback
+                    _ => MemoryType::Lesson,
                 };
 
                 let memory = Memory::new(memory_type, &em.title, &em.content)
@@ -133,9 +133,18 @@ async fn process_file(
 
                 if let Err(e) = ops::remember(&locked.conn, &memory) {
                     eprintln!("[extractor] failed to store memory '{}': {e}", em.title);
+                    failed += 1;
                 } else {
                     stored += 1;
                 }
+            }
+
+            // Only advance offset if ALL memories were stored successfully.
+            // If any failed, keep old offset so chunks are re-extracted next time.
+            if failed == 0 {
+                offsets.insert(path.clone(), new_offset);
+            } else {
+                eprintln!("[extractor] {} store failures — offset NOT advanced, will retry", failed);
             }
 
             eprintln!(
