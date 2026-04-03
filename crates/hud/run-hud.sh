@@ -14,7 +14,7 @@ done
 export CLAUDE_PLUGIN_DATA="${FORGE_DIR:-$HOME/.claude/plugins/data/forge-forge-marketplace}"
 # Try workspace binary first (development), then local target
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-WORKSPACE_DIR="$(dirname "$SCRIPT_DIR")"
+WORKSPACE_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 if [ -x "$WORKSPACE_DIR/target/release/forge-hud" ]; then
     exec "$WORKSPACE_DIR/target/release/forge-hud" "$@"
 elif [ -x "$SCRIPT_DIR/target/release/forge-hud" ]; then
