@@ -8,5 +8,6 @@ pub mod adapters;
 pub mod guardrails;
 pub mod migrate;
 pub mod recall;
+pub mod sessions;
 pub mod server;
 pub mod workers;

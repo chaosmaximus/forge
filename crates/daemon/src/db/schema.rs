@@ -79,6 +79,18 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_code_symbol_name ON code_symbol(name);
         CREATE INDEX IF NOT EXISTS idx_code_symbol_file ON code_symbol(file_path);
+
+        CREATE TABLE IF NOT EXISTS session (
+            id TEXT PRIMARY KEY,
+            agent TEXT NOT NULL,
+            project TEXT,
+            cwd TEXT,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            status TEXT NOT NULL DEFAULT 'active'
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_agent ON session(agent);
+        CREATE INDEX IF NOT EXISTS idx_session_status ON session(status);
     ")
 }
 
