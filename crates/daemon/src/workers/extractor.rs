@@ -18,6 +18,10 @@ use tokio::sync::{mpsc, watch, Mutex};
 ///
 /// Uses agent adapters to parse transcript files — each adapter handles its own format.
 /// Maintains per-file byte offsets for incremental parsing.
+///
+/// Extraction is debounced: collects file change events and waits for a 30-second
+/// activity gap before calling the LLM. This prevents wasting API credits during
+/// active editing sessions where the transcript changes every few seconds.
 pub async fn run_extractor(
     mut file_rx: mpsc::Receiver<PathBuf>,
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
@@ -26,20 +30,59 @@ pub async fn run_extractor(
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut offsets: HashMap<PathBuf, usize> = HashMap::new();
+    let mut pending: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
-    eprintln!("[extractor] ready, waiting for files...");
+    eprintln!("[extractor] ready, waiting for files (30s debounce)...");
 
     loop {
+        // Wait for a file event or shutdown
         tokio::select! {
             Some(path) = file_rx.recv() => {
-                if let Err(e) = process_file(&path, &mut offsets, &state, &config, &agent_adapters).await {
-                    eprintln!("[extractor] error processing {}: {e}", path.display());
-                }
+                pending.insert(path);
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
+                    // Process any pending files before shutdown
+                    for path in pending.drain() {
+                        let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters).await;
+                    }
                     eprintln!("[extractor] shutdown received");
                     return;
+                }
+            }
+        }
+
+        // Activity gap debounce: keep collecting events for 30 seconds of silence.
+        // This prevents calling the LLM extractor on every keystroke during active sessions.
+        loop {
+            tokio::select! {
+                Some(path) = file_rx.recv() => {
+                    pending.insert(path);
+                    // Reset the debounce timer (keep waiting for silence)
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                    // 30 seconds of silence — process all pending files
+                    break;
+                }
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        for path in pending.drain() {
+                            let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters).await;
+                        }
+                        eprintln!("[extractor] shutdown received during debounce");
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Process all accumulated files
+        let files_to_process: Vec<PathBuf> = pending.drain().collect();
+        if !files_to_process.is_empty() {
+            eprintln!("[extractor] processing {} files after activity gap", files_to_process.len());
+            for path in &files_to_process {
+                if let Err(e) = process_file(path, &mut offsets, &state, &config, &agent_adapters).await {
+                    eprintln!("[extractor] error processing {}: {e}", path.display());
                 }
             }
         }

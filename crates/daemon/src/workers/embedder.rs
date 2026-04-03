@@ -20,11 +20,11 @@ pub async fn run_embedder(
     config: ForgeConfig,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    eprintln!("[embedder] started, interval = 30s");
+    eprintln!("[embedder] started, interval = 60s");
 
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+            _ = tokio::time::sleep(Duration::from_secs(60)) => {}
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     eprintln!("[embedder] shutdown received");
