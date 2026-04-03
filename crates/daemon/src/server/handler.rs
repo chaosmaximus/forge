@@ -114,9 +114,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::Doctor => {
-            let h = ops::health(&state.conn).unwrap_or_default();
-            let files = ops::count_files(&state.conn).unwrap_or(0);
-            let symbols = ops::count_symbols(&state.conn).unwrap_or(0);
+            let h = match ops::health(&state.conn) {
+                Ok(h) => h,
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("doctor: health check failed: {e}"),
+                    }
+                }
+            };
+            let files = match ops::count_files(&state.conn) {
+                Ok(n) => n,
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("doctor: count_files failed: {e}"),
+                    }
+                }
+            };
+            let symbols = match ops::count_symbols(&state.conn) {
+                Ok(n) => n,
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("doctor: count_symbols failed: {e}"),
+                    }
+                }
+            };
             Response::Ok {
                 data: ResponseData::Doctor {
                     daemon_up: true,

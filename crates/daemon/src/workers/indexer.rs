@@ -56,10 +56,11 @@ async fn run_index(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut files_stored = 0usize;
-    let mut symbols_stored = 0usize;
+    let indexed_at = now_str();
 
-    let locked = state.lock().await;
+    // MEDIUM FIX: Parse NDJSON OUTSIDE the Mutex lock to avoid holding it during parsing
+    let mut files_to_store: Vec<CodeFile> = Vec::new();
+    let mut symbols_to_store: Vec<CodeSymbol> = Vec::new();
 
     for line in stdout.lines() {
         let trimmed = line.trim();
@@ -68,34 +69,59 @@ async fn run_index(
         }
 
         if let Ok(v1) = serde_json::from_str::<V1IndexSymbol>(trimmed) {
-            // Store file (dedup by path)
             let file = CodeFile {
                 id: format!("file:{}", v1.file_path),
                 path: v1.file_path.clone(),
                 language: v1.language.clone().unwrap_or_else(|| "unknown".into()),
                 project: project_dir.to_string(),
                 hash: v1.hash.clone().unwrap_or_default(),
-                indexed_at: now_str(),
+                indexed_at: indexed_at.clone(),
             };
-            if ops::store_file(&locked.conn, &file).is_ok() {
-                files_stored += 1;
-            }
+            files_to_store.push(file);
 
-            // Store symbol
-            let sym = CodeSymbol {
-                id: v1.id.clone(),
-                name: v1.name.clone(),
-                kind: v1.kind.clone(),
-                file_path: v1.file_path.clone(),
-                line_start: v1.line_start.unwrap_or(0),
-                line_end: v1.line_end,
-                signature: v1.signature.clone(),
-            };
-            if ops::store_symbol(&locked.conn, &sym).is_ok() {
-                symbols_stored += 1;
+            // MEDIUM FIX: Skip v1 "file" records — they represent files, not symbols.
+            // Only store actual symbols (function, class, method, etc.).
+            if v1.kind != "file" {
+                let sym = CodeSymbol {
+                    id: v1.id.clone(),
+                    name: v1.name.clone(),
+                    kind: v1.kind.clone(),
+                    file_path: v1.file_path.clone(),
+                    line_start: v1.line_start.unwrap_or(0),
+                    line_end: v1.line_end,
+                    signature: v1.signature.clone(),
+                };
+                symbols_to_store.push(sym);
             }
         }
     }
+
+    // Take lock only for the batch DB writes
+    let locked = state.lock().await;
+
+    let mut files_stored = 0usize;
+    let mut symbols_stored = 0usize;
+
+    for file in &files_to_store {
+        if ops::store_file(&locked.conn, file).is_ok() {
+            files_stored += 1;
+        }
+    }
+    for sym in &symbols_to_store {
+        if ops::store_symbol(&locked.conn, sym).is_ok() {
+            symbols_stored += 1;
+        }
+    }
+
+    // HIGH-2 FIX: Clean up stale entries for files no longer in the index output
+    let current_paths: Vec<&str> = files_to_store.iter().map(|f| f.path.as_str()).collect();
+    if let Ok(cleaned) = ops::cleanup_stale_files(&locked.conn, &current_paths) {
+        if cleaned > 0 {
+            eprintln!("[indexer] cleaned {} stale entries", cleaned);
+        }
+    }
+
+    drop(locked); // release lock immediately
 
     if symbols_stored > 0 {
         eprintln!(

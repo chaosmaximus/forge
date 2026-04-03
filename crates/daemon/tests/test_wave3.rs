@@ -7,21 +7,46 @@ use std::io::Write;
 use tempfile::NamedTempFile;
 
 #[test]
-fn test_confidence_decay() {
+fn test_confidence_decay_idempotent() {
     let state = DaemonState::new(":memory:").unwrap();
-    // Insert memory with old accessed_at (60 days ago)
+
+    // Insert 90-day-old memory (effective = 0.9 * exp(-0.03*90) ~ 0.06 < 0.1 → should fade)
     state.conn.execute(
         "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
          VALUES ('d1', 'decision', 'Old decision', 'content', 0.9, 'active', '[]',
-                 datetime('now', '-60 days'), datetime('now', '-60 days'))",
+                 datetime('now', '-90 days'), datetime('now', '-90 days'))",
         [],
     ).unwrap();
 
-    let (decayed, _) = ops::decay_memories(&state.conn).unwrap();
-    assert!(decayed >= 1);
+    // Insert 30-day-old memory (effective = 0.9 * exp(-0.03*30) ~ 0.37 > 0.1 → stays active)
+    state.conn.execute(
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
+         VALUES ('d2', 'decision', 'Mid decision', 'content', 0.9, 'active', '[]',
+                 datetime('now', '-30 days'), datetime('now', '-30 days'))",
+        [],
+    ).unwrap();
 
+    let (checked, faded) = ops::decay_memories(&state.conn).unwrap();
+    assert_eq!(checked, 2);
+    assert_eq!(faded, 1, "90-day memory should be faded");
+
+    // Stored confidence is never modified — this is the core fix for HIGH-1
     let conf: f64 = state.conn.query_row("SELECT confidence FROM memory WHERE id = 'd1'", [], |r| r.get(0)).unwrap();
-    assert!(conf < 0.5, "60-day-old memory should be below 0.5: got {}", conf);
+    assert!((conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {}", conf);
+
+    let conf2: f64 = state.conn.query_row("SELECT confidence FROM memory WHERE id = 'd2'", [], |r| r.get(0)).unwrap();
+    assert!((conf2 - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {}", conf2);
+
+    // Status checks
+    let s1: String = state.conn.query_row("SELECT status FROM memory WHERE id = 'd1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(s1, "faded");
+    let s2: String = state.conn.query_row("SELECT status FROM memory WHERE id = 'd2'", [], |r| r.get(0)).unwrap();
+    assert_eq!(s2, "active");
+
+    // Running decay again should produce the same result (idempotent)
+    let (checked2, faded2) = ops::decay_memories(&state.conn).unwrap();
+    assert_eq!(checked2, 1, "only d2 is still active after first run");
+    assert_eq!(faded2, 0, "d2 should not fade on second run");
 }
 
 #[test]
