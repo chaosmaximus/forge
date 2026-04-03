@@ -51,6 +51,28 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_edge_from ON edge(from_id);
         CREATE INDEX IF NOT EXISTS idx_edge_to ON edge(to_id);
         CREATE INDEX IF NOT EXISTS idx_edge_type ON edge(edge_type);
+
+        CREATE TABLE IF NOT EXISTS code_file (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            language TEXT NOT NULL,
+            project TEXT NOT NULL DEFAULT '',
+            hash TEXT NOT NULL,
+            indexed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_file_path ON code_file(path);
+
+        CREATE TABLE IF NOT EXISTS code_symbol (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            line_start INTEGER,
+            line_end INTEGER,
+            signature TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_symbol_name ON code_symbol(name);
+        CREATE INDEX IF NOT EXISTS idx_code_symbol_file ON code_symbol(file_path);
     ")
 }
 

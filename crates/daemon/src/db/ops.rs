@@ -1,5 +1,5 @@
 use rusqlite::{Connection, params};
-use forge_v2_core::types::{Memory, MemoryType};
+use forge_v2_core::types::{Memory, MemoryType, CodeFile, CodeSymbol};
 
 /// BM25 search result
 #[derive(Debug, Clone)]
@@ -210,11 +210,39 @@ pub fn touch(conn: &Connection, ids: &[&str]) {
     }
 }
 
+/// Insert or replace a code file record.
+pub fn store_file(conn: &Connection, file: &CodeFile) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO code_file (id, path, language, project, hash, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![file.id, file.path, file.language, file.project, file.hash, file.indexed_at],
+    )?;
+    Ok(())
+}
+
+/// Insert or replace a code symbol record.
+pub fn store_symbol(conn: &Connection, symbol: &CodeSymbol) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO code_symbol (id, name, kind, file_path, line_start, line_end, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![symbol.id, symbol.name, symbol.kind, symbol.file_path, symbol.line_start, symbol.line_end, symbol.signature],
+    )?;
+    Ok(())
+}
+
+/// Count total code files in the database.
+pub fn count_files(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.query_row("SELECT count(*) FROM code_file", [], |r| r.get(0))
+}
+
+/// Count total code symbols in the database.
+pub fn count_symbols(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.query_row("SELECT count(*) FROM code_symbol", [], |r| r.get(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::schema::create_schema;
-    use forge_v2_core::types::{Memory, MemoryType};
+    use forge_v2_core::types::{Memory, MemoryType, CodeFile, CodeSymbol};
 
     fn open_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -335,5 +363,65 @@ mod tests {
         assert_eq!(counts.patterns, 0);
         assert_eq!(counts.preferences, 0);
         assert_eq!(counts.edges, 0);
+    }
+
+    #[test]
+    fn test_store_file_and_symbol() {
+        let conn = open_db();
+
+        let file = CodeFile {
+            id: "f1".into(),
+            path: "src/main.rs".into(),
+            language: "rust".into(),
+            project: "forge".into(),
+            hash: "abc".into(),
+            indexed_at: "2026-04-02".into(),
+        };
+        store_file(&conn, &file).unwrap();
+        assert_eq!(count_files(&conn).unwrap(), 1);
+
+        let sym = CodeSymbol {
+            id: "s1".into(),
+            name: "main".into(),
+            kind: "function".into(),
+            file_path: "src/main.rs".into(),
+            line_start: 1,
+            line_end: Some(10),
+            signature: Some("fn main()".into()),
+        };
+        store_symbol(&conn, &sym).unwrap();
+        assert_eq!(count_symbols(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_store_file_upsert() {
+        let conn = open_db();
+
+        let file = CodeFile {
+            id: "f1".into(),
+            path: "src/main.rs".into(),
+            language: "rust".into(),
+            project: "forge".into(),
+            hash: "abc".into(),
+            indexed_at: "2026-04-02".into(),
+        };
+        store_file(&conn, &file).unwrap();
+
+        // Upsert same id with new hash
+        let file2 = CodeFile {
+            id: "f1".into(),
+            path: "src/main.rs".into(),
+            language: "rust".into(),
+            project: "forge".into(),
+            hash: "def".into(),
+            indexed_at: "2026-04-03".into(),
+        };
+        store_file(&conn, &file2).unwrap();
+        assert_eq!(count_files(&conn).unwrap(), 1, "upsert should not duplicate");
+
+        let stored_hash: String = conn.query_row(
+            "SELECT hash FROM code_file WHERE id = 'f1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(stored_hash, "def", "upsert should update hash");
     }
 }
