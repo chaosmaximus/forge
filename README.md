@@ -4,315 +4,206 @@
   <img src="docs/images/creation-of-adam.jpg" alt="The Creation of Adam — Michelangelo, Sistine Chapel, c. 1512" width="720" />
 </p>
 
-The gap between the fingers — that's where Forge lives. Human intent meets machine execution. You decide what's worth building. Agent teams execute in parallel, review across model boundaries, remember what they learned. The spark happens in the space between.
+**The terminal that remembers.**
 
-<sub>Yes, Forge uses OpenAI to grade Anthropic's homework. The future is weird and I love it.</sub>
+An 8-layer knowledge graph that auto-extracts decisions, patterns, and architecture from your coding sessions — packaged as a premium native terminal. Works with Claude, Gemini, Codex, or any AI agent. Everything runs locally. $9/mo.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-378%20passing-brightgreen)]()
+[![Rust](https://img.shields.io/badge/rust-1.88-orange)]()
 
 ---
 
-**The missing operating system for AI-powered development.**
+## Why Forge?
 
-One plugin. Think → Ship. Agent teams with memory that compounds.
+AI coding agents forget everything between sessions. The agent that spent 30 minutes understanding your auth architecture yesterday has forgotten it today. It will break decisions it doesn't know about.
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/chaosmaximus/forge/releases)
-[![CI](https://github.com/chaosmaximus/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/chaosmaximus/forge/actions)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-161%20passing-brightgreen)]()
+**Forge fixes this.** A daemon runs in the background, silently extracting what your agent learns into a knowledge graph. Next session, the agent recalls — instantly.
+
+```
+Session 1: Agent learns "Use JWT for auth, RS256 signing, rotating keys"
+            → Forge extracts and stores as a Decision in the knowledge graph
+
+Session 2: Agent runs `forge recall "auth"` → gets the decision back in <10ms
+            → Agent also gets a guardrail warning: "auth/middleware.rs has 3 linked decisions"
+```
+
+No manual tagging. No copying. No MEMORY.md flat files. A real knowledge graph with 8 layers.
+
+## The App
+
+A Tauri v2 desktop terminal (SolidJS + Rust) that replaces iTerm2/Ghostty:
+
+| Feature | Description |
+|---------|-------------|
+| **Terminal** | xterm.js with WebGL rendering, Geist Mono font, GPU-accelerated |
+| **Multi-tab** | Shell, tmux, Claude Code agent, and SSH tabs — each with its own PTY |
+| **Cmd+K Search** | Spotlight-style memory search across all 8 layers with project/layer filtering |
+| **Sidebar** | Agent status (working/waiting/idle), 8-layer memory stats, brain map preview |
+| **Brain Map** | Canvas 2D visualization with breathing animation — see what Forge knows |
+| **Guardrails** | Inline warnings when agents edit files with linked architectural decisions |
+| **Notifications** | Native alerts on task completion and memory extraction |
+| **SSH** | Built-in SSH with ~/.ssh/config parsing and key management |
+| **Shortcuts** | Cmd+K (search), Cmd+T (new tab), Cmd+W (close), Cmd+1-9 (switch) |
+
+## The Daemon
+
+A Rust daemon with the Manas 8-layer memory architecture:
+
+| Layer | What It Stores | How It Grows |
+|-------|---------------|-------------|
+| 1. Platform | OS, CPU, shell, hostname | Auto-detected at startup |
+| 2. Tool | Available tools, APIs | User/app registered |
+| 3. Skill | Learned workflows | Extracted from sessions |
+| 4. Domain DNA | Project conventions | Detected from codebase |
+| 5. Experience | Decisions, lessons, patterns | LLM extraction (core) |
+| 6. Perception | Git state, file changes | Perception worker (30s) |
+| 7. Declared | CLAUDE.md, README, docs | Ingested from files |
+| 8. Latent | Embedding vectors | Embedder worker (60s) |
+
+Plus: Identity system (agent persona), Disposition engine (behavioral tendencies), Guardrails engine (blast radius, decision tracking), and Proactive context compiler.
+
+**7 background workers** running continuously: extraction, embedding, consolidation, perception, disposition, indexing, watching.
 
 ## Quick Start
 
 ```bash
-# Install
-claude plugin install forge@forge-marketplace
+# Clone
+git clone https://github.com/chaosmaximus/forge.git
+cd forge
 
-# Verify
-forge doctor --format text
+# Build the daemon
+cargo build --release -p forge-daemon -p forge-cli
+./target/release/forge-daemon &
 
-# Start building
-forge             # Auto-detects: new project or existing codebase
-forge think       # Product discovery (BDD-style)
-forge plan        # Explore + plan with blast radius
-forge build       # Agent team execution
-forge test        # Verify with Playwright + security scan
-forge ship        # PR + changelog + release
+# Build and run the app
+cd app/forge
+npm install
+npm run tauri dev
 ```
 
-## The Lifecycle
+### Prerequisites
 
-```
-DISCOVER  →  SPECIFY  →  PLAN  →  BUILD  →  VERIFY  →  SHIP
-forge think   (specs)   forge plan  forge build  forge test  forge ship
-    │                       │           │            │           │
-    └── BDD questions       │           │            │           └── PR + changelog
-        PRD + feature specs │           │            └── Playwright CLI
-                            │           │                Security scan
-                            │           └── 3 agents    Property tests
-                            │               in parallel
-                            └── Graph queries
-                                Memory recall
-                                Blast radius
-```
-
-Every phase stores decisions in a knowledge graph. Session 50 knows what session 1 decided.
-
-## Security — Five Layers Deep
-
-Security isn't a feature. It's the foundation.
-
-### Layer 1: Every Edit (<5ms, Rust)
-```
-PostToolUse hook → forge hook post-edit → regex + entropy secret scan
-PreToolUse hook → forge protect → blocks .env, .pem, credentials
-```
-Every file edit is scanned. Every sensitive file is protected. Rust binary, <5ms.
-
-### Layer 2: Every Agent
-- **Worktree isolation** — generators work in git copies, can't corrupt main branch
-- **Agent ACLs** — evaluator cannot Edit/Write, planner cannot Bash
-- **Input validation** — all hook payloads: regex-validated IDs, no path traversal, no shell metacharacters
-- **Bounded stdin** — agent hooks reject payloads >64KB
-
-### Layer 3: Every Memory
-- **Trust-level filtering** — only user-trust decisions injected into agent context
-- **Parameterized Cypher** — `$param` syntax, never string interpolation
-- **Property key validation** — `^[A-Za-z_][A-Za-z0-9_]{0,63}$`
-- **Secret fingerprinting** — SHA256 hashes only, NEVER stores actual values
-- **Cypher sandbox** — `forge query` blocks memory node access, code nodes only
-
-### Layer 4: Every Review
-- **Two-stage evaluation** — spec compliance THEN code quality (mandatory order)
-- **Cross-model adversarial review** — Claude writes, Codex reviews. Different model = different blind spots.
-- **Auto-fail rules** — security rubric auto-fails if Input Validation or Auth ≤ 2
-- **Hard gate** — changes to `infrastructure/**`, `terraform/**`, `k8s/**` MUST pass Codex review
-
-### Layer 5: Every Session
-- **`forge doctor`** — 13 health checks verify the entire installation
-- **No persistent process** — no MCP server, no DB lock, no attack surface
-- **Symlink defense** — all file operations verify `symlink_metadata()` before read/write
-- **Atomic writes** — tmp file + rename pattern on all state files (0o600 perms)
-
-## Agent Team
-
-```
-Planner (Opus, read-only)  →  Generator(s) (worktree-isolated)  →  Evaluator (Opus, read-only)  →  Codex (adversarial)
-```
-
-| Agent | Role | Security |
-|-------|------|----------|
-| **Planner** | Architecture + wave planning. Never specifies implementation. | Read-only. No Write/Edit/Bash. |
-| **Generator** | Implements tasks in isolated worktrees. Deviation rules: auto-fix bugs, STOP on architecture changes. | Worktree-isolated. Cannot touch main branch. |
-| **Evaluator** | Two-stage graded review. Distrusts claims — runs tests, verifies on disk. | Read-only. Cannot modify code. |
-| **Codex** | Cross-model adversarial review. Different model catches different bugs. | External. No repo write access. |
-
-Agents receive structured XML context at spawn:
-```xml
-<forge-agent-context>
-  <task>
-    <description>Implement user authentication</description>
-    <acceptance-criteria>JWT tokens, bcrypt passwords, 24h expiry</acceptance-criteria>
-  </task>
-  <decisions>
-    <decision title="REST API pattern" confidence="0.95">Express + middleware chain</decision>
-  </decisions>
-  <prior-wave-summary>Wave 1 built: database schema, 12 tests passing</prior-wave-summary>
-</forge-agent-context>
-```
-
-Wave 2 agents know what Wave 1 built. Session 10 agents know what Session 1 decided.
+- Rust 1.88+
+- Node.js 18+
+- tmux (`brew install tmux`)
+- Ollama (for local LLM extraction — optional)
 
 ## CLI Reference
 
-### Memory
 ```bash
-forge remember --type decision --title "..." --content "..."   # Store
-forge remember --type lesson --title "..." --content "..."     # Learn
-forge remember --type pattern --title "..." --content "..."    # Pattern
-forge recall "keyword"                                          # Search
-forge recall --list --type decision                            # List all
-forge recall --graph "keyword"                                  # Deep graph search
-forge forget <id> --label Decision                             # Soft-delete
-forge sync                                                      # Flush pending → graph
+# Memory
+forge-next recall "auth" --project forge --limit 10
+forge-next recall "database" --layer experience
+forge-next remember --type decision --title "Use JWT" --content "..."
+forge-next forget <id>
+
+# Manas layers
+forge-next health                    # Experience layer counts
+forge-next manas-health              # All 8 layer counts
+forge-next health-by-project         # Per-project breakdown
+forge-next platform                  # Platform layer entries
+
+# Identity
+forge-next identity set --facet role --description "Senior Rust dev"
+forge-next identity list
+
+# Guardrails
+forge-next check --file src/main.rs
+forge-next blast-radius --file src/main.rs
+
+# System
+forge-next doctor                    # Full diagnostics
+forge-next sessions                  # Active agent sessions
+forge-next compile-context           # Proactive context assembly
 ```
-
-### Code Intelligence
-```bash
-forge index .                    # Parse Python/TS/JS → symbol graph
-forge scan .                     # Detect exposed secrets
-forge scan . --watch             # Always-on security monitor
-forge query "MATCH (f:File) RETURN f.name LIMIT 10"  # Cypher graph query
-```
-
-### System
-```bash
-forge doctor --format text       # 13 health checks
-forge health                     # Graph node/edge counts
-forge --version                  # forge 0.3.0
-```
-
-### Hooks (automatic — called by Claude Code)
-```bash
-forge hook session-start         # XML context injection (<5ms)
-forge hook post-edit <file>      # Secret scan per file (<5ms)
-forge hook session-end           # HUD update + memory sync
-forge agent                      # Agent lifecycle tracking
-```
-
-## Memory System
-
-Forge remembers across sessions. Not flat files — a knowledge graph.
-
-```
-Session 1: forge remember --type decision --title "Use PostgreSQL" --content "..."
-Session 2: XML context injection → agent receives: <decision title="Use PostgreSQL">...</decision>
-Session 5: forge recall "database" → returns decision with confidence decay
-```
-
-**Dual storage:** Cache (Rust, <5ms reads) + LadybugDB graph (Python, <200ms, durable).
-
-**Confidence decay:** `effective = confidence × e^(-0.03 × days)` — ~23-day half-life. Recent decisions are stronger.
-
-**XML injection at session start:**
-```xml
-<forge-context version="0.3.0">
-  <decisions count="6">
-    <decision title="CLI-first architecture" confidence="0.95">...</decision>
-  </decisions>
-  <lessons count="2">
-    <lesson>Always test end-to-end, not just unit tests</lesson>
-  </lessons>
-</forge-context>
-```
-
-## Skills
-
-| Skill | When to Use |
-|-------|------------|
-| `forge` | **Start here.** Auto-detects greenfield vs existing codebase |
-| `forge:forge-new` | New project from scratch (PRD → design → build) |
-| `forge:forge-feature` | Existing code (explore → plan → build → review) |
-| `forge:forge-review` | Code review — evaluator + Codex adversarial gate |
-| `forge:forge-ship` | PR creation + final verification |
-| `forge:forge-research` | Autonomous research with git checkpoints |
-| `forge:forge-security` | Security scanning — `forge scan .` or `--watch` mode |
-| `forge:forge-agents` | View agent status, tool calls, activity timeline |
-| `forge:forge-handoff` | Pause/resume sessions with state preservation |
-| `forge:forge-setup` | First-time prerequisite checks |
-
-## Agent Team: Known Limitations
-
-Agent teams are experimental. Forge handles their limitations, but you should understand them.
-
-<details>
-<summary><strong>Click to expand: 10 known limitations and mitigations</strong></summary>
-
-### 1. Teammate context exhaustion (CRITICAL)
-**Problem:** When a teammate's context fills up, it becomes unresponsive or loops.
-**Forge handles it:** Isolated worktrees with focused single-task prompts, `maxTurns` caps (50 generators, 30 evaluator), session guard at 90/120 minutes, `TeammateIdle` hook detection.
-**You should:** Monitor progress. If quality degrades, tell the lead: "Shut down [teammate] and spawn a replacement."
-
-### 2. No session resumption for teammates
-**Problem:** `/resume` doesn't restore in-process teammates.
-**Forge handles it:** `forge-handoff` saves state to STATE.md. On resume, spawns fresh teammates.
-**You should:** Always use `forge:forge-handoff` before ending a session with active teammates.
-
-### 3. Task status can lag
-**Problem:** Teammates sometimes fail to mark tasks complete, blocking dependent waves.
-**Forge handles it:** `TaskCompleted` hook validates completion. Wave-based execution limits cross-dependencies.
-
-### 4. Lead does work instead of delegating
-**Problem:** The lead agent sometimes implements tasks itself.
-**Forge handles it:** Explicit "You NEVER write code" instruction. Use delegate mode (Shift+Tab).
-
-### 5. File conflicts between teammates
-**Problem:** Two teammates editing the same file causes corruption.
-**Forge handles it:** Every generator runs in `isolation: worktree`. Conflicts caught at merge time.
-
-### 6. Graceful shutdown can be slow
-**Problem:** Teammates finish current operations before shutting down.
-**Forge handles it:** `forge-handoff` shuts down sequentially. Work committed before shutdown.
-
-### 7. Orphaned processes
-**Problem:** Unexpected crashes leave agent processes running (150-800 MB each).
-**You should:** `tmux ls && tmux kill-session -t <name>` — do NOT use killall.
-
-### 8. Token costs scale with team size
-**Forge handles it:** Team size guidelines (1-2 tasks → subagents, 3-4 → 2-3 generators + evaluator, max 5 teammates). Focused single-task prompts minimize per-agent tokens.
-
-### 9. One team per session
-**Forge handles it:** Teams created and destroyed per wave group, not persistent.
-
-### 10. No nested teams
-**Forge handles it:** Generators use subagents (not teams) for internal parallelization.
-
-</details>
-
-## Evaluation Rubrics
-
-Four scored rubrics (1-5 per criterion, weighted average):
-
-| Rubric | Pass Threshold | Auto-Fail |
-|--------|---------------|-----------|
-| Code Quality | ≥ 3.5 | Any criterion = 1 |
-| Security | ≥ 4.0 | Input Validation or Auth ≤ 2 |
-| Architecture | ≥ 3.5 | Consistency < 3 |
-| Infrastructure | ≥ 4.0 | Security Posture or Blast Radius < 3 |
-
-## Cross-Platform
-
-Forge works with any AI coding tool that has Bash access:
-
-```bash
-# Claude Code (native plugin)
-claude plugin install forge@forge-marketplace
-
-# Cargo (any platform)
-cargo install forge-agentic-os
-
-# Any tool with Bash
-forge doctor && forge recall --list && forge remember --type decision --title "..." --content "..."
-```
-
-See [AGENTS.md](AGENTS.md) for Codex, Gemini CLI, and generic tool integration.
-
-## Companion Plugins (Optional)
-
-Forge works standalone. These enhance it:
-
-| Plugin | Purpose | Required? |
-|--------|---------|-----------|
-| `codex` | Cross-model adversarial review (OpenAI) | Recommended |
-| `superpowers` | Methodology skills (TDD, brainstorming) | Recommended |
-| `serena` | LSP-grade symbol navigation | Optional |
-
-## Configuration
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `codex_enabled` | `true` | Enable Codex adversarial review |
-| `prod_paths` | `infrastructure/**,terraform/**,k8s/**` | Paths requiring hard Codex gate |
-| `default_generator_model` | `opus` | Model for generators (`opus` or `sonnet`) |
 
 ## Architecture
 
 ```
-forge (Rust, 4.3MB)              — CLI: 14 subcommands, <5ms for hot paths
-forge-graph (Python, 115 tests)  — LadybugDB graph, called by forge via subprocess
-forge-hud (Rust, 476KB)          — StatusLine: <2ms render, real-time stats
+forge-core (shared types + protocol)
+    ↑
+forge-daemon (8-layer Manas, 7 workers, socket API)
+    ↑
+forge-cli (thin socket client)
+
+forge app (Tauri v2 — SolidJS + Rust IPC → daemon socket)
+    ├── xterm.js terminal (WebGL)
+    ├── Sidebar (agents + memory + brain map)
+    ├── Search overlay (Cmd+K)
+    └── Guardrail warnings
 ```
 
-No MCP server. No persistent process. Rust for speed. Python for graph writes. Each operation opens DB, writes, closes, exits.
+**Communication:** Unix domain socket, NDJSON protocol.
 
-## First Principles
+**Shared types:** App and daemon share types via the `forge-core` crate. No duplicate definitions.
 
-> Every component in an agent harness encodes an assumption about what the model cannot do on its own. These assumptions should be stress-tested because they may be incorrect and they will go stale as the model improves.
-> — [Anthropic Engineering](https://www.anthropic.com/engineering/harness-design-long-running-apps)
+## Tests
 
-Forge keeps only what the model genuinely needs help with. Everything else is delegated or removed.
+| Component | Tests | Framework |
+|-----------|-------|-----------|
+| forge-core | 35 | Rust |
+| forge-daemon | 261 | Rust |
+| forge app (Rust) | 47 | Rust |
+| forge app (frontend) | 17 | Vitest |
+| **Total** | **378** | |
+
+All tests pass. 5 adversarial Codex (gpt-5.4) reviews completed.
+
+## Security
+
+- **CSP enabled** — default-src 'self', restricted connect-src
+- **Socket validation** — lstat + is_socket + UID ownership check before connect
+- **Shell whitelist** — only /bin/, /usr/bin/, /opt/homebrew/bin/ paths allowed
+- **Session name sanitization** — prevents shell/flag injection
+- **PTY cleanup** — kill → join → wait, no zombie processes
+- **Secret scanning** — SHA256 fingerprints, never stores actual values
+- **Parameterized queries** — no SQL injection in daemon
+- **IPC permissions** — minimal Tauri capabilities
+
+## Pricing
+
+| | Free | Pro $9/mo | Team $19/seat | Enterprise |
+|--|------|----------|--------------|-----------|
+| Terminal | Full | Full | Full | Full |
+| Memory | 200 | Unlimited | Unlimited | Unlimited |
+| Brain map | Preview | Interactive | Interactive | Interactive |
+| Agents | 1 | Unlimited | Unlimited | Unlimited |
+| SSH | Unlimited | Unlimited | Unlimited | Unlimited |
+| Sync | — | 3 machines | Unlimited | Unlimited |
+
+**Zero marginal cost per user** — everything runs locally.
+
+## Competitive Position
+
+Nobody else combines: premium terminal + 8-layer knowledge graph + brain map + guardrails + $9/mo + local-first.
+
+| Product | Terminal | Memory Graph | Brain Map | Guardrails | Price |
+|---------|----------|-------------|-----------|-----------|-------|
+| **Forge** | **Yes** | **8-layer** | **Yes** | **Yes** | **$9/mo** |
+| Warp | Yes | No | No | No | $18/mo |
+| Mem0 | No | Yes (cloud) | No | No | $249/mo |
+| OpenClaw | No (chat) | Plugins | No | No | Free |
+| Claude Code | CLI | MEMORY.md | No | No | $20/mo |
+
+## Product Documents
+
+See [`product/`](product/) for:
+- [Vision](product/vision.md) — "The terminal that remembers"
+- [Positioning](product/positioning.md) — Category creation, sales ammunition
+- [Pricing](product/pricing.md) — $9/mo disruption strategy
+- [Competitive landscape](product/competitive-landscape-2026-04.md) — Full market analysis
+- [User stories](product/user-stories.md) — US-1 through US-13
+- [Designs](product/designs/) — Pencil mockups (v3 final)
+
+## Contributing
+
+See [CONTRIBUTING.md](docs/archive/v030/CONTRIBUTING.md) for guidelines.
 
 ## Acknowledgments
 
-Built on: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) · [Codex](https://github.com/openai/codex) · [LadybugDB](https://github.com/LadybugDB/ladybug) · [tree-sitter](https://tree-sitter.github.io/) · [Playwright](https://playwright.dev/) · [Superpowers](https://github.com/obra/superpowers) · and every dependency beneath them. Thank you.
+Built on: [Tauri](https://tauri.app/) · [SolidJS](https://solidjs.com/) · [xterm.js](https://xtermjs.org/) · [Claude Code](https://docs.anthropic.com/en/docs/claude-code) · [Codex](https://github.com/openai/codex) · [portable-pty](https://github.com/wez/wezterm/tree/main/pty) · [SQLite](https://sqlite.org/) · [Superpowers](https://github.com/obra/superpowers)
 
 ## License
 
-MIT
+[MIT](LICENSE)
