@@ -1,4 +1,4 @@
-//! Shared path functions for Forge v2 daemon and CLI.
+//! Shared path functions for Forge daemon and CLI.
 //! Centralizes all path derivation logic to avoid duplication.
 
 /// Returns the path to the Forge data directory (~/.forge).
