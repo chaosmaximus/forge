@@ -257,13 +257,27 @@ pub struct SyncImportResult {
 pub fn sync_import(
     conn: &Connection,
     lines: &[String],
-    _local_node_id: &str,
+    local_node_id: &str,
 ) -> rusqlite::Result<SyncImportResult> {
     let mut imported = 0;
     let mut conflicts = 0;
     let mut skipped = 0;
 
+    // SECURITY: limit total import size to prevent OOM
+    const MAX_LINES: usize = 10_000;
+    if lines.len() > MAX_LINES {
+        return Err(rusqlite::Error::InvalidParameterName(
+            format!("sync import exceeds {} line limit ({} lines)", MAX_LINES, lines.len()),
+        ));
+    }
+
     for line in lines {
+        // SECURITY: skip oversized lines (>1MB per line)
+        if line.len() > 1_048_576 {
+            skipped += 1;
+            continue;
+        }
+
         // Check for identity facet lines first
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
             if val.get("_type").and_then(|t| t.as_str()) == Some("identity") {
@@ -302,12 +316,14 @@ pub fn sync_import(
             .optional()?;
 
         match existing {
-            Some((existing_id, existing_content, existing_node, existing_hlc)) => {
+            Some((existing_id, existing_content, _existing_node, existing_hlc)) => {
                 if existing_content == remote_mem.content {
                     // Same content, no action needed
                     skipped += 1;
-                } else if existing_node == remote_mem.node_id {
-                    // Same node, different content => update if remote HLC is newer
+                } else if remote_mem.node_id == local_node_id {
+                    // Memory originated from THIS node (round-trip sync) => update if HLC newer
+                    // SECURITY: compare against local_node_id, NOT existing record's node_id
+                    // A malicious peer could spoof node_id in their export to match ours
                     if remote_mem.hlc_timestamp > existing_hlc {
                         conn.execute(
                             "UPDATE memory SET content = ?1, confidence = MAX(confidence, ?2),
