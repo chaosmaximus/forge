@@ -4,4 +4,4 @@ pub mod response;
 
 pub use codec::{decode_request, encode_response, read_request, write_response};
 pub use request::Request;
-pub use response::{ExportEdge, MemoryResult, Response, ResponseData};
+pub use response::{ExportEdge, HealthProjectData, MemoryResult, Response, ResponseData};

@@ -97,6 +97,27 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             },
         },
 
+        Request::HealthByProject => {
+            match ops::health_by_project(&state.conn) {
+                Ok(projects) => {
+                    let project_data: std::collections::HashMap<String, forge_core::protocol::HealthProjectData> = projects.into_iter()
+                        .map(|(k, v)| (k, forge_core::protocol::HealthProjectData {
+                            decisions: v.decisions,
+                            lessons: v.lessons,
+                            patterns: v.patterns,
+                            preferences: v.preferences,
+                        }))
+                        .collect();
+                    Response::Ok {
+                        data: ResponseData::HealthByProject { projects: project_data },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("health_by_project failed: {e}"),
+                },
+            }
+        }
+
         Request::Health => match ops::health(&state.conn) {
             Ok(counts) => Response::Ok {
                 data: ResponseData::Health {
@@ -441,6 +462,47 @@ mod tests {
                 assert_eq!(decisions, 0, "fresh DB should have 0 decisions");
             }
             other => panic!("expected Health response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_health_by_project() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store memories in different projects
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Forge arch".into(),
+            content: "Rust CLI".into(),
+            confidence: None,
+            tags: None,
+            project: Some("forge".into()),
+        });
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Lesson,
+            title: "Backend lesson".into(),
+            content: "REST".into(),
+            confidence: None,
+            tags: None,
+            project: Some("backend".into()),
+        });
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Pattern,
+            title: "Global pattern".into(),
+            content: "Always test".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+
+        let resp = handle_request(&mut state, Request::HealthByProject);
+        match resp {
+            Response::Ok { data: ResponseData::HealthByProject { projects } } => {
+                assert_eq!(projects.get("forge").unwrap().decisions, 1);
+                assert_eq!(projects.get("backend").unwrap().lessons, 1);
+                assert_eq!(projects.get("_global").unwrap().patterns, 1);
+            }
+            other => panic!("expected HealthByProject response, got {:?}", other),
         }
     }
 

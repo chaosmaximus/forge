@@ -59,6 +59,9 @@ enum Commands {
     },
     /// System health
     Health,
+    /// Memory counts grouped by project
+    #[command(name = "health-by-project")]
+    HealthByProject,
     /// Daemon health diagnostics
     Doctor,
     /// Import v1 cache.json into daemon
@@ -131,6 +134,9 @@ async fn main() {
         },
         Commands::Health => {
             commands::system::health().await;
+        }
+        Commands::HealthByProject => {
+            commands::system::health_by_project().await;
         }
         Commands::Doctor => {
             commands::system::doctor().await;

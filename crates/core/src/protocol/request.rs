@@ -22,6 +22,8 @@ pub enum Request {
         id: String,
     },
     Health,
+    /// Health counts grouped by project
+    HealthByProject,
     Status,
     Doctor,
     /// Export all data as JSON (for visualization, backup, or sync)

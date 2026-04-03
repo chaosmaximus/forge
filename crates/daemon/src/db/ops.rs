@@ -222,6 +222,39 @@ pub fn forget(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     Ok(rows_changed > 0)
 }
 
+/// Health counts grouped by project.
+pub fn health_by_project(conn: &Connection) -> rusqlite::Result<std::collections::HashMap<String, HealthCounts>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(project, ''), '_global') as proj, memory_type, count(*) as cnt
+         FROM memory WHERE status = 'active' GROUP BY proj, memory_type"
+    )?;
+
+    let mut projects: std::collections::HashMap<String, HealthCounts> = std::collections::HashMap::new();
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, usize>(2)?))
+    })?;
+
+    for row in rows.flatten() {
+        let (proj, mtype, count) = row;
+        let entry = projects.entry(proj).or_insert_with(HealthCounts::default);
+        match mtype.as_str() {
+            "decision" => entry.decisions = count,
+            "lesson" => entry.lessons = count,
+            "pattern" => entry.patterns = count,
+            "preference" => entry.preferences = count,
+            _ => {}
+        }
+    }
+
+    // Add total edge count to each project (simplified — all projects see total edges)
+    let total_edges: usize = conn.query_row("SELECT count(*) FROM edge", [], |r| r.get(0)).unwrap_or(0);
+    for counts in projects.values_mut() {
+        counts.edges = total_edges;
+    }
+
+    Ok(projects)
+}
+
 /// Count active memories per type and total edges.
 pub fn health(conn: &Connection) -> rusqlite::Result<HealthCounts> {
     let count_type = |type_name: &str| -> rusqlite::Result<usize> {
@@ -1018,6 +1051,35 @@ mod tests {
 
         let results = recall_bm25_project(&conn, "empty project memory", Some("anyproject"), 10).unwrap();
         assert_eq!(results.len(), 1, "empty-string project memory should appear as global");
+    }
+
+    #[test]
+    fn test_health_by_project() {
+        let conn = open_db();
+
+        let mut m1 = Memory::new(MemoryType::Decision, "Forge decision", "content");
+        m1 = m1.with_project("forge");
+        remember(&conn, &m1).unwrap();
+
+        let mut m2 = Memory::new(MemoryType::Lesson, "Backend lesson", "content");
+        m2 = m2.with_project("backend");
+        remember(&conn, &m2).unwrap();
+
+        let m3 = Memory::new(MemoryType::Pattern, "Global pattern", "content");
+        remember(&conn, &m3).unwrap(); // no project → _global
+
+        let result = health_by_project(&conn).unwrap();
+        assert_eq!(result.get("forge").unwrap().decisions, 1);
+        assert_eq!(result.get("backend").unwrap().lessons, 1);
+        assert_eq!(result.get("_global").unwrap().patterns, 1);
+        assert_eq!(result.len(), 3, "should have 3 projects: forge, backend, _global");
+    }
+
+    #[test]
+    fn test_health_by_project_empty() {
+        let conn = open_db();
+        let result = health_by_project(&conn).unwrap();
+        assert!(result.is_empty(), "empty db should return empty map");
     }
 
     #[test]

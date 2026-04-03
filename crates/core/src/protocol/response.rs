@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use crate::types::code::{CodeFile, CodeSymbol};
 use crate::types::memory::Memory;
 
@@ -22,6 +23,9 @@ pub enum ResponseData {
         patterns: usize,
         preferences: usize,
         edges: usize,
+    },
+    HealthByProject {
+        projects: HashMap<String, HealthProjectData>,
     },
     Status {
         uptime_secs: u64,
@@ -59,6 +63,14 @@ pub enum ResponseData {
         memories_stored: usize,
     },
     Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HealthProjectData {
+    pub decisions: usize,
+    pub lessons: usize,
+    pub patterns: usize,
+    pub preferences: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -35,6 +35,43 @@ pub async fn doctor() {
     }
 }
 
+/// Print system health grouped by project.
+pub async fn health_by_project() {
+    let request = Request::HealthByProject;
+
+    match client::send(&request).await {
+        Ok(Response::Ok {
+            data: ResponseData::HealthByProject { projects },
+        }) => {
+            println!("Health by Project:");
+            if projects.is_empty() {
+                println!("  (no memories stored)");
+            } else {
+                let mut sorted: Vec<_> = projects.iter().collect();
+                sorted.sort_by_key(|(k, _)| (*k).clone());
+                for (project, data) in sorted {
+                    let total = data.decisions + data.lessons + data.patterns + data.preferences;
+                    println!("  {}:", project);
+                    println!("    decisions: {}, lessons: {}, patterns: {}, preferences: {}, total: {}",
+                        data.decisions, data.lessons, data.patterns, data.preferences, total);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(other) => {
+            eprintln!("unexpected response: {other:?}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Print system health (memory counts by type + edges).
 pub async fn health() {
     let request = Request::Health;
