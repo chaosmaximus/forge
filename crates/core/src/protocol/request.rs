@@ -67,5 +67,33 @@ pub enum Request {
     Sessions { active_only: Option<bool> },
     /// Query which language servers are available for the current project
     LspStatus,
+
+    // ── Manas Layer Operations ──
+
+    /// Store a platform key-value pair (Layer 0)
+    StorePlatform { key: String, value: String },
+    /// List all platform entries (Layer 0)
+    ListPlatform,
+    /// Store a tool (Layer 1)
+    StoreTool { tool: crate::types::manas::Tool },
+    /// List all tools (Layer 1)
+    ListTools,
+    /// Store a perception (Layer 4)
+    StorePerception { perception: crate::types::manas::Perception },
+    /// List unconsumed perceptions (Layer 4)
+    ListPerceptions { project: Option<String>, limit: Option<usize> },
+    /// Consume (mark as read) perceptions by ID (Layer 4)
+    ConsumePerceptions { ids: Vec<String> },
+    /// Store an identity facet (Layer 6 — Ahankara)
+    StoreIdentity { facet: crate::types::manas::IdentityFacet },
+    /// List identity facets for an agent (Layer 6)
+    ListIdentity { agent: String },
+    /// Deactivate an identity facet (Layer 6)
+    DeactivateIdentity { id: String },
+    /// List disposition traits for an agent (Layer 7)
+    ListDisposition { agent: String },
+    /// Extended health across all 8 Manas layers
+    ManasHealth,
+
     Shutdown,
 }

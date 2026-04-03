@@ -27,6 +27,9 @@ impl DaemonState {
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         schema::create_schema(&conn)?;
 
+        // Best-effort: detect and store platform info (OS, arch, shell, etc.)
+        let _ = crate::db::manas::detect_and_store_platform(&conn);
+
         Ok(DaemonState {
             conn,
             events: crate::events::create_event_bus(),
@@ -164,6 +167,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             };
             let embeddings = crate::db::vec::count_embeddings(&state.conn).unwrap_or(0);
+            let mh = crate::db::manas::manas_health(&state.conn).unwrap_or_default();
             Response::Ok {
                 data: ResponseData::Doctor {
                     daemon_up: true,
@@ -181,6 +185,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         "indexer".into(),
                     ],
                     uptime_secs: state.started_at.elapsed().as_secs(),
+                    platform_count: mh.platform_entries,
+                    tool_count: mh.tools,
+                    skill_count: mh.skills,
+                    domain_dna_count: mh.domain_dna_entries,
+                    perception_count: mh.perceptions_unconsumed,
+                    declared_count: mh.declared_entries,
+                    identity_count: mh.identity_facets_active,
+                    disposition_count: mh.dispositions,
                 },
             }
         }
@@ -485,10 +497,235 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Manas Layer Handlers ──
+
+        Request::StorePlatform { key, value } => {
+            let entry = forge_core::types::manas::PlatformEntry {
+                key: key.clone(),
+                value,
+                detected_at: chrono_now(),
+            };
+            match crate::db::manas::store_platform(&state.conn, &entry) {
+                Ok(()) => Response::Ok {
+                    data: ResponseData::PlatformStored { key },
+                },
+                Err(e) => Response::Error {
+                    message: format!("store_platform failed: {e}"),
+                },
+            }
+        }
+
+        Request::ListPlatform => {
+            match crate::db::manas::list_platform(&state.conn) {
+                Ok(entries) => Response::Ok {
+                    data: ResponseData::PlatformList { entries },
+                },
+                Err(e) => Response::Error {
+                    message: format!("list_platform failed: {e}"),
+                },
+            }
+        }
+
+        Request::StoreTool { tool } => {
+            let id = tool.id.clone();
+            match crate::db::manas::store_tool(&state.conn, &tool) {
+                Ok(()) => Response::Ok {
+                    data: ResponseData::ToolStored { id },
+                },
+                Err(e) => Response::Error {
+                    message: format!("store_tool failed: {e}"),
+                },
+            }
+        }
+
+        Request::ListTools => {
+            match crate::db::manas::list_tools(&state.conn, None) {
+                Ok(tools) => {
+                    let count = tools.len();
+                    Response::Ok {
+                        data: ResponseData::ToolList { tools, count },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("list_tools failed: {e}"),
+                },
+            }
+        }
+
+        Request::StorePerception { perception } => {
+            let id = perception.id.clone();
+            match crate::db::manas::store_perception(&state.conn, &perception) {
+                Ok(()) => Response::Ok {
+                    data: ResponseData::PerceptionStored { id },
+                },
+                Err(e) => Response::Error {
+                    message: format!("store_perception failed: {e}"),
+                },
+            }
+        }
+
+        Request::ListPerceptions { project: _, limit } => {
+            // list_unconsumed_perceptions doesn't take project filter directly,
+            // so we list all unconsumed and apply limit
+            match crate::db::manas::list_unconsumed_perceptions(&state.conn, None) {
+                Ok(perceptions) => {
+                    let limited: Vec<_> = if let Some(lim) = limit {
+                        perceptions.into_iter().take(lim).collect()
+                    } else {
+                        perceptions
+                    };
+                    let count = limited.len();
+                    Response::Ok {
+                        data: ResponseData::PerceptionList { perceptions: limited, count },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("list_perceptions failed: {e}"),
+                },
+            }
+        }
+
+        Request::ConsumePerceptions { ids } => {
+            let mut consumed = 0usize;
+            for id in &ids {
+                match crate::db::manas::consume_perception(&state.conn, id) {
+                    Ok(true) => consumed += 1,
+                    Ok(false) => {} // already consumed or not found
+                    Err(e) => {
+                        return Response::Error {
+                            message: format!("consume_perception failed for {id}: {e}"),
+                        };
+                    }
+                }
+            }
+            Response::Ok {
+                data: ResponseData::PerceptionsConsumed { count: consumed },
+            }
+        }
+
+        Request::StoreIdentity { facet } => {
+            let id = facet.id.clone();
+            match crate::db::manas::store_identity(&state.conn, &facet) {
+                Ok(()) => Response::Ok {
+                    data: ResponseData::IdentityStored { id },
+                },
+                Err(e) => Response::Error {
+                    message: format!("store_identity failed: {e}"),
+                },
+            }
+        }
+
+        Request::ListIdentity { agent } => {
+            match crate::db::manas::list_identity(&state.conn, &agent, true) {
+                Ok(facets) => {
+                    let count = facets.len();
+                    Response::Ok {
+                        data: ResponseData::IdentityList { facets, count },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("list_identity failed: {e}"),
+                },
+            }
+        }
+
+        Request::DeactivateIdentity { id } => {
+            match crate::db::manas::deactivate_identity(&state.conn, &id) {
+                Ok(found) => Response::Ok {
+                    data: ResponseData::IdentityDeactivated { id, found },
+                },
+                Err(e) => Response::Error {
+                    message: format!("deactivate_identity failed: {e}"),
+                },
+            }
+        }
+
+        Request::ListDisposition { agent } => {
+            match crate::db::manas::list_dispositions(&state.conn, &agent) {
+                Ok(traits) => {
+                    let count = traits.len();
+                    Response::Ok {
+                        data: ResponseData::DispositionList { traits, count },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("list_dispositions failed: {e}"),
+                },
+            }
+        }
+
+        Request::ManasHealth => {
+            match crate::db::manas::manas_health(&state.conn) {
+                Ok(mh) => Response::Ok {
+                    data: ResponseData::ManasHealthData {
+                        platform_count: mh.platform_entries,
+                        tool_count: mh.tools,
+                        skill_count: mh.skills,
+                        domain_dna_count: mh.domain_dna_entries,
+                        perception_unconsumed: mh.perceptions_unconsumed,
+                        declared_count: mh.declared_entries,
+                        identity_facets: mh.identity_facets_active,
+                        disposition_traits: mh.dispositions,
+                    },
+                },
+                Err(e) => Response::Error {
+                    message: format!("manas_health failed: {e}"),
+                },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
     }
+}
+
+/// Simple timestamp helper (avoids adding chrono dependency)
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Simple ISO-ish format: good enough for SQLite ordering
+    let days_since_epoch = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    let mut year = 1970u64;
+    let mut remaining_days = days_since_epoch;
+    loop {
+        let is_leap = (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0));
+        let days_in_year = if is_leap { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+
+    let months_days: &[u64] = if (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0)) {
+        &[31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        &[31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut month = 0u64;
+    for (i, &d) in months_days.iter().enumerate() {
+        if remaining_days < d {
+            month = i as u64 + 1;
+            break;
+        }
+        remaining_days -= d;
+    }
+    if month == 0 {
+        month = 12;
+    }
+    let day = remaining_days + 1;
+
+    format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}")
 }
 
 #[cfg(test)]
@@ -618,6 +855,14 @@ mod tests {
                         symbol_count,
                         edge_count,
                         workers,
+                        platform_count,
+                        tool_count,
+                        skill_count,
+                        domain_dna_count,
+                        perception_count,
+                        declared_count,
+                        identity_count,
+                        disposition_count,
                         ..
                     },
             } => {
@@ -628,6 +873,16 @@ mod tests {
                 assert_eq!(edge_count, 0);
                 assert_eq!(workers.len(), 5);
                 assert!(workers.contains(&"indexer".to_string()));
+                // Manas layer counts: detect_and_store_platform may have stored
+                // some entries. The rest should be 0.
+                let _ = platform_count; // platform may be non-zero from auto-detect
+                assert_eq!(tool_count, 0);
+                assert_eq!(skill_count, 0);
+                assert_eq!(domain_dna_count, 0);
+                assert_eq!(perception_count, 0);
+                assert_eq!(declared_count, 0);
+                assert_eq!(identity_count, 0);
+                assert_eq!(disposition_count, 0);
             }
             _ => panic!("expected Doctor response"),
         }
@@ -887,6 +1142,239 @@ mod tests {
                 assert!(sessions.is_empty());
             }
             other => panic!("expected Sessions, got {:?}", other),
+        }
+    }
+
+    // ── Manas Handler Tests ──
+
+    #[test]
+    fn test_platform_store_and_list() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store a platform entry
+        let resp = handle_request(&mut state, Request::StorePlatform {
+            key: "os".into(),
+            value: "linux".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::PlatformStored { key } } => {
+                assert_eq!(key, "os");
+            }
+            other => panic!("expected PlatformStored, got {:?}", other),
+        }
+
+        // Store another
+        handle_request(&mut state, Request::StorePlatform {
+            key: "arch".into(),
+            value: "x86_64".into(),
+        });
+
+        // List platform entries
+        let resp = handle_request(&mut state, Request::ListPlatform);
+        match resp {
+            Response::Ok { data: ResponseData::PlatformList { entries } } => {
+                // detect_and_store_platform may have added entries, so check ours exist
+                let keys: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+                assert!(keys.contains(&"os"), "should contain 'os', got: {:?}", keys);
+                assert!(keys.contains(&"arch"), "should contain 'arch', got: {:?}", keys);
+                let os_entry = entries.iter().find(|e| e.key == "os").unwrap();
+                assert_eq!(os_entry.value, "linux");
+            }
+            other => panic!("expected PlatformList, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_identity_lifecycle() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store an identity facet
+        let facet = forge_core::types::manas::IdentityFacet {
+            id: "if-test-1".into(),
+            agent: "forge-test".into(),
+            facet: "role".into(),
+            description: "memory system".into(),
+            strength: 0.9,
+            source: "declared".into(),
+            active: true,
+            created_at: "2026-04-03 12:00:00".into(),
+        };
+        let resp = handle_request(&mut state, Request::StoreIdentity { facet });
+        match resp {
+            Response::Ok { data: ResponseData::IdentityStored { id } } => {
+                assert_eq!(id, "if-test-1");
+            }
+            other => panic!("expected IdentityStored, got {:?}", other),
+        }
+
+        // List identity for the agent
+        let resp = handle_request(&mut state, Request::ListIdentity {
+            agent: "forge-test".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::IdentityList { facets, count } } => {
+                assert_eq!(count, 1);
+                assert_eq!(facets.len(), 1);
+                assert_eq!(facets[0].facet, "role");
+                assert_eq!(facets[0].description, "memory system");
+            }
+            other => panic!("expected IdentityList, got {:?}", other),
+        }
+
+        // Deactivate
+        let resp = handle_request(&mut state, Request::DeactivateIdentity {
+            id: "if-test-1".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::IdentityDeactivated { id, found } } => {
+                assert_eq!(id, "if-test-1");
+                assert!(found);
+            }
+            other => panic!("expected IdentityDeactivated, got {:?}", other),
+        }
+
+        // List again — active only, should be empty
+        let resp = handle_request(&mut state, Request::ListIdentity {
+            agent: "forge-test".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::IdentityList { facets, count } } => {
+                assert_eq!(count, 0);
+                assert!(facets.is_empty());
+            }
+            other => panic!("expected IdentityList (empty), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_manas_health_handler() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let resp = handle_request(&mut state, Request::ManasHealth);
+        match resp {
+            Response::Ok {
+                data: ResponseData::ManasHealthData {
+                    tool_count,
+                    skill_count,
+                    domain_dna_count,
+                    perception_unconsumed,
+                    declared_count,
+                    identity_facets,
+                    disposition_traits,
+                    ..
+                },
+            } => {
+                // Fresh DB: all non-platform counts should be 0
+                assert_eq!(tool_count, 0);
+                assert_eq!(skill_count, 0);
+                assert_eq!(domain_dna_count, 0);
+                assert_eq!(perception_unconsumed, 0);
+                assert_eq!(declared_count, 0);
+                assert_eq!(identity_facets, 0);
+                assert_eq!(disposition_traits, 0);
+            }
+            other => panic!("expected ManasHealthData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_perception_store_and_consume() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store a perception
+        let perception = forge_core::types::manas::Perception {
+            id: "p-test-1".into(),
+            kind: forge_core::types::manas::PerceptionKind::Error,
+            data: "compilation failed".into(),
+            severity: forge_core::types::manas::Severity::Error,
+            project: Some("forge".into()),
+            created_at: "2026-04-03 12:00:00".into(),
+            expires_at: None,
+            consumed: false,
+        };
+        let resp = handle_request(&mut state, Request::StorePerception { perception });
+        match resp {
+            Response::Ok { data: ResponseData::PerceptionStored { id } } => {
+                assert_eq!(id, "p-test-1");
+            }
+            other => panic!("expected PerceptionStored, got {:?}", other),
+        }
+
+        // List unconsumed perceptions
+        let resp = handle_request(&mut state, Request::ListPerceptions {
+            project: None,
+            limit: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {
+                assert_eq!(count, 1);
+                assert_eq!(perceptions.len(), 1);
+                assert_eq!(perceptions[0].data, "compilation failed");
+                assert!(!perceptions[0].consumed);
+            }
+            other => panic!("expected PerceptionList, got {:?}", other),
+        }
+
+        // Consume the perception
+        let resp = handle_request(&mut state, Request::ConsumePerceptions {
+            ids: vec!["p-test-1".into()],
+        });
+        match resp {
+            Response::Ok { data: ResponseData::PerceptionsConsumed { count } } => {
+                assert_eq!(count, 1);
+            }
+            other => panic!("expected PerceptionsConsumed, got {:?}", other),
+        }
+
+        // List unconsumed again — should be empty
+        let resp = handle_request(&mut state, Request::ListPerceptions {
+            project: None,
+            limit: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {
+                assert_eq!(count, 0);
+                assert!(perceptions.is_empty());
+            }
+            other => panic!("expected PerceptionList (empty), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_tool_store_and_list() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store a tool
+        let tool = forge_core::types::manas::Tool {
+            id: "t-test-1".into(),
+            name: "cargo".into(),
+            kind: forge_core::types::manas::ToolKind::Cli,
+            capabilities: vec!["build".into(), "test".into()],
+            config: None,
+            health: forge_core::types::manas::ToolHealth::Healthy,
+            last_used: None,
+            use_count: 0,
+            discovered_at: "2026-04-03 12:00:00".into(),
+        };
+        let resp = handle_request(&mut state, Request::StoreTool { tool });
+        match resp {
+            Response::Ok { data: ResponseData::ToolStored { id } } => {
+                assert_eq!(id, "t-test-1");
+            }
+            other => panic!("expected ToolStored, got {:?}", other),
+        }
+
+        // List tools
+        let resp = handle_request(&mut state, Request::ListTools);
+        match resp {
+            Response::Ok { data: ResponseData::ToolList { tools, count } } => {
+                assert_eq!(count, 1);
+                assert_eq!(tools.len(), 1);
+                assert_eq!(tools[0].name, "cargo");
+                assert_eq!(tools[0].kind, forge_core::types::manas::ToolKind::Cli);
+                assert_eq!(tools[0].capabilities, vec!["build", "test"]);
+            }
+            other => panic!("expected ToolList, got {:?}", other),
         }
     }
 }

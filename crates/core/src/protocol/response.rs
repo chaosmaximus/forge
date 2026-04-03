@@ -42,6 +42,15 @@ pub enum ResponseData {
         edge_count: usize,
         workers: Vec<String>,
         uptime_secs: u64,
+        // Manas layer counts
+        platform_count: usize,
+        tool_count: usize,
+        skill_count: usize,
+        domain_dna_count: usize,
+        perception_count: usize,
+        declared_count: usize,
+        identity_count: usize,
+        disposition_count: usize,
     },
     Export {
         memories: Vec<MemoryResult>,
@@ -79,6 +88,31 @@ pub enum ResponseData {
     SessionEnded { id: String, found: bool },
     Sessions { sessions: Vec<SessionInfo>, count: usize },
     LspStatus { servers: Vec<LspServerInfo> },
+
+    // ── Manas Layer Responses ──
+
+    PlatformStored { key: String },
+    PlatformList { entries: Vec<crate::types::manas::PlatformEntry> },
+    ToolStored { id: String },
+    ToolList { tools: Vec<crate::types::manas::Tool>, count: usize },
+    PerceptionStored { id: String },
+    PerceptionList { perceptions: Vec<crate::types::manas::Perception>, count: usize },
+    PerceptionsConsumed { count: usize },
+    IdentityStored { id: String },
+    IdentityList { facets: Vec<crate::types::manas::IdentityFacet>, count: usize },
+    IdentityDeactivated { id: String, found: bool },
+    DispositionList { traits: Vec<crate::types::manas::Disposition>, count: usize },
+    ManasHealthData {
+        platform_count: usize,
+        tool_count: usize,
+        skill_count: usize,
+        domain_dna_count: usize,
+        perception_unconsumed: usize,
+        declared_count: usize,
+        identity_facets: usize,
+        disposition_traits: usize,
+    },
+
     Shutdown,
 }
 
