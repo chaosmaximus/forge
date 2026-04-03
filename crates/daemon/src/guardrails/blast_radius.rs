@@ -19,7 +19,6 @@ pub fn analyze_blast_radius(conn: &Connection, file: &str) -> BlastRadius {
     let file_target = format!("file:{file}");
 
     let decisions = find_decisions(conn, &file_target);
-    let callers = count_callers(conn, &file_target);
     let importers = find_importers(conn, &file_target);
 
     let decision_ids: Vec<String> = decisions.iter().map(|(id, _, _)| id.clone()).collect();
@@ -27,7 +26,8 @@ pub fn analyze_blast_radius(conn: &Connection, file: &str) -> BlastRadius {
 
     BlastRadius {
         decisions,
-        callers,
+        // No "calls" edges exist yet — LSP indexing (Phase 4) will populate these.
+        callers: 0,
         importers,
         files_affected,
     }
@@ -62,13 +62,6 @@ fn find_decisions(conn: &Connection, file_target: &str) -> Vec<(String, String, 
         Err(_) => Vec::new(),
     };
     result
-}
-
-/// Count edges where this file is a call target (edge_type = 'calls').
-fn count_callers(conn: &Connection, file: &str) -> usize {
-    let sql = "SELECT COUNT(*) FROM edge WHERE to_id = ?1 AND edge_type = 'calls'";
-    conn.query_row(sql, [file], |row| row.get::<_, i64>(0))
-        .unwrap_or(0) as usize
 }
 
 /// Find files that import the given file target.
