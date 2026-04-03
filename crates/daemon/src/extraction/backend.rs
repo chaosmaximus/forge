@@ -49,16 +49,16 @@ pub async fn detect_backend(config: &ForgeConfig) -> BackendChoice {
             }
         }
         _ => {
-            // Try Claude first, then Ollama, then None
-            if is_claude_cli_available().await {
-                return BackendChoice::ClaudeCli;
-            }
+            // Try Ollama first (free, local), then Claude (paid API)
             let endpoint = &config.extraction.ollama.endpoint;
             if is_ollama_available(endpoint).await {
                 return BackendChoice::Ollama;
             }
+            if is_claude_cli_available().await {
+                return BackendChoice::ClaudeCli;
+            }
             BackendChoice::None(
-                "no extraction backend available (tried claude CLI, ollama)".to_string(),
+                "no extraction backend available (tried ollama, claude CLI)".to_string(),
             )
         }
     }
