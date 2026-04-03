@@ -919,6 +919,66 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Sync Operations ──
+
+        Request::SyncExport { project, since } => {
+            match crate::sync::sync_export(
+                &state.conn,
+                project.as_deref(),
+                since.as_deref(),
+            ) {
+                Ok(lines) => {
+                    let count = lines.len();
+                    let node_id = state.hlc.node_id().to_string();
+                    Response::Ok {
+                        data: ResponseData::SyncExported { lines, count, node_id },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("sync_export failed: {e}"),
+                },
+            }
+        }
+
+        Request::SyncImport { lines } => {
+            let local_node_id = state.hlc.node_id().to_string();
+            match crate::sync::sync_import(&state.conn, &lines, &local_node_id) {
+                Ok(result) => Response::Ok {
+                    data: ResponseData::SyncImported {
+                        imported: result.imported,
+                        conflicts: result.conflicts,
+                        skipped: result.skipped,
+                    },
+                },
+                Err(e) => Response::Error {
+                    message: format!("sync_import failed: {e}"),
+                },
+            }
+        }
+
+        Request::SyncConflicts => {
+            match crate::sync::list_conflicts(&state.conn) {
+                Ok(conflicts) => Response::Ok {
+                    data: ResponseData::SyncConflictList { conflicts },
+                },
+                Err(e) => Response::Error {
+                    message: format!("list_conflicts failed: {e}"),
+                },
+            }
+        }
+
+        Request::SyncResolve { keep_id } => {
+            let id = keep_id.clone();
+            match crate::sync::resolve_conflict(&state.conn, &keep_id) {
+                Ok(resolved) => Response::Ok {
+                    data: ResponseData::SyncResolved { id, resolved },
+                },
+                Err(e) => Response::Error {
+                    message: format!("resolve_conflict failed: {e}"),
+                },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

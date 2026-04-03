@@ -167,6 +167,49 @@ enum Commands {
         #[arg(long)]
         id: String,
     },
+
+    // ── Sync Commands ──
+
+    /// Export memories as NDJSON with HLC metadata (for sync)
+    #[command(name = "sync-export")]
+    SyncExport {
+        /// Filter by project
+        #[arg(long)]
+        project: Option<String>,
+        /// Only export memories with HLC timestamp after this value
+        #[arg(long)]
+        since: Option<String>,
+    },
+    /// Import NDJSON memory lines from stdin (for sync)
+    #[command(name = "sync-import")]
+    SyncImport,
+    /// Pull memories from a remote host via SSH
+    #[command(name = "sync-pull")]
+    SyncPull {
+        /// Remote host (SSH destination, e.g. user@host)
+        host: String,
+        /// Filter by project
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Push memories to a remote host via SSH
+    #[command(name = "sync-push")]
+    SyncPush {
+        /// Remote host (SSH destination, e.g. user@host)
+        host: String,
+        /// Filter by project
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List unresolved sync conflicts
+    #[command(name = "sync-conflicts")]
+    SyncConflicts,
+    /// Resolve a sync conflict by keeping the given memory ID
+    #[command(name = "sync-resolve")]
+    SyncResolve {
+        /// Memory ID to keep
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -313,6 +356,26 @@ async fn main() {
         }
         Commands::Perceptions { project, limit } => {
             commands::manas::perceptions(project, limit).await;
+        }
+
+        // ── Sync Commands ──
+        Commands::SyncExport { project, since } => {
+            commands::sync::sync_export(project, since).await;
+        }
+        Commands::SyncImport => {
+            commands::sync::sync_import().await;
+        }
+        Commands::SyncPull { host, project } => {
+            commands::sync::sync_pull(host, project).await;
+        }
+        Commands::SyncPush { host, project } => {
+            commands::sync::sync_push(host, project).await;
+        }
+        Commands::SyncConflicts => {
+            commands::sync::sync_conflicts().await;
+        }
+        Commands::SyncResolve { id } => {
+            commands::sync::sync_resolve(id).await;
         }
     }
 }

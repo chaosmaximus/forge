@@ -123,7 +123,43 @@ pub enum ResponseData {
         chars: usize,
     },
 
+    // ── Sync Responses ──
+
+    SyncExported {
+        lines: Vec<String>,
+        count: usize,
+        node_id: String,
+    },
+    SyncImported {
+        imported: usize,
+        conflicts: usize,
+        skipped: usize,
+    },
+    SyncConflictList {
+        conflicts: Vec<ConflictPair>,
+    },
+    SyncResolved {
+        id: String,
+        resolved: bool,
+    },
+
     Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConflictPair {
+    pub title: String,
+    pub memory_type: String,
+    pub local: ConflictVersion,
+    pub remote: ConflictVersion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConflictVersion {
+    pub id: String,
+    pub content: String,
+    pub node_id: String,
+    pub hlc_timestamp: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -111,5 +111,23 @@ pub enum Request {
         project: Option<String>,
     },
 
+    // ── Sync Operations ──
+
+    /// Export memories as NDJSON lines with HLC metadata for sync
+    SyncExport {
+        project: Option<String>,
+        since: Option<String>,
+    },
+    /// Import NDJSON memory lines from a remote node
+    SyncImport {
+        lines: Vec<String>,
+    },
+    /// List unresolved sync conflicts
+    SyncConflicts,
+    /// Resolve a sync conflict by keeping the given memory ID
+    SyncResolve {
+        keep_id: String,
+    },
+
     Shutdown,
 }
