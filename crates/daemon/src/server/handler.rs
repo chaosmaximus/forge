@@ -885,6 +885,19 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::CompileContext { agent, project } => {
+            let agent_name = agent.as_deref().unwrap_or("claude-code");
+            let context = crate::recall::compile_context(&state.conn, agent_name, project.as_deref());
+            let chars = context.len();
+            Response::Ok {
+                data: ResponseData::CompiledContext {
+                    context,
+                    layers_used: 6, // platform, identity, decisions, lessons, skills, perceptions
+                    chars,
+                },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
@@ -1892,6 +1905,27 @@ mod tests {
                 assert_eq!(count, 0, "should not find anything for non-matching query");
             }
             other => panic!("expected Memories, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compile_context_handler() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(
+            &mut state,
+            Request::CompileContext {
+                agent: None,
+                project: None,
+            },
+        );
+        match resp {
+            Response::Ok {
+                data: ResponseData::CompiledContext { context, chars, .. },
+            } => {
+                assert!(context.contains("<forge-context"), "should contain opening tag");
+                assert!(chars > 0, "chars should be > 0");
+            }
+            other => panic!("expected CompiledContext, got {:?}", other),
         }
     }
 }

@@ -117,6 +117,12 @@ pub enum ResponseData {
         disposition_traits: usize,
     },
 
+    CompiledContext {
+        context: String,
+        layers_used: usize,
+        chars: usize,
+    },
+
     Shutdown,
 }
 

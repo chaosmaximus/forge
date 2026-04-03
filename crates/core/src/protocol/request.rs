@@ -105,5 +105,11 @@ pub enum Request {
     /// Extended health across all 8 Manas layers
     ManasHealth,
 
+    /// Compile optimized context from all Manas layers (for session-start)
+    CompileContext {
+        agent: Option<String>,
+        project: Option<String>,
+    },
+
     Shutdown,
 }
