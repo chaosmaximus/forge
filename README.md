@@ -10,9 +10,9 @@ Multi-layered memory. Proactive perception. Universal tool abstraction. One daem
 
 Coding is the first vertical. The architecture is domain-agnostic. The same 8-layer memory system that makes a coding agent remember your architecture can make a medical agent remember patient history, a research agent track hypotheses, or a driving agent learn road patterns. We validate on coding because we eat our own dogfood — then we expand to everything.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-378%20passing-brightgreen)]()
 [![Rust](https://img.shields.io/badge/rust-1.88-orange)]()
+[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa)](https://github.com/sponsors/chaosmaximus)
 
 ---
 
@@ -170,7 +170,7 @@ All tests pass. 5 adversarial Codex (gpt-5.4) reviews completed.
 
 ## Pricing
 
-| | Free | Pro $9/mo | Team $19/seat | Enterprise |
+| | Free | Pro $12/mo | Team $19/seat | Enterprise |
 |--|------|----------|--------------|-----------|
 | Terminal | Full | Full | Full | Full |
 | Memory | 200 | Unlimited | Unlimited | Unlimited |
@@ -183,11 +183,11 @@ All tests pass. 5 adversarial Codex (gpt-5.4) reviews completed.
 
 ## Competitive Position
 
-Nobody else combines: premium terminal + 8-layer knowledge graph + brain map + guardrails + $9/mo + local-first.
+Nobody else combines: premium terminal + 8-layer knowledge graph + brain map + guardrails + $12/mo + local-first.
 
 | Product | Terminal | Memory Graph | Brain Map | Guardrails | Price |
 |---------|----------|-------------|-----------|-----------|-------|
-| **Forge** | **Yes** | **8-layer** | **Yes** | **Yes** | **$9/mo** |
+| **Forge** | **Yes** | **8-layer** | **Yes** | **Yes** | **$12/mo** |
 | Warp | Yes | No | No | No | $18/mo |
 | Mem0 | No | Yes (cloud) | No | No | $249/mo |
 | OpenClaw | No (chat) | Plugins | No | No | Free |
@@ -198,7 +198,7 @@ Nobody else combines: premium terminal + 8-layer knowledge graph + brain map + g
 See [`product/`](product/) for:
 - [Vision](product/vision.md) — "The terminal that remembers"
 - [Positioning](product/positioning.md) — Category creation, sales ammunition
-- [Pricing](product/pricing.md) — $9/mo disruption strategy
+- [Pricing](product/pricing.md) — $12/mo disruption strategy
 - [Competitive landscape](product/competitive-landscape-2026-04.md) — Full market analysis
 - [User stories](product/user-stories.md) — US-1 through US-13
 - [Designs](product/designs/) — Pencil mockups (v3 final)
@@ -213,4 +213,4 @@ Built on: [Tauri](https://tauri.app/) · [SolidJS](https://solidjs.com/) · [xte
 
 ## License
 
-[MIT](LICENSE)
+Proprietary. See [LICENSE](LICENSE) for details.
