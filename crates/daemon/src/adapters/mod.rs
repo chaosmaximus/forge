@@ -28,8 +28,10 @@ pub fn detect_adapters() -> Vec<Box<dyn AgentAdapter>> {
         adapters.push(Box::new(cline));
     }
 
-    // Codex will be added by another agent — for now create empty placeholder file
-    // so the module compiles
+    let codex = codex::CodexAdapter::new(&home);
+    if !codex.watch_dirs().is_empty() {
+        adapters.push(Box::new(codex));
+    }
 
     adapters
 }
