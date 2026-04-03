@@ -18,6 +18,7 @@ pub enum MemoryStatus {
     Superseded,
     Reverted,
     Faded,
+    Conflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -37,6 +38,10 @@ pub struct Memory {
     pub valence: String,      // "positive", "negative", "neutral"
     #[serde(default)]
     pub intensity: f64,       // 0.0-1.0 how emotionally significant
+    #[serde(default)]
+    pub hlc_timestamp: String, // HLC: "{wall_ms}-{counter}-{node_id}"
+    #[serde(default)]
+    pub node_id: String,       // 8-char hex node identifier
 }
 
 fn default_valence() -> String {
@@ -60,6 +65,8 @@ impl Memory {
             accessed_at: now,
             valence: "neutral".to_string(),
             intensity: 0.0,
+            hlc_timestamp: String::new(),
+            node_id: String::new(),
         }
     }
 
@@ -82,6 +89,12 @@ impl Memory {
         self.valence = valence.to_string();
         self.intensity = intensity.clamp(0.0, 1.0);
         self
+    }
+
+    /// Set HLC timestamp and node_id (called before storing to DB).
+    pub fn set_hlc(&mut self, hlc_timestamp: String, node_id: String) {
+        self.hlc_timestamp = hlc_timestamp;
+        self.node_id = node_id;
     }
 }
 

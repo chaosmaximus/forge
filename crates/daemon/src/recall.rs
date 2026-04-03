@@ -26,7 +26,7 @@ fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String,
 /// Fetch a single Memory record from SQLite by its ID.
 fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id
          FROM memory WHERE id = ?1",
     )?;
 
@@ -46,13 +46,7 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             _ => MemoryType::Decision,
         };
 
-        let status = match status_str.as_str() {
-            "active" => MemoryStatus::Active,
-            "superseded" => MemoryStatus::Superseded,
-            "reverted" => MemoryStatus::Reverted,
-            "faded" => MemoryStatus::Faded,
-            _ => MemoryStatus::Active,
-        };
+        let status = ops::status_from_str(&status_str);
 
         let tags: Vec<String> =
             serde_json::from_str(&tags_json).unwrap_or_default();
@@ -71,6 +65,8 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             accessed_at: row.get(9)?,
             valence: row.get(10)?,
             intensity: row.get(11)?,
+            hlc_timestamp: row.get(12)?,
+            node_id: row.get(13)?,
         }))
     } else {
         Ok(None)

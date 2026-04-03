@@ -11,6 +11,7 @@ pub struct DaemonState {
     pub conn: Connection,
     pub events: EventSender,
     pub started_at: Instant,
+    pub hlc: crate::sync::Hlc,
 }
 
 impl DaemonState {
@@ -33,10 +34,14 @@ impl DaemonState {
         // Best-effort: detect and store available CLI tools
         let _ = crate::db::manas::detect_and_store_tools(&conn);
 
+        let node_id = crate::sync::generate_node_id();
+        let hlc = crate::sync::Hlc::new(&node_id);
+
         Ok(DaemonState {
             conn,
             events: crate::events::create_event_bus(),
             started_at: Instant::now(),
+            hlc,
         })
     }
 }
@@ -63,6 +68,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             if let Some(p) = project {
                 memory = memory.with_project(p);
             }
+            // Stamp HLC before storing
+            memory.set_hlc(state.hlc.now(), state.hlc.node_id().to_string());
             let id = memory.id.clone();
             match ops::remember(&state.conn, &memory) {
                 Ok(()) => {

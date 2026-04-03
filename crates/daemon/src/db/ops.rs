@@ -40,6 +40,18 @@ fn status_str(ms: &MemoryStatus) -> &'static str {
         MemoryStatus::Superseded => "superseded",
         MemoryStatus::Reverted => "reverted",
         MemoryStatus::Faded => "faded",
+        MemoryStatus::Conflict => "conflict",
+    }
+}
+
+pub fn status_from_str(s: &str) -> MemoryStatus {
+    match s {
+        "active" => MemoryStatus::Active,
+        "superseded" => MemoryStatus::Superseded,
+        "reverted" => MemoryStatus::Reverted,
+        "faded" => MemoryStatus::Faded,
+        "conflict" => MemoryStatus::Conflict,
+        _ => MemoryStatus::Active,
     }
 }
 
@@ -64,24 +76,49 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     if let Some(existing_id) = existing_id {
         // Update existing — bump confidence if higher, update content
         conn.execute(
-            "UPDATE memory SET content = ?1, confidence = MAX(confidence, ?2), accessed_at = ?3
-             WHERE id = ?4",
-            params![memory.content, memory.confidence, memory.accessed_at, existing_id],
+            "UPDATE memory SET content = ?1, confidence = MAX(confidence, ?2), accessed_at = ?3,
+             hlc_timestamp = ?4, node_id = ?5
+             WHERE id = ?6",
+            params![memory.content, memory.confidence, memory.accessed_at,
+                    memory.hlc_timestamp, memory.node_id, existing_id],
         )?;
     } else {
         // Insert new
         conn.execute(
-            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 memory.id, mt, memory.title, memory.content,
                 memory.confidence, status,
                 memory.project, tags_json,
                 memory.created_at, memory.accessed_at,
                 memory.valence, memory.intensity,
+                memory.hlc_timestamp, memory.node_id,
             ],
         )?;
     }
+    Ok(())
+}
+
+/// Insert a memory without dedup checking. Used for storing conflict versions
+/// where we need both the local and remote copy preserved.
+pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
+    let mt = type_str(&memory.memory_type);
+    let status = status_str(&memory.status);
+    let tags_json = serde_json::to_string(&memory.tags).unwrap_or_else(|_| "[]".to_string());
+
+    conn.execute(
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            memory.id, mt, memory.title, memory.content,
+            memory.confidence, status,
+            memory.project, tags_json,
+            memory.created_at, memory.accessed_at,
+            memory.valence, memory.intensity,
+            memory.hlc_timestamp, memory.node_id,
+        ],
+    )?;
     Ok(())
 }
 
@@ -434,7 +471,7 @@ pub fn cleanup_stale_files(conn: &Connection, current_paths: &[&str]) -> rusqlit
 /// Export all active memories as full Memory objects.
 pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id
          FROM memory WHERE status = 'active' ORDER BY created_at DESC"
     )?;
     let rows = stmt.query_map([], |row| {
@@ -462,6 +499,8 @@ pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
             accessed_at: row.get(9)?,
             valence: row.get(10)?,
             intensity: row.get(11)?,
+            hlc_timestamp: row.get(12)?,
+            node_id: row.get(13)?,
         })
     })?;
     rows.collect()

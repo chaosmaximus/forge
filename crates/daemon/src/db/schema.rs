@@ -208,6 +208,10 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN valence TEXT NOT NULL DEFAULT 'neutral'", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN intensity REAL NOT NULL DEFAULT 0.0", []);
 
+    // Add HLC sync columns (safe to re-run — ignores if already exists)
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN hlc_timestamp TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN node_id TEXT NOT NULL DEFAULT ''", []);
+
     Ok(())
 }
 
@@ -266,6 +270,22 @@ mod tests {
         assert_eq!(valence, "negative");
         let intensity: f64 = conn.query_row("SELECT intensity FROM memory WHERE id = 'v1'", [], |r| r.get(0)).unwrap();
         assert!((intensity - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_hlc_columns_exist() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
+             VALUES ('h1', 'decision', 'test', 'test', 0.9, 'active', '[]', datetime('now'), datetime('now'), 'neutral', 0.0, '1712345678000-0-abc12345', 'abc12345')",
+            [],
+        ).unwrap();
+        let hlc: String = conn.query_row("SELECT hlc_timestamp FROM memory WHERE id = 'h1'", [], |r| r.get(0)).unwrap();
+        assert!(hlc.contains("abc12345"));
+        let node: String = conn.query_row("SELECT node_id FROM memory WHERE id = 'h1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(node, "abc12345");
     }
 
     #[test]
