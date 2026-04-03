@@ -42,6 +42,33 @@ fn flatten_symbols(file_path: &str, symbols: &[DocumentSymbol], out: &mut Vec<Co
     }
 }
 
+/// Build "calls" edges from LSP reference locations.
+///
+/// For a symbol defined in `definition_file` with `symbol_id`, creates edges
+/// from each referencing file to the symbol. Self-file references are excluded
+/// and duplicate edges (same from_id) are deduplicated.
+pub fn build_call_edges(
+    symbol_id: &str,
+    definition_file: &str,
+    references: &[lsp_types::Location],
+) -> Vec<(String, String)> {
+    let mut edges = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for loc in references {
+        let ref_path = loc.uri.path().as_str();
+        // Skip self-references (same file as the definition)
+        if ref_path == definition_file {
+            continue;
+        }
+        let from_id = format!("file:{}", ref_path);
+        if seen.insert(from_id.clone()) {
+            edges.push((from_id, symbol_id.to_string()));
+        }
+    }
+    edges
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +181,56 @@ mod tests {
     fn test_empty_symbols() {
         let result = convert_symbols("empty.rs", &[]);
         assert!(result.is_empty());
+    }
+
+    /// Helper to create an lsp_types::Location for testing build_call_edges.
+    fn make_location(path: &str, line: u32) -> lsp_types::Location {
+        let uri: lsp_types::Uri = format!("file://{}", path)
+            .parse()
+            .expect("valid URI");
+        lsp_types::Location {
+            uri,
+            range: Range {
+                start: Position { line, character: 0 },
+                end: Position { line, character: 10 },
+            },
+        }
+    }
+
+    #[test]
+    fn test_build_call_edges() {
+        // 3 references from 2 different files → 2 edges (deduped)
+        let refs = vec![
+            make_location("/src/caller_a.rs", 10),
+            make_location("/src/caller_b.rs", 20),
+            make_location("/src/caller_a.rs", 30), // duplicate file
+        ];
+
+        let edges = super::build_call_edges(
+            "/src/lib.rs:process:5",
+            "/src/lib.rs",
+            &refs,
+        );
+
+        assert_eq!(edges.len(), 2, "should deduplicate same-file refs");
+        assert_eq!(edges[0], ("file:/src/caller_a.rs".to_string(), "/src/lib.rs:process:5".to_string()));
+        assert_eq!(edges[1], ("file:/src/caller_b.rs".to_string(), "/src/lib.rs:process:5".to_string()));
+    }
+
+    #[test]
+    fn test_build_call_edges_skips_self_file() {
+        // All references from the same file as the definition → 0 edges
+        let refs = vec![
+            make_location("/src/lib.rs", 10),
+            make_location("/src/lib.rs", 25),
+        ];
+
+        let edges = super::build_call_edges(
+            "/src/lib.rs:process:5",
+            "/src/lib.rs",
+            &refs,
+        );
+
+        assert!(edges.is_empty(), "self-file references should be excluded");
     }
 }

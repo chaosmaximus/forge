@@ -184,12 +184,25 @@ impl LspClient {
         Ok(client)
     }
 
-    /// Check if the server supports a capability.
+    /// Check if the server supports document symbols.
     pub fn supports_document_symbols(&self) -> bool {
         self.server_caps
             .as_ref()
             .and_then(|c| c.capabilities.document_symbol_provider.as_ref())
             .is_some()
+    }
+
+    /// Check if the server supports textDocument/references.
+    pub fn supports_references(&self) -> bool {
+        self.server_caps
+            .as_ref()
+            .and_then(|c| c.capabilities.references_provider.as_ref())
+            .is_some()
+    }
+
+    /// Check whether the language server process is still running.
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
     }
 
     /// Notify the server that a file has been opened.
@@ -262,6 +275,33 @@ impl LspClient {
         }
     }
 
+    /// Request references for a symbol at the given position.
+    ///
+    /// Returns all locations where the symbol is referenced (excluding its declaration).
+    pub async fn references(
+        &mut self,
+        file_uri: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<lsp_types::Location>, String> {
+        let uri: Uri = file_uri.parse().map_err(|e| format!("Invalid URI: {e}"))?;
+        let params = lsp_types::ReferenceParams {
+            text_document_position: lsp_types::TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: lsp_types::Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: lsp_types::ReferenceContext {
+                include_declaration: false,
+            },
+        };
+        let response: Option<Vec<lsp_types::Location>> = self
+            .send_request("textDocument/references", params)
+            .await?;
+        Ok(response.unwrap_or_default())
+    }
+
     /// Cleanly shut down the language server.
     pub async fn shutdown(mut self) -> Result<(), String> {
         // Send shutdown request.
@@ -288,6 +328,11 @@ impl LspClient {
         method: &'static str,
         params: P,
     ) -> Result<R, String> {
+        // Check if the server is still alive before writing
+        if !self.is_alive() {
+            return Err("Language server process has exited".to_string());
+        }
+
         let id = self.next_id;
         self.next_id += 1;
 
@@ -302,6 +347,8 @@ impl LspClient {
 
         // Read responses until we get one matching our id.
         // (Language servers may send notifications/requests interleaved.)
+        const MAX_SKIPPED: usize = 1000;
+        let mut skipped = 0usize;
         loop {
             let body = self.read_message().await?;
 
@@ -326,6 +373,13 @@ impl LspClient {
                 }
             }
             // Not our response — probably a server notification; skip it.
+            skipped += 1;
+            if skipped > MAX_SKIPPED {
+                return Err(format!(
+                    "Exceeded {} non-response messages waiting for id {}",
+                    MAX_SKIPPED, id
+                ));
+            }
         }
     }
 

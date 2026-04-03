@@ -8,9 +8,10 @@ use crate::lsp::client::{file_uri, LspClient};
 use crate::lsp::detect::{detect_language_servers, LspServerConfig};
 use crate::lsp::symbols::convert_symbols;
 use forge_core::types::{CodeFile, CodeSymbol};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use tokio::sync::{watch, Mutex};
 
@@ -34,6 +35,11 @@ const SKIP_DIRS: &[&str] = &[
     ".venv",
     "venv",
 ];
+
+/// Content-hash cache: skips re-indexing unchanged files across index runs.
+/// Key = file path, Value = size:mtime hash string.
+static HASH_CACHE: std::sync::LazyLock<StdMutex<HashMap<String, String>>> =
+    std::sync::LazyLock::new(|| StdMutex::new(HashMap::new()));
 
 pub async fn run_indexer(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
@@ -193,20 +199,20 @@ fn walk_dir_recursive(
 
 /// Index all matching files using a single LSP server.
 ///
-/// Returns the collected CodeFiles and CodeSymbols on success.
+/// Returns the collected CodeFiles, CodeSymbols, and call edges on success.
 async fn index_with_server(
     config: &LspServerConfig,
     project_dir: &str,
     indexed_at: &str,
-) -> Result<(Vec<CodeFile>, Vec<CodeSymbol>), String> {
+) -> Result<(Vec<CodeFile>, Vec<CodeSymbol>, Vec<(String, String)>), String> {
     let extensions = extensions_for_language(&config.language);
     if extensions.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
 
     let source_files = collect_source_files(project_dir, extensions);
     if source_files.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
 
     eprintln!(
@@ -228,7 +234,7 @@ async fn index_with_server(
     if !client.supports_document_symbols() {
         eprintln!("[indexer] {} does not support documentSymbol, skipping", config.command);
         let _ = client.shutdown().await;
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
 
     let mut files = Vec::new();
@@ -243,9 +249,17 @@ async fn index_with_server(
             path: file_path.clone(),
             language: config.language.clone(),
             project: project_dir.to_string(),
-            hash,
+            hash: hash.clone(),
             indexed_at: indexed_at.to_string(),
         };
+
+        // Check hash cache — skip unchanged files
+        let cached = HASH_CACHE.lock().unwrap().get(file_path.as_str()).cloned();
+        if cached.as_deref() == Some(&hash) {
+            files.push(file_record);
+            continue; // file unchanged since last index
+        }
+
         files.push(file_record);
 
         // Send didOpen before requesting symbols (required by LSP protocol)
@@ -265,6 +279,8 @@ async fn index_with_server(
             Ok(Ok(doc_symbols)) => {
                 let converted = convert_symbols(file_path, &doc_symbols);
                 symbols.extend(converted);
+                // Update hash cache on successful extraction
+                HASH_CACHE.lock().unwrap().insert(file_path.to_string(), hash);
             }
             Ok(Err(e)) => {
                 eprintln!("[indexer] {} symbols failed for {}: {}", config.language, file_path, e);
@@ -278,12 +294,47 @@ async fn index_with_server(
         let _ = client.did_close(&uri).await;
     }
 
+    // Request references for callable symbols → build "calls" edges
+    let mut call_edges: Vec<(String, String)> = Vec::new();
+    if client.supports_references() {
+        let callable_symbols: Vec<&CodeSymbol> = symbols
+            .iter()
+            .filter(|s| s.kind == "function" || s.kind == "class")
+            .collect();
+
+        // Limit to first 100 symbols to avoid excessive LSP calls
+        for sym in callable_symbols.iter().take(100) {
+            let sym_uri = file_uri(&sym.file_path);
+            let content = std::fs::read_to_string(&sym.file_path).unwrap_or_default();
+            let _ = client.did_open(&sym_uri, &config.language, &content).await;
+
+            match tokio::time::timeout(
+                Duration::from_secs(10),
+                client.references(&sym_uri, sym.line_start as u32, 0),
+            )
+            .await
+            {
+                Ok(Ok(refs)) if !refs.is_empty() => {
+                    let edges = crate::lsp::symbols::build_call_edges(
+                        &sym.id,
+                        &sym.file_path,
+                        &refs,
+                    );
+                    call_edges.extend(edges);
+                }
+                _ => {}
+            }
+
+            let _ = client.did_close(&sym_uri).await;
+        }
+    }
+
     // Shut down the server gracefully
     if let Err(e) = client.shutdown().await {
         eprintln!("[indexer] {} shutdown error: {}", config.command, e);
     }
 
-    Ok((files, symbols))
+    Ok((files, symbols, call_edges))
 }
 
 /// Compute a simple hash string from file size + mtime.
@@ -315,12 +366,14 @@ async fn run_index(
     let indexed_at = now_str();
     let mut all_files: Vec<CodeFile> = Vec::new();
     let mut all_symbols: Vec<CodeSymbol> = Vec::new();
+    let mut all_call_edges: Vec<(String, String)> = Vec::new();
 
     for config in &servers {
         match index_with_server(config, project_dir, &indexed_at).await {
-            Ok((files, symbols)) => {
+            Ok((files, symbols, edges)) => {
                 all_files.extend(files);
                 all_symbols.extend(symbols);
+                all_call_edges.extend(edges);
             }
             Err(e) => {
                 eprintln!("[indexer] {} failed: {}", config.command, e);
@@ -349,6 +402,14 @@ async fn run_index(
         }
     }
 
+    // Store "calls" edges
+    let mut edges_stored = 0usize;
+    for (from_id, to_id) in &all_call_edges {
+        if ops::store_edge(&locked.conn, from_id, to_id, "calls", "{}").is_ok() {
+            edges_stored += 1;
+        }
+    }
+
     // Clean up stale entries for files no longer in the index output
     let current_paths: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
     if let Ok(cleaned) = ops::cleanup_stale_files(&locked.conn, &current_paths) {
@@ -364,6 +425,9 @@ async fn run_index(
             "[indexer] indexed {} symbols across {} file entries",
             symbols_stored, files_stored
         );
+    }
+    if edges_stored > 0 {
+        eprintln!("[indexer] stored {} call edges", edges_stored);
     }
     Ok(())
 }
