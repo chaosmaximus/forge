@@ -17,6 +17,10 @@ pub enum Request {
         memory_type: Option<MemoryType>,
         project: Option<String>,
         limit: Option<usize>,
+        /// Layer filter: "experience", "declared", "domain_dna", "perception", "identity"
+        /// None = search all layers (current behavior)
+        #[serde(default)]
+        layer: Option<String>,
     },
     Forget {
         id: String,

@@ -48,6 +48,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             tags,
             project,
         } => {
+            let type_str = format!("{:?}", memory_type);
+            let title_clone = title.clone();
             let mut memory = Memory::new(memory_type, title, content);
             if let Some(c) = confidence {
                 memory = memory.with_confidence(c);
@@ -60,27 +62,137 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
             let id = memory.id.clone();
             match ops::remember(&state.conn, &memory) {
-                Ok(()) => Response::Ok {
-                    data: ResponseData::Stored { id },
-                },
+                Ok(()) => {
+                    crate::events::emit(&state.events, "memory_created", serde_json::json!({
+                        "id": id,
+                        "memory_type": type_str,
+                        "title": title_clone,
+                    }));
+                    Response::Ok {
+                        data: ResponseData::Stored { id },
+                    }
+                }
                 Err(e) => Response::Error {
                     message: format!("remember failed: {e}"),
                 },
             }
         }
 
-        Request::Recall { query, memory_type, project, limit } => {
+        Request::Recall { query, memory_type, project, limit, layer } => {
             let lim = limit.unwrap_or(10);
-            let mut results =
-                hybrid_recall(&state.conn, &query, None, memory_type.as_ref(), project.as_deref(), lim);
 
-            // Cross-layer search (only if no type filter — type filter means user wants specific memory types)
-            if memory_type.is_none() {
-                let manas_results = crate::recall::manas_recall(&state.conn, &query, project.as_deref(), 3);
-                results.extend(manas_results);
-                results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-                results.truncate(lim);
-            }
+            let results = match layer.as_deref() {
+                // "experience" → only memory table (hybrid_recall, no manas_recall)
+                Some("experience") => {
+                    hybrid_recall(&state.conn, &query, None, memory_type.as_ref(), project.as_deref(), lim)
+                }
+                // "declared" → only declared knowledge
+                Some("declared") => {
+                    let declared = crate::db::manas::search_declared(&state.conn, &query, project.as_deref())
+                        .unwrap_or_default();
+                    declared.into_iter().take(lim).map(|d| {
+                        MemoryResult {
+                            memory: forge_core::types::Memory::new(
+                                forge_core::types::MemoryType::Lesson,
+                                format!("[declared:{}] {}", d.source, d.id),
+                                d.content.chars().take(500).collect::<String>(),
+                            ).with_confidence(0.7),
+                            score: 0.5,
+                            source: "declared".to_string(),
+                        }
+                    }).collect()
+                }
+                // "domain_dna" → only domain DNA
+                Some("domain_dna") => {
+                    let dna_list = crate::db::manas::list_domain_dna(&state.conn, project.as_deref())
+                        .unwrap_or_default();
+                    let query_lower = query.to_lowercase();
+                    dna_list.into_iter()
+                        .filter(|dna| dna.pattern.to_lowercase().contains(&query_lower))
+                        .take(lim)
+                        .map(|dna| {
+                            MemoryResult {
+                                memory: forge_core::types::Memory::new(
+                                    forge_core::types::MemoryType::Pattern,
+                                    format!("[dna:{}] {}", dna.aspect, dna.pattern),
+                                    format!("Project convention: {} (confidence: {:.0}%)", dna.pattern, dna.confidence * 100.0),
+                                ).with_confidence(dna.confidence),
+                                score: 0.4,
+                                source: "domain_dna".to_string(),
+                            }
+                        }).collect()
+                }
+                // "identity" → list identity facets matching query
+                Some("identity") => {
+                    // Search across all agents via LIKE on facet/description
+                    let search = format!("%{}%", query);
+                    let facets: Vec<forge_core::types::manas::IdentityFacet> = state.conn.prepare(
+                        "SELECT id, agent, facet, description, strength, source, active, created_at
+                         FROM identity WHERE active = 1 AND (facet LIKE ?1 OR description LIKE ?1)
+                         ORDER BY strength DESC LIMIT ?2"
+                    ).and_then(|mut stmt| {
+                        stmt.query_map(rusqlite::params![search, lim as i64], |row| {
+                            Ok(forge_core::types::manas::IdentityFacet {
+                                id: row.get(0)?,
+                                agent: row.get(1)?,
+                                facet: row.get(2)?,
+                                description: row.get(3)?,
+                                strength: row.get(4)?,
+                                source: row.get(5)?,
+                                active: row.get::<_, i32>(6)? != 0,
+                                created_at: row.get(7)?,
+                            })
+                        })?.collect()
+                    }).unwrap_or_default();
+
+                    facets.into_iter()
+                        .map(|f| {
+                            MemoryResult {
+                                memory: forge_core::types::Memory::new(
+                                    forge_core::types::MemoryType::Preference,
+                                    format!("[identity:{}] {}", f.agent, f.facet),
+                                    f.description.clone(),
+                                ).with_confidence(f.strength),
+                                score: 0.6,
+                                source: "identity".to_string(),
+                            }
+                        }).collect()
+                }
+                // "perception" → list perceptions matching query
+                Some("perception") => {
+                    let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None)
+                        .unwrap_or_default();
+                    let query_lower = query.to_lowercase();
+                    perceptions.into_iter()
+                        .filter(|p| p.data.to_lowercase().contains(&query_lower))
+                        .take(lim)
+                        .map(|p| {
+                            let snippet: String = p.data.chars().take(80).collect();
+                            MemoryResult {
+                                memory: forge_core::types::Memory::new(
+                                    forge_core::types::MemoryType::Lesson,
+                                    format!("[perception:{:?}] {}", p.kind, snippet),
+                                    p.data.clone(),
+                                ),
+                                score: 0.5,
+                                source: "perception".to_string(),
+                            }
+                        }).collect()
+                }
+                // None or unknown → current behavior (search everything)
+                _ => {
+                    let mut results =
+                        hybrid_recall(&state.conn, &query, None, memory_type.as_ref(), project.as_deref(), lim);
+                    // Cross-layer search (only if no type filter)
+                    if memory_type.is_none() {
+                        let manas_results = crate::recall::manas_recall(&state.conn, &query, project.as_deref(), 3);
+                        results.extend(manas_results);
+                        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+                        results.truncate(lim);
+                    }
+                    results
+                }
+            };
 
             let count = results.len();
             Response::Ok {
@@ -89,9 +201,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::Forget { id } => match ops::forget(&state.conn, &id) {
-            Ok(true) => Response::Ok {
-                data: ResponseData::Forgotten { id },
-            },
+            Ok(true) => {
+                crate::events::emit(&state.events, "memory_forgotten", serde_json::json!({
+                    "id": id,
+                }));
+                Response::Ok {
+                    data: ResponseData::Forgotten { id },
+                }
+            }
             Ok(false) => Response::Error {
                 message: format!("memory not found or already deleted: {id}"),
             },
@@ -425,10 +542,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::RegisterSession { id, agent, project, cwd } => {
+            let agent_clone = agent.clone();
             match crate::sessions::register_session(&state.conn, &id, &agent, project.as_deref(), cwd.as_deref()) {
-                Ok(()) => Response::Ok {
-                    data: ResponseData::SessionRegistered { id },
-                },
+                Ok(()) => {
+                    crate::events::emit(&state.events, "session_changed", serde_json::json!({
+                        "id": id,
+                        "agent": agent_clone,
+                        "action": "registered",
+                    }));
+                    Response::Ok {
+                        data: ResponseData::SessionRegistered { id },
+                    }
+                }
                 Err(e) => Response::Error {
                     message: format!("register_session failed: {e}"),
                 },
@@ -437,9 +562,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::EndSession { id } => {
             match crate::sessions::end_session(&state.conn, &id) {
-                Ok(found) => Response::Ok {
-                    data: ResponseData::SessionEnded { id, found },
-                },
+                Ok(found) => {
+                    crate::events::emit(&state.events, "session_changed", serde_json::json!({
+                        "id": id,
+                        "action": "ended",
+                    }));
+                    Response::Ok {
+                        data: ResponseData::SessionEnded { id, found },
+                    }
+                }
                 Err(e) => Response::Error {
                     message: format!("end_session failed: {e}"),
                 },
@@ -582,10 +713,17 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::StorePerception { perception } => {
             let id = perception.id.clone();
+            let kind_str = format!("{:?}", perception.kind);
             match crate::db::manas::store_perception(&state.conn, &perception) {
-                Ok(()) => Response::Ok {
-                    data: ResponseData::PerceptionStored { id },
-                },
+                Ok(()) => {
+                    crate::events::emit(&state.events, "perception_update", serde_json::json!({
+                        "id": id,
+                        "kind": kind_str,
+                    }));
+                    Response::Ok {
+                        data: ResponseData::PerceptionStored { id },
+                    }
+                }
                 Err(e) => Response::Error {
                     message: format!("store_perception failed: {e}"),
                 },
@@ -637,10 +775,19 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::StoreIdentity { mut facet } => {
             facet.strength = facet.strength.clamp(0.0, 1.0);
             let id = facet.id.clone();
+            let facet_name = facet.facet.clone();
+            let agent_name = facet.agent.clone();
             match crate::db::manas::store_identity(&state.conn, &facet) {
-                Ok(()) => Response::Ok {
-                    data: ResponseData::IdentityStored { id },
-                },
+                Ok(()) => {
+                    crate::events::emit(&state.events, "identity_updated", serde_json::json!({
+                        "id": id,
+                        "facet": facet_name,
+                        "agent": agent_name,
+                    }));
+                    Response::Ok {
+                        data: ResponseData::IdentityStored { id },
+                    }
+                }
                 Err(e) => Response::Error {
                     message: format!("store_identity failed: {e}"),
                 },
@@ -796,6 +943,7 @@ mod tests {
             memory_type: None,
             project: None,
             limit: None,
+            layer: None,
         };
         let response = handle_request(&mut state, recall_req);
 
@@ -1407,6 +1555,302 @@ mod tests {
                 assert_eq!(tools[0].capabilities, vec!["build", "test"]);
             }
             other => panic!("expected ToolList, got {:?}", other),
+        }
+    }
+
+    // ── Event Emission Tests ──
+
+    #[test]
+    fn test_remember_emits_memory_created_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use Rust".into(),
+            content: "Fast".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event, "memory_created");
+        assert_eq!(event.data["title"], "Use Rust");
+        assert_eq!(event.data["memory_type"], "Decision");
+    }
+
+    #[test]
+    fn test_session_register_emits_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+
+        handle_request(&mut state, Request::RegisterSession {
+            id: "s1".into(),
+            agent: "claude-code".into(),
+            project: None,
+            cwd: None,
+        });
+
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event, "session_changed");
+        assert_eq!(event.data["action"], "registered");
+        assert_eq!(event.data["agent"], "claude-code");
+        assert_eq!(event.data["id"], "s1");
+    }
+
+    #[test]
+    fn test_end_session_emits_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Register first
+        handle_request(&mut state, Request::RegisterSession {
+            id: "s1".into(),
+            agent: "claude-code".into(),
+            project: None,
+            cwd: None,
+        });
+
+        let mut rx = state.events.subscribe();
+
+        handle_request(&mut state, Request::EndSession { id: "s1".into() });
+
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event, "session_changed");
+        assert_eq!(event.data["action"], "ended");
+        assert_eq!(event.data["id"], "s1");
+    }
+
+    #[test]
+    fn test_forget_emits_memory_forgotten_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a memory first
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Temp decision".into(),
+            content: "Will be forgotten".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+        let id = match resp {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            _ => panic!("expected Stored"),
+        };
+
+        let mut rx = state.events.subscribe();
+
+        handle_request(&mut state, Request::Forget { id: id.clone() });
+
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event, "memory_forgotten");
+        assert_eq!(event.data["id"], id);
+    }
+
+    #[test]
+    fn test_store_perception_emits_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+
+        let perception = forge_core::types::manas::Perception {
+            id: "p-ev-1".into(),
+            kind: forge_core::types::manas::PerceptionKind::Error,
+            data: "test error".into(),
+            severity: forge_core::types::manas::Severity::Error,
+            project: None,
+            created_at: "2026-04-03 12:00:00".into(),
+            expires_at: None,
+            consumed: false,
+        };
+        handle_request(&mut state, Request::StorePerception { perception });
+
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event, "perception_update");
+        assert_eq!(event.data["id"], "p-ev-1");
+        assert_eq!(event.data["kind"], "Error");
+    }
+
+    #[test]
+    fn test_store_identity_emits_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+
+        let facet = forge_core::types::manas::IdentityFacet {
+            id: "if-ev-1".into(),
+            agent: "forge-test".into(),
+            facet: "role".into(),
+            description: "memory system".into(),
+            strength: 0.9,
+            source: "declared".into(),
+            active: true,
+            created_at: "2026-04-03 12:00:00".into(),
+        };
+        handle_request(&mut state, Request::StoreIdentity { facet });
+
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event, "identity_updated");
+        assert_eq!(event.data["id"], "if-ev-1");
+        assert_eq!(event.data["facet"], "role");
+        assert_eq!(event.data["agent"], "forge-test");
+    }
+
+    // ── Layer-Filtered Recall Tests ──
+
+    #[test]
+    fn test_recall_with_layer_filter() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a memory
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use JWT auth".into(),
+            content: "For security".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+
+        // Recall with layer=experience should find it
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "JWT".into(),
+            memory_type: None,
+            project: None,
+            limit: None,
+            layer: Some("experience".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, .. } } => {
+                assert!(count > 0, "should find memory in experience layer");
+            }
+            other => panic!("expected Memories, got {:?}", other),
+        }
+
+        // Recall with layer=declared should NOT find it
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "JWT".into(),
+            memory_type: None,
+            project: None,
+            limit: None,
+            layer: Some("declared".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, .. } } => {
+                assert_eq!(count, 0, "should not find memory in declared layer");
+            }
+            other => panic!("expected Memories, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_recall_layer_none_is_default_behavior() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use Postgres".into(),
+            content: "For persistence".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+
+        // layer=None should behave like current (search everything)
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "Postgres".into(),
+            memory_type: None,
+            project: None,
+            limit: None,
+            layer: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, .. } } => {
+                assert!(count > 0, "layer=None should find memory");
+            }
+            other => panic!("expected Memories, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_recall_layer_identity() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store an identity facet
+        let facet = forge_core::types::manas::IdentityFacet {
+            id: "if-recall-1".into(),
+            agent: "forge-test".into(),
+            facet: "specialty".into(),
+            description: "memory system architect".into(),
+            strength: 0.95,
+            source: "declared".into(),
+            active: true,
+            created_at: "2026-04-03 12:00:00".into(),
+        };
+        handle_request(&mut state, Request::StoreIdentity { facet });
+
+        // Recall with layer=identity, query matching description
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "memory".into(),
+            memory_type: None,
+            project: None,
+            limit: None,
+            layer: Some("identity".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, results, .. } } => {
+                assert!(count > 0, "should find identity facet matching 'memory'");
+                assert_eq!(results[0].source, "identity");
+            }
+            other => panic!("expected Memories, got {:?}", other),
+        }
+
+        // Non-matching query
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "xyzzy_nonexistent".into(),
+            memory_type: None,
+            project: None,
+            limit: None,
+            layer: Some("identity".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, .. } } => {
+                assert_eq!(count, 0, "should not find anything for non-matching query");
+            }
+            other => panic!("expected Memories, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_recall_layer_perception() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a perception
+        let perception = forge_core::types::manas::Perception {
+            id: "p-recall-1".into(),
+            kind: forge_core::types::manas::PerceptionKind::Error,
+            data: "compilation failed in main.rs".into(),
+            severity: forge_core::types::manas::Severity::Error,
+            project: Some("forge".into()),
+            created_at: "2026-04-03 12:00:00".into(),
+            expires_at: None,
+            consumed: false,
+        };
+        handle_request(&mut state, Request::StorePerception { perception });
+
+        // Recall with layer=perception
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "compilation".into(),
+            memory_type: None,
+            project: None,
+            limit: None,
+            layer: Some("perception".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, results, .. } } => {
+                assert!(count > 0, "should find perception matching 'compilation'");
+                assert_eq!(results[0].source, "perception");
+            }
+            other => panic!("expected Memories, got {:?}", other),
         }
     }
 }

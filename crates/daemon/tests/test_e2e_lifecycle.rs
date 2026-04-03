@@ -64,6 +64,7 @@ fn do_recall(
             memory_type,
             project,
             limit,
+            layer: None,
         },
     );
     match resp {
@@ -741,6 +742,7 @@ fn test_edge_cases() {
             memory_type: None,
             project: None,
             limit: None,
+            layer: None,
         },
     );
     match resp {

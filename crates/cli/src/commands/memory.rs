@@ -33,6 +33,7 @@ pub async fn recall(query: String, type_filter: Option<String>, project: Option<
         memory_type,
         project,
         limit: Some(limit),
+        layer: None,
     };
 
     match client::send(&request).await {
