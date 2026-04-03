@@ -104,6 +104,12 @@ enum Commands {
         #[arg(long)]
         file: String,
     },
+    /// List active agent sessions
+    Sessions {
+        /// Show all sessions (including ended)
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -177,6 +183,9 @@ async fn main() {
         }
         Commands::BlastRadius { file } => {
             commands::system::blast_radius(file).await;
+        }
+        Commands::Sessions { all } => {
+            commands::system::sessions(!all).await;
         }
     }
 }

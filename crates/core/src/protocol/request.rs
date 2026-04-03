@@ -54,5 +54,16 @@ pub enum Request {
     BlastRadius {
         file: String,
     },
+    /// Register an active agent session
+    RegisterSession {
+        id: String,
+        agent: String,
+        project: Option<String>,
+        cwd: Option<String>,
+    },
+    /// Mark a session as ended
+    EndSession { id: String },
+    /// List sessions
+    Sessions { active_only: Option<bool> },
     Shutdown,
 }

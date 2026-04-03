@@ -362,6 +362,29 @@ pub async fn blast_radius(file: String) {
     }
 }
 
+/// List active (or all) agent sessions.
+pub async fn sessions(active_only: bool) {
+    match client::send(&Request::Sessions { active_only: Some(active_only) }).await {
+        Ok(Response::Ok {
+            data: ResponseData::Sessions { sessions, count },
+        }) => {
+            if sessions.is_empty() {
+                println!("No {} sessions.", if active_only { "active" } else { "" });
+            } else {
+                println!("{count} session(s):");
+                for s in &sessions {
+                    let project = s.project.as_deref().unwrap_or("(none)");
+                    let status_str = if s.status == "active" { "ACTIVE" } else { "ended" };
+                    println!("  [{}] {} — {} (project: {}, since: {})", status_str, s.id, s.agent, project, s.started_at);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
 fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     format!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())

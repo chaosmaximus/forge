@@ -74,6 +74,9 @@ pub enum ResponseData {
         importers: Vec<String>,
         files_affected: Vec<String>,
     },
+    SessionRegistered { id: String },
+    SessionEnded { id: String, found: bool },
+    Sessions { sessions: Vec<SessionInfo>, count: usize },
     Shutdown,
 }
 
@@ -98,6 +101,17 @@ pub struct BlastRadiusDecision {
     pub id: String,
     pub title: String,
     pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionInfo {
+    pub id: String,
+    pub agent: String,
+    pub project: Option<String>,
+    pub cwd: Option<String>,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

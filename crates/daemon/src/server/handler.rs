@@ -382,6 +382,49 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::RegisterSession { id, agent, project, cwd } => {
+            match crate::sessions::register_session(&state.conn, &id, &agent, project.as_deref(), cwd.as_deref()) {
+                Ok(()) => Response::Ok {
+                    data: ResponseData::SessionRegistered { id },
+                },
+                Err(e) => Response::Error {
+                    message: format!("register_session failed: {e}"),
+                },
+            }
+        }
+
+        Request::EndSession { id } => {
+            match crate::sessions::end_session(&state.conn, &id) {
+                Ok(found) => Response::Ok {
+                    data: ResponseData::SessionEnded { id, found },
+                },
+                Err(e) => Response::Error {
+                    message: format!("end_session failed: {e}"),
+                },
+            }
+        }
+
+        Request::Sessions { active_only } => {
+            match crate::sessions::list_sessions(&state.conn, active_only.unwrap_or(true)) {
+                Ok(sessions) => {
+                    let count = sessions.len();
+                    let infos: Vec<forge_core::protocol::SessionInfo> = sessions.into_iter().map(|s| {
+                        forge_core::protocol::SessionInfo {
+                            id: s.id, agent: s.agent, project: s.project,
+                            cwd: s.cwd, started_at: s.started_at,
+                            ended_at: s.ended_at, status: s.status,
+                        }
+                    }).collect();
+                    Response::Ok {
+                        data: ResponseData::Sessions { sessions: infos, count },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("list_sessions failed: {e}"),
+                },
+            }
+        }
+
         Request::Subscribe { .. } => {
             // Subscribe is handled directly in socket.rs (streaming mode).
             // This arm should never be reached.
@@ -752,6 +795,77 @@ mod tests {
                 assert!(files_affected.is_empty());
             }
             _ => panic!("expected BlastRadius response"),
+        }
+    }
+
+    #[test]
+    fn test_register_and_list_sessions() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Register two sessions
+        let resp1 = handle_request(&mut state, Request::RegisterSession {
+            id: "s1".into(),
+            agent: "claude-code".into(),
+            project: Some("forge".into()),
+            cwd: Some("/project".into()),
+        });
+        match resp1 {
+            Response::Ok { data: ResponseData::SessionRegistered { id } } => assert_eq!(id, "s1"),
+            other => panic!("expected SessionRegistered, got {:?}", other),
+        }
+
+        let resp2 = handle_request(&mut state, Request::RegisterSession {
+            id: "s2".into(),
+            agent: "cline".into(),
+            project: None,
+            cwd: None,
+        });
+        match resp2 {
+            Response::Ok { data: ResponseData::SessionRegistered { id } } => assert_eq!(id, "s2"),
+            other => panic!("expected SessionRegistered, got {:?}", other),
+        }
+
+        // List active sessions — should be 2
+        let resp = handle_request(&mut state, Request::Sessions { active_only: Some(true) });
+        match resp {
+            Response::Ok { data: ResponseData::Sessions { sessions, count } } => {
+                assert_eq!(count, 2);
+                assert_eq!(sessions.len(), 2);
+            }
+            other => panic!("expected Sessions, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_end_session_via_handler() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Register
+        handle_request(&mut state, Request::RegisterSession {
+            id: "s1".into(),
+            agent: "claude-code".into(),
+            project: None,
+            cwd: None,
+        });
+
+        // End
+        let resp = handle_request(&mut state, Request::EndSession { id: "s1".into() });
+        match resp {
+            Response::Ok { data: ResponseData::SessionEnded { id, found } } => {
+                assert_eq!(id, "s1");
+                assert!(found);
+            }
+            other => panic!("expected SessionEnded, got {:?}", other),
+        }
+
+        // List active — should be 0
+        let resp = handle_request(&mut state, Request::Sessions { active_only: Some(true) });
+        match resp {
+            Response::Ok { data: ResponseData::Sessions { sessions, count } } => {
+                assert_eq!(count, 0);
+                assert!(sessions.is_empty());
+            }
+            other => panic!("expected Sessions, got {:?}", other),
         }
     }
 }
