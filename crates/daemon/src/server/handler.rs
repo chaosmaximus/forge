@@ -564,19 +564,22 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::ListPerceptions { project: _, limit } => {
-            // list_unconsumed_perceptions doesn't take project filter directly,
-            // so we list all unconsumed and apply limit
+        Request::ListPerceptions { project, limit } => {
+            let lim = limit.unwrap_or(20);
             match crate::db::manas::list_unconsumed_perceptions(&state.conn, None) {
                 Ok(perceptions) => {
-                    let limited: Vec<_> = if let Some(lim) = limit {
-                        perceptions.into_iter().take(lim).collect()
-                    } else {
-                        perceptions
-                    };
-                    let count = limited.len();
+                    // Apply project filter and limit in-memory
+                    let filtered: Vec<_> = perceptions.into_iter()
+                        .filter(|p| match (&project, &p.project) {
+                            (Some(proj), Some(pp)) => pp == proj,
+                            (Some(_), None) => false,
+                            (None, _) => true,
+                        })
+                        .take(lim)
+                        .collect();
+                    let count = filtered.len();
                     Response::Ok {
-                        data: ResponseData::PerceptionList { perceptions: limited, count },
+                        data: ResponseData::PerceptionList { perceptions: filtered, count },
                     }
                 }
                 Err(e) => Response::Error {
@@ -603,7 +606,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::StoreIdentity { facet } => {
+        Request::StoreIdentity { mut facet } => {
+            facet.strength = facet.strength.clamp(0.0, 1.0);
             let id = facet.id.clone();
             match crate::db::manas::store_identity(&state.conn, &facet) {
                 Ok(()) => Response::Ok {

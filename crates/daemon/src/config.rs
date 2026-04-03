@@ -149,7 +149,7 @@ mod tests {
         // Extraction defaults
         assert_eq!(cfg.extraction.backend, "auto");
         assert_eq!(cfg.extraction.claude.model, "haiku");
-        assert_eq!(cfg.extraction.ollama.model, "qwen3:8b");
+        assert_eq!(cfg.extraction.ollama.model, "gemma3:1b");
         assert_eq!(cfg.extraction.ollama.endpoint, "http://localhost:11434");
 
         // Embedding defaults
@@ -199,7 +199,7 @@ backend = "ollama"
 
         // All other fields should be defaults
         assert_eq!(cfg.extraction.claude.model, "haiku");
-        assert_eq!(cfg.extraction.ollama.model, "qwen3:8b");
+        assert_eq!(cfg.extraction.ollama.model, "gemma3:1b");
         assert_eq!(cfg.extraction.ollama.endpoint, "http://localhost:11434");
         assert_eq!(cfg.embedding.model, "nomic-embed-text");
         assert_eq!(cfg.embedding.dimensions, 768);
@@ -231,7 +231,7 @@ backend = "ollama"
 
         assert_eq!(cfg.extraction.backend, "auto");
         assert_eq!(cfg.extraction.claude.model, "haiku");
-        assert_eq!(cfg.extraction.ollama.model, "qwen3:8b");
+        assert_eq!(cfg.extraction.ollama.model, "gemma3:1b");
         assert_eq!(cfg.extraction.ollama.endpoint, "http://localhost:11434");
         assert_eq!(cfg.embedding.model, "nomic-embed-text");
         assert_eq!(cfg.embedding.dimensions, 768);

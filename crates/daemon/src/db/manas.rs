@@ -25,7 +25,10 @@ fn tool_kind_from_str(s: &str) -> ToolKind {
         "mcp" => ToolKind::Mcp,
         "builtin" => ToolKind::Builtin,
         "plugin" => ToolKind::Plugin,
-        _ => ToolKind::Cli,
+        other => {
+            eprintln!("[manas] unknown tool kind '{}', defaulting to Cli", other);
+            ToolKind::Cli
+        }
     }
 }
 
@@ -43,7 +46,10 @@ fn tool_health_from_str(s: &str) -> ToolHealth {
         "healthy" => ToolHealth::Healthy,
         "degraded" => ToolHealth::Degraded,
         "unavailable" => ToolHealth::Unavailable,
-        _ => ToolHealth::Unknown,
+        other => {
+            eprintln!("[manas] unknown tool health '{}', defaulting to Unknown", other);
+            ToolHealth::Unknown
+        }
     }
 }
 
@@ -64,7 +70,10 @@ fn perception_kind_from_str(s: &str) -> PerceptionKind {
         "build_result" => PerceptionKind::BuildResult,
         "test_result" => PerceptionKind::TestResult,
         "user_feedback" => PerceptionKind::UserFeedback,
-        _ => PerceptionKind::Error,
+        other => {
+            eprintln!("[manas] unknown perception kind '{}', defaulting to Error", other);
+            PerceptionKind::Error
+        }
     }
 }
 
@@ -85,7 +94,10 @@ fn severity_from_str(s: &str) -> Severity {
         "warning" => Severity::Warning,
         "error" => Severity::Error,
         "critical" => Severity::Critical,
-        _ => Severity::Info,
+        other => {
+            eprintln!("[manas] unknown severity '{}', defaulting to Info", other);
+            Severity::Info
+        }
     }
 }
 
@@ -106,7 +118,10 @@ fn disposition_trait_from_str(s: &str) -> DispositionTrait {
         "autonomy" => DispositionTrait::Autonomy,
         "verbosity" => DispositionTrait::Verbosity,
         "creativity" => DispositionTrait::Creativity,
-        _ => DispositionTrait::Caution,
+        other => {
+            eprintln!("[manas] unknown disposition trait '{}', defaulting to Caution", other);
+            DispositionTrait::Caution
+        }
     }
 }
 
@@ -123,7 +138,10 @@ fn trend_from_str(s: &str) -> Trend {
         "rising" => Trend::Rising,
         "stable" => Trend::Stable,
         "falling" => Trend::Falling,
-        _ => Trend::Stable,
+        other => {
+            eprintln!("[manas] unknown trend '{}', defaulting to Stable", other);
+            Trend::Stable
+        }
     }
 }
 
