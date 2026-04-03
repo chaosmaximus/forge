@@ -21,10 +21,9 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn watch_dirs(&self) -> Vec<PathBuf> {
-        if self.watch_dir.exists() {
+        // Always return the dir — the watcher polls for dirs that appear later
+        {
             vec![self.watch_dir.clone()]
-        } else {
-            vec![]
         }
     }
 

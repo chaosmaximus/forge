@@ -131,11 +131,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn watch_dirs(&self) -> Vec<PathBuf> {
-        if self.sessions_dir.exists() {
-            vec![self.sessions_dir.clone()]
-        } else {
-            vec![]
-        }
+        vec![self.sessions_dir.clone()]
     }
 
     fn matches(&self, path: &std::path::Path) -> bool {

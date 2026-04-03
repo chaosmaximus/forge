@@ -87,11 +87,7 @@ impl AgentAdapter for ClineAdapter {
     }
 
     fn watch_dirs(&self) -> Vec<PathBuf> {
-        if self.tasks_dir.exists() {
-            vec![self.tasks_dir.clone()]
-        } else {
-            vec![]
-        }
+        vec![self.tasks_dir.clone()]
     }
 
     fn matches(&self, path: &std::path::Path) -> bool {

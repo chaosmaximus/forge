@@ -67,16 +67,21 @@ async fn process_file(
         }
     };
 
-    // Guard against OOM: reject files larger than 50 MB
+    // Guard against OOM: skip files larger than 50 MB but still advance offset
+    // so incremental parsers can resume when new content appears.
     const MAX_FILE_SIZE: u64 = 50_000_000;
     let metadata = tokio::fs::metadata(&canonical)
         .await
         .map_err(|e| format!("failed to stat {}: {e}", canonical.display()))?;
     if metadata.len() > MAX_FILE_SIZE {
-        return Err(format!(
-            "file too large ({} bytes, max {}): {}",
-            metadata.len(), MAX_FILE_SIZE, canonical.display()
-        ));
+        // Advance offset to file end so we don't re-check this file until it grows
+        offsets.insert(path.clone(), metadata.len() as usize);
+        eprintln!(
+            "[extractor] file too large ({} bytes), skipping but advancing offset: {}",
+            metadata.len(),
+            canonical.display()
+        );
+        return Ok(());
     }
 
     // Read the file
