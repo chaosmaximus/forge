@@ -1,0 +1,13 @@
+[extraction]
+backend = "auto"
+
+[extraction.claude]
+model = "haiku"
+
+[extraction.ollama]
+model = "qwen3:8b"
+endpoint = "http://localhost:11434"
+
+[embedding]
+model = "nomic-embed-text"
+dimensions = 768
