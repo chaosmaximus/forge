@@ -62,10 +62,13 @@ async fn process_file(
     // Parse incrementally
     let (chunks, new_offset) = parse_transcript_incremental(&content, last_offset);
 
+    // Always advance the offset after parsing. Title-based dedup at remember()
+    // prevents duplicate memories if the same chunks are re-processed. This avoids
+    // the 18x re-extraction problem where the extractor would re-process the same
+    // transcript region on every watcher notification during an active session.
+    offsets.insert(path.clone(), new_offset);
+
     if chunks.is_empty() {
-        // No new complete lines — still safe to update offset to new_offset
-        // because parse_transcript_incremental only advances to the last complete newline.
-        offsets.insert(path.clone(), new_offset);
         return Ok(());
     }
 
@@ -100,23 +103,20 @@ async fn process_file(
         }
         BackendChoice::None(reason) => {
             eprintln!("[extractor] no backend available: {reason}");
-            // Don't update offset — chunks will be re-attempted next time
             return Ok(());
         }
     };
 
-    // Process results — only advance offset on successful extraction
+    // Process results. Offset is already advanced above — title-based dedup at
+    // remember() prevents duplicates even if extraction re-runs on overlapping content.
     match result {
         ExtractionResult::Success(extracted) => {
             if extracted.is_empty() {
-                // Nothing extracted — safe to advance offset (extraction ran successfully)
-                offsets.insert(path.clone(), new_offset);
                 return Ok(());
             }
 
             let locked = state.lock().await;
             let mut stored = 0usize;
-            let mut failed = 0usize;
 
             for em in &extracted {
                 let memory_type = match em.memory_type.as_str() {
@@ -133,18 +133,9 @@ async fn process_file(
 
                 if let Err(e) = ops::remember(&locked.conn, &memory) {
                     eprintln!("[extractor] failed to store memory '{}': {e}", em.title);
-                    failed += 1;
                 } else {
                     stored += 1;
                 }
-            }
-
-            // Only advance offset if ALL memories were stored successfully.
-            // If any failed, keep old offset so chunks are re-extracted next time.
-            if failed == 0 {
-                offsets.insert(path.clone(), new_offset);
-            } else {
-                eprintln!("[extractor] {} store failures — offset NOT advanced, will retry", failed);
             }
 
             eprintln!(
@@ -155,12 +146,10 @@ async fn process_file(
             Ok(())
         }
         ExtractionResult::Unavailable(reason) => {
-            // Don't update offset — chunks will be re-attempted next time
             eprintln!("[extractor] backend unavailable: {reason}");
             Ok(())
         }
         ExtractionResult::Error(err) => {
-            // Don't update offset — chunks will be re-attempted next time
             eprintln!("[extractor] extraction error: {err}");
             Ok(())
         }

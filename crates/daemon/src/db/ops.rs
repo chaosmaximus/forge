@@ -1,5 +1,5 @@
-use rusqlite::{Connection, params};
-use forge_core::types::{Memory, MemoryType, CodeFile, CodeSymbol};
+use rusqlite::{Connection, OptionalExtension, params};
+use forge_core::types::{Memory, MemoryType, MemoryStatus, CodeFile, CodeSymbol};
 
 /// BM25 search result
 #[derive(Debug, Clone)]
@@ -31,33 +31,72 @@ fn type_str(mt: &MemoryType) -> &'static str {
     }
 }
 
-/// Insert or replace a memory record into the database.
+fn status_str(ms: &MemoryStatus) -> &'static str {
+    match ms {
+        MemoryStatus::Active => "active",
+        MemoryStatus::Superseded => "superseded",
+        MemoryStatus::Reverted => "reverted",
+        MemoryStatus::Faded => "faded",
+    }
+}
+
+/// Insert or update a memory record, deduplicating by title + type.
+///
+/// If an active memory with the same title and type already exists, its content
+/// is updated and its confidence is bumped to the higher of the two values.
+/// This prevents the extractor from creating 18 copies of the same decision
+/// when it re-processes overlapping transcript chunks.
 pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     let mt = type_str(&memory.memory_type);
-    let status = serde_json::to_value(&memory.status)
-        .ok()
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "active".to_string());
+    let status = status_str(&memory.status);
     let tags_json = serde_json::to_string(&memory.tags).unwrap_or_else(|_| "[]".to_string());
 
-    conn.execute(
-        "INSERT OR REPLACE INTO memory
-            (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            memory.id,
-            mt,
-            memory.title,
-            memory.content,
-            memory.confidence,
-            status,
-            memory.project,
-            tags_json,
-            memory.created_at,
-            memory.accessed_at,
-        ],
-    )?;
+    // Check for existing memory with same title and type
+    let existing_id: Option<String> = conn.query_row(
+        "SELECT id FROM memory WHERE title = ?1 AND memory_type = ?2 AND status = 'active'",
+        params![memory.title, mt],
+        |row| row.get(0),
+    ).optional()?;
+
+    if let Some(existing_id) = existing_id {
+        // Update existing — bump confidence if higher, update content
+        conn.execute(
+            "UPDATE memory SET content = ?1, confidence = MAX(confidence, ?2), accessed_at = ?3
+             WHERE id = ?4",
+            params![memory.content, memory.confidence, memory.accessed_at, existing_id],
+        )?;
+    } else {
+        // Insert new
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                memory.id, mt, memory.title, memory.content,
+                memory.confidence, status,
+                memory.project, tags_json,
+                memory.created_at, memory.accessed_at,
+            ],
+        )?;
+    }
     Ok(())
+}
+
+/// Remove duplicate memories, keeping the one with highest confidence for each title+type.
+/// Returns the number of rows deleted.
+pub fn dedup_memories(conn: &Connection) -> rusqlite::Result<usize> {
+    let deleted = conn.execute(
+        "DELETE FROM memory WHERE id NOT IN (
+            SELECT id FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY title, memory_type
+                    ORDER BY confidence DESC, created_at DESC
+                ) as rn
+                FROM memory WHERE status = 'active'
+            ) WHERE rn = 1
+        ) AND status = 'active'",
+        [],
+    )?;
+    Ok(deleted)
 }
 
 /// NEW-2: Sanitize user input for FTS5 MATCH by stripping non-alphanumeric chars
@@ -716,5 +755,72 @@ mod tests {
             "SELECT hash FROM code_file WHERE id = 'f1'", [], |r| r.get(0)
         ).unwrap();
         assert_eq!(stored_hash, "def", "upsert should update hash");
+    }
+
+    #[test]
+    fn test_remember_dedup_by_title() {
+        let conn = open_db();
+        let m1 = Memory::new(MemoryType::Decision, "Use JWT", "First version");
+        remember(&conn, &m1).unwrap();
+
+        let m2 = Memory::new(MemoryType::Decision, "Use JWT", "Updated version")
+            .with_confidence(0.95);
+        remember(&conn, &m2).unwrap();
+
+        // Should still be 1 decision, not 2
+        let h = health(&conn).unwrap();
+        assert_eq!(h.decisions, 1, "dedup should prevent duplicate titles");
+
+        // Content should be updated
+        let results = recall_bm25(&conn, "JWT", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].content.contains("Updated"), "content should be updated");
+        // Confidence should be bumped to the higher value
+        assert!(
+            (results[0].confidence - 0.95).abs() < 0.001,
+            "confidence should be max of old (0.9) and new (0.95), got {}",
+            results[0].confidence
+        );
+    }
+
+    #[test]
+    fn test_remember_dedup_different_types_allowed() {
+        let conn = open_db();
+        // Same title but different types should NOT dedup
+        let m1 = Memory::new(MemoryType::Decision, "Use JWT", "Decision content");
+        let m2 = Memory::new(MemoryType::Lesson, "Use JWT", "Lesson content");
+        remember(&conn, &m1).unwrap();
+        remember(&conn, &m2).unwrap();
+
+        let h = health(&conn).unwrap();
+        assert_eq!(h.decisions, 1);
+        assert_eq!(h.lessons, 1);
+    }
+
+    #[test]
+    fn test_dedup_memories() {
+        let conn = open_db();
+        // Insert 3 memories with same title directly (bypassing remember dedup)
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
+                 VALUES (?1, 'decision', 'Same title', 'content', ?2, 'active', '[]', datetime('now'), datetime('now'))",
+                params![format!("d{}", i), 0.5 + (i as f64) * 0.1],
+            ).unwrap();
+        }
+        assert_eq!(health(&conn).unwrap().decisions, 3);
+
+        let deleted = dedup_memories(&conn).unwrap();
+        assert_eq!(deleted, 2, "should remove 2 duplicates");
+        assert_eq!(health(&conn).unwrap().decisions, 1);
+
+        // The surviving one should be the highest confidence (d2, conf=0.7)
+        let survivor: (String, f64) = conn.query_row(
+            "SELECT id, confidence FROM memory WHERE status = 'active'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(survivor.0, "d2");
+        assert!((survivor.1 - 0.7).abs() < 0.001);
     }
 }

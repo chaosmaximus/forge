@@ -20,13 +20,25 @@ pub async fn run_consolidator(
         tokio::select! {
             _ = tokio::time::sleep(CONSOLIDATION_INTERVAL) => {
                 let locked = state.lock().await;
+
+                // Dedup pass — remove duplicate memories (same title+type)
+                match ops::dedup_memories(&locked.conn) {
+                    Ok(removed) => {
+                        if removed > 0 {
+                            eprintln!("[consolidator] dedup removed {} duplicate memories", removed);
+                        }
+                    }
+                    Err(e) => eprintln!("[consolidator] dedup error: {}", e),
+                }
+
+                // Decay pass — fade old memories below confidence threshold
                 match ops::decay_memories(&locked.conn) {
                     Ok((decayed, faded)) => {
                         if faded > 0 {
                             eprintln!("[consolidator] decayed {}, faded {}", decayed, faded);
                         }
                     }
-                    Err(e) => eprintln!("[consolidator] error: {}", e),
+                    Err(e) => eprintln!("[consolidator] decay error: {}", e),
                 }
             }
             _ = shutdown_rx.changed() => {

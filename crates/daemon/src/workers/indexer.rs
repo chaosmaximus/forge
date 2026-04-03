@@ -20,9 +20,20 @@ pub async fn run_indexer(
     loop {
         tokio::select! {
             _ = tokio::time::sleep(INDEX_INTERVAL) => {
-                let project_dir = std::env::var("FORGE_PROJECT").unwrap_or_else(|_| ".".into());
+                let project_dir = match find_project_dir() {
+                    Some(dir) => dir,
+                    None => {
+                        eprintln!("[indexer] no project directory found (FORGE_PROJECT not set, no Claude transcript dirs)");
+                        continue;
+                    }
+                };
                 if std::path::Path::new(&project_dir).exists() {
-                    if let Err(e) = run_index(&project_dir, &state).await {
+                    let forge_bin = find_forge_binary();
+                    if forge_bin.is_empty() {
+                        eprintln!("[indexer] forge binary not found on PATH or known locations");
+                        continue;
+                    }
+                    if let Err(e) = run_index(&project_dir, &forge_bin, &state).await {
                         eprintln!("[indexer] error: {}", e);
                     }
                 }
@@ -35,13 +46,95 @@ pub async fn run_indexer(
     }
 }
 
+/// Discover the project directory from env or Claude transcript paths.
+fn find_project_dir() -> Option<String> {
+    // 1. Check FORGE_PROJECT env
+    if let Ok(dir) = std::env::var("FORGE_PROJECT") {
+        if dir != "." && std::path::Path::new(&dir).is_dir() {
+            return Some(dir);
+        }
+    }
+
+    // 2. Infer from Claude Code transcript directory names.
+    //    Claude encodes project paths as e.g. `-mnt-colab-disk-DurgaSaiK-forge`
+    //    which maps back to `/mnt/colab-disk/DurgaSaiK/forge`.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let projects_dir = format!("{}/.claude/projects", home);
+    let entries = match std::fs::read_dir(&projects_dir) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+
+    // Collect entries and sort by modification time (most recent first)
+    let mut candidates: Vec<_> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with('-') {
+                return None;
+            }
+            let mtime = entry.metadata().ok()?.modified().ok()?;
+            Some((name, mtime))
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (name, _) in &candidates {
+        // Decode: replace leading/internal dashes with slashes
+        let decoded = name.replace('-', "/");
+        // Walk backwards from the full decoded path to find a real directory
+        // e.g. "/mnt/colab/disk/..." — try progressively shorter prefixes
+        // Only check at slash boundaries
+        let bytes = decoded.as_bytes();
+        for i in (1..bytes.len()).rev() {
+            if bytes[i] == b'/' {
+                let candidate = &decoded[..i];
+                if std::path::Path::new(candidate).is_dir() {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Find the `forge` (v1) binary on PATH or at known locations.
+fn find_forge_binary() -> String {
+    // Check PATH first
+    if std::process::Command::new("forge")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+    {
+        return "forge".to_string();
+    }
+
+    // Try known locations
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates = [
+        format!("{}/.local/bin/forge", home),
+        "/mnt/colab-disk/DurgaSaiK/forge/target/release/forge".to_string(),
+    ];
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return path.clone();
+        }
+    }
+
+    String::new()
+}
+
 async fn run_index(
     project_dir: &str,
+    forge_bin: &str,
     state: &Arc<Mutex<crate::server::handler::DaemonState>>,
 ) -> Result<(), String> {
     let output = tokio::time::timeout(
         Duration::from_secs(120),
-        tokio::process::Command::new("forge")
+        tokio::process::Command::new(forge_bin)
             .args(["index", project_dir])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
