@@ -1,7 +1,0 @@
-domain,complexity,key_concerns,special_sections
-fintech,high,"KYC/AML compliance;PCI-DSS;Fraud prevention;Financial regulations;Data residency;Audit trails","regulatory_compliance;financial_security;audit_requirements"
-healthcare,high,"HIPAA compliance;FDA classification;Clinical validation;PHI protection;HL7/FHIR integration","regulatory_compliance;clinical_requirements;data_protection"
-edtech,medium,"COPPA/FERPA compliance;Accessibility (WCAG 2.1 AA);Content moderation;Progress tracking","accessibility_requirements;content_safety;data_privacy"
-ecommerce,medium,"PCI compliance;Inventory management;Payment processing;Tax calculations;Shipping integration","payment_security;inventory_design;tax_compliance"
-govtech,high,"FedRAMP/StateRAMP;Section 508 accessibility;Data sovereignty;Audit requirements;NIST controls","regulatory_compliance;accessibility_requirements;security_controls"
-general,low,"Standard security practices;Data protection;Performance optimization",""
