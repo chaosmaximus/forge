@@ -69,6 +69,17 @@ async fn main() {
     // C1: Create shutdown watch channel
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);
 
+    // Load config
+    let config = forge_daemon::config::load_config();
+    eprintln!("[daemon] extraction backend: {}", config.extraction.backend);
+
+    // Spawn background workers
+    let _worker_handles = forge_daemon::workers::spawn_workers(
+        Arc::clone(&state),
+        config,
+        &shutdown_tx,
+    );
+
     // I3: Spawn signal handler that sends on shutdown channel instead of process::exit
     let shutdown_for_signal = shutdown_tx.clone();
     tokio::spawn(async move {
