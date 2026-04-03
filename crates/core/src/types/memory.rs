@@ -33,6 +33,14 @@ pub struct Memory {
     pub embedding: Option<Vec<f32>>,
     pub created_at: String,
     pub accessed_at: String,
+    #[serde(default = "default_valence")]
+    pub valence: String,      // "positive", "negative", "neutral"
+    #[serde(default)]
+    pub intensity: f64,       // 0.0-1.0 how emotionally significant
+}
+
+fn default_valence() -> String {
+    "neutral".to_string()
 }
 
 impl Memory {
@@ -50,6 +58,8 @@ impl Memory {
             embedding: None,
             created_at: now.clone(),
             accessed_at: now,
+            valence: "neutral".to_string(),
+            intensity: 0.0,
         }
     }
 
@@ -65,6 +75,12 @@ impl Memory {
 
     pub fn with_project(mut self, project: impl Into<String>) -> Self {
         self.project = Some(project.into());
+        self
+    }
+
+    pub fn with_valence(mut self, valence: &str, intensity: f64) -> Self {
+        self.valence = valence.to_string();
+        self.intensity = intensity.clamp(0.0, 1.0);
         self
     }
 }
@@ -100,6 +116,32 @@ mod tests {
         assert!((m.confidence - 0.75).abs() < f64::EPSILON);
         assert_eq!(m.tags, vec!["tdd".to_string(), "testing".to_string()]);
         assert_eq!(m.project, Some("forge".to_string()));
+    }
+
+    #[test]
+    fn test_memory_with_valence() {
+        let mem = Memory::new(MemoryType::Decision, "Broke prod", "Server went down")
+            .with_valence("negative", 0.9);
+        assert_eq!(mem.valence, "negative");
+        assert!((mem.intensity - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_memory_valence_defaults() {
+        let mem = Memory::new(MemoryType::Lesson, "Test first", "TDD works");
+        assert_eq!(mem.valence, "neutral");
+        assert!((mem.intensity - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_memory_valence_clamped() {
+        let mem = Memory::new(MemoryType::Decision, "test", "test")
+            .with_valence("positive", 1.5);
+        assert!((mem.intensity - 1.0).abs() < f64::EPSILON, "intensity should be clamped to 1.0");
+
+        let mem2 = Memory::new(MemoryType::Decision, "test", "test")
+            .with_valence("negative", -0.5);
+        assert!((mem2.intensity - 0.0).abs() < f64::EPSILON, "intensity should be clamped to 0.0");
     }
 
     #[test]

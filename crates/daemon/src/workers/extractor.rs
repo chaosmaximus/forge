@@ -262,7 +262,8 @@ async fn process_file(
 
                 let memory = Memory::new(memory_type, &em.title, &em.content)
                     .with_confidence(em.confidence)
-                    .with_tags(em.tags.clone());
+                    .with_tags(em.tags.clone())
+                    .with_valence(&em.valence, em.intensity);
 
                 if let Err(e) = ops::remember(&locked.conn, &memory) {
                     eprintln!("[extractor] failed to store memory '{}': {e}", em.title);

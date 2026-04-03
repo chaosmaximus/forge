@@ -26,7 +26,7 @@ fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String,
 /// Fetch a single Memory record from SQLite by its ID.
 fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity
          FROM memory WHERE id = ?1",
     )?;
 
@@ -69,6 +69,8 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             embedding: None,
             created_at: row.get(8)?,
             accessed_at: row.get(9)?,
+            valence: row.get(10)?,
+            intensity: row.get(11)?,
         }))
     } else {
         Ok(None)
@@ -332,11 +334,19 @@ pub fn compile_context(
     }
 
     // Top decisions (highest confidence, most recent access)
+    // Boost high-intensity memories: intensity > 0.5 gets up to 1.5x score multiplier
     if let Ok(decisions) = ops::recall_bm25_project(conn, "decision architecture", project, 10) {
-        let decisions: Vec<_> = decisions
+        let mut decisions: Vec<_> = decisions
             .into_iter()
             .filter(|d| d.memory_type == "decision")
+            .map(|mut d| {
+                if d.intensity > 0.5 {
+                    d.score *= 1.0 + d.intensity * 0.5;
+                }
+                d
+            })
             .collect();
+        decisions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         if !decisions.is_empty() {
             let mut dec_xml = String::from("<decisions>");
             for d in &decisions {
@@ -355,11 +365,19 @@ pub fn compile_context(
     }
 
     // Top lessons
+    // Boost high-intensity memories: intensity > 0.5 gets up to 1.5x score multiplier
     if let Ok(lessons) = ops::recall_bm25_project(conn, "lesson learned pattern", project, 5) {
-        let lessons: Vec<_> = lessons
+        let mut lessons: Vec<_> = lessons
             .into_iter()
             .filter(|l| l.memory_type == "lesson")
+            .map(|mut l| {
+                if l.intensity > 0.5 {
+                    l.score *= 1.0 + l.intensity * 0.5;
+                }
+                l
+            })
             .collect();
+        lessons.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         if !lessons.is_empty() {
             let mut les_xml = String::from("<lessons>");
             for l in &lessons {

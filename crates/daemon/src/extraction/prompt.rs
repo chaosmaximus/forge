@@ -14,6 +14,8 @@ Return a JSON array of objects, each with:
 - confidence: 0.0-1.0 (how certain this is a real decision/lesson)
 - tags: array of relevant keywords
 - affects: array of file paths or symbol names mentioned
+- valence: "positive" | "negative" | "neutral" (emotional tone of this memory)
+- intensity: 0.0-1.0 (how emotionally significant — production outage = 1.0, routine change = 0.1)
 
 Type guidance:
 - "decision": a strategic choice made (e.g., "Use JWT for auth")
@@ -45,10 +47,18 @@ pub struct ExtractedMemory {
     pub tags: Vec<String>,
     #[serde(default)]
     pub affects: Vec<String>,
+    #[serde(default = "default_valence")]
+    pub valence: String,
+    #[serde(default)]
+    pub intensity: f64,
 }
 
 fn default_confidence() -> f64 {
     0.5
+}
+
+fn default_valence() -> String {
+    "neutral".to_string()
 }
 
 impl ExtractedMemory {
@@ -264,6 +274,8 @@ mod tests {
             confidence: 0.85,
             tags: vec!["devops".to_string()],
             affects: vec![],
+            valence: "neutral".to_string(),
+            intensity: 0.0,
         };
         assert!(em.is_valid_type());
     }
@@ -274,6 +286,24 @@ mod tests {
         let result = parse_extraction_output(json);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].memory_type, "skill");
+    }
+
+    #[test]
+    fn test_extracted_memory_with_valence() {
+        let json = r#"[{"type":"decision","title":"Rollback deploy","content":"Production was down","confidence":0.95,"tags":["incident"],"affects":[],"valence":"negative","intensity":0.9}]"#;
+        let result = parse_extraction_output(json);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].valence, "negative");
+        assert!((result[0].intensity - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_extracted_memory_valence_defaults() {
+        let json = r#"[{"type":"lesson","title":"Use TDD","content":"Testing first","confidence":0.8,"tags":[],"affects":[]}]"#;
+        let result = parse_extraction_output(json);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].valence, "neutral");
+        assert!((result[0].intensity - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]

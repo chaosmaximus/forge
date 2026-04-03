@@ -202,7 +202,13 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_disposition_agent ON disposition(agent);
         CREATE INDEX IF NOT EXISTS idx_disposition_trait ON disposition(trait_name);
-    ")
+    ")?;
+
+    // Add valence columns (safe to re-run — ignores if already exists)
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN valence TEXT NOT NULL DEFAULT 'neutral'", []);
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN intensity REAL NOT NULL DEFAULT 0.0", []);
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -243,6 +249,23 @@ mod tests {
         // Calling create_schema twice should not error
         create_schema(&conn).unwrap();
         create_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn test_valence_columns_exist() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        // Verify we can insert with valence
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, valence, intensity)
+             VALUES ('v1', 'decision', 'test', 'test', 0.9, 'active', '[]', datetime('now'), datetime('now'), 'negative', 0.8)",
+            [],
+        ).unwrap();
+        let valence: String = conn.query_row("SELECT valence FROM memory WHERE id = 'v1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(valence, "negative");
+        let intensity: f64 = conn.query_row("SELECT intensity FROM memory WHERE id = 'v1'", [], |r| r.get(0)).unwrap();
+        assert!((intensity - 0.8).abs() < f64::EPSILON);
     }
 
     #[test]

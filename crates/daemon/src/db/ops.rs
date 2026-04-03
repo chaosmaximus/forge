@@ -11,6 +11,8 @@ pub struct BM25Result {
     pub score: f64,
     pub memory_type: String,
     pub confidence: f64,
+    pub valence: String,
+    pub intensity: f64,
 }
 
 /// Health counts per memory type + edges
@@ -69,13 +71,14 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     } else {
         // Insert new
         conn.execute(
-            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 memory.id, mt, memory.title, memory.content,
                 memory.confidence, status,
                 memory.project, tags_json,
                 memory.created_at, memory.accessed_at,
+                memory.valence, memory.intensity,
             ],
         )?;
     }
@@ -138,7 +141,7 @@ pub fn recall_bm25(conn: &Connection, query: &str, limit: usize) -> rusqlite::Re
     }
 
     let sql = "
-        SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence
+        SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
         FROM memory_fts
         JOIN memory m ON memory_fts.rowid = m.rowid
         WHERE memory_fts MATCH ?1
@@ -159,6 +162,8 @@ pub fn recall_bm25(conn: &Connection, query: &str, limit: usize) -> rusqlite::Re
             },
             memory_type: row.get(4)?,
             confidence: row.get(5)?,
+            valence: row.get(6)?,
+            intensity: row.get(7)?,
         })
     })?;
 
@@ -184,7 +189,7 @@ pub fn recall_bm25_project(
     match project {
         Some(proj) => {
             let mut stmt = conn.prepare(
-                "SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence
+                "SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
                  FROM memory_fts
                  JOIN memory m ON memory_fts.rowid = m.rowid
                  WHERE memory_fts MATCH ?1
@@ -204,6 +209,8 @@ pub fn recall_bm25_project(
                     },
                     memory_type: row.get(4)?,
                     confidence: row.get(5)?,
+                    valence: row.get(6)?,
+                    intensity: row.get(7)?,
                 })
             })?;
             results.collect()
@@ -427,7 +434,7 @@ pub fn cleanup_stale_files(conn: &Connection, current_paths: &[&str]) -> rusqlit
 /// Export all active memories as full Memory objects.
 pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity
          FROM memory WHERE status = 'active' ORDER BY created_at DESC"
     )?;
     let rows = stmt.query_map([], |row| {
@@ -453,6 +460,8 @@ pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
             embedding: None,
             created_at: row.get(8)?,
             accessed_at: row.get(9)?,
+            valence: row.get(10)?,
+            intensity: row.get(11)?,
         })
     })?;
     rows.collect()
