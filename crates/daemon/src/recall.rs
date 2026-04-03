@@ -274,6 +274,181 @@ pub fn manas_recall(
     results
 }
 
+/// Compile optimized context from all Manas layers for session-start injection.
+///
+/// Returns an XML string with the most relevant information, budget-limited
+/// to ~4000 chars (~1000 tokens). Uses lazy loading pattern: summaries in
+/// context, full content on demand via `forge recall --layer <layer>`.
+pub fn compile_context(
+    conn: &Connection,
+    agent: &str,
+    project: Option<&str>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let budget = 4000usize;
+    let mut used = 0usize;
+
+    // Always: Platform (tiny, ~100 chars) — always injected even if empty
+    {
+        let platform = crate::db::manas::list_platform(conn).unwrap_or_default();
+        let mut platform_xml = String::from("<platform>");
+        for entry in &platform {
+            platform_xml.push_str(&format!(" {}={}", entry.key, entry.value));
+        }
+        platform_xml.push_str("</platform>");
+        used += platform_xml.len();
+        parts.push(platform_xml);
+    }
+
+    // Identity facets (important for shaping behavior)
+    if let Ok(facets) = crate::db::manas::list_identity(conn, agent, true) {
+        if !facets.is_empty() {
+            let mut id_xml = String::from("<identity agent=\"");
+            id_xml.push_str(agent);
+            id_xml.push_str("\">");
+            for f in &facets {
+                let entry = format!(
+                    "\n  <{} strength=\"{:.1}\">{}</{}>",
+                    f.facet, f.strength, f.description, f.facet
+                );
+                if used + id_xml.len() + entry.len() < budget {
+                    id_xml.push_str(&entry);
+                }
+            }
+            id_xml.push_str("\n</identity>");
+            used += id_xml.len();
+            parts.push(id_xml);
+        }
+    }
+
+    // Top decisions (highest confidence, most recent access)
+    if let Ok(decisions) = ops::recall_bm25_project(conn, "decision architecture", project, 10) {
+        let decisions: Vec<_> = decisions
+            .into_iter()
+            .filter(|d| d.memory_type == "decision")
+            .collect();
+        if !decisions.is_empty() {
+            let mut dec_xml = String::from("<decisions>");
+            for d in &decisions {
+                let entry = format!(
+                    "\n  <decision confidence=\"{:.1}\">{}</decision>",
+                    d.confidence, d.title
+                );
+                if used + dec_xml.len() + entry.len() < budget {
+                    dec_xml.push_str(&entry);
+                }
+            }
+            dec_xml.push_str("\n</decisions>");
+            used += dec_xml.len();
+            parts.push(dec_xml);
+        }
+    }
+
+    // Top lessons
+    if let Ok(lessons) = ops::recall_bm25_project(conn, "lesson learned pattern", project, 5) {
+        let lessons: Vec<_> = lessons
+            .into_iter()
+            .filter(|l| l.memory_type == "lesson")
+            .collect();
+        if !lessons.is_empty() {
+            let mut les_xml = String::from("<lessons>");
+            for l in &lessons {
+                let entry = format!("\n  <lesson>{}</lesson>", l.title);
+                if used + les_xml.len() + entry.len() < budget {
+                    les_xml.push_str(&entry);
+                }
+            }
+            les_xml.push_str("\n</lessons>");
+            used += les_xml.len();
+            parts.push(les_xml);
+        }
+    }
+
+    // Skill summaries (lazy loading — 1-line each, agent pulls details on demand)
+    if let Ok(skills) = crate::db::manas::list_skills(conn, None) {
+        let active_skills: Vec<_> = skills
+            .into_iter()
+            .filter(|s| s.success_count > 0)
+            .take(5)
+            .collect();
+        if !active_skills.is_empty() {
+            let mut skill_xml = String::from(
+                "<skills hint=\"use 'forge recall --layer skill &lt;keyword&gt;' for full steps\">",
+            );
+            for s in &active_skills {
+                let entry = format!(
+                    "\n  <skill domain=\"{}\" uses=\"{}\">{}</skill>",
+                    s.domain, s.success_count, s.name
+                );
+                if used + skill_xml.len() + entry.len() < budget {
+                    skill_xml.push_str(&entry);
+                }
+            }
+            skill_xml.push_str("\n</skills>");
+            used += skill_xml.len();
+            parts.push(skill_xml);
+        }
+    }
+
+    // Critical perceptions only (warnings/errors, unconsumed)
+    if let Ok(perceptions) = crate::db::manas::list_unconsumed_perceptions(conn, None) {
+        let critical: Vec<_> = perceptions
+            .into_iter()
+            .filter(|p| {
+                matches!(
+                    p.severity,
+                    forge_core::types::manas::Severity::Warning
+                        | forge_core::types::manas::Severity::Error
+                        | forge_core::types::manas::Severity::Critical
+                )
+            })
+            .take(3)
+            .collect();
+        if !critical.is_empty() {
+            let mut perc_xml = String::from("<perceptions>");
+            for p in &critical {
+                let snippet: String = p.data.chars().take(100).collect();
+                let sev = format!("{:?}", p.severity);
+                let sev_lower = sev.to_lowercase();
+                let entry = format!("\n  <{sev_lower}>{snippet}</{sev_lower}>");
+                if used + perc_xml.len() + entry.len() < budget {
+                    perc_xml.push_str(&entry);
+                }
+            }
+            perc_xml.push_str("\n</perceptions>");
+            used += perc_xml.len();
+            parts.push(perc_xml);
+        }
+    }
+
+    // Disposition summary
+    if let Ok(traits) = crate::db::manas::list_dispositions(conn, agent) {
+        if !traits.is_empty() {
+            let mut disp_xml = String::from("<disposition>");
+            for t in &traits {
+                let entry = format!(
+                    " {:?}={:.2}({:?})",
+                    t.disposition_trait, t.value, t.trend
+                );
+                if used + disp_xml.len() + entry.len() < budget {
+                    disp_xml.push_str(&entry);
+                }
+            }
+            disp_xml.push_str("</disposition>");
+            parts.push(disp_xml);
+        }
+    }
+
+    // Assemble
+    let mut xml = String::from("<forge-context version=\"0.6.0\">\n");
+    for part in &parts {
+        xml.push_str(part);
+        xml.push('\n');
+    }
+    xml.push_str("</forge-context>");
+    xml
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,5 +727,67 @@ mod tests {
         // Non-matching query should not return the skill
         let results = manas_recall(&conn, "xyzzy_nonexistent", None, 10);
         assert!(results.is_empty(), "non-matching query should return empty");
+    }
+
+    // ── compile_context tests ──
+
+    #[test]
+    fn test_compile_context_empty_db() {
+        let conn = setup();
+
+        let ctx = compile_context(&conn, "claude-code", None);
+        assert!(ctx.contains("<forge-context"), "should contain opening tag");
+        assert!(ctx.contains("</forge-context>"), "should contain closing tag");
+        assert!(ctx.contains("<platform"), "should always include platform");
+    }
+
+    #[test]
+    fn test_compile_context_with_data() {
+        let conn = setup();
+
+        // Store a decision
+        let mem = Memory::new(MemoryType::Decision, "Use JWT for auth", "Security decision")
+            .with_confidence(0.9);
+        ops::remember(&conn, &mem).unwrap();
+
+        // Store an identity facet
+        let facet = forge_core::types::manas::IdentityFacet {
+            id: "f1".into(),
+            agent: "claude-code".into(),
+            facet: "role".into(),
+            description: "Senior Rust engineer".into(),
+            strength: 0.9,
+            source: "user_defined".into(),
+            active: true,
+            created_at: "2026-04-03".into(),
+        };
+        crate::db::manas::store_identity(&conn, &facet).unwrap();
+
+        let ctx = compile_context(&conn, "claude-code", None);
+        assert!(ctx.contains("JWT"), "should contain decision about JWT");
+        assert!(ctx.contains("Senior Rust engineer"), "should contain identity facet");
+    }
+
+    #[test]
+    fn test_compile_context_respects_budget() {
+        let conn = setup();
+
+        // Store 50 long decisions
+        for i in 0..50 {
+            let mem = Memory::new(
+                MemoryType::Decision,
+                &format!("Decision {} about architecture and design patterns", i),
+                &"x".repeat(200),
+            )
+            .with_confidence(0.9);
+            ops::remember(&conn, &mem).unwrap();
+        }
+
+        let ctx = compile_context(&conn, "claude-code", None);
+        assert!(
+            ctx.len() <= 5000,
+            "context should be budget-limited, got {} chars",
+            ctx.len()
+        );
     }
 }
