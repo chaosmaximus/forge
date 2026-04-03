@@ -43,7 +43,13 @@ impl LspManager {
         };
 
         if needs_spawn {
-            let client = LspClient::spawn(config, &self.project_dir).await?;
+            let client = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                LspClient::spawn(config, &self.project_dir),
+            )
+            .await
+            .map_err(|_| format!("{} timed out during spawn/initialize", config.command))?
+            .map_err(|e| format!("{} spawn failed: {}", config.command, e))?;
             self.clients.insert(language.clone(), client);
         }
 

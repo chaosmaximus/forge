@@ -265,14 +265,14 @@ async fn index_with_server(
             indexed_at: indexed_at.to_string(),
         };
 
-        // Check hash cache — skip unchanged files
+        files.push(file_record);
+
+        // Check hash cache — skip LSP symbol request for unchanged files
+        // (references are still requested below for ALL symbols, since callers may change)
         let cached = HASH_CACHE.lock().unwrap().get(file_path.as_str()).cloned();
         if cached.as_deref() == Some(&hash) {
-            files.push(file_record);
-            continue; // file unchanged since last index
+            continue; // symbols unchanged — skip didOpen/documentSymbol
         }
-
-        files.push(file_record);
 
         // Send didOpen before requesting symbols (required by LSP protocol)
         let content = std::fs::read_to_string(file_path).unwrap_or_default();
@@ -328,7 +328,10 @@ async fn index_with_server(
 
             match tokio::time::timeout(
                 Duration::from_secs(10),
-                client.references(&sym_uri, sym.line_start as u32, 0),
+                // Use character offset 4 (past typical indentation/visibility keywords)
+                // to land inside the symbol token rather than at column 0
+                // which may be whitespace, a doc comment, or an attribute
+                client.references(&sym_uri, sym.line_start as u32, 4),
             )
             .await
             {
@@ -420,6 +423,9 @@ async fn run_index(
             symbols_stored += 1;
         }
     }
+
+    // Clear old "calls" edges before inserting fresh ones (prevents duplicates across runs)
+    let _ = locked.conn.execute("DELETE FROM edge WHERE edge_type = 'calls'", []);
 
     // Store "calls" edges
     let mut edges_stored = 0usize;
