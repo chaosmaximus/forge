@@ -26,5 +26,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 notify = "7"
 ulid = "1"
 
+# LSP client
+lsp-types = "0.97"
+
 [dev-dependencies]
 tempfile = "3"

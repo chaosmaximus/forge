@@ -6,6 +6,7 @@ pub mod events;
 pub mod extraction;
 pub mod adapters;
 pub mod guardrails;
+pub mod lsp;
 pub mod migrate;
 pub mod recall;
 pub mod sessions;
