@@ -1,6 +1,6 @@
-/// Ingest Claude Code's MEMORY.md files into the Forge daemon.
-/// Scans ~/.claude/projects/*/memory/ for MEMORY.md and linked .md files.
-/// Parses frontmatter (name, description, type) and imports as memories.
+//! Ingest Claude Code's MEMORY.md files into the Forge daemon.
+//! Scans ~/.claude/projects/*/memory/ for MEMORY.md and linked .md files.
+//! Parses frontmatter (name, description, type) and imports as memories.
 
 use crate::db::ops;
 use forge_core::types::{Memory, MemoryType};

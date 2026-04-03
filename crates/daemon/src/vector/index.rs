@@ -10,11 +10,16 @@ pub struct VectorIndex {
 }
 
 impl VectorIndex {
-    /// Create a new HNSW index for vectors of dimension `dim`.
-    /// Parameters: max_connections=16, max_elements=10_000, nb_layers=16, ef_construction=200, DistCosine.
+    /// Create a new HNSW index for vectors of dimension `dim` with default capacity (100K).
+    /// Parameters: max_connections=16, nb_layers=16, ef_construction=200, DistCosine.
     pub fn new(dim: usize) -> Self {
+        Self::with_capacity(dim, 100_000)
+    }
+
+    /// Create a new HNSW index with a custom maximum element capacity.
+    pub fn with_capacity(dim: usize, max_elements: usize) -> Self {
         // Hnsw::new(max_nb_connection, max_elements, max_layer, ef_construction, dist)
-        let hnsw = Hnsw::<f32, DistCosine>::new(16, 10_000, 16, 200, DistCosine {});
+        let hnsw = Hnsw::<f32, DistCosine>::new(16, max_elements, 16, 200, DistCosine {});
         VectorIndex {
             hnsw,
             id_to_idx: HashMap::new(),

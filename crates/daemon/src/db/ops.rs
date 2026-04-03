@@ -1,4 +1,5 @@
 use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::HashSet;
 use forge_core::types::{Memory, MemoryType, MemoryStatus, CodeFile, CodeSymbol};
 
 /// BM25 search result
@@ -437,12 +438,9 @@ pub fn count_symbols(conn: &Connection) -> rusqlite::Result<usize> {
 /// Insert an edge into the SQLite edge table (persisted, unlike in-memory GraphStore).
 pub fn store_edge(conn: &Connection, from_id: &str, to_id: &str, edge_type: &str, properties: &str) -> rusqlite::Result<()> {
     let id = ulid::Ulid::new().to_string();
-    let now = "datetime('now')";
     conn.execute(
-        &format!(
-            "INSERT OR IGNORE INTO edge (id, from_id, to_id, edge_type, properties, created_at, valid_from)
-             VALUES (?1, ?2, ?3, ?4, ?5, {now}, {now})"
-        ),
+        "INSERT OR IGNORE INTO edge (id, from_id, to_id, edge_type, properties, created_at, valid_from)
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))",
         params![id, from_id, to_id, edge_type, properties],
     )?;
     Ok(())
@@ -465,7 +463,7 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
         .collect();
 
     let mut merged = 0usize;
-    let mut to_delete: Vec<String> = Vec::new();
+    let mut to_delete: HashSet<String> = HashSet::new();
 
     for i in 0..memories.len() {
         let (ref id_a, ref title_a, ref type_a) = memories[i];
@@ -473,8 +471,10 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
             continue;
         }
 
-        for j in (i + 1)..memories.len() {
-            let (ref id_b, ref _title_b, ref type_b) = memories[j];
+        let words_a: HashSet<String> =
+            title_a.to_lowercase().split_whitespace().map(String::from).collect();
+
+        for (id_b, title_b, type_b) in memories.iter().skip(i + 1) {
             if to_delete.contains(id_b) {
                 continue;
             }
@@ -483,16 +483,14 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
             }
 
             // Check word overlap (fast filter)
-            let words_a: std::collections::HashSet<String> =
-                title_a.to_lowercase().split_whitespace().map(String::from).collect();
-            let words_b: std::collections::HashSet<String> =
-                memories[j].1.to_lowercase().split_whitespace().map(String::from).collect();
+            let words_b: HashSet<String> =
+                title_b.to_lowercase().split_whitespace().map(String::from).collect();
             let intersection = words_a.intersection(&words_b).count() as f64;
             let max_len = words_a.len().max(words_b.len()) as f64;
 
             if max_len > 0.0 && (intersection / max_len) > 0.6 {
                 // Mark the later one (id_b) for deletion
-                to_delete.push(id_b.clone());
+                to_delete.insert(id_b.clone());
                 merged += 1;
             }
         }
@@ -533,8 +531,7 @@ pub fn link_related_memories(conn: &Connection) -> rusqlite::Result<usize> {
             continue;
         }
 
-        for j in (i + 1)..memories.len() {
-            let (ref id_b, ref tags_b) = memories[j];
+        for (id_b, tags_b) in memories.iter().skip(i + 1) {
             if tags_b.is_empty() {
                 continue;
             }

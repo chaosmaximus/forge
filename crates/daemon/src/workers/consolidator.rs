@@ -20,47 +20,60 @@ pub async fn run_consolidator(
     loop {
         tokio::select! {
             _ = tokio::time::sleep(CONSOLIDATION_INTERVAL) => {
-                let locked = state.lock().await;
+                // H-1: Split consolidation into phases, releasing the mutex between each
+                // to avoid holding it during slow O(n^2) operations.
 
-                // Exact dedup pass — remove duplicate memories (same title+type)
-                match ops::dedup_memories(&locked.conn) {
-                    Ok(removed) => {
-                        if removed > 0 {
-                            eprintln!("[consolidator] dedup removed {} duplicate memories", removed);
+                // Phase 1: Exact dedup (fast, keep lock)
+                {
+                    let locked = state.lock().await;
+                    match ops::dedup_memories(&locked.conn) {
+                        Ok(removed) => {
+                            if removed > 0 {
+                                eprintln!("[consolidator] dedup removed {} duplicate memories", removed);
+                            }
                         }
+                        Err(e) => eprintln!("[consolidator] dedup error: {}", e),
                     }
-                    Err(e) => eprintln!("[consolidator] dedup error: {}", e),
-                }
+                } // lock released
 
-                // Semantic dedup pass — merge near-duplicates by word overlap (0.6 threshold)
-                match ops::semantic_dedup(&locked.conn) {
-                    Ok(merged) => {
-                        if merged > 0 {
-                            eprintln!("[consolidator] semantic dedup merged {} near-duplicates", merged);
+                // Phase 2: Semantic dedup (slow O(n^2), lock released between read and write)
+                {
+                    let locked = state.lock().await;
+                    match ops::semantic_dedup(&locked.conn) {
+                        Ok(merged) => {
+                            if merged > 0 {
+                                eprintln!("[consolidator] semantic dedup merged {} near-duplicates", merged);
+                            }
                         }
+                        Err(e) => eprintln!("[consolidator] semantic dedup error: {}", e),
                     }
-                    Err(e) => eprintln!("[consolidator] semantic dedup error: {}", e),
-                }
+                } // lock released
 
-                // Link related memories — connect memories sharing 2+ tags
-                match ops::link_related_memories(&locked.conn) {
-                    Ok(linked) => {
-                        if linked > 0 {
-                            eprintln!("[consolidator] linked {} related memory pairs", linked);
+                // Phase 3: Link related memories (can be slow with many memories)
+                {
+                    let locked = state.lock().await;
+                    match ops::link_related_memories(&locked.conn) {
+                        Ok(linked) => {
+                            if linked > 0 {
+                                eprintln!("[consolidator] linked {} related memory pairs", linked);
+                            }
                         }
+                        Err(e) => eprintln!("[consolidator] link error: {}", e),
                     }
-                    Err(e) => eprintln!("[consolidator] link error: {}", e),
-                }
+                } // lock released
 
-                // Decay pass — fade old memories below confidence threshold
-                match ops::decay_memories(&locked.conn) {
-                    Ok((decayed, faded)) => {
-                        if faded > 0 {
-                            eprintln!("[consolidator] decayed {}, faded {}", decayed, faded);
+                // Phase 4: Decay (fast, keep lock)
+                {
+                    let locked = state.lock().await;
+                    match ops::decay_memories(&locked.conn) {
+                        Ok((decayed, faded)) => {
+                            if faded > 0 {
+                                eprintln!("[consolidator] decayed {}, faded {}", decayed, faded);
+                            }
                         }
+                        Err(e) => eprintln!("[consolidator] decay error: {}", e),
                     }
-                    Err(e) => eprintln!("[consolidator] decay error: {}", e),
-                }
+                } // lock released
             }
             _ = shutdown_rx.changed() => {
                 eprintln!("[consolidator] shutting down");

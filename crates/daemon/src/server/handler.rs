@@ -22,11 +22,23 @@ impl DaemonState {
         } else {
             Connection::open(db_path)?
         };
+        // M-5: Enable WAL mode for better concurrent read/write performance
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         schema::create_schema(&conn)?;
+
+        // L-6: Load existing graph edges from SQLite into petgraph on startup
+        let mut graph = GraphStore::new();
+        if let Ok(edges) = ops::export_edges(&conn) {
+            for (from_id, to_id, edge_type, props_str) in edges {
+                let props = serde_json::from_str(&props_str).unwrap_or(serde_json::Value::Null);
+                graph.add_edge(&from_id, &to_id, &edge_type, props);
+            }
+        }
+
         Ok(DaemonState {
             conn,
             vector_idx: VectorIndex::new(768),
-            graph: GraphStore::new(),
+            graph,
             started_at: Instant::now(),
         })
     }
@@ -208,10 +220,28 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             };
 
+            // C-2: Enforce record count limit before importing
+            let max_records: usize = 10_000;
+            let total_records = payload.memories.as_ref().map_or(0, |v| v.len())
+                + payload.files.as_ref().map_or(0, |v| v.len())
+                + payload.symbols.as_ref().map_or(0, |v| v.len());
+            if total_records > max_records {
+                return Response::Error {
+                    message: format!("import exceeds {max_records} record limit ({total_records} records)"),
+                };
+            }
+
             let mut memories_imported = 0usize;
             let mut files_imported = 0usize;
             let mut symbols_imported = 0usize;
             let mut skipped = 0usize;
+
+            // C-2: Wrap all import operations in a SQLite transaction
+            if let Err(e) = state.conn.execute_batch("BEGIN") {
+                return Response::Error {
+                    message: format!("import transaction begin failed: {e}"),
+                };
+            }
 
             // Import memories
             if let Some(mems) = payload.memories {
@@ -251,6 +281,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             }
 
+            if let Err(e) = state.conn.execute_batch("COMMIT") {
+                // Attempt rollback on commit failure
+                state.conn.execute_batch("ROLLBACK").ok();
+                return Response::Error {
+                    message: format!("import commit failed: {e}"),
+                };
+            }
+
             Response::Ok {
                 data: ResponseData::Import {
                     memories_imported,
@@ -273,8 +311,24 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::Backfill { path } => {
+            // C-1: Validate path is under ~/.claude/ to prevent arbitrary file read
+            let home = std::env::var("HOME").unwrap_or_default();
+            let allowed_dir = format!("{}/.claude/", home);
+            let canonical = match std::fs::canonicalize(&path) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("invalid path: {e}"),
+                    }
+                }
+            };
+            if !canonical.to_string_lossy().starts_with(&allowed_dir) {
+                return Response::Error {
+                    message: "path must be under ~/.claude/".to_string(),
+                };
+            }
             // Read the transcript file, parse all chunks from offset 0, store as memories
-            match std::fs::read_to_string(&path) {
+            match std::fs::read_to_string(&canonical) {
                 Ok(content) => {
                     let (chunks, _) = crate::chunk::parse_transcript_incremental(&content, 0);
                     let mut stored = 0usize;
