@@ -26,7 +26,8 @@ pub struct GuardrailResult {
 /// 3. **Relevant lessons** — lessons/patterns linked to this file + dangerous patterns
 /// 4. **Applicable skills** — tested workflows relevant to this file
 ///
-/// A file is considered unsafe if there are linked decisions OR dangerous patterns.
+/// A file is considered unsafe only if there are linked decisions.
+/// Dangerous patterns are advisory warnings, not safety gates.
 pub fn check_action(conn: &Connection, file: &str, action: &str) -> GuardrailResult {
     let file_target = format!("file:{}", file);
 
@@ -76,7 +77,9 @@ pub fn check_action(conn: &Connection, file: &str, action: &str) -> GuardrailRes
     }
 
     let decisions_affected: Vec<String> = decisions.iter().map(|(id, _, _)| id.clone()).collect();
-    let safe = decisions_affected.is_empty() && dangerous_patterns.is_empty();
+    // Only linked decisions make a file unsafe. Dangerous patterns are advisory
+    // (Codex fix: global negative-valence memories shouldn't poison every check)
+    let safe = decisions_affected.is_empty();
 
     GuardrailResult {
         safe,
@@ -585,7 +588,8 @@ mod tests {
         let result = check_action(&conn, "src/any_file.rs", "edit");
         assert!(!result.dangerous_patterns.is_empty(), "should flag dangerous pattern");
         assert!(result.dangerous_patterns[0].contains("send_raw"));
-        assert!(!result.safe, "should be unsafe when dangerous patterns exist");
+        // Dangerous patterns are advisory, not safety gates (Codex fix)
+        assert!(result.safe, "dangerous patterns alone should NOT flip safe — only decisions do");
         assert!(result.warnings.iter().any(|w| w.contains("Dangerous pattern")));
     }
 
