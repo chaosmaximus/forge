@@ -7,6 +7,7 @@ use crate::db::ops;
 use crate::lsp::client::{file_uri, LspClient};
 use crate::lsp::detect::{detect_language_servers, LspServerConfig};
 use crate::lsp::symbols::convert_symbols;
+use crate::lsp::LspManager;
 use forge_core::types::{CodeFile, CodeSymbol};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -16,9 +17,6 @@ use std::time::Duration;
 use tokio::sync::{watch, Mutex};
 
 const INDEX_INTERVAL: Duration = Duration::from_secs(5 * 60); // 5 minutes
-
-/// Per-server timeout: if an LSP server takes longer than this, kill it.
-const LSP_SERVER_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Directories to skip when walking the project tree.
 const SKIP_DIRS: &[&str] = &[
@@ -46,6 +44,7 @@ pub async fn run_indexer(
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     eprintln!("[indexer] started, interval = {:?}", INDEX_INTERVAL);
+    let mut manager: Option<LspManager> = None;
 
     loop {
         tokio::select! {
@@ -57,13 +56,31 @@ pub async fn run_indexer(
                         continue;
                     }
                 };
-                if std::path::Path::new(&project_dir).exists() {
-                    if let Err(e) = run_index(&project_dir, &state).await {
-                        eprintln!("[indexer] error: {}", e);
+                if !std::path::Path::new(&project_dir).exists() {
+                    continue;
+                }
+
+                // Create or reuse LspManager
+                let mgr = match &mut manager {
+                    Some(m) if m.project_dir() == project_dir => m,
+                    _ => {
+                        // Project changed or first run — create new manager
+                        if let Some(old) = manager.take() {
+                            old.shutdown_all().await;
+                        }
+                        manager = Some(LspManager::new(project_dir.clone()));
+                        manager.as_mut().unwrap()
                     }
+                };
+
+                if let Err(e) = run_index(&project_dir, &state, mgr).await {
+                    eprintln!("[indexer] error: {}", e);
                 }
             }
             _ = shutdown_rx.changed() => {
+                if let Some(mgr) = manager.take() {
+                    mgr.shutdown_all().await;
+                }
                 eprintln!("[indexer] shutting down");
                 return;
             }
@@ -197,10 +214,12 @@ fn walk_dir_recursive(
     }
 }
 
-/// Index all matching files using a single LSP server.
+/// Index all matching files using an LSP client managed by `LspManager`.
 ///
+/// The client is provided by the caller (LspManager handles lifecycle).
 /// Returns the collected CodeFiles, CodeSymbols, and call edges on success.
 async fn index_with_server(
+    client: &mut LspClient,
     config: &LspServerConfig,
     project_dir: &str,
     indexed_at: &str,
@@ -216,24 +235,17 @@ async fn index_with_server(
     }
 
     eprintln!(
-        "[indexer] {} — found {} files, starting LSP server",
+        "[indexer] {} — found {} files, using persistent LSP server",
         config.language,
         source_files.len()
     );
 
-    // Spawn the language server with an overall timeout.
-    let mut client = tokio::time::timeout(
-        LSP_SERVER_TIMEOUT,
-        LspClient::spawn(config, project_dir),
-    )
-    .await
-    .map_err(|_| format!("{} timed out during spawn/initialize", config.command))?
-    .map_err(|e| format!("{} spawn failed: {}", config.command, e))?;
-
     // Check server capabilities before requesting symbols (Serena pattern)
     if !client.supports_document_symbols() {
-        eprintln!("[indexer] {} does not support documentSymbol, skipping", config.command);
-        let _ = client.shutdown().await;
+        eprintln!(
+            "[indexer] {} does not support documentSymbol, skipping",
+            config.command
+        );
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
 
@@ -270,23 +282,27 @@ async fn index_with_server(
         }
 
         // Request symbols with per-file timeout
-        match tokio::time::timeout(
-            Duration::from_secs(10),
-            client.document_symbols(&uri),
-        )
-        .await
-        {
+        match tokio::time::timeout(Duration::from_secs(10), client.document_symbols(&uri)).await {
             Ok(Ok(doc_symbols)) => {
                 let converted = convert_symbols(file_path, &doc_symbols);
                 symbols.extend(converted);
                 // Update hash cache on successful extraction
-                HASH_CACHE.lock().unwrap().insert(file_path.to_string(), hash);
+                HASH_CACHE
+                    .lock()
+                    .unwrap()
+                    .insert(file_path.to_string(), hash);
             }
             Ok(Err(e)) => {
-                eprintln!("[indexer] {} symbols failed for {}: {}", config.language, file_path, e);
+                eprintln!(
+                    "[indexer] {} symbols failed for {}: {}",
+                    config.language, file_path, e
+                );
             }
             Err(_) => {
-                eprintln!("[indexer] {} symbols timed out for {}", config.language, file_path);
+                eprintln!(
+                    "[indexer] {} symbols timed out for {}",
+                    config.language, file_path
+                );
             }
         }
 
@@ -294,7 +310,7 @@ async fn index_with_server(
         let _ = client.did_close(&uri).await;
     }
 
-    // Request references for callable symbols → build "calls" edges
+    // Request references for callable symbols -> build "calls" edges
     let mut call_edges: Vec<(String, String)> = Vec::new();
     if client.supports_references() {
         let callable_symbols: Vec<&CodeSymbol> = symbols
@@ -306,7 +322,9 @@ async fn index_with_server(
         for sym in callable_symbols.iter().take(100) {
             let sym_uri = file_uri(&sym.file_path);
             let content = std::fs::read_to_string(&sym.file_path).unwrap_or_default();
-            let _ = client.did_open(&sym_uri, &config.language, &content).await;
+            let _ = client
+                .did_open(&sym_uri, &config.language, &content)
+                .await;
 
             match tokio::time::timeout(
                 Duration::from_secs(10),
@@ -329,10 +347,7 @@ async fn index_with_server(
         }
     }
 
-    // Shut down the server gracefully
-    if let Err(e) = client.shutdown().await {
-        eprintln!("[indexer] {} shutdown error: {}", config.command, e);
-    }
+    // Note: no shutdown here — LspManager handles server lifecycle
 
     Ok((files, symbols, call_edges))
 }
@@ -357,6 +372,7 @@ fn file_hash(path: &str) -> String {
 async fn run_index(
     project_dir: &str,
     state: &Arc<Mutex<crate::server::handler::DaemonState>>,
+    manager: &mut LspManager,
 ) -> Result<(), String> {
     let servers = detect_language_servers(project_dir);
     if servers.is_empty() {
@@ -369,15 +385,18 @@ async fn run_index(
     let mut all_call_edges: Vec<(String, String)> = Vec::new();
 
     for config in &servers {
-        match index_with_server(config, project_dir, &indexed_at).await {
-            Ok((files, symbols, edges)) => {
-                all_files.extend(files);
-                all_symbols.extend(symbols);
-                all_call_edges.extend(edges);
+        match manager.get_client(config).await {
+            Ok(client) => {
+                match index_with_server(client, config, project_dir, &indexed_at).await {
+                    Ok((files, symbols, edges)) => {
+                        all_files.extend(files);
+                        all_symbols.extend(symbols);
+                        all_call_edges.extend(edges);
+                    }
+                    Err(e) => eprintln!("[indexer] {} failed: {}", config.language, e),
+                }
             }
-            Err(e) => {
-                eprintln!("[indexer] {} failed: {}", config.command, e);
-            }
+            Err(e) => eprintln!("[indexer] {} spawn failed: {}", config.command, e),
         }
     }
 
