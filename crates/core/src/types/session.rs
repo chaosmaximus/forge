@@ -1,0 +1,159 @@
+use serde::{Deserialize, Serialize};
+
+/// A parsed conversation turn from a Claude Code JSONL transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConversationChunk {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub has_tool_use: bool,
+    pub timestamp: String,
+    pub extracted: bool,
+}
+
+/// Raw JSONL line from a Claude Code transcript.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TranscriptLine {
+    #[serde(rename = "type")]
+    pub line_type: Option<String>,
+    pub message: Option<TranscriptMessage>,
+    pub uuid: Option<String>,
+    pub timestamp: Option<String>,
+    #[serde(rename = "sessionId")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TranscriptMessage {
+    pub role: Option<String>,
+    pub content: Option<serde_json::Value>,
+}
+
+impl TranscriptLine {
+    /// Extract text content. Handles string content AND array-of-blocks content.
+    /// For arrays: concatenate all blocks with type="text", join with newline.
+    /// Returns None if no text content (e.g., tool-only turns).
+    pub fn text_content(&self) -> Option<String> {
+        let content = self.message.as_ref()?.content.as_ref()?;
+
+        match content {
+            // Simple string content (e.g., user messages)
+            serde_json::Value::String(s) => {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.clone())
+                }
+            }
+            // Array of content blocks (e.g., assistant messages)
+            serde_json::Value::Array(blocks) => {
+                let texts: Vec<&str> = blocks
+                    .iter()
+                    .filter_map(|block| {
+                        let block_type = block.get("type")?.as_str()?;
+                        if block_type == "text" {
+                            block.get("text")?.as_str()
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if texts.is_empty() {
+                    None
+                } else {
+                    Some(texts.join("\n"))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if this line contains tool_use blocks.
+    pub fn has_tool_use(&self) -> bool {
+        let Some(msg) = &self.message else {
+            return false;
+        };
+        let Some(content) = &msg.content else {
+            return false;
+        };
+        let serde_json::Value::Array(blocks) = content else {
+            return false;
+        };
+
+        blocks.iter().any(|block| {
+            block
+                .get("type")
+                .and_then(|v| v.as_str())
+                .is_some_and(|t| t == "tool_use")
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_user_message() {
+        let json = r#"{"type":"user","message":{"role":"user","content":"hello world"},"uuid":"abc","timestamp":"2026-04-02T12:00:00Z","sessionId":"sess1"}"#;
+        let line: TranscriptLine = serde_json::from_str(json).expect("parse user message");
+
+        assert_eq!(line.line_type, Some("user".to_string()));
+        assert_eq!(line.uuid, Some("abc".to_string()));
+        assert_eq!(line.timestamp, Some("2026-04-02T12:00:00Z".to_string()));
+        assert_eq!(line.session_id, Some("sess1".to_string()));
+
+        let text = line.text_content();
+        assert_eq!(text, Some("hello world".to_string()));
+        assert!(!line.has_tool_use());
+    }
+
+    #[test]
+    fn test_parse_assistant_with_blocks() {
+        let json = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll help"},{"type":"tool_use","id":"t1","name":"Read","input":{}}]},"uuid":"def"}"#;
+        let line: TranscriptLine = serde_json::from_str(json).expect("parse assistant with blocks");
+
+        assert_eq!(line.line_type, Some("assistant".to_string()));
+        assert_eq!(line.uuid, Some("def".to_string()));
+
+        let text = line.text_content();
+        assert_eq!(text, Some("I'll help".to_string()));
+        assert!(line.has_tool_use());
+    }
+
+    #[test]
+    fn test_parse_empty_content() {
+        let json = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}"#;
+        let line: TranscriptLine = serde_json::from_str(json).expect("parse tool-only message");
+
+        let text = line.text_content();
+        assert!(text.is_none());
+        assert!(line.has_tool_use());
+    }
+
+    #[test]
+    fn test_chunk_serde_roundtrip() {
+        let chunk = ConversationChunk {
+            id: "chunk-001".to_string(),
+            session_id: "sess1".to_string(),
+            role: "user".to_string(),
+            content: "hello world".to_string(),
+            has_tool_use: false,
+            timestamp: "2026-04-02T12:00:00Z".to_string(),
+            extracted: false,
+        };
+
+        let json = serde_json::to_string(&chunk).expect("serialize chunk");
+        let restored: ConversationChunk = serde_json::from_str(&json).expect("deserialize chunk");
+
+        assert_eq!(chunk.id, restored.id);
+        assert_eq!(chunk.session_id, restored.session_id);
+        assert_eq!(chunk.role, restored.role);
+        assert_eq!(chunk.content, restored.content);
+        assert_eq!(chunk.has_tool_use, restored.has_tool_use);
+        assert_eq!(chunk.timestamp, restored.timestamp);
+        assert_eq!(chunk.extracted, restored.extracted);
+    }
+}
