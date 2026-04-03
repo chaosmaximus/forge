@@ -75,6 +75,7 @@ mod tests {
     use std::io::Write;
 
     fn open_db() -> Connection {
+        crate::db::vec::init_sqlite_vec();
         let conn = Connection::open_in_memory().unwrap();
         create_schema(&conn).unwrap();
         conn

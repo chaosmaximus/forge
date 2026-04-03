@@ -1,6 +1,4 @@
-use crate::db::ops;
-use crate::graph::GraphStore;
-use crate::vector::VectorIndex;
+use crate::db::{ops, vec};
 use forge_core::protocol::MemoryResult;
 use forge_core::types::{Memory, MemoryStatus, MemoryType};
 use rusqlite::{params, Connection};
@@ -68,7 +66,7 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             status,
             project,
             tags,
-            embedding: None, // embeddings not stored in SQLite
+            embedding: None,
             created_at: row.get(8)?,
             accessed_at: row.get(9)?,
         }))
@@ -77,23 +75,38 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
     }
 }
 
+/// Get 1-hop outgoing neighbors from the edge table via SQL.
+/// Replaces in-memory petgraph GraphStore.neighbors().
+/// Limited to 10 neighbors per node to prevent fan-out explosion
+/// (e.g., a decision that `affects` hundreds of files).
+fn sql_neighbors(conn: &Connection, id: &str) -> Vec<String> {
+    let mut stmt = match conn.prepare("SELECT to_id FROM edge WHERE from_id = ?1 LIMIT 10") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let rows = match stmt.query_map(params![id], |row| row.get(0)) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+    rows.filter_map(|r| r.ok()).collect()
+}
+
 /// Hybrid recall combining BM25 full-text search, vector similarity search,
 /// and graph expansion via Reciprocal Rank Fusion.
 ///
+/// All data comes from SQLite — no in-memory indexes required.
+///
 /// Steps:
 /// 1. BM25 search via FTS5
-/// 2. Vector search if an embedding is provided and the index is non-empty
+/// 2. Vector search via sqlite-vec (if embedding provided)
 /// 3. RRF merge of both result lists (k=60)
-/// 4. Graph expansion: 1-hop neighbors of top 5 results
+/// 4. Graph expansion: 1-hop neighbors of top 5 via SQL edge table
 /// 5. Fetch full Memory records from SQLite
 /// 6. Filter by memory_type if specified
 /// 7. Touch accessed_at for returned IDs
 /// 8. Return Vec<MemoryResult> with score and source="hybrid"
-#[allow(clippy::too_many_arguments)] // Will shrink in Phase 2 when vector_idx and graph are removed
 pub fn hybrid_recall(
     conn: &Connection,
-    vector_idx: &VectorIndex,
-    graph: &GraphStore,
     query: &str,
     query_embedding: Option<&[f32]>,
     memory_type: Option<&MemoryType>,
@@ -115,28 +128,24 @@ pub fn hybrid_recall(
         }
         Err(e) => {
             eprintln!("[recall] BM25 search error: {}", e);
-            // Continue with empty BM25 list — vector search may still work
         }
     }
 
-    // 2. Vector search (only if embedding provided and index non-empty)
-    // NEW-4: handle Result from search (no panic on dimension mismatch)
+    // 2. Vector search via sqlite-vec (if embedding provided)
     if let Some(emb) = query_embedding {
-        if !vector_idx.is_empty() {
-            match vector_idx.search(emb, limit * 3) {
-                Ok(vec_results) => {
-                    let vec_list: Vec<(String, f64)> = vec_results
-                        .into_iter()
-                        .map(|(id, distance)| (id, 1.0 - distance as f64))
-                        .collect();
-                    if !vec_list.is_empty() {
-                        ranked_lists.push(vec_list);
-                    }
+        match vec::search_vectors(conn, emb, limit * 3) {
+            Ok(vec_results) => {
+                // Convert cosine distance to similarity score (1 - distance)
+                let vec_list: Vec<(String, f64)> = vec_results
+                    .into_iter()
+                    .map(|(id, distance)| (id, 1.0 - distance))
+                    .collect();
+                if !vec_list.is_empty() {
+                    ranked_lists.push(vec_list);
                 }
-                Err(e) => {
-                    eprintln!("[recall] vector search error: {}", e);
-                    // Continue without vector results
-                }
+            }
+            Err(e) => {
+                eprintln!("[recall] vector search error: {}", e);
             }
         }
     }
@@ -144,28 +153,27 @@ pub fn hybrid_recall(
     // 3. RRF merge
     let merged = rrf_merge(&ranked_lists, 60.0, limit);
 
-    // 4. Graph expansion: for top 5 merged results, get 1-hop neighbors
-    // NEW-5: Use HashSet for O(1) dedup instead of O(n) Vec::contains
+    // 4. Graph expansion via SQL: 1-hop neighbors of top 5 results
     let mut all_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
     let mut seen_ids: HashSet<String> = all_ids.iter().cloned().collect();
-    let top_for_expansion = merged.iter().take(5).map(|(id, _)| id.clone()).collect::<Vec<_>>();
+    let top_for_expansion: Vec<String> = merged.iter().take(5).map(|(id, _)| id.clone()).collect();
     for id in &top_for_expansion {
-        let neighbors = graph.neighbors(id);
-        for (neighbor_id, _edge_type) in neighbors {
+        let neighbors = sql_neighbors(conn, id);
+        for neighbor_id in neighbors {
             if seen_ids.insert(neighbor_id.clone()) {
                 all_ids.push(neighbor_id);
             }
         }
     }
 
-    // Build a score map from merged results; graph-expanded items get a small bonus score
+    // Build score map; graph-expanded items get minimal score
     let score_map: HashMap<String, f64> = merged.iter().cloned().collect();
 
     // 5. Fetch full Memory records from SQLite
     let mut results: Vec<MemoryResult> = Vec::new();
     for id in &all_ids {
         if let Ok(Some(memory)) = fetch_memory_by_id(conn, id) {
-            let score = score_map.get(id).copied().unwrap_or(0.001); // graph-expanded get minimal score
+            let score = score_map.get(id).copied().unwrap_or(0.001);
             results.push(MemoryResult {
                 memory,
                 score,
@@ -195,17 +203,16 @@ mod tests {
     use super::*;
     use crate::db::schema::create_schema;
 
-    fn setup() -> (Connection, VectorIndex, GraphStore) {
+    fn setup() -> Connection {
+        crate::db::vec::init_sqlite_vec();
         let conn = Connection::open_in_memory().unwrap();
         create_schema(&conn).unwrap();
-        let vi = VectorIndex::new(768);
-        let gs = GraphStore::new();
-        (conn, vi, gs)
+        conn
     }
 
     #[test]
     fn test_hybrid_recall_bm25_only() {
-        let (conn, vi, gs) = setup();
+        let conn = setup();
 
         let m = Memory::new(
             MemoryType::Decision,
@@ -214,7 +221,7 @@ mod tests {
         );
         ops::remember(&conn, &m).unwrap();
 
-        let results = hybrid_recall(&conn, &vi, &gs, "JWT authentication", None, None, None, 10);
+        let results = hybrid_recall(&conn, "JWT authentication", None, None, None, 10);
 
         assert!(!results.is_empty(), "should find at least one result");
         assert!(
@@ -226,7 +233,7 @@ mod tests {
 
     #[test]
     fn test_hybrid_recall_with_vector() {
-        let (conn, mut vi, gs) = setup();
+        let conn = setup();
 
         let m = Memory::new(
             MemoryType::Decision,
@@ -236,31 +243,22 @@ mod tests {
         let mem_id = m.id.clone();
         ops::remember(&conn, &m).unwrap();
 
-        // Create a fake embedding and insert into vector index
+        // Store embedding in sqlite-vec
         let dim = 768;
         let emb: Vec<f32> = (0..dim).map(|j| (j as f32 * 0.001).sin()).collect();
-        vi.insert(&mem_id, &emb).unwrap();
+        vec::store_embedding(&conn, &mem_id, &emb).unwrap();
 
         // Use a slightly different embedding as the query
         let query_emb: Vec<f32> = (0..dim).map(|j| (j as f32 * 0.001 + 0.01).sin()).collect();
 
-        let results = hybrid_recall(
-            &conn,
-            &vi,
-            &gs,
-            "JWT",
-            Some(&query_emb),
-            None,
-            None,
-            10,
-        );
+        let results = hybrid_recall(&conn, "JWT", Some(&query_emb), None, None, 10);
 
         assert!(!results.is_empty(), "should find results with both BM25 and vector");
     }
 
     #[test]
     fn test_hybrid_recall_graph_expansion() {
-        let (conn, vi, mut gs) = setup();
+        let conn = setup();
 
         // Insert memory A ("JWT auth") and memory B ("Token rotation")
         let m_a = Memory::new(
@@ -278,12 +276,12 @@ mod tests {
         ops::remember(&conn, &m_a).unwrap();
         ops::remember(&conn, &m_b).unwrap();
 
-        // Add edge: A -[motivated_by]-> B in the graph
-        gs.add_edge(&id_a, &id_b, "motivated_by", serde_json::json!({}));
+        // Add edge: A -[motivated_by]-> B in the SQL edge table
+        ops::store_edge(&conn, &id_a, &id_b, "motivated_by", "{}").unwrap();
 
         // Recall "JWT" — should find A directly via BM25
         // B should appear in results via graph expansion (1-hop neighbor of A)
-        let results = hybrid_recall(&conn, &vi, &gs, "JWT authentication", None, None, None, 10);
+        let results = hybrid_recall(&conn, "JWT authentication", None, None, None, 10);
 
         assert!(!results.is_empty(), "should find at least one result");
 
@@ -307,19 +305,9 @@ mod tests {
 
     #[test]
     fn test_hybrid_recall_no_matches() {
-        let (conn, vi, gs) = setup();
+        let conn = setup();
 
-        // Recall a query that matches nothing in an empty DB
-        let results = hybrid_recall(
-            &conn,
-            &vi,
-            &gs,
-            "xyzzy nonexistent gibberish",
-            None,
-            None,
-            None,
-            10,
-        );
+        let results = hybrid_recall(&conn, "xyzzy nonexistent gibberish", None, None, None, 10);
 
         assert!(
             results.is_empty(),
@@ -343,18 +331,34 @@ mod tests {
 
         let merged = rrf_merge(&[list1, list2], 60.0, 10);
 
-        // "b" should be #1: it appears at rank 1 in list1 and rank 0 in list2
-        // b_score = 1/(60+1+1) + 1/(60+0+1) = 1/62 + 1/61
-        // "a" at rank 0 in list1 only: 1/61
-        // "c" at rank 2 in list1, rank 1 in list2: 1/63 + 1/62
-        // "d" at rank 2 in list2 only: 1/63
         assert_eq!(merged[0].0, "b", "b should be ranked #1 (appears in both lists)");
 
-        // Verify all 4 items are present
         let ids: Vec<&str> = merged.iter().map(|x| x.0.as_str()).collect();
         assert!(ids.contains(&"a"));
         assert!(ids.contains(&"b"));
         assert!(ids.contains(&"c"));
         assert!(ids.contains(&"d"));
+    }
+
+    #[test]
+    fn test_hybrid_recall_with_persistent_vector() {
+        let conn = setup();
+
+        // Store memory + embedding
+        let m = Memory::new(MemoryType::Decision, "Use SQLite", "For persistent storage");
+        let mem_id = m.id.clone();
+        ops::remember(&conn, &m).unwrap();
+
+        let emb: Vec<f32> = (0..768).map(|j| (j as f32 * 0.002).sin()).collect();
+        vec::store_embedding(&conn, &mem_id, &emb).unwrap();
+
+        // Verify vector is in sqlite-vec
+        assert!(vec::has_embedding(&conn, &mem_id).unwrap());
+
+        // Recall via vector similarity
+        let query_emb: Vec<f32> = (0..768).map(|j| (j as f32 * 0.002 + 0.001).sin()).collect();
+        let results = hybrid_recall(&conn, "SQLite storage", Some(&query_emb), None, None, 10);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].memory.id, mem_id);
     }
 }

@@ -1,6 +1,14 @@
 use rusqlite::Connection;
 
 pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
+    // Create memory_vec virtual table (sqlite-vec must be loaded before this call)
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
+            id TEXT PRIMARY KEY,
+            embedding float[768] distance_metric=cosine
+        );"
+    )?;
+
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS memory (
             id TEXT PRIMARY KEY,
@@ -44,9 +52,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             properties TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL,
             valid_from TEXT NOT NULL,
-            valid_until TEXT,
-            FOREIGN KEY (from_id) REFERENCES memory(id),
-            FOREIGN KEY (to_id) REFERENCES memory(id)
+            valid_until TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_edge_from ON edge(from_id);
         CREATE INDEX IF NOT EXISTS idx_edge_to ON edge(to_id);
@@ -82,6 +88,7 @@ mod tests {
 
     #[test]
     fn test_schema_creates_tables() {
+        crate::db::vec::init_sqlite_vec();
         let conn = Connection::open_in_memory().unwrap();
         create_schema(&conn).unwrap();
 
@@ -108,6 +115,7 @@ mod tests {
 
     #[test]
     fn test_schema_idempotent() {
+        crate::db::vec::init_sqlite_vec();
         let conn = Connection::open_in_memory().unwrap();
         // Calling create_schema twice should not error
         create_schema(&conn).unwrap();

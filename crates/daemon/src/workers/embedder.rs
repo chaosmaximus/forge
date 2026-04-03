@@ -1,11 +1,11 @@
-// workers/embedder.rs — Batch embedding via Ollama
+// workers/embedder.rs — Batch embedding via Ollama → sqlite-vec
 //
 // Periodically checks for memories without embeddings and generates them
-// via Ollama's /api/embed endpoint.
+// via Ollama's /api/embed endpoint. Stores results in sqlite-vec.
 
 use crate::config::ForgeConfig;
+use crate::db::vec;
 use crate::extraction::ollama;
-use crate::vector::VectorIndex;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{watch, Mutex};
@@ -13,7 +13,7 @@ use tokio::sync::{watch, Mutex};
 /// Periodically checks for memories missing embeddings and generates them via Ollama.
 ///
 /// Runs every 30 seconds. For each batch of up to 32 memories, calls Ollama embed
-/// and inserts the resulting vectors into the VectorIndex.
+/// and inserts the resulting vectors into sqlite-vec (persistent storage).
 /// If Ollama is unavailable, logs and retries next interval.
 pub async fn run_embedder(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
@@ -33,10 +33,10 @@ pub async fn run_embedder(
             }
         }
 
-        // Get unembedded memories (under lock, but fast — just a SQLite query)
+        // Get unembedded memories (under lock, but fast — just SQLite queries)
         let to_embed: Vec<(String, String)> = {
             let locked = state.lock().await;
-            get_unembedded_memories(&locked.conn, &locked.vector_idx)
+            get_unembedded_memories(&locked.conn)
         };
 
         if to_embed.is_empty() {
@@ -56,15 +56,15 @@ pub async fn run_embedder(
 
             match result {
                 Ok(embeddings) => {
-                    let mut locked = state.lock().await;
+                    let locked = state.lock().await;
                     let mut inserted = 0usize;
 
                     for (i, (id, _)) in batch.iter().enumerate() {
                         if let Some(emb) = embeddings.get(i) {
-                            match locked.vector_idx.insert(id, emb) {
-                                Ok(_) => inserted += 1,
+                            match vec::store_embedding(&locked.conn, id, emb) {
+                                Ok(()) => inserted += 1,
                                 Err(e) => {
-                                    eprintln!("[embedder] insert error for {id}: {e}");
+                                    eprintln!("[embedder] store error for {id}: {e}");
                                 }
                             }
                         }
@@ -81,16 +81,17 @@ pub async fn run_embedder(
     }
 }
 
-/// Query SQLite for memories not yet in the vector index.
+/// Query SQLite for memories not yet in the sqlite-vec table.
 ///
 /// Returns (id, combined_text) pairs where combined_text = title + ' ' + content.
 /// Only returns active memories. Limited to 100 results per call.
-fn get_unembedded_memories(
-    conn: &rusqlite::Connection,
-    vector_idx: &VectorIndex,
-) -> Vec<(String, String)> {
+fn get_unembedded_memories(conn: &rusqlite::Connection) -> Vec<(String, String)> {
     let mut stmt = match conn.prepare(
-        "SELECT id, title || ' ' || content FROM memory WHERE status = 'active' LIMIT 100",
+        "SELECT m.id, m.title || ' ' || m.content
+         FROM memory m
+         LEFT JOIN memory_vec v ON v.id = m.id
+         WHERE m.status = 'active' AND v.id IS NULL
+         LIMIT 100",
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -111,9 +112,7 @@ fn get_unembedded_memories(
         }
     };
 
-    rows.filter_map(|r| r.ok())
-        .filter(|(id, _)| !vector_idx.contains(id))
-        .collect()
+    rows.filter_map(|r| r.ok()).collect()
 }
 
 #[cfg(test)]
@@ -122,21 +121,25 @@ mod tests {
     use crate::db::{ops, schema};
     use forge_core::types::{Memory, MemoryType};
 
-    #[test]
-    fn test_get_unembedded_memories() {
+    fn open_db() -> rusqlite::Connection {
+        crate::db::vec::init_sqlite_vec();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         schema::create_schema(&conn).unwrap();
-        let vi = VectorIndex::new(768);
+        conn
+    }
+
+    #[test]
+    fn test_get_unembedded_memories() {
+        let conn = open_db();
 
         // Insert 2 memories
         let m1 = Memory::new(MemoryType::Decision, "Use JWT", "For auth");
         let m2 = Memory::new(MemoryType::Lesson, "Test first", "TDD works");
-        let _m1_id = m1.id.clone();
         ops::remember(&conn, &m1).unwrap();
         ops::remember(&conn, &m2).unwrap();
 
         // Both should be unembedded
-        let unembedded = get_unembedded_memories(&conn, &vi);
+        let unembedded = get_unembedded_memories(&conn);
         assert_eq!(unembedded.len(), 2);
 
         // Verify the returned data contains the right text
@@ -158,9 +161,7 @@ mod tests {
 
     #[test]
     fn test_get_unembedded_skips_embedded() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        schema::create_schema(&conn).unwrap();
-        let mut vi = VectorIndex::new(4); // small dim for test
+        let conn = open_db();
 
         let m1 = Memory::new(MemoryType::Decision, "Embedded", "Already done");
         let m2 = Memory::new(MemoryType::Lesson, "Not embedded", "Still pending");
@@ -168,21 +169,19 @@ mod tests {
         ops::remember(&conn, &m1).unwrap();
         ops::remember(&conn, &m2).unwrap();
 
-        // Simulate m1 being already embedded
-        vi.insert(&m1_id, &[0.1, 0.2, 0.3, 0.4]).unwrap();
+        // Simulate m1 being already embedded in sqlite-vec
+        let emb: Vec<f32> = (0..768).map(|j| (j as f32 * 0.001).sin()).collect();
+        vec::store_embedding(&conn, &m1_id, &emb).unwrap();
 
-        let unembedded = get_unembedded_memories(&conn, &vi);
+        let unembedded = get_unembedded_memories(&conn);
         assert_eq!(unembedded.len(), 1);
         assert_eq!(unembedded[0].0, m2.id);
     }
 
     #[test]
     fn test_get_unembedded_empty_db() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        schema::create_schema(&conn).unwrap();
-        let vi = VectorIndex::new(768);
-
-        let unembedded = get_unembedded_memories(&conn, &vi);
+        let conn = open_db();
+        let unembedded = get_unembedded_memories(&conn);
         assert!(unembedded.is_empty());
     }
 }

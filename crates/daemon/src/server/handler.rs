@@ -1,9 +1,7 @@
 use crate::claude_memory;
 use crate::db::{ops, schema};
 use crate::events::EventSender;
-use crate::graph::GraphStore;
 use crate::recall::hybrid_recall;
-use crate::vector::VectorIndex;
 use forge_core::protocol::*;
 use forge_core::types::{Memory, CodeFile, CodeSymbol};
 use rusqlite::Connection;
@@ -11,36 +9,26 @@ use std::time::Instant;
 
 pub struct DaemonState {
     pub conn: Connection,
-    pub vector_idx: VectorIndex,
-    pub graph: GraphStore,
     pub events: EventSender,
     pub started_at: Instant,
 }
 
 impl DaemonState {
     pub fn new(db_path: &str) -> rusqlite::Result<Self> {
+        // Must init sqlite-vec extension before opening any connection
+        crate::db::vec::init_sqlite_vec();
+
         let conn = if db_path == ":memory:" {
             Connection::open_in_memory()?
         } else {
             Connection::open(db_path)?
         };
-        // M-5: Enable WAL mode for better concurrent read/write performance
+        // Enable WAL mode for better concurrent read/write performance
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         schema::create_schema(&conn)?;
 
-        // L-6: Load existing graph edges from SQLite into petgraph on startup
-        let mut graph = GraphStore::new();
-        if let Ok(edges) = ops::export_edges(&conn) {
-            for (from_id, to_id, edge_type, props_str) in edges {
-                let props = serde_json::from_str(&props_str).unwrap_or(serde_json::Value::Null);
-                graph.add_edge(&from_id, &to_id, &edge_type, props);
-            }
-        }
-
         Ok(DaemonState {
             conn,
-            vector_idx: VectorIndex::new(768),
-            graph,
             events: crate::events::create_event_bus(),
             started_at: Instant::now(),
         })
@@ -81,7 +69,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::Recall { query, memory_type, project, limit } => {
             let lim = limit.unwrap_or(10);
             let results =
-                hybrid_recall(&state.conn, &state.vector_idx, &state.graph, &query, None, memory_type.as_ref(), project.as_deref(), lim);
+                hybrid_recall(&state.conn, &query, None, memory_type.as_ref(), project.as_deref(), lim);
             let count = results.len();
             Response::Ok {
                 data: ResponseData::Memories { results, count },

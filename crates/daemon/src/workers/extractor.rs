@@ -116,7 +116,7 @@ async fn process_file(
                 return Ok(());
             }
 
-            let mut locked = state.lock().await;
+            let locked = state.lock().await;
             let mut stored = 0usize;
             let event_tx = locked.events.clone();
 
@@ -146,16 +146,9 @@ async fn process_file(
                         "project": memory.project,
                     }));
 
-                    // Wire affects field to graph edges
+                    // Wire affects field to graph edges (SQL edge table)
                     if !em.affects.is_empty() {
                         for affected in &em.affects {
-                            locked.graph.add_edge(
-                                &memory.id,
-                                &format!("file:{}", affected),
-                                "affects",
-                                serde_json::json!({}),
-                            );
-                            // Also persist to SQLite edge table
                             let _ = ops::store_edge(
                                 &locked.conn,
                                 &memory.id,
