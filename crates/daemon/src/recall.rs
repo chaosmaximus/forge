@@ -274,11 +274,21 @@ pub fn manas_recall(
     results
 }
 
+/// Escape special XML characters to prevent injection.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 /// Compile optimized context from all Manas layers for session-start injection.
 ///
 /// Returns an XML string with the most relevant information, budget-limited
 /// to ~4000 chars (~1000 tokens). Uses lazy loading pattern: summaries in
 /// context, full content on demand via `forge recall --layer <layer>`.
+/// All user-controlled strings are XML-escaped to prevent injection.
 pub fn compile_context(
     conn: &Connection,
     agent: &str,
@@ -293,7 +303,7 @@ pub fn compile_context(
         let platform = crate::db::manas::list_platform(conn).unwrap_or_default();
         let mut platform_xml = String::from("<platform>");
         for entry in &platform {
-            platform_xml.push_str(&format!(" {}={}", entry.key, entry.value));
+            platform_xml.push_str(&format!(" {}=\"{}\"", xml_escape(&entry.key), xml_escape(&entry.value)));
         }
         platform_xml.push_str("</platform>");
         used += platform_xml.len();
@@ -304,12 +314,12 @@ pub fn compile_context(
     if let Ok(facets) = crate::db::manas::list_identity(conn, agent, true) {
         if !facets.is_empty() {
             let mut id_xml = String::from("<identity agent=\"");
-            id_xml.push_str(agent);
+            id_xml.push_str(&xml_escape(agent));
             id_xml.push_str("\">");
             for f in &facets {
                 let entry = format!(
-                    "\n  <{} strength=\"{:.1}\">{}</{}>",
-                    f.facet, f.strength, f.description, f.facet
+                    "\n  <facet type=\"{}\" strength=\"{:.1}\">{}</facet>",
+                    xml_escape(&f.facet), f.strength, xml_escape(&f.description)
                 );
                 if used + id_xml.len() + entry.len() < budget {
                     id_xml.push_str(&entry);
@@ -332,7 +342,7 @@ pub fn compile_context(
             for d in &decisions {
                 let entry = format!(
                     "\n  <decision confidence=\"{:.1}\">{}</decision>",
-                    d.confidence, d.title
+                    d.confidence, xml_escape(&d.title)
                 );
                 if used + dec_xml.len() + entry.len() < budget {
                     dec_xml.push_str(&entry);
@@ -353,7 +363,7 @@ pub fn compile_context(
         if !lessons.is_empty() {
             let mut les_xml = String::from("<lessons>");
             for l in &lessons {
-                let entry = format!("\n  <lesson>{}</lesson>", l.title);
+                let entry = format!("\n  <lesson>{}</lesson>", xml_escape(&l.title));
                 if used + les_xml.len() + entry.len() < budget {
                     les_xml.push_str(&entry);
                 }
@@ -365,10 +375,16 @@ pub fn compile_context(
     }
 
     // Skill summaries (lazy loading — 1-line each, agent pulls details on demand)
+    // Skills: project-scoped (global skills + project skills)
     if let Ok(skills) = crate::db::manas::list_skills(conn, None) {
         let active_skills: Vec<_> = skills
             .into_iter()
-            .filter(|s| s.success_count > 0)
+            .filter(|s| {
+                s.success_count > 0
+                    && (s.project.is_none()
+                        || s.project.as_deref() == Some("")
+                        || s.project.as_deref() == project)
+            })
             .take(5)
             .collect();
         if !active_skills.is_empty() {
@@ -378,7 +394,7 @@ pub fn compile_context(
             for s in &active_skills {
                 let entry = format!(
                     "\n  <skill domain=\"{}\" uses=\"{}\">{}</skill>",
-                    s.domain, s.success_count, s.name
+                    xml_escape(&s.domain), s.success_count, xml_escape(&s.name)
                 );
                 if used + skill_xml.len() + entry.len() < budget {
                     skill_xml.push_str(&entry);
@@ -390,12 +406,19 @@ pub fn compile_context(
         }
     }
 
-    // Critical perceptions only (warnings/errors, unconsumed)
+    // Critical perceptions only (warnings/errors, unconsumed, project-scoped)
     if let Ok(perceptions) = crate::db::manas::list_unconsumed_perceptions(conn, None) {
         let critical: Vec<_> = perceptions
             .into_iter()
             .filter(|p| {
-                matches!(
+                // Project filter
+                let project_ok = match (&p.project, project) {
+                    (Some(pp), Some(proj)) => pp == proj,
+                    (None, _) => true, // global perceptions always visible
+                    (_, None) => true,  // no project filter = show all
+                    _ => false,
+                };
+                project_ok && matches!(
                     p.severity,
                     forge_core::types::manas::Severity::Warning
                         | forge_core::types::manas::Severity::Error
@@ -407,7 +430,7 @@ pub fn compile_context(
         if !critical.is_empty() {
             let mut perc_xml = String::from("<perceptions>");
             for p in &critical {
-                let snippet: String = p.data.chars().take(100).collect();
+                let snippet: String = xml_escape(&p.data.chars().take(100).collect::<String>());
                 let sev = format!("{:?}", p.severity);
                 let sev_lower = sev.to_lowercase();
                 let entry = format!("\n  <{sev_lower}>{snippet}</{sev_lower}>");
