@@ -71,8 +71,17 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::Recall { query, memory_type, project, limit } => {
             let lim = limit.unwrap_or(10);
-            let results =
+            let mut results =
                 hybrid_recall(&state.conn, &query, None, memory_type.as_ref(), project.as_deref(), lim);
+
+            // Cross-layer search (only if no type filter — type filter means user wants specific memory types)
+            if memory_type.is_none() {
+                let manas_results = crate::recall::manas_recall(&state.conn, &query, project.as_deref(), 3);
+                results.extend(manas_results);
+                results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+                results.truncate(lim);
+            }
+
             let count = results.len();
             Response::Ok {
                 data: ResponseData::Memories { results, count },
@@ -332,6 +341,25 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 },
                 Err(e) => Response::Error {
                     message: format!("ingest-claude failed: {e}"),
+                },
+            }
+        }
+
+        Request::IngestDeclared { path, source, project } => {
+            match crate::db::manas::ingest_declared_file(
+                &state.conn,
+                &path,
+                &source,
+                project.as_deref(),
+            ) {
+                Ok(ingested) => Response::Ok {
+                    data: ResponseData::IngestDeclared {
+                        ingested,
+                        path,
+                    },
+                },
+                Err(e) => Response::Error {
+                    message: format!("ingest-declared failed: {e}"),
                 },
             }
         }

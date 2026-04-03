@@ -68,6 +68,10 @@ pub enum ResponseData {
         imported: usize,
         skipped: usize,
     },
+    IngestDeclared {
+        ingested: bool,
+        path: String,
+    },
     Backfill {
         chunks_processed: usize,
         memories_stored: usize,

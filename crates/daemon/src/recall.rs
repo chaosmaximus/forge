@@ -198,6 +198,63 @@ pub fn hybrid_recall(
     results
 }
 
+/// Cross-layer recall across Manas layers (declared knowledge + domain DNA).
+///
+/// Searches declared knowledge (Layer 5) via LIKE and domain DNA (Layer 3)
+/// by pattern keyword match. Returns results as MemoryResult with lower
+/// scores than direct memory matches.
+pub fn manas_recall(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+    limit: usize,
+) -> Vec<MemoryResult> {
+    let mut results = Vec::new();
+
+    // Search declared knowledge (LIKE search on content/source)
+    if let Ok(declared_list) = crate::db::manas::search_declared(conn, query, project) {
+        for d in declared_list.into_iter().take(limit) {
+            results.push(MemoryResult {
+                memory: Memory::new(
+                    MemoryType::Lesson,
+                    format!("[declared:{}] {}", d.source, d.id),
+                    d.content.chars().take(500).collect::<String>(),
+                )
+                .with_confidence(0.7),
+                score: 0.5, // Lower score than direct memory matches
+                source: "declared".to_string(),
+            });
+        }
+    }
+
+    // Search domain DNA for the project
+    if let Some(proj) = project {
+        if let Ok(dna_list) = crate::db::manas::list_domain_dna(conn, Some(proj)) {
+            for dna in dna_list.into_iter().take(3) {
+                if dna.pattern.to_lowercase().contains(&query.to_lowercase()) {
+                    results.push(MemoryResult {
+                        memory: Memory::new(
+                            MemoryType::Pattern,
+                            format!("[dna:{}] {}", dna.aspect, dna.pattern),
+                            format!(
+                                "Project convention: {} (confidence: {:.0}%)",
+                                dna.pattern,
+                                dna.confidence * 100.0
+                            ),
+                        )
+                        .with_confidence(dna.confidence),
+                        score: 0.4,
+                        source: "domain_dna".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    results.truncate(limit);
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +417,65 @@ mod tests {
         let results = hybrid_recall(&conn, "SQLite storage", Some(&query_emb), None, None, 10);
         assert!(!results.is_empty());
         assert_eq!(results[0].memory.id, mem_id);
+    }
+
+    #[test]
+    fn test_manas_recall_empty() {
+        let conn = setup();
+
+        // On empty DB, manas_recall should return empty vec
+        let results = manas_recall(&conn, "anything", None, 10);
+        assert!(results.is_empty(), "manas_recall on empty DB should return empty");
+    }
+
+    #[test]
+    fn test_manas_recall_with_declared() {
+        let conn = setup();
+
+        // Store declared knowledge
+        let d = forge_core::types::manas::Declared {
+            id: "dk1".into(),
+            source: "CLAUDE.md".into(),
+            path: Some("/project/CLAUDE.md".into()),
+            content: "Always use parameterized SQL queries for security".into(),
+            hash: "abc123".into(),
+            project: Some("forge".into()),
+            ingested_at: "2026-04-03 12:00:00".into(),
+        };
+        crate::db::manas::store_declared(&conn, &d).unwrap();
+
+        // Search for it via manas_recall
+        let results = manas_recall(&conn, "parameterized", Some("forge"), 10);
+        assert!(!results.is_empty(), "should find declared knowledge");
+        assert_eq!(results[0].source, "declared");
+        assert!(results[0].memory.title.contains("[declared:CLAUDE.md]"));
+        assert!(results[0].score > 0.0);
+    }
+
+    #[test]
+    fn test_manas_recall_with_dna() {
+        let conn = setup();
+
+        // Store domain DNA
+        let dna = forge_core::types::manas::DomainDna {
+            id: "d1".into(),
+            project: "forge".into(),
+            aspect: "naming".into(),
+            pattern: "snake_case for all functions".into(),
+            confidence: 0.9,
+            evidence: vec!["src/main.rs".into()],
+            detected_at: "2026-04-03 12:00:00".into(),
+        };
+        crate::db::manas::store_domain_dna(&conn, &dna).unwrap();
+
+        // Search by pattern keyword — should find it
+        let results = manas_recall(&conn, "snake_case", Some("forge"), 10);
+        assert!(!results.is_empty(), "should find domain DNA by pattern keyword");
+        assert_eq!(results[0].source, "domain_dna");
+        assert!(results[0].memory.title.contains("[dna:naming]"));
+
+        // Search without project — DNA should not appear (requires project)
+        let results = manas_recall(&conn, "snake_case", None, 10);
+        assert!(results.is_empty(), "domain DNA should not appear without project");
     }
 }

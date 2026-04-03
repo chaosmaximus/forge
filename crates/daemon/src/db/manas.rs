@@ -550,6 +550,73 @@ pub fn list_unconsumed_perceptions(
     }
 }
 
+/// Delete perceptions whose expires_at has passed.
+pub fn expire_perceptions(conn: &Connection) -> rusqlite::Result<usize> {
+    let now = now_iso();
+    let rows = conn.execute(
+        "DELETE FROM perception WHERE expires_at IS NOT NULL AND expires_at < ?1",
+        params![now],
+    )?;
+    Ok(rows)
+}
+
+/// Generate a timestamp string offset by `delta_secs` from now.
+/// Positive values are in the future, negative in the past.
+pub fn now_offset(delta_secs: i64) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+        + delta_secs;
+    epoch_to_iso(secs as u64)
+}
+
+fn epoch_to_iso(secs: u64) -> String {
+    let days_since_epoch = secs / 86400;
+    let time_of_day = secs % 86400;
+
+    let mut year = 1970u64;
+    let mut remaining_days = days_since_epoch;
+    loop {
+        let is_leap =
+            year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+        let days_in_year = if is_leap { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+
+    let is_leap =
+        year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let month_days: [u64; 12] = if is_leap {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut month = 1u64;
+    for &days in &month_days {
+        if remaining_days < days {
+            break;
+        }
+        remaining_days -= days;
+        month += 1;
+    }
+    let day = remaining_days + 1;
+
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year, month, day, hours, minutes, seconds
+    )
+}
+
 /// Mark a perception as consumed.
 pub fn consume_perception(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     let rows = conn.execute(
@@ -621,6 +688,65 @@ pub fn get_declared_by_hash(conn: &Connection, hash: &str) -> rusqlite::Result<O
         row_to_declared,
     )
     .optional()
+}
+
+/// Search declared knowledge entries by content or source using LIKE.
+pub fn search_declared(conn: &Connection, query: &str, project: Option<&str>) -> rusqlite::Result<Vec<Declared>> {
+    let search = format!("%{}%", query);
+    match project {
+        Some(p) => {
+            let mut stmt = conn.prepare(
+                "SELECT id, source, path, content, hash, project, ingested_at FROM declared
+                 WHERE (content LIKE ?1 OR source LIKE ?1) AND (project = ?2 OR project IS NULL)
+                 ORDER BY ingested_at DESC LIMIT 5",
+            )?;
+            let rows = stmt.query_map(params![search, p], row_to_declared)?;
+            rows.collect()
+        }
+        None => {
+            let mut stmt = conn.prepare(
+                "SELECT id, source, path, content, hash, project, ingested_at FROM declared
+                 WHERE content LIKE ?1 OR source LIKE ?1
+                 ORDER BY ingested_at DESC LIMIT 5",
+            )?;
+            let rows = stmt.query_map(params![search], row_to_declared)?;
+            rows.collect()
+        }
+    }
+}
+
+/// Ingest a file (e.g. CLAUDE.md) as declared knowledge with content-hash dedup.
+pub fn ingest_declared_file(conn: &Connection, path: &str, source: &str, project: Option<&str>) -> rusqlite::Result<bool> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Ok(false),
+    };
+
+    // Hash the content for change detection
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    let hash = format!("{:x}", hasher.finish());
+
+    // Check if already ingested with same hash
+    if get_declared_by_hash(conn, &hash)?.is_some() {
+        return Ok(false); // Already up to date
+    }
+
+    let id = format!("declared-{}", ulid::Ulid::new());
+    let declared = Declared {
+        id,
+        source: source.to_string(),
+        path: Some(path.to_string()),
+        content,
+        hash,
+        project: project.map(|s| s.to_string()),
+        ingested_at: now_iso(),
+    };
+    store_declared(conn, &declared)?;
+    Ok(true)
 }
 
 fn row_to_declared(row: &rusqlite::Row) -> rusqlite::Result<Declared> {
@@ -1239,5 +1365,108 @@ mod tests {
         let arch_entry = entries.iter().find(|e| e.key == "arch");
         assert!(arch_entry.is_some(), "arch entry should exist");
         assert!(!arch_entry.unwrap().value.is_empty());
+    }
+
+    #[test]
+    fn test_search_declared() {
+        let conn = open_db();
+
+        // Store some declared knowledge
+        let d1 = Declared {
+            id: "dk1".into(),
+            source: "CLAUDE.md".into(),
+            path: Some("/project/CLAUDE.md".into()),
+            content: "Always use snake_case for Rust functions".into(),
+            hash: "hash1".into(),
+            project: Some("forge".into()),
+            ingested_at: "2026-04-03 12:00:00".into(),
+        };
+        let d2 = Declared {
+            id: "dk2".into(),
+            source: "CONVENTIONS.md".into(),
+            path: Some("/project/CONVENTIONS.md".into()),
+            content: "Use parameterized SQL queries for security".into(),
+            hash: "hash2".into(),
+            project: Some("forge".into()),
+            ingested_at: "2026-04-03 12:01:00".into(),
+        };
+        store_declared(&conn, &d1).unwrap();
+        store_declared(&conn, &d2).unwrap();
+
+        // Search by content keyword
+        let results = search_declared(&conn, "snake_case", None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "dk1");
+
+        // Search by source keyword
+        let results = search_declared(&conn, "CONVENTIONS", None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "dk2");
+
+        // Search with project filter
+        let results = search_declared(&conn, "SQL", Some("forge")).unwrap();
+        assert_eq!(results.len(), 1);
+
+        // Search with wrong project — should return nothing (project != "other" and not NULL)
+        let results = search_declared(&conn, "snake_case", Some("other")).unwrap();
+        assert!(results.is_empty());
+
+        // Search for non-existent content
+        let results = search_declared(&conn, "nonexistent_gibberish", None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_ingest_declared_file() {
+        let conn = open_db();
+
+        // Write a temp file
+        let dir = std::env::temp_dir().join("forge_test_ingest");
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join("test_claude.md");
+        std::fs::write(&file_path, "# Forge Rules\nAlways run tests before committing.").unwrap();
+
+        let path_str = file_path.to_str().unwrap();
+        let ingested = ingest_declared_file(&conn, path_str, "CLAUDE.md", Some("forge")).unwrap();
+        assert!(ingested, "first ingest should return true");
+
+        // Verify stored
+        let all = list_declared(&conn, Some("forge")).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].source, "CLAUDE.md");
+        assert!(all[0].content.contains("Always run tests"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&file_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_ingest_declared_idempotent() {
+        let conn = open_db();
+
+        // Write a temp file
+        let dir = std::env::temp_dir().join("forge_test_ingest_idem");
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join("test_idem.md");
+        std::fs::write(&file_path, "Idempotent content check").unwrap();
+
+        let path_str = file_path.to_str().unwrap();
+
+        // First ingest
+        let first = ingest_declared_file(&conn, path_str, "TEST.md", None).unwrap();
+        assert!(first, "first ingest should succeed");
+
+        // Second ingest with same content — should be idempotent
+        let second = ingest_declared_file(&conn, path_str, "TEST.md", None).unwrap();
+        assert!(!second, "second ingest of same content should return false");
+
+        // Verify only one entry
+        let all = list_declared(&conn, None).unwrap();
+        assert_eq!(all.len(), 1);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&file_path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

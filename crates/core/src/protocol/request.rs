@@ -37,6 +37,12 @@ pub enum Request {
     },
     /// Ingest Claude Code's MEMORY.md files from ~/.claude/projects/*/memory/
     IngestClaude,
+    /// Ingest a file as declared knowledge (Layer 5)
+    IngestDeclared {
+        path: String,
+        source: String,
+        project: Option<String>,
+    },
     /// Backfill: re-process a transcript file from scratch (ignoring offsets)
     Backfill {
         path: String,

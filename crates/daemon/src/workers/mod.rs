@@ -1,16 +1,20 @@
 // workers/ — Background worker tasks for the daemon
 //
 // Workers form the extraction pipeline:
-//   watcher   → detects new/modified transcript files (multi-agent)
-//   extractor → parses transcripts via adapters and extracts memories via LLM
-//   embedder  → generates vector embeddings for unembedded memories
+//   watcher     → detects new/modified transcript files (multi-agent)
+//   extractor   → parses transcripts via adapters and extracts memories via LLM
+//   embedder    → generates vector embeddings for unembedded memories
 //   consolidator → periodic dedup, linking, decay
-//   indexer   → code index via LSP language servers
+//   indexer     → code index via LSP language servers
+//   perception  → monitors environment (git status) and creates ephemeral perceptions
+//   disposition → analyzes session history and updates agent disposition traits
 
 pub mod consolidator;
+pub mod disposition;
 pub mod embedder;
 pub mod extractor;
 pub mod indexer;
+pub mod perception;
 pub mod watcher;
 
 use crate::adapters;
@@ -51,11 +55,15 @@ pub fn spawn_workers(
     let embedder_shutdown = shutdown_tx.subscribe();
     let consolidator_shutdown = shutdown_tx.subscribe();
     let indexer_shutdown = shutdown_tx.subscribe();
+    let perception_shutdown = shutdown_tx.subscribe();
+    let disposition_shutdown = shutdown_tx.subscribe();
 
     let extractor_state = Arc::clone(&state);
     let embedder_state = Arc::clone(&state);
     let consolidator_state = Arc::clone(&state);
     let indexer_state = Arc::clone(&state);
+    let perception_state = Arc::clone(&state);
+    let disposition_state = Arc::clone(&state);
 
     let extractor_config = config.clone();
     let embedder_config = config;
@@ -87,7 +95,15 @@ pub fn spawn_workers(
         indexer::run_indexer(indexer_state, indexer_shutdown).await;
     });
 
-    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer");
+    let perception_handle = tokio::spawn(async move {
+        perception::run_perception(perception_state, perception_shutdown).await;
+    });
+
+    let disposition_handle = tokio::spawn(async move {
+        disposition::run_disposition(disposition_state, disposition_shutdown).await;
+    });
+
+    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer, perception, disposition");
 
     vec![
         watcher_handle,
@@ -95,5 +111,7 @@ pub fn spawn_workers(
         embedder_handle,
         consolidator_handle,
         indexer_handle,
+        perception_handle,
+        disposition_handle,
     ]
 }
