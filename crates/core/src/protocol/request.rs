@@ -60,6 +60,15 @@ pub enum Request {
         file: String,
         action: String,
     },
+    /// Pre-bash check: warn about destructive commands, surface relevant skills/lessons
+    PreBashCheck {
+        command: String,
+    },
+    /// Post-bash check: on failure, surface relevant lessons and skills
+    PostBashCheck {
+        command: String,
+        exit_code: i32,
+    },
     /// Post-edit check: surface callers, lessons, and patterns after a file edit
     PostEditCheck {
         file: String,

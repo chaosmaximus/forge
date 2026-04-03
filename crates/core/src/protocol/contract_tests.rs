@@ -138,6 +138,19 @@ mod tests {
                 },
             ),
             (
+                "pre_bash_check",
+                Request::PreBashCheck {
+                    command: "rm -rf /tmp/test".into(),
+                },
+            ),
+            (
+                "post_bash_check",
+                Request::PostBashCheck {
+                    command: "cargo test".into(),
+                    exit_code: 1,
+                },
+            ),
+            (
                 "blast_radius",
                 Request::BlastRadius {
                     file: "src/main.rs".into(),
@@ -352,6 +365,14 @@ mod tests {
                 r#"{"method":"post_edit_check","params":{"file":"src/main.rs"}}"#,
             ),
             (
+                "pre_bash_check",
+                r#"{"method":"pre_bash_check","params":{"command":"rm -rf /tmp"}}"#,
+            ),
+            (
+                "post_bash_check",
+                r#"{"method":"post_bash_check","params":{"command":"cargo test","exit_code":1}}"#,
+            ),
+            (
                 "blast_radius",
                 r#"{"method":"blast_radius","params":{"file":"src/main.rs"}}"#,
             ),
@@ -454,17 +475,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 38 Request variants.
+    /// Ensure we cover ALL 40 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
         // Unit variants: 11
         let unit_count = 11;
-        // Parameterized variants: 27
-        let param_count = 27;
-        // Total: 38
-        let expected_total = 38;
+        // Parameterized variants: 29
+        let param_count = 29;
+        // Total: 40
+        let expected_total = 40;
 
         assert_eq!(
             unit_count + param_count,
@@ -523,6 +544,8 @@ mod tests {
                     action: "a".into(),
                 },
                 Request::PostEditCheck { file: "f".into() },
+                Request::PreBashCheck { command: "ls".into() },
+                Request::PostBashCheck { command: "cargo test".into(), exit_code: 1 },
                 Request::BlastRadius { file: "f".into() },
                 Request::RegisterSession {
                     id: "s".into(),

@@ -257,6 +257,166 @@ fn find_dangerous_patterns(conn: &Connection) -> Vec<String> {
     rows.filter_map(|r| r.ok()).collect()
 }
 
+/// Result of a pre-bash check for a command.
+#[derive(Debug, Clone)]
+pub struct PreBashResult {
+    pub safe: bool,
+    pub warnings: Vec<String>,
+    pub relevant_skills: Vec<String>,
+}
+
+/// Pre-bash check: warn about destructive commands, surface relevant lessons/skills.
+///
+/// 1. **Destructive patterns** — known dangerous command patterns
+/// 2. **Relevant lessons** — negative-valence memories matching the command
+/// 3. **Relevant skills** — skills matching the command name
+pub fn pre_bash_check(conn: &Connection, command: &str) -> PreBashResult {
+    let mut warnings = Vec::new();
+    let mut relevant_skills = Vec::new();
+    let mut safe = true;
+
+    // Check 1: Destructive command patterns
+    let destructive_patterns: &[(&str, &str)] = &[
+        ("rm -rf", "Recursive force delete -- verify path before running"),
+        ("git reset --hard", "Discards all uncommitted changes"),
+        ("git push --force", "Force push can overwrite remote history"),
+        ("git push -f", "Force push can overwrite remote history"),
+        ("drop table", "SQL table deletion -- irreversible"),
+        ("drop database", "SQL database deletion -- irreversible"),
+        ("docker rm", "Removes container -- data may be lost"),
+        ("docker rmi", "Removes image"),
+        ("kubectl delete", "Deletes Kubernetes resource"),
+        ("terraform destroy", "Destroys infrastructure"),
+        ("chmod 777", "World-writable permissions -- security risk"),
+        ("pkill", "Kills processes -- may affect running services"),
+        ("killall", "Kills all matching processes"),
+    ];
+
+    let cmd_lower = command.to_lowercase();
+    for (pattern, warning) in destructive_patterns {
+        if cmd_lower.contains(pattern) {
+            warnings.push(format!("Destructive: {} -- {}", pattern, warning));
+            safe = false;
+        }
+    }
+
+    // Check 2: Relevant lessons about this command from memory
+    let cmd_name = command.split_whitespace().next().unwrap_or("");
+    if !cmd_name.is_empty() {
+        let search = format!("%{}%", cmd_name);
+
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT title FROM memory WHERE status = 'active'
+             AND memory_type IN ('lesson', 'pattern')
+             AND (title LIKE ?1 OR content LIKE ?1)
+             AND valence = 'negative' AND intensity > 0.5
+             ORDER BY intensity DESC LIMIT 2",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![search], |row| row.get::<_, String>(0)) {
+                for r in rows.flatten() {
+                    warnings.push(format!("Lesson: {}", r));
+                }
+            }
+        }
+
+        // Check 3: Relevant skills for this command
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT name, domain FROM skill WHERE success_count > 0
+             AND (description LIKE ?1 OR name LIKE ?1 OR domain LIKE ?1)
+             ORDER BY success_count DESC LIMIT 1",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![search], |row| {
+                Ok(format!(
+                    "{} ({})",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?
+                ))
+            }) {
+                for r in rows.flatten() {
+                    relevant_skills.push(r);
+                }
+            }
+        }
+    }
+
+    PreBashResult {
+        safe,
+        warnings,
+        relevant_skills,
+    }
+}
+
+/// Result of a post-bash check for a command.
+#[derive(Debug, Clone)]
+pub struct PostBashResult {
+    pub suggestions: Vec<String>,
+}
+
+/// Post-bash check: on failure, surface relevant lessons and skills.
+///
+/// Returns empty suggestions on success (exit_code == 0).
+pub fn post_bash_check(conn: &Connection, command: &str, exit_code: i32) -> PostBashResult {
+    let mut suggestions = Vec::new();
+
+    if exit_code == 0 {
+        return PostBashResult { suggestions };
+    }
+
+    let cmd_name = command.split_whitespace().next().unwrap_or("");
+    if cmd_name.is_empty() {
+        return PostBashResult { suggestions };
+    }
+
+    let search = format!("%{}%", cmd_name);
+
+    // Surface lessons about similar command failures
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT title, content FROM memory WHERE status = 'active'
+         AND memory_type IN ('lesson', 'pattern')
+         AND (title LIKE ?1 OR content LIKE ?1)
+         ORDER BY confidence DESC LIMIT 3",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![search], |row| {
+            Ok(format!(
+                "{}: {}",
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?
+                    .chars()
+                    .take(100)
+                    .collect::<String>()
+            ))
+        }) {
+            for r in rows.flatten() {
+                suggestions.push(r);
+            }
+        }
+    }
+
+    // Surface applicable skills
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT name, description FROM skill WHERE success_count > 0
+         AND (description LIKE ?1 OR name LIKE ?1)
+         ORDER BY success_count DESC LIMIT 1",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![search], |row| {
+            Ok(format!(
+                "Skill: {} -- {}",
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?
+                    .chars()
+                    .take(80)
+                    .collect::<String>()
+            ))
+        }) {
+            for r in rows.flatten() {
+                suggestions.push(r);
+            }
+        }
+    }
+
+    PostBashResult { suggestions }
+}
+
 /// Find skills whose name, domain, or description mention any path segment
 /// of the file (filename, parent directories, or stem without extension).
 /// Only returns skills with at least one successful usage.
@@ -774,6 +934,135 @@ mod tests {
         assert!(result.dangerous_patterns.is_empty());
         assert!(result.applicable_skills.is_empty());
         assert!(result.decisions_to_review.is_empty());
+    }
+
+    // ── Pre-bash check tests ──
+
+    #[test]
+    fn test_pre_bash_detects_destructive() {
+        let conn = setup();
+        let result = pre_bash_check(&conn, "rm -rf /tmp/test");
+        assert!(!result.safe);
+        assert!(result.warnings.iter().any(|w| w.contains("Destructive")));
+    }
+
+    #[test]
+    fn test_pre_bash_safe_command() {
+        let conn = setup();
+        let result = pre_bash_check(&conn, "ls -la");
+        assert!(result.safe);
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_pre_bash_force_push_warning() {
+        let conn = setup();
+        let result = pre_bash_check(&conn, "git push --force origin main");
+        assert!(!result.safe);
+        assert!(result.warnings.iter().any(|w| w.contains("force")));
+    }
+
+    #[test]
+    fn test_pre_bash_force_push_short_flag() {
+        let conn = setup();
+        let result = pre_bash_check(&conn, "git push -f origin main");
+        assert!(!result.safe);
+        assert!(result.warnings.iter().any(|w| w.contains("Force push")));
+    }
+
+    #[test]
+    fn test_pre_bash_git_reset_hard() {
+        let conn = setup();
+        let result = pre_bash_check(&conn, "git reset --hard HEAD~3");
+        assert!(!result.safe);
+        assert!(result.warnings.iter().any(|w| w.contains("Discards")));
+    }
+
+    #[test]
+    fn test_pre_bash_surfaces_lessons() {
+        let conn = setup();
+
+        let lesson = Memory::new(MemoryType::Lesson, "rm needs careful path check", "Deleted wrong dir once")
+            .with_valence("negative", 0.8);
+        remember(&conn, &lesson).unwrap();
+
+        let result = pre_bash_check(&conn, "rm some-file.txt");
+        assert!(result.warnings.iter().any(|w| w.contains("Lesson")));
+    }
+
+    #[test]
+    fn test_pre_bash_surfaces_skills() {
+        let conn = setup();
+
+        let skill = Skill {
+            id: "s-cargo".into(),
+            name: "Cargo build workflow".into(),
+            domain: "cargo".into(),
+            description: "Steps for building with cargo".into(),
+            steps: vec!["cargo build".into()],
+            success_count: 5,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        store_skill(&conn, &skill).unwrap();
+
+        let result = pre_bash_check(&conn, "cargo test --workspace");
+        assert!(!result.relevant_skills.is_empty());
+        assert!(result.relevant_skills[0].contains("Cargo build workflow"));
+    }
+
+    // ── Post-bash check tests ──
+
+    #[test]
+    fn test_post_bash_success_no_suggestions() {
+        let conn = setup();
+        let result = post_bash_check(&conn, "cargo test", 0);
+        assert!(result.suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_post_bash_failure_surfaces_lessons() {
+        let conn = setup();
+
+        let lesson = Memory::new(MemoryType::Lesson, "cargo test needs --workspace flag", "Found missing tests");
+        remember(&conn, &lesson).unwrap();
+
+        let result = post_bash_check(&conn, "cargo test", 1);
+        assert!(!result.suggestions.is_empty());
+        assert!(result.suggestions[0].contains("cargo test needs --workspace"));
+    }
+
+    #[test]
+    fn test_post_bash_failure_surfaces_skills() {
+        let conn = setup();
+
+        let skill = Skill {
+            id: "s-npm".into(),
+            name: "npm debug workflow".into(),
+            domain: "npm".into(),
+            description: "Steps for debugging npm issues".into(),
+            steps: vec!["npm cache clean".into()],
+            success_count: 2,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        store_skill(&conn, &skill).unwrap();
+
+        let result = post_bash_check(&conn, "npm install", 1);
+        assert!(result.suggestions.iter().any(|s| s.contains("Skill:")));
+    }
+
+    #[test]
+    fn test_post_bash_empty_command_no_crash() {
+        let conn = setup();
+        let result = post_bash_check(&conn, "", 1);
+        assert!(result.suggestions.is_empty());
     }
 
     // ── Combined scenario test ──

@@ -426,6 +426,58 @@ pub async fn blast_radius(file: String) {
     }
 }
 
+/// Pre-bash check -- warn about destructive commands, surface relevant skills/lessons.
+pub async fn pre_bash_check(command: String) {
+    match client::send(&Request::PreBashCheck { command: command.clone() }).await {
+        Ok(Response::Ok {
+            data: ResponseData::PreBashChecked {
+                safe, warnings, relevant_skills,
+            },
+        }) => {
+            for w in &warnings {
+                println!("{w}");
+            }
+            for s in &relevant_skills {
+                println!("Skill: {s}");
+            }
+            if safe && warnings.is_empty() && relevant_skills.is_empty() {
+                // Silent on safe -- context budget rule
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Post-bash check -- surface lessons and skills after command failure.
+pub async fn post_bash_check(command: String, exit_code: i32) {
+    match client::send(&Request::PostBashCheck { command: command.clone(), exit_code }).await {
+        Ok(Response::Ok {
+            data: ResponseData::PostBashChecked { suggestions },
+        }) => {
+            for s in &suggestions {
+                println!("{s}");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// List active (or all) agent sessions.
 pub async fn sessions(active_only: bool) {
     match client::send(&Request::Sessions { active_only: Some(active_only) }).await {

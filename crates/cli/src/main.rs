@@ -104,6 +104,23 @@ enum Commands {
         #[arg(long)]
         file: String,
     },
+    /// Pre-bash check — warn about destructive commands, surface relevant skills/lessons
+    #[command(name = "pre-bash-check")]
+    PreBashCheck {
+        /// The bash command to check
+        #[arg(long)]
+        command: String,
+    },
+    /// Post-bash check — surface lessons and skills after command failure
+    #[command(name = "post-bash-check")]
+    PostBashCheck {
+        /// The bash command that was run
+        #[arg(long)]
+        command: String,
+        /// Exit code of the command (default: 1)
+        #[arg(long, default_value = "1")]
+        exit_code: i32,
+    },
     /// Blast radius analysis for a file
     #[command(name = "blast-radius")]
     BlastRadius {
@@ -320,6 +337,12 @@ async fn main() {
         }
         Commands::PostEditCheck { file } => {
             commands::system::post_edit_check(file).await;
+        }
+        Commands::PreBashCheck { command } => {
+            commands::system::pre_bash_check(command).await;
+        }
+        Commands::PostBashCheck { command, exit_code } => {
+            commands::system::post_bash_check(command, exit_code).await;
         }
         Commands::BlastRadius { file } => {
             commands::system::blast_radius(file).await;

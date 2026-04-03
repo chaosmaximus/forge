@@ -95,6 +95,14 @@ pub enum ResponseData {
         applicable_skills: Vec<String>,
         decisions_to_review: Vec<String>,
     },
+    PreBashChecked {
+        safe: bool,
+        warnings: Vec<String>,
+        relevant_skills: Vec<String>,
+    },
+    PostBashChecked {
+        suggestions: Vec<String>,
+    },
     BlastRadius {
         decisions: Vec<BlastRadiusDecision>,
         callers: usize,

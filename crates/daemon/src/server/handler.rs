@@ -680,6 +680,38 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::PreBashCheck { command } => {
+            let result = crate::guardrails::check::pre_bash_check(&state.conn, &command);
+
+            // Emit bash_warning event when check returns unsafe
+            if !result.safe {
+                crate::events::emit(&state.events, "bash_warning", serde_json::json!({
+                    "command": command,
+                    "safe": false,
+                    "warnings": result.warnings.clone(),
+                    "relevant_skills": result.relevant_skills.clone(),
+                }));
+            }
+
+            Response::Ok {
+                data: ResponseData::PreBashChecked {
+                    safe: result.safe,
+                    warnings: result.warnings,
+                    relevant_skills: result.relevant_skills,
+                },
+            }
+        }
+
+        Request::PostBashCheck { command, exit_code } => {
+            let result = crate::guardrails::check::post_bash_check(&state.conn, &command, exit_code);
+
+            Response::Ok {
+                data: ResponseData::PostBashChecked {
+                    suggestions: result.suggestions,
+                },
+            }
+        }
+
         Request::PostEditCheck { file } => {
             let result = crate::guardrails::check::post_edit_check(&state.conn, &file);
 
