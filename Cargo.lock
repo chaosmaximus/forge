@@ -447,7 +447,9 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "forge-v2-core",
+ "fs2",
  "hnsw_rs",
+ "libc",
  "petgraph",
  "rusqlite",
  "serde",

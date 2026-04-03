@@ -15,6 +15,12 @@ pub struct GraphStore {
     id_to_node: HashMap<String, NodeIndex>,
 }
 
+impl Default for GraphStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GraphStore {
     pub fn new() -> Self {
         GraphStore {

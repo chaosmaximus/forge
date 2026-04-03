@@ -16,7 +16,7 @@ fn parse_memory_type(s: &str) -> Result<MemoryType, String> {
 }
 
 /// Search memories (hybrid BM25 + vector + graph).
-pub async fn recall(query: String, type_filter: Option<String>, limit: Option<usize>) {
+pub async fn recall(query: String, type_filter: Option<String>, limit: usize) {
     let memory_type = match type_filter {
         Some(t) => match parse_memory_type(&t) {
             Ok(mt) => Some(mt),
@@ -31,7 +31,7 @@ pub async fn recall(query: String, type_filter: Option<String>, limit: Option<us
     let request = Request::Recall {
         query,
         memory_type,
-        limit,
+        limit: Some(limit),
     };
 
     match client::send(&request).await {
@@ -45,7 +45,8 @@ pub async fn recall(query: String, type_filter: Option<String>, limit: Option<us
             println!("{count} memor{} found:\n", if count == 1 { "y" } else { "ies" });
             for (i, r) in results.iter().enumerate() {
                 println!(
-                    "  [{i}] {title} (score: {score:.3}, type: {mtype:?})",
+                    "  [{}] {title} (score: {score:.3}, type: {mtype:?})",
+                    i + 1,
                     title = r.memory.title,
                     score = r.score,
                     mtype = r.memory.memory_type,

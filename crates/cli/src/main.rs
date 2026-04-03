@@ -21,7 +21,7 @@ enum Commands {
         r#type: Option<String>,
         /// Maximum number of results
         #[arg(long, default_value = "10")]
-        limit: Option<usize>,
+        limit: usize,
     },
     /// Store a memory
     Remember {

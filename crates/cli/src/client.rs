@@ -1,11 +1,24 @@
 use forge_v2_core::protocol::{Request, Response};
+use forge_v2_core::default_socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-/// Returns the default socket path: ~/.forge/forge.sock
-pub fn default_socket_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    format!("{home}/.forge/forge.sock")
+/// Maximum allowed response line length (1 MB).
+const MAX_RESPONSE_LINE_BYTES: usize = 1_048_576;
+
+/// M3: Find the daemon binary — try sibling directory first, then fall back to PATH.
+fn find_daemon_binary() -> String {
+    // 1. Check sibling directory (development / local install)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("forge-daemon");
+            if sibling.exists() {
+                return sibling.to_string_lossy().to_string();
+            }
+        }
+    }
+    // 2. Fall back to PATH
+    "forge-daemon".to_string()
 }
 
 /// Connect to the daemon socket without auto-starting the daemon.
@@ -20,7 +33,7 @@ pub async fn connect_no_autostart() -> Result<UnixStream, String> {
 /// Connect to the daemon socket, auto-starting the daemon if needed.
 ///
 /// 1. Try connecting to the socket.
-/// 2. If it fails, spawn the `forge-daemon` binary (found next to the current exe).
+/// 2. If it fails, spawn the `forge-daemon` binary (sibling dir or PATH).
 /// 3. Poll every 100ms for up to 3 seconds for the socket to appear.
 /// 4. Connect.
 pub async fn connect() -> Result<UnixStream, String> {
@@ -32,18 +45,7 @@ pub async fn connect() -> Result<UnixStream, String> {
     }
 
     // Socket not available — start the daemon
-    let current_exe = std::env::current_exe().map_err(|e| format!("cannot find current exe: {e}"))?;
-    let exe_dir = current_exe
-        .parent()
-        .ok_or_else(|| "cannot determine exe directory".to_string())?;
-    let daemon_path = exe_dir.join("forge-daemon");
-
-    if !daemon_path.exists() {
-        return Err(format!(
-            "forge-daemon not found at {}. Build it with: cargo build -p forge-daemon",
-            daemon_path.display()
-        ));
-    }
+    let daemon_path = find_daemon_binary();
 
     // C3: Spawn daemon as a detached background process
     // Use Stdio::null() for stderr to prevent the daemon from hanging on a broken pipe
@@ -52,7 +54,7 @@ pub async fn connect() -> Result<UnixStream, String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("failed to start forge-daemon: {e}"))?;
+        .map_err(|e| format!("failed to start forge-daemon at '{}': {e}", daemon_path))?;
 
     // Explicitly drop the child handle so the CLI doesn't hold a reference
     drop(child);
@@ -106,6 +108,11 @@ async fn send_on_stream(stream: UnixStream, request: &Request) -> Result<Respons
         .read_line(&mut line)
         .await
         .map_err(|e| format!("read error: {e}"))?;
+
+    // I6: Check response line length before parsing
+    if line.len() > MAX_RESPONSE_LINE_BYTES {
+        return Err("response too large from daemon (>1MB)".to_string());
+    }
 
     let trimmed = line.trim();
     if trimmed.is_empty() {

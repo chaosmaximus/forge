@@ -1,25 +1,9 @@
 use forge_daemon::server::{DaemonState, run_server};
+use forge_v2_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
+use fs2::FileExt;
+use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{watch, Mutex};
-
-fn default_socket_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    format!("{home}/.forge/forge.sock")
-}
-
-fn default_db_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    format!("{home}/.forge/forge.db")
-}
-
-fn forge_dir() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    format!("{home}/.forge")
-}
-
-fn pid_file_path() -> String {
-    format!("{}/forge.pid", forge_dir())
-}
 
 #[tokio::main]
 async fn main() {
@@ -40,13 +24,35 @@ async fn main() {
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
 
-    // Write PID file
-    let pid = std::process::id();
-    let pid_path = pid_file_path();
-    if let Err(e) = std::fs::write(&pid_path, pid.to_string()) {
-        eprintln!("error: failed to write PID file {pid_path}: {e}");
+    // C2: Write PID file with advisory lock to prevent multiple daemon instances
+    let pid_path = default_pid_path();
+    let pid_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&pid_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: failed to open PID file {pid_path}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if pid_file.try_lock_exclusive().is_err() {
+        eprintln!("error: another forge-daemon is already running (PID file locked)");
         std::process::exit(1);
     }
+
+    // Write PID — file is now locked exclusively
+    let pid = std::process::id();
+    if let Err(e) = write!(&pid_file, "{}", pid) {
+        eprintln!("error: failed to write PID to {pid_path}: {e}");
+        std::process::exit(1);
+    }
+
+    // Keep pid_file alive (holds the advisory lock) for the lifetime of main()
+    let _pid_file_guard = pid_file;
 
     // Create DaemonState (opens/creates DB)
     let state = match DaemonState::new(&db_path) {
@@ -78,8 +84,9 @@ async fn main() {
         eprintln!("error: server failed: {e}");
     }
 
-    // Graceful cleanup after server stops
+    // M6: Graceful cleanup after server stops (both success and error paths)
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&pid_path);
     eprintln!("[daemon] stopped");
+    // _pid_file_guard drops here, releasing the advisory lock
 }

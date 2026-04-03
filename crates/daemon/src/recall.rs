@@ -101,13 +101,19 @@ pub fn hybrid_recall(
     let mut ranked_lists: Vec<Vec<(String, f64)>> = Vec::new();
 
     // 1. BM25 search
-    if let Ok(bm25_results) = ops::recall_bm25(conn, query, limit * 3) {
-        let bm25_list: Vec<(String, f64)> = bm25_results
-            .into_iter()
-            .map(|r| (r.id, r.score))
-            .collect();
-        if !bm25_list.is_empty() {
-            ranked_lists.push(bm25_list);
+    match ops::recall_bm25(conn, query, limit * 3) {
+        Ok(bm25_results) => {
+            let bm25_list: Vec<(String, f64)> = bm25_results
+                .into_iter()
+                .map(|r| (r.id, r.score))
+                .collect();
+            if !bm25_list.is_empty() {
+                ranked_lists.push(bm25_list);
+            }
+        }
+        Err(e) => {
+            eprintln!("[recall] BM25 search error: {}", e);
+            // Continue with empty BM25 list — vector search may still work
         }
     }
 
@@ -237,6 +243,75 @@ mod tests {
         );
 
         assert!(!results.is_empty(), "should find results with both BM25 and vector");
+    }
+
+    #[test]
+    fn test_hybrid_recall_graph_expansion() {
+        let (conn, vi, mut gs) = setup();
+
+        // Insert memory A ("JWT auth") and memory B ("Token rotation")
+        let m_a = Memory::new(
+            MemoryType::Decision,
+            "Use JWT",
+            "For authentication across microservices",
+        );
+        let m_b = Memory::new(
+            MemoryType::Decision,
+            "Token rotation policy",
+            "Rotate refresh tokens every 7 days for security compliance",
+        );
+        let id_a = m_a.id.clone();
+        let id_b = m_b.id.clone();
+        ops::remember(&conn, &m_a).unwrap();
+        ops::remember(&conn, &m_b).unwrap();
+
+        // Add edge: A -[motivated_by]-> B in the graph
+        gs.add_edge(&id_a, &id_b, "motivated_by", serde_json::json!({}));
+
+        // Recall "JWT" — should find A directly via BM25
+        // B should appear in results via graph expansion (1-hop neighbor of A)
+        let results = hybrid_recall(&conn, &vi, &gs, "JWT authentication", None, None, 10);
+
+        assert!(!results.is_empty(), "should find at least one result");
+
+        let has_a = results.iter().any(|r| r.memory.id == id_a);
+        assert!(has_a, "memory A (JWT) should be found via BM25");
+
+        let has_b = results.iter().any(|r| r.memory.id == id_b);
+        assert!(
+            has_b,
+            "memory B (Token rotation) should appear via graph expansion"
+        );
+
+        // B should have a lower score than A (graph-expanded gets minimal score)
+        let score_a = results.iter().find(|r| r.memory.id == id_a).unwrap().score;
+        let score_b = results.iter().find(|r| r.memory.id == id_b).unwrap().score;
+        assert!(
+            score_a > score_b,
+            "directly matched A ({score_a}) should score higher than graph-expanded B ({score_b})"
+        );
+    }
+
+    #[test]
+    fn test_hybrid_recall_no_matches() {
+        let (conn, vi, gs) = setup();
+
+        // Recall a query that matches nothing in an empty DB
+        let results = hybrid_recall(
+            &conn,
+            &vi,
+            &gs,
+            "xyzzy nonexistent gibberish",
+            None,
+            None,
+            10,
+        );
+
+        assert!(
+            results.is_empty(),
+            "should return empty results for a query matching nothing, got {} results",
+            results.len()
+        );
     }
 
     #[test]
