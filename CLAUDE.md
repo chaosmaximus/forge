@@ -124,6 +124,14 @@ forge-next export [--format json]
 forge-next import [--file F]
 forge-next ingest-claude
 
+# Memory sync
+forge-next sync-export [--project P] [--since S]
+forge-next sync-import                    # reads NDJSON from stdin
+forge-next sync-pull <host> [--project P] # pull remote memories via SSH
+forge-next sync-push <host> [--project P] # push local memories via SSH
+forge-next sync-conflicts                 # list unresolved conflicts
+forge-next sync-resolve <id>              # resolve a conflict
+
 # Code intelligence
 forge scan .                              # Detect exposed secrets
 forge scan . --watch --interval 30        # Always-on security monitor
