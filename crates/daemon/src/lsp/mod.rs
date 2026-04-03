@@ -9,7 +9,7 @@ use std::collections::HashMap;
 /// Manages persistent LSP client connections.
 /// Keeps language servers alive between index cycles and auto-restarts dead ones.
 pub struct LspManager {
-    clients: HashMap<String, LspClient>, // language -> client
+    clients: HashMap<String, LspClient>,
     project_dir: String,
 }
 
@@ -22,7 +22,6 @@ impl LspManager {
     }
 
     /// Get or create an LSP client for the given language server config.
-    /// Returns a mutable reference to the client.
     /// If the client doesn't exist or has crashed, spawns a new one.
     pub async fn get_client(
         &mut self,
@@ -30,18 +29,20 @@ impl LspManager {
     ) -> Result<&mut LspClient, String> {
         let language = config.language.clone();
 
-        // Check if we need to (re)spawn: missing or dead
-        let alive = self
-            .clients
-            .get_mut(&language)
-            .map(|c| c.is_alive())
-            .unwrap_or(false);
-
-        if !alive {
-            // Remove dead client if present (drop triggers kill_on_drop)
-            if self.clients.remove(&language).is_some() {
+        // Check if existing client needs replacement
+        let needs_spawn = if let Some(c) = self.clients.get_mut(&language) {
+            if c.is_alive() {
+                false
+            } else {
                 eprintln!("[lsp-manager] {} server died, restarting", language);
+                self.clients.remove(&language);
+                true
             }
+        } else {
+            true
+        };
+
+        if needs_spawn {
             let client = LspClient::spawn(config, &self.project_dir).await?;
             self.clients.insert(language.clone(), client);
         }
