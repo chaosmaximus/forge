@@ -5,6 +5,7 @@
 //   extractor → parses transcripts and extracts memories via LLM
 //   embedder  → generates vector embeddings for unembedded memories
 
+pub mod consolidator;
 pub mod embedder;
 pub mod extractor;
 pub mod watcher;
@@ -31,9 +32,11 @@ pub fn spawn_workers(
     let watcher_shutdown = shutdown_tx.subscribe();
     let extractor_shutdown = shutdown_tx.subscribe();
     let embedder_shutdown = shutdown_tx.subscribe();
+    let consolidator_shutdown = shutdown_tx.subscribe();
 
     let extractor_state = Arc::clone(&state);
     let embedder_state = Arc::clone(&state);
+    let consolidator_state = Arc::clone(&state);
 
     let extractor_config = config.clone();
     let embedder_config = config;
@@ -51,7 +54,11 @@ pub fn spawn_workers(
         embedder::run_embedder(embedder_state, embedder_config, embedder_shutdown).await;
     });
 
-    eprintln!("[workers] spawned: watcher, extractor, embedder");
+    let consolidator_handle = tokio::spawn(async move {
+        consolidator::run_consolidator(consolidator_state, consolidator_shutdown).await;
+    });
 
-    vec![watcher_handle, extractor_handle, embedder_handle]
+    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator");
+
+    vec![watcher_handle, extractor_handle, embedder_handle, consolidator_handle]
 }

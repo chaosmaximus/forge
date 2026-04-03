@@ -164,6 +164,42 @@ pub fn health(conn: &Connection) -> rusqlite::Result<HealthCounts> {
     })
 }
 
+/// Apply exponential confidence decay to all active memories based on time since last access.
+/// Formula: confidence = confidence * exp(-0.03 * days_since_accessed)
+/// Memories below 0.1 confidence are marked "faded" (excluded from recall but still searchable with --include-historical).
+/// Returns (decayed_count, faded_count).
+pub fn decay_memories(conn: &Connection) -> rusqlite::Result<(usize, usize)> {
+    // Compute decay in Rust since SQLite may not have exp() built-in.
+    // Fetch active memories with their days-since-accessed, apply exponential decay, write back.
+    let mut stmt = conn.prepare(
+        "SELECT id, confidence, max(0, julianday('now') - julianday(accessed_at)) AS days_since
+         FROM memory
+         WHERE status = 'active' AND accessed_at IS NOT NULL AND accessed_at != ''"
+    )?;
+
+    let rows: Vec<(String, f64, f64)> = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, f64>(2)?))
+    })?.filter_map(|r| r.ok()).collect();
+
+    let mut decayed = 0usize;
+    for (id, confidence, days_since) in &rows {
+        let new_conf = confidence * (-0.03 * days_since).exp();
+        conn.execute(
+            "UPDATE memory SET confidence = ?1 WHERE id = ?2",
+            params![new_conf, id],
+        )?;
+        decayed += 1;
+    }
+
+    let faded = conn.execute(
+        "UPDATE memory SET status = 'faded'
+         WHERE status = 'active' AND confidence < 0.1",
+        [],
+    )?;
+
+    Ok((decayed, faded))
+}
+
 /// Update accessed_at for each given id (best-effort — errors are ignored).
 pub fn touch(conn: &Connection, ids: &[&str]) {
     for id in ids {
@@ -251,6 +287,34 @@ mod tests {
         // Empty input
         let sanitized4 = sanitize_fts5_query("* ^ !");
         assert_eq!(sanitized4, "");
+    }
+
+    #[test]
+    fn test_decay_memories() {
+        let conn = open_db();
+        // Insert old memory (30 days ago)
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
+             VALUES ('old1', 'decision', 'Old decision', 'content', 0.9, 'active', '[]',
+                     datetime('now', '-30 days'), datetime('now', '-30 days'))",
+            [],
+        ).unwrap();
+        // Insert recent memory
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
+             VALUES ('new1', 'decision', 'New decision', 'content', 0.9, 'active', '[]',
+                     datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let (decayed, _faded) = decay_memories(&conn).unwrap();
+        assert!(decayed >= 1);
+
+        let old_conf: f64 = conn.query_row("SELECT confidence FROM memory WHERE id = 'old1'", [], |r| r.get(0)).unwrap();
+        assert!(old_conf < 0.5, "30-day-old memory should have decayed: {}", old_conf);
+
+        let new_conf: f64 = conn.query_row("SELECT confidence FROM memory WHERE id = 'new1'", [], |r| r.get(0)).unwrap();
+        assert!(new_conf > 0.8, "recent memory should barely decay: {}", new_conf);
     }
 
     #[test]
