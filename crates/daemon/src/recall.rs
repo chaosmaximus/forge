@@ -4,7 +4,7 @@ use crate::vector::VectorIndex;
 use forge_v2_core::protocol::MemoryResult;
 use forge_v2_core::types::{Memory, MemoryStatus, MemoryType};
 use rusqlite::{params, Connection};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Reciprocal Rank Fusion merges multiple ranked lists.
 ///
@@ -118,15 +118,23 @@ pub fn hybrid_recall(
     }
 
     // 2. Vector search (only if embedding provided and index non-empty)
+    // NEW-4: handle Result from search (no panic on dimension mismatch)
     if let Some(emb) = query_embedding {
         if !vector_idx.is_empty() {
-            let vec_results = vector_idx.search(emb, limit * 3);
-            let vec_list: Vec<(String, f64)> = vec_results
-                .into_iter()
-                .map(|(id, distance)| (id, 1.0 - distance as f64)) // convert distance to similarity
-                .collect();
-            if !vec_list.is_empty() {
-                ranked_lists.push(vec_list);
+            match vector_idx.search(emb, limit * 3) {
+                Ok(vec_results) => {
+                    let vec_list: Vec<(String, f64)> = vec_results
+                        .into_iter()
+                        .map(|(id, distance)| (id, 1.0 - distance as f64))
+                        .collect();
+                    if !vec_list.is_empty() {
+                        ranked_lists.push(vec_list);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[recall] vector search error: {}", e);
+                    // Continue without vector results
+                }
             }
         }
     }
@@ -135,12 +143,14 @@ pub fn hybrid_recall(
     let merged = rrf_merge(&ranked_lists, 60.0, limit);
 
     // 4. Graph expansion: for top 5 merged results, get 1-hop neighbors
+    // NEW-5: Use HashSet for O(1) dedup instead of O(n) Vec::contains
     let mut all_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
+    let mut seen_ids: HashSet<String> = all_ids.iter().cloned().collect();
     let top_for_expansion = merged.iter().take(5).map(|(id, _)| id.clone()).collect::<Vec<_>>();
     for id in &top_for_expansion {
         let neighbors = graph.neighbors(id);
         for (neighbor_id, _edge_type) in neighbors {
-            if !all_ids.contains(&neighbor_id) {
+            if seen_ids.insert(neighbor_id.clone()) {
                 all_ids.push(neighbor_id);
             }
         }
@@ -227,7 +237,7 @@ mod tests {
         // Create a fake embedding and insert into vector index
         let dim = 768;
         let emb: Vec<f32> = (0..dim).map(|j| (j as f32 * 0.001).sin()).collect();
-        vi.insert(&mem_id, &emb);
+        vi.insert(&mem_id, &emb).unwrap();
 
         // Use a slightly different embedding as the query
         let query_emb: Vec<f32> = (0..dim).map(|j| (j as f32 * 0.001 + 0.01).sin()).collect();

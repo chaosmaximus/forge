@@ -2,9 +2,54 @@ use forge_v2_core::protocol::{Request, Response};
 use forge_v2_core::default_socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::time::{timeout, Duration};
 
 /// Maximum allowed response line length (1 MB).
 const MAX_RESPONSE_LINE_BYTES: usize = 1_048_576;
+
+/// NEW-7: Read timeout for daemon responses (30 seconds).
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// NEW-1: Read a newline-terminated line with a size cap using fill_buf/consume.
+///
+/// Prevents unbounded allocation: the BufReader's internal buffer (8 KB) is
+/// the most that can be read per syscall, and we check accumulated size after
+/// each chunk. Returns `Ok(0)` on EOF.
+async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut String,
+    max_bytes: usize,
+) -> std::io::Result<usize> {
+    let mut total = 0usize;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(total);
+        }
+
+        let newline_pos = available.iter().position(|&b| b == b'\n');
+        let to_consume = match newline_pos {
+            Some(pos) => pos + 1,
+            None => available.len(),
+        };
+
+        if total + to_consume > max_bytes {
+            reader.consume(to_consume);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "response line exceeds maximum allowed length",
+            ));
+        }
+
+        buf.push_str(&String::from_utf8_lossy(&available[..to_consume]));
+        total += to_consume;
+        reader.consume(to_consume);
+
+        if newline_pos.is_some() {
+            return Ok(total);
+        }
+    }
+}
 
 /// M3: Find the daemon binary — try sibling directory first, then fall back to PATH.
 fn find_daemon_binary() -> String {
@@ -101,17 +146,18 @@ async fn send_on_stream(stream: UnixStream, request: &Request) -> Result<Respons
         .await
         .map_err(|e| format!("write newline error: {e}"))?;
 
-    // Read response line
+    // NEW-1 + NEW-7: Read response with size cap (fill_buf/consume) and 30s timeout
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .await
-        .map_err(|e| format!("read error: {e}"))?;
-
-    // I6: Check response line length before parsing
-    if line.len() > MAX_RESPONSE_LINE_BYTES {
-        return Err("response too large from daemon (>1MB)".to_string());
+    let read_result = timeout(
+        CLIENT_TIMEOUT,
+        read_line_limited(&mut reader, &mut line, MAX_RESPONSE_LINE_BYTES),
+    )
+    .await;
+    match read_result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => return Err(format!("read error: {e}")),
+        Err(_) => return Err("daemon response timed out (30s)".to_string()),
     }
 
     let trimmed = line.trim();

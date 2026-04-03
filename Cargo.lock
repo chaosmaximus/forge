@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "forge-daemon"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "bincode",
  "forge-v2-core",
@@ -468,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "forge-v2-cli"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "forge-v2-core",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "forge-v2-core"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",

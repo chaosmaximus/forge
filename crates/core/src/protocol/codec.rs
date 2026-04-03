@@ -4,8 +4,11 @@ use super::request::Request;
 use super::response::Response;
 
 /// Encode a Response to a JSON string.
+/// NEW-3: Returns a JSON error object on serialization failure instead of panicking.
 pub fn encode_response(response: &Response) -> String {
-    serde_json::to_string(response).expect("Response serialization is infallible")
+    serde_json::to_string(response).unwrap_or_else(|e| {
+        format!(r#"{{"status":"error","message":"serialize error: {}"}}"#, e)
+    })
 }
 
 /// Decode a JSON line into a Request.

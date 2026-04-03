@@ -13,6 +13,51 @@ const MAX_LINE_BYTES: usize = 1_048_576;
 /// Read timeout for idle clients (30 seconds).
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Read a newline-terminated line from a BufReader with a size cap.
+///
+/// Uses `fill_buf` + `consume` to avoid unbounded allocation: the internal
+/// buffer (8 KB by default) is the maximum that can be read in one syscall,
+/// and we check accumulated size after each chunk. Returns `Ok(0)` on EOF.
+async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut String,
+    max_bytes: usize,
+) -> std::io::Result<usize> {
+    let mut total = 0usize;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            // EOF
+            return Ok(total);
+        }
+
+        let newline_pos = available.iter().position(|&b| b == b'\n');
+        let to_consume = match newline_pos {
+            Some(pos) => pos + 1, // include the newline
+            None => available.len(),
+        };
+
+        // Check before pushing to prevent the allocation itself from being huge
+        if total + to_consume > max_bytes {
+            // Consume the bytes so the stream isn't stuck, then report overflow
+            reader.consume(to_consume);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "line exceeds maximum allowed length",
+            ));
+        }
+
+        buf.push_str(&String::from_utf8_lossy(&available[..to_consume]));
+        total += to_consume;
+        reader.consume(to_consume);
+
+        if newline_pos.is_some() {
+            // Complete line
+            return Ok(total);
+        }
+    }
+}
+
 /// M1: Check whether a daemon process is alive by reading the PID file and
 /// sending signal 0 (existence check).
 #[cfg(unix)]
@@ -80,25 +125,29 @@ pub async fn run_server(
                     loop {
                         line.clear();
 
-                        // I5: Wrap read_line with a 30-second timeout to disconnect idle clients
-                        let read_result = timeout(READ_TIMEOUT, reader.read_line(&mut line)).await;
-                        let bytes_read = match read_result {
-                            Ok(Ok(0)) => break,      // EOF
-                            Ok(Ok(n)) => n,           // Got data
-                            Ok(Err(_)) => break,      // IO error
-                            Err(_) => break,          // Timeout — disconnect idle client
+                        // NEW-1: Use read_line_limited (fill_buf/consume) to cap allocation
+                        // BEFORE memory is committed, preventing OOM from huge payloads.
+                        // Also wrapped with a timeout (I5) to disconnect idle clients.
+                        let read_result = timeout(
+                            READ_TIMEOUT,
+                            read_line_limited(&mut reader, &mut line, MAX_LINE_BYTES),
+                        )
+                        .await;
+                        match read_result {
+                            Ok(Ok(0)) => break,       // EOF
+                            Ok(Ok(_n)) => {}           // Got data — continue below
+                            Ok(Err(_)) => {
+                                // IO error or line too long — send error and disconnect
+                                let err_resp = Response::Error {
+                                    message: "request too large or read error".to_string(),
+                                };
+                                let encoded = encode_response(&err_resp);
+                                let _ = write_half.write_all(encoded.as_bytes()).await;
+                                let _ = write_half.write_all(b"\n").await;
+                                break;
+                            }
+                            Err(_) => break,           // Timeout — disconnect idle client
                         };
-
-                        // I6: Reject lines exceeding 1 MB to prevent memory exhaustion
-                        if bytes_read > MAX_LINE_BYTES {
-                            let err_resp = Response::Error {
-                                message: "request too large (>1MB)".to_string(),
-                            };
-                            let encoded = encode_response(&err_resp);
-                            let _ = write_half.write_all(encoded.as_bytes()).await;
-                            let _ = write_half.write_all(b"\n").await;
-                            break; // Disconnect abusive client
-                        }
 
                         let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
                         if trimmed.is_empty() {

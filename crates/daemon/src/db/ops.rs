@@ -60,8 +60,43 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// NEW-2: Sanitize user input for FTS5 MATCH by stripping non-alphanumeric chars
+/// and wrapping each surviving word in double-quotes. This prevents FTS5 operator
+/// injection (AND, OR, NOT, NEAR, *, ^, etc.) and avoids parse errors from bare
+/// punctuation tokens that FTS5 rejects even inside quotes.
+///
+/// Terms are joined with OR so that a query like "JWT AND bad" matches documents
+/// containing any of the words, not requiring all of them to be present.
+fn sanitize_fts5_query(query: &str) -> String {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .filter_map(|word| {
+            // Strip characters that are not alphanumeric or underscore
+            let cleaned: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect();
+            if cleaned.is_empty() {
+                return None; // drop pure-punctuation tokens like "*"
+            }
+            // FTS5 escape: double any internal double-quotes (shouldn't exist after cleaning, but defensive)
+            let escaped = cleaned.replace('"', "\"\"");
+            Some(format!("\"{}\"", escaped))
+        })
+        .collect();
+
+    if terms.is_empty() {
+        return String::new();
+    }
+
+    terms.join(" OR ")
+}
+
 /// Full-text search using FTS5 BM25 scoring. Returns active memories ranked by relevance.
 pub fn recall_bm25(conn: &Connection, query: &str, limit: usize) -> rusqlite::Result<Vec<BM25Result>> {
+    // NEW-2: Sanitize the query to prevent FTS5 operator injection
+    let safe_query = sanitize_fts5_query(query);
+    if safe_query.is_empty() {
+        return Ok(Vec::new()); // No valid search terms after sanitization
+    }
+
     let sql = "
         SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence
         FROM memory_fts
@@ -73,7 +108,7 @@ pub fn recall_bm25(conn: &Connection, query: &str, limit: usize) -> rusqlite::Re
     ";
 
     let mut stmt = conn.prepare(sql)?;
-    let results = stmt.query_map(params![query, limit as i64], |row| {
+    let results = stmt.query_map(params![safe_query, limit as i64], |row| {
         Ok(BM25Result {
             id: row.get(0)?,
             title: row.get(1)?,
@@ -185,6 +220,37 @@ mod tests {
         // Second forget on same id should return false
         let again = forget(&conn, &m.id).unwrap();
         assert!(!again, "second forget should return false");
+    }
+
+    #[test]
+    fn test_recall_bm25_special_characters() {
+        let conn = open_db();
+
+        let m = Memory::new(MemoryType::Decision, "Use JWT", "For auth");
+        remember(&conn, &m).unwrap();
+
+        // Should not crash or error on FTS5 operators
+        let results = recall_bm25(&conn, "JWT AND OR NOT *", 10).unwrap();
+        // Should return results (JWT matches) without FTS5 parse error
+        assert!(!results.is_empty(), "should find JWT despite FTS5 operator chars in query");
+    }
+
+    #[test]
+    fn test_sanitize_fts5_query() {
+        let sanitized = sanitize_fts5_query("JWT AND authentication NOT bad");
+        assert_eq!(sanitized, r#""JWT" OR "AND" OR "authentication" OR "NOT" OR "bad""#);
+
+        // Punctuation-only tokens are dropped
+        let sanitized2 = sanitize_fts5_query("hello * world");
+        assert_eq!(sanitized2, r#""hello" OR "world""#);
+
+        // Mixed punctuation stripped, alphanumeric kept
+        let sanitized3 = sanitize_fts5_query("^prefix$ foo-bar");
+        assert_eq!(sanitized3, r#""prefix" OR "foobar""#);
+
+        // Empty input
+        let sanitized4 = sanitize_fts5_query("* ^ !");
+        assert_eq!(sanitized4, "");
     }
 
     #[test]
