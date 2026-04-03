@@ -62,6 +62,18 @@ pub enum ResponseData {
         chunks_processed: usize,
         memories_stored: usize,
     },
+    GuardrailsCheck {
+        safe: bool,
+        warnings: Vec<String>,
+        decisions_affected: Vec<String>,
+        callers_count: usize,
+    },
+    BlastRadius {
+        decisions: Vec<BlastRadiusDecision>,
+        callers: usize,
+        importers: Vec<String>,
+        files_affected: Vec<String>,
+    },
     Shutdown,
 }
 
@@ -79,6 +91,13 @@ pub struct ExportEdge {
     pub to_id: String,
     pub edge_type: String,
     pub properties: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BlastRadiusDecision {
+    pub id: String,
+    pub title: String,
+    pub confidence: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

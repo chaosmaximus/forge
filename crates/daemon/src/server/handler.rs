@@ -386,6 +386,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::GuardrailsCheck { .. } => {
+            // TODO: Phase 3, Task 2 — wire guardrails check logic
+            Response::Ok {
+                data: ResponseData::GuardrailsCheck {
+                    safe: true,
+                    warnings: vec![],
+                    decisions_affected: vec![],
+                    callers_count: 0,
+                },
+            }
+        }
+
+        Request::BlastRadius { .. } => {
+            // TODO: Phase 3, Task 3 — wire blast radius analysis
+            Response::Ok {
+                data: ResponseData::BlastRadius {
+                    decisions: vec![],
+                    callers: 0,
+                    importers: vec![],
+                    files_affected: vec![],
+                },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

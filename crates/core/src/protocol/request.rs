@@ -45,5 +45,14 @@ pub enum Request {
     Subscribe {
         events: Option<Vec<String>>, // filter by event type; None = all events
     },
+    /// Pre-execution guardrail check: are there decisions linked to this file?
+    GuardrailsCheck {
+        file: String,
+        action: String,
+    },
+    /// Blast radius analysis: what is the impact of changing this file?
+    BlastRadius {
+        file: String,
+    },
     Shutdown,
 }
