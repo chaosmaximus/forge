@@ -158,13 +158,23 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             }
                         }).collect()
                 }
-                // "perception" → list perceptions matching query
+                // "perception" → list perceptions matching query (project-scoped)
                 Some("perception") => {
                     let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None)
                         .unwrap_or_default();
                     let query_lower = query.to_lowercase();
                     perceptions.into_iter()
-                        .filter(|p| p.data.to_lowercase().contains(&query_lower))
+                        .filter(|p| {
+                            // Codex fix: respect project filter
+                            if let Some(ref proj) = project {
+                                match &p.project {
+                                    Some(pp) if pp != proj => return false,
+                                    None => {} // global perceptions are visible
+                                    _ => {}
+                                }
+                            }
+                            p.data.to_lowercase().contains(&query_lower)
+                        })
                         .take(lim)
                         .map(|p| {
                             let snippet: String = p.data.chars().take(80).collect();
@@ -563,10 +573,12 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::EndSession { id } => {
             match crate::sessions::end_session(&state.conn, &id) {
                 Ok(found) => {
-                    crate::events::emit(&state.events, "session_changed", serde_json::json!({
-                        "id": id,
-                        "action": "ended",
-                    }));
+                    if found {
+                        crate::events::emit(&state.events, "session_changed", serde_json::json!({
+                            "id": id,
+                            "action": "ended",
+                        }));
+                    }
                     Response::Ok {
                         data: ResponseData::SessionEnded { id, found },
                     }

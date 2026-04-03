@@ -531,13 +531,13 @@ pub fn store_edge(conn: &Connection, from_id: &str, to_id: &str, edge_type: &str
 /// Threshold: 0.6 word overlap ratio.
 /// Returns number of duplicates merged (marked as superseded).
 pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
-    // Get all active memory IDs with titles and types
+    // Get all active memory IDs with titles, types, AND projects
     let mut stmt = conn.prepare(
-        "SELECT id, title, memory_type FROM memory WHERE status = 'active'"
+        "SELECT id, title, memory_type, COALESCE(project, '') FROM memory WHERE status = 'active' ORDER BY confidence DESC, created_at DESC"
     )?;
-    let memories: Vec<(String, String, String)> = stmt
+    let memories: Vec<(String, String, String, String)> = stmt
         .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -546,7 +546,7 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
     let mut to_delete: HashSet<String> = HashSet::new();
 
     for i in 0..memories.len() {
-        let (ref id_a, ref title_a, ref type_a) = memories[i];
+        let (ref id_a, ref title_a, ref type_a, ref project_a) = memories[i];
         if to_delete.contains(id_a) {
             continue;
         }
@@ -554,12 +554,15 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
         let words_a: HashSet<String> =
             title_a.to_lowercase().split_whitespace().map(String::from).collect();
 
-        for (id_b, title_b, type_b) in memories.iter().skip(i + 1) {
+        for (id_b, title_b, type_b, project_b) in memories.iter().skip(i + 1) {
             if to_delete.contains(id_b) {
                 continue;
             }
             if type_a != type_b {
                 continue; // only dedup same type
+            }
+            if project_a != project_b {
+                continue; // only dedup within same project (Codex fix: cross-project safety)
             }
 
             // Check word overlap (fast filter)
@@ -570,6 +573,7 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
 
             if max_len > 0.0 && (intersection / max_len) > 0.6 {
                 // Mark the later one (id_b) for deletion
+                // ORDER BY confidence DESC ensures we keep the higher-confidence memory (Codex fix: deterministic survivor)
                 to_delete.insert(id_b.clone());
                 merged += 1;
             }
