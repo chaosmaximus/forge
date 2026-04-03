@@ -92,13 +92,25 @@ pub async fn connect() -> Result<UnixStream, String> {
     // Socket not available — start the daemon
     let daemon_path = find_daemon_binary();
 
-    // C3: Spawn daemon as a detached background process
-    // Use Stdio::null() for stderr to prevent the daemon from hanging on a broken pipe
-    let child = tokio::process::Command::new(&daemon_path)
-        .stdin(std::process::Stdio::null())
+    // Spawn daemon as a detached background process.
+    // Pass through FORGE_PROJECT and FORGE_DB if set in the CLI environment.
+    let mut cmd = tokio::process::Command::new(&daemon_path);
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .stderr(std::process::Stdio::null());
+
+    // Forward relevant env vars to daemon
+    if let Ok(v) = std::env::var("FORGE_PROJECT") {
+        cmd.env("FORGE_PROJECT", v);
+    }
+    if let Ok(v) = std::env::var("FORGE_DB") {
+        cmd.env("FORGE_DB", v);
+    }
+    if let Ok(v) = std::env::var("FORGE_SOCKET") {
+        cmd.env("FORGE_SOCKET", v);
+    }
+
+    let child = cmd.spawn()
         .map_err(|e| format!("failed to start forge-daemon at '{}': {e}", daemon_path))?;
 
     // Explicitly drop the child handle so the CLI doesn't hold a reference

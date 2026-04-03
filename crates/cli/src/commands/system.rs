@@ -11,8 +11,10 @@ pub async fn doctor() {
                 ResponseData::Doctor {
                     daemon_up,
                     memory_count,
+                    embedding_count,
                     file_count,
                     symbol_count,
+                    edge_count,
                     workers,
                     uptime_secs,
                     ..
@@ -25,8 +27,10 @@ pub async fn doctor() {
                 uptime_secs
             );
             println!("  Memories:  {}", memory_count);
+            println!("  Embeddings:{}", embedding_count);
             println!("  Files:     {}", file_count);
             println!("  Symbols:   {}", symbol_count);
+            println!("  Edges:     {}", edge_count);
             println!("  Workers:   {}", workers.join(", "));
         }
         Ok(Response::Error { message }) => eprintln!("error: {}", message),

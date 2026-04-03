@@ -163,11 +163,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     }
                 }
             };
+            let embeddings = crate::db::vec::count_embeddings(&state.conn).unwrap_or(0);
             Response::Ok {
                 data: ResponseData::Doctor {
                     daemon_up: true,
-                    db_size_bytes: 0, // would need DB path to check file size
+                    db_size_bytes: 0,
                     memory_count: h.decisions + h.lessons + h.patterns + h.preferences,
+                    embedding_count: embeddings,
                     file_count: files,
                     symbol_count: symbols,
                     edge_count: h.edges,

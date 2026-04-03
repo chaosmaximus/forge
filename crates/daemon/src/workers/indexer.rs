@@ -45,10 +45,19 @@ pub async fn run_indexer(
 ) {
     eprintln!("[indexer] started, interval = {:?}", INDEX_INTERVAL);
     let mut manager: Option<LspManager> = None;
+    let mut first_run = true;
 
     loop {
+        // Run immediately on first cycle, then every INDEX_INTERVAL
+        let delay = if first_run {
+            first_run = false;
+            Duration::from_secs(10) // short delay on startup for daemon to settle
+        } else {
+            INDEX_INTERVAL
+        };
+
         tokio::select! {
-            _ = tokio::time::sleep(INDEX_INTERVAL) => {
+            _ = tokio::time::sleep(delay) => {
                 let project_dir = match find_project_dir() {
                     Some(dir) => dir,
                     None => {

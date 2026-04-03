@@ -36,6 +36,7 @@ pub enum ResponseData {
         daemon_up: bool,
         db_size_bytes: u64,
         memory_count: usize,
+        embedding_count: usize,
         file_count: usize,
         symbol_count: usize,
         edge_count: usize,
