@@ -156,6 +156,7 @@ impl AgentAdapter for CodexAdapter {
         last_offset: usize,
     ) -> (Vec<ConversationChunk>, usize) {
         if last_offset > content.len() {
+            eprintln!("[codex] file truncated (offset {} > len {}), resetting", last_offset, content.len());
             return self.parse_incremental(content, 0);
         }
         if last_offset == content.len() {

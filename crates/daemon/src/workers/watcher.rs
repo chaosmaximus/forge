@@ -65,7 +65,8 @@ pub async fn run_watcher(
                             for path in event.paths {
                                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                                     if valid_extensions.contains(ext) {
-                                        let _ = notify_tx.blocking_send(path);
+                                        // try_send: drop event rather than block notify thread
+                                        let _ = notify_tx.try_send(path);
                                     }
                                 }
                             }

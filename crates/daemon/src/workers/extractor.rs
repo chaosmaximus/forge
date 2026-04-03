@@ -54,18 +54,35 @@ async fn process_file(
     config: &ForgeConfig,
     agent_adapters: &[Box<dyn AgentAdapter>],
 ) -> Result<(), String> {
-    // Find the adapter for this file
-    let adapter = match adapters::adapter_for_path(agent_adapters, path) {
+    // Resolve symlinks and verify the canonical path still matches an adapter.
+    // Prevents symlink attacks (e.g., evil.jsonl -> /etc/shadow).
+    let canonical = tokio::fs::canonicalize(path)
+        .await
+        .map_err(|e| format!("failed to resolve {}: {e}", path.display()))?;
+
+    let adapter = match adapters::adapter_for_path(agent_adapters, &canonical) {
         Some(a) => a,
         None => {
-            return Err(format!("no adapter for {}", path.display()));
+            return Err(format!("no adapter for {} (canonical: {})", path.display(), canonical.display()));
         }
     };
 
-    // Read the file
-    let content = tokio::fs::read_to_string(path)
+    // Guard against OOM: reject files larger than 50 MB
+    const MAX_FILE_SIZE: u64 = 50_000_000;
+    let metadata = tokio::fs::metadata(&canonical)
         .await
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        .map_err(|e| format!("failed to stat {}: {e}", canonical.display()))?;
+    if metadata.len() > MAX_FILE_SIZE {
+        return Err(format!(
+            "file too large ({} bytes, max {}): {}",
+            metadata.len(), MAX_FILE_SIZE, canonical.display()
+        ));
+    }
+
+    // Read the file
+    let content = tokio::fs::read_to_string(&canonical)
+        .await
+        .map_err(|e| format!("failed to read {}: {e}", canonical.display()))?;
 
     // Get the last offset for this file (or 0 if first time)
     let last_offset = offsets.get(path).copied().unwrap_or(0);
