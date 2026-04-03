@@ -107,7 +107,7 @@ impl ForgeConfig {
 /// Load config from `~/.forge/config.toml`.
 /// Returns defaults if the file doesn't exist or can't be parsed.
 pub fn load_config() -> ForgeConfig {
-    let dir = forge_v2_core::forge_dir();
+    let dir = forge_core::forge_dir();
     let path = format!("{dir}/config.toml");
     load_config_from(&path)
 }

@@ -1,8 +1,8 @@
 use crate::db::ops;
 use crate::graph::GraphStore;
 use crate::vector::VectorIndex;
-use forge_v2_core::protocol::MemoryResult;
-use forge_v2_core::types::{Memory, MemoryStatus, MemoryType};
+use forge_core::protocol::MemoryResult;
+use forge_core::types::{Memory, MemoryStatus, MemoryType};
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
 

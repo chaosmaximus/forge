@@ -465,11 +465,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-cli"
+version = "0.4.0"
+dependencies = [
+ "clap",
+ "forge-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "forge-core"
+version = "0.4.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ulid",
+]
+
+[[package]]
 name = "forge-daemon"
 version = "0.4.0"
 dependencies = [
  "bincode",
- "forge-v2-core",
+ "forge-core",
  "fs2",
  "hnsw_rs",
  "libc",
@@ -490,26 +510,6 @@ version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "forge-v2-cli"
-version = "0.4.0"
-dependencies = [
- "clap",
- "forge-v2-core",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "forge-v2-core"
-version = "0.4.0"
-dependencies = [
- "serde",
- "serde_json",
- "ulid",
 ]
 
 [[package]]

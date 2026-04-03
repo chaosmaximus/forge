@@ -1,5 +1,5 @@
 use crate::server::handler::{handle_request, DaemonState};
-use forge_v2_core::protocol::{decode_request, encode_response, Response};
+use forge_core::protocol::{decode_request, encode_response, Response};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -169,7 +169,7 @@ pub async fn run_server(
                         };
 
                         // Check for shutdown before acquiring lock so we can respond then exit
-                        let is_shutdown = matches!(request, forge_v2_core::protocol::Request::Shutdown);
+                        let is_shutdown = matches!(request, forge_core::protocol::Request::Shutdown);
 
                         // Handle request
                         let response = {

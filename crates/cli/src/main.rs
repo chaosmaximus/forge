@@ -4,7 +4,7 @@ mod commands;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "forge-v2", about = "Forge v2 — memory for AI coding agents")]
+#[command(name = "forge-next", about = "Forge — memory for AI coding agents")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -58,7 +58,7 @@ enum Commands {
     Health,
     /// Daemon health diagnostics
     Doctor,
-    /// Import v1 cache.json into v2
+    /// Import v1 cache.json into daemon
     Migrate {
         /// Path to v1 state directory containing cache.json
         state_dir: String,

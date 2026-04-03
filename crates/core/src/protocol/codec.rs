@@ -56,7 +56,7 @@ mod tests {
             content: "Newline-delimited JSON for IPC".to_string(),
             confidence: Some(0.95),
             tags: Some(vec!["protocol".to_string()]),
-            project: Some("forge-v2".to_string()),
+            project: Some("forge".to_string()),
         };
 
         let json = serde_json::to_string(&req).expect("serialize");
@@ -68,7 +68,7 @@ mod tests {
         if let Request::Remember { title, confidence, project, tags, .. } = decoded {
             assert_eq!(title, "Use NDJSON");
             assert_eq!(confidence, Some(0.95));
-            assert_eq!(project, Some("forge-v2".to_string()));
+            assert_eq!(project, Some("forge".to_string()));
             assert_eq!(tags, Some(vec!["protocol".to_string()]));
         } else {
             panic!("Expected Remember variant");

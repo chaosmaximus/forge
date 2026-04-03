@@ -1,5 +1,5 @@
 use crate::client;
-use forge_v2_core::protocol::{Request, Response, ResponseData};
+use forge_core::protocol::{Request, Response, ResponseData};
 
 /// Print daemon status (uptime, workers, memory count).
 pub async fn status() {

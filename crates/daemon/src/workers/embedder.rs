@@ -120,7 +120,7 @@ fn get_unembedded_memories(
 mod tests {
     use super::*;
     use crate::db::{ops, schema};
-    use forge_v2_core::types::{Memory, MemoryType};
+    use forge_core::types::{Memory, MemoryType};
 
     #[test]
     fn test_get_unembedded_memories() {

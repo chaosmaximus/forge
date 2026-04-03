@@ -1,4 +1,4 @@
-use forge_v2_core::types::{ConversationChunk, TranscriptLine};
+use forge_core::types::{ConversationChunk, TranscriptLine};
 
 /// Parse a Claude Code JSONL transcript file into conversation chunks.
 /// Groups user + assistant turns. Skips tool-only turns (no text content).

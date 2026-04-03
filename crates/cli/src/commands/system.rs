@@ -1,6 +1,6 @@
 use crate::client;
-use forge_v2_core::protocol::{Request, Response, ResponseData};
-use forge_v2_core::types::MemoryType;
+use forge_core::protocol::{Request, Response, ResponseData};
+use forge_core::types::MemoryType;
 
 /// Print daemon health diagnostics (doctor).
 pub async fn doctor() {

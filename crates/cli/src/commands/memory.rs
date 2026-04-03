@@ -1,6 +1,6 @@
 use crate::client;
-use forge_v2_core::protocol::{Request, Response, ResponseData};
-use forge_v2_core::types::MemoryType;
+use forge_core::protocol::{Request, Response, ResponseData};
+use forge_core::types::MemoryType;
 
 /// Parse a string into a MemoryType.
 fn parse_memory_type(s: &str) -> Result<MemoryType, String> {

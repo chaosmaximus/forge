@@ -1,8 +1,8 @@
 use forge_daemon::db::ops;
 use forge_daemon::server::handler::{handle_request, DaemonState};
 use forge_daemon::migrate::import_v1_cache;
-use forge_v2_core::protocol::*;
-use forge_v2_core::types::{MemoryType, CodeFile, CodeSymbol};
+use forge_core::protocol::*;
+use forge_core::types::{MemoryType, CodeFile, CodeSymbol};
 use std::io::Write;
 use tempfile::NamedTempFile;
 

@@ -144,12 +144,12 @@ mod tests {
         let m = Memory::new(MemoryType::Lesson, "TDD first", "Write tests before impl")
             .with_confidence(0.75)
             .with_tags(vec!["tdd".to_string(), "testing".to_string()])
-            .with_project("forge-v2");
+            .with_project("forge");
 
         assert_eq!(m.memory_type, MemoryType::Lesson);
         assert!((m.confidence - 0.75).abs() < f64::EPSILON);
         assert_eq!(m.tags, vec!["tdd".to_string(), "testing".to_string()]);
-        assert_eq!(m.project, Some("forge-v2".to_string()));
+        assert_eq!(m.project, Some("forge".to_string()));
     }
 
     #[test]

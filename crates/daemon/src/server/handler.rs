@@ -2,8 +2,8 @@ use crate::db::{ops, schema};
 use crate::graph::GraphStore;
 use crate::recall::hybrid_recall;
 use crate::vector::VectorIndex;
-use forge_v2_core::protocol::*;
-use forge_v2_core::types::Memory;
+use forge_core::protocol::*;
+use forge_core::types::Memory;
 use rusqlite::Connection;
 use std::time::Instant;
 
@@ -167,7 +167,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_v2_core::types::MemoryType;
+    use forge_core::types::MemoryType;
 
     #[test]
     fn test_remember_and_recall() {

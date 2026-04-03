@@ -1,5 +1,5 @@
 use forge_daemon::server::{DaemonState, run_server};
-use forge_v2_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
+use forge_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
 use fs2::FileExt;
 use std::io::Write;
 use std::sync::Arc;

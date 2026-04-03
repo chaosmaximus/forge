@@ -4,7 +4,7 @@
 // to populate SQLite with code_file and code_symbol records.
 
 use crate::db::ops;
-use forge_v2_core::types::{CodeFile, CodeSymbol, V1IndexSymbol};
+use forge_core::types::{CodeFile, CodeSymbol, V1IndexSymbol};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{watch, Mutex};

@@ -7,7 +7,7 @@ use crate::chunk::parse_transcript_incremental;
 use crate::config::ForgeConfig;
 use crate::db::ops;
 use crate::extraction::{self, BackendChoice, ExtractionResult};
-use forge_v2_core::types::{Memory, MemoryType};
+use forge_core::types::{Memory, MemoryType};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;

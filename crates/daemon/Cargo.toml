@@ -12,7 +12,7 @@ name = "forge-daemon"
 path = "src/main.rs"
 
 [dependencies]
-forge-v2-core = { path = "../core" }
+forge-core = { path = "../core" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 hnsw_rs = "0.3"
 petgraph = "0.7"

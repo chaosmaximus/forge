@@ -1,6 +1,6 @@
 use forge_daemon::server::handler::{handle_request, DaemonState};
-use forge_v2_core::protocol::*;
-use forge_v2_core::types::MemoryType;
+use forge_core::protocol::*;
+use forge_core::types::MemoryType;
 
 /// Helper: create an in-memory DaemonState for testing.
 fn fresh_state() -> DaemonState {

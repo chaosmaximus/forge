@@ -3,7 +3,7 @@
 // Reads the v1 JSON cache format and converts active entries into v2 Memory records.
 
 use crate::db::ops;
-use forge_v2_core::types::{Memory, MemoryType};
+use forge_core::types::{Memory, MemoryType};
 use rusqlite::Connection;
 
 #[derive(Debug, serde::Deserialize)]

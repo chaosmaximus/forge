@@ -1,5 +1,5 @@
-use forge_v2_core::protocol::{Request, Response};
-use forge_v2_core::default_socket_path;
+use forge_core::protocol::{Request, Response};
+use forge_core::default_socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::{timeout, Duration};

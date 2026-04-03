@@ -1,5 +1,5 @@
 use rusqlite::{Connection, params};
-use forge_v2_core::types::{Memory, MemoryType, CodeFile, CodeSymbol};
+use forge_core::types::{Memory, MemoryType, CodeFile, CodeSymbol};
 
 /// BM25 search result
 #[derive(Debug, Clone)]
@@ -318,7 +318,7 @@ pub fn count_symbols(conn: &Connection) -> rusqlite::Result<usize> {
 mod tests {
     use super::*;
     use crate::db::schema::create_schema;
-    use forge_v2_core::types::{Memory, MemoryType, CodeFile, CodeSymbol};
+    use forge_core::types::{Memory, MemoryType, CodeFile, CodeSymbol};
 
     fn open_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
