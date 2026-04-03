@@ -11,4 +11,5 @@ path = "src/main.rs"
 forge-v2-core = { path = "../core" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "process", "time"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
