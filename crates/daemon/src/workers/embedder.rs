@@ -45,6 +45,7 @@ pub async fn run_embedder(
 
         // Process in batches of 32
         for batch in to_embed.chunks(32) {
+            let batch_start = std::time::Instant::now();
             let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
 
             let result = ollama::embed(
@@ -70,7 +71,7 @@ pub async fn run_embedder(
                         }
                     }
 
-                    eprintln!("[embedder] embedded {inserted}/{} memories", batch.len());
+                    eprintln!("[embedder] embedded {inserted}/{} memories ({}ms)", batch.len(), batch_start.elapsed().as_millis());
                 }
                 Err(e) => {
                     eprintln!("[embedder] ollama embed failed: {e}, will retry next interval");

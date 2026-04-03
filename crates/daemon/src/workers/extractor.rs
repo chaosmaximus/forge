@@ -90,6 +90,7 @@ pub async fn run_extractor(
 }
 
 /// Process a single transcript file: read, parse incrementally, extract, and store.
+/// Logs timing for each phase (parse, extract, store) for observability.
 async fn process_file(
     path: &PathBuf,
     offsets: &mut HashMap<PathBuf, usize>,
@@ -97,6 +98,7 @@ async fn process_file(
     config: &ForgeConfig,
     agent_adapters: &[Box<dyn AgentAdapter>],
 ) -> Result<(), String> {
+    let total_start = std::time::Instant::now();
     // Resolve symlinks and verify the canonical path still matches an adapter.
     // Prevents symlink attacks (e.g., evil.jsonl -> /etc/shadow).
     let canonical = tokio::fs::canonicalize(path)
@@ -136,7 +138,9 @@ async fn process_file(
     let last_offset = offsets.get(path).copied().unwrap_or(0);
 
     // Parse incrementally using the matched adapter
+    let parse_start = std::time::Instant::now();
     let (chunks, new_offset) = adapter.parse_incremental(&content, last_offset);
+    let parse_ms = parse_start.elapsed().as_millis();
 
     // Always advance the offset after parsing. Title-based dedup at remember()
     // prevents duplicate memories if the same chunks are re-processed. This avoids
@@ -169,7 +173,8 @@ async fn process_file(
     // Detect backend
     let backend = extraction::detect_backend(config).await;
 
-    // Extract memories
+    // Extract memories (this is the slow part — LLM call)
+    let extract_start = std::time::Instant::now();
     let result = match &backend {
         BackendChoice::ClaudeCli => {
             extraction::claude_cli::extract(&config.extraction.claude.model, &combined_text).await
@@ -241,19 +246,20 @@ async fn process_file(
                 }
             }
 
+            let extract_ms = extract_start.elapsed().as_millis();
+            let total_ms = total_start.elapsed().as_millis();
             eprintln!(
-                "[extractor] extracted {} memories from {}",
-                stored,
-                path.display()
+                "[extractor] {} memories from {} | parse: {}ms, extract: {}ms, total: {}ms, chunks: {}",
+                stored, path.display(), parse_ms, extract_ms, total_ms, chunks.len()
             );
             Ok(())
         }
         ExtractionResult::Unavailable(reason) => {
-            eprintln!("[extractor] backend unavailable: {reason}");
+            eprintln!("[extractor] backend unavailable: {reason} ({}ms)", total_start.elapsed().as_millis());
             Ok(())
         }
         ExtractionResult::Error(err) => {
-            eprintln!("[extractor] extraction error: {err}");
+            eprintln!("[extractor] extraction error: {err} ({}ms)", total_start.elapsed().as_millis());
             Ok(())
         }
     }
