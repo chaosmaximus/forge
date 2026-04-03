@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "legacy/forge-core",
     "crates/hud",
     "crates/core",
     "crates/daemon",

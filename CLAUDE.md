@@ -134,50 +134,54 @@ Use `--sync` to write immediately to graph DB. Without it, writes to cache only 
 
 ---
 
-## Architecture (v0.3.0)
+## Architecture (v0.5.0)
 
-**CLI-first. No MCP server.**
+**Daemon-first. CLI-first. No MCP server.**
 
 ```
-forge (Rust, 4.3MB)          — CLI: all operations, <5ms for cache, <200ms for graph
-forge-graph (Python, 115 tests) — Graph library: LadybugDB 0.15.3, called by forge
-forge-hud (Rust, 476KB)      — StatusLine: <2ms render, real-time stats
-forge-channel (TS/Bun)       — Telegram + iMessage bridges
+forge-daemon (Rust, single binary) — always-on daemon, Unix socket API
+  ├── SQLite FTS5 + sqlite-vec (memory + vectors + edges, single file)
+  ├── Guardrails engine (check + blast_radius)
+  ├── Multi-agent adapters (Claude Code + Cline + Codex CLI)
+  ├── Auto-extraction (claude -p --model haiku / ollama qwen3:4b)
+  ├── Session tracking (active agent sessions)
+  └── Event bus (tokio::broadcast for Mac app)
+
+forge-next (Rust CLI)  — client for daemon, auto-starts daemon
+forge-hud (Rust)       — StatusLine rendering
 ```
 
-**Key architecture: No persistent Python process.**
-- `forge` handles everything via CLI subcommands
-- For graph operations, Rust shells out to `python3 -m forge_graph.cli`
-- Python opens DB, operates, closes, exits — no lock contention
-- Dual storage: `cache.json` (instant reads) + LadybugDB (durable graph)
-- HUD reads `hud-state.json` written by forge (updated on remember/forget/agent events)
+**Key architecture:**
+- `forge-daemon` handles everything via Unix domain socket (NDJSON protocol)
+- Adapters watch transcript directories for Claude Code, Cline, and Codex CLI
+- sqlite-vec stores persistent embeddings (768-dim, cosine distance)
+- Graph traversal via SQL recursive CTEs on edge table
+- Guardrails query the knowledge graph before agent actions
+- Security: umask 0177, 50MB file limit, symlink defense, parameterized SQL, UTF-8 safe truncation
 
 ## Development
 
 ### Running Tests
 
 ```bash
-# Python tests (ALWAYS use PYTHONPATH=src)
-cd forge-graph && PYTHONPATH=src python3 -m pytest tests/ -v --tb=short
+# Full workspace (407+ tests)
+cargo test --workspace
 
-# Rust build + tests
-cargo build --release
-cargo test -p forge-agentic-os
+# Daemon only
+cargo test -p forge-daemon
 
-# Test CLI
-./target/release/forge index forge-graph/src/
-./target/release/forge scan .
-./target/release/forge recall --list
+# Socket E2E (requires release binary built)
+cargo build --release -p forge-daemon
+cargo test -p forge-daemon --test test_socket_e2e -- --test-threads=1
+
+# Clippy (zero warnings required)
+cargo clippy -p forge-daemon -p forge-core -p forge-cli -- -W clippy::all
 ```
 
 ### Critical Rules
 
-- **Python 3.10** — always `python3`, never `python`
-- **No MCP** — removed in v0.3.0. All ops via `forge` CLI
-- **LadybugDB** — use `current_timestamp()` not `timestamp()`. Secret table uses `status` column, not `invalid_at`.
 - **Codex** — use `codex exec --model gpt-5.2` (default o4-mini broken on ChatGPT auth)
-- **Plugin cache** — `~/.claude/plugins/cache/forge-marketplace/forge/0.3.0/`. After changes, sync with: `rsync -a forge-graph/src/ "$CACHE/forge-graph/src/" && cp target/release/forge "$CACHE/servers/forge"`
-- **Circular imports** — `app.py` removed. `memory/tools.py` uses local stubs. `cli.py` is the Python entry point.
+- **Plugin cache** — `~/.claude/plugins/cache/forge-marketplace/forge/0.3.0/`. After changes, sync with: `cp target/release/forge "$CACHE/servers/forge"`
 
 ### CI Pipeline (6 jobs, all green)
 
