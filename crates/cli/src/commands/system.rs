@@ -418,6 +418,34 @@ pub async fn lsp_status() {
     }
 }
 
+/// Register an active agent session.
+pub async fn register_session(id: String, agent: String, project: Option<String>, cwd: Option<String>) {
+    match client::send(&Request::RegisterSession { id: id.clone(), agent, project, cwd }).await {
+        Ok(Response::Ok { data: ResponseData::SessionRegistered { .. } }) => {
+            println!("Session registered: {id}");
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+/// End an active agent session.
+pub async fn end_session(id: String) {
+    match client::send(&Request::EndSession { id: id.clone() }).await {
+        Ok(Response::Ok { data: ResponseData::SessionEnded { found, .. } }) => {
+            if found {
+                println!("Session ended: {id}");
+            } else {
+                println!("Session not found or already ended: {id}");
+            }
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
 fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     format!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())

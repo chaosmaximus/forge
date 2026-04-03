@@ -113,6 +113,29 @@ enum Commands {
     /// Show available language servers for the current project
     #[command(name = "lsp-status")]
     LspStatus,
+    /// Register an active agent session
+    #[command(name = "register-session")]
+    RegisterSession {
+        /// Session ID (e.g., UUID)
+        #[arg(long)]
+        id: String,
+        /// Agent name (claude-code, cline, codex, etc.)
+        #[arg(long)]
+        agent: String,
+        /// Project name
+        #[arg(long)]
+        project: Option<String>,
+        /// Working directory
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+    /// End an active agent session
+    #[command(name = "end-session")]
+    EndSession {
+        /// Session ID to end
+        #[arg(long)]
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -192,6 +215,12 @@ async fn main() {
         }
         Commands::LspStatus => {
             commands::system::lsp_status().await;
+        }
+        Commands::RegisterSession { id, agent, project, cwd } => {
+            commands::system::register_session(id, agent, project, cwd).await;
+        }
+        Commands::EndSession { id } => {
+            commands::system::end_session(id).await;
         }
     }
 }
