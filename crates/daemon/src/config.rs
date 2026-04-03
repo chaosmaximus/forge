@@ -81,6 +81,25 @@ impl Default for EmbeddingConfig {
     }
 }
 
+impl ForgeConfig {
+    /// Validate that config fields are sensible.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.embedding.dimensions == 0 {
+            return Err("embedding.dimensions must be > 0".into());
+        }
+        if self.extraction.claude.model.trim().is_empty() {
+            return Err("extraction.claude.model must not be empty".into());
+        }
+        if self.extraction.ollama.model.trim().is_empty() {
+            return Err("extraction.ollama.model must not be empty".into());
+        }
+        if self.extraction.ollama.endpoint.trim().is_empty() {
+            return Err("extraction.ollama.endpoint must not be empty".into());
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Loaders
 // ---------------------------------------------------------------------------
@@ -97,13 +116,20 @@ pub fn load_config() -> ForgeConfig {
 /// Returns defaults if the file doesn't exist or can't be parsed.
 pub fn load_config_from(path: &str) -> ForgeConfig {
     match std::fs::read_to_string(path) {
-        Ok(contents) => match toml::from_str(&contents) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                eprintln!("forge: warning: failed to parse {path}: {e}");
-                ForgeConfig::default()
+        Ok(contents) => {
+            let config: ForgeConfig = match toml::from_str(&contents) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    eprintln!("forge: warning: failed to parse {path}: {e}");
+                    return ForgeConfig::default();
+                }
+            };
+            if let Err(e) = config.validate() {
+                eprintln!("[config] validation error: {e}, using defaults");
+                return ForgeConfig::default();
             }
-        },
+            config
+        }
         Err(_) => ForgeConfig::default(),
     }
 }
@@ -177,6 +203,26 @@ backend = "ollama"
         assert_eq!(cfg.extraction.ollama.endpoint, "http://localhost:11434");
         assert_eq!(cfg.embedding.model, "nomic-embed-text");
         assert_eq!(cfg.embedding.dimensions, 768);
+    }
+
+    #[test]
+    fn test_validate_zero_dimensions() {
+        let mut config = ForgeConfig::default();
+        config.embedding.dimensions = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_model() {
+        let mut config = ForgeConfig::default();
+        config.extraction.claude.model = "".into();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_default_passes() {
+        let config = ForgeConfig::default();
+        assert!(config.validate().is_ok());
     }
 
     #[test]

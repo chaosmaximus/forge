@@ -65,15 +65,20 @@ pub async fn detect_backend(config: &ForgeConfig) -> BackendChoice {
 }
 
 /// Check if `claude` CLI is available on PATH.
+/// Wrapped in a 5-second timeout to prevent hangs on unresponsive binaries.
 async fn is_claude_cli_available() -> bool {
-    tokio::process::Command::new("claude")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::process::Command::new("claude")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Check if Ollama is reachable at the given endpoint.

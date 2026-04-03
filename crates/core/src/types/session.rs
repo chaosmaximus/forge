@@ -63,7 +63,12 @@ impl TranscriptLine {
                 if texts.is_empty() {
                     None
                 } else {
-                    Some(texts.join("\n"))
+                    let joined = texts.join("\n");
+                    if joined.trim().is_empty() {
+                        None
+                    } else {
+                        Some(joined)
+                    }
                 }
             }
             _ => None,
@@ -131,6 +136,16 @@ mod tests {
         let text = line.text_content();
         assert!(text.is_none());
         assert!(line.has_tool_use());
+    }
+
+    #[test]
+    fn test_parse_empty_text_blocks() {
+        let json = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":""},{"type":"text","text":"  "}]}}"#;
+        let line: TranscriptLine = serde_json::from_str(json).unwrap();
+        assert!(
+            line.text_content().is_none(),
+            "empty/whitespace-only text should return None"
+        );
     }
 
     #[test]

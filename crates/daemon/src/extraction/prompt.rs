@@ -41,6 +41,16 @@ fn default_confidence() -> f64 {
     0.5
 }
 
+impl ExtractedMemory {
+    /// Check whether memory_type is one of the known valid types.
+    pub fn is_valid_type(&self) -> bool {
+        matches!(
+            self.memory_type.as_str(),
+            "decision" | "lesson" | "pattern" | "preference"
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
@@ -78,6 +88,11 @@ pub fn parse_extraction_output(output: &str) -> Vec<ExtractedMemory> {
         }
     }
 
+    // All parsing strategies failed — log so silent data loss is visible
+    eprintln!(
+        "[extraction] failed to parse LLM output as JSON array (len={})",
+        trimmed.len()
+    );
     Vec::new()
 }
 
@@ -104,11 +119,11 @@ fn extract_json_array(s: &str) -> Option<&str> {
     }
 }
 
-/// Filter out memories with confidence < 0.3.
+/// Filter out memories with confidence < 0.3 or an invalid memory type.
 fn filter_low_confidence(memories: Vec<ExtractedMemory>) -> Vec<ExtractedMemory> {
     memories
         .into_iter()
-        .filter(|m| m.confidence >= 0.3)
+        .filter(|m| m.confidence >= 0.3 && m.is_valid_type())
         .collect()
 }
 
@@ -221,6 +236,13 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].title, "High confidence item");
         assert_eq!(result[1].title, "Borderline item");
+    }
+
+    #[test]
+    fn test_filter_invalid_type() {
+        let output = r#"[{"type":"garbage","title":"Bad","content":"x","confidence":0.9,"tags":[],"affects":[]}]"#;
+        let memories = parse_extraction_output(output);
+        assert!(memories.is_empty(), "invalid memory_type should be filtered out");
     }
 
     #[test]
