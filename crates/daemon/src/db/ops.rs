@@ -644,6 +644,93 @@ pub fn link_related_memories(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(created)
 }
 
+/// Promote recurring lessons to patterns (episodic -> semantic consolidation).
+///
+/// If 3+ active lessons share >50% word overlap in titles AND same project,
+/// create a Pattern memory with boosted confidence and supersede the individual
+/// lessons. This is the neuroscience-inspired consolidation where specific
+/// events (episodic) become general knowledge (semantic).
+pub fn promote_recurring_lessons(conn: &Connection) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, content, confidence, project FROM memory
+         WHERE memory_type = 'lesson' AND status = 'active'
+         ORDER BY confidence DESC"
+    )?;
+
+    let lessons: Vec<(String, String, String, f64, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if lessons.len() < 3 {
+        return Ok(0);
+    }
+
+    let mut promoted = 0usize;
+    let mut processed: HashSet<String> = HashSet::new();
+
+    for i in 0..lessons.len() {
+        let (ref id_a, ref title_a, ref content_a, _conf_a, ref project_a) = lessons[i];
+        if processed.contains(id_a) { continue; }
+
+        let words_a: HashSet<String> = title_a.to_lowercase()
+            .split_whitespace().map(String::from).collect();
+
+        let mut cluster: Vec<usize> = vec![i];
+
+        for (j, (ref id_b, ref title_b, _, _, ref project_b)) in lessons.iter().enumerate().skip(i + 1) {
+            if processed.contains(id_b) { continue; }
+            if project_a != project_b { continue; }
+
+            let words_b: HashSet<String> = title_b.to_lowercase()
+                .split_whitespace().map(String::from).collect();
+            let intersection = words_a.intersection(&words_b).count() as f64;
+            let max_len = words_a.len().max(words_b.len()) as f64;
+
+            if max_len > 0.0 && (intersection / max_len) > 0.5 {
+                cluster.push(j);
+            }
+        }
+
+        if cluster.len() >= 3 {
+            // Promote: create a Pattern from the cluster
+            let best_conf = cluster.iter()
+                .map(|&idx| lessons[idx].3)
+                .fold(0.0f64, f64::max);
+            let boosted = (best_conf + 0.1).min(1.0);
+
+            let mut pattern = Memory::new(
+                MemoryType::Pattern,
+                title_a.clone(),
+                format!("Promoted from {} recurring lessons: {}", cluster.len(), content_a),
+            )
+            .with_confidence(boosted);
+
+            if let Some(ref p) = project_a {
+                pattern.project = Some(p.clone());
+            }
+
+            let _ = remember(conn, &pattern);
+
+            // Supersede the individual lessons
+            for &idx in &cluster {
+                let id = &lessons[idx].0;
+                conn.execute(
+                    "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+                    params![id],
+                )?;
+                processed.insert(id.clone());
+            }
+
+            promoted += 1;
+        }
+    }
+
+    Ok(promoted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1126,5 +1213,43 @@ mod tests {
         ).unwrap();
         assert_eq!(survivor.0, "d2");
         assert!((survivor.1 - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_promote_recurring_lessons() {
+        let conn = open_db();
+
+        // Store 3 similar lessons (recurring theme)
+        for i in 0..3 {
+            let mem = Memory::new(
+                MemoryType::Lesson,
+                &format!("Always run tests before pushing v{}", i),
+                "Learned from breaking prod",
+            ).with_confidence(0.7);
+            remember(&conn, &mem).unwrap();
+        }
+
+        let promoted = promote_recurring_lessons(&conn).unwrap();
+        assert!(promoted > 0, "should promote recurring lesson to pattern");
+
+        // Verify a Pattern was created
+        let h = health(&conn).unwrap();
+        assert!(h.patterns > 0, "should have at least one pattern");
+    }
+
+    #[test]
+    fn test_no_promotion_for_unique_lessons() {
+        let conn = open_db();
+
+        // Store 3 different lessons (no recurring theme)
+        let mem1 = Memory::new(MemoryType::Lesson, "Use JWT", "Auth").with_confidence(0.7);
+        let mem2 = Memory::new(MemoryType::Lesson, "Write docs", "Quality").with_confidence(0.7);
+        let mem3 = Memory::new(MemoryType::Lesson, "Test edge cases", "Coverage").with_confidence(0.7);
+        remember(&conn, &mem1).unwrap();
+        remember(&conn, &mem2).unwrap();
+        remember(&conn, &mem3).unwrap();
+
+        let promoted = promote_recurring_lessons(&conn).unwrap();
+        assert_eq!(promoted, 0, "unique lessons should not be promoted");
     }
 }

@@ -1,8 +1,8 @@
-// workers/consolidator.rs — Confidence decay consolidator
+// workers/consolidator.rs — Memory consolidator (5 phases)
 //
-// Periodically applies exponential confidence decay to memories based on time
-// since last access. Memories that fall below 0.1 confidence are marked "faded".
-// Also runs semantic dedup (word-overlap) and links related memories by shared tags.
+// Periodically runs: exact dedup, semantic dedup, link related, confidence decay,
+// and episodic->semantic promotion (recurring lessons become patterns).
+// Memories that fall below 0.1 effective confidence are marked "faded".
 
 use crate::db::ops;
 use crate::events;
@@ -92,12 +92,28 @@ pub async fn run_consolidator(
                     }
                 } // lock released
 
+                // Phase 5: Episodic -> Semantic promotion
+                let mut promoted_count = 0usize;
+                {
+                    let locked = state.lock().await;
+                    match ops::promote_recurring_lessons(&locked.conn) {
+                        Ok(promoted) => {
+                            promoted_count = promoted;
+                            if promoted > 0 {
+                                eprintln!("[consolidator] promoted {} recurring lessons to patterns", promoted);
+                            }
+                        }
+                        Err(e) => eprintln!("[consolidator] promotion error: {}", e),
+                    }
+                } // lock released
+
                 // Emit consolidation event
                 events::emit(&event_tx, "consolidation", serde_json::json!({
                     "exact_dedup": exact_dedup_count,
                     "semantic_dedup": semantic_dedup_count,
                     "linked": linked_count,
                     "faded": faded_count,
+                    "promoted": promoted_count,
                 }));
             }
             _ = shutdown_rx.changed() => {
