@@ -19,10 +19,11 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use super::detect::LspServerConfig;
 
-/// Convert an absolute filesystem path to a `file://` URI string.
-fn path_to_file_uri(path: &str) -> String {
-    // On Unix, file URIs are file:///absolute/path
-    // Ensure the path is absolute.
+/// Convert an absolute filesystem path to a properly percent-encoded `file://` URI.
+///
+/// Handles spaces, non-ASCII characters, and other reserved URI characters.
+/// Follows RFC 8089 (file URI scheme): each path segment is percent-encoded.
+pub fn path_to_file_uri(path: &str) -> String {
     let abs = if Path::new(path).is_absolute() {
         path.to_string()
     } else {
@@ -30,7 +31,33 @@ fn path_to_file_uri(path: &str) -> String {
             .map(|cwd| cwd.join(path).to_string_lossy().to_string())
             .unwrap_or_else(|_| path.to_string())
     };
-    format!("file://{}", abs)
+
+    // Percent-encode each path segment, preserving '/' as separator
+    let encoded: String = abs
+        .split('/')
+        .map(|segment| {
+            segment
+                .bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric()
+                        || b == b'-'
+                        || b == b'_'
+                        || b == b'.'
+                        || b == b'~'
+                    {
+                        // Unreserved characters (RFC 3986 §2.3) — pass through
+                        String::from(b as char)
+                    } else {
+                        // Percent-encode everything else
+                        format!("%{:02X}", b)
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+
+    format!("file://{}", encoded)
 }
 
 /// A minimal JSON-RPC LSP client that communicates over stdin/stdout.
@@ -382,6 +409,32 @@ mod tests {
         let uri_str = path_to_file_uri("/home/user/project");
         let parsed: Result<Uri, _> = uri_str.parse();
         assert!(parsed.is_ok(), "file URI should parse as lsp_types::Uri");
+    }
+
+    #[test]
+    fn test_path_to_file_uri_with_spaces() {
+        let uri = path_to_file_uri("/Users/me/My Project/src/lib.rs");
+        assert_eq!(uri, "file:///Users/me/My%20Project/src/lib.rs");
+        // Must still parse as valid URI
+        let parsed: Result<Uri, _> = uri.parse();
+        assert!(parsed.is_ok(), "URI with encoded spaces should parse");
+    }
+
+    #[test]
+    fn test_path_to_file_uri_with_special_chars() {
+        let uri = path_to_file_uri("/home/user/café/naïve.rs");
+        assert!(uri.starts_with("file:///home/user/"));
+        assert!(!uri.contains("café"), "non-ASCII should be percent-encoded");
+        // Verify it parses
+        let parsed: Result<Uri, _> = uri.parse();
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn test_path_to_file_uri_preserves_normal_paths() {
+        // Normal paths without special chars should be unchanged
+        let uri = path_to_file_uri("/mnt/colab-disk/DurgaSaiK/forge/src/main.rs");
+        assert_eq!(uri, "file:///mnt/colab-disk/DurgaSaiK/forge/src/main.rs");
     }
 
     #[test]
