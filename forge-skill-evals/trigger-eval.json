@@ -1,82 +1,82 @@
 [
   {
-    "query": "I want to add user authentication with JWT tokens to this Express API, the routes are in src/routes/ and I need both login and register endpoints",
+    "query": "I need to add a dark mode toggle to the settings page, the current theme is stored in localStorage and the toggle component should go in src/components/Settings.tsx",
     "should_trigger": true
   },
   {
-    "query": "there's a bug in the checkout flow — when users submit their cart with a discount code, the total comes back as NaN. I think it's in calculateTotal in src/utils/pricing.ts",
+    "query": "there's a race condition in our websocket handler — when two clients connect simultaneously the session map gets corrupted, I've been seeing ECONNRESET errors in production logs since last Tuesday",
     "should_trigger": true
   },
   {
-    "query": "ok so I have this monorepo with a React frontend and a Python FastAPI backend, and I need to add a real-time notifications system using WebSockets. Users should get notified when their order status changes",
+    "query": "let's build a new CLI tool from scratch for managing our internal deployment configs, it needs to support YAML and TOML formats and have a dry-run mode",
     "should_trigger": true
   },
   {
-    "query": "refactor the database layer — we're currently using raw SQL queries scattered everywhere in src/services/ and I want to consolidate them into a proper repository pattern with typed queries",
+    "query": "can you review the changes I made in the last 3 commits? I refactored the auth middleware and want to make sure I didn't break the session handling",
     "should_trigger": true
   },
   {
-    "query": "I need to set up CI/CD for this project — GitHub Actions workflow that runs tests on PR, builds Docker images on merge to main, and deploys to our staging Kubernetes cluster",
+    "query": "I want to plan out the implementation for migrating our REST API to GraphQL — there are about 40 endpoints and we need to do it incrementally without breaking existing clients",
     "should_trigger": true
   },
   {
-    "query": "can you review the changes I just made to the auth middleware? I changed how tokens are validated and want to make sure I didn't break anything",
+    "query": "the CI pipeline is failing on the integration tests — pytest is timing out on test_payment_flow but it passes locally, might be a docker networking issue",
     "should_trigger": true
   },
   {
-    "query": "I just finished implementing the search feature across 12 files. Can we ship this? The tests pass locally but I want to make sure everything is solid before creating the PR",
+    "query": "ship this — I've tested everything locally and the feature branch is ready, create a PR against main with a good description covering the auth changes",
     "should_trigger": true
   },
   {
-    "query": "let me start from scratch — I want to build a CLI tool in Rust that manages dotfiles across machines. It should support symlinks, templates with variables, and encrypted secrets",
+    "query": "I want to refactor the data layer — we have 6 different files that each implement their own database connection pooling and I want to consolidate into a shared module",
     "should_trigger": true
   },
   {
-    "query": "the performance of our GraphQL resolvers is terrible — the users query takes 3 seconds because of N+1 queries. I need to add dataloader batching without breaking the existing resolver signatures",
+    "query": "help me think through the product requirements for a notification system — we need email, push, and in-app notifications with user preference controls",
     "should_trigger": true
   },
   {
-    "query": "I want to add end-to-end tests for the login flow and the dashboard page. We're using Next.js and I think Playwright would be good for this",
+    "query": "I want to brainstorm some ideas for improving our onboarding flow — the current drop-off rate is 40% at step 3 where users have to connect their GitHub account",
     "should_trigger": true
   },
   {
-    "query": "what's the weather in San Francisco today?",
+    "query": "ok so I have this xlsx file my boss sent (Q4-sales-final.xlsx in downloads) and she wants me to add a profit margin column, revenue is col C and costs col D",
     "should_trigger": false
   },
   {
-    "query": "can you explain how async/await works in JavaScript? I'm trying to understand the event loop",
+    "query": "what does the ENOENT error mean in Node.js? I keep getting it when I try to read a config file",
     "should_trigger": false
   },
   {
-    "query": "summarize this PDF document for me — it's a research paper about transformer architectures",
+    "query": "can you explain how React's useEffect cleanup function works? I'm confused about when it runs",
     "should_trigger": false
   },
   {
-    "query": "write me a poem about the ocean using iambic pentameter",
+    "query": "write me a bash one-liner that finds all .log files older than 7 days and deletes them",
     "should_trigger": false
   },
   {
-    "query": "what are the differences between PostgreSQL and MySQL? Which one should I use for a new project?",
+    "query": "I need to create a skill that helps with writing better commit messages — can you help me design the SKILL.md for it?",
     "should_trigger": false
   },
   {
-    "query": "help me write a cover letter for a senior software engineer position at Stripe",
+    "query": "search my previous conversations for when we discussed the caching architecture — I think we made a decision about Redis vs Memcached last week",
     "should_trigger": false
   },
   {
-    "query": "can you read the Claude API documentation and tell me how to use tool_use?",
+    "query": "can you fetch the latest React documentation for the new use() hook? I want to understand how it replaces useEffect for data fetching",
     "should_trigger": false
   },
   {
-    "query": "translate this README from English to Japanese",
+    "query": "help me configure my Claude Code hooks — I want a pre-commit hook that runs eslint and a post-edit hook that formats with prettier",
     "should_trigger": false
   },
   {
-    "query": "I need to prepare a presentation about microservices architecture for my team meeting tomorrow — can you help me outline the key points?",
+    "query": "rename the variable 'tmp' to 'temporaryBuffer' in line 45 of src/utils/parser.ts",
     "should_trigger": false
   },
   {
-    "query": "what's the current price of Bitcoin and should I buy it?",
+    "query": "read the file at /etc/nginx/nginx.conf and tell me what the upstream configuration looks like",
     "should_trigger": false
   }
 ]

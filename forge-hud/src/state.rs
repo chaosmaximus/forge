@@ -13,6 +13,7 @@ pub struct HudState {
     #[serde(default)] pub skills: SkillStats,
     #[serde(default)] pub team: HashMap<String, AgentInfo>,
     #[serde(default)] pub security: SecurityStats,
+    #[serde(default)] pub tasks: Option<TaskStats>,
 }
 
 #[derive(Deserialize, Default)]
@@ -38,7 +39,7 @@ pub struct SkillStats { pub active: u64, pub fix_candidates: u64 }
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct AgentInfo {
-    #[serde(rename = "type", default)]
+    #[serde(alias = "type", alias = "agent_type", default)]
     pub agent_type: Option<String>,
     pub status: Option<String>,
     pub started_at: Option<String>,
@@ -55,6 +56,14 @@ pub struct AgentInfo {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct SecurityStats { pub total: u64, pub stale: u64, pub exposed: u64 }
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct TaskStats {
+    pub total: u64,
+    pub completed: u64,
+    pub in_progress: Option<String>,
+}
 
 pub fn read_state(state_dir: &str) -> HudState {
     let path = Path::new(state_dir).join("hud").join("hud-state.json");

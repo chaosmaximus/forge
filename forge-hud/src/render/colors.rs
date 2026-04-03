@@ -7,6 +7,8 @@ pub const RED: &str = "\x1b[31m";
 pub const CYAN: &str = "\x1b[36m";
 pub const BLUE: &str = "\x1b[34m";
 pub const MAGENTA: &str = "\x1b[35m";
+pub const BRIGHT_BLUE: &str = "\x1b[94m";
+pub const BRIGHT_MAGENTA: &str = "\x1b[95m";
 
 pub fn security_color(stale: u64, exposed: u64) -> &'static str {
     if exposed > 0 { RED } else if stale > 0 { YELLOW } else { GREEN }

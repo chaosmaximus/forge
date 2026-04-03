@@ -1,46 +1,25 @@
 use crate::render::colors::*;
 use crate::stdin::StdinData;
 
-/// Line 1: Claude model, context usage, git branch, rate limits
-pub fn render_line1(stdin: &StdinData, width: usize) -> String {
+/// Line 1: [Model | Plan] │ project git:(branch*) │ forge
+pub fn render_line1(stdin: &StdinData, _width: usize) -> String {
     let model = sanitize(&stdin.model_name());
-    let ctx = render_context_bar(stdin.context_pct());
+    let plan = stdin.plan_name();
+    let sep = "\u{2502}"; // │ BOX DRAWINGS LIGHT VERTICAL
+
+    let project = sanitize(&stdin.project_name());
     let branch = crate::stdin::git_branch(stdin.cwd_str());
+    let dirty = crate::stdin::git_dirty(stdin.cwd_str());
+
     let git_seg = if !branch.is_empty() {
         let b = sanitize(&branch);
-        format!(" {DIM}on{RESET} {CYAN}{b}{RESET}")
+        let d = if dirty { "*" } else { "" };
+        format!(" {MAGENTA}git:({CYAN}{b}{d}{MAGENTA}){RESET}")
     } else {
         String::new()
     };
-    let rate = render_rate(stdin.rate_5h(), stdin.rate_7d());
 
-    if width >= 140 {
-        format!("{BOLD}[{model}]{RESET} {ctx}{git_seg} {DIM}|{RESET} {rate}")
-    } else if width >= 100 {
-        format!("{BOLD}[{model}]{RESET} {ctx}{git_seg}")
-    } else {
-        format!("{BOLD}[{model}]{RESET} {ctx}")
-    }
-}
-
-fn render_context_bar(pct: f64) -> String {
-    let p = pct.clamp(0.0, 100.0);
-    let filled = (p / 10.0).round() as usize;
-    let empty = 10_usize.saturating_sub(filled);
-    let color = if p >= 85.0 { RED } else if p >= 60.0 { YELLOW } else { GREEN };
-    let bar = format!("{}\u{2591}", "\u{2588}".repeat(filled));
-    let rest = "\u{2591}".repeat(empty.saturating_sub(1));
     format!(
-        "{DIM}Context{RESET} {color}[{bar}{rest}]{RESET} {color}{:.0}%{RESET}",
-        p
+        "{CYAN}[{model} | {plan}]{RESET} {DIM}{sep}{RESET} {YELLOW}{project}{RESET}{git_seg} {DIM}{sep}{RESET} {BOLD}{GREEN}forge{RESET}"
     )
-}
-
-fn render_rate(five: f64, seven: f64) -> String {
-    if five <= 0.0 && seven <= 0.0 {
-        return String::new();
-    }
-    let fc = if five >= 80.0 { RED } else if five >= 50.0 { YELLOW } else { GREEN };
-    let sc = if seven >= 80.0 { RED } else if seven >= 50.0 { YELLOW } else { GREEN };
-    format!("{DIM}Rate{RESET} {fc}{:.0}%{RESET}{DIM}/5h{RESET} {sc}{:.0}%{RESET}{DIM}/7d{RESET}", five, seven)
 }

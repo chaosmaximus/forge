@@ -1,24 +1,52 @@
 # Forge — Agentic OS for Claude Code
 
-## CRITICAL: Forge is the Entry Point
+## CRITICAL: Forge is the ONLY Entry Point for Development
 
-**For ANY development task — building, fixing, planning, reviewing — invoke `forge:forge` FIRST.**
+**Before invoking ANY development-related skill, invoke `forge:forge` FIRST. This is non-negotiable.**
 
-Forge orchestrates the full lifecycle and delegates to other skills (Superpowers, Codex) at the right phase. Do NOT invoke `superpowers:brainstorming`, `superpowers:writing-plans`, or `superpowers:subagent-driven-development` directly for development tasks. Forge calls them internally when needed.
+Forge orchestrates the full lifecycle and delegates to Superpowers, Codex, and other skills at the right phase. Calling them directly bypasses mode detection, prerequisite checks, agent team coordination, memory tracking, and security scanning.
 
-| User says | You invoke | NOT |
-|-----------|-----------|-----|
-| "build X" | `forge:forge` | ~~`superpowers:brainstorming`~~ |
-| "fix this bug" | `forge:forge` | ~~`superpowers:systematic-debugging`~~ |
-| "plan the implementation" | `forge:forge` | ~~`superpowers:writing-plans`~~ |
-| "review the code" | `forge:forge-review` | ~~`superpowers:requesting-code-review`~~ |
-| "add a feature" | `forge:forge` | ~~`superpowers:brainstorming`~~ |
+### Routing Table — ALWAYS check this before invoking a skill
 
-Superpowers skills are still useful — Forge invokes them at the right lifecycle phase:
-- Think phase → Forge invokes brainstorming
-- Plan phase → Forge invokes writing-plans
-- Build phase → Forge invokes subagent-driven-development + TDD
-- Debug → Forge invokes systematic-debugging
+| User says | You invoke | NEVER invoke directly |
+|-----------|-----------|----------------------|
+| "build X" / "create X" / "add X" | `forge:forge` | ~~brainstorming, subagent-driven-development~~ |
+| "fix this bug" / "debug this" / "tests failing" | `forge:forge` | ~~systematic-debugging, test-driven-development~~ |
+| "plan the implementation" / "how should we build" | `forge:forge` | ~~writing-plans, brainstorming~~ |
+| "review the code" / "check my changes" | `forge:forge-review` | ~~requesting-code-review, verification-before-completion~~ |
+| "add a feature" / "refactor" / "improve" | `forge:forge` | ~~brainstorming, feature-dev~~ |
+| "ship this" / "create a PR" / "merge" | `forge:forge-ship` | ~~finishing-a-development-branch~~ |
+| "brainstorm" / "think through" / "requirements" | `forge:forge` | ~~brainstorming~~ |
+| "let me start from scratch" / "new project" | `forge:forge` | ~~brainstorming, writing-plans~~ |
+| "set up CI/CD" / "add tests" / "add e2e tests" | `forge:forge` | ~~test-driven-development~~ |
+| "performance issue" / "optimize" / "N+1 queries" | `forge:forge` | ~~systematic-debugging~~ |
+
+### Skills that Forge calls internally — do NOT call directly
+
+| Superpowers Skill | Forge Phase |
+|-------------------|-------------|
+| `superpowers:brainstorming` | Think phase (via forge-think) |
+| `superpowers:writing-plans` | Plan phase (via forge-feature/forge-new) |
+| `superpowers:subagent-driven-development` | Build phase (via forge agents) |
+| `superpowers:test-driven-development` | Build phase (generators follow TDD) |
+| `superpowers:systematic-debugging` | Debug phase (when tests/verification fail) |
+| `superpowers:requesting-code-review` | Review phase (via forge-review) |
+| `superpowers:verification-before-completion` | Ship phase (via forge-ship) |
+| `superpowers:finishing-a-development-branch` | Ship phase (via forge-ship) |
+| `superpowers:dispatching-parallel-agents` | Build phase (forge dispatches its own agent team) |
+| `superpowers:using-git-worktrees` | Build phase (forge-generator uses worktrees) |
+| `feature-dev:feature-dev` | Entire lifecycle (forge-feature supersedes this) |
+
+### When NOT to use Forge
+
+Forge is for **development work**. These tasks should NOT go through forge:
+- Explaining concepts, answering questions about code
+- Reading/searching files without intent to modify
+- Writing documentation, cover letters, presentations
+- Configuring Claude Code settings, hooks, keybindings
+- Creating or editing skills (use `skill-creator:skill-creator`)
+- Searching conversation history (use `episodic-memory`)
+- Data manipulation (spreadsheets, CSVs) without code changes
 
 ## How to Use Forge
 

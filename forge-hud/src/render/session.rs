@@ -1,44 +1,32 @@
 use crate::render::colors::*;
 use crate::state::HudState;
 
-/// Line 2: Forge status — version, session, memory, security, agents, tokens, skills.
-/// Only sections with real data are shown; empty sections are omitted entirely.
-pub fn render_line2(state: &HudState, width: usize) -> String {
-    let sep = format!(" {DIM}|{RESET} ");
+/// Line 3: Forge version, security status, agent team
+///   Forge v0.3.0 │ ✓ secure │ ◐ planner (Bash) ◐ generator (Edit) ✓ evaluator
+pub fn render_line3(state: &HudState, _width: usize) -> String {
+    let sep = format!(" {DIM}\u{2502}{RESET} "); // │
 
-    // Version is always shown
-    let mut parts: Vec<String> = vec![render_version(&state.version)];
+    let version = render_version(&state.version);
+    let security = render_security(&state.security);
 
-    // Session: only if mode is set
-    if state.session.mode.is_some() {
-        parts.push(render_session(&state.session));
+    let agents_or_memory = if !state.team.is_empty() {
+        render_team(&state.team)
+    } else {
+        render_memory_fallback(&state.memory)
+    };
+
+    let tasks = state.tasks.as_ref().and_then(|t| render_tasks(t));
+
+    let mut result = format!("  {version}{sep}{security}");
+    if !agents_or_memory.is_empty() {
+        result.push_str(&sep);
+        result.push_str(&agents_or_memory);
     }
-
-    // Memory: only if decisions + patterns + lessons > 0
-    let mem_total = state.memory.decisions + state.memory.patterns + state.memory.lessons;
-    if mem_total > 0 {
-        parts.push(render_memory(&state.memory));
+    if let Some(task_str) = tasks {
+        result.push_str(&sep);
+        result.push_str(&task_str);
     }
-
-    // Security: always shown (even "✓ secure" is useful)
-    parts.push(render_security(&state.security));
-
-    // Team: only if non-empty
-    if !state.team.is_empty() {
-        parts.push(render_team(&state.team));
-    }
-
-    // Tokens: only if non-zero AND width >= 140
-    if width >= 140 && (state.tokens.input > 0 || state.tokens.output > 0) {
-        parts.push(render_tokens(&state.tokens));
-    }
-
-    // Skills: only if non-zero AND width >= 180
-    if width >= 180 && state.skills.active > 0 {
-        parts.push(render_skills(&state.skills));
-    }
-
-    parts.join(&sep)
+    result
 }
 
 fn render_version(v: &Option<String>) -> String {
@@ -46,51 +34,22 @@ fn render_version(v: &Option<String>) -> String {
     format!("{BOLD}{GREEN}Forge v{}{RESET}", sanitize(ver))
 }
 
-fn render_session(s: &crate::state::SessionInfo) -> String {
-    match (&s.mode, &s.phase, &s.wave) {
-        (Some(m), Some(p), Some(w)) => {
-            format!("{BOLD}{MAGENTA}{}{RESET} {DIM}\u{203a}{RESET} {MAGENTA}{}{RESET} {DIM}[wave {CYAN}{}{RESET}{DIM}]{RESET}",
-                sanitize(m), sanitize(p), sanitize(w))
-        }
-        (Some(m), Some(p), None) => {
-            format!("{BOLD}{MAGENTA}{}{RESET} {DIM}\u{203a}{RESET} {MAGENTA}{}{RESET}",
-                sanitize(m), sanitize(p))
-        }
-        (Some(m), None, _) => format!("{MAGENTA}{}{RESET}", sanitize(m)),
-        _ => String::new(),
-    }
-}
-
-fn render_memory(m: &crate::state::MemoryStats) -> String {
-    let mut parts = Vec::new();
-    if m.decisions > 0 { parts.push(format!("{} decision{}", m.decisions, plural(m.decisions))); }
-    if m.patterns > 0 { parts.push(format!("{} pattern{}", m.patterns, plural(m.patterns))); }
-    if m.lessons > 0 { parts.push(format!("{} lesson{}", m.lessons, plural(m.lessons))); }
-    format!("{BLUE}{}{RESET}", parts.join(" \u{00b7} "))
-}
-
 fn render_security(s: &crate::state::SecurityStats) -> String {
-    let c = crate::render::colors::security_color(s.stale, s.exposed);
-    if s.total == 0 {
-        return format!("{GREEN}\u{2713} secure{RESET}");
-    }
     if s.exposed > 0 {
-        format!("{c}\u{26a0} {} secret{} ({} exposed){RESET}", s.total, plural(s.total), s.exposed)
+        format!("{RED}\u{26a0} {} exposed{RESET}", s.exposed)
     } else if s.stale > 0 {
-        format!("{c}\u{26a0} {} secret{} ({} stale){RESET}", s.total, plural(s.total), s.stale)
+        format!("{YELLOW}\u{26a0} {} stale{RESET}", s.stale)
     } else {
-        format!("{c}{} secret{}{RESET}", s.total, plural(s.total))
+        format!("{GREEN}\u{2713} secure{RESET}")
     }
 }
 
 fn render_team(team: &std::collections::HashMap<String, crate::state::AgentInfo>) -> String {
-    let mut parts = Vec::new();
-    // Sort agents by key for consistent display
     let mut entries: Vec<_> = team.iter().collect();
     entries.sort_by_key(|(k, _)| (*k).clone());
 
+    let mut parts = Vec::new();
     for (agent_id, info) in entries {
-        // Display name: prefer agent_type, strip "forge-" prefix; fallback to agent_id
         let display_name = info
             .agent_type
             .as_deref()
@@ -98,11 +57,11 @@ fn render_team(team: &std::collections::HashMap<String, crate::state::AgentInfo>
         let short = sanitize(display_name.strip_prefix("forge-").unwrap_or(display_name));
 
         let (icon, color) = match info.status.as_deref() {
-            Some("done") => ("\u{2713}", GREEN),     // checkmark
-            Some("running") => ("\u{25b6}", YELLOW),  // play
-            Some("pending") => ("\u{23f3}", DIM),     // hourglass
-            Some("blocked") => ("\u{2717}", RED),     // x
-            Some("stale") => ("\u{26a0}", RED),       // warning
+            Some("done") => ("\u{2713}", GREEN),       // ✓
+            Some("running") => ("\u{25d0}", YELLOW),    // ◐
+            Some("pending") => ("\u{23f3}", DIM),       // ⏳
+            Some("blocked") => ("\u{2717}", RED),       // ✗
+            Some("stale") => ("\u{26a0}", RED),         // ⚠
             _ => ("?", DIM),
         };
         let tool_info = if info.status.as_deref() == Some("running") {
@@ -114,24 +73,38 @@ fn render_team(team: &std::collections::HashMap<String, crate::state::AgentInfo>
         };
         parts.push(format!("{color}{icon}{RESET} {short}{tool_info}"));
     }
-    parts.join("  ")
+    parts.join(" ")
 }
 
-fn render_tokens(t: &crate::state::TokenStats) -> String {
-    let rc = ratio_color(t.deterministic_ratio);
-    let pct = (t.deterministic_ratio * 100.0) as u64;
-    format!("{rc}{}K in \u{00b7} {}K out \u{00b7} {pct}% deterministic{RESET}", t.input / 1000, t.output / 1000)
-}
-
-fn render_skills(s: &crate::state::SkillStats) -> String {
-    if s.fix_candidates > 0 {
-        format!("{} skill{} {YELLOW}({} need{} fix){RESET}",
-            s.active, plural(s.active), s.fix_candidates, if s.fix_candidates == 1 { "s" } else { "" })
+fn render_tasks(t: &crate::state::TaskStats) -> Option<String> {
+    // Only render if there's an in-progress task
+    let subject = t.in_progress.as_ref()?;
+    let truncated = if subject.chars().count() > 40 {
+        let s: String = subject.chars().take(40).collect();
+        format!("{s}...")
     } else {
-        format!("{} skill{}", s.active, plural(s.active))
-    }
+        subject.clone()
+    };
+    let truncated = sanitize(&truncated);
+    Some(format!(
+        "{YELLOW}\u{25b8}{RESET} {truncated} {DIM}({}/{}){RESET}",
+        t.completed, t.total
+    ))
 }
 
-fn plural(n: u64) -> &'static str {
-    if n == 1 { "" } else { "s" }
+fn render_memory_fallback(m: &crate::state::MemoryStats) -> String {
+    let mut parts = Vec::new();
+    if m.decisions > 0 {
+        parts.push(format!("{} decision{}", m.decisions, if m.decisions == 1 { "" } else { "s" }));
+    }
+    if m.patterns > 0 {
+        parts.push(format!("{} pattern{}", m.patterns, if m.patterns == 1 { "" } else { "s" }));
+    }
+    if m.lessons > 0 {
+        parts.push(format!("{} lesson{}", m.lessons, if m.lessons == 1 { "" } else { "s" }));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("{BLUE}{}{RESET}", parts.join(" \u{00b7} "))
 }
