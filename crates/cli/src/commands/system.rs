@@ -385,6 +385,35 @@ pub async fn sessions(active_only: bool) {
     }
 }
 
+/// Show available language servers for the current project.
+pub async fn lsp_status() {
+    match client::send(&Request::LspStatus).await {
+        Ok(Response::Ok {
+            data: ResponseData::LspStatus { servers },
+        }) => {
+            if servers.is_empty() {
+                println!("No language servers detected for the current project.");
+                println!("Tip: Set FORGE_PROJECT to your project directory, or ensure language server binaries are on PATH.");
+            } else {
+                println!("Language Servers:");
+                for s in &servers {
+                    let status = if s.available { "available" } else { "not found" };
+                    println!("  {} — {} ({})", s.language, s.command, status);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     format!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())

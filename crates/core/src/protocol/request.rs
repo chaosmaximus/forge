@@ -65,5 +65,7 @@ pub enum Request {
     EndSession { id: String },
     /// List sessions
     Sessions { active_only: Option<bool> },
+    /// Query which language servers are available for the current project
+    LspStatus,
     Shutdown,
 }

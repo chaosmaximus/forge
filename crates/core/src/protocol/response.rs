@@ -77,6 +77,7 @@ pub enum ResponseData {
     SessionRegistered { id: String },
     SessionEnded { id: String, found: bool },
     Sessions { sessions: Vec<SessionInfo>, count: usize },
+    LspStatus { servers: Vec<LspServerInfo> },
     Shutdown,
 }
 
@@ -112,6 +113,13 @@ pub struct SessionInfo {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LspServerInfo {
+    pub language: String,
+    pub command: String,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -110,6 +110,9 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
+    /// Show available language servers for the current project
+    #[command(name = "lsp-status")]
+    LspStatus,
 }
 
 #[derive(Subcommand)]
@@ -186,6 +189,9 @@ async fn main() {
         }
         Commands::Sessions { all } => {
             commands::system::sessions(!all).await;
+        }
+        Commands::LspStatus => {
+            commands::system::lsp_status().await;
         }
     }
 }

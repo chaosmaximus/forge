@@ -464,6 +464,25 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::LspStatus => {
+            let project_dir = crate::workers::indexer::find_project_dir();
+            let servers = match project_dir {
+                Some(ref dir) => crate::lsp::detect::detect_language_servers(dir),
+                None => vec![],
+            };
+            let infos: Vec<forge_core::protocol::LspServerInfo> = servers
+                .into_iter()
+                .map(|s| forge_core::protocol::LspServerInfo {
+                    language: s.language,
+                    command: s.command,
+                    available: true, // detect_language_servers only returns servers that exist on PATH
+                })
+                .collect();
+            Response::Ok {
+                data: ResponseData::LspStatus { servers: infos },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
