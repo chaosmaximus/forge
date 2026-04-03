@@ -113,6 +113,27 @@ enum Commands {
     /// Show available language servers for the current project
     #[command(name = "lsp-status")]
     LspStatus,
+    /// Show Manas 8-layer memory health
+    #[command(name = "manas-health")]
+    ManasHealth,
+    /// Manage agent identity (Ahankara)
+    Identity {
+        #[command(subcommand)]
+        action: IdentityAction,
+    },
+    /// Show platform information (Layer 1)
+    Platform,
+    /// List discovered tools (Layer 2)
+    Tools,
+    /// List unconsumed perceptions (Layer 6)
+    Perceptions {
+        /// Filter by project
+        #[arg(long)]
+        project: Option<String>,
+        /// Maximum results
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
     /// Register an active agent session
     #[command(name = "register-session")]
     RegisterSession {
@@ -144,6 +165,36 @@ enum DaemonAction {
     Status,
     /// Stop the daemon
     Stop,
+}
+
+#[derive(Subcommand)]
+enum IdentityAction {
+    /// List identity facets
+    List {
+        /// Agent name (default: claude-code)
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
+    },
+    /// Set an identity facet
+    Set {
+        /// Facet type (role, expertise, values, goals, constraints)
+        #[arg(long)]
+        facet: String,
+        /// Description
+        #[arg(long)]
+        description: String,
+        /// Agent name
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
+        /// Strength (0.0-1.0)
+        #[arg(long, default_value = "0.5")]
+        strength: f64,
+    },
+    /// Remove (deactivate) an identity facet
+    Remove {
+        /// Facet ID to deactivate
+        id: String,
+    },
 }
 
 #[tokio::main]
@@ -221,6 +272,34 @@ async fn main() {
         }
         Commands::EndSession { id } => {
             commands::system::end_session(id).await;
+        }
+        Commands::ManasHealth => {
+            commands::manas::manas_health().await;
+        }
+        Commands::Identity { action } => match action {
+            IdentityAction::List { agent } => {
+                commands::manas::identity_list(agent).await;
+            }
+            IdentityAction::Set {
+                facet,
+                description,
+                agent,
+                strength,
+            } => {
+                commands::manas::identity_set(facet, description, agent, strength).await;
+            }
+            IdentityAction::Remove { id } => {
+                commands::manas::identity_remove(id).await;
+            }
+        },
+        Commands::Platform => {
+            commands::manas::platform().await;
+        }
+        Commands::Tools => {
+            commands::manas::tools().await;
+        }
+        Commands::Perceptions { project, limit } => {
+            commands::manas::perceptions(project, limit).await;
         }
     }
 }
