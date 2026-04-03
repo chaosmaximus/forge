@@ -32,7 +32,11 @@ pub async fn run_extractor(
     let mut offsets: HashMap<PathBuf, usize> = HashMap::new();
     let mut pending: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
-    eprintln!("[extractor] ready, waiting for files (30s debounce)...");
+    // Debounce: wait for 10 seconds of silence before extraction.
+    // Claude haiku extraction takes ~11s, so 10s gap means we extract
+    // roughly every conversation turn (not every keystroke).
+    const DEBOUNCE_SECS: u64 = 10;
+    eprintln!("[extractor] ready, waiting for files ({}s debounce)...", DEBOUNCE_SECS);
 
     loop {
         // Wait for a file event or shutdown
@@ -60,7 +64,7 @@ pub async fn run_extractor(
                     pending.insert(path);
                     // Reset the debounce timer (keep waiting for silence)
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(DEBOUNCE_SECS)) => {
                     // 30 seconds of silence — process all pending files
                     break;
                 }
