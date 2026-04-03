@@ -11,4 +11,5 @@ pub mod migrate;
 pub mod recall;
 pub mod sessions;
 pub mod server;
+pub mod sync;
 pub mod workers;
