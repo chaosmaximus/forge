@@ -434,6 +434,135 @@ pub fn count_symbols(conn: &Connection) -> rusqlite::Result<usize> {
     conn.query_row("SELECT count(*) FROM code_symbol", [], |r| r.get(0))
 }
 
+/// Insert an edge into the SQLite edge table (persisted, unlike in-memory GraphStore).
+pub fn store_edge(conn: &Connection, from_id: &str, to_id: &str, edge_type: &str, properties: &str) -> rusqlite::Result<()> {
+    let id = ulid::Ulid::new().to_string();
+    let now = "datetime('now')";
+    conn.execute(
+        &format!(
+            "INSERT OR IGNORE INTO edge (id, from_id, to_id, edge_type, properties, created_at, valid_from)
+             VALUES (?1, ?2, ?3, ?4, ?5, {now}, {now})"
+        ),
+        params![id, from_id, to_id, edge_type, properties],
+    )?;
+    Ok(())
+}
+
+/// Find and merge near-duplicate memories using word overlap.
+/// Only deduplicates memories of the same type.
+/// Threshold: 0.6 word overlap ratio.
+/// Returns number of duplicates merged (marked as superseded).
+pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
+    // Get all active memory IDs with titles and types
+    let mut stmt = conn.prepare(
+        "SELECT id, title, memory_type FROM memory WHERE status = 'active'"
+    )?;
+    let memories: Vec<(String, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut merged = 0usize;
+    let mut to_delete: Vec<String> = Vec::new();
+
+    for i in 0..memories.len() {
+        let (ref id_a, ref title_a, ref type_a) = memories[i];
+        if to_delete.contains(id_a) {
+            continue;
+        }
+
+        for j in (i + 1)..memories.len() {
+            let (ref id_b, ref _title_b, ref type_b) = memories[j];
+            if to_delete.contains(id_b) {
+                continue;
+            }
+            if type_a != type_b {
+                continue; // only dedup same type
+            }
+
+            // Check word overlap (fast filter)
+            let words_a: std::collections::HashSet<String> =
+                title_a.to_lowercase().split_whitespace().map(String::from).collect();
+            let words_b: std::collections::HashSet<String> =
+                memories[j].1.to_lowercase().split_whitespace().map(String::from).collect();
+            let intersection = words_a.intersection(&words_b).count() as f64;
+            let max_len = words_a.len().max(words_b.len()) as f64;
+
+            if max_len > 0.0 && (intersection / max_len) > 0.6 {
+                // Mark the later one (id_b) for deletion
+                to_delete.push(id_b.clone());
+                merged += 1;
+            }
+        }
+    }
+
+    for id in &to_delete {
+        conn.execute(
+            "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+            params![id],
+        )?;
+    }
+
+    Ok(merged)
+}
+
+/// Link memories that share 2+ tags with "related_to" edges.
+/// Returns the number of edges created.
+pub fn link_related_memories(conn: &Connection) -> rusqlite::Result<usize> {
+    // Query all active memories with their tags
+    let mut stmt = conn.prepare(
+        "SELECT id, tags FROM memory WHERE status = 'active'"
+    )?;
+    let memories: Vec<(String, Vec<String>)> = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let tags_json: String = row.get(1)?;
+            let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+            Ok((id, tags))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut created = 0usize;
+
+    for i in 0..memories.len() {
+        let (ref id_a, ref tags_a) = memories[i];
+        if tags_a.is_empty() {
+            continue;
+        }
+
+        for j in (i + 1)..memories.len() {
+            let (ref id_b, ref tags_b) = memories[j];
+            if tags_b.is_empty() {
+                continue;
+            }
+
+            // Count shared tags
+            let shared = tags_a.iter().filter(|t| tags_b.contains(t)).count();
+            if shared >= 2 {
+                // Check if edge already exists
+                let exists: bool = conn
+                    .query_row(
+                        "SELECT COUNT(*) > 0 FROM edge WHERE from_id = ?1 AND to_id = ?2 AND edge_type = 'related_to'",
+                        params![id_a, id_b],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+
+                if !exists {
+                    let props = serde_json::json!({"shared_tags": shared}).to_string();
+                    store_edge(conn, id_a, id_b, "related_to", &props)?;
+                    created += 1;
+                }
+            }
+        }
+    }
+
+    Ok(created)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

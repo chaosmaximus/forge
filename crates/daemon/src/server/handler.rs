@@ -1,3 +1,4 @@
+use crate::claude_memory;
 use crate::db::{ops, schema};
 use crate::graph::GraphStore;
 use crate::recall::hybrid_recall;
@@ -256,6 +257,57 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     files_imported,
                     symbols_imported,
                     skipped,
+                },
+            }
+        }
+
+        Request::IngestClaude => {
+            match claude_memory::ingest_claude_memories(&state.conn) {
+                Ok((imported, skipped)) => Response::Ok {
+                    data: ResponseData::IngestClaude { imported, skipped },
+                },
+                Err(e) => Response::Error {
+                    message: format!("ingest-claude failed: {e}"),
+                },
+            }
+        }
+
+        Request::Backfill { path } => {
+            // Read the transcript file, parse all chunks from offset 0, store as memories
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    let (chunks, _) = crate::chunk::parse_transcript_incremental(&content, 0);
+                    let mut stored = 0usize;
+                    for chunk in &chunks {
+                        // Store each substantial turn as a memory for later extraction
+                        if chunk.content.len() < 50 {
+                            continue; // skip trivial turns
+                        }
+                        let title = if chunk.content.len() > 80 {
+                            format!("{}...", &chunk.content[..77])
+                        } else {
+                            chunk.content.clone()
+                        };
+                        let memory = Memory::new(
+                            forge_core::types::MemoryType::Lesson,
+                            title,
+                            format!("[{}] {}", chunk.role, chunk.content),
+                        )
+                        .with_confidence(0.5)
+                        .with_tags(vec!["backfill".to_string(), "transcript".to_string()]);
+                        if ops::remember(&state.conn, &memory).is_ok() {
+                            stored += 1;
+                        }
+                    }
+                    Response::Ok {
+                        data: ResponseData::Backfill {
+                            chunks_processed: chunks.len(),
+                            memories_stored: stored,
+                        },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("backfill failed to read {}: {e}", path),
                 },
             }
         }

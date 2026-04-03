@@ -115,7 +115,7 @@ async fn process_file(
                 return Ok(());
             }
 
-            let locked = state.lock().await;
+            let mut locked = state.lock().await;
             let mut stored = 0usize;
 
             for em in &extracted {
@@ -135,6 +135,26 @@ async fn process_file(
                     eprintln!("[extractor] failed to store memory '{}': {e}", em.title);
                 } else {
                     stored += 1;
+
+                    // Wire affects field to graph edges
+                    if !em.affects.is_empty() {
+                        for affected in &em.affects {
+                            locked.graph.add_edge(
+                                &memory.id,
+                                &format!("file:{}", affected),
+                                "affects",
+                                serde_json::json!({}),
+                            );
+                            // Also persist to SQLite edge table
+                            let _ = ops::store_edge(
+                                &locked.conn,
+                                &memory.id,
+                                &format!("file:{}", affected),
+                                "affects",
+                                "{}",
+                            );
+                        }
+                    }
                 }
             }
 

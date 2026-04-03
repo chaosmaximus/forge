@@ -50,6 +50,14 @@ pub enum ResponseData {
         symbols_imported: usize,
         skipped: usize,
     },
+    IngestClaude {
+        imported: usize,
+        skipped: usize,
+    },
+    Backfill {
+        chunks_processed: usize,
+        memories_stored: usize,
+    },
     Shutdown,
 }
 

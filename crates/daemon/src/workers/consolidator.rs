@@ -2,6 +2,7 @@
 //
 // Periodically applies exponential confidence decay to memories based on time
 // since last access. Memories that fall below 0.1 confidence are marked "faded".
+// Also runs semantic dedup (word-overlap) and links related memories by shared tags.
 
 use crate::db::ops;
 use std::sync::Arc;
@@ -21,7 +22,7 @@ pub async fn run_consolidator(
             _ = tokio::time::sleep(CONSOLIDATION_INTERVAL) => {
                 let locked = state.lock().await;
 
-                // Dedup pass — remove duplicate memories (same title+type)
+                // Exact dedup pass — remove duplicate memories (same title+type)
                 match ops::dedup_memories(&locked.conn) {
                     Ok(removed) => {
                         if removed > 0 {
@@ -29,6 +30,26 @@ pub async fn run_consolidator(
                         }
                     }
                     Err(e) => eprintln!("[consolidator] dedup error: {}", e),
+                }
+
+                // Semantic dedup pass — merge near-duplicates by word overlap (0.6 threshold)
+                match ops::semantic_dedup(&locked.conn) {
+                    Ok(merged) => {
+                        if merged > 0 {
+                            eprintln!("[consolidator] semantic dedup merged {} near-duplicates", merged);
+                        }
+                    }
+                    Err(e) => eprintln!("[consolidator] semantic dedup error: {}", e),
+                }
+
+                // Link related memories — connect memories sharing 2+ tags
+                match ops::link_related_memories(&locked.conn) {
+                    Ok(linked) => {
+                        if linked > 0 {
+                            eprintln!("[consolidator] linked {} related memory pairs", linked);
+                        }
+                    }
+                    Err(e) => eprintln!("[consolidator] link error: {}", e),
                 }
 
                 // Decay pass — fade old memories below confidence threshold

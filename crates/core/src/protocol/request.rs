@@ -32,5 +32,11 @@ pub enum Request {
     Import {
         data: String,  // JSON string of exported data
     },
+    /// Ingest Claude Code's MEMORY.md files from ~/.claude/projects/*/memory/
+    IngestClaude,
+    /// Backfill: re-process a transcript file from scratch (ignoring offsets)
+    Backfill {
+        path: String,
+    },
     Shutdown,
 }

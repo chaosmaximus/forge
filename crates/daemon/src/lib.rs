@@ -1,4 +1,5 @@
 pub mod chunk;
+pub mod claude_memory;
 pub mod config;
 pub mod db;
 pub mod extraction;

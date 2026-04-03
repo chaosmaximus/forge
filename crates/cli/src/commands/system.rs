@@ -223,6 +223,45 @@ pub async fn import(file: Option<String>) {
     }
 }
 
+/// Ingest Claude Code's MEMORY.md files into Forge.
+pub async fn ingest_claude() {
+    match client::send(&Request::IngestClaude).await {
+        Ok(Response::Ok {
+            data: ResponseData::IngestClaude { imported, skipped },
+        }) => {
+            println!("Claude memory ingestion complete:");
+            println!("  imported: {}", imported);
+            println!("  skipped:  {}", skipped);
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {}", message),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {}", e),
+    }
+}
+
+/// Backfill: re-process a transcript file from scratch.
+pub async fn backfill(path: String) {
+    // Verify file exists before sending to daemon
+    if !std::path::Path::new(&path).exists() {
+        eprintln!("error: file not found: {}", path);
+        std::process::exit(1);
+    }
+
+    let req = Request::Backfill { path };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::Backfill { chunks_processed, memories_stored },
+        }) => {
+            println!("Backfill complete:");
+            println!("  chunks processed: {}", chunks_processed);
+            println!("  memories stored:  {}", memories_stored);
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {}", message),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {}", e),
+    }
+}
+
 fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     format!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())

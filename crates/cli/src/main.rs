@@ -75,6 +75,13 @@ enum Commands {
         #[arg(long)]
         file: Option<String>,
     },
+    /// Ingest Claude Code's MEMORY.md files into Forge
+    IngestClaude,
+    /// Backfill: re-process a transcript file from scratch
+    Backfill {
+        /// Path to transcript file
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -132,6 +139,12 @@ async fn main() {
         }
         Commands::Import { file } => {
             commands::system::import(file).await;
+        }
+        Commands::IngestClaude => {
+            commands::system::ingest_claude().await;
+        }
+        Commands::Backfill { path } => {
+            commands::system::backfill(path).await;
         }
     }
 }
