@@ -227,6 +227,25 @@ pub fn manas_recall(
         }
     }
 
+    // Search skills (Layer 2 — procedural memory)
+    if let Ok(skills) = crate::db::manas::search_skills(conn, query) {
+        for skill in skills.into_iter().take(3) {
+            results.push(MemoryResult {
+                memory: Memory::new(
+                    MemoryType::Pattern,
+                    format!("[skill:{}] {}", skill.domain, skill.name),
+                    skill.description.clone(),
+                )
+                .with_confidence(
+                    // Higher confidence for skills with more successful uses
+                    (0.5 + (skill.success_count as f64 * 0.1)).min(1.0),
+                ),
+                score: 0.6, // Skills rank between experience and domain DNA
+                source: "skill".to_string(),
+            });
+        }
+    }
+
     // Search domain DNA for the project
     if let Some(proj) = project {
         if let Ok(dna_list) = crate::db::manas::list_domain_dna(conn, Some(proj)) {
@@ -477,5 +496,59 @@ mod tests {
         // Search without project — DNA should not appear (requires project)
         let results = manas_recall(&conn, "snake_case", None, 10);
         assert!(results.is_empty(), "domain DNA should not appear without project");
+    }
+
+    #[test]
+    fn test_manas_recall_with_skill() {
+        let conn = setup();
+
+        // Store a skill
+        let skill = forge_core::types::Skill {
+            id: "s1".into(),
+            name: "Deploy Rust".into(),
+            domain: "devops".into(),
+            description: "cargo build --release then scp binary".into(),
+            steps: vec!["cargo build --release".into(), "scp binary".into()],
+            success_count: 5,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+        };
+        crate::db::manas::store_skill(&conn, &skill).unwrap();
+
+        // Search for it via manas_recall
+        let results = manas_recall(&conn, "deploy", None, 10);
+        assert!(!results.is_empty(), "should find skill via manas_recall");
+        assert_eq!(results[0].source, "skill");
+        assert!(results[0].memory.title.contains("[skill:devops]"));
+        assert!(results[0].score > 0.0);
+
+        // Confidence should be boosted by success_count (5 * 0.1 + 0.5 = 1.0)
+        assert!((results[0].memory.confidence - 1.0).abs() < f64::EPSILON,
+            "5 successes should give max confidence, got {}", results[0].memory.confidence);
+    }
+
+    #[test]
+    fn test_manas_recall_skill_no_match() {
+        let conn = setup();
+
+        let skill = forge_core::types::Skill {
+            id: "s1".into(),
+            name: "Deploy Rust".into(),
+            domain: "devops".into(),
+            description: "cargo build".into(),
+            steps: vec![],
+            success_count: 1,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+        };
+        crate::db::manas::store_skill(&conn, &skill).unwrap();
+
+        // Non-matching query should not return the skill
+        let results = manas_recall(&conn, "xyzzy_nonexistent", None, 10);
+        assert!(results.is_empty(), "non-matching query should return empty");
     }
 }

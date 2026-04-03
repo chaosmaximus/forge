@@ -8,14 +8,24 @@ use serde::Deserialize;
 
 pub const EXTRACTION_SYSTEM_PROMPT: &str = r#"Extract structured memories from this conversation.
 Return a JSON array of objects, each with:
-- type: "decision" | "lesson" | "pattern" | "preference"
+- type: "decision" | "lesson" | "pattern" | "preference" | "skill"
 - title: concise summary (under 80 chars)
 - content: full rationale/context
 - confidence: 0.0-1.0 (how certain this is a real decision/lesson)
 - tags: array of relevant keywords
 - affects: array of file paths or symbol names mentioned
 
-Only extract REAL decisions/lessons. If unsure, skip it.
+Type guidance:
+- "decision": a strategic choice made (e.g., "Use JWT for auth")
+- "lesson": something learned from experience (e.g., "Always run tests before push")
+- "pattern": a recurring approach (e.g., "Error handling uses Result<T, AppError>")
+- "preference": a user preference or working style (e.g., "Prefers TDD")
+- "skill": a REUSABLE WORKFLOW successfully demonstrated in this conversation.
+  Only extract skills when the conversation shows a COMPLETE, SUCCESSFUL workflow
+  that could be replicated. The content should describe the steps clearly.
+  Example: "Deploy Rust service: 1) cargo build --release 2) copy binary to server 3) restart systemd unit"
+
+Only extract REAL decisions/lessons/skills. If unsure, skip it.
 Return [] if nothing worth remembering.
 Return ONLY the JSON array, no other text."#;
 
@@ -46,7 +56,7 @@ impl ExtractedMemory {
     pub fn is_valid_type(&self) -> bool {
         matches!(
             self.memory_type.as_str(),
-            "decision" | "lesson" | "pattern" | "preference"
+            "decision" | "lesson" | "pattern" | "preference" | "skill"
         )
     }
 }
@@ -243,6 +253,27 @@ mod tests {
         let output = r#"[{"type":"garbage","title":"Bad","content":"x","confidence":0.9,"tags":[],"affects":[]}]"#;
         let memories = parse_extraction_output(output);
         assert!(memories.is_empty(), "invalid memory_type should be filtered out");
+    }
+
+    #[test]
+    fn test_skill_type_valid() {
+        let em = ExtractedMemory {
+            memory_type: "skill".to_string(),
+            title: "Deploy Rust service".to_string(),
+            content: "1) cargo build --release 2) scp binary 3) systemctl restart".to_string(),
+            confidence: 0.85,
+            tags: vec!["devops".to_string()],
+            affects: vec![],
+        };
+        assert!(em.is_valid_type());
+    }
+
+    #[test]
+    fn test_skill_parsed_from_json() {
+        let json = r#"[{"type":"skill","title":"Run tests","content":"1) cargo test 2) check output","confidence":0.9,"tags":["testing"],"affects":[]}]"#;
+        let result = parse_extraction_output(json);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].memory_type, "skill");
     }
 
     #[test]

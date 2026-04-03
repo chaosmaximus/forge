@@ -211,6 +211,46 @@ async fn process_file(
             let event_tx = locked.events.clone();
 
             for em in &extracted {
+                // Route skills to the skill table (Layer 2) instead of
+                // the memory table (Layer 5). The `continue` ensures a
+                // skill extraction doesn't also create a duplicate memory entry.
+                if em.memory_type == "skill" {
+                    let skill = forge_core::types::Skill {
+                        id: format!("skill-{}", ulid::Ulid::new()),
+                        name: em.title.clone(),
+                        domain: em.tags.first().cloned().unwrap_or_else(|| "general".to_string()),
+                        description: em.content.clone(),
+                        steps: em.content.lines()
+                            .filter(|l| {
+                                let trimmed = l.trim();
+                                // Match numbered steps or bullet points
+                                trimmed.starts_with(|c: char| c.is_ascii_digit())
+                                    || trimmed.starts_with('-')
+                                    || trimmed.starts_with('*')
+                                    || trimmed.starts_with("Step")
+                            })
+                            .map(|l| l.trim().to_string())
+                            .collect(),
+                        success_count: 1, // Extracted from a successful execution
+                        fail_count: 0,
+                        last_used: None,
+                        source: "extracted".to_string(),
+                        version: 1,
+                    };
+
+                    if let Err(e) = crate::db::manas::store_skill(&locked.conn, &skill) {
+                        eprintln!("[extractor] failed to store skill '{}': {e}", em.title);
+                    } else {
+                        stored += 1;
+                        events::emit(&event_tx, "skill_extracted", serde_json::json!({
+                            "skill_id": skill.id,
+                            "name": skill.name,
+                            "domain": skill.domain,
+                        }));
+                    }
+                    continue; // Don't also store as memory
+                }
+
                 let memory_type = match em.memory_type.as_str() {
                     "decision" => MemoryType::Decision,
                     "lesson" => MemoryType::Lesson,

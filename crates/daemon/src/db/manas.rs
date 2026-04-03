@@ -442,6 +442,32 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
     })
 }
 
+/// Search skills by name, description, or domain keyword (LIKE search).
+pub fn search_skills(conn: &Connection, query: &str) -> rusqlite::Result<Vec<Skill>> {
+    let search = format!("%{}%", query);
+    let mut stmt = conn.prepare(
+        "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version
+         FROM skill WHERE name LIKE ?1 OR description LIKE ?1 OR domain LIKE ?1
+         ORDER BY success_count DESC LIMIT 5"
+    )?;
+    let rows = stmt.query_map(params![search], row_to_skill)?;
+    rows.collect()
+}
+
+/// Record a skill execution result (success or failure).
+///
+/// The format! for the field name is safe because `field` is a hardcoded
+/// string literal ("success_count" or "fail_count"), not user input.
+pub fn record_skill_result(conn: &Connection, skill_id: &str, success: bool) -> rusqlite::Result<bool> {
+    // Safe: `field` is a compile-time literal, not user input
+    let field = if success { "success_count" } else { "fail_count" };
+    let updated = conn.execute(
+        &format!("UPDATE skill SET {} = {} + 1, last_used = datetime('now') WHERE id = ?1", field, field),
+        params![skill_id],
+    )?;
+    Ok(updated > 0)
+}
+
 // ──────────────────────────────────────────────
 // Layer 3: Domain DNA ops
 // ──────────────────────────────────────────────
@@ -1061,6 +1087,70 @@ mod tests {
 
         let empty = list_skills(&conn, Some("nonexistent")).unwrap();
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_search_skills() {
+        let conn = open_db();
+        let skill = Skill {
+            id: "s1".into(),
+            name: "Deploy Rust".into(),
+            domain: "devops".into(),
+            description: "cargo build then scp".into(),
+            steps: vec!["cargo build".into()],
+            success_count: 3,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+        };
+        store_skill(&conn, &skill).unwrap();
+
+        let found = search_skills(&conn, "deploy").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "Deploy Rust");
+
+        // Search by domain
+        let by_domain = search_skills(&conn, "devops").unwrap();
+        assert_eq!(by_domain.len(), 1);
+
+        // Search by description keyword
+        let by_desc = search_skills(&conn, "scp").unwrap();
+        assert_eq!(by_desc.len(), 1);
+
+        let not_found = search_skills(&conn, "nonexistent").unwrap();
+        assert!(not_found.is_empty());
+    }
+
+    #[test]
+    fn test_record_skill_result() {
+        let conn = open_db();
+        let skill = Skill {
+            id: "s1".into(),
+            name: "Test".into(),
+            domain: "qa".into(),
+            description: "Run tests".into(),
+            steps: vec![],
+            success_count: 0,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+        };
+        store_skill(&conn, &skill).unwrap();
+
+        record_skill_result(&conn, "s1", true).unwrap();
+        record_skill_result(&conn, "s1", true).unwrap();
+        record_skill_result(&conn, "s1", false).unwrap();
+
+        let skills = list_skills(&conn, None).unwrap();
+        assert_eq!(skills[0].success_count, 2);
+        assert_eq!(skills[0].fail_count, 1);
+        assert!(skills[0].last_used.is_some());
+
+        // Non-existent skill should return false
+        let updated = record_skill_result(&conn, "nonexistent", true).unwrap();
+        assert!(!updated);
     }
 
     #[test]

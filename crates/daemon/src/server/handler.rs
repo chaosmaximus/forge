@@ -189,6 +189,26 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             }
                         }).collect()
                 }
+                // "skill" → only skills (Layer 2 — procedural memory)
+                Some("skill") => {
+                    let skills = crate::db::manas::search_skills(&state.conn, &query)
+                        .unwrap_or_default();
+                    skills.into_iter()
+                        .take(lim)
+                        .map(|s| {
+                            MemoryResult {
+                                memory: forge_core::types::Memory::new(
+                                    forge_core::types::MemoryType::Pattern,
+                                    format!("[skill:{}] {}", s.domain, s.name),
+                                    s.description,
+                                ).with_confidence(
+                                    (0.5 + (s.success_count as f64 * 0.1)).min(1.0)
+                                ),
+                                score: 0.6,
+                                source: "skill".to_string(),
+                            }
+                        }).collect()
+                }
                 // None or unknown → current behavior (search everything)
                 _ => {
                     let mut results =
@@ -1861,6 +1881,57 @@ mod tests {
             Response::Ok { data: ResponseData::Memories { count, results, .. } } => {
                 assert!(count > 0, "should find perception matching 'compilation'");
                 assert_eq!(results[0].source, "perception");
+            }
+            other => panic!("expected Memories, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_recall_layer_skill() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a skill directly
+        let skill = forge_core::types::Skill {
+            id: "s1".into(),
+            name: "Deploy Rust".into(),
+            domain: "devops".into(),
+            description: "cargo build --release then scp".into(),
+            steps: vec![],
+            success_count: 5,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+        };
+        crate::db::manas::store_skill(&state.conn, &skill).unwrap();
+
+        // Recall with layer=skill should find it
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "deploy".into(),
+            memory_type: None,
+            project: None,
+            limit: None,
+            layer: Some("skill".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, results, .. } } => {
+                assert!(count > 0, "should find skill matching 'deploy'");
+                assert_eq!(results[0].source, "skill");
+            }
+            other => panic!("expected Memories, got {:?}", other),
+        }
+
+        // Non-matching query
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "xyzzy_nonexistent".into(),
+            memory_type: None,
+            project: None,
+            limit: None,
+            layer: Some("skill".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, .. } } => {
+                assert_eq!(count, 0, "should not find anything for non-matching query");
             }
             other => panic!("expected Memories, got {:?}", other),
         }
