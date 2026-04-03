@@ -104,6 +104,14 @@ fn get_unembedded_memories(conn: &rusqlite::Connection) -> Vec<(String, String)>
     let rows = match stmt.query_map([], |row| {
         let id: String = row.get(0)?;
         let text: String = row.get(1)?;
+        // Truncate to 8000 chars to stay within nomic-embed-text context window
+        let text = if text.len() > 8000 {
+            let mut end = 8000;
+            while !text.is_char_boundary(end) && end > 0 { end -= 1; }
+            text[..end].to_string()
+        } else {
+            text
+        };
         Ok((id, text))
     }) {
         Ok(r) => r,
