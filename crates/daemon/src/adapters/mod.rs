@@ -23,7 +23,12 @@ pub fn detect_adapters() -> Vec<Box<dyn AgentAdapter>> {
         adapters.push(Box::new(claude));
     }
 
-    // Cline and Codex will be added by other agents — for now create empty placeholder files
+    let cline = cline::ClineAdapter::new(&home);
+    if !cline.watch_dirs().is_empty() {
+        adapters.push(Box::new(cline));
+    }
+
+    // Codex will be added by another agent — for now create empty placeholder file
     // so the module compiles
 
     adapters
