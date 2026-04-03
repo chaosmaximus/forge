@@ -108,7 +108,12 @@ async fn process_file(
         .collect::<Vec<_>>()
         .join("\n\n");
     let combined_text = if combined_text.len() > 50_000 {
-        combined_text[combined_text.len() - 50_000..].to_string()
+        // Find a safe UTF-8 char boundary near the 50KB mark from the end
+        let mut start = combined_text.len() - 50_000;
+        while !combined_text.is_char_boundary(start) && start < combined_text.len() {
+            start += 1;
+        }
+        combined_text[start..].to_string()
     } else {
         combined_text
     };

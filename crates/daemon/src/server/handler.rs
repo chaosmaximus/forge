@@ -248,19 +248,21 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let mut symbols_imported = 0usize;
             let mut skipped = 0usize;
 
-            // C-2: Wrap all import operations in a SQLite transaction
-            if let Err(e) = state.conn.execute_batch("BEGIN") {
-                return Response::Error {
-                    message: format!("import transaction begin failed: {e}"),
-                };
-            }
+            // RAII transaction: auto-rollback on drop if not committed
+            let tx = match state.conn.unchecked_transaction() {
+                Ok(t) => t,
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("import transaction begin failed: {e}"),
+                    };
+                }
+            };
 
             // Import memories
             if let Some(mems) = payload.memories {
                 for mem_val in mems {
-                    // Each memory in the export is a MemoryResult with flattened Memory fields
                     if let Ok(mem) = serde_json::from_value::<Memory>(mem_val) {
-                        if ops::remember(&state.conn, &mem).is_ok() {
+                        if ops::remember(&tx, &mem).is_ok() {
                             memories_imported += 1;
                         } else {
                             skipped += 1;
@@ -274,7 +276,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // Import files
             if let Some(files) = payload.files {
                 for file in &files {
-                    if ops::store_file(&state.conn, file).is_ok() {
+                    if ops::store_file(&tx, file).is_ok() {
                         files_imported += 1;
                     } else {
                         skipped += 1;
@@ -285,7 +287,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // Import symbols
             if let Some(syms) = payload.symbols {
                 for sym in &syms {
-                    if ops::store_symbol(&state.conn, sym).is_ok() {
+                    if ops::store_symbol(&tx, sym).is_ok() {
                         symbols_imported += 1;
                     } else {
                         skipped += 1;
@@ -293,9 +295,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             }
 
-            if let Err(e) = state.conn.execute_batch("COMMIT") {
-                // Attempt rollback on commit failure
-                state.conn.execute_batch("ROLLBACK").ok();
+            if let Err(e) = tx.commit() {
                 return Response::Error {
                     message: format!("import commit failed: {e}"),
                 };
@@ -350,7 +350,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             continue; // skip trivial turns
                         }
                         let title = if chunk.content.len() > 80 {
-                            format!("{}...", &chunk.content[..77])
+                            let mut end = 77;
+                            while !chunk.content.is_char_boundary(end) && end > 0 {
+                                end -= 1;
+                            }
+                            format!("{}...", &chunk.content[..end])
                         } else {
                             chunk.content.clone()
                         };
