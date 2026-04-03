@@ -640,6 +640,17 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::GuardrailsCheck { file, action } => {
             let result = crate::guardrails::check::check_action(&state.conn, &file, &action);
+
+            // Emit guardrail_warning event when check returns unsafe
+            if !result.safe {
+                crate::events::emit(&state.events, "guardrail_warning", serde_json::json!({
+                    "file": file,
+                    "safe": false,
+                    "warnings": result.warnings.clone(),
+                    "decisions_affected": result.decisions_affected.clone(),
+                }));
+            }
+
             Response::Ok {
                 data: ResponseData::GuardrailsCheck {
                     safe: result.safe,
@@ -1237,6 +1248,74 @@ mod tests {
             }
             _ => panic!("expected GuardrailsCheck response"),
         }
+    }
+
+    #[test]
+    fn test_guardrail_check_emits_warning_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+
+        // Store a decision linked to a file
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use JWT auth".into(),
+            content: "Security decision".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+        let id = match resp {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            _ => panic!("expected Stored"),
+        };
+
+        // Link decision to a file
+        crate::db::ops::store_edge(&state.conn, &id, "file:src/auth.rs", "affects", "{}").unwrap();
+
+        // Drain any prior events (e.g. from remember)
+        while rx.try_recv().is_ok() {}
+
+        // Fire guardrails check — should be unsafe because decision is linked
+        let resp = handle_request(&mut state, Request::GuardrailsCheck {
+            file: "src/auth.rs".into(),
+            action: "edit".into(),
+        });
+
+        // Verify the response itself is still correct
+        match &resp {
+            Response::Ok { data: ResponseData::GuardrailsCheck { safe, decisions_affected, .. } } => {
+                assert!(!safe);
+                assert_eq!(decisions_affected.len(), 1);
+            }
+            _ => panic!("expected GuardrailsCheck response"),
+        }
+
+        // Should have emitted a guardrail_warning event
+        let event = rx.try_recv().expect("should have emitted guardrail_warning event");
+        assert_eq!(event.event, "guardrail_warning");
+        assert_eq!(event.data["safe"], false);
+        assert_eq!(event.data["file"], "src/auth.rs");
+        assert!(event.data["warnings"].is_array());
+        assert!(event.data["decisions_affected"].is_array());
+        assert_eq!(event.data["decisions_affected"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_guardrail_check_safe_no_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+
+        // Drain any prior events
+        while rx.try_recv().is_ok() {}
+
+        // Fire guardrails check on a file with no linked decisions — should be safe
+        handle_request(&mut state, Request::GuardrailsCheck {
+            file: "src/lib.rs".into(),
+            action: "edit".into(),
+        });
+
+        // Should NOT have emitted a guardrail_warning event
+        assert!(rx.try_recv().is_err(), "should not emit event when check is safe");
     }
 
     #[test]

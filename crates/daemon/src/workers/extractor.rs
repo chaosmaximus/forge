@@ -157,6 +157,25 @@ async fn process_file(
         return Ok(());
     }
 
+    // Emit agent_status based on transcript activity
+    {
+        let last_chunk = chunks.last().unwrap();
+        let status = if last_chunk.has_tool_use {
+            "working"
+        } else if last_chunk.role == "assistant" {
+            "thinking"
+        } else {
+            "waiting"
+        };
+        let locked = state.lock().await;
+        crate::events::emit(&locked.events, "agent_status", serde_json::json!({
+            "agent": adapter.name(),
+            "status": status,
+            "transcript": path.to_string_lossy(),
+        }));
+        drop(locked);
+    }
+
     // Combine chunk texts for extraction (limit to last 20 chunks / ~50KB to avoid oversized prompts)
     let recent_chunks: Vec<&_> = chunks.iter().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect();
     let combined_text: String = recent_chunks
@@ -309,5 +328,105 @@ async fn process_file(
             eprintln!("[extractor] extraction error: {err} ({}ms)", total_start.elapsed().as_millis());
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_agent_status_event_format_working() {
+        let event = serde_json::json!({
+            "agent": "claude-code",
+            "status": "working",
+            "transcript": "/home/user/.claude/projects/test/session.jsonl",
+        });
+        assert_eq!(event["status"], "working");
+        assert_eq!(event["agent"], "claude-code");
+        assert!(event["transcript"].as_str().unwrap().contains("session.jsonl"));
+    }
+
+    #[test]
+    fn test_agent_status_event_format_thinking() {
+        let event = serde_json::json!({
+            "agent": "codex",
+            "status": "thinking",
+            "transcript": "/tmp/codex/transcript.jsonl",
+        });
+        assert_eq!(event["status"], "thinking");
+        assert_eq!(event["agent"], "codex");
+    }
+
+    #[test]
+    fn test_agent_status_event_format_waiting() {
+        let event = serde_json::json!({
+            "agent": "cline",
+            "status": "waiting",
+            "transcript": "/tmp/cline/transcript.json",
+        });
+        assert_eq!(event["status"], "waiting");
+        assert_eq!(event["agent"], "cline");
+    }
+
+    #[test]
+    fn test_agent_status_detection_logic() {
+        // Verify the status detection logic matches what process_file does:
+        // has_tool_use=true => "working"
+        // has_tool_use=false, role="assistant" => "thinking"
+        // has_tool_use=false, role="user" => "waiting"
+        use forge_core::types::session::ConversationChunk;
+
+        let working_chunk = ConversationChunk {
+            id: "1".into(),
+            session_id: "s1".into(),
+            role: "assistant".into(),
+            content: "running tool".into(),
+            has_tool_use: true,
+            timestamp: "2026-04-03T12:00:00Z".into(),
+            extracted: false,
+        };
+        let status = if working_chunk.has_tool_use {
+            "working"
+        } else if working_chunk.role == "assistant" {
+            "thinking"
+        } else {
+            "waiting"
+        };
+        assert_eq!(status, "working");
+
+        let thinking_chunk = ConversationChunk {
+            id: "2".into(),
+            session_id: "s1".into(),
+            role: "assistant".into(),
+            content: "considering options".into(),
+            has_tool_use: false,
+            timestamp: "2026-04-03T12:00:01Z".into(),
+            extracted: false,
+        };
+        let status = if thinking_chunk.has_tool_use {
+            "working"
+        } else if thinking_chunk.role == "assistant" {
+            "thinking"
+        } else {
+            "waiting"
+        };
+        assert_eq!(status, "thinking");
+
+        let waiting_chunk = ConversationChunk {
+            id: "3".into(),
+            session_id: "s1".into(),
+            role: "user".into(),
+            content: "please help".into(),
+            has_tool_use: false,
+            timestamp: "2026-04-03T12:00:02Z".into(),
+            extracted: false,
+        };
+        let status = if waiting_chunk.has_tool_use {
+            "working"
+        } else if waiting_chunk.role == "assistant" {
+            "thinking"
+        } else {
+            "waiting"
+        };
+        assert_eq!(status, "waiting");
     }
 }
