@@ -46,3 +46,4 @@ node_modules/
 .superpowers/
 .claude/worktrees/
 .codex
+product/claude-skills/
