@@ -386,26 +386,33 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::GuardrailsCheck { .. } => {
-            // TODO: Phase 3, Task 2 — wire guardrails check logic
+        Request::GuardrailsCheck { file, action } => {
+            let result = crate::guardrails::check::check_action(&state.conn, &file, &action);
             Response::Ok {
                 data: ResponseData::GuardrailsCheck {
-                    safe: true,
-                    warnings: vec![],
-                    decisions_affected: vec![],
-                    callers_count: 0,
+                    safe: result.safe,
+                    warnings: result.warnings,
+                    decisions_affected: result.decisions_affected,
+                    callers_count: result.callers_count,
                 },
             }
         }
 
-        Request::BlastRadius { .. } => {
-            // TODO: Phase 3, Task 3 — wire blast radius analysis
+        Request::BlastRadius { file } => {
+            let br = crate::guardrails::blast_radius::analyze_blast_radius(&state.conn, &file);
+            let decisions: Vec<forge_core::protocol::BlastRadiusDecision> = br
+                .decisions
+                .into_iter()
+                .map(|(id, title, confidence)| forge_core::protocol::BlastRadiusDecision {
+                    id, title, confidence,
+                })
+                .collect();
             Response::Ok {
                 data: ResponseData::BlastRadius {
-                    decisions: vec![],
-                    callers: 0,
-                    importers: vec![],
-                    files_affected: vec![],
+                    decisions,
+                    callers: br.callers,
+                    importers: br.importers,
+                    files_affected: br.files_affected,
                 },
             }
         }
@@ -673,6 +680,74 @@ mod tests {
                 assert_eq!(symbols[0].name, "main");
             }
             _ => panic!("expected Export response after import"),
+        }
+    }
+
+    #[test]
+    fn test_guardrails_check_safe() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::GuardrailsCheck {
+            file: "src/lib.rs".into(),
+            action: "edit".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::GuardrailsCheck { safe, warnings, decisions_affected, callers_count } } => {
+                assert!(safe);
+                assert!(warnings.is_empty());
+                assert!(decisions_affected.is_empty());
+                assert_eq!(callers_count, 0);
+            }
+            _ => panic!("expected GuardrailsCheck response"),
+        }
+    }
+
+    #[test]
+    fn test_guardrails_check_with_linked_decision() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use JWT".into(),
+            content: "Auth".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+        let id = match resp {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            _ => panic!("expected Stored"),
+        };
+
+        crate::db::ops::store_edge(&state.conn, &id, "file:src/auth.rs", "affects", "{}").unwrap();
+
+        let resp = handle_request(&mut state, Request::GuardrailsCheck {
+            file: "src/auth.rs".into(),
+            action: "edit".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::GuardrailsCheck { safe, decisions_affected, .. } } => {
+                assert!(!safe);
+                assert_eq!(decisions_affected.len(), 1);
+                assert_eq!(decisions_affected[0], id);
+            }
+            _ => panic!("expected GuardrailsCheck response"),
+        }
+    }
+
+    #[test]
+    fn test_blast_radius_empty() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::BlastRadius {
+            file: "src/lib.rs".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::BlastRadius { decisions, callers, importers, files_affected } } => {
+                assert!(decisions.is_empty());
+                assert_eq!(callers, 0);
+                assert!(importers.is_empty());
+                assert!(files_affected.is_empty());
+            }
+            _ => panic!("expected BlastRadius response"),
         }
     }
 }
