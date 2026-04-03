@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 pub mod events;
 pub mod extraction;
+pub mod adapters;
 pub mod guardrails;
 pub mod migrate;
 pub mod recall;
