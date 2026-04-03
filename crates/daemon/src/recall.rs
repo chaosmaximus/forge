@@ -1,6 +1,6 @@
 use crate::db::{ops, vec};
 use forge_core::protocol::MemoryResult;
-use forge_core::types::{Memory, MemoryStatus, MemoryType};
+use forge_core::types::{Memory, MemoryType};
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
 
@@ -450,7 +450,6 @@ pub fn compile_context(
                     (Some(pp), Some(proj)) => pp == proj,
                     (None, _) => true, // global perceptions always visible
                     (_, None) => true,  // no project filter = show all
-                    _ => false,
                 };
                 project_ok && matches!(
                     p.severity,

@@ -1,4 +1,6 @@
 pub mod codec;
+#[cfg(test)]
+mod contract_tests;
 pub mod request;
 pub mod response;
 
