@@ -23,5 +23,14 @@ pub enum Request {
     Health,
     Status,
     Doctor,
+    /// Export all data as JSON (for visualization, backup, or sync)
+    Export {
+        format: Option<String>,  // "json" (default) | "ndjson"
+        since: Option<String>,   // timestamp filter (optional)
+    },
+    /// Import data from JSON (stdin or file)
+    Import {
+        data: String,  // JSON string of exported data
+    },
     Shutdown,
 }

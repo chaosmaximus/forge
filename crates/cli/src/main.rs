@@ -63,6 +63,18 @@ enum Commands {
         /// Path to v1 state directory containing cache.json
         state_dir: String,
     },
+    /// Export all data as JSON (for visualization, backup, or sync)
+    Export {
+        /// Output format: json (default) or ndjson
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Import data from JSON (stdin or file)
+    Import {
+        /// File to import (reads stdin if not specified)
+        #[arg(long)]
+        file: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -114,6 +126,12 @@ async fn main() {
         }
         Commands::Migrate { state_dir } => {
             commands::system::migrate(state_dir).await;
+        }
+        Commands::Export { format } => {
+            commands::system::export(&format).await;
+        }
+        Commands::Import { file } => {
+            commands::system::import(file).await;
         }
     }
 }

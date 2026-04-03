@@ -3,7 +3,7 @@ use crate::graph::GraphStore;
 use crate::recall::hybrid_recall;
 use crate::vector::VectorIndex;
 use forge_core::protocol::*;
-use forge_core::types::Memory;
+use forge_core::types::{Memory, CodeFile, CodeSymbol};
 use rusqlite::Connection;
 use std::time::Instant;
 
@@ -158,6 +158,108 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::Export { format: _, since: _ } => {
+            let memories = ops::export_memories(&state.conn).unwrap_or_default();
+            let files = ops::export_files(&state.conn).unwrap_or_default();
+            let symbols = ops::export_symbols(&state.conn).unwrap_or_default();
+            let edges = ops::export_edges(&state.conn).unwrap_or_default();
+
+            let memory_results: Vec<MemoryResult> = memories.into_iter().map(|m| MemoryResult {
+                memory: m,
+                score: 1.0,
+                source: "export".into(),
+            }).collect();
+
+            let export_edges: Vec<ExportEdge> = edges.into_iter().map(|(from, to, etype, props)| {
+                ExportEdge {
+                    from_id: from,
+                    to_id: to,
+                    edge_type: etype,
+                    properties: serde_json::from_str(&props).unwrap_or(serde_json::Value::Null),
+                }
+            }).collect();
+
+            Response::Ok {
+                data: ResponseData::Export {
+                    memories: memory_results,
+                    files,
+                    symbols,
+                    edges: export_edges,
+                },
+            }
+        }
+
+        Request::Import { data } => {
+            // Parse the JSON export payload
+            #[derive(serde::Deserialize)]
+            struct ExportPayload {
+                memories: Option<Vec<serde_json::Value>>,
+                files: Option<Vec<CodeFile>>,
+                symbols: Option<Vec<CodeSymbol>>,
+            }
+
+            let payload: ExportPayload = match serde_json::from_str(&data) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("import parse error: {e}"),
+                    }
+                }
+            };
+
+            let mut memories_imported = 0usize;
+            let mut files_imported = 0usize;
+            let mut symbols_imported = 0usize;
+            let mut skipped = 0usize;
+
+            // Import memories
+            if let Some(mems) = payload.memories {
+                for mem_val in mems {
+                    // Each memory in the export is a MemoryResult with flattened Memory fields
+                    if let Ok(mem) = serde_json::from_value::<Memory>(mem_val) {
+                        if ops::remember(&state.conn, &mem).is_ok() {
+                            memories_imported += 1;
+                        } else {
+                            skipped += 1;
+                        }
+                    } else {
+                        skipped += 1;
+                    }
+                }
+            }
+
+            // Import files
+            if let Some(files) = payload.files {
+                for file in &files {
+                    if ops::store_file(&state.conn, file).is_ok() {
+                        files_imported += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                }
+            }
+
+            // Import symbols
+            if let Some(syms) = payload.symbols {
+                for sym in &syms {
+                    if ops::store_symbol(&state.conn, sym).is_ok() {
+                        symbols_imported += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                }
+            }
+
+            Response::Ok {
+                data: ResponseData::Import {
+                    memories_imported,
+                    files_imported,
+                    symbols_imported,
+                    skipped,
+                },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
@@ -261,6 +363,124 @@ mod tests {
                 assert!(workers.contains(&"indexer".to_string()));
             }
             _ => panic!("expected Doctor response"),
+        }
+    }
+
+    #[test]
+    fn test_export_empty() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::Export { format: None, since: None });
+        match resp {
+            Response::Ok { data: ResponseData::Export { memories, files, symbols, edges } } => {
+                assert!(memories.is_empty());
+                assert!(files.is_empty());
+                assert!(symbols.is_empty());
+                assert!(edges.is_empty());
+            }
+            _ => panic!("expected Export response"),
+        }
+    }
+
+    #[test]
+    fn test_export_with_data() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        // Remember a decision
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use Rust".into(),
+            content: "Fast".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+
+        let resp = handle_request(&mut state, Request::Export { format: None, since: None });
+        match resp {
+            Response::Ok { data: ResponseData::Export { memories, files, symbols, edges } } => {
+                assert_eq!(memories.len(), 1);
+                assert_eq!(memories[0].memory.title, "Use Rust");
+                assert_eq!(memories[0].source, "export");
+                assert!((memories[0].score - 1.0).abs() < f64::EPSILON);
+                assert!(files.is_empty());
+                assert!(symbols.is_empty());
+                assert!(edges.is_empty());
+            }
+            _ => panic!("expected Export response"),
+        }
+    }
+
+    #[test]
+    fn test_import_memories() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // First export is empty
+        let resp = handle_request(&mut state, Request::Export { format: None, since: None });
+        match &resp {
+            Response::Ok { data: ResponseData::Export { memories, .. } } => {
+                assert!(memories.is_empty());
+            }
+            _ => panic!("expected empty Export"),
+        }
+
+        // Import a memory via JSON
+        let import_data = serde_json::json!({
+            "memories": [{
+                "id": "test-import-1",
+                "memory_type": "decision",
+                "title": "Imported decision",
+                "content": "From another machine",
+                "confidence": 0.85,
+                "status": "active",
+                "project": null,
+                "tags": [],
+                "embedding": null,
+                "created_at": "2026-04-02 10:00:00",
+                "accessed_at": "2026-04-02 10:00:00"
+            }],
+            "files": [{
+                "id": "f-import-1",
+                "path": "src/lib.rs",
+                "language": "rust",
+                "project": "forge",
+                "hash": "deadbeef",
+                "indexed_at": "2026-04-02"
+            }],
+            "symbols": [{
+                "id": "s-import-1",
+                "name": "main",
+                "kind": "function",
+                "file_path": "src/main.rs",
+                "line_start": 1,
+                "line_end": 10,
+                "signature": "fn main()"
+            }]
+        });
+
+        let resp = handle_request(&mut state, Request::Import {
+            data: import_data.to_string(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Import { memories_imported, files_imported, symbols_imported, skipped } } => {
+                assert_eq!(memories_imported, 1);
+                assert_eq!(files_imported, 1);
+                assert_eq!(symbols_imported, 1);
+                assert_eq!(skipped, 0);
+            }
+            _ => panic!("expected Import response"),
+        }
+
+        // Verify the imported memory shows up in export
+        let resp = handle_request(&mut state, Request::Export { format: None, since: None });
+        match resp {
+            Response::Ok { data: ResponseData::Export { memories, files, symbols, .. } } => {
+                assert_eq!(memories.len(), 1);
+                assert_eq!(memories[0].memory.title, "Imported decision");
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].path, "src/lib.rs");
+                assert_eq!(symbols.len(), 1);
+                assert_eq!(symbols[0].name, "main");
+            }
+            _ => panic!("expected Export response after import"),
         }
     }
 }

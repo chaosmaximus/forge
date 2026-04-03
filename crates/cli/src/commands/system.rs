@@ -1,5 +1,6 @@
 use crate::client;
 use forge_core::protocol::{Request, Response, ResponseData};
+#[allow(unused_imports)]
 use forge_core::types::MemoryType;
 
 /// Print daemon health diagnostics (doctor).
@@ -158,4 +159,71 @@ pub async fn migrate(state_dir: String) {
     }
 
     println!("Migration complete: {} imported, {} skipped", imported, skipped);
+}
+
+/// Export all data as JSON.
+pub async fn export(format: &str) {
+    let req = Request::Export { format: Some(format.to_string()), since: None };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::Export { memories, files, symbols, edges } }) => {
+            let output = serde_json::json!({
+                "memories": memories,
+                "files": files,
+                "symbols": symbols,
+                "edges": edges,
+                "exported_at": chrono_now(),
+                "count": {
+                    "memories": memories.len(),
+                    "files": files.len(),
+                    "symbols": symbols.len(),
+                    "edges": edges.len(),
+                }
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {}", message),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {}", e),
+    }
+}
+
+/// Import data from JSON (stdin or file).
+pub async fn import(file: Option<String>) {
+    let data = match file {
+        Some(path) => match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) => {
+                eprintln!("error: cannot read {}: {}", path, e);
+                std::process::exit(1);
+            }
+        },
+        None => {
+            use std::io::Read;
+            let mut buf = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                eprintln!("error: cannot read stdin: {}", e);
+                std::process::exit(1);
+            }
+            buf
+        }
+    };
+
+    let req = Request::Import { data };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::Import { memories_imported, files_imported, symbols_imported, skipped } }) => {
+            println!("Import complete:");
+            println!("  memories: {}", memories_imported);
+            println!("  files:    {}", files_imported);
+            println!("  symbols:  {}", symbols_imported);
+            println!("  skipped:  {}", skipped);
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {}", message),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {}", e),
+    }
+}
+
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    format!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
 }

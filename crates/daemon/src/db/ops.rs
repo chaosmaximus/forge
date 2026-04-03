@@ -304,6 +304,87 @@ pub fn cleanup_stale_files(conn: &Connection, current_paths: &[&str]) -> rusqlit
     Ok(deleted_files + deleted_symbols)
 }
 
+/// Export all active memories as full Memory objects.
+pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at
+         FROM memory WHERE status = 'active' ORDER BY created_at DESC"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let mt_str: String = row.get(1)?;
+        let memory_type = match mt_str.as_str() {
+            "decision" => MemoryType::Decision,
+            "lesson" => MemoryType::Lesson,
+            "pattern" => MemoryType::Pattern,
+            "preference" => MemoryType::Preference,
+            _ => MemoryType::Decision, // fallback
+        };
+        let tags_json: String = row.get(7)?;
+        let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+        Ok(Memory {
+            id: row.get(0)?,
+            memory_type,
+            title: row.get(2)?,
+            content: row.get(3)?,
+            confidence: row.get(4)?,
+            status: forge_core::types::MemoryStatus::Active,
+            project: row.get(6)?,
+            tags,
+            embedding: None,
+            created_at: row.get(8)?,
+            accessed_at: row.get(9)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Export all code files.
+pub fn export_files(conn: &Connection) -> rusqlite::Result<Vec<CodeFile>> {
+    let mut stmt = conn.prepare("SELECT id, path, language, project, hash, indexed_at FROM code_file")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CodeFile {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            language: row.get(2)?,
+            project: row.get(3)?,
+            hash: row.get(4)?,
+            indexed_at: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Export all code symbols.
+pub fn export_symbols(conn: &Connection) -> rusqlite::Result<Vec<CodeSymbol>> {
+    let mut stmt = conn.prepare("SELECT id, name, kind, file_path, line_start, line_end, signature FROM code_symbol")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CodeSymbol {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            kind: row.get(2)?,
+            file_path: row.get(3)?,
+            line_start: row.get::<_, Option<usize>>(4)?.unwrap_or(0),
+            line_end: row.get(5)?,
+            signature: row.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Export all edges as (from_id, to_id, edge_type, properties_json).
+pub fn export_edges(conn: &Connection) -> rusqlite::Result<Vec<(String, String, String, String)>> {
+    let mut stmt = conn.prepare("SELECT from_id, to_id, edge_type, properties FROM edge")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    rows.collect()
+}
+
 /// Count total code files in the database.
 pub fn count_files(conn: &Connection) -> rusqlite::Result<usize> {
     conn.query_row("SELECT count(*) FROM code_file", [], |r| r.get(0))

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::types::code::{CodeFile, CodeSymbol};
 use crate::types::memory::Memory;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -37,7 +38,27 @@ pub enum ResponseData {
         workers: Vec<String>,
         uptime_secs: u64,
     },
+    Export {
+        memories: Vec<MemoryResult>,
+        files: Vec<CodeFile>,
+        symbols: Vec<CodeSymbol>,
+        edges: Vec<ExportEdge>,
+    },
+    Import {
+        memories_imported: usize,
+        files_imported: usize,
+        symbols_imported: usize,
+        skipped: usize,
+    },
     Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExportEdge {
+    pub from_id: String,
+    pub to_id: String,
+    pub edge_type: String,
+    pub properties: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

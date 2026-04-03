@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CodeFile {
     pub id: String,
     pub path: String,
@@ -10,7 +10,7 @@ pub struct CodeFile {
     pub indexed_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CodeSymbol {
     pub id: String,
     pub name: String,
