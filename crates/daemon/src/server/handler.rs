@@ -30,6 +30,9 @@ impl DaemonState {
         // Best-effort: detect and store platform info (OS, arch, shell, etc.)
         let _ = crate::db::manas::detect_and_store_platform(&conn);
 
+        // Best-effort: detect and store available CLI tools
+        let _ = crate::db::manas::detect_and_store_tools(&conn);
+
         Ok(DaemonState {
             conn,
             events: crate::events::create_event_bus(),
@@ -1066,10 +1069,10 @@ mod tests {
                 assert_eq!(edge_count, 0);
                 assert_eq!(workers.len(), 5);
                 assert!(workers.contains(&"indexer".to_string()));
-                // Manas layer counts: detect_and_store_platform may have stored
-                // some entries. The rest should be 0.
+                // Manas layer counts: detect_and_store_platform and detect_and_store_tools
+                // may have stored some entries. The rest should be 0.
                 let _ = platform_count; // platform may be non-zero from auto-detect
-                assert_eq!(tool_count, 0);
+                let _ = tool_count; // tools may be non-zero from auto-detect
                 assert_eq!(skill_count, 0);
                 assert_eq!(domain_dna_count, 0);
                 assert_eq!(perception_count, 0);
@@ -1525,8 +1528,9 @@ mod tests {
                     ..
                 },
             } => {
-                // Fresh DB: all non-platform counts should be 0
-                assert_eq!(tool_count, 0);
+                // Fresh DB: non-platform/tool counts should be 0
+                // (tool_count may be non-zero from auto-detect at startup)
+                let _ = tool_count;
                 assert_eq!(skill_count, 0);
                 assert_eq!(domain_dna_count, 0);
                 assert_eq!(perception_unconsumed, 0);
@@ -1625,15 +1629,19 @@ mod tests {
             other => panic!("expected ToolStored, got {:?}", other),
         }
 
-        // List tools
+        // List tools (includes auto-detected tools from startup + our manually stored one)
         let resp = handle_request(&mut state, Request::ListTools);
         match resp {
             Response::Ok { data: ResponseData::ToolList { tools, count } } => {
-                assert_eq!(count, 1);
-                assert_eq!(tools.len(), 1);
-                assert_eq!(tools[0].name, "cargo");
-                assert_eq!(tools[0].kind, forge_core::types::manas::ToolKind::Cli);
-                assert_eq!(tools[0].capabilities, vec!["build", "test"]);
+                assert!(count >= 1, "should have at least the manually stored tool");
+                assert_eq!(tools.len(), count);
+                // Verify our manually stored tool is present
+                let manual = tools.iter().find(|t| t.id == "t-test-1");
+                assert!(manual.is_some(), "manually stored tool should exist");
+                let manual = manual.unwrap();
+                assert_eq!(manual.name, "cargo");
+                assert_eq!(manual.kind, forge_core::types::manas::ToolKind::Cli);
+                assert_eq!(manual.capabilities, vec!["build", "test"]);
             }
             other => panic!("expected ToolList, got {:?}", other),
         }

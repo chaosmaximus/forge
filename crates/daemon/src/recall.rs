@@ -393,7 +393,8 @@ pub fn compile_context(
     }
 
     // Skill summaries (lazy loading — 1-line each, agent pulls details on demand)
-    // Skills: project-scoped (global skills + project skills)
+    // Skills: project-scoped AND tool-validated
+    let available_tools = crate::db::manas::available_tool_names(conn).unwrap_or_default();
     if let Ok(skills) = crate::db::manas::list_skills(conn, None) {
         let active_skills: Vec<_> = skills
             .into_iter()
@@ -402,6 +403,25 @@ pub fn compile_context(
                     && (s.project.is_none()
                         || s.project.as_deref() == Some("")
                         || s.project.as_deref() == project)
+            })
+            // Tool validation: if skill references a tool not available, filter it out
+            .filter(|s| {
+                // If no tools registered at all, don't filter (graceful degradation)
+                if available_tools.is_empty() { return true; }
+                // Check if skill name/description/domain references a tool not available
+                let skill_text = format!("{} {} {}", s.name, s.description, s.domain).to_lowercase();
+                let tool_keywords: &[(&str, &str)] = &[
+                    ("docker", "docker"), ("kubectl", "kubectl"), ("terraform", "terraform"),
+                    ("npm", "npm"), ("cargo", "cargo"), ("pip", "pip"),
+                    ("gcloud", "gcloud"), ("aws", "aws"), ("ssh", "ssh"),
+                    ("make", "make"), ("scp", "scp"), ("rsync", "rsync"),
+                ];
+                for (keyword, tool_name) in tool_keywords {
+                    if skill_text.contains(keyword) && !available_tools.contains(*tool_name) {
+                        return false; // Skill references a tool we don't have
+                    }
+                }
+                true
             })
             .take(5)
             .collect();
@@ -830,5 +850,108 @@ mod tests {
             "context should be budget-limited, got {} chars",
             ctx.len()
         );
+    }
+
+    #[test]
+    fn test_compile_context_filters_unavailable_skill_tools() {
+        let conn = setup();
+
+        // Store a skill that requires "kubectl"
+        let skill = forge_core::types::Skill {
+            id: "s-kubectl".into(),
+            name: "Deploy to k8s".into(),
+            domain: "kubernetes".into(),
+            description: "kubectl apply -f deployment.yaml".into(),
+            steps: vec!["kubectl apply".into()],
+            success_count: 5,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        crate::db::manas::store_skill(&conn, &skill).unwrap();
+
+        // Store available tools (only git, not kubectl)
+        let git_tool = forge_core::types::manas::Tool {
+            id: "cli:git".into(),
+            name: "git".into(),
+            kind: forge_core::types::manas::ToolKind::Cli,
+            capabilities: vec!["version-control".into()],
+            config: None,
+            health: forge_core::types::manas::ToolHealth::Healthy,
+            last_used: None,
+            use_count: 0,
+            discovered_at: "2026-04-03".into(),
+        };
+        crate::db::manas::store_tool(&conn, &git_tool).unwrap();
+
+        let ctx = compile_context(&conn, "claude-code", None);
+        // The k8s skill should NOT appear because kubectl is not in the tool table
+        assert!(!ctx.contains("Deploy to k8s"), "skill requiring unavailable tool should be filtered");
+    }
+
+    #[test]
+    fn test_compile_context_keeps_skill_with_available_tool() {
+        let conn = setup();
+
+        // Store a skill that requires "cargo"
+        let skill = forge_core::types::Skill {
+            id: "s-cargo".into(),
+            name: "Build Rust project".into(),
+            domain: "build".into(),
+            description: "cargo build --release".into(),
+            steps: vec!["cargo build --release".into()],
+            success_count: 3,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        crate::db::manas::store_skill(&conn, &skill).unwrap();
+
+        // Store cargo as available tool
+        let cargo_tool = forge_core::types::manas::Tool {
+            id: "cli:cargo".into(),
+            name: "cargo".into(),
+            kind: forge_core::types::manas::ToolKind::Cli,
+            capabilities: vec!["rust-build".into()],
+            config: None,
+            health: forge_core::types::manas::ToolHealth::Healthy,
+            last_used: None,
+            use_count: 0,
+            discovered_at: "2026-04-03".into(),
+        };
+        crate::db::manas::store_tool(&conn, &cargo_tool).unwrap();
+
+        let ctx = compile_context(&conn, "claude-code", None);
+        // The cargo skill SHOULD appear because cargo is available
+        assert!(ctx.contains("Build Rust project"), "skill with available tool should be kept");
+    }
+
+    #[test]
+    fn test_compile_context_no_tools_graceful_degradation() {
+        let conn = setup();
+
+        // Store a skill referencing docker but don't store any tools
+        let skill = forge_core::types::Skill {
+            id: "s-docker".into(),
+            name: "Docker deploy".into(),
+            domain: "devops".into(),
+            description: "docker build and push".into(),
+            steps: vec!["docker build".into()],
+            success_count: 2,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        crate::db::manas::store_skill(&conn, &skill).unwrap();
+
+        // No tools stored at all — graceful degradation: show all skills
+        let ctx = compile_context(&conn, "claude-code", None);
+        assert!(ctx.contains("Docker deploy"), "with no tools registered, all skills should pass through");
     }
 }

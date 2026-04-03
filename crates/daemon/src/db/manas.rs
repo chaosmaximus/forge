@@ -327,6 +327,73 @@ fn row_to_tool(row: &rusqlite::Row) -> rusqlite::Result<Tool> {
     })
 }
 
+/// Check if a command exists on PATH (same pattern as lsp/detect.rs).
+fn command_exists(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Scan PATH for common developer tools and store in the tool table.
+/// Returns the number of tools found.
+pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
+    let tools_to_check: &[(&str, &[&str])] = &[
+        ("git",       &["version-control", "diff", "merge", "branch"]),
+        ("cargo",     &["rust-build", "rust-test", "rust-publish"]),
+        ("rustc",     &["rust-compiler"]),
+        ("npm",       &["node-packages", "node-scripts"]),
+        ("node",      &["javascript-runtime", "node-scripts"]),
+        ("python3",   &["python-runtime", "python-scripts"]),
+        ("pip",       &["python-packages"]),
+        ("docker",    &["containers", "images", "compose"]),
+        ("kubectl",   &["kubernetes", "deployments", "pods"]),
+        ("gh",        &["github-api", "issues", "pull-requests"]),
+        ("make",      &["build-automation", "makefiles"]),
+        ("curl",      &["http-client", "api-calls"]),
+        ("jq",        &["json-processing"]),
+        ("rg",        &["fast-search", "ripgrep"]),
+        ("fd",        &["fast-find"]),
+        ("terraform", &["infrastructure", "iac"]),
+        ("gcloud",    &["gcp", "cloud"]),
+        ("aws",       &["aws", "cloud"]),
+        ("ssh",       &["remote-access", "ssh"]),
+        ("scp",       &["file-transfer", "ssh"]),
+        ("rsync",     &["file-sync"]),
+        ("tmux",      &["terminal-multiplexer"]),
+    ];
+
+    let mut found = 0;
+    let now = now_iso();
+    for (name, caps) in tools_to_check {
+        if command_exists(name) {
+            let tool = Tool {
+                id: format!("cli:{}", name),
+                name: name.to_string(),
+                kind: ToolKind::Cli,
+                capabilities: caps.iter().map(|s| s.to_string()).collect(),
+                config: None,
+                health: ToolHealth::Healthy,
+                last_used: None,
+                use_count: 0,
+                discovered_at: now.clone(),
+            };
+            store_tool(conn, &tool)?;
+            found += 1;
+        }
+    }
+    Ok(found)
+}
+
+/// Get a set of available tool names for skill validation.
+pub fn available_tool_names(conn: &Connection) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let tools = list_tools(conn, None)?;
+    Ok(tools.into_iter().map(|t| t.name).collect())
+}
+
 // ──────────────────────────────────────────────
 // Layer 2: Skill ops
 // ──────────────────────────────────────────────
@@ -1532,5 +1599,61 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_file(&file_path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_detect_and_store_tools() {
+        let conn = open_db();
+        let found = detect_and_store_tools(&conn).unwrap();
+        // Should find at least 1 tool on any dev machine (git, bash, etc.)
+        assert!(found > 0, "should detect at least one tool");
+
+        let tools = list_tools(&conn, None).unwrap();
+        assert!(!tools.is_empty());
+        // All tools should have ToolKind::Cli and ToolHealth::Healthy
+        for t in &tools {
+            assert_eq!(t.kind, ToolKind::Cli);
+            assert_eq!(t.health, ToolHealth::Healthy);
+            assert!(!t.capabilities.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_available_tool_names() {
+        let conn = open_db();
+
+        // Initially empty
+        let names = available_tool_names(&conn).unwrap();
+        assert!(names.is_empty());
+
+        // Store a tool
+        store_tool(&conn, &Tool {
+            id: "cli:git".into(),
+            name: "git".into(),
+            kind: ToolKind::Cli,
+            capabilities: vec!["version-control".into()],
+            config: None,
+            health: ToolHealth::Healthy,
+            last_used: None,
+            use_count: 0,
+            discovered_at: "2026-04-03 12:00:00".into(),
+        }).unwrap();
+
+        let names = available_tool_names(&conn).unwrap();
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("git"));
+        assert!(!names.contains("kubectl"));
+    }
+
+    #[test]
+    fn test_detect_and_store_tools_idempotent() {
+        let conn = open_db();
+        let found1 = detect_and_store_tools(&conn).unwrap();
+        let found2 = detect_and_store_tools(&conn).unwrap();
+        // Running twice should find the same number (upsert, no duplicates)
+        assert_eq!(found1, found2);
+
+        let tools = list_tools(&conn, None).unwrap();
+        assert_eq!(tools.len(), found1);
     }
 }

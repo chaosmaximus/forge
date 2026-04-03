@@ -83,9 +83,9 @@ fn test_tool_sql_injection_name() {
     // Verify tool is retrievable with the injection name intact
     let resp = handle_request(&mut state, Request::ListTools);
     match resp {
-        Response::Ok { data: ResponseData::ToolList { tools, count } } => {
-            assert_eq!(count, 1);
-            assert_eq!(tools[0].name, injection_name);
+        Response::Ok { data: ResponseData::ToolList { tools, .. } } => {
+            let our_tool = tools.iter().find(|t| t.name == injection_name);
+            assert!(our_tool.is_some(), "should find tool with injection name");
         }
         other => panic!("expected ToolList, got: {:?}", other),
     }
@@ -290,12 +290,13 @@ fn test_tool_empty_capabilities() {
     };
     handle_request(&mut state, Request::StoreTool { tool });
 
-    // List tools and verify empty capabilities is returned correctly
+    // List tools and verify our tool with empty capabilities is present
     let resp = handle_request(&mut state, Request::ListTools);
     match resp {
-        Response::Ok { data: ResponseData::ToolList { tools, count } } => {
-            assert_eq!(count, 1);
-            assert!(tools[0].capabilities.is_empty(), "empty capabilities should round-trip");
+        Response::Ok { data: ResponseData::ToolList { tools, .. } } => {
+            let our_tool = tools.iter().find(|t| t.id == "t-empty-caps");
+            assert!(our_tool.is_some(), "should find our stored tool");
+            assert!(our_tool.unwrap().capabilities.is_empty(), "empty capabilities should round-trip");
         }
         other => panic!("expected ToolList, got: {:?}", other),
     }
@@ -431,11 +432,13 @@ fn test_tool_name_special_chars() {
     // Verify XSS payload is stored as-is and retrievable
     let resp = handle_request(&mut state, Request::ListTools);
     match resp {
-        Response::Ok { data: ResponseData::ToolList { tools, count } } => {
-            assert_eq!(count, 1);
-            assert_eq!(tools[0].name, xss_name, "XSS payload should be stored as-is");
+        Response::Ok { data: ResponseData::ToolList { tools, .. } } => {
+            let xss_tool = tools.iter().find(|t| t.id == "t-xss");
+            assert!(xss_tool.is_some(), "should find XSS tool");
+            let xss_tool = xss_tool.unwrap();
+            assert_eq!(xss_tool.name, xss_name, "XSS payload should be stored as-is");
             assert_eq!(
-                tools[0].capabilities[0], "<img onerror=alert(1)>",
+                xss_tool.capabilities[0], "<img onerror=alert(1)>",
                 "XSS in capabilities should be stored as-is"
             );
         }
@@ -588,7 +591,7 @@ fn test_manas_health_after_mass_insert() {
         } => {
             // Platform may have auto-detected entries from DaemonState::new, so >= 10
             assert!(platform_count >= 10, "platform should have >= 10 entries, got: {}", platform_count);
-            assert_eq!(tool_count, 10, "should have 10 tools");
+            assert!(tool_count >= 10, "should have >= 10 tools (includes auto-detected), got: {}", tool_count);
             assert_eq!(skill_count, 10, "should have 10 skills");
             assert_eq!(domain_dna_count, 10, "should have 10 domain DNA entries");
             assert_eq!(perception_unconsumed, 10, "should have 10 unconsumed perceptions");
@@ -1055,7 +1058,7 @@ fn test_doctor_includes_manas_counts() {
             },
         } => {
             assert!(daemon_up, "daemon should be up");
-            assert_eq!(tool_count, 1, "should have 1 tool stored via handler");
+            assert!(tool_count >= 1, "should have >= 1 tool (auto-detected + stored), got: {}", tool_count);
             assert_eq!(identity_count, 1, "should have 1 identity facet");
             // platform_count may be > 0 from auto-detect; just check it exists
             let _ = platform_count;
