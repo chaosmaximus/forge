@@ -2,6 +2,7 @@ pub mod chunk;
 pub mod claude_memory;
 pub mod config;
 pub mod db;
+pub mod events;
 pub mod extraction;
 pub mod graph;
 pub mod migrate;

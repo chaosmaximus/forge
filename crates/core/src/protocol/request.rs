@@ -41,5 +41,9 @@ pub enum Request {
     Backfill {
         path: String,
     },
+    /// Subscribe to real-time event stream (keeps connection open, streams NDJSON)
+    Subscribe {
+        events: Option<Vec<String>>, // filter by event type; None = all events
+    },
     Shutdown,
 }

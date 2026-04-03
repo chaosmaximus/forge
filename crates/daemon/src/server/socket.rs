@@ -1,9 +1,9 @@
 use crate::server::handler::{handle_request, DaemonState};
-use forge_core::protocol::{decode_request, encode_response, Response};
+use forge_core::protocol::{decode_request, encode_response, Request, Response};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{broadcast, watch, Mutex};
 use tokio::time::{timeout, Duration};
 
 /// Maximum allowed line length (1 MB). Requests or responses exceeding this
@@ -168,8 +168,43 @@ pub async fn run_server(
                             }
                         };
 
+                        // If it's a Subscribe request, enter streaming mode
+                        if let Request::Subscribe { events: ref filter } = request {
+                            let mut rx = {
+                                let locked = state_clone.lock().await;
+                                locked.events.subscribe()
+                            };
+                            let filter = filter.clone();
+                            let mut sub_shutdown_rx = shutdown_tx_clone.subscribe();
+
+                            // Stream events until client disconnects or shutdown
+                            loop {
+                                tokio::select! {
+                                    result = rx.recv() => {
+                                        match result {
+                                            Ok(event) => {
+                                                // Apply filter
+                                                if let Some(ref types) = filter {
+                                                    if !types.is_empty() && !types.contains(&event.event) {
+                                                        continue;
+                                                    }
+                                                }
+                                                let line = serde_json::to_string(&event).unwrap_or_default();
+                                                if write_half.write_all(line.as_bytes()).await.is_err() { break; }
+                                                if write_half.write_all(b"\n").await.is_err() { break; }
+                                            }
+                                            Err(broadcast::error::RecvError::Closed) => break,
+                                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                        }
+                                    }
+                                    _ = sub_shutdown_rx.changed() => break,
+                                }
+                            }
+                            break; // Exit the connection loop after streaming ends
+                        }
+
                         // Check for shutdown before acquiring lock so we can respond then exit
-                        let is_shutdown = matches!(request, forge_core::protocol::Request::Shutdown);
+                        let is_shutdown = matches!(request, Request::Shutdown);
 
                         // Handle request
                         let response = {

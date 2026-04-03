@@ -236,7 +236,7 @@ pub fn health_by_project(conn: &Connection) -> rusqlite::Result<std::collections
 
     for row in rows.flatten() {
         let (proj, mtype, count) = row;
-        let entry = projects.entry(proj).or_insert_with(HealthCounts::default);
+        let entry = projects.entry(proj).or_default();
         match mtype.as_str() {
             "decision" => entry.decisions = count,
             "lesson" => entry.lessons = count,

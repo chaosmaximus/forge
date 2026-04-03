@@ -6,6 +6,7 @@
 use crate::chunk::parse_transcript_incremental;
 use crate::config::ForgeConfig;
 use crate::db::ops;
+use crate::events;
 use crate::extraction::{self, BackendChoice, ExtractionResult};
 use forge_core::types::{Memory, MemoryType};
 use std::collections::HashMap;
@@ -117,6 +118,7 @@ async fn process_file(
 
             let mut locked = state.lock().await;
             let mut stored = 0usize;
+            let event_tx = locked.events.clone();
 
             for em in &extracted {
                 let memory_type = match em.memory_type.as_str() {
@@ -135,6 +137,14 @@ async fn process_file(
                     eprintln!("[extractor] failed to store memory '{}': {e}", em.title);
                 } else {
                     stored += 1;
+
+                    // Emit extraction event for subscribers
+                    events::emit(&event_tx, "extraction", serde_json::json!({
+                        "memory_id": memory.id,
+                        "title": memory.title,
+                        "memory_type": format!("{:?}", memory.memory_type),
+                        "project": memory.project,
+                    }));
 
                     // Wire affects field to graph edges
                     if !em.affects.is_empty() {

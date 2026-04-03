@@ -1,5 +1,6 @@
 use crate::claude_memory;
 use crate::db::{ops, schema};
+use crate::events::EventSender;
 use crate::graph::GraphStore;
 use crate::recall::hybrid_recall;
 use crate::vector::VectorIndex;
@@ -12,6 +13,7 @@ pub struct DaemonState {
     pub conn: Connection,
     pub vector_idx: VectorIndex,
     pub graph: GraphStore,
+    pub events: EventSender,
     pub started_at: Instant,
 }
 
@@ -39,6 +41,7 @@ impl DaemonState {
             conn,
             vector_idx: VectorIndex::new(768),
             graph,
+            events: crate::events::create_event_bus(),
             started_at: Instant::now(),
         })
     }
@@ -384,6 +387,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 Err(e) => Response::Error {
                     message: format!("backfill failed to read {}: {e}", path),
                 },
+            }
+        }
+
+        Request::Subscribe { .. } => {
+            // Subscribe is handled directly in socket.rs (streaming mode).
+            // This arm should never be reached.
+            Response::Error {
+                message: "subscribe must be handled at the socket layer".to_string(),
             }
         }
 
