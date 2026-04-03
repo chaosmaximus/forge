@@ -3,8 +3,7 @@ use crate::client;
 /// Print Manas 8-layer memory health.
 pub async fn manas_health() {
     let request = serde_json::json!({
-        "method": "manas_health",
-        "params": {}
+        "method": "manas_health"
     });
 
     match client::send_raw(&request).await {
@@ -94,7 +93,7 @@ pub async fn manas_health() {
 /// List identity facets for an agent.
 pub async fn identity_list(agent: String) {
     let request = serde_json::json!({
-        "method": "identity_list",
+        "method": "list_identity",
         "params": {
             "agent": agent
         }
@@ -166,12 +165,14 @@ pub async fn identity_set(
     strength: f64,
 ) {
     let request = serde_json::json!({
-        "method": "identity_set",
+        "method": "store_identity",
         "params": {
-            "agent": agent,
-            "facet_type": facet,
-            "description": description,
-            "strength": strength
+            "facet": {
+                "agent": agent,
+                "facet_type": facet,
+                "description": description,
+                "strength": strength
+            }
         }
     });
 
@@ -203,7 +204,7 @@ pub async fn identity_set(
 /// Remove (deactivate) an identity facet by ID.
 pub async fn identity_remove(id: String) {
     let request = serde_json::json!({
-        "method": "identity_remove",
+        "method": "deactivate_identity",
         "params": {
             "id": id
         }
@@ -232,8 +233,7 @@ pub async fn identity_remove(id: String) {
 /// Show platform information (Layer 1).
 pub async fn platform() {
     let request = serde_json::json!({
-        "method": "platform_info",
-        "params": {}
+        "method": "list_platform"
     });
 
     match client::send_raw(&request).await {
@@ -288,8 +288,7 @@ pub async fn platform() {
 /// List discovered tools (Layer 2).
 pub async fn tools() {
     let request = serde_json::json!({
-        "method": "tools_list",
-        "params": {}
+        "method": "list_tools"
     });
 
     match client::send_raw(&request).await {
@@ -348,7 +347,7 @@ pub async fn tools() {
 /// List unconsumed perceptions (Layer 6).
 pub async fn perceptions(project: Option<String>, limit: usize) {
     let request = serde_json::json!({
-        "method": "perceptions_list",
+        "method": "list_perceptions",
         "params": {
             "project": project,
             "limit": limit
