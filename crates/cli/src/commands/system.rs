@@ -299,6 +299,69 @@ pub async fn backfill(path: String) {
     }
 }
 
+/// Pre-execution guardrail check on a file.
+pub async fn check(file: String, action: String) {
+    match client::send(&Request::GuardrailsCheck { file: file.clone(), action }).await {
+        Ok(Response::Ok {
+            data: ResponseData::GuardrailsCheck { safe, warnings, decisions_affected, callers_count },
+        }) => {
+            if safe {
+                println!("Safe to proceed — no decisions linked to {file}");
+            } else {
+                println!("{} decision(s) linked to {file}:", decisions_affected.len());
+                for w in &warnings {
+                    println!("  {w}");
+                }
+            }
+            if callers_count > 0 {
+                println!("  Note: {callers_count} caller(s) reference symbols in this file");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Blast radius analysis on a file.
+pub async fn blast_radius(file: String) {
+    match client::send(&Request::BlastRadius { file: file.clone() }).await {
+        Ok(Response::Ok {
+            data: ResponseData::BlastRadius { decisions, callers, importers, files_affected },
+        }) => {
+            println!("Blast radius for {file}:");
+            println!("  Decisions:         {}", decisions.len());
+            for d in &decisions {
+                println!("    - {} (confidence: {:.2}) [{}]", d.title, d.confidence, d.id);
+            }
+            println!("  Callers:           {callers}");
+            println!("  Importers:         {}", importers.len());
+            for imp in &importers {
+                println!("    - {imp}");
+            }
+            println!("  Co-affected files: {}", files_affected.len());
+            for f in &files_affected {
+                println!("    - {f}");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     format!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())

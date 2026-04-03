@@ -88,6 +88,22 @@ enum Commands {
         /// Path to transcript file
         path: String,
     },
+    /// Pre-execution guardrail check
+    Check {
+        /// File path to check
+        #[arg(long)]
+        file: String,
+        /// Action type: edit, delete, or rename
+        #[arg(long, default_value = "edit")]
+        action: String,
+    },
+    /// Blast radius analysis for a file
+    #[command(name = "blast-radius")]
+    BlastRadius {
+        /// File path to analyze
+        #[arg(long)]
+        file: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -155,6 +171,12 @@ async fn main() {
         }
         Commands::Backfill { path } => {
             commands::system::backfill(path).await;
+        }
+        Commands::Check { file, action } => {
+            commands::system::check(file, action).await;
+        }
+        Commands::BlastRadius { file } => {
+            commands::system::blast_radius(file).await;
         }
     }
 }
