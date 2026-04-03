@@ -66,7 +66,7 @@ impl Default for ClaudeCliConfig {
 impl Default for OllamaConfig {
     fn default() -> Self {
         Self {
-            model: "qwen3:8b".to_string(),
+            model: "gemma3:1b".to_string(),
             endpoint: "http://localhost:11434".to_string(),
         }
     }
