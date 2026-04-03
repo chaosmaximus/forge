@@ -191,7 +191,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
                 // "skill" → only skills (Layer 2 — procedural memory)
                 Some("skill") => {
-                    let skills = crate::db::manas::search_skills(&state.conn, &query)
+                    let skills = crate::db::manas::search_skills(&state.conn, &query, project.as_deref())
                         .unwrap_or_default();
                     skills.into_iter()
                         .take(lim)
@@ -1859,6 +1859,7 @@ mod tests {
             last_used: None,
             source: "extracted".into(),
             version: 1,
+            project: None,
         };
         crate::db::manas::store_skill(&state.conn, &skill).unwrap();
 

@@ -335,8 +335,8 @@ fn row_to_tool(row: &rusqlite::Row) -> rusqlite::Result<Tool> {
 pub fn store_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
     let steps_json = serde_json::to_string(&skill.steps).unwrap_or_else(|_| "[]".to_string());
     conn.execute(
-        "INSERT INTO skill (id, name, domain, description, steps, success_count, fail_count, last_used, source, version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "INSERT INTO skill (id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             domain = excluded.domain,
@@ -357,6 +357,7 @@ pub fn store_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
             skill.last_used,
             skill.source,
             skill.version as i64,
+            skill.project,
         ],
     )?;
     Ok(())
@@ -366,14 +367,14 @@ pub fn store_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
 pub fn list_skills(conn: &Connection, domain_filter: Option<&str>) -> rusqlite::Result<Vec<Skill>> {
     if let Some(d) = domain_filter {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project
              FROM skill WHERE domain = ?1 ORDER BY name"
         )?;
         let rows = stmt.query_map(params![d], row_to_skill)?;
         rows.collect()
     } else {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project
              FROM skill ORDER BY name"
         )?;
         let rows = stmt.query_map([], row_to_skill)?;
@@ -395,19 +396,32 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
         last_used: row.get(7)?,
         source: row.get(8)?,
         version: row.get::<_, i64>(9)? as u64,
+        project: row.get(10).ok().unwrap_or(None), // Optional — old rows may not have this column
     })
 }
 
 /// Search skills by name, description, or domain keyword (LIKE search).
-pub fn search_skills(conn: &Connection, query: &str) -> rusqlite::Result<Vec<Skill>> {
+/// Respects project scoping: returns skills for the given project + global skills (project IS NULL).
+pub fn search_skills(conn: &Connection, query: &str, project: Option<&str>) -> rusqlite::Result<Vec<Skill>> {
     let search = format!("%{}%", query);
-    let mut stmt = conn.prepare(
-        "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version
-         FROM skill WHERE name LIKE ?1 OR description LIKE ?1 OR domain LIKE ?1
-         ORDER BY success_count DESC LIMIT 5"
-    )?;
-    let rows = stmt.query_map(params![search], row_to_skill)?;
-    rows.collect()
+    if let Some(proj) = project {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project
+             FROM skill WHERE (name LIKE ?1 OR description LIKE ?1 OR domain LIKE ?1)
+             AND (project = ?2 OR project IS NULL OR project = '')
+             ORDER BY success_count DESC LIMIT 5"
+        )?;
+        let rows = stmt.query_map(params![search, proj], row_to_skill)?;
+        rows.collect()
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project
+             FROM skill WHERE name LIKE ?1 OR description LIKE ?1 OR domain LIKE ?1
+             ORDER BY success_count DESC LIMIT 5"
+        )?;
+        let rows = stmt.query_map(params![search], row_to_skill)?;
+        rows.collect()
+    }
 }
 
 /// Record a skill execution result (success or failure).
@@ -1011,6 +1025,7 @@ mod tests {
             last_used: None,
             source: "learned".into(),
             version: 1,
+            project: None,
         };
         let skill2 = Skill {
             id: "s2".into(),
@@ -1023,6 +1038,7 @@ mod tests {
             last_used: None,
             source: "declared".into(),
             version: 1,
+            project: None,
         };
         store_skill(&conn, &skill1).unwrap();
         store_skill(&conn, &skill2).unwrap();
@@ -1059,22 +1075,23 @@ mod tests {
             last_used: None,
             source: "extracted".into(),
             version: 1,
+            project: None,
         };
         store_skill(&conn, &skill).unwrap();
 
-        let found = search_skills(&conn, "deploy").unwrap();
+        let found = search_skills(&conn, "deploy", None).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "Deploy Rust");
 
         // Search by domain
-        let by_domain = search_skills(&conn, "devops").unwrap();
+        let by_domain = search_skills(&conn, "devops", None).unwrap();
         assert_eq!(by_domain.len(), 1);
 
         // Search by description keyword
-        let by_desc = search_skills(&conn, "scp").unwrap();
+        let by_desc = search_skills(&conn, "scp", None).unwrap();
         assert_eq!(by_desc.len(), 1);
 
-        let not_found = search_skills(&conn, "nonexistent").unwrap();
+        let not_found = search_skills(&conn, "nonexistent", None).unwrap();
         assert!(not_found.is_empty());
     }
 
@@ -1092,6 +1109,7 @@ mod tests {
             last_used: None,
             source: "extracted".into(),
             version: 1,
+            project: None,
         };
         store_skill(&conn, &skill).unwrap();
 

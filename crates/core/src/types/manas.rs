@@ -63,6 +63,7 @@ pub struct Skill {
     pub last_used: Option<String>,
     pub source: String,
     pub version: u64,
+    pub project: Option<String>,
 }
 
 // ──────────────────────────────────────────────
@@ -228,6 +229,7 @@ mod tests {
             last_used: Some("2026-04-03 12:00:00".into()),
             source: "learned".into(),
             version: 1,
+            project: None,
         };
         let json = serde_json::to_string(&skill).expect("serialize Skill");
         let restored: Skill = serde_json::from_str(&json).expect("deserialize Skill");

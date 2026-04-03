@@ -125,10 +125,12 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             fail_count INTEGER NOT NULL DEFAULT 0,
             last_used TEXT,
             source TEXT NOT NULL,
-            version INTEGER NOT NULL DEFAULT 1
+            version INTEGER NOT NULL DEFAULT 1,
+            project TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_skill_domain ON skill(domain);
         CREATE INDEX IF NOT EXISTS idx_skill_source ON skill(source);
+        CREATE INDEX IF NOT EXISTS idx_skill_project ON skill(project);
 
         -- Manas Layer 3: Domain DNA
         CREATE TABLE IF NOT EXISTS domain_dna (

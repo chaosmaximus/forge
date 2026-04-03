@@ -236,6 +236,7 @@ async fn process_file(
                         last_used: None,
                         source: "extracted".to_string(),
                         version: 1,
+                        project: None, // Skills are global — reusable across projects
                     };
 
                     if let Err(e) = crate::db::manas::store_skill(&locked.conn, &skill) {

@@ -228,7 +228,7 @@ pub fn manas_recall(
     }
 
     // Search skills (Layer 2 — procedural memory)
-    if let Ok(skills) = crate::db::manas::search_skills(conn, query) {
+    if let Ok(skills) = crate::db::manas::search_skills(conn, query, project) {
         for skill in skills.into_iter().take(3) {
             results.push(MemoryResult {
                 memory: Memory::new(
@@ -514,6 +514,7 @@ mod tests {
             last_used: None,
             source: "extracted".into(),
             version: 1,
+            project: None,
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -544,6 +545,7 @@ mod tests {
             last_used: None,
             source: "extracted".into(),
             version: 1,
+            project: None,
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 

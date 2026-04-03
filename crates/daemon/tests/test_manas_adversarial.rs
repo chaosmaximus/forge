@@ -493,6 +493,7 @@ fn test_manas_health_after_mass_insert() {
             last_used: None,
             source: "test".into(),
             version: 1,
+            project: None,
         };
         manas::store_skill(&state.conn, &skill).unwrap();
     }
@@ -735,6 +736,7 @@ fn test_skill_version_tracking() {
         last_used: None,
         source: "test".into(),
         version: 1,
+            project: None,
     };
     manas::store_skill(&conn, &skill_v1).unwrap();
 
@@ -750,6 +752,7 @@ fn test_skill_version_tracking() {
         last_used: None,
         source: "test".into(),
         version: 2,
+        project: None,
     };
     manas::store_skill(&conn, &skill_v2).unwrap();
 
@@ -905,6 +908,7 @@ fn test_manas_health_includes_all_layers() {
         last_used: None,
         source: "test".into(),
         version: 1,
+            project: None,
     };
     manas::store_skill(&state.conn, &skill).unwrap();
 
