@@ -30,12 +30,7 @@ pub fn emit(tx: &EventSender, event: &str, data: serde_json::Value) {
 }
 
 fn timestamp_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{}", secs)
+    forge_core::time::timestamp_now()
 }
 
 #[cfg(test)]

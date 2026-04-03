@@ -467,12 +467,7 @@ async fn run_index(
 }
 
 fn now_str() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{}", secs)
+    forge_core::time::timestamp_now()
 }
 
 #[cfg(test)]

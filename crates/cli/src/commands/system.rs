@@ -447,6 +447,5 @@ pub async fn end_session(id: String) {
 }
 
 fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    format!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
+    forge_core::time::timestamp_now()
 }

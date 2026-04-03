@@ -891,52 +891,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
     }
 }
 
-/// Simple timestamp helper (avoids adding chrono dependency)
+// Use shared timestamp from forge_core
 fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Simple ISO-ish format: good enough for SQLite ordering
-    let days_since_epoch = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    let mut year = 1970u64;
-    let mut remaining_days = days_since_epoch;
-    loop {
-        let is_leap = (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0));
-        let days_in_year = if is_leap { 366 } else { 365 };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        year += 1;
-    }
-
-    let months_days: &[u64] = if (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0)) {
-        &[31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        &[31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 0u64;
-    for (i, &d) in months_days.iter().enumerate() {
-        if remaining_days < d {
-            month = i as u64 + 1;
-            break;
-        }
-        remaining_days -= d;
-    }
-    if month == 0 {
-        month = 12;
-    }
-    let day = remaining_days + 1;
-
-    format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}")
+    forge_core::time::now_iso()
 }
 
 #[cfg(test)]
