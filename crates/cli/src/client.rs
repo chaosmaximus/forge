@@ -143,53 +143,6 @@ pub async fn send_no_autostart(request: &Request) -> Result<Response, String> {
     send_on_stream(connect_no_autostart().await?, request).await
 }
 
-/// Send a raw JSON value to the daemon and return the raw JSON response.
-///
-/// This allows sending requests for protocol variants that may not yet exist
-/// in the compiled `Request` enum (e.g., Manas commands being added by another agent).
-pub async fn send_raw(json_value: &serde_json::Value) -> Result<serde_json::Value, String> {
-    send_raw_on_stream(connect().await?, json_value).await
-}
-
-/// Internal: send raw JSON on an already-connected stream and read the raw JSON response.
-async fn send_raw_on_stream(
-    stream: UnixStream,
-    json_value: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let (read_half, mut write_half) = tokio::io::split(stream);
-
-    let json =
-        serde_json::to_string(json_value).map_err(|e| format!("serialize error: {e}"))?;
-    write_half
-        .write_all(json.as_bytes())
-        .await
-        .map_err(|e| format!("write error: {e}"))?;
-    write_half
-        .write_all(b"\n")
-        .await
-        .map_err(|e| format!("write newline error: {e}"))?;
-
-    let mut reader = BufReader::new(read_half);
-    let mut line = String::new();
-    let read_result = timeout(
-        CLIENT_TIMEOUT,
-        read_line_limited(&mut reader, &mut line, MAX_RESPONSE_LINE_BYTES),
-    )
-    .await;
-    match read_result {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => return Err(format!("read error: {e}")),
-        Err(_) => return Err("daemon response timed out (30s)".to_string()),
-    }
-
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return Err("empty response from daemon".to_string());
-    }
-
-    serde_json::from_str(trimmed).map_err(|e| format!("response parse error: {e}"))
-}
-
 /// Internal: send a request on an already-connected stream and read the response.
 async fn send_on_stream(stream: UnixStream, request: &Request) -> Result<Response, String> {
     let (read_half, mut write_half) = tokio::io::split(stream);
