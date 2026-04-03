@@ -27,6 +27,16 @@ pub enum ResponseData {
         workers: Vec<String>,
         memory_count: usize,
     },
+    Doctor {
+        daemon_up: bool,
+        db_size_bytes: u64,
+        memory_count: usize,
+        file_count: usize,
+        symbol_count: usize,
+        edge_count: usize,
+        workers: Vec<String>,
+        uptime_secs: u64,
+    },
     Shutdown,
 }
 

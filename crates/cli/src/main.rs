@@ -56,6 +56,13 @@ enum Commands {
     },
     /// System health
     Health,
+    /// Daemon health diagnostics
+    Doctor,
+    /// Import v1 cache.json into v2
+    Migrate {
+        /// Path to v1 state directory containing cache.json
+        state_dir: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -101,6 +108,12 @@ async fn main() {
         },
         Commands::Health => {
             commands::system::health().await;
+        }
+        Commands::Doctor => {
+            commands::system::doctor().await;
+        }
+        Commands::Migrate { state_dir } => {
+            commands::system::migrate(state_dir).await;
         }
     }
 }

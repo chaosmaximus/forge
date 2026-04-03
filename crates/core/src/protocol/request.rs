@@ -22,5 +22,6 @@ pub enum Request {
     },
     Health,
     Status,
+    Doctor,
     Shutdown,
 }

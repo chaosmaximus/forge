@@ -113,6 +113,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::Doctor => {
+            let h = ops::health(&state.conn).unwrap_or_default();
+            let files = ops::count_files(&state.conn).unwrap_or(0);
+            let symbols = ops::count_symbols(&state.conn).unwrap_or(0);
+            Response::Ok {
+                data: ResponseData::Doctor {
+                    daemon_up: true,
+                    db_size_bytes: 0, // would need DB path to check file size
+                    memory_count: h.decisions + h.lessons + h.patterns + h.preferences,
+                    file_count: files,
+                    symbol_count: symbols,
+                    edge_count: h.edges,
+                    workers: vec![
+                        "watcher".into(),
+                        "extractor".into(),
+                        "embedder".into(),
+                        "consolidator".into(),
+                        "indexer".into(),
+                    ],
+                    uptime_secs: state.started_at.elapsed().as_secs(),
+                },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
@@ -187,6 +211,35 @@ mod tests {
                 assert_eq!(decisions, 0, "fresh DB should have 0 decisions");
             }
             other => panic!("expected Health response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_doctor() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+        let resp = handle_request(&mut state, Request::Doctor);
+        match resp {
+            Response::Ok {
+                data:
+                    ResponseData::Doctor {
+                        daemon_up,
+                        memory_count,
+                        file_count,
+                        symbol_count,
+                        edge_count,
+                        workers,
+                        ..
+                    },
+            } => {
+                assert!(daemon_up);
+                assert_eq!(memory_count, 0);
+                assert_eq!(file_count, 0);
+                assert_eq!(symbol_count, 0);
+                assert_eq!(edge_count, 0);
+                assert_eq!(workers.len(), 5);
+                assert!(workers.contains(&"indexer".to_string()));
+            }
+            _ => panic!("expected Doctor response"),
         }
     }
 }
