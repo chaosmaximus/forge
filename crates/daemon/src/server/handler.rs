@@ -75,6 +75,24 @@ impl DaemonState {
             cs.exact_dedup, cs.semantic_dedup, cs.linked, cs.faded, cs.promoted, cs.reconsolidated
         );
 
+        // Ingest project documentation (Layer 7 — Declared Knowledge)
+        // and detect project type (Layer 4 — Domain DNA)
+        let project_dir = std::env::var("FORGE_PROJECT_DIR")
+            .or_else(|_| std::env::current_dir().map(|p| p.to_string_lossy().to_string()))
+            .unwrap_or_default();
+        if !project_dir.is_empty() {
+            match crate::db::manas::ingest_project_declared(&conn, &project_dir) {
+                Ok((ingested, _)) if ingested > 0 => eprintln!("[daemon] ingested {} declared knowledge files", ingested),
+                Ok(_) => {},
+                Err(e) => eprintln!("[daemon] WARN: declared knowledge ingestion failed: {e}"),
+            }
+            match crate::db::manas::detect_domain_dna(&conn, &project_dir) {
+                Ok(n) if n > 0 => eprintln!("[daemon] detected {} project type markers", n),
+                Ok(_) => {},
+                Err(e) => eprintln!("[daemon] WARN: domain DNA detection failed: {e}"),
+            }
+        }
+
         Ok(DaemonState {
             conn,
             events: crate::events::create_event_bus(),
@@ -1500,9 +1518,9 @@ mod tests {
                 let _ = platform_count; // platform may be non-zero from auto-detect
                 let _ = tool_count; // tools may be non-zero from auto-detect
                 assert_eq!(skill_count, 0);
-                assert_eq!(domain_dna_count, 0);
+                let _ = domain_dna_count; // may be non-zero from auto-detect (Cargo.toml in test dir)
                 assert_eq!(perception_count, 0);
-                assert_eq!(declared_count, 0);
+                let _ = declared_count; // may be non-zero from auto-detect (CLAUDE.md in test dir)
                 assert_eq!(identity_count, 0);
                 assert_eq!(disposition_count, 0);
             }
@@ -2032,9 +2050,9 @@ mod tests {
                 // (tool_count may be non-zero from auto-detect at startup)
                 let _ = tool_count;
                 assert_eq!(skill_count, 0);
-                assert_eq!(domain_dna_count, 0);
+                let _ = domain_dna_count; // may be non-zero from auto-detect
                 assert_eq!(perception_unconsumed, 0);
-                assert_eq!(declared_count, 0);
+                let _ = declared_count; // may be non-zero from auto-detect
                 assert_eq!(identity_facets, 0);
                 assert_eq!(disposition_traits, 0);
                 assert_eq!(experience_count, 0);
