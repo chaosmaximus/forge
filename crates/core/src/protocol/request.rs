@@ -14,6 +14,14 @@ pub struct EvaluationFinding {
     pub category: String,
 }
 
+/// A single recall query for BatchRecall.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecallQuery {
+    pub text: String,
+    pub memory_type: Option<MemoryType>,
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
@@ -200,6 +208,17 @@ pub enum Request {
     /// Query aggregated metrics/stats for a time period
     GetStats {
         hours: Option<u64>,
+    },
+
+    /// Get graph data for Cortex 3D visualization — nodes (memories) + edges
+    GetGraphData {
+        layer: Option<String>,  // filter by layer name, or None for all
+        limit: Option<usize>,   // max nodes per layer (default 50)
+    },
+
+    /// Batch recall — multiple queries in single request (eliminates N+1 for sidebar)
+    BatchRecall {
+        queries: Vec<RecallQuery>,
     },
 
     Shutdown,

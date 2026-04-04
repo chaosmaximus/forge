@@ -1492,6 +1492,37 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::GetGraphData { layer, limit } => {
+            let max = limit.unwrap_or(50);
+            match ops::get_graph_data(&state.conn, layer.as_deref(), max) {
+                Ok((nodes, edges)) => {
+                    let total_nodes = nodes.len();
+                    let total_edges = edges.len();
+                    Response::Ok {
+                        data: ResponseData::GraphData { nodes, edges, total_nodes, total_edges },
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[handler] ERROR: graph query failed: {e}");
+                    Response::Error { message: format!("graph query failed: {e}") }
+                }
+            }
+        }
+
+        Request::BatchRecall { queries } => {
+            let mut all_results = Vec::new();
+            for q in &queries {
+                let lim = q.limit.unwrap_or(5);
+                let results = hybrid_recall(
+                    &state.conn, &q.text, None, q.memory_type.as_ref(), None, lim,
+                );
+                all_results.push(results);
+            }
+            Response::Ok {
+                data: ResponseData::BatchRecallResults { results: all_results },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
@@ -3200,6 +3231,197 @@ mod tests {
                 assert_eq!(contradictions, 0);
             }
             other => panic!("expected ConsolidationComplete, got {:?}", other),
+        }
+    }
+
+    // ── Cortex endpoint tests ──
+
+    #[test]
+    fn test_get_graph_data_returns_nodes_and_edges() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store some memories
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use Rust".into(),
+            content: "For performance".into(),
+            confidence: Some(0.9),
+            tags: None,
+            project: None,
+        });
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Lesson,
+            title: "Always test".into(),
+            content: "Testing prevents regressions".into(),
+            confidence: Some(0.8),
+            tags: None,
+            project: None,
+        });
+
+        let resp = handle_request(&mut state, Request::GetGraphData {
+            layer: None,
+            limit: Some(50),
+        });
+
+        match resp {
+            Response::Ok { data: ResponseData::GraphData { nodes, edges: _, total_nodes, total_edges: _ } } => {
+                // Should have at least the 2 memory nodes plus platform/tool nodes
+                assert!(total_nodes >= 2, "should have at least 2 nodes, got {}", total_nodes);
+                // Verify the memory nodes are present
+                let memory_nodes: Vec<_> = nodes.iter().filter(|n| n.layer == "experience").collect();
+                assert!(memory_nodes.len() >= 2, "should have at least 2 experience nodes");
+                for node in &memory_nodes {
+                    assert!(!node.id.is_empty());
+                    assert!(!node.title.is_empty());
+                    assert!(node.confidence > 0.0);
+                }
+            }
+            other => panic!("expected GraphData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_get_graph_data_layer_filter() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store a memory (experience layer)
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use Rust".into(),
+            content: "For performance".into(),
+            confidence: Some(0.9),
+            tags: None,
+            project: None,
+        });
+
+        // Filter by experience layer — should get memory nodes
+        let resp = handle_request(&mut state, Request::GetGraphData {
+            layer: Some("experience".into()),
+            limit: Some(50),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::GraphData { nodes, .. } } => {
+                assert!(!nodes.is_empty(), "experience layer should have nodes");
+                for node in &nodes {
+                    assert_eq!(node.layer, "experience", "all nodes should be experience layer");
+                }
+            }
+            other => panic!("expected GraphData, got {:?}", other),
+        }
+
+        // Filter by identity layer — should be empty (no identity facets stored)
+        let resp = handle_request(&mut state, Request::GetGraphData {
+            layer: Some("identity".into()),
+            limit: Some(50),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::GraphData { nodes, .. } } => {
+                assert!(nodes.is_empty(), "identity layer should have no nodes when no facets stored");
+            }
+            other => panic!("expected GraphData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_get_graph_data_position_hints() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Position test".into(),
+            content: "Check xyz".into(),
+            confidence: Some(0.9),
+            tags: None,
+            project: None,
+        });
+
+        let resp = handle_request(&mut state, Request::GetGraphData {
+            layer: Some("experience".into()),
+            limit: Some(50),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::GraphData { nodes, .. } } => {
+                assert!(!nodes.is_empty());
+                for node in &nodes {
+                    // x and z should be in [-1.0, 1.0] range
+                    assert!(node.x >= -1.0 && node.x <= 1.0, "x={} out of range", node.x);
+                    assert!(node.z >= -1.0 && node.z <= 1.0, "z={} out of range", node.z);
+                    // y should be the layer height (experience = 3.0-4.0)
+                    assert!(node.y >= 0.0, "y={} should be non-negative", node.y);
+                }
+            }
+            other => panic!("expected GraphData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_batch_recall_returns_per_query() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store some memories
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use Rust for backend".into(),
+            content: "Rust gives memory safety".into(),
+            confidence: Some(0.9),
+            tags: None,
+            project: None,
+        });
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Lesson,
+            title: "TypeScript for frontend".into(),
+            content: "React with TypeScript is productive".into(),
+            confidence: Some(0.8),
+            tags: None,
+            project: None,
+        });
+
+        let resp = handle_request(&mut state, Request::BatchRecall {
+            queries: vec![
+                forge_core::protocol::RecallQuery {
+                    text: "Rust backend".into(),
+                    memory_type: None,
+                    limit: Some(5),
+                },
+                forge_core::protocol::RecallQuery {
+                    text: "TypeScript frontend".into(),
+                    memory_type: None,
+                    limit: Some(5),
+                },
+                forge_core::protocol::RecallQuery {
+                    text: "Python machine learning".into(),
+                    memory_type: None,
+                    limit: Some(5),
+                },
+            ],
+        });
+
+        match resp {
+            Response::Ok { data: ResponseData::BatchRecallResults { results } } => {
+                assert_eq!(results.len(), 3, "should have 3 result sets for 3 queries");
+                // First query should find the Rust memory
+                assert!(!results[0].is_empty(), "Rust query should return results");
+                // Second query should find the TypeScript memory
+                assert!(!results[1].is_empty(), "TypeScript query should return results");
+                // Third query about Python may or may not return results (FTS matching)
+            }
+            other => panic!("expected BatchRecallResults, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_batch_recall_empty_queries() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let resp = handle_request(&mut state, Request::BatchRecall {
+            queries: vec![],
+        });
+
+        match resp {
+            Response::Ok { data: ResponseData::BatchRecallResults { results } } => {
+                assert!(results.is_empty(), "empty queries should return empty results");
+            }
+            other => panic!("expected BatchRecallResults, got {:?}", other),
         }
     }
 }

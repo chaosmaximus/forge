@@ -7,7 +7,7 @@
 #[cfg(test)]
 mod tests {
     use crate::protocol::codec::decode_request;
-    use crate::protocol::request::{EvaluationFinding, Request};
+    use crate::protocol::request::{EvaluationFinding, RecallQuery, Request};
     use crate::types::manas::{
         IdentityFacet, Perception, PerceptionKind, Severity, Tool, ToolHealth, ToolKind,
     };
@@ -324,6 +324,23 @@ mod tests {
                     project: Some("forge".into()),
                 },
             ),
+            (
+                "get_graph_data",
+                Request::GetGraphData {
+                    layer: Some("experience".into()),
+                    limit: Some(50),
+                },
+            ),
+            (
+                "batch_recall",
+                Request::BatchRecall {
+                    queries: vec![RecallQuery {
+                        text: "test query".into(),
+                        memory_type: None,
+                        limit: Some(5),
+                    }],
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -493,6 +510,22 @@ mod tests {
                 "bootstrap no project",
                 r#"{"method":"bootstrap","params":{}}"#,
             ),
+            (
+                "get_graph_data",
+                r#"{"method":"get_graph_data","params":{"layer":"experience","limit":50}}"#,
+            ),
+            (
+                "get_graph_data no params",
+                r#"{"method":"get_graph_data","params":{}}"#,
+            ),
+            (
+                "batch_recall",
+                r#"{"method":"batch_recall","params":{"queries":[{"text":"test query","limit":5}]}}"#,
+            ),
+            (
+                "batch_recall empty",
+                r#"{"method":"batch_recall","params":{"queries":[]}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -542,17 +575,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 50 Request variants.
+    /// Ensure we cover ALL 52 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
         // Unit variants: 15 (added ForceExtract, GetConfig)
         let unit_count = 15;
-        // Parameterized variants: 35 (added SetConfig, CompileContextTrace)
-        let param_count = 35;
-        // Total: 50
-        let expected_total = 50;
+        // Parameterized variants: 37 (added GetGraphData, BatchRecall)
+        let param_count = 37;
+        // Total: 52
+        let expected_total = 52;
 
         assert_eq!(
             unit_count + param_count,
@@ -714,6 +747,17 @@ mod tests {
                 Request::SetConfig {
                     key: "extraction.backend".into(),
                     value: "claude".into(),
+                },
+                Request::GetGraphData {
+                    layer: None,
+                    limit: None,
+                },
+                Request::BatchRecall {
+                    queries: vec![RecallQuery {
+                        text: "q".into(),
+                        memory_type: None,
+                        limit: None,
+                    }],
                 },
             ]
         }

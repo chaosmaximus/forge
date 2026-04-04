@@ -21,6 +21,29 @@ pub struct MemoryEdge {
     pub edge_type: String,
 }
 
+/// A memory node for Cortex 3D visualization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GraphNode {
+    pub id: String,
+    pub title: String,
+    pub memory_type: String,
+    pub layer: String,
+    pub confidence: f64,
+    pub activation_level: f64,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// An edge for Cortex 3D visualization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GraphEdge {
+    pub from_id: String,
+    pub to_id: String,
+    pub edge_type: String,
+    pub strength: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryResult {
     #[serde(flatten)]
@@ -277,6 +300,19 @@ pub enum ResponseData {
         total_cost_usd: f64,
         avg_latency_ms: usize,
         memories_created: usize,
+    },
+
+    /// Graph data for Cortex 3D visualization (brain map)
+    GraphData {
+        nodes: Vec<GraphNode>,
+        edges: Vec<GraphEdge>,
+        total_nodes: usize,
+        total_edges: usize,
+    },
+
+    /// Batch recall results — one result set per query
+    BatchRecallResults {
+        results: Vec<Vec<MemoryResult>>,
     },
 
     Shutdown,

@@ -1238,6 +1238,202 @@ pub fn detect_contradictions(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(found)
 }
 
+/// FNV-1a 64-bit hash for deterministic position hints.
+fn fnv_hash(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Map memory_type to (layer_name, y_position).
+fn layer_for_memory_type(memory_type: &str) -> (&str, f64) {
+    match memory_type {
+        "decision" => ("experience", 4.0),
+        "lesson" => ("experience", 4.0),
+        "pattern" => ("experience", 3.5),
+        "preference" => ("experience", 3.0),
+        _ => ("experience", 4.0),
+    }
+}
+
+/// Get graph data for Cortex 3D brain map visualization.
+/// Returns memory nodes with position hints + edges between them.
+pub fn get_graph_data(
+    conn: &Connection,
+    layer_filter: Option<&str>,
+    limit_per_layer: usize,
+) -> rusqlite::Result<(Vec<forge_core::protocol::GraphNode>, Vec<forge_core::protocol::GraphEdge>)> {
+    use forge_core::protocol::{GraphNode, GraphEdge};
+
+    let mut nodes = Vec::new();
+    let limit_total = (limit_per_layer * 8) as i64;
+
+    // ── Experience layer: memories ──
+    if layer_filter.is_none() || layer_filter == Some("experience") {
+        let mut stmt = conn.prepare(
+            "SELECT id, title, memory_type, confidence, COALESCE(activation_level, 0.0)
+             FROM memory WHERE status = 'active'
+             ORDER BY COALESCE(activation_level, 0.0) DESC, confidence DESC
+             LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit_total], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+            ))
+        })?;
+        for row in rows.flatten() {
+            let (id, title, memory_type, confidence, activation) = row;
+            let (layer, y) = layer_for_memory_type(&memory_type);
+            let layer_str = layer.to_string();
+            let hash = fnv_hash(id.as_bytes());
+            let x = ((hash % 1000) as f64 / 500.0) - 1.0;
+            let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
+            nodes.push(GraphNode { id, title, memory_type, layer: layer_str, confidence, activation_level: activation, x, y, z });
+        }
+    }
+
+    // ── Platform layer (Layer 0) ──
+    if layer_filter.is_none() || layer_filter == Some("platform") {
+        let mut stmt = conn.prepare(
+            "SELECT key, value FROM platform LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit_per_layer as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows.flatten() {
+            let (key, value) = row;
+            let id = format!("platform:{}", key);
+            let hash = fnv_hash(id.as_bytes());
+            let x = ((hash % 1000) as f64 / 500.0) - 1.0;
+            let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
+            nodes.push(GraphNode {
+                id, title: format!("{}: {}", key, value), memory_type: "platform".to_string(),
+                layer: "platform".to_string(), confidence: 1.0, activation_level: 0.0,
+                x, y: 0.0, z,
+            });
+        }
+    }
+
+    // ── Tool layer (Layer 1) ──
+    if layer_filter.is_none() || layer_filter == Some("tool") {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, kind FROM tool LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit_per_layer as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        for row in rows.flatten() {
+            let (id, name, kind) = row;
+            let hash = fnv_hash(id.as_bytes());
+            let x = ((hash % 1000) as f64 / 500.0) - 1.0;
+            let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
+            nodes.push(GraphNode {
+                id, title: name, memory_type: kind, layer: "tool".to_string(),
+                confidence: 1.0, activation_level: 0.0, x, y: 1.0, z,
+            });
+        }
+    }
+
+    // ── Skill layer (Layer 2) ──
+    if layer_filter.is_none() || layer_filter == Some("skill") {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, domain, success_count FROM skill LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit_per_layer as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+        })?;
+        for row in rows.flatten() {
+            let (id, name, domain, success_count) = row;
+            let hash = fnv_hash(id.as_bytes());
+            let x = ((hash % 1000) as f64 / 500.0) - 1.0;
+            let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
+            let confidence = (0.5 + (success_count as f64 * 0.1)).min(1.0);
+            nodes.push(GraphNode {
+                id, title: format!("[{}] {}", domain, name), memory_type: "skill".to_string(),
+                layer: "skill".to_string(), confidence, activation_level: 0.0,
+                x, y: 2.0, z,
+            });
+        }
+    }
+
+    // ── Identity layer (Layer 6) ──
+    if layer_filter.is_none() || layer_filter == Some("identity") {
+        let mut stmt = conn.prepare(
+            "SELECT id, agent, facet, description, strength FROM identity WHERE active = 1 LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit_per_layer as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?, row.get::<_, f64>(4)?))
+        })?;
+        for row in rows.flatten() {
+            let (id, agent, facet, _description, strength) = row;
+            let hash = fnv_hash(id.as_bytes());
+            let x = ((hash % 1000) as f64 / 500.0) - 1.0;
+            let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
+            nodes.push(GraphNode {
+                id, title: format!("[{}] {}", agent, facet), memory_type: "identity".to_string(),
+                layer: "identity".to_string(), confidence: strength, activation_level: 0.0,
+                x, y: 6.0, z,
+            });
+        }
+    }
+
+    // ── Disposition layer (Layer 7) ──
+    if layer_filter.is_none() || layer_filter == Some("disposition") {
+        let mut stmt = conn.prepare(
+            "SELECT id, agent, trait_name, value FROM disposition LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit_per_layer as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?))
+        })?;
+        for row in rows.flatten() {
+            let (id, agent, trait_name, value) = row;
+            let hash = fnv_hash(id.as_bytes());
+            let x = ((hash % 1000) as f64 / 500.0) - 1.0;
+            let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
+            nodes.push(GraphNode {
+                id, title: format!("[{}] {}", agent, trait_name), memory_type: "disposition".to_string(),
+                layer: "disposition".to_string(), confidence: value, activation_level: 0.0,
+                x, y: 7.0, z,
+            });
+        }
+    }
+
+    // ── Edges ──
+    // Only include edges where both from_id and to_id are in our node set
+    let node_ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let mut edges = Vec::new();
+    let mut edge_stmt = conn.prepare(
+        "SELECT from_id, to_id, edge_type, properties FROM edge LIMIT ?1"
+    )?;
+    let edge_rows = edge_stmt.query_map(params![limit_total * 2], |row| {
+        let from_id: String = row.get(0)?;
+        let to_id: String = row.get(1)?;
+        let edge_type: String = row.get(2)?;
+        let props: String = row.get(3)?;
+        let strength: f64 = serde_json::from_str::<serde_json::Value>(&props)
+            .ok()
+            .and_then(|v| v.get("strength").and_then(|s| s.as_f64()))
+            .unwrap_or(0.5);
+        Ok(GraphEdge { from_id, to_id, edge_type, strength })
+    })?;
+    for edge in edge_rows.flatten() {
+        if node_ids.contains(edge.from_id.as_str()) || node_ids.contains(edge.to_id.as_str()) {
+            edges.push(edge);
+        }
+    }
+
+    Ok((nodes, edges))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
