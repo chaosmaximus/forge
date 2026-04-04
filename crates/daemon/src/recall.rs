@@ -383,6 +383,120 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str) -> String {
     xml
 }
 
+/// Predict what memories will be needed based on last session's access patterns.
+///
+/// Returns up to `limit` memory titles as prefetch hints.
+/// Uses the last ended session's time window to find memories accessed during that
+/// session (by `accessed_at`), then expands to 1-hop graph neighbors via the edge table.
+/// Results are deduplicated and ranked by access_count descending.
+///
+/// FAIL-LOUD: all errors are logged via `eprintln!`, never silently swallowed.
+pub fn compile_prefetch_hints(
+    conn: &Connection,
+    agent: &str,
+    project: Option<&str>,
+    limit: usize,
+) -> Vec<String> {
+    // Step 1: Find the last ended session for this agent+project
+    let session: Option<(String, String, String)> = match project {
+        Some(proj) => conn.query_row(
+            "SELECT id, started_at, ended_at FROM session
+             WHERE agent = ?1 AND status = 'ended' AND project = ?2
+             ORDER BY ended_at DESC LIMIT 1",
+            params![agent, proj],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ),
+        None => conn.query_row(
+            "SELECT id, started_at, ended_at FROM session
+             WHERE agent = ?1 AND status = 'ended'
+             ORDER BY ended_at DESC LIMIT 1",
+            params![agent],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ),
+    }
+    .map(Some)
+    .unwrap_or_else(|e| {
+        if e != rusqlite::Error::QueryReturnedNoRows {
+            eprintln!("[prefetch] failed to query last session: {e}");
+        }
+        None
+    });
+
+    let (_session_id, started_at, ended_at) = match session {
+        Some(s) => s,
+        None => return vec![], // No ended sessions — nothing to prefetch
+    };
+
+    // Step 2: Find memories accessed during that session window
+    // (accessed_at BETWEEN session start and end, ordered by access_count)
+    let hot_memories: Vec<(String, String, i64)> = conn
+        .prepare(
+            "SELECT id, title, access_count FROM memory
+             WHERE status = 'active'
+             AND accessed_at >= ?1 AND accessed_at <= ?2
+             ORDER BY access_count DESC
+             LIMIT 10",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![started_at, ended_at], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect()
+        })
+        .unwrap_or_else(|e| {
+            eprintln!("[prefetch] failed to query hot memories: {e}");
+            vec![]
+        });
+
+    if hot_memories.is_empty() {
+        return vec![];
+    }
+
+    // Collect titles with their access counts for ranking
+    // Use (title, access_count) — title as the dedup key
+    let mut seen_titles: HashSet<String> = HashSet::new();
+    let mut ranked: Vec<(String, i64)> = Vec::new();
+
+    for (id, title, access_count) in &hot_memories {
+        if seen_titles.insert(title.clone()) {
+            ranked.push((title.clone(), *access_count));
+        }
+
+        // Step 3: Find 1-hop graph neighbors (bidirectional)
+        let neighbors: Vec<(String, String, i64)> = conn
+            .prepare(
+                "SELECT DISTINCT m.id, m.title, m.access_count FROM memory m
+                 JOIN edge e ON (e.from_id = ?1 AND e.to_id = m.id)
+                    OR (e.to_id = ?1 AND e.from_id = m.id)
+                 WHERE m.status = 'active'
+                 LIMIT 5",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect()
+            })
+            .unwrap_or_else(|e| {
+                eprintln!("[prefetch] failed to query neighbors for {id}: {e}");
+                vec![]
+            });
+
+        for (_nid, ntitle, naccess) in neighbors {
+            if seen_titles.insert(ntitle.clone()) {
+                ranked.push((ntitle, naccess));
+            }
+        }
+    }
+
+    // Step 4: Sort by access_count descending, take top-N
+    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.truncate(limit);
+
+    // Step 5: Return titles
+    ranked.into_iter().map(|(title, _)| title).collect()
+}
+
 /// Dynamic suffix — things that change per-turn or accumulate.
 /// Regenerated on each compile_context call.
 /// All XML sections always present (masking, not removal) for KV-cache stability.
@@ -601,16 +715,32 @@ pub fn compile_dynamic_suffix(
         }
     }
 
-    // Working set from last session (pick up where you left off)
+    // Working set from last session + predictive prefetch hints
     {
         let ws = crate::sessions::get_last_working_set(conn, agent, project)
             .unwrap_or_default();
-        if ws.is_empty() {
+        let prefetch = compile_prefetch_hints(conn, agent, project, 5);
+
+        if ws.is_empty() && prefetch.is_empty() {
             xml.push_str("<working-set/>\n");
         } else {
-            let mut ws_xml = String::from("<working-set hint=\"from your last session\">");
-            ws_xml.push_str(&xml_escape(&ws));
-            ws_xml.push_str("</working-set>\n");
+            let mut ws_xml = String::from("<working-set>");
+            if !ws.is_empty() {
+                ws_xml.push_str(&format!(
+                    "\n  <last-session>{}</last-session>",
+                    xml_escape(&ws)
+                ));
+            }
+            if !prefetch.is_empty() {
+                ws_xml.push_str(
+                    "\n  <predicted-context hint=\"memories likely needed based on your patterns\">",
+                );
+                for hint in &prefetch {
+                    ws_xml.push_str(&format!("\n    <memory>{}</memory>", xml_escape(hint)));
+                }
+                ws_xml.push_str("\n  </predicted-context>");
+            }
+            ws_xml.push_str("\n</working-set>\n");
             if used + ws_xml.len() < budget {
                 xml.push_str(&ws_xml);
                 // used += ws_xml.len(); // last item
@@ -1235,5 +1365,317 @@ mod tests {
         // No tools stored at all — graceful degradation: show all skills
         let ctx = compile_context(&conn, "claude-code", None);
         assert!(ctx.contains("Docker deploy"), "with no tools registered, all skills should pass through");
+    }
+
+    // ── compile_prefetch_hints tests ──
+
+    /// Helper: create a memory with specific access_count and accessed_at timestamp.
+    fn insert_memory_with_access(
+        conn: &Connection,
+        id: &str,
+        title: &str,
+        access_count: i64,
+        accessed_at: &str,
+        project: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, access_count)
+             VALUES (?1, 'decision', ?2, 'content', 0.9, 'active', ?3, '[]', datetime('now'), ?4, ?5)",
+            params![id, title, project, accessed_at, access_count],
+        )
+        .unwrap();
+    }
+
+    /// Helper: create an ended session with specific time window.
+    fn insert_ended_session(
+        conn: &Connection,
+        id: &str,
+        agent: &str,
+        project: Option<&str>,
+        started_at: &str,
+        ended_at: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO session (id, agent, project, started_at, ended_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'ended')",
+            params![id, agent, project, started_at, ended_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_prefetch_hints_finds_hot_memories() {
+        let conn = setup();
+
+        // Create an ended session: 12:00 to 13:00
+        insert_ended_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            "2026-04-03 12:00:00",
+            "2026-04-03 13:00:00",
+        );
+
+        // Memories accessed during that session window
+        insert_memory_with_access(
+            &conn,
+            "m1",
+            "Hot Decision A",
+            10,
+            "2026-04-03 12:30:00",
+            Some("forge"),
+        );
+        insert_memory_with_access(
+            &conn,
+            "m2",
+            "Hot Decision B",
+            5,
+            "2026-04-03 12:45:00",
+            Some("forge"),
+        );
+
+        // Memory outside the session window — should NOT appear
+        insert_memory_with_access(
+            &conn,
+            "m3",
+            "Old Decision",
+            20,
+            "2026-04-03 11:00:00",
+            Some("forge"),
+        );
+
+        let hints = compile_prefetch_hints(&conn, "claude-code", Some("forge"), 5);
+
+        assert_eq!(hints.len(), 2, "should find 2 hot memories");
+        assert_eq!(hints[0], "Hot Decision A", "highest access_count first");
+        assert_eq!(hints[1], "Hot Decision B");
+    }
+
+    #[test]
+    fn test_prefetch_hints_includes_graph_neighbors() {
+        let conn = setup();
+
+        // Create an ended session
+        insert_ended_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            "2026-04-03 12:00:00",
+            "2026-04-03 13:00:00",
+        );
+
+        // Hot memory accessed during session
+        insert_memory_with_access(
+            &conn,
+            "m1",
+            "JWT Auth Decision",
+            10,
+            "2026-04-03 12:30:00",
+            Some("forge"),
+        );
+
+        // Graph neighbor (linked by edge, but NOT in session window)
+        insert_memory_with_access(
+            &conn,
+            "m2",
+            "Token Rotation Policy",
+            3,
+            "2026-04-02 10:00:00", // accessed before session
+            Some("forge"),
+        );
+
+        // Create edge: m1 -> m2
+        ops::store_edge(&conn, "m1", "m2", "motivated_by", "{}").unwrap();
+
+        let hints = compile_prefetch_hints(&conn, "claude-code", Some("forge"), 5);
+
+        assert!(
+            hints.contains(&"JWT Auth Decision".to_string()),
+            "should contain the hot memory"
+        );
+        assert!(
+            hints.contains(&"Token Rotation Policy".to_string()),
+            "should contain the graph neighbor"
+        );
+    }
+
+    #[test]
+    fn test_prefetch_hints_bidirectional_edges() {
+        let conn = setup();
+
+        insert_ended_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            "2026-04-03 12:00:00",
+            "2026-04-03 13:00:00",
+        );
+
+        // Hot memory
+        insert_memory_with_access(
+            &conn,
+            "m1",
+            "Architecture Decision",
+            8,
+            "2026-04-03 12:30:00",
+            Some("forge"),
+        );
+
+        // Neighbor linked via reverse edge (m2 -> m1, so m2 is a neighbor of m1)
+        insert_memory_with_access(
+            &conn,
+            "m2",
+            "Related Pattern",
+            2,
+            "2026-04-02 10:00:00",
+            Some("forge"),
+        );
+
+        // Edge: m2 -> m1 (reverse direction)
+        ops::store_edge(&conn, "m2", "m1", "affects", "{}").unwrap();
+
+        let hints = compile_prefetch_hints(&conn, "claude-code", Some("forge"), 5);
+
+        assert!(
+            hints.contains(&"Related Pattern".to_string()),
+            "should find neighbor via reverse edge direction"
+        );
+    }
+
+    #[test]
+    fn test_prefetch_hints_respects_limit() {
+        let conn = setup();
+
+        insert_ended_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            "2026-04-03 12:00:00",
+            "2026-04-03 13:00:00",
+        );
+
+        // Create 10 hot memories in the session window
+        for i in 0..10 {
+            insert_memory_with_access(
+                &conn,
+                &format!("m{i}"),
+                &format!("Decision {i}"),
+                10 - i as i64,
+                "2026-04-03 12:30:00",
+                Some("forge"),
+            );
+        }
+
+        let hints = compile_prefetch_hints(&conn, "claude-code", Some("forge"), 5);
+        assert_eq!(
+            hints.len(),
+            5,
+            "should respect limit of 5, got {}",
+            hints.len()
+        );
+
+        // Top-ranked should be the one with highest access_count
+        assert_eq!(hints[0], "Decision 0", "highest access_count first");
+    }
+
+    #[test]
+    fn test_prefetch_hints_empty_when_no_sessions() {
+        let conn = setup();
+
+        // No sessions at all
+        let hints = compile_prefetch_hints(&conn, "claude-code", Some("forge"), 5);
+        assert!(
+            hints.is_empty(),
+            "should return empty when no ended sessions exist"
+        );
+    }
+
+    #[test]
+    fn test_prefetch_hints_empty_when_no_memories_in_window() {
+        let conn = setup();
+
+        insert_ended_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            "2026-04-03 12:00:00",
+            "2026-04-03 13:00:00",
+        );
+
+        // Memory outside the session window
+        insert_memory_with_access(
+            &conn,
+            "m1",
+            "Old Memory",
+            10,
+            "2026-04-02 10:00:00",
+            Some("forge"),
+        );
+
+        let hints = compile_prefetch_hints(&conn, "claude-code", Some("forge"), 5);
+        assert!(
+            hints.is_empty(),
+            "should return empty when no memories were accessed during session"
+        );
+    }
+
+    #[test]
+    fn test_compile_context_includes_prefetch() {
+        let conn = setup();
+
+        // Create ended session
+        insert_ended_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            "2026-04-03 12:00:00",
+            "2026-04-03 13:00:00",
+        );
+
+        // Hot memory in session window
+        insert_memory_with_access(
+            &conn,
+            "m1",
+            "Use SQLite for storage",
+            10,
+            "2026-04-03 12:30:00",
+            Some("forge"),
+        );
+
+        // Graph neighbor
+        insert_memory_with_access(
+            &conn,
+            "m2",
+            "sqlite-vec for embeddings",
+            3,
+            "2026-04-02 10:00:00",
+            Some("forge"),
+        );
+        ops::store_edge(&conn, "m1", "m2", "related_to", "{}").unwrap();
+
+        let ctx = compile_context(&conn, "claude-code", Some("forge"));
+
+        assert!(
+            ctx.contains("<predicted-context"),
+            "context should include predicted-context section"
+        );
+        assert!(
+            ctx.contains("Use SQLite for storage"),
+            "context should include the hot memory title"
+        );
+        assert!(
+            ctx.contains("sqlite-vec for embeddings"),
+            "context should include the graph neighbor title"
+        );
+        assert!(
+            ctx.contains("<working-set>"),
+            "working-set should be non-empty"
+        );
     }
 }
