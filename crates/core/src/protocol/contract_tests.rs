@@ -178,6 +178,12 @@ mod tests {
                 },
             ),
             (
+                "cleanup_sessions",
+                Request::CleanupSessions {
+                    prefix: Some("hook-test".into()),
+                },
+            ),
+            (
                 "store_platform",
                 Request::StorePlatform {
                     key: "os".into(),
@@ -599,10 +605,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 15
         let unit_count = 15;
-        // Parameterized variants: 38 (added GetGraphData, BatchRecall, ExtractWithProvider)
-        let param_count = 38;
-        // Total: 53
-        let expected_total = 53;
+        // Parameterized variants: 39 (added CleanupSessions)
+        let param_count = 39;
+        // Total: 54
+        let expected_total = 54;
 
         assert_eq!(
             unit_count + param_count,
@@ -676,6 +682,7 @@ mod tests {
                 },
                 Request::EndSession { id: "s".into() },
                 Request::Sessions { active_only: None },
+                Request::CleanupSessions { prefix: Some("hook-test".into()) },
                 Request::StorePlatform {
                     key: "k".into(),
                     value: "v".into(),

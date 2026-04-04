@@ -96,50 +96,64 @@ async fn main() {
     // Spawn startup tasks in background (consolidation, ingestion).
     // These run AFTER the server starts accepting connections, ensuring the
     // socket is available within ~100ms instead of waiting 2-5s for consolidation.
+    //
+    // IMPORTANT: Each task acquires and releases the lock independently.
+    // This prevents a single long lock hold from blocking all API requests.
+    // Like Docker — background maintenance never blocks the API.
     let startup_state = Arc::clone(&state);
     tokio::spawn(async move {
-        let locked = startup_state.lock().await;
+        // Phase 1: Consolidation (2-5s with many edges — short lock per phase)
+        {
+            let locked = startup_state.lock().await;
+            let cs = forge_daemon::workers::consolidator::run_all_phases(&locked.conn);
+            eprintln!(
+                "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",
+                cs.exact_dedup, cs.semantic_dedup, cs.linked, cs.faded, cs.promoted, cs.reconsolidated
+            );
+        } // lock released — API can serve requests between phases
 
-        // Consolidation (slow — can take 2-5s with many edges)
-        let cs = forge_daemon::workers::consolidator::run_all_phases(&locked.conn);
-        eprintln!(
-            "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",
-            cs.exact_dedup, cs.semantic_dedup, cs.linked, cs.faded, cs.promoted, cs.reconsolidated
-        );
-
-        // Project ingestion (Layer 7 — Declared Knowledge) + Domain DNA (Layer 4)
+        // Phase 2: Project ingestion (Layer 7 — Declared Knowledge) + Domain DNA (Layer 4)
         let project_dir = std::env::var("FORGE_PROJECT_DIR")
             .or_else(|_| std::env::current_dir().map(|p| p.to_string_lossy().to_string()))
             .unwrap_or_default();
         if !project_dir.is_empty() {
-            match forge_daemon::db::manas::ingest_project_declared(&locked.conn, &project_dir) {
-                Ok((ingested, _)) if ingested > 0 => eprintln!("[daemon] ingested {} declared knowledge files", ingested),
-                Ok(_) => {},
-                Err(e) => eprintln!("[daemon] WARN: declared knowledge ingestion failed: {e}"),
-            }
-            match forge_daemon::db::manas::detect_domain_dna(&locked.conn, &project_dir) {
-                Ok(n) if n > 0 => eprintln!("[daemon] detected {} project type markers", n),
-                Ok(_) => {},
-                Err(e) => eprintln!("[daemon] WARN: domain DNA detection failed: {e}"),
-            }
+            {
+                let locked = startup_state.lock().await;
+                match forge_daemon::db::manas::ingest_project_declared(&locked.conn, &project_dir) {
+                    Ok((ingested, _)) if ingested > 0 => eprintln!("[daemon] ingested {} declared knowledge files", ingested),
+                    Ok(_) => {},
+                    Err(e) => eprintln!("[daemon] WARN: declared knowledge ingestion failed: {e}"),
+                }
+            } // lock released
+
+            {
+                let locked = startup_state.lock().await;
+                match forge_daemon::db::manas::detect_domain_dna(&locked.conn, &project_dir) {
+                    Ok(n) if n > 0 => eprintln!("[daemon] detected {} project type markers", n),
+                    Ok(_) => {},
+                    Err(e) => eprintln!("[daemon] WARN: domain DNA detection failed: {e}"),
+                }
+            } // lock released
         }
 
-        // Clean duplicate identity facets (same description → keep highest strength)
-        match locked.conn.execute(
-            "DELETE FROM identity WHERE id NOT IN (
-                SELECT id FROM (
-                    SELECT id, ROW_NUMBER() OVER (PARTITION BY agent, description ORDER BY strength DESC) as rn
-                    FROM identity WHERE active = 1
-                ) WHERE rn = 1
-            ) AND active = 1",
-            [],
-        ) {
-            Ok(n) if n > 0 => eprintln!("[daemon] cleaned {} duplicate identity facets", n),
-            Ok(_) => {},
-            Err(e) => eprintln!("[daemon] WARN: identity dedup failed: {e}"),
-        }
+        // Phase 3: Clean duplicate identity facets (fast, <100ms)
+        {
+            let locked = startup_state.lock().await;
+            match locked.conn.execute(
+                "DELETE FROM identity WHERE id NOT IN (
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER (PARTITION BY agent, description ORDER BY strength DESC) as rn
+                        FROM identity WHERE active = 1
+                    ) WHERE rn = 1
+                ) AND active = 1",
+                [],
+            ) {
+                Ok(n) if n > 0 => eprintln!("[daemon] cleaned {} duplicate identity facets", n),
+                Ok(_) => {},
+                Err(e) => eprintln!("[daemon] WARN: identity dedup failed: {e}"),
+            }
+        } // lock released
 
-        drop(locked);
         eprintln!("[daemon] startup tasks complete");
     });
 

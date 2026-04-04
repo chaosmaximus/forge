@@ -109,6 +109,9 @@ pub enum Request {
     EndSession { id: String },
     /// List sessions
     Sessions { active_only: Option<bool> },
+    /// Cleanup sessions: end all active sessions matching optional prefix filter.
+    /// If prefix is None, ends ALL active sessions (nuclear option).
+    CleanupSessions { prefix: Option<String> },
     /// Query which language servers are available for the current project
     LspStatus,
 

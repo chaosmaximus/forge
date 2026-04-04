@@ -731,6 +731,25 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::CleanupSessions { prefix } => {
+            match crate::sessions::cleanup_sessions(&state.conn, prefix.as_deref()) {
+                Ok(ended) => {
+                    eprintln!("[sessions] cleanup: ended {} sessions (prefix: {:?})", ended, prefix);
+                    crate::events::emit(&state.events, "session_changed", serde_json::json!({
+                        "action": "cleanup",
+                        "ended": ended,
+                        "prefix": prefix,
+                    }));
+                    Response::Ok {
+                        data: ResponseData::SessionsCleaned { ended },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("cleanup_sessions failed: {e}"),
+                },
+            }
+        }
+
         Request::Subscribe { .. } => {
             // Subscribe is handled directly in socket.rs (streaming mode).
             // This arm should never be reached.
@@ -2150,6 +2169,41 @@ mod tests {
             Response::Ok { data: ResponseData::Sessions { sessions, count } } => {
                 assert_eq!(count, 0);
                 assert!(sessions.is_empty());
+            }
+            other => panic!("expected Sessions, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cleanup_sessions_via_handler() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Register 3 sessions: 2 hook-test, 1 real
+        for id in &["hook-test-1", "hook-test-2", "real-s1"] {
+            handle_request(&mut state, Request::RegisterSession {
+                id: id.to_string(),
+                agent: "claude-code".into(),
+                project: Some("forge".into()),
+                cwd: None,
+            });
+        }
+
+        // Cleanup hook-test sessions only
+        let resp = handle_request(&mut state, Request::CleanupSessions {
+            prefix: Some("hook-test".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::SessionsCleaned { ended } } => {
+                assert_eq!(ended, 2, "should end 2 hook-test sessions");
+            }
+            other => panic!("expected SessionsCleaned, got {:?}", other),
+        }
+
+        // Verify: only real session remains
+        let resp = handle_request(&mut state, Request::Sessions { active_only: Some(true) });
+        match resp {
+            Response::Ok { data: ResponseData::Sessions { count, .. } } => {
+                assert_eq!(count, 1);
             }
             other => panic!("expected Sessions, got {:?}", other),
         }

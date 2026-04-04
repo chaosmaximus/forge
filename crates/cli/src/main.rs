@@ -198,6 +198,13 @@ enum Commands {
         #[arg(long)]
         id: String,
     },
+    /// Cleanup sessions: end all active sessions matching an optional prefix
+    #[command(name = "cleanup-sessions")]
+    CleanupSessions {
+        /// Only end sessions whose ID starts with this prefix (e.g., "hook-test")
+        #[arg(long)]
+        prefix: Option<String>,
+    },
 
     /// Run proactive checks on a file or show all active diagnostics
     Verify {
@@ -446,6 +453,9 @@ async fn main() {
         }
         Commands::EndSession { id } => {
             commands::system::end_session(id).await;
+        }
+        Commands::CleanupSessions { prefix } => {
+            commands::system::cleanup_sessions(prefix).await;
         }
         Commands::CompileContext { agent, project, static_only } => {
             commands::manas::compile_context(agent, project, static_only).await;

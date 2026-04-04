@@ -158,6 +158,7 @@ pub enum ResponseData {
     SessionRegistered { id: String },
     SessionEnded { id: String, found: bool },
     Sessions { sessions: Vec<SessionInfo>, count: usize },
+    SessionsCleaned { ended: usize },
     LspStatus { servers: Vec<LspServerInfo> },
 
     VerifyResult {

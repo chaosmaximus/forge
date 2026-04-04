@@ -439,9 +439,10 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str) -> String {
 /// Returns up to `limit` memory titles as prefetch hints.
 /// Uses the last 3 ended sessions' time windows to find memories accessed during
 /// those sessions (by `accessed_at`), with recency weighting:
-///   - Last session: weight 1.0
-///   - Session before: weight 0.7
-///   - Session before that: weight 0.5
+/// - Last session: weight 1.0
+/// - Session before: weight 0.7
+/// - Session before that: weight 0.5
+///
 /// Results are expanded to 1-hop graph neighbors, deduplicated, and ranked.
 ///
 /// FAIL-LOUD: all errors are logged via `eprintln!`, never silently swallowed.

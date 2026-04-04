@@ -562,6 +562,20 @@ pub async fn end_session(id: String) {
     }
 }
 
+pub async fn cleanup_sessions(prefix: Option<String>) {
+    match client::send(&Request::CleanupSessions { prefix: prefix.clone() }).await {
+        Ok(Response::Ok { data: ResponseData::SessionsCleaned { ended } }) => {
+            println!("Cleaned up {ended} session(s){}", match &prefix {
+                Some(p) => format!(" (prefix: {p})"),
+                None => " (all)".to_string(),
+            });
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
 /// Run proactive checks on a file or show all active diagnostics.
 pub async fn verify(file: Option<String>) {
     let req = Request::Verify { file: file.clone() };

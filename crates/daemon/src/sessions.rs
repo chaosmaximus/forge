@@ -169,6 +169,25 @@ pub fn increment_tool_use_count(conn: &Connection, session_id: &str, delta: usiz
     Ok(())
 }
 
+/// End all active sessions matching an optional ID prefix.
+/// If prefix is None, ends ALL active sessions.
+/// Returns the number of sessions ended.
+pub fn cleanup_sessions(conn: &Connection, prefix: Option<&str>) -> rusqlite::Result<usize> {
+    match prefix {
+        Some(pfx) => {
+            let pattern = format!("{}%", pfx);
+            conn.execute(
+                "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status = 'active' AND id LIKE ?1",
+                params![pattern],
+            )
+        }
+        None => conn.execute(
+            "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status = 'active'",
+            [],
+        ),
+    }
+}
+
 /// Auto-cleanup sessions that have been ACTIVE for more than 24 hours.
 /// These are leaked sessions where the session-end hook never fired.
 /// Called on daemon startup to prevent unbounded session accumulation.
@@ -442,5 +461,47 @@ mod tests {
             cross_session.unwrap().data.contains("JWT"),
             "perception should contain the decision title"
         );
+    }
+
+    #[test]
+    fn test_cleanup_sessions_with_prefix() {
+        let conn = setup();
+        register_session(&conn, "hook-test-1", "claude-code", Some("forge"), None).unwrap();
+        register_session(&conn, "hook-test-2", "claude-code", Some("forge"), None).unwrap();
+        register_session(&conn, "real-session-1", "claude-code", Some("forge"), None).unwrap();
+
+        // Cleanup only hook-test sessions
+        let ended = cleanup_sessions(&conn, Some("hook-test")).unwrap();
+        assert_eq!(ended, 2, "should end 2 hook-test sessions");
+
+        // Real session still active
+        let active = list_sessions(&conn, true).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, "real-session-1");
+    }
+
+    #[test]
+    fn test_cleanup_sessions_all() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", None, None).unwrap();
+        register_session(&conn, "s2", "cline", None, None).unwrap();
+
+        let ended = cleanup_sessions(&conn, None).unwrap();
+        assert_eq!(ended, 2, "should end all active sessions");
+
+        let active = list_sessions(&conn, true).unwrap();
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_sessions_no_match() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", None, None).unwrap();
+
+        let ended = cleanup_sessions(&conn, Some("nonexistent")).unwrap();
+        assert_eq!(ended, 0, "should not end any sessions");
+
+        let active = list_sessions(&conn, true).unwrap();
+        assert_eq!(active.len(), 1);
     }
 }
