@@ -25,9 +25,14 @@ Type guidance:
 - "preference": a user preference or working style (e.g., "Prefers TDD")
 - "identity": a signal about the user's role, expertise, or working context.
   Extract when the user reveals WHO THEY ARE or WHAT THEY DO.
-  Examples: "Senior Rust developer", "Building a fintech platform", "Data scientist",
-  "Prefers functional programming", "Works on GCP infrastructure"
+  IMPORTANT: always include a tag indicating the facet type: "role", "expertise", "domain", "values", "goals", or "constraints".
   The title should be the identity signal, content should be the evidence.
+  Examples:
+    {"type": "identity", "title": "Senior Rust developer", "content": "User demonstrated deep Rust knowledge and mentioned years of experience", "confidence": 0.9, "tags": ["expertise"], "affects": []}
+    {"type": "identity", "title": "Building a fintech platform", "content": "User is working on a financial technology product with payment processing", "confidence": 0.85, "tags": ["domain"], "affects": []}
+    {"type": "identity", "title": "Security-first approach", "content": "User explicitly prioritizes security in all design decisions", "confidence": 0.8, "tags": ["values"], "affects": []}
+    {"type": "identity", "title": "Tech lead at startup", "content": "User mentioned leading a small engineering team", "confidence": 0.9, "tags": ["role"], "affects": []}
+    {"type": "identity", "title": "Ship weekly releases", "content": "User wants to maintain a weekly release cadence", "confidence": 0.7, "tags": ["goals"], "affects": []}
 - "skill": a REUSABLE, GENERALIZABLE WORKFLOW with DISCRETE, NUMBERED STEPS.
   ONLY extract as a skill if ALL of these are true:
   1. The workflow was SUCCESSFULLY completed in this conversation
@@ -352,5 +357,38 @@ Done. I found 1 memory worth extracting."#;
         assert_eq!(result[0].memory_type, "decision");
         assert_eq!(result[0].title, "Use SQLite for local storage");
         assert!((result[0].confidence - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_identity_type_parsed_with_facet_tags() {
+        let json = r#"[
+            {"type":"identity","title":"Senior Rust developer","content":"User demonstrated deep Rust knowledge","confidence":0.9,"tags":["expertise"],"affects":[]},
+            {"type":"identity","title":"Building a fintech platform","content":"User is working on fintech","confidence":0.85,"tags":["domain"],"affects":[]},
+            {"type":"identity","title":"Tech lead at startup","content":"User leads engineering team","confidence":0.9,"tags":["role"],"affects":[]}
+        ]"#;
+        let result = parse_extraction_output(json);
+        assert_eq!(result.len(), 3, "all 3 identity memories should parse");
+        assert_eq!(result[0].memory_type, "identity");
+        assert_eq!(result[0].tags, vec!["expertise"]);
+        assert_eq!(result[1].memory_type, "identity");
+        assert_eq!(result[1].tags, vec!["domain"]);
+        assert_eq!(result[2].memory_type, "identity");
+        assert_eq!(result[2].tags, vec!["role"]);
+    }
+
+    #[test]
+    fn test_identity_type_valid() {
+        let em = ExtractedMemory {
+            memory_type: "identity".to_string(),
+            title: "Senior Rust developer".to_string(),
+            content: "User demonstrated deep Rust knowledge".to_string(),
+            confidence: 0.9,
+            tags: vec!["expertise".to_string()],
+            affects: vec![],
+            valence: "neutral".to_string(),
+            intensity: 0.0,
+            motivated_by: None,
+        };
+        assert!(em.is_valid_type(), "'identity' should be a valid type");
     }
 }

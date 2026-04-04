@@ -279,7 +279,7 @@ async fn process_file(
 
                 // Route identity signals to the identity table (Ahankara)
                 if em.memory_type == "identity" {
-                    let facet_type = em.tags.first().cloned().unwrap_or_else(|| "expertise".to_string());
+                    let facet_type = identity_facet_type(&em.tags, &em.title);
                     let facet = forge_core::types::manas::IdentityFacet {
                         id: format!("identity-{}", ulid::Ulid::new()),
                         agent: adapter.name().to_string(),
@@ -409,6 +409,26 @@ async fn process_file(
     }
 }
 
+/// Valid identity facet types that the LLM should produce.
+const VALID_FACET_TYPES: &[&str] = &["role", "expertise", "domain", "values", "goals", "constraints"];
+
+/// Extract a valid facet type from tags, or default to "expertise" with a warning.
+///
+/// Scans tags for a known facet type (role, expertise, domain, values, goals, constraints).
+/// If none found, logs a warning (FAIL-LOUD) and defaults to "expertise".
+fn identity_facet_type(tags: &[String], title: &str) -> String {
+    tags.iter()
+        .find(|t| VALID_FACET_TYPES.contains(&t.as_str()))
+        .cloned()
+        .unwrap_or_else(|| {
+            eprintln!(
+                "[extractor] identity '{}' has no valid facet tag (tags: {:?}), defaulting to 'expertise'",
+                title, tags
+            );
+            "expertise".to_string()
+        })
+}
+
 /// Result of the skill quality gate check.
 #[derive(Debug)]
 struct SkillQualityGate {
@@ -480,7 +500,84 @@ fn skill_quality_gate(title: &str, content: &str) -> SkillQualityGate {
 
 #[cfg(test)]
 mod tests {
-    use super::skill_quality_gate;
+    use super::{identity_facet_type, skill_quality_gate};
+
+    // ── Identity facet type extraction tests ─────────────────────────
+
+    #[test]
+    fn test_identity_facet_type_expertise_tag() {
+        let tags = vec!["expertise".to_string()];
+        let result = identity_facet_type(&tags, "Senior Rust developer");
+        assert_eq!(result, "expertise");
+    }
+
+    #[test]
+    fn test_identity_facet_type_role_tag() {
+        let tags = vec!["role".to_string()];
+        let result = identity_facet_type(&tags, "Tech lead at startup");
+        assert_eq!(result, "role");
+    }
+
+    #[test]
+    fn test_identity_facet_type_domain_tag() {
+        let tags = vec!["domain".to_string()];
+        let result = identity_facet_type(&tags, "Building a fintech platform");
+        assert_eq!(result, "domain");
+    }
+
+    #[test]
+    fn test_identity_facet_type_values_tag() {
+        let tags = vec!["values".to_string()];
+        let result = identity_facet_type(&tags, "Security-first approach");
+        assert_eq!(result, "values");
+    }
+
+    #[test]
+    fn test_identity_facet_type_goals_tag() {
+        let tags = vec!["goals".to_string()];
+        let result = identity_facet_type(&tags, "Ship weekly releases");
+        assert_eq!(result, "goals");
+    }
+
+    #[test]
+    fn test_identity_facet_type_constraints_tag() {
+        let tags = vec!["constraints".to_string()];
+        let result = identity_facet_type(&tags, "No external dependencies");
+        assert_eq!(result, "constraints");
+    }
+
+    #[test]
+    fn test_identity_facet_type_empty_tags_defaults_to_expertise() {
+        let tags: Vec<String> = vec![];
+        let result = identity_facet_type(&tags, "Unknown identity");
+        assert_eq!(result, "expertise", "empty tags should default to 'expertise'");
+    }
+
+    #[test]
+    fn test_identity_facet_type_unknown_tag_defaults_to_expertise() {
+        let tags = vec!["unknown_tag".to_string()];
+        let result = identity_facet_type(&tags, "Some identity");
+        assert_eq!(result, "expertise", "unknown tag should default to 'expertise'");
+    }
+
+    #[test]
+    fn test_identity_facet_type_mixed_tags_picks_valid() {
+        // The valid facet tag should be found even among irrelevant tags
+        let tags = vec!["rust".to_string(), "domain".to_string(), "backend".to_string()];
+        let result = identity_facet_type(&tags, "Building a fintech platform");
+        assert_eq!(result, "domain", "should find 'domain' among mixed tags");
+    }
+
+    #[test]
+    fn test_identity_facet_type_first_valid_wins() {
+        // If multiple valid facet tags present, first one wins
+        let tags = vec!["role".to_string(), "expertise".to_string()];
+        let result = identity_facet_type(&tags, "Tech lead and Rust expert");
+        assert_eq!(result, "role", "first valid facet tag should win");
+    }
+
+    // ── Skill quality gate tests (existing) ──────────────────────────
+
     #[test]
     fn test_agent_status_event_format_working() {
         let event = serde_json::json!({
