@@ -579,14 +579,18 @@ fn parse_publish_diagnostics(params: serde_json::Value, buffer: &mut Vec<LspDiag
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
-        buffer.push(LspDiagnostic {
-            file_uri: uri.clone(),
-            severity,
-            message,
-            line,
-            column,
-            source,
-        });
+        // Bound buffer to prevent memory exhaustion from noisy LSP servers (Codex fix)
+        const MAX_BUFFER_SIZE: usize = 500;
+        if buffer.len() < MAX_BUFFER_SIZE {
+            buffer.push(LspDiagnostic {
+                file_uri: uri.clone(),
+                severity,
+                message,
+                line,
+                column,
+                source,
+            });
+        }
     }
 }
 

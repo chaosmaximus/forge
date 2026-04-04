@@ -41,15 +41,18 @@ pub fn store_diagnostic(conn: &Connection, d: &Diagnostic) -> rusqlite::Result<(
 }
 
 /// Get active (non-expired) diagnostics for a file.
-/// Uses LIKE matching for file_path to handle absolute vs relative paths.
+/// Uses exact match first, then escaped suffix match for absolute/relative path compatibility.
+/// Wildcards in file_path are escaped to prevent LIKE injection (Codex fix).
 pub fn get_diagnostics(conn: &Connection, file_path: &str) -> rusqlite::Result<Vec<Diagnostic>> {
-    let like_pattern = format!("%{}", file_path);
+    // Escape LIKE wildcards in the file path to prevent overmatch
+    let escaped = file_path.replace('%', "\\%").replace('_', "\\_");
+    let like_pattern = format!("%{}", escaped);
     let mut stmt = conn.prepare(
         "SELECT id, file_path, severity, message, source, line, col, created_at, expires_at
-         FROM diagnostic WHERE file_path LIKE ?1 AND expires_at > datetime('now')
+         FROM diagnostic WHERE (file_path = ?1 OR file_path LIKE ?2 ESCAPE '\\') AND expires_at > datetime('now')
          ORDER BY severity, line",
     )?;
-    let rows = stmt.query_map(params![like_pattern], |row| {
+    let rows = stmt.query_map(params![file_path, like_pattern], |row| {
         Ok(Diagnostic {
             id: row.get(0)?,
             file_path: row.get(1)?,
@@ -66,11 +69,13 @@ pub fn get_diagnostics(conn: &Connection, file_path: &str) -> rusqlite::Result<V
 }
 
 /// Clear all diagnostics for a file (before re-populating).
+/// Escapes LIKE wildcards to prevent cross-file deletion (Codex fix).
 pub fn clear_diagnostics(conn: &Connection, file_path: &str) -> rusqlite::Result<usize> {
-    let like_pattern = format!("%{}", file_path);
+    let escaped = file_path.replace('%', "\\%").replace('_', "\\_");
+    let like_pattern = format!("%{}", escaped);
     conn.execute(
-        "DELETE FROM diagnostic WHERE file_path LIKE ?1",
-        params![like_pattern],
+        "DELETE FROM diagnostic WHERE file_path = ?1 OR file_path LIKE ?2 ESCAPE '\\'",
+        params![file_path, like_pattern],
     )
 }
 

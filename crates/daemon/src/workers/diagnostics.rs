@@ -52,14 +52,23 @@ pub async fn run_diagnostics_worker(
         }
 
         // Activity gap debounce: keep collecting events for DEBOUNCE_SECS of silence.
+        // Max wait of 30s prevents starvation under continuous activity (Codex fix).
+        let max_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
+            let debounce_timeout = tokio::time::sleep(Duration::from_secs(DEBOUNCE_SECS));
+            let max_timeout = tokio::time::sleep_until(max_deadline);
             tokio::select! {
                 Some(file) = file_rx.recv() => {
                     pending_files.insert(file);
                     // Reset the debounce timer (keep waiting for silence)
                 }
-                _ = tokio::time::sleep(Duration::from_secs(DEBOUNCE_SECS)) => {
+                _ = debounce_timeout => {
                     // Silence period reached — process all pending files
+                    break;
+                }
+                _ = max_timeout => {
+                    // Max wait reached — process even if still receiving files
+                    eprintln!("[diagnostics] max wait reached, processing {} files", pending_files.len());
                     break;
                 }
                 _ = shutdown_rx.changed() => {
@@ -83,20 +92,18 @@ pub async fn run_diagnostics_worker(
 
 async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String]) {
     eprintln!("[diagnostics] batch analysis on {} files", files.len());
-    let locked = state.lock().await;
 
+    // Narrow lock scope: acquire per-file, not for entire batch (Codex fix)
     for file in files {
-        // Clear old diagnostics for this file
+        let locked = state.lock().await;
         let _ = diagnostics::clear_diagnostics(&locked.conn, file);
-
-        // Check 1: Cross-file consistency (callers of symbols in this file)
         run_consistency_check(&locked.conn, file);
-
-        // Check 2: Memory-informed repeat-bug detection
         run_repeat_bug_check(&locked.conn, file);
+        drop(locked); // Release between files to avoid blocking daemon
     }
 
-    // Emit event
+    // Emit event (brief lock)
+    let locked = state.lock().await;
     crate::events::emit(
         &locked.events,
         "diagnostics_ready",
