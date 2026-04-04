@@ -586,18 +586,44 @@ pub fn store_edge(conn: &Connection, from_id: &str, to_id: &str, edge_type: &str
     Ok(())
 }
 
-/// Find and merge near-duplicate memories using word overlap.
-/// Only deduplicates memories of the same type.
-/// Threshold: 0.6 word overlap ratio.
+/// Stop words filtered out before word-overlap comparison in semantic dedup.
+/// These inflate overlap scores for unrelated memories and should be excluded.
+const STOP_WORDS: &[&str] = &[
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "to", "in", "for", "of", "and", "or", "with", "on", "at", "by",
+    "from", "that", "this", "it", "as", "not", "but", "do", "has",
+    "have", "had", "will", "would", "can", "could", "should", "may",
+    "might", "we", "i", "you", "they", "he", "she", "its", "our",
+    "their", "my", "your",
+];
+
+/// Extract meaningful words from text: lowercase, split on non-alphanumeric,
+/// filter out stop words and single-character tokens.
+fn meaningful_words(text: &str) -> HashSet<String> {
+    let stop: HashSet<&str> = STOP_WORDS.iter().copied().collect();
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 1 && !stop.contains(w))
+        .map(String::from)
+        .collect()
+}
+
+/// Find and merge near-duplicate memories using word overlap on title AND content.
+/// Only deduplicates memories of the same type and project.
+/// Computes title overlap and content overlap separately, then takes the max of
+/// (weighted average, title score, content score) — so a strong match in either
+/// title or content alone is sufficient to flag a duplicate.
+/// Stop words are filtered before comparison so only meaningful words count.
+/// Threshold: 0.6 combined score.
 /// Returns number of duplicates merged (marked as superseded).
 pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
-    // Get all active memory IDs with titles, types, AND projects
+    // Get all active memory IDs with titles, types, projects, AND content
     let mut stmt = conn.prepare(
-        "SELECT id, title, memory_type, COALESCE(project, '') FROM memory WHERE status = 'active' ORDER BY confidence DESC, created_at DESC"
+        "SELECT id, title, memory_type, COALESCE(project, ''), content FROM memory WHERE status = 'active' ORDER BY confidence DESC, created_at DESC"
     )?;
-    let memories: Vec<(String, String, String, String)> = stmt
+    let memories: Vec<(String, String, String, String, String)> = stmt
         .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -608,15 +634,15 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
     let mut superseded_by: Vec<(String, String)> = Vec::new(); // (superseded_id, survivor_id)
 
     for i in 0..memories.len() {
-        let (ref id_a, ref title_a, ref type_a, ref project_a) = memories[i];
+        let (ref id_a, ref title_a, ref type_a, ref project_a, ref content_a) = memories[i];
         if to_delete.contains(id_a) {
             continue;
         }
 
-        let words_a: HashSet<String> =
-            title_a.to_lowercase().split_whitespace().map(String::from).collect();
+        let title_words_a = meaningful_words(title_a);
+        let content_words_a = meaningful_words(content_a);
 
-        for (id_b, title_b, type_b, project_b) in memories.iter().skip(i + 1) {
+        for (id_b, title_b, type_b, project_b, content_b) in memories.iter().skip(i + 1) {
             if to_delete.contains(id_b) {
                 continue;
             }
@@ -627,13 +653,25 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
                 continue; // only dedup within same project (Codex fix: cross-project safety)
             }
 
-            // Check word overlap (fast filter)
-            let words_b: HashSet<String> =
-                title_b.to_lowercase().split_whitespace().map(String::from).collect();
-            let intersection = words_a.intersection(&words_b).count() as f64;
-            let max_len = words_a.len().max(words_b.len()) as f64;
+            let title_words_b = meaningful_words(title_b);
+            let content_words_b = meaningful_words(content_b);
 
-            if max_len > 0.0 && (intersection / max_len) > 0.6 {
+            // Title overlap
+            let title_intersection = title_words_a.intersection(&title_words_b).count() as f64;
+            let title_max = title_words_a.len().max(title_words_b.len()) as f64;
+            let title_score = if title_max > 0.0 { title_intersection / title_max } else { 0.0 };
+
+            // Content overlap
+            let content_intersection = content_words_a.intersection(&content_words_b).count() as f64;
+            let content_max = content_words_a.len().max(content_words_b.len()) as f64;
+            let content_score = if content_max > 0.0 { content_intersection / content_max } else { 0.0 };
+
+            // Combined: weighted average (title 0.4, content 0.6) OR max of either score.
+            // Using max ensures a strong match in either title or content is sufficient.
+            let weighted = title_score * 0.4 + content_score * 0.6;
+            let combined = weighted.max(title_score).max(content_score);
+
+            if combined > 0.6 {
                 // Mark the later one (id_b) for deletion
                 // ORDER BY confidence DESC ensures we keep the higher-confidence memory (Codex fix: deterministic survivor)
                 to_delete.insert(id_b.clone());
@@ -1362,5 +1400,201 @@ mod tests {
 
         let promoted = promote_recurring_lessons(&conn).unwrap();
         assert_eq!(promoted, 0, "unique lessons should not be promoted");
+    }
+
+    // --- meaningful_words helper tests ---
+
+    #[test]
+    fn test_meaningful_words_filters_stop_words() {
+        let words = meaningful_words("the quick brown fox is a fast animal");
+        assert!(!words.contains("the"));
+        assert!(!words.contains("is"));
+        assert!(!words.contains("a"));
+        assert!(words.contains("quick"));
+        assert!(words.contains("brown"));
+        assert!(words.contains("fox"));
+        assert!(words.contains("fast"));
+        assert!(words.contains("animal"));
+    }
+
+    #[test]
+    fn test_meaningful_words_filters_single_chars() {
+        let words = meaningful_words("I am a b c developer");
+        // "I", "a", "b", "c" are all single chars or stop words
+        assert!(!words.contains("b"));
+        assert!(!words.contains("c"));
+        assert!(words.contains("am"));
+        assert!(words.contains("developer"));
+    }
+
+    #[test]
+    fn test_meaningful_words_splits_on_punctuation() {
+        let words = meaningful_words("graph-edges auto_generated: AFFECTS (extraction)");
+        assert!(words.contains("graph"));
+        assert!(words.contains("edges"));
+        assert!(words.contains("auto"));
+        assert!(words.contains("generated"));
+        assert!(words.contains("affects"));
+        assert!(words.contains("extraction"));
+    }
+
+    // --- semantic_dedup tests ---
+
+    /// Helper: insert a memory directly into the DB for dedup testing, bypassing remember() dedup.
+    fn insert_memory_for_dedup(conn: &Connection, id: &str, mem_type: &str, title: &str, content: &str, project: &str, confidence: f64) {
+        let proj_val: Option<&str> = if project.is_empty() { None } else { Some(project) };
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, '[]', datetime('now'), datetime('now'))",
+            params![id, mem_type, title, content, confidence, proj_val],
+        ).unwrap();
+    }
+
+    #[test]
+    fn test_semantic_dedup_identical_titles_same_content() {
+        let conn = open_db();
+        // Two memories with identical titles and content should dedup
+        insert_memory_for_dedup(&conn, "a1", "decision", "Use SQLite for storage", "SQLite FTS5 fast recall", "", 0.9);
+        insert_memory_for_dedup(&conn, "a2", "decision", "Use SQLite for storage", "SQLite FTS5 fast recall", "", 0.8);
+
+        let merged = semantic_dedup(&conn).unwrap();
+        assert_eq!(merged, 1, "identical title+content should be deduped");
+
+        // Higher confidence (a1=0.9) should survive
+        let status_a1: String = conn.query_row("SELECT status FROM memory WHERE id = 'a1'", [], |r| r.get(0)).unwrap();
+        let status_a2: String = conn.query_row("SELECT status FROM memory WHERE id = 'a2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status_a1, "active");
+        assert_eq!(status_a2, "superseded");
+    }
+
+    #[test]
+    fn test_semantic_dedup_different_titles_same_content() {
+        let conn = open_db();
+        // Different titles but same content should now be caught via content overlap
+        insert_memory_for_dedup(&conn, "b1", "lesson", "Code indexer broken", "The code indexer keeps crashing when parsing large files with many symbols", "", 0.9);
+        insert_memory_for_dedup(&conn, "b2", "lesson", "Indexer crash bug", "The code indexer keeps crashing when parsing large files with many symbols", "", 0.8);
+
+        let merged = semantic_dedup(&conn).unwrap();
+        assert_eq!(merged, 1, "different titles but same content should be deduped via content overlap");
+    }
+
+    #[test]
+    fn test_semantic_dedup_stop_words_only_overlap_no_dedup() {
+        let conn = open_db();
+        // Two memories where only stop words overlap — should NOT dedup
+        insert_memory_for_dedup(&conn, "c1", "decision", "Use JWT authentication", "Token based auth with RS256 signing", "", 0.9);
+        insert_memory_for_dedup(&conn, "c2", "decision", "Deploy Kubernetes cluster", "Container orchestration with Helm charts", "", 0.8);
+
+        let merged = semantic_dedup(&conn).unwrap();
+        assert_eq!(merged, 0, "memories with no meaningful word overlap should not be deduped");
+    }
+
+    #[test]
+    fn test_semantic_dedup_different_types_no_dedup() {
+        let conn = open_db();
+        // Same title and content but different types — should NOT dedup
+        insert_memory_for_dedup(&conn, "d1", "decision", "Use SQLite storage", "SQLite FTS5 for recall", "", 0.9);
+        insert_memory_for_dedup(&conn, "d2", "lesson", "Use SQLite storage", "SQLite FTS5 for recall", "", 0.8);
+
+        let merged = semantic_dedup(&conn).unwrap();
+        assert_eq!(merged, 0, "different types should never be deduped");
+    }
+
+    #[test]
+    fn test_semantic_dedup_different_projects_no_dedup() {
+        let conn = open_db();
+        // Same title and content but different projects — should NOT dedup
+        insert_memory_for_dedup(&conn, "e1", "decision", "Use SQLite storage", "SQLite FTS5 for recall", "forge", 0.9);
+        insert_memory_for_dedup(&conn, "e2", "decision", "Use SQLite storage", "SQLite FTS5 for recall", "backend", 0.8);
+
+        let merged = semantic_dedup(&conn).unwrap();
+        assert_eq!(merged, 0, "different projects should never be deduped");
+    }
+
+    #[test]
+    fn test_semantic_dedup_known_audit_duplicates() {
+        let conn = open_db();
+        // The known near-duplicate pair from audit:
+        // "Graph edges auto-generated: AFFECTS (extraction) and related_to (consolidation)"
+        // vs "Graph edges auto-generated from memory extraction"
+        // These share significant meaningful words: graph, edges, auto, generated, extraction
+        insert_memory_for_dedup(
+            &conn, "f1", "decision",
+            "Graph edges auto-generated: AFFECTS (extraction) and related_to (consolidation)",
+            "The system automatically generates graph edges during memory extraction and consolidation phases",
+            "", 0.9,
+        );
+        insert_memory_for_dedup(
+            &conn, "f2", "decision",
+            "Graph edges auto-generated from memory extraction",
+            "Graph edges are automatically generated from the memory extraction process",
+            "", 0.8,
+        );
+
+        let merged = semantic_dedup(&conn).unwrap();
+        assert_eq!(merged, 1, "known audit near-duplicates should be caught by combined title+content dedup");
+
+        // Higher confidence should survive
+        let status_f1: String = conn.query_row("SELECT status FROM memory WHERE id = 'f1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status_f1, "active", "higher confidence memory should survive");
+    }
+
+    #[test]
+    fn test_semantic_dedup_creates_supersedes_edges() {
+        let conn = open_db();
+        insert_memory_for_dedup(&conn, "g1", "decision", "Use SQLite for storage", "Fast BM25 recall engine", "", 0.9);
+        insert_memory_for_dedup(&conn, "g2", "decision", "Use SQLite for storage", "Fast BM25 recall engine", "", 0.8);
+
+        semantic_dedup(&conn).unwrap();
+
+        // Check that a supersedes edge was created
+        let edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE from_id = 'g1' AND to_id = 'g2' AND edge_type = 'supersedes'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(edge_count, 1, "supersedes edge should be created from survivor to superseded");
+    }
+
+    #[test]
+    fn test_semantic_dedup_near_similar_content_different_titles() {
+        let conn = open_db();
+        // Near-similar content (most words overlap) but different titles
+        insert_memory_for_dedup(
+            &conn, "h1", "lesson",
+            "Code indexer keeps crashing",
+            "The code indexer crashes when processing Rust files with complex generics and trait implementations",
+            "", 0.9,
+        );
+        insert_memory_for_dedup(
+            &conn, "h2", "lesson",
+            "Indexer failure on complex code",
+            "Code indexer crashes when processing Rust files with complex generics and trait implementations",
+            "", 0.8,
+        );
+
+        let merged = semantic_dedup(&conn).unwrap();
+        assert_eq!(merged, 1, "near-similar content should be deduped even with different titles");
+    }
+
+    #[test]
+    fn test_semantic_dedup_completely_unrelated() {
+        let conn = open_db();
+        // Completely unrelated memories should not be deduped
+        insert_memory_for_dedup(
+            &conn, "i1", "decision",
+            "Use PostgreSQL for analytics",
+            "Complex aggregation queries benefit from PostgreSQL columnar extensions",
+            "", 0.9,
+        );
+        insert_memory_for_dedup(
+            &conn, "i2", "decision",
+            "Deploy with Docker Compose",
+            "Multi-container orchestration simplifies local development environment setup",
+            "", 0.8,
+        );
+
+        let merged = semantic_dedup(&conn).unwrap();
+        assert_eq!(merged, 0, "completely unrelated memories should not be deduped");
     }
 }
