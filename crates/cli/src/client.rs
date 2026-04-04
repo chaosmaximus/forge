@@ -92,7 +92,10 @@ pub async fn connect() -> Result<UnixStream, String> {
     // Socket not available — check for stale socket and clean up before starting daemon
     if std::path::Path::new(&socket_path).exists() {
         eprintln!("[cli] WARN: stale socket detected at {} — removing before daemon start", socket_path);
-        let _ = std::fs::remove_file(&socket_path);
+        if let Err(e) = std::fs::remove_file(&socket_path) {
+            eprintln!("[cli] ERROR: failed to remove stale socket {}: {e}", socket_path);
+            return Err(format!("stale socket at {} could not be removed: {e}", socket_path));
+        }
     }
 
     // Start the daemon
@@ -134,7 +137,9 @@ pub async fn connect() -> Result<UnixStream, String> {
     // Daemon started but socket never appeared — clean up stale socket if present
     if std::path::Path::new(&socket_path).exists() {
         eprintln!("[cli] WARN: daemon started but socket not connectable — cleaning stale socket at {}", socket_path);
-        let _ = std::fs::remove_file(&socket_path);
+        if let Err(e) = std::fs::remove_file(&socket_path) {
+            eprintln!("[cli] ERROR: failed to clean stale socket {}: {e}", socket_path);
+        }
     }
 
     Err(format!(

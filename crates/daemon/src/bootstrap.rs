@@ -32,17 +32,21 @@ fn fnv1a(data: &[u8]) -> u64 {
     hash
 }
 
-/// Compute a fast content hash: first 4KB + file size.
-/// NOT cryptographic -- just for change detection.
+/// Compute content hash: mtime + file size + first 4KB.
+/// Uses mtime as secondary check to catch in-place rewrites that preserve size.
+/// NOT cryptographic — just for change detection.
 pub fn compute_content_hash(path: &PathBuf) -> Result<String, String> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let metadata = f.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
     let size = metadata.len();
+    let mtime = metadata.modified()
+        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+        .unwrap_or(0);
     let read_len = 4096.min(size as usize);
     let mut buf = vec![0u8; read_len];
     f.read_exact(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
-    let hash = format!("{:x}-{}", fnv1a(&buf), size);
+    let hash = format!("{:x}-{}-{}", fnv1a(&buf), size, mtime);
     Ok(hash)
 }
 
@@ -91,6 +95,13 @@ fn walk_dir_inner(dir: &PathBuf, ext: &str, files: &mut Vec<PathBuf>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        // Symlink defense: refuse to follow symlinks (Codex review finding)
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            if meta.file_type().is_symlink() {
+                eprintln!("[bootstrap] WARN: skipping symlink {}", path.display());
+                continue;
+            }
+        }
         if path.is_dir() {
             walk_dir_inner(&path, ext, files);
         } else if path.extension().is_some_and(|e| e == ext) {
@@ -112,7 +123,9 @@ pub fn needs_processing(conn: &Connection, path: &PathBuf, current_hash: &str) -
             if stored_hash == current_hash {
                 (false, offset) // unchanged
             } else {
-                (true, offset) // file changed -- process from last offset
+                // Hash changed — reset offset to 0 to reparse from beginning
+                // (file may have been rewritten, not just appended)
+                (true, 0)
             }
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => (true, 0), // new file
@@ -447,7 +460,7 @@ mod tests {
 
         let (needs, offset) = needs_processing(&conn, &path, "new-hash");
         assert!(needs, "changed file should need processing");
-        assert_eq!(offset, 50, "should return stored offset for resume");
+        assert_eq!(offset, 0, "should reset offset to 0 when hash changes (file may be rewritten)");
     }
 
     #[test]

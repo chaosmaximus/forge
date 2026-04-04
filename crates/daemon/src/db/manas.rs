@@ -955,9 +955,10 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
             continue;
         }
 
-        // Store language/framework detection
+        // Store language/framework detection — unique per marker file
+        // so multiple languages in one repo coexist (e.g., Cargo.toml + Dockerfile)
         let dna = DomainDna {
-            id: format!("dna-{}-language", project_name),
+            id: format!("dna-{}-lang-{}", project_name, lang),
             project: project_name.clone(),
             aspect: "language".to_string(),
             pattern: lang.to_string(),
@@ -967,7 +968,7 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
         };
         store_domain_dna(conn, &dna)?;
 
-        // Store test/lint/build commands
+        // Store test/lint/build commands — unique per language
         for (i, cmd) in commands.iter().enumerate() {
             let aspect = match i {
                 0 => "test_command",
@@ -976,7 +977,7 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
                 _ => continue,
             };
             let dna = DomainDna {
-                id: format!("dna-{}-{}", project_name, aspect),
+                id: format!("dna-{}-{}-{}", project_name, lang, aspect),
                 project: project_name.clone(),
                 aspect: aspect.to_string(),
                 pattern: cmd.to_string(),
