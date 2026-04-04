@@ -657,6 +657,19 @@ pub async fn bootstrap(project: Option<String>) {
             if errors > 0 {
                 println!("  Errors:           {}", errors);
             }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Force-run all consolidation phases (dedup, decay, promotion, etc.)
 pub async fn consolidate() {
     match client::send(&Request::ForceConsolidate).await {

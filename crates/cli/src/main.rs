@@ -457,6 +457,7 @@ async fn main() {
         }
         Commands::Bootstrap { project } => {
             commands::system::bootstrap(project).await;
+        }
         Commands::Consolidate => {
             commands::system::consolidate().await;
         }
