@@ -276,7 +276,7 @@ Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to re
 
 ```
 60+ protocol commands · 9 background workers · 8 memory layers
-560+ tests · 3 adversarial security reviews · 0 warnings (clippy)
+560+ tests · 6 adversarial security reviews · 0 warnings (clippy)
 ```
 
 | Component | What | Tests |
@@ -299,12 +299,14 @@ cargo clippy --workspace -- -W clippy::all   # zero warnings
 | | Free | Pro | Team | Enterprise |
 |--|------|-----|------|-----------|
 | **Price** | $0 | **$12/mo** | $19/seat/mo | Custom |
-| Memory | 200 | Unlimited | Unlimited | Unlimited |
-| Extraction | Ollama (local) | + Claude, OpenAI, Gemini | All | All + custom |
-| Agents | 1 | Unlimited | Unlimited | Unlimited |
-| Sync | -- | 3 machines | Unlimited | Unlimited |
-| Brain map | Preview | Interactive | Interactive | Interactive |
-| SSH | Unlimited | Unlimited | Unlimited | Unlimited |
+| Memories | Unlimited | Unlimited | Unlimited | Unlimited |
+| Extraction | Ollama only | All providers | All providers | All + custom |
+| Search | Basic BM25 | Hybrid (BM25 + vector + graph) | Hybrid + team search | Full |
+| Guardrails | Basic | Full 4-layer + blast radius | Full + org policies | Full + audit |
+| Agents | 1 adapter | All adapters | All + custom | All |
+| Sync | -- | 3 devices | Unlimited + team | Unlimited |
+| Brain Map | Preview | Interactive | Full + team view | Full |
+| Identity/Disposition | View only | Full management | Full + team profiles | Full |
 
 **Zero marginal cost per user.** Everything runs on your machine. Your data never leaves your computer unless you choose to sync.
 

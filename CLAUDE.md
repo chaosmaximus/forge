@@ -1,4 +1,4 @@
-# Forge — Agentic OS for Claude Code
+# Forge — Cognitive Infrastructure for AI Agents
 
 ## CRITICAL: Forge is the ONLY Entry Point for Development
 
@@ -160,13 +160,13 @@ forge-next remember --type decision --title "..." --content "..."
 
 ## Architecture (v0.6.0 — Manas)
 
-**Daemon-first. CLI-first. No MCP server. 8-layer memory. 7 workers. 318 tests.**
+**Daemon-first. CLI-first. No MCP server. 8-layer memory. 9 workers. 560+ tests.**
 
 ```
 forge-daemon (Rust, single binary) — always-on daemon, Unix socket API
   ├── SQLite FTS5 + sqlite-vec (memory + vectors + edges, single file)
   ├── 8-layer memory (episodic, semantic, procedural, decision, identity, perception, disposition, working)
-  ├── 7 background workers (extraction, embedding, compaction, sync, health, adapters, events)
+  ├── 9 background workers (extraction, embedding, compaction, sync, health, adapters, events, perception, disposition)
   ├── Guardrails engine (check + blast_radius)
   ├── Multi-agent adapters (Claude Code + Cline + Codex CLI)
   ├── Auto-extraction (claude -p --model haiku / ollama qwen3:4b)
@@ -192,7 +192,7 @@ forge-hud (Rust)       — StatusLine rendering
 ### Running Tests
 
 ```bash
-# Full workspace (407+ tests)
+# Full workspace (560+ tests)
 cargo test --workspace
 
 # Daemon only
@@ -230,7 +230,7 @@ cargo clippy -p forge-daemon -p forge-core -p forge-cli -- -W clippy::all
 - Trust-level filtering on session context injection (`trust_level = 'user'`)
 - Symlink defense in scanner and workspace boundary checks
 - Secret scanner NEVER stores actual values — SHA256 fingerprint only
-- 3 adversarial reviews completed (Forge evaluator + Codex gpt-5.2 x2)
+- 6 adversarial reviews completed (Forge evaluator + Codex gpt-5.2)
 - 15 adversarial tests in CI
 
 ## Remaining Work
