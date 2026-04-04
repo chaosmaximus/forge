@@ -198,6 +198,12 @@ pub enum ResponseData {
         lessons_created: usize,
         diagnostics_created: usize,
     },
+    BootstrapComplete {
+        files_processed: usize,
+        files_skipped: usize,
+        memories_extracted: usize,
+        errors: usize,
+    },
 
     Shutdown,
 }

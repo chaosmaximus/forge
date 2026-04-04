@@ -638,6 +638,38 @@ pub async fn diagnostics(file: String) {
     }
 }
 
+/// Bootstrap: scan and process all existing transcript files.
+pub async fn bootstrap(project: Option<String>) {
+    let req = Request::Bootstrap { project };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::BootstrapComplete {
+                files_processed,
+                files_skipped,
+                memories_extracted,
+                errors,
+            },
+        }) => {
+            println!("Bootstrap complete:");
+            println!("  Files processed:  {}", files_processed);
+            println!("  Files skipped:    {}", files_skipped);
+            println!("  Memories created: {}", memories_extracted);
+            if errors > 0 {
+                println!("  Errors:           {}", errors);
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
 }

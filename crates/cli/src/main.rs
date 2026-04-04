@@ -258,6 +258,14 @@ enum Commands {
     /// Backfill HLC timestamps on existing memories that have empty hlc_timestamp
     #[command(name = "hlc-backfill")]
     HlcBackfill,
+
+    /// Bootstrap: scan and process all existing transcript files
+    #[command(name = "bootstrap")]
+    Bootstrap {
+        /// Only process transcripts for this project
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -444,6 +452,9 @@ async fn main() {
         }
         Commands::HlcBackfill => {
             commands::sync::hlc_backfill().await;
+        }
+        Commands::Bootstrap { project } => {
+            commands::system::bootstrap(project).await;
         }
     }
 }

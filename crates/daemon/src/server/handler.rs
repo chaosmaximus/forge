@@ -1298,6 +1298,22 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 data: ResponseData::EvaluationStored { lessons_created, diagnostics_created },
             }
         }
+        Request::Bootstrap { project } => {
+            let adapters = crate::adapters::detect_adapters();
+            let result = crate::bootstrap::run_bootstrap(
+                &state.conn,
+                &adapters,
+                project.as_deref(),
+            );
+            Response::Ok {
+                data: ResponseData::BootstrapComplete {
+                    files_processed: result.files_processed,
+                    files_skipped: result.files_skipped,
+                    memories_extracted: result.memories_extracted,
+                    errors: result.errors,
+                },
+            }
+        }
 
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,

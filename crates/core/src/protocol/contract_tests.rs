@@ -310,6 +310,12 @@ mod tests {
                     session_id: Some("s1".into()),
                 },
             ),
+            (
+                "bootstrap",
+                Request::Bootstrap {
+                    project: Some("forge".into()),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -467,6 +473,14 @@ mod tests {
                 "store_evaluation",
                 r#"{"method":"store_evaluation","params":{"findings":[{"description":"bug found","severity":"high","files":["src/main.rs"],"category":"bug"}],"project":"forge","session_id":"s1"}}"#,
             ),
+            (
+                "bootstrap",
+                r#"{"method":"bootstrap","params":{"project":"forge"}}"#,
+            ),
+            (
+                "bootstrap no project",
+                r#"{"method":"bootstrap","params":{}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -515,17 +529,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 44 Request variants.
+    /// Ensure we cover ALL 45 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
         // Unit variants: 12
         let unit_count = 12;
-        // Parameterized variants: 32
-        let param_count = 32;
-        // Total: 44
-        let expected_total = 44;
+        // Parameterized variants: 33
+        let param_count = 33;
+        // Total: 45
+        let expected_total = 45;
 
         assert_eq!(
             unit_count + param_count,
@@ -673,6 +687,9 @@ mod tests {
                     }],
                     project: None,
                     session_id: None,
+                },
+                Request::Bootstrap {
+                    project: None,
                 },
             ]
         }

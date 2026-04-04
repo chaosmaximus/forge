@@ -219,6 +219,20 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_diagnostic_expires ON diagnostic(expires_at);
     ")?;
 
+    // Bootstrap: transcript processing log for efficient skip/resume
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS transcript_log (
+            path TEXT PRIMARY KEY,
+            adapter TEXT NOT NULL,
+            project TEXT,
+            size_bytes INTEGER NOT NULL,
+            offset_processed INTEGER NOT NULL DEFAULT 0,
+            content_hash TEXT NOT NULL,
+            processed_at TEXT NOT NULL,
+            memories_extracted INTEGER NOT NULL DEFAULT 0
+        );
+    ")?;
+
     // Add valence columns (safe to re-run — ignores if already exists)
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN valence TEXT NOT NULL DEFAULT 'neutral'", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN intensity REAL NOT NULL DEFAULT 0.0", []);

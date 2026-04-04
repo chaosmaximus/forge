@@ -1,10 +1,11 @@
+pub mod adapters;
+pub mod bootstrap;
 pub mod chunk;
 pub mod claude_memory;
 pub mod config;
 pub mod db;
 pub mod events;
 pub mod extraction;
-pub mod adapters;
 pub mod guardrails;
 pub mod lsp;
 pub mod migrate;

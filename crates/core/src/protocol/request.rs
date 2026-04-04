@@ -174,6 +174,10 @@ pub enum Request {
         project: Option<String>,
         session_id: Option<String>,
     },
+    /// Bootstrap: scan and process all existing transcript files
+    Bootstrap {
+        project: Option<String>,
+    },
 
     Shutdown,
 }
