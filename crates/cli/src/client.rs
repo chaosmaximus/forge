@@ -89,7 +89,13 @@ pub async fn connect() -> Result<UnixStream, String> {
         return Ok(stream);
     }
 
-    // Socket not available — start the daemon
+    // Socket not available — check for stale socket and clean up before starting daemon
+    if std::path::Path::new(&socket_path).exists() {
+        eprintln!("[cli] WARN: stale socket detected at {} — removing before daemon start", socket_path);
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    // Start the daemon
     let daemon_path = find_daemon_binary();
 
     // Spawn daemon as a detached background process.
@@ -123,6 +129,12 @@ pub async fn connect() -> Result<UnixStream, String> {
         if let Ok(stream) = UnixStream::connect(&socket_path).await {
             return Ok(stream);
         }
+    }
+
+    // Daemon started but socket never appeared — clean up stale socket if present
+    if std::path::Path::new(&socket_path).exists() {
+        eprintln!("[cli] WARN: daemon started but socket not connectable — cleaning stale socket at {}", socket_path);
+        let _ = std::fs::remove_file(&socket_path);
     }
 
     Err(format!(

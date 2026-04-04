@@ -60,8 +60,13 @@ async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(
 
 /// M1: Check whether a daemon process is alive by reading the PID file and
 /// sending signal 0 (existence check).
+///
+/// Uses the canonical PID path (`~/.forge/forge.pid` or `$FORGE_DIR/forge.pid`)
+/// rather than deriving from the socket path's parent directory, which would
+/// break when `FORGE_SOCKET` points to a custom location like `/tmp/forge.sock`.
 #[cfg(unix)]
-fn is_daemon_alive(forge_dir: &str) -> bool {
+pub fn is_daemon_alive() -> bool {
+    let forge_dir = forge_core::forge_dir();
     let pid_path = format!("{}/forge.pid", forge_dir);
     if let Ok(content) = std::fs::read_to_string(&pid_path) {
         if let Ok(pid) = content.trim().parse::<i32>() {
@@ -79,18 +84,16 @@ pub async fn run_server(
 ) -> std::io::Result<()> {
     // M1: Before removing the socket, check if another daemon is actually alive
     if std::path::Path::new(socket_path).exists() {
-        let forge_dir = std::path::Path::new(socket_path)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-
         #[cfg(unix)]
-        if is_daemon_alive(&forge_dir) {
+        if is_daemon_alive() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AddrInUse,
                 "another daemon is running",
             ));
         }
+
+        // FAIL-LOUD: log stale socket detection so operators can see it
+        eprintln!("[daemon] stale socket detected at {}, cleaning up", socket_path);
     }
 
     // Remove stale socket file (safe — we verified the old daemon is dead)
