@@ -1009,16 +1009,39 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::CompileContext { agent, project } => {
+        Request::CompileContext { agent, project, static_only } => {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
-            let context = crate::recall::compile_context(&state.conn, agent_name, project.as_deref());
-            let chars = context.len();
-            Response::Ok {
-                data: ResponseData::CompiledContext {
-                    context,
-                    layers_used: 6, // platform, identity, decisions, lessons, skills, perceptions
-                    chars,
-                },
+            let static_prefix = crate::recall::compile_static_prefix(&state.conn, agent_name);
+
+            if static_only.unwrap_or(false) {
+                let chars = static_prefix.len();
+                Response::Ok {
+                    data: ResponseData::CompiledContext {
+                        context: static_prefix.clone(),
+                        static_prefix,
+                        dynamic_suffix: String::new(),
+                        layers_used: 4, // platform, identity, disposition, tools
+                        chars,
+                    },
+                }
+            } else {
+                let dynamic_suffix = crate::recall::compile_dynamic_suffix(
+                    &state.conn, agent_name, project.as_deref(), 3000,
+                );
+                let full = format!(
+                    "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
+                    static_prefix, dynamic_suffix
+                );
+                let chars = full.len();
+                Response::Ok {
+                    data: ResponseData::CompiledContext {
+                        context: full,
+                        static_prefix,
+                        dynamic_suffix,
+                        layers_used: 9, // platform, identity, disposition, tools, decisions, lessons, skills, perceptions, working-set
+                        chars,
+                    },
+                }
             }
         }
 
@@ -2380,14 +2403,60 @@ mod tests {
             Request::CompileContext {
                 agent: None,
                 project: None,
+                static_only: None,
             },
         );
         match resp {
             Response::Ok {
-                data: ResponseData::CompiledContext { context, chars, .. },
+                data:
+                    ResponseData::CompiledContext {
+                        context,
+                        static_prefix,
+                        dynamic_suffix,
+                        chars,
+                        layers_used,
+                    },
             } => {
                 assert!(context.contains("<forge-context"), "should contain opening tag");
                 assert!(chars > 0, "chars should be > 0");
+                assert!(!static_prefix.is_empty(), "static_prefix should not be empty");
+                assert!(!dynamic_suffix.is_empty(), "dynamic_suffix should not be empty");
+                assert_eq!(layers_used, 9, "full context uses 9 layers");
+            }
+            other => panic!("expected CompiledContext, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compile_context_handler_static_only() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(
+            &mut state,
+            Request::CompileContext {
+                agent: None,
+                project: None,
+                static_only: Some(true),
+            },
+        );
+        match resp {
+            Response::Ok {
+                data:
+                    ResponseData::CompiledContext {
+                        context,
+                        static_prefix,
+                        dynamic_suffix,
+                        layers_used,
+                        ..
+                    },
+            } => {
+                assert!(
+                    context.contains("<forge-static>"),
+                    "static_only should return static prefix"
+                );
+                assert!(!context.contains("<forge-dynamic>"), "should not contain dynamic suffix");
+                assert_eq!(context, static_prefix, "context should equal static_prefix");
+                assert!(dynamic_suffix.is_empty(), "dynamic_suffix should be empty");
+                assert_eq!(layers_used, 4, "static only uses 4 layers");
             }
             other => panic!("expected CompiledContext, got {:?}", other),
         }

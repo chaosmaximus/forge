@@ -263,6 +263,7 @@ mod tests {
                 Request::CompileContext {
                     agent: Some("claude-code".into()),
                     project: Some("forge".into()),
+                    static_only: None,
                 },
             ),
             (
@@ -630,6 +631,7 @@ mod tests {
                 Request::CompileContext {
                     agent: None,
                     project: None,
+                    static_only: None,
                 },
                 Request::SyncExport {
                     project: None,

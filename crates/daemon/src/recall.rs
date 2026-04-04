@@ -296,82 +296,140 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// Compile optimized context from all Manas layers for session-start injection.
-///
-/// Returns an XML string with the most relevant information, budget-limited
-/// to ~4000 chars (~1000 tokens). Uses lazy loading pattern: summaries in
-/// context, full content on demand via `forge recall --layer <layer>`.
-/// All user-controlled strings are XML-escaped to prevent injection.
-pub fn compile_context(
+/// Static prefix — things that don't change within a session.
+/// Generated once at session-start, cached by the hook.
+/// DETERMINISTIC: same input = same output, every time.
+/// All XML sections always present (masking, not removal) for KV-cache stability.
+pub fn compile_static_prefix(conn: &Connection, agent: &str) -> String {
+    let mut xml = String::from("<forge-static>\n");
+
+    // Platform (never changes within a session)
+    {
+        let platform = crate::db::manas::list_platform(conn).unwrap_or_default();
+        if platform.is_empty() {
+            xml.push_str("<platform/>\n");
+        } else {
+            xml.push_str("<platform");
+            for entry in &platform {
+                xml.push_str(&format!(
+                    " {}=\"{}\"",
+                    xml_escape(&entry.key),
+                    xml_escape(&entry.value)
+                ));
+            }
+            xml.push_str("/>\n");
+        }
+    }
+
+    // Identity facets (changes rarely — user-declared)
+    {
+        let facets = crate::db::manas::list_identity(conn, agent, true).unwrap_or_default();
+        if facets.is_empty() {
+            xml.push_str(&format!(
+                "<identity agent=\"{}\"/>\n",
+                xml_escape(agent)
+            ));
+        } else {
+            xml.push_str(&format!(
+                "<identity agent=\"{}\">\n",
+                xml_escape(agent)
+            ));
+            for f in &facets {
+                xml.push_str(&format!(
+                    "  <facet type=\"{}\" strength=\"{:.1}\">{}</facet>\n",
+                    xml_escape(&f.facet),
+                    f.strength,
+                    xml_escape(&f.description)
+                ));
+            }
+            xml.push_str("</identity>\n");
+        }
+    }
+
+    // Disposition (changes slowly — 15min intervals)
+    {
+        let traits = crate::db::manas::list_dispositions(conn, agent).unwrap_or_default();
+        if traits.is_empty() {
+            xml.push_str("<disposition/>\n");
+        } else {
+            xml.push_str("<disposition");
+            for t in &traits {
+                xml.push_str(&format!(
+                    " {}=\"{:.2}({:?})\"",
+                    format!("{:?}", t.disposition_trait).to_lowercase(),
+                    t.value,
+                    t.trend
+                ));
+            }
+            xml.push_str("/>\n");
+        }
+    }
+
+    // Tool summary (changes only on restart)
+    {
+        let tools = crate::db::manas::list_tools(conn, None).unwrap_or_default();
+        if tools.is_empty() {
+            xml.push_str("<tools/>\n");
+        } else {
+            xml.push_str("<tools");
+            xml.push_str(&format!(" count=\"{}\"", tools.len()));
+            let names: Vec<String> = tools.iter().take(10).map(|t| t.name.clone()).collect();
+            xml.push_str(&format!(" available=\"{}\"", names.join(",")));
+            xml.push_str("/>\n");
+        }
+    }
+
+    xml.push_str("</forge-static>");
+    xml
+}
+
+/// Dynamic suffix — things that change per-turn or accumulate.
+/// Regenerated on each compile_context call.
+/// All XML sections always present (masking, not removal) for KV-cache stability.
+pub fn compile_dynamic_suffix(
     conn: &Connection,
     agent: &str,
     project: Option<&str>,
+    budget: usize,
 ) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    let budget = 4000usize;
+    let mut xml = String::from("<forge-dynamic>\n");
     let mut used = 0usize;
 
-    // Always: Platform (tiny, ~100 chars) — always injected even if empty
-    {
-        let platform = crate::db::manas::list_platform(conn).unwrap_or_default();
-        let mut platform_xml = String::from("<platform>");
-        for entry in &platform {
-            platform_xml.push_str(&format!(" {}=\"{}\"", xml_escape(&entry.key), xml_escape(&entry.value)));
-        }
-        platform_xml.push_str("</platform>");
-        used += platform_xml.len();
-        parts.push(platform_xml);
-    }
-
-    // Identity facets (important for shaping behavior)
-    if let Ok(facets) = crate::db::manas::list_identity(conn, agent, true) {
-        if !facets.is_empty() {
-            let mut id_xml = String::from("<identity agent=\"");
-            id_xml.push_str(&xml_escape(agent));
-            id_xml.push_str("\">");
-            for f in &facets {
-                let entry = format!(
-                    "\n  <facet type=\"{}\" strength=\"{:.1}\">{}</facet>",
-                    xml_escape(&f.facet), f.strength, xml_escape(&f.description)
-                );
-                if used + id_xml.len() + entry.len() < budget {
-                    id_xml.push_str(&entry);
-                }
-            }
-            id_xml.push_str("\n</identity>");
-            used += id_xml.len();
-            parts.push(id_xml);
-        }
-    }
-
-    // Top decisions — direct query (not BM25) to ensure ALL decisions appear
+    // Decisions (accumulate — always show ALL, masking with empty tag if none)
     {
         let decisions: Vec<(String, f64, String, f64)> = if let Some(proj) = project {
             conn.prepare(
                 "SELECT title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'decision' AND status = 'active'
                  AND (project = ?1 OR project IS NULL OR project = '')
-                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10"
-            ).and_then(|mut stmt| {
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10",
+            )
+            .and_then(|mut stmt| {
                 stmt.query_map(params![proj], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })?.collect()
-            }).unwrap_or_default()
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
         } else {
             conn.prepare(
                 "SELECT title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'decision' AND status = 'active'
-                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10"
-            ).and_then(|mut stmt| {
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10",
+            )
+            .and_then(|mut stmt| {
                 stmt.query_map([], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })?.collect()
-            }).unwrap_or_default()
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
         };
-        if !decisions.is_empty() {
+        if decisions.is_empty() {
+            xml.push_str("<decisions/>\n");
+        } else {
             let mut dec_xml = String::from("<decisions>");
             for (title, confidence, _valence, intensity) in &decisions {
-                // Boost high-intensity memories in display ordering
                 let display_confidence = if *intensity > 0.5 {
                     (confidence * (1.0 + intensity * 0.5)).min(1.0)
                 } else {
@@ -379,43 +437,52 @@ pub fn compile_context(
                 };
                 let entry = format!(
                     "\n  <decision confidence=\"{:.1}\">{}</decision>",
-                    display_confidence, xml_escape(title)
+                    display_confidence,
+                    xml_escape(title)
                 );
                 if used + dec_xml.len() + entry.len() < budget {
                     dec_xml.push_str(&entry);
                 }
             }
-            dec_xml.push_str("\n</decisions>");
+            dec_xml.push_str("\n</decisions>\n");
             used += dec_xml.len();
-            parts.push(dec_xml);
+            xml.push_str(&dec_xml);
         }
     }
 
-    // Top lessons — direct query (not BM25) to ensure ALL lessons appear
+    // Lessons (accumulate — always present)
     {
         let lessons: Vec<(String, f64, String, f64)> = if let Some(proj) = project {
             conn.prepare(
                 "SELECT title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'lesson' AND status = 'active'
                  AND (project = ?1 OR project IS NULL OR project = '')
-                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5"
-            ).and_then(|mut stmt| {
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5",
+            )
+            .and_then(|mut stmt| {
                 stmt.query_map(params![proj], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })?.collect()
-            }).unwrap_or_default()
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
         } else {
             conn.prepare(
                 "SELECT title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'lesson' AND status = 'active'
-                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5"
-            ).and_then(|mut stmt| {
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5",
+            )
+            .and_then(|mut stmt| {
                 stmt.query_map([], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })?.collect()
-            }).unwrap_or_default()
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
         };
-        if !lessons.is_empty() {
+        if lessons.is_empty() {
+            xml.push_str("<lessons/>\n");
+        } else {
             let mut les_xml = String::from("<lessons>");
             for (title, _confidence, _valence, _intensity) in &lessons {
                 let entry = format!("\n  <lesson>{}</lesson>", xml_escape(title));
@@ -423,17 +490,18 @@ pub fn compile_context(
                     les_xml.push_str(&entry);
                 }
             }
-            les_xml.push_str("\n</lessons>");
+            les_xml.push_str("\n</lessons>\n");
             used += les_xml.len();
-            parts.push(les_xml);
+            xml.push_str(&les_xml);
         }
     }
 
     // Skill summaries (lazy loading — 1-line each, agent pulls details on demand)
     // Skills: project-scoped AND tool-validated
-    let available_tools = crate::db::manas::available_tool_names(conn).unwrap_or_default();
-    if let Ok(skills) = crate::db::manas::list_skills(conn, None) {
-        let active_skills: Vec<_> = skills
+    {
+        let available_tools = crate::db::manas::available_tool_names(conn).unwrap_or_default();
+        let active_skills: Vec<_> = crate::db::manas::list_skills(conn, None)
+            .unwrap_or_default()
             .into_iter()
             .filter(|s| {
                 s.success_count > 0
@@ -441,67 +509,82 @@ pub fn compile_context(
                         || s.project.as_deref() == Some("")
                         || s.project.as_deref() == project)
             })
-            // Tool validation: if skill references a tool not available, filter it out
             .filter(|s| {
-                // If no tools registered at all, don't filter (graceful degradation)
-                if available_tools.is_empty() { return true; }
-                // Check if skill name/description/domain references a tool not available
-                let skill_text = format!("{} {} {}", s.name, s.description, s.domain).to_lowercase();
+                if available_tools.is_empty() {
+                    return true;
+                }
+                let skill_text =
+                    format!("{} {} {}", s.name, s.description, s.domain).to_lowercase();
                 let tool_keywords: &[(&str, &str)] = &[
-                    ("docker", "docker"), ("kubectl", "kubectl"), ("terraform", "terraform"),
-                    ("npm", "npm"), ("cargo", "cargo"), ("pip", "pip"),
-                    ("gcloud", "gcloud"), ("aws", "aws"), ("ssh", "ssh"),
-                    ("make", "make"), ("scp", "scp"), ("rsync", "rsync"),
+                    ("docker", "docker"),
+                    ("kubectl", "kubectl"),
+                    ("terraform", "terraform"),
+                    ("npm", "npm"),
+                    ("cargo", "cargo"),
+                    ("pip", "pip"),
+                    ("gcloud", "gcloud"),
+                    ("aws", "aws"),
+                    ("ssh", "ssh"),
+                    ("make", "make"),
+                    ("scp", "scp"),
+                    ("rsync", "rsync"),
                 ];
                 for (keyword, tool_name) in tool_keywords {
                     if skill_text.contains(keyword) && !available_tools.contains(*tool_name) {
-                        return false; // Skill references a tool we don't have
+                        return false;
                     }
                 }
                 true
             })
             .take(5)
             .collect();
-        if !active_skills.is_empty() {
+        if active_skills.is_empty() {
+            xml.push_str("<skills/>\n");
+        } else {
             let mut skill_xml = String::from(
                 "<skills hint=\"use 'forge recall --layer skill &lt;keyword&gt;' for full steps\">",
             );
             for s in &active_skills {
                 let entry = format!(
                     "\n  <skill domain=\"{}\" uses=\"{}\">{}</skill>",
-                    xml_escape(&s.domain), s.success_count, xml_escape(&s.name)
+                    xml_escape(&s.domain),
+                    s.success_count,
+                    xml_escape(&s.name)
                 );
                 if used + skill_xml.len() + entry.len() < budget {
                     skill_xml.push_str(&entry);
                 }
             }
-            skill_xml.push_str("\n</skills>");
+            skill_xml.push_str("\n</skills>\n");
             used += skill_xml.len();
-            parts.push(skill_xml);
+            xml.push_str(&skill_xml);
         }
     }
 
     // Critical perceptions only (warnings/errors, unconsumed, project-scoped)
-    if let Ok(perceptions) = crate::db::manas::list_unconsumed_perceptions(conn, None) {
-        let critical: Vec<_> = perceptions
+    {
+        let critical: Vec<_> = crate::db::manas::list_unconsumed_perceptions(conn, None)
+            .unwrap_or_default()
             .into_iter()
             .filter(|p| {
-                // Project filter
                 let project_ok = match (&p.project, project) {
                     (Some(pp), Some(proj)) => pp == proj,
-                    (None, _) => true, // global perceptions always visible
-                    (_, None) => true,  // no project filter = show all
+                    (None, _) => true,
+                    (_, None) => true,
                 };
-                project_ok && matches!(
-                    p.severity,
-                    forge_core::types::manas::Severity::Warning
-                        | forge_core::types::manas::Severity::Error
-                        | forge_core::types::manas::Severity::Critical
-                )
+                project_ok
+                    && matches!(
+                        p.severity,
+                        forge_core::types::manas::Severity::Warning
+                            | forge_core::types::manas::Severity::Error
+                            | forge_core::types::manas::Severity::Critical
+                    )
             })
             .take(3)
             .collect();
-        if !critical.is_empty() {
+        if critical.is_empty() {
+            xml.push_str("<perceptions/>\n");
+        } else {
             let mut perc_xml = String::from("<perceptions>");
             for p in &critical {
                 let snippet: String = xml_escape(&p.data.chars().take(100).collect::<String>());
@@ -512,51 +595,53 @@ pub fn compile_context(
                     perc_xml.push_str(&entry);
                 }
             }
-            perc_xml.push_str("\n</perceptions>");
+            perc_xml.push_str("\n</perceptions>\n");
             used += perc_xml.len();
-            parts.push(perc_xml);
-        }
-    }
-
-    // Disposition summary
-    if let Ok(traits) = crate::db::manas::list_dispositions(conn, agent) {
-        if !traits.is_empty() {
-            let mut disp_xml = String::from("<disposition>");
-            for t in &traits {
-                let entry = format!(
-                    " {:?}={:.2}({:?})",
-                    t.disposition_trait, t.value, t.trend
-                );
-                if used + disp_xml.len() + entry.len() < budget {
-                    disp_xml.push_str(&entry);
-                }
-            }
-            disp_xml.push_str("</disposition>");
-            parts.push(disp_xml);
+            xml.push_str(&perc_xml);
         }
     }
 
     // Working set from last session (pick up where you left off)
-    if let Ok(ws) = crate::sessions::get_last_working_set(conn, agent, project) {
-        if !ws.is_empty() {
+    {
+        let ws = crate::sessions::get_last_working_set(conn, agent, project)
+            .unwrap_or_default();
+        if ws.is_empty() {
+            xml.push_str("<working-set/>\n");
+        } else {
             let mut ws_xml = String::from("<working-set hint=\"from your last session\">");
             ws_xml.push_str(&xml_escape(&ws));
-            ws_xml.push_str("</working-set>");
+            ws_xml.push_str("</working-set>\n");
             if used + ws_xml.len() < budget {
-                parts.push(ws_xml);
-                // used += ws_xml.len(); // last item, no further budget checks needed
+                xml.push_str(&ws_xml);
+                // used += ws_xml.len(); // last item
             }
         }
     }
 
-    // Assemble
-    let mut xml = String::from("<forge-context version=\"0.6.0\">\n");
-    for part in &parts {
-        xml.push_str(part);
-        xml.push('\n');
-    }
-    xml.push_str("</forge-context>");
+    xml.push_str("</forge-dynamic>");
     xml
+}
+
+/// Compile optimized context from all Manas layers for session-start injection.
+///
+/// Returns an XML string with the most relevant information, budget-limited
+/// to ~4000 chars (~1000 tokens). Uses lazy loading pattern: summaries in
+/// context, full content on demand via `forge recall --layer <layer>`.
+/// All user-controlled strings are XML-escaped to prevent injection.
+///
+/// This is backward compatible: calls compile_static_prefix + compile_dynamic_suffix
+/// and wraps them in a single `<forge-context>` envelope.
+pub fn compile_context(
+    conn: &Connection,
+    agent: &str,
+    project: Option<&str>,
+) -> String {
+    let prefix = compile_static_prefix(conn, agent);
+    let suffix = compile_dynamic_suffix(conn, agent, project, 3000);
+    format!(
+        "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
+        prefix, suffix
+    )
 }
 
 #[cfg(test)]
@@ -839,7 +924,104 @@ mod tests {
         assert!(results.is_empty(), "non-matching query should return empty");
     }
 
-    // ── compile_context tests ──
+    // ── compile_static_prefix tests ──
+
+    #[test]
+    fn test_compile_static_prefix_is_stable() {
+        let conn = setup();
+
+        // Store some platform data so prefix is non-trivial
+        let pe1 = forge_core::types::manas::PlatformEntry {
+            key: "os".into(),
+            value: "linux".into(),
+            detected_at: "2026-04-03".into(),
+        };
+        let pe2 = forge_core::types::manas::PlatformEntry {
+            key: "arch".into(),
+            value: "x86_64".into(),
+            detected_at: "2026-04-03".into(),
+        };
+        crate::db::manas::store_platform(&conn, &pe1).unwrap();
+        crate::db::manas::store_platform(&conn, &pe2).unwrap();
+
+        let prefix1 = compile_static_prefix(&conn, "claude-code");
+        let prefix2 = compile_static_prefix(&conn, "claude-code");
+        assert_eq!(
+            prefix1, prefix2,
+            "static prefix should be identical across calls"
+        );
+    }
+
+    #[test]
+    fn test_compile_static_prefix_all_sections_present_empty_db() {
+        let conn = setup();
+
+        let prefix = compile_static_prefix(&conn, "claude-code");
+        assert!(prefix.contains("<forge-static>"), "should contain opening tag");
+        assert!(prefix.contains("</forge-static>"), "should contain closing tag");
+        assert!(prefix.contains("<platform"), "platform always present");
+        assert!(prefix.contains("<identity"), "identity always present");
+        assert!(prefix.contains("<disposition"), "disposition always present");
+        assert!(prefix.contains("<tools"), "tools always present");
+    }
+
+    #[test]
+    fn test_compile_static_prefix_with_data() {
+        let conn = setup();
+
+        let facet = forge_core::types::manas::IdentityFacet {
+            id: "f1".into(),
+            agent: "claude-code".into(),
+            facet: "role".into(),
+            description: "Senior Rust engineer".into(),
+            strength: 0.9,
+            source: "user_defined".into(),
+            active: true,
+            created_at: "2026-04-03".into(),
+        };
+        crate::db::manas::store_identity(&conn, &facet).unwrap();
+
+        let prefix = compile_static_prefix(&conn, "claude-code");
+        assert!(
+            prefix.contains("Senior Rust engineer"),
+            "should contain identity facet"
+        );
+    }
+
+    // ── compile_dynamic_suffix tests ──
+
+    #[test]
+    fn test_compile_dynamic_suffix_all_sections_present_empty_db() {
+        let conn = setup();
+
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        assert!(suffix.contains("<forge-dynamic>"), "should contain opening tag");
+        assert!(suffix.contains("</forge-dynamic>"), "should contain closing tag");
+        assert!(suffix.contains("<decisions"), "decisions always present");
+        assert!(suffix.contains("<lessons"), "lessons always present");
+        assert!(suffix.contains("<skills"), "skills always present");
+        assert!(suffix.contains("<perceptions"), "perceptions always present");
+        assert!(suffix.contains("<working-set"), "working-set always present");
+    }
+
+    #[test]
+    fn test_compile_dynamic_suffix_changes_with_new_data() {
+        let conn = setup();
+
+        let suffix1 = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        assert!(suffix1.contains("<decisions/>"), "no decisions yet");
+
+        // Store a decision
+        let mem = Memory::new(MemoryType::Decision, "Use JWT for auth", "Security decision")
+            .with_confidence(0.9);
+        ops::remember(&conn, &mem).unwrap();
+
+        let suffix2 = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        assert_ne!(suffix1, suffix2, "suffix should change when data is added");
+        assert!(suffix2.contains("JWT"), "should contain the new decision");
+    }
+
+    // ── compile_context tests (backward compat) ──
 
     #[test]
     fn test_compile_context_empty_db() {
@@ -849,6 +1031,32 @@ mod tests {
         assert!(ctx.contains("<forge-context"), "should contain opening tag");
         assert!(ctx.contains("</forge-context>"), "should contain closing tag");
         assert!(ctx.contains("<platform"), "should always include platform");
+        // All sections always present (masking)
+        assert!(ctx.contains("<decisions"), "decisions always present");
+        assert!(ctx.contains("<lessons"), "lessons always present");
+        assert!(ctx.contains("<skills"), "skills always present");
+        assert!(ctx.contains("<perceptions"), "perceptions always present");
+        assert!(ctx.contains("<working-set"), "working-set always present");
+        assert!(ctx.contains("<identity"), "identity always present");
+        assert!(ctx.contains("<disposition"), "disposition always present");
+        assert!(ctx.contains("<tools"), "tools always present");
+    }
+
+    #[test]
+    fn test_compile_context_all_sections_always_present() {
+        let conn = setup();
+
+        // Even with completely empty DB, all XML sections exist
+        let ctx = compile_context(&conn, "claude-code", None);
+        assert!(ctx.contains("<platform"), "platform always present");
+        assert!(ctx.contains("<identity"), "identity always present");
+        assert!(ctx.contains("<disposition"), "disposition always present");
+        assert!(ctx.contains("<tools"), "tools always present");
+        assert!(ctx.contains("<decisions"), "decisions always present");
+        assert!(ctx.contains("<lessons"), "lessons always present");
+        assert!(ctx.contains("<skills"), "skills always present");
+        assert!(ctx.contains("<perceptions"), "perceptions always present");
+        assert!(ctx.contains("<working-set"), "working-set always present");
     }
 
     #[test]
@@ -875,7 +1083,32 @@ mod tests {
 
         let ctx = compile_context(&conn, "claude-code", None);
         assert!(ctx.contains("JWT"), "should contain decision about JWT");
-        assert!(ctx.contains("Senior Rust engineer"), "should contain identity facet");
+        assert!(
+            ctx.contains("Senior Rust engineer"),
+            "should contain identity facet"
+        );
+    }
+
+    #[test]
+    fn test_compile_context_contains_both_static_and_dynamic() {
+        let conn = setup();
+
+        let ctx = compile_context(&conn, "claude-code", None);
+        assert!(ctx.contains("<forge-static>"), "should contain static prefix");
+        assert!(ctx.contains("</forge-static>"), "should contain static prefix closing");
+        assert!(ctx.contains("<forge-dynamic>"), "should contain dynamic suffix");
+        assert!(ctx.contains("</forge-dynamic>"), "should contain dynamic suffix closing");
+    }
+
+    #[test]
+    fn test_compile_context_version_updated() {
+        let conn = setup();
+
+        let ctx = compile_context(&conn, "claude-code", None);
+        assert!(
+            ctx.contains("version=\"0.7.0\""),
+            "version should be 0.7.0"
+        );
     }
 
     #[test]

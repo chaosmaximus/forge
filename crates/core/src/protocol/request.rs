@@ -127,6 +127,10 @@ pub enum Request {
     CompileContext {
         agent: Option<String>,
         project: Option<String>,
+        /// If true, only return the static prefix (platform, identity, disposition, tools).
+        /// Used by session-start hook to cache the stable part for KV-cache optimization.
+        #[serde(default)]
+        static_only: Option<bool>,
     },
 
     // ── Sync Operations ──

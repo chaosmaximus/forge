@@ -158,6 +158,14 @@ pub enum ResponseData {
 
     CompiledContext {
         context: String,
+        /// Cacheable static prefix (platform, identity, disposition, tools).
+        /// Stable within a session — suitable for KV-cache reuse.
+        #[serde(default)]
+        static_prefix: String,
+        /// Per-turn dynamic suffix (decisions, lessons, skills, perceptions, working set).
+        /// Changes on each compile.
+        #[serde(default)]
+        dynamic_suffix: String,
         layers_used: usize,
         chars: usize,
     },

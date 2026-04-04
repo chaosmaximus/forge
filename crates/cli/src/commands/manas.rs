@@ -288,18 +288,19 @@ pub async fn perceptions(project: Option<String>, limit: usize) {
 }
 
 /// Compile optimized context from all Manas layers (for session-start injection).
-pub async fn compile_context(agent: String, project: Option<String>) {
+pub async fn compile_context(agent: String, project: Option<String>, static_only: bool) {
     let request = Request::CompileContext {
         agent: Some(agent),
         project,
+        static_only: if static_only { Some(true) } else { None },
     };
 
     match client::send(&request).await {
         Ok(Response::Ok {
-            data: ResponseData::CompiledContext { context, layers_used, chars },
+            data: ResponseData::CompiledContext { context, layers_used, chars, .. },
         }) => {
             if context.is_empty() {
-                println!("<forge-context version=\"0.6.0\"/>");
+                println!("<forge-context version=\"0.7.0\"/>");
             } else {
                 println!("{context}");
             }

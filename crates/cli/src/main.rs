@@ -170,6 +170,10 @@ enum Commands {
         /// Project name
         #[arg(long)]
         project: Option<String>,
+        /// Only return the static prefix (platform, identity, disposition, tools).
+        /// Useful for caching the stable part for KV-cache optimization.
+        #[arg(long)]
+        static_only: bool,
     },
     /// Register an active agent session
     #[command(name = "register-session")]
@@ -380,8 +384,8 @@ async fn main() {
         Commands::EndSession { id } => {
             commands::system::end_session(id).await;
         }
-        Commands::CompileContext { agent, project } => {
-            commands::manas::compile_context(agent, project).await;
+        Commands::CompileContext { agent, project, static_only } => {
+            commands::manas::compile_context(agent, project, static_only).await;
         }
         Commands::ManasHealth => {
             commands::manas::manas_health().await;
