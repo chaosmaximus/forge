@@ -283,6 +283,30 @@ else
 fi
 
 # ============================================================
+# Test 13: VERSION with invalid characters is rejected
+# ============================================================
+run_test "VERSION with invalid characters is rejected"
+invalid_ver_output="$(DRY_RUN=1 FORGE_VERSION='1.0; rm -rf /' bash "$INSTALL_SCRIPT" 2>&1)" && invalid_ver_rc=0 || invalid_ver_rc=$?
+
+if [ "$invalid_ver_rc" -ne 0 ] && echo "$invalid_ver_output" | grep -qi "invalid characters"; then
+    pass
+else
+    fail "Expected non-zero exit and 'invalid characters' message (rc=$invalid_ver_rc)"
+fi
+
+# ============================================================
+# Test 14: INSTALL_DIR with path traversal (..) is rejected
+# ============================================================
+run_test "INSTALL_DIR with path traversal is rejected"
+traversal_output="$(DRY_RUN=1 FORGE_INSTALL_DIR='/tmp/../../../etc' bash "$INSTALL_SCRIPT" 2>&1)" && traversal_rc=0 || traversal_rc=$?
+
+if [ "$traversal_rc" -ne 0 ] && echo "$traversal_output" | grep -qi "path traversal"; then
+    pass
+else
+    fail "Expected non-zero exit and 'path traversal' message (rc=$traversal_rc)"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 printf "\n============================\n"
