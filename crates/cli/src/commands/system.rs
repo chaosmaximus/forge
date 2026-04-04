@@ -743,16 +743,41 @@ pub async fn config_show() {
                     backend,
                     ollama_model,
                     ollama_endpoint,
-                    claude_model,
+                    claude_cli_model,
+                    claude_api_model,
+                    claude_api_key_set,
+                    openai_model,
+                    openai_endpoint,
+                    openai_key_set,
+                    gemini_model,
+                    gemini_key_set,
                     embedding_model,
                 },
         }) => {
             println!("Forge Configuration:");
-            println!("  extraction.backend:          {backend}");
-            println!("  extraction.claude.model:     {claude_model}");
-            println!("  extraction.ollama.model:     {ollama_model}");
-            println!("  extraction.ollama.endpoint:  {ollama_endpoint}");
-            println!("  embedding.model:             {embedding_model}");
+            println!("  Active backend:              {backend}");
+            println!();
+            println!("  Ollama (local):");
+            println!("    model:     {ollama_model}");
+            println!("    endpoint:  {ollama_endpoint}");
+            println!();
+            println!("  Claude CLI:");
+            println!("    model:     {claude_cli_model}");
+            println!();
+            println!("  Claude API (Anthropic):");
+            println!("    model:     {claude_api_model}");
+            println!("    API key:   {}", if claude_api_key_set { "****set" } else { "not set" });
+            println!();
+            println!("  OpenAI:");
+            println!("    model:     {openai_model}");
+            println!("    endpoint:  {openai_endpoint}");
+            println!("    API key:   {}", if openai_key_set { "****set" } else { "not set" });
+            println!();
+            println!("  Gemini (Google):");
+            println!("    model:     {gemini_model}");
+            println!("    API key:   {}", if gemini_key_set { "****set" } else { "not set" });
+            println!();
+            println!("  Embedding:   {embedding_model}");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

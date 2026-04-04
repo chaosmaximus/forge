@@ -35,7 +35,7 @@ fn fnv1a(data: &[u8]) -> u64 {
 /// Compute content hash: mtime + file size + first 4KB.
 /// Uses mtime as secondary check to catch in-place rewrites that preserve size.
 /// NOT cryptographic — just for change detection.
-pub fn compute_content_hash(path: &PathBuf) -> Result<String, String> {
+pub fn compute_content_hash(path: &std::path::Path) -> Result<String, String> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let metadata = f.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
@@ -112,7 +112,7 @@ fn walk_dir_inner(dir: &PathBuf, ext: &str, files: &mut Vec<PathBuf>) {
 
 /// Check if a transcript needs processing (new or changed since last time).
 /// Returns (needs_work, last_offset).
-pub fn needs_processing(conn: &Connection, path: &PathBuf, current_hash: &str) -> (bool, usize) {
+pub fn needs_processing(conn: &Connection, path: &std::path::Path, current_hash: &str) -> (bool, usize) {
     let path_str = path.to_string_lossy();
     match conn.query_row(
         "SELECT content_hash, offset_processed FROM transcript_log WHERE path = ?1",
@@ -140,15 +140,16 @@ pub fn needs_processing(conn: &Connection, path: &PathBuf, current_hash: &str) -
 }
 
 /// Update the transcript_log after processing.
+#[allow(clippy::too_many_arguments)]
 pub fn update_log(
     conn: &Connection,
-    path: &PathBuf,
+    path: &std::path::Path,
     adapter: &str,
     project: Option<&str>,
     size_bytes: u64,
     offset: usize,
     content_hash: &str,
-    memories: usize,
+    memories: usize, // clippy: 8 args is fine for a log-update function
 ) {
     let path_str = path.to_string_lossy();
     let now = crate::db::manas::now_offset(0);
@@ -173,7 +174,7 @@ pub fn update_log(
 
 /// Extract project name from a transcript file path.
 /// Reuses the same logic as extractor.rs:327-347.
-pub fn extract_project_from_path(path: &PathBuf) -> Option<String> {
+pub fn extract_project_from_path(path: &std::path::Path) -> Option<String> {
     let path_str = path.to_string_lossy();
     if let Some(projects_idx) = path_str.find("/projects/") {
         let after = &path_str[projects_idx + 10..];

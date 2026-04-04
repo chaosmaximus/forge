@@ -1378,12 +1378,29 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::GetConfig => {
             let config = crate::config::load_config();
+            // SECURITY: never expose API keys — just show if they're set
+            let claude_api_key_set = crate::config::resolve_api_key(
+                &config.extraction.claude_api.api_key, "ANTHROPIC_API_KEY"
+            ).is_some();
+            let openai_key_set = crate::config::resolve_api_key(
+                &config.extraction.openai.api_key, "OPENAI_API_KEY"
+            ).is_some();
+            let gemini_key_set = crate::config::resolve_api_key(
+                &config.extraction.gemini.api_key, "GEMINI_API_KEY"
+            ).is_some();
             Response::Ok {
                 data: ResponseData::ConfigData {
                     backend: config.extraction.backend.clone(),
                     ollama_model: config.extraction.ollama.model.clone(),
                     ollama_endpoint: config.extraction.ollama.endpoint.clone(),
-                    claude_model: config.extraction.claude.model.clone(),
+                    claude_cli_model: config.extraction.claude.model.clone(),
+                    claude_api_model: config.extraction.claude_api.model.clone(),
+                    claude_api_key_set,
+                    openai_model: config.extraction.openai.model.clone(),
+                    openai_endpoint: config.extraction.openai.endpoint.clone(),
+                    openai_key_set,
+                    gemini_model: config.extraction.gemini.model.clone(),
+                    gemini_key_set,
                     embedding_model: config.embedding.model.clone(),
                 },
             }
