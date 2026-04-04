@@ -1112,7 +1112,33 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
 // ──────────────────────────────────────────────
 
 /// Store or update an identity facet.
+///
+/// Deduplicates by (agent, description): if an active facet with the same
+/// agent and description already exists, the one with higher strength wins
+/// and the insert is skipped. This prevents the extractor from creating
+/// hundreds of near-identical identity facets over time.
 pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Result<()> {
+    // Dedup check: merge with existing facet that has the same description for this agent
+    let existing: Option<(String, f64)> = conn
+        .query_row(
+            "SELECT id, strength FROM identity WHERE agent = ?1 AND description = ?2 AND active = 1",
+            params![facet.agent, facet.description],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+
+    if let Some((existing_id, existing_strength)) = existing {
+        // Merge: keep higher strength, skip the insert
+        if facet.strength > existing_strength {
+            conn.execute(
+                "UPDATE identity SET strength = ?1 WHERE id = ?2",
+                params![facet.strength, existing_id],
+            )?;
+        }
+        return Ok(());
+    }
+
+    // No duplicate — insert normally
     conn.execute(
         "INSERT INTO identity (id, agent, facet, description, strength, source, active, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -2145,5 +2171,116 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_identity_dedup_same_description() {
+        let conn = open_db();
+
+        let f1 = IdentityFacet {
+            id: "f1".into(),
+            agent: "claude-code".into(),
+            facet: "values".into(),
+            description: "Values thoroughness".into(),
+            strength: 0.8,
+            source: "extracted".into(),
+            active: true,
+            created_at: "2026-04-04 12:00:00".into(),
+        };
+        store_identity(&conn, &f1).unwrap();
+
+        // Insert a second facet with same agent + description but different id and higher strength
+        let f2 = IdentityFacet {
+            id: "f2".into(),
+            agent: "claude-code".into(),
+            facet: "values".into(),
+            description: "Values thoroughness".into(),
+            strength: 0.9,
+            source: "extracted".into(),
+            active: true,
+            created_at: "2026-04-04 12:00:01".into(),
+        };
+        store_identity(&conn, &f2).unwrap();
+
+        let all = list_identity(&conn, "claude-code", true).unwrap();
+        assert_eq!(all.len(), 1, "duplicate facets should be merged, got {}", all.len());
+        assert!(
+            (all[0].strength - 0.9).abs() < 0.01,
+            "should keep higher strength (0.9), got {}",
+            all[0].strength
+        );
+    }
+
+    #[test]
+    fn test_identity_dedup_lower_strength_ignored() {
+        let conn = open_db();
+
+        let f1 = IdentityFacet {
+            id: "f1".into(),
+            agent: "claude-code".into(),
+            facet: "values".into(),
+            description: "Values thoroughness".into(),
+            strength: 0.9,
+            source: "extracted".into(),
+            active: true,
+            created_at: "2026-04-04 12:00:00".into(),
+        };
+        store_identity(&conn, &f1).unwrap();
+
+        // Insert a duplicate with lower strength — should be silently merged (no update)
+        let f2 = IdentityFacet {
+            id: "f2".into(),
+            agent: "claude-code".into(),
+            facet: "values".into(),
+            description: "Values thoroughness".into(),
+            strength: 0.5,
+            source: "extracted".into(),
+            active: true,
+            created_at: "2026-04-04 12:00:01".into(),
+        };
+        store_identity(&conn, &f2).unwrap();
+
+        let all = list_identity(&conn, "claude-code", true).unwrap();
+        assert_eq!(all.len(), 1, "duplicate facets should be merged");
+        assert!(
+            (all[0].strength - 0.9).abs() < 0.01,
+            "should keep original higher strength (0.9), got {}",
+            all[0].strength
+        );
+    }
+
+    #[test]
+    fn test_identity_dedup_different_agents_not_merged() {
+        let conn = open_db();
+
+        let f1 = IdentityFacet {
+            id: "f1".into(),
+            agent: "claude-code".into(),
+            facet: "values".into(),
+            description: "Values thoroughness".into(),
+            strength: 0.8,
+            source: "extracted".into(),
+            active: true,
+            created_at: "2026-04-04 12:00:00".into(),
+        };
+        store_identity(&conn, &f1).unwrap();
+
+        // Same description but different agent — should NOT be merged
+        let f2 = IdentityFacet {
+            id: "f2".into(),
+            agent: "codex".into(),
+            facet: "values".into(),
+            description: "Values thoroughness".into(),
+            strength: 0.9,
+            source: "extracted".into(),
+            active: true,
+            created_at: "2026-04-04 12:00:01".into(),
+        };
+        store_identity(&conn, &f2).unwrap();
+
+        let claude = list_identity(&conn, "claude-code", true).unwrap();
+        let codex = list_identity(&conn, "codex", true).unwrap();
+        assert_eq!(claude.len(), 1, "claude-code should have 1 facet");
+        assert_eq!(codex.len(), 1, "codex should have 1 facet");
     }
 }

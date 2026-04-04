@@ -1,5 +1,5 @@
 use crate::db::{ops, vec};
-use forge_core::protocol::MemoryResult;
+use forge_core::protocol::{MemoryEdge, MemoryResult};
 use forge_core::types::{Memory, MemoryType};
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
@@ -92,6 +92,35 @@ fn sql_neighbors(conn: &Connection, id: &str) -> Vec<String> {
     rows.filter_map(|r| r.ok()).collect()
 }
 
+/// Query all edges (both outgoing and incoming) for a given memory ID.
+/// Returns up to 20 edges to prevent fan-out from heavily-connected nodes.
+fn query_edges_for_memory(conn: &Connection, memory_id: &str) -> Vec<MemoryEdge> {
+    let mut stmt = match conn.prepare(
+        "SELECT to_id, edge_type FROM edge WHERE from_id = ?1
+         UNION ALL
+         SELECT from_id, edge_type FROM edge WHERE to_id = ?1
+         LIMIT 20",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[recall] edge query error: {e}");
+            return Vec::new();
+        }
+    };
+    match stmt.query_map(params![memory_id], |row| {
+        Ok(MemoryEdge {
+            target_id: row.get(0)?,
+            edge_type: row.get(1)?,
+        })
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            eprintln!("[recall] edge query_map error: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// Hybrid recall combining BM25 full-text search, vector similarity search,
 /// and graph expansion via Reciprocal Rank Fusion.
 ///
@@ -179,6 +208,7 @@ pub fn hybrid_recall(
                 memory,
                 score,
                 source: "hybrid".to_string(),
+                edges: Vec::new(), // populated below
             });
         }
     }
@@ -191,6 +221,11 @@ pub fn hybrid_recall(
     // Sort by score descending
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     results.truncate(limit);
+
+    // 5b. Populate edges for each result (both outgoing and incoming)
+    for result in &mut results {
+        result.edges = query_edges_for_memory(conn, &result.memory.id);
+    }
 
     // Temporal recency boost: recent memories get up to 1.5x score
     let now_secs = std::time::SystemTime::now()
@@ -244,6 +279,7 @@ pub fn manas_recall(
                 .with_confidence(0.7),
                 score: 0.5, // Lower score than direct memory matches
                 source: "declared".to_string(),
+                edges: Vec::new(),
             });
         }
     }
@@ -263,6 +299,7 @@ pub fn manas_recall(
                 ),
                 score: 0.6, // Skills rank between experience and domain DNA
                 source: "skill".to_string(),
+                edges: Vec::new(),
             });
         }
     }
@@ -285,6 +322,7 @@ pub fn manas_recall(
                         .with_confidence(dna.confidence),
                         score: 0.4,
                         source: "domain_dna".to_string(),
+                        edges: Vec::new(),
                     });
                 }
             }
@@ -2027,6 +2065,72 @@ mod tests {
         assert!(
             fresh_pos < old_pos,
             "recent lesson (boosted: 0.8*1.5=1.2) should appear before old lesson (1.0*1.0=1.0)"
+        );
+    }
+
+    #[test]
+    fn test_recall_includes_edges() {
+        let conn = setup();
+
+        let m1 = Memory::new(MemoryType::Decision, "Use Rust for daemon", "For performance and safety");
+        let m2 = Memory::new(MemoryType::Lesson, "Rust is fast", "Confirmed in benchmarks");
+        let m1_id = m1.id.clone();
+        let m2_id = m2.id.clone();
+        ops::remember(&conn, &m1).unwrap();
+        ops::remember(&conn, &m2).unwrap();
+        ops::store_edge(&conn, &m1_id, &m2_id, "related_to", "{}").unwrap();
+
+        let results = hybrid_recall(&conn, "Rust daemon", None, None, None, 10);
+        assert!(!results.is_empty(), "should find at least one result");
+
+        // Find the result for m1 and check it has edges
+        let rust_result = results.iter().find(|r| r.memory.id == m1_id);
+        assert!(rust_result.is_some(), "should find 'Use Rust for daemon' in results");
+        let rust_result = rust_result.unwrap();
+        assert!(
+            !rust_result.edges.is_empty(),
+            "result for 'Use Rust for daemon' should have edges (connected to 'Rust is fast')"
+        );
+        assert_eq!(rust_result.edges[0].target_id, m2_id);
+        assert_eq!(rust_result.edges[0].edge_type, "related_to");
+    }
+
+    #[test]
+    fn test_recall_edges_bidirectional() {
+        let conn = setup();
+
+        let m1 = Memory::new(MemoryType::Decision, "Use SQLite for storage", "Single-file database");
+        let m2 = Memory::new(MemoryType::Lesson, "SQLite supports FTS5", "Full-text search built-in");
+        let m1_id = m1.id.clone();
+        let m2_id = m2.id.clone();
+        ops::remember(&conn, &m1).unwrap();
+        ops::remember(&conn, &m2).unwrap();
+        ops::store_edge(&conn, &m1_id, &m2_id, "supports", "{}").unwrap();
+
+        let results = hybrid_recall(&conn, "SQLite FTS5", None, None, None, 10);
+        // m2 should show up and have an edge back to m1
+        let fts_result = results.iter().find(|r| r.memory.id == m2_id);
+        if let Some(fts_result) = fts_result {
+            assert!(
+                !fts_result.edges.is_empty(),
+                "m2 should have incoming edge from m1"
+            );
+            assert_eq!(fts_result.edges[0].target_id, m1_id);
+        }
+    }
+
+    #[test]
+    fn test_recall_no_edges_empty() {
+        let conn = setup();
+
+        let m = Memory::new(MemoryType::Decision, "Use PostgreSQL", "For relational data");
+        ops::remember(&conn, &m).unwrap();
+
+        let results = hybrid_recall(&conn, "PostgreSQL", None, None, None, 10);
+        assert!(!results.is_empty(), "should find result");
+        assert!(
+            results[0].edges.is_empty(),
+            "memory with no edges should have empty edges vec"
         );
     }
 }

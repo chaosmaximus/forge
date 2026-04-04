@@ -158,6 +158,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             ).with_confidence(0.7),
                             score: 0.5,
                             source: "declared".to_string(),
+                            edges: Vec::new(),
                         }
                     }).collect()
                 }
@@ -178,6 +179,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                 ).with_confidence(dna.confidence),
                                 score: 0.4,
                                 source: "domain_dna".to_string(),
+                                edges: Vec::new(),
                             }
                         }).collect()
                 }
@@ -214,6 +216,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                 ).with_confidence(f.strength),
                                 score: 0.6,
                                 source: "identity".to_string(),
+                                edges: Vec::new(),
                             }
                         }).collect()
                 }
@@ -245,6 +248,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                 ),
                                 score: 0.5,
                                 source: "perception".to_string(),
+                                edges: Vec::new(),
                             }
                         }).collect()
                 }
@@ -265,6 +269,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                 ),
                                 score: 0.6,
                                 source: "skill".to_string(),
+                                edges: Vec::new(),
                             }
                         }).collect()
                 }
@@ -425,6 +430,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 memory: m,
                 score: 1.0,
                 source: "export".into(),
+                edges: Vec::new(),
             }).collect();
 
             let export_edges: Vec<ExportEdge> = edges.into_iter().map(|(from, to, etype, props)| {

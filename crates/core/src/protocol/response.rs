@@ -14,12 +14,23 @@ pub struct TraceEntry {
     pub reason: String,
 }
 
+/// An edge connecting a memory to another memory or entity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemoryEdge {
+    pub target_id: String,
+    pub edge_type: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryResult {
     #[serde(flatten)]
     pub memory: Memory,
     pub score: f64,
     pub source: String,
+    /// Edges connecting this memory to other memories/entities.
+    /// Populated by hybrid_recall; empty for other recall sources.
+    #[serde(default)]
+    pub edges: Vec<MemoryEdge>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
