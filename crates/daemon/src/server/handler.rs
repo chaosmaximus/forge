@@ -1005,7 +1005,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::ListPerceptions { project, limit } => {
-            let lim = limit.unwrap_or(20);
+            let lim = limit.unwrap_or(20).min(100); // Cap at 100
             match crate::db::manas::list_unconsumed_perceptions(&state.conn, None) {
                 Ok(perceptions) => {
                     // Apply project filter and limit in-memory
@@ -1708,7 +1708,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::SessionAck { message_ids } => {
-            match crate::sessions::ack_messages(&state.conn, &message_ids) {
+            // "api" as caller — in future, hooks will pass the actual session ID
+            match crate::sessions::ack_messages(&state.conn, &message_ids, "api") {
                 Ok(count) => Response::Ok { data: ResponseData::MessagesAcked { count } },
                 Err(e) => Response::Error { message: format!("ack_messages failed: {e}") },
             }

@@ -330,7 +330,12 @@ pub fn respond_to_message(
     );
 
     match original {
-        Ok((orig_from, _orig_to, topic, project)) => {
+        Ok((orig_from, orig_to, topic, project)) => {
+            // Ownership check: only the original recipient can respond
+            if orig_to != from_session {
+                eprintln!("[a2a] WARN: session {} tried to respond to message {} addressed to {}", from_session, message_id, orig_to);
+                return Ok(false);
+            }
             // Update the original message's status
             conn.execute(
                 "UPDATE session_message SET status = ?1 WHERE id = ?2",
@@ -351,13 +356,14 @@ pub fn respond_to_message(
     }
 }
 
-/// List messages for a session (inbox).
+/// List messages for a session (inbox). Limit capped at 100.
 pub fn list_messages(
     conn: &Connection,
     session_id: &str,
     status_filter: Option<&str>,
     limit: usize,
 ) -> rusqlite::Result<Vec<SessionMessageRow>> {
+    let limit = limit.min(100) as i64; // Cap at 100, safe i64 cast
     let (sql, use_status) = match status_filter {
         Some(_) => (
             "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
@@ -388,23 +394,27 @@ pub fn list_messages(
         })
     };
     let rows: Vec<rusqlite::Result<SessionMessageRow>> = if use_status {
-        stmt.query_map(params![session_id, status_filter.unwrap_or(""), limit as i64], map_row)?.collect()
+        stmt.query_map(params![session_id, status_filter.unwrap_or(""), limit], map_row)?.collect()
     } else {
-        stmt.query_map(params![session_id, limit as i64], map_row)?.collect()
+        stmt.query_map(params![session_id, limit], map_row)?.collect()
     };
     rows.into_iter().collect()
 }
 
 /// Mark messages as read/consumed.
+/// Only acks messages addressed TO the given session (ownership validation).
 pub fn ack_messages(
     conn: &Connection,
     message_ids: &[String],
+    caller_session: &str,
 ) -> rusqlite::Result<usize> {
     let mut count = 0;
     for id in message_ids {
+        // Only ack messages addressed to the caller (ownership check)
         let updated = conn.execute(
-            "UPDATE session_message SET status = 'read', delivered_at = datetime('now') WHERE id = ?1",
-            params![id],
+            "UPDATE session_message SET status = 'read', delivered_at = datetime('now')
+             WHERE id = ?1 AND to_session = ?2",
+            params![id, caller_session],
         )?;
         count += updated;
     }
@@ -770,7 +780,7 @@ mod tests {
         let id1 = send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None).unwrap();
         let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None).unwrap();
 
-        let acked = ack_messages(&conn, &[id1.clone(), id2.clone()]).unwrap();
+        let acked = ack_messages(&conn, &[id1.clone(), id2.clone()], "s1").unwrap();
         assert_eq!(acked, 2);
 
         // Messages should now be "read"
@@ -806,7 +816,7 @@ mod tests {
 
         send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None).unwrap();
         let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None).unwrap();
-        ack_messages(&conn, &[id2]).unwrap();
+        ack_messages(&conn, &[id2], "s1").unwrap();
 
         let pending = list_messages(&conn, "s1", Some("pending"), 10).unwrap();
         assert_eq!(pending.len(), 1, "should have 1 pending message");

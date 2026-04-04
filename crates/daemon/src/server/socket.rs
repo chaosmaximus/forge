@@ -118,12 +118,23 @@ pub async fn run_server(
         libc::umask(old_umask);
     }
 
+    // Limit concurrent connections to prevent FD exhaustion
+    let conn_semaphore = Arc::new(tokio::sync::Semaphore::new(64));
+
     // Accept loop with shutdown support
     let mut shutdown_rx = shutdown_tx.subscribe();
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (stream, _addr) = result?;
+                let permit = match conn_semaphore.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        eprintln!("[socket] WARN: max connections (64) reached — rejecting");
+                        drop(stream);
+                        continue;
+                    }
+                };
                 let write_tx = write_tx.clone();
                 let shutdown_tx_clone = shutdown_tx.clone();
                 let db_path = db_path.clone();
@@ -131,6 +142,7 @@ pub async fn run_server(
                 let hlc = Arc::clone(&hlc);
 
                 tokio::spawn(async move {
+                    let _permit = permit; // hold semaphore permit until task completes
                     // Open a per-connection read-only SQLite connection.
                     // This allows read requests to be served without ANY mutex.
                     let mut reader_state = match DaemonState::new_reader(
