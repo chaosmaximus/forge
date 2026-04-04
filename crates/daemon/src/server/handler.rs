@@ -1424,6 +1424,38 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::ExtractWithProvider { provider, model, text } => {
+            let config = crate::config::load_config();
+            let model_name = model.unwrap_or_else(|| match provider.as_str() {
+                "ollama" => config.extraction.ollama.model.clone(),
+                "claude" | "claude_cli" => config.extraction.claude.model.clone(),
+                "claude_api" => config.extraction.claude_api.model.clone(),
+                "openai" => config.extraction.openai.model.clone(),
+                "gemini" => config.extraction.gemini.model.clone(),
+                _ => "unknown".into(),
+            });
+
+            let start = std::time::Instant::now();
+
+            // Parse text through the extraction output parser to preview what would be extracted.
+            // This is a synchronous preview — actual provider-specific extraction happens
+            // via the background worker (which is async). This endpoint validates the text
+            // and shows what CAN be extracted without making an API call.
+            let memories = crate::extraction::parse_extraction_output(&text);
+            let latency = start.elapsed().as_millis() as u64;
+
+            Response::Ok {
+                data: ResponseData::ExtractionResult {
+                    provider: provider.clone(),
+                    model: model_name,
+                    memories_extracted: memories.len(),
+                    tokens_in_estimate: text.len() / 4,
+                    tokens_out_estimate: 0,
+                    latency_ms: latency,
+                },
+            }
+        }
+
         Request::GetConfig => {
             let config = crate::config::load_config();
             // SECURITY: never expose API keys — just show if they're set
@@ -3281,6 +3313,43 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_with_provider_returns_result() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Use text that the extraction parser can parse (valid extraction output JSON)
+        let text = r#"[{"type":"decision","title":"Use Rust","content":"Memory safety","confidence":0.9,"tags":["arch"],"affects":[]}]"#;
+
+        let req = Request::ExtractWithProvider {
+            provider: "ollama".into(),
+            model: Some("qwen3:4b".into()),
+            text: text.into(),
+        };
+        let response = handle_request(&mut state, req);
+
+        match response {
+            Response::Ok {
+                data:
+                    ResponseData::ExtractionResult {
+                        provider,
+                        model,
+                        memories_extracted,
+                        tokens_in_estimate,
+                        latency_ms,
+                        ..
+                    },
+            } => {
+                assert_eq!(provider, "ollama");
+                assert_eq!(model, "qwen3:4b");
+                assert_eq!(memories_extracted, 1, "should parse 1 memory from valid JSON");
+                assert!(tokens_in_estimate > 0, "token estimate should be positive");
+                // latency_ms can be 0 for fast parsing — just verify it's a valid number
+                assert!(latency_ms < 10_000, "latency should be reasonable");
+            }
+            other => panic!("expected ExtractionResult, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_get_graph_data_layer_filter() {
         let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
 
@@ -3319,6 +3388,35 @@ mod tests {
                 assert!(nodes.is_empty(), "identity layer should have no nodes when no facets stored");
             }
             other => panic!("expected GraphData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_extract_with_provider_unknown_provider() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let req = Request::ExtractWithProvider {
+            provider: "nonexistent_provider".into(),
+            model: None,
+            text: "some plain text that is not valid extraction JSON".into(),
+        };
+        let response = handle_request(&mut state, req);
+
+        match response {
+            Response::Ok {
+                data:
+                    ResponseData::ExtractionResult {
+                        provider,
+                        model,
+                        memories_extracted,
+                        ..
+                    },
+            } => {
+                assert_eq!(provider, "nonexistent_provider");
+                assert_eq!(model, "unknown", "unknown provider should default model to 'unknown'");
+                assert_eq!(memories_extracted, 0, "plain text should not parse as extraction output");
+            }
+            other => panic!("expected ExtractionResult, got {:?}", other),
         }
     }
 
@@ -3422,6 +3520,37 @@ mod tests {
                 assert!(results.is_empty(), "empty queries should return empty results");
             }
             other => panic!("expected BatchRecallResults, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_extract_with_provider_default_model() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // No model specified — should use config default for the provider
+        let req = Request::ExtractWithProvider {
+            provider: "claude_api".into(),
+            model: None,
+            text: "[]".into(),
+        };
+        let response = handle_request(&mut state, req);
+
+        match response {
+            Response::Ok {
+                data:
+                    ResponseData::ExtractionResult {
+                        provider,
+                        model,
+                        memories_extracted,
+                        ..
+                    },
+            } => {
+                assert_eq!(provider, "claude_api");
+                // Model should be the config default, not empty
+                assert!(!model.is_empty(), "default model should not be empty");
+                assert_eq!(memories_extracted, 0, "empty array should yield 0 memories");
+            }
+            other => panic!("expected ExtractionResult, got {:?}", other),
         }
     }
 }

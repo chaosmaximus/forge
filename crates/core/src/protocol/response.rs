@@ -291,6 +291,15 @@ pub enum ResponseData {
         value: String,
     },
 
+    ExtractionResult {
+        provider: String,
+        model: String,
+        memories_extracted: usize,
+        tokens_in_estimate: usize,
+        tokens_out_estimate: usize,
+        latency_ms: u64,
+    },
+
     Stats {
         period_hours: u64,
         extractions: usize,
