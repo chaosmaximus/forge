@@ -497,6 +497,10 @@ fn test_manas_health_after_mass_insert() {
             source: "test".into(),
             version: 1,
             project: None,
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         manas::store_skill(&state.conn, &skill).unwrap();
     }
@@ -740,7 +744,11 @@ fn test_skill_version_tracking() {
         last_used: None,
         source: "test".into(),
         version: 1,
-            project: None,
+        project: None,
+            skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
     };
     manas::store_skill(&conn, &skill_v1).unwrap();
 
@@ -757,6 +765,10 @@ fn test_skill_version_tracking() {
         source: "test".into(),
         version: 2,
         project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
     };
     manas::store_skill(&conn, &skill_v2).unwrap();
 
@@ -912,7 +924,11 @@ fn test_manas_health_includes_all_layers() {
         last_used: None,
         source: "test".into(),
         version: 1,
-            project: None,
+        project: None,
+            skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
     };
     manas::store_skill(&state.conn, &skill).unwrap();
 

@@ -1546,6 +1546,10 @@ mod tests {
             source: "learned".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         let skill2 = Skill {
             id: "s2".into(),
@@ -1559,6 +1563,10 @@ mod tests {
             source: "declared".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         store_skill(&conn, &skill1).unwrap();
         store_skill(&conn, &skill2).unwrap();
@@ -1596,6 +1604,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -1630,6 +1642,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -1664,6 +1680,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         store_skill(&conn, &junk).unwrap();
 
@@ -1680,6 +1700,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         store_skill(&conn, &good).unwrap();
 
@@ -1709,6 +1733,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         store_skill(&conn, &proven).unwrap();
 

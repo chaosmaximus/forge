@@ -1266,6 +1266,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -1297,6 +1301,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -1532,6 +1540,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -1571,6 +1583,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -1610,6 +1626,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
+        skill_type: "procedural".to_string(),
+        user_specific: false,
+        observed_count: 1,
+        correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 

@@ -86,6 +86,28 @@ fn default_observed_count() -> u32 {
     1
 }
 
+impl Default for Skill {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            domain: "general".to_string(),
+            description: String::new(),
+            steps: Vec::new(),
+            success_count: 0,
+            fail_count: 0,
+            last_used: None,
+            source: "test".to_string(),
+            version: 1,
+            project: None,
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: Vec::new(),
+        }
+    }
+}
+
 // ──────────────────────────────────────────────
 // Layer 3: Domain DNA
 // ──────────────────────────────────────────────
