@@ -290,10 +290,16 @@ async fn process_file(
                 memory.session_id = session_id.clone();
 
                 // Task 5: Causal chain — if motivated_by is present, link to referenced memory
+                // Codex fix: scope to same project to prevent cross-project fake causal links
+                // Only create edge AFTER successful memory store (below)
                 if let Some(ref motivation) = em.motivated_by {
-                    if let Ok(results) = ops::recall_bm25_project(&locked.conn, motivation, None, 1) {
+                    let project_scope = memory.project.as_deref();
+                    if let Ok(results) = ops::recall_bm25_project(&locked.conn, motivation, project_scope, 1) {
                         if let Some(match_result) = results.first() {
-                            let _ = ops::store_edge(&locked.conn, &memory.id, &match_result.id, "motivated_by", "{}");
+                            // Only link if match score is strong enough (prevent weak false links)
+                            if match_result.score.abs() > 0.001 {
+                                let _ = ops::store_edge(&locked.conn, &memory.id, &match_result.id, "motivated_by", "{}");
+                            }
                         }
                     }
                 }

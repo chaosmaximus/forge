@@ -415,8 +415,13 @@ pub fn parse_timestamp_to_epoch(s: &str) -> Option<f64> {
 /// Update accessed_at and increment access_count for each given id (best-effort — errors are ignored).
 pub fn touch(conn: &Connection, ids: &[&str]) {
     for id in ids {
+        // Codex fix: cap access_count at 1000, only increment if last access > 60s ago
+        // Prevents gaming via repeated recall to inflate confidence
         let _ = conn.execute(
-            "UPDATE memory SET accessed_at = datetime('now'), access_count = access_count + 1 WHERE id = ?1",
+            "UPDATE memory SET accessed_at = datetime('now'),
+             access_count = MIN(access_count + 1, 1000)
+             WHERE id = ?1
+             AND (accessed_at < datetime('now', '-60 seconds') OR access_count = 0)",
             params![id],
         );
     }

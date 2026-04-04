@@ -98,10 +98,19 @@ pub fn save_working_set(conn: &Connection, session_id: &str) -> rusqlite::Result
         stmt.query_map(params![session_id], |r| r.get(0))?.collect()
     }).unwrap_or_default();
 
-    let working_set = serde_json::json!({
+    // Truncate individual items to prevent bloat (Codex fix: byte-bound working set)
+    let files: Vec<String> = files.into_iter().map(|f| f.chars().take(200).collect()).collect();
+    let memories: Vec<String> = memories.into_iter().map(|m| m.chars().take(100).collect()).collect();
+
+    let mut working_set = serde_json::json!({
         "files": files,
         "memories": memories,
     }).to_string();
+
+    // Hard cap at 4KB to prevent storage bloat
+    if working_set.len() > 4096 {
+        working_set.truncate(4096);
+    }
 
     conn.execute(
         "UPDATE session SET working_set = ?1 WHERE id = ?2",
