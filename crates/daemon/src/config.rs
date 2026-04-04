@@ -16,14 +16,39 @@ pub struct ForgeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExtractionConfig {
-    pub backend: String,
+    pub backend: String, // "auto", "ollama", "claude", "claude_api", "openai", "gemini"
     pub claude: ClaudeCliConfig,
+    pub claude_api: ClaudeApiConfig,
+    pub openai: OpenAiConfig,
+    pub gemini: GeminiConfig,
     pub ollama: OllamaConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClaudeCliConfig {
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClaudeApiConfig {
+    pub api_key: String, // or ANTHROPIC_API_KEY env var
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenAiConfig {
+    pub api_key: String, // or OPENAI_API_KEY env var
+    pub model: String,
+    pub endpoint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeminiConfig {
+    pub api_key: String, // or GEMINI_API_KEY env var
     pub model: String,
 }
 
@@ -50,6 +75,9 @@ impl Default for ExtractionConfig {
         Self {
             backend: "auto".to_string(),
             claude: ClaudeCliConfig::default(),
+            claude_api: ClaudeApiConfig::default(),
+            openai: OpenAiConfig::default(),
+            gemini: GeminiConfig::default(),
             ollama: OllamaConfig::default(),
         }
     }
@@ -59,6 +87,34 @@ impl Default for ClaudeCliConfig {
     fn default() -> Self {
         Self {
             model: "haiku".to_string(),
+        }
+    }
+}
+
+impl Default for ClaudeApiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            model: "claude-haiku-4-5-20251001".to_string(),
+        }
+    }
+}
+
+impl Default for OpenAiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            model: "gpt-4o-mini".to_string(),
+            endpoint: "https://api.openai.com/v1".to_string(),
+        }
+    }
+}
+
+impl Default for GeminiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            model: "gemini-2.0-flash".to_string(),
         }
     }
 }
@@ -134,8 +190,24 @@ pub fn load_config_from(path: &str) -> ForgeConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// API key resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve API key: config value > environment variable > None.
+/// SECURITY: never log the returned key value.
+pub fn resolve_api_key(config_value: &str, env_var: &str) -> Option<String> {
+    if !config_value.is_empty() {
+        return Some(config_value.to_string());
+    }
+    std::env::var(env_var).ok().filter(|k| !k.is_empty())
+}
+
+// ---------------------------------------------------------------------------
+// Config update (persist changes to disk)
+// ---------------------------------------------------------------------------
+
 /// Update a config value by dotted key and persist to ~/.forge/config.toml.
-/// Supports 2-level (e.g., "extraction.backend") and 3-level (e.g., "extraction.ollama.model") keys.
 pub fn update_config(key: &str, value: &str) -> Result<(), String> {
     let dir = forge_core::forge_dir();
     let path = format!("{dir}/config.toml");
@@ -145,15 +217,18 @@ pub fn update_config(key: &str, value: &str) -> Result<(), String> {
 /// Update a config value at an arbitrary path (for testing).
 pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String> {
     let content = std::fs::read_to_string(path).unwrap_or_default();
-    let parts: Vec<&str> = key.split('.').collect();
-
-    // Simple TOML manipulation without toml_edit dependency
-    // Parse existing config, update the value, serialize back
     let mut config: ForgeConfig = toml::from_str(&content).unwrap_or_default();
 
-    match parts.as_slice() {
+    match key.split('.').collect::<Vec<_>>().as_slice() {
         ["extraction", "backend"] => config.extraction.backend = value.to_string(),
         ["extraction", "claude", "model"] => config.extraction.claude.model = value.to_string(),
+        ["extraction", "claude_api", "api_key"] => config.extraction.claude_api.api_key = value.to_string(),
+        ["extraction", "claude_api", "model"] => config.extraction.claude_api.model = value.to_string(),
+        ["extraction", "openai", "api_key"] => config.extraction.openai.api_key = value.to_string(),
+        ["extraction", "openai", "model"] => config.extraction.openai.model = value.to_string(),
+        ["extraction", "openai", "endpoint"] => config.extraction.openai.endpoint = value.to_string(),
+        ["extraction", "gemini", "api_key"] => config.extraction.gemini.api_key = value.to_string(),
+        ["extraction", "gemini", "model"] => config.extraction.gemini.model = value.to_string(),
         ["extraction", "ollama", "model"] => config.extraction.ollama.model = value.to_string(),
         ["extraction", "ollama", "endpoint"] => config.extraction.ollama.endpoint = value.to_string(),
         ["embedding", "model"] => config.embedding.model = value.to_string(),
@@ -269,5 +344,87 @@ backend = "ollama"
         assert_eq!(cfg.extraction.ollama.endpoint, "http://localhost:11434");
         assert_eq!(cfg.embedding.model, "nomic-embed-text");
         assert_eq!(cfg.embedding.dimensions, 768);
+    }
+
+    #[test]
+    fn test_new_provider_defaults() {
+        let cfg = ForgeConfig::default();
+
+        // Claude API defaults
+        assert!(cfg.extraction.claude_api.api_key.is_empty());
+        assert_eq!(cfg.extraction.claude_api.model, "claude-haiku-4-5-20251001");
+
+        // OpenAI defaults
+        assert!(cfg.extraction.openai.api_key.is_empty());
+        assert_eq!(cfg.extraction.openai.model, "gpt-4o-mini");
+        assert_eq!(cfg.extraction.openai.endpoint, "https://api.openai.com/v1");
+
+        // Gemini defaults
+        assert!(cfg.extraction.gemini.api_key.is_empty());
+        assert_eq!(cfg.extraction.gemini.model, "gemini-2.0-flash");
+    }
+
+    #[test]
+    fn test_parse_config_with_new_providers() {
+        let toml_str = r#"
+[extraction]
+backend = "claude_api"
+
+[extraction.claude_api]
+api_key = "sk-ant-test"
+model = "claude-sonnet-4-20250514"
+
+[extraction.openai]
+api_key = "sk-openai-test"
+model = "gpt-4o"
+endpoint = "https://custom.openai.com/v1"
+
+[extraction.gemini]
+api_key = "gemini-test-key"
+model = "gemini-1.5-pro"
+"#;
+
+        let cfg: ForgeConfig = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(cfg.extraction.backend, "claude_api");
+        assert_eq!(cfg.extraction.claude_api.api_key, "sk-ant-test");
+        assert_eq!(cfg.extraction.claude_api.model, "claude-sonnet-4-20250514");
+        assert_eq!(cfg.extraction.openai.api_key, "sk-openai-test");
+        assert_eq!(cfg.extraction.openai.model, "gpt-4o");
+        assert_eq!(cfg.extraction.openai.endpoint, "https://custom.openai.com/v1");
+        assert_eq!(cfg.extraction.gemini.api_key, "gemini-test-key");
+        assert_eq!(cfg.extraction.gemini.model, "gemini-1.5-pro");
+    }
+
+    #[test]
+    fn test_resolve_api_key_from_config() {
+        // Config value takes priority over env var
+        let result = resolve_api_key("sk-from-config", "NONEXISTENT_VAR_12345");
+        assert_eq!(result, Some("sk-from-config".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_api_key_from_env() {
+        // Set a temporary env var
+        std::env::set_var("FORGE_TEST_API_KEY_12345", "sk-from-env");
+        let result = resolve_api_key("", "FORGE_TEST_API_KEY_12345");
+        assert_eq!(result, Some("sk-from-env".to_string()));
+        std::env::remove_var("FORGE_TEST_API_KEY_12345");
+    }
+
+    #[test]
+    fn test_resolve_api_key_none() {
+        // Neither config nor env var set
+        let result = resolve_api_key("", "NONEXISTENT_VAR_67890");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_api_key_empty_env() {
+        // Empty env var should return None
+        std::env::set_var("FORGE_TEST_EMPTY_KEY", "");
+        let result = resolve_api_key("", "FORGE_TEST_EMPTY_KEY");
+        assert_eq!(result, None);
+        std::env::remove_var("FORGE_TEST_EMPTY_KEY");
     }
 }

@@ -1,6 +1,6 @@
 // extraction/backend.rs — Backend choice enum + auto-detection
 
-use crate::config::ForgeConfig;
+use crate::config::{resolve_api_key, ForgeConfig};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,6 +20,9 @@ pub enum ExtractionResult {
 #[derive(Debug, PartialEq)]
 pub enum BackendChoice {
     ClaudeCli,
+    ClaudeApi,
+    OpenAi,
+    Gemini,
     Ollama,
     None(String),
 }
@@ -31,6 +34,28 @@ pub enum BackendChoice {
 /// Detect the best available extraction backend based on config.
 pub async fn detect_backend(config: &ForgeConfig) -> BackendChoice {
     match config.extraction.backend.as_str() {
+        "claude_api" | "anthropic" => {
+            if resolve_api_key(&config.extraction.claude_api.api_key, "ANTHROPIC_API_KEY").is_some()
+            {
+                BackendChoice::ClaudeApi
+            } else {
+                BackendChoice::None("ANTHROPIC_API_KEY not set".to_string())
+            }
+        }
+        "openai" => {
+            if resolve_api_key(&config.extraction.openai.api_key, "OPENAI_API_KEY").is_some() {
+                BackendChoice::OpenAi
+            } else {
+                BackendChoice::None("OPENAI_API_KEY not set".to_string())
+            }
+        }
+        "gemini" | "google" => {
+            if resolve_api_key(&config.extraction.gemini.api_key, "GEMINI_API_KEY").is_some() {
+                BackendChoice::Gemini
+            } else {
+                BackendChoice::None("GEMINI_API_KEY not set".to_string())
+            }
+        }
         "claude" => {
             if is_claude_cli_available().await {
                 BackendChoice::ClaudeCli
@@ -43,22 +68,31 @@ pub async fn detect_backend(config: &ForgeConfig) -> BackendChoice {
             if is_ollama_available(endpoint).await {
                 BackendChoice::Ollama
             } else {
-                BackendChoice::None(format!(
-                    "ollama not reachable at {endpoint}"
-                ))
+                BackendChoice::None(format!("ollama not reachable at {endpoint}"))
             }
         }
         _ => {
-            // Try Ollama first (free, local), then Claude (paid API)
+            // Auto: try local first (free), then cloud providers with API keys, then CLI
             let endpoint = &config.extraction.ollama.endpoint;
             if is_ollama_available(endpoint).await {
                 return BackendChoice::Ollama;
+            }
+            if resolve_api_key(&config.extraction.claude_api.api_key, "ANTHROPIC_API_KEY")
+                .is_some()
+            {
+                return BackendChoice::ClaudeApi;
+            }
+            if resolve_api_key(&config.extraction.openai.api_key, "OPENAI_API_KEY").is_some() {
+                return BackendChoice::OpenAi;
+            }
+            if resolve_api_key(&config.extraction.gemini.api_key, "GEMINI_API_KEY").is_some() {
+                return BackendChoice::Gemini;
             }
             if is_claude_cli_available().await {
                 return BackendChoice::ClaudeCli;
             }
             BackendChoice::None(
-                "no extraction backend available (tried ollama, claude CLI)".to_string(),
+                "no extraction backend available (tried ollama, claude API, openai, gemini, claude CLI)".to_string(),
             )
         }
     }
@@ -121,9 +155,115 @@ mod tests {
                     "reason should mention claude: {reason}"
                 );
             }
-            BackendChoice::Ollama => {
-                panic!("should never return Ollama when backend is 'claude'");
+            _ => {
+                panic!("should never return non-Claude when backend is 'claude'");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_detect_backend_claude_api_with_key() {
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "claude_api".to_string();
+        cfg.extraction.claude_api.api_key = "sk-ant-test-key".to_string();
+
+        let result = detect_backend(&cfg).await;
+        assert_eq!(result, BackendChoice::ClaudeApi);
+    }
+
+    #[tokio::test]
+    async fn test_detect_backend_claude_api_without_key() {
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "claude_api".to_string();
+        // No API key set, env var should also not be set for this test
+
+        let result = detect_backend(&cfg).await;
+        match result {
+            BackendChoice::None(reason) => {
+                assert!(reason.contains("ANTHROPIC_API_KEY"), "reason should mention ANTHROPIC_API_KEY: {reason}");
+            }
+            _ => panic!("should return None when API key is missing"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_backend_openai_with_key() {
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "openai".to_string();
+        cfg.extraction.openai.api_key = "sk-openai-test".to_string();
+
+        let result = detect_backend(&cfg).await;
+        assert_eq!(result, BackendChoice::OpenAi);
+    }
+
+    #[tokio::test]
+    async fn test_detect_backend_openai_without_key() {
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "openai".to_string();
+
+        let result = detect_backend(&cfg).await;
+        match result {
+            BackendChoice::None(reason) => {
+                assert!(reason.contains("OPENAI_API_KEY"), "reason should mention OPENAI_API_KEY: {reason}");
+            }
+            _ => panic!("should return None when API key is missing"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_backend_gemini_with_key() {
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "gemini".to_string();
+        cfg.extraction.gemini.api_key = "gemini-test-key".to_string();
+
+        let result = detect_backend(&cfg).await;
+        assert_eq!(result, BackendChoice::Gemini);
+    }
+
+    #[tokio::test]
+    async fn test_detect_backend_gemini_without_key() {
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "gemini".to_string();
+
+        let result = detect_backend(&cfg).await;
+        match result {
+            BackendChoice::None(reason) => {
+                assert!(reason.contains("GEMINI_API_KEY"), "reason should mention GEMINI_API_KEY: {reason}");
+            }
+            _ => panic!("should return None when API key is missing"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_backend_anthropic_alias() {
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "anthropic".to_string();
+        cfg.extraction.claude_api.api_key = "sk-ant-test".to_string();
+
+        let result = detect_backend(&cfg).await;
+        assert_eq!(result, BackendChoice::ClaudeApi);
+    }
+
+    #[tokio::test]
+    async fn test_detect_backend_google_alias() {
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "google".to_string();
+        cfg.extraction.gemini.api_key = "gemini-key".to_string();
+
+        let result = detect_backend(&cfg).await;
+        assert_eq!(result, BackendChoice::Gemini);
+    }
+
+    #[tokio::test]
+    async fn test_detect_backend_auto_with_claude_api_key() {
+        // Auto mode with no Ollama + Claude API key available
+        // should pick ClaudeApi (Ollama may or may not be running,
+        // so we just verify the key-based path works when explicitly set)
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "claude_api".to_string(); // Explicit for determinism
+        cfg.extraction.claude_api.api_key = "sk-ant-test".to_string();
+
+        let result = detect_backend(&cfg).await;
+        assert_eq!(result, BackendChoice::ClaudeApi);
     }
 }

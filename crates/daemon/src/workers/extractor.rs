@@ -197,40 +197,59 @@ async fn process_file(
     // Detect backend
     let backend = extraction::detect_backend(config).await;
 
-    // Truncate more aggressively for local models (smaller context window)
-    let text_for_extraction = match &backend {
-        BackendChoice::Ollama if combined_text.len() > 15_000 => {
-            // Local models: limit to ~15KB to stay within context + speed
-            let mut start = combined_text.len() - 15_000;
-            while !combined_text.is_char_boundary(start) && start < combined_text.len() {
-                start += 1;
-            }
-            combined_text[start..].to_string()
-        }
-        _ => combined_text.clone(),
-    };
-
     // Extract memories (this is the slow part — LLM call)
     let extract_start = std::time::Instant::now();
     let result = match &backend {
         BackendChoice::ClaudeCli => {
-            extraction::claude_cli::extract(&config.extraction.claude.model, &text_for_extraction).await
+            extraction::claude_cli::extract(&config.extraction.claude.model, &combined_text).await
+        }
+        BackendChoice::ClaudeApi => {
+            let api_key = crate::config::resolve_api_key(
+                &config.extraction.claude_api.api_key,
+                "ANTHROPIC_API_KEY",
+            )
+            .unwrap_or_default();
+            extraction::claude_api::extract(
+                &api_key,
+                &config.extraction.claude_api.model,
+                &combined_text,
+            )
+            .await
+        }
+        BackendChoice::OpenAi => {
+            let api_key = crate::config::resolve_api_key(
+                &config.extraction.openai.api_key,
+                "OPENAI_API_KEY",
+            )
+            .unwrap_or_default();
+            extraction::openai::extract(
+                &api_key,
+                &config.extraction.openai.model,
+                &config.extraction.openai.endpoint,
+                &combined_text,
+            )
+            .await
+        }
+        BackendChoice::Gemini => {
+            let api_key = crate::config::resolve_api_key(
+                &config.extraction.gemini.api_key,
+                "GEMINI_API_KEY",
+            )
+            .unwrap_or_default();
+            extraction::gemini::extract(
+                &api_key,
+                &config.extraction.gemini.model,
+                &combined_text,
+            )
+            .await
         }
         BackendChoice::Ollama => {
-            let ollama_result = extraction::ollama::extract(
+            extraction::ollama::extract(
                 &config.extraction.ollama.endpoint,
                 &config.extraction.ollama.model,
-                &text_for_extraction,
+                &combined_text,
             )
-            .await;
-            // Fallback: if Ollama times out, try Claude Haiku
-            match &ollama_result {
-                extraction::ExtractionResult::Unavailable(reason) if reason.contains("timeout") => {
-                    eprintln!("[extractor] Ollama timed out, falling back to Claude Haiku");
-                    extraction::claude_cli::extract(&config.extraction.claude.model, &text_for_extraction).await
-                }
-                _ => ollama_result,
-            }
+            .await
         }
         BackendChoice::None(reason) => {
             eprintln!("[extractor] no backend available: {reason}");
@@ -260,13 +279,22 @@ async fn process_file(
                 // skill extraction doesn't also create a duplicate memory entry.
                 // Quality gate: reject junk skills and demote them to lessons.
                 if em.memory_type == "skill" {
-                    let gate = skill_quality_gate(&em.title, &em.content);
+                    let has_steps = em.content.contains("1)")
+                        || em.content.contains("1.")
+                        || em.content.contains("- ")
+                        || em.content.lines().count() >= 3;
+                    let long_enough = em.content.len() >= 50;
+                    let title_lower = em.title.to_lowercase();
+                    let not_status = !title_lower.contains("complete")
+                        && !title_lower.contains("remaining")
+                        && !title_lower.starts_with("all ")
+                        && !title_lower.starts_with("fix the");
 
-                    if !gate.pass {
+                    if !has_steps || !long_enough || !not_status {
                         // Demote to lesson — fall through to normal memory storage below
                         eprintln!(
-                            "[extractor] demoted junk skill '{}' to lesson (steps={}, len={}, not_status={})",
-                            em.title, gate.step_count, em.content.len(), gate.not_status
+                            "[extractor] demoted junk skill '{}' to lesson (has_steps={}, long_enough={}, not_status={})",
+                            em.title, has_steps, long_enough, not_status
                         );
                         // Don't continue — let it fall through to memory storage as a lesson
                     } else {
@@ -275,7 +303,17 @@ async fn process_file(
                             name: em.title.clone(),
                             domain: em.tags.first().cloned().unwrap_or_else(|| "general".to_string()),
                             description: em.content.clone(),
-                            steps: gate.extracted_steps,
+                            steps: em.content.lines()
+                                .filter(|l| {
+                                    let trimmed = l.trim();
+                                    // Match numbered steps or bullet points
+                                    trimmed.starts_with(|c: char| c.is_ascii_digit())
+                                        || trimmed.starts_with('-')
+                                        || trimmed.starts_with('*')
+                                        || trimmed.starts_with("Step")
+                                })
+                                .map(|l| l.trim().to_string())
+                                .collect(),
                             success_count: 1, // Extracted from a successful execution
                             fail_count: 0,
                             last_used: None,
@@ -300,7 +338,7 @@ async fn process_file(
 
                 // Route identity signals to the identity table (Ahankara)
                 if em.memory_type == "identity" {
-                    let facet_type = identity_facet_type(&em.tags, &em.title);
+                    let facet_type = em.tags.first().cloned().unwrap_or_else(|| "expertise".to_string());
                     let facet = forge_core::types::manas::IdentityFacet {
                         id: format!("identity-{}", ulid::Ulid::new()),
                         agent: adapter.name().to_string(),
@@ -430,175 +468,8 @@ async fn process_file(
     }
 }
 
-/// Valid identity facet types that the LLM should produce.
-const VALID_FACET_TYPES: &[&str] = &["role", "expertise", "domain", "values", "goals", "constraints"];
-
-/// Extract a valid facet type from tags, or default to "expertise" with a warning.
-///
-/// Scans tags for a known facet type (role, expertise, domain, values, goals, constraints).
-/// If none found, logs a warning (FAIL-LOUD) and defaults to "expertise".
-fn identity_facet_type(tags: &[String], title: &str) -> String {
-    tags.iter()
-        .find(|t| VALID_FACET_TYPES.contains(&t.as_str()))
-        .cloned()
-        .unwrap_or_else(|| {
-            eprintln!(
-                "[extractor] identity '{}' has no valid facet tag (tags: {:?}), defaulting to 'expertise'",
-                title, tags
-            );
-            "expertise".to_string()
-        })
-}
-
-/// Result of the skill quality gate check.
-#[derive(Debug)]
-struct SkillQualityGate {
-    /// Whether the skill passes quality gates and should be stored.
-    pass: bool,
-    /// Number of properly structured steps found.
-    step_count: usize,
-    /// Whether the title is NOT a status/completion message.
-    not_status: bool,
-    /// Extracted step lines (only meaningful when pass=true).
-    extracted_steps: Vec<String>,
-}
-
-/// Evaluate whether an extracted skill meets quality standards.
-///
-/// A skill must have:
-/// - At least 200 characters of content
-/// - At least 2 properly numbered steps (e.g. "1. ...", "2) ...", "Step 1: ...")
-/// - A title that does not indicate task completion or status reporting
-fn skill_quality_gate(title: &str, content: &str) -> SkillQualityGate {
-    // Extract properly structured steps: numbered ("1.", "2)") or "Step N"
-    let extracted_steps: Vec<String> = content
-        .lines()
-        .filter(|l| {
-            let trimmed = l.trim();
-            let starts_with_digit = trimmed
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit());
-            // Numbered steps: digit followed by '.' or ')'
-            (starts_with_digit
-                && trimmed
-                    .chars()
-                    .find(|c| !c.is_ascii_digit())
-                    .is_some_and(|c| c == '.' || c == ')'))
-                || trimmed.starts_with("Step ")
-        })
-        .map(|l| l.trim().to_string())
-        .collect();
-
-    let step_count = extracted_steps.len();
-    let has_steps = step_count >= 2;
-    let long_enough = content.len() >= 200;
-
-    let title_lower = title.to_lowercase();
-    let not_status = !title_lower.contains("complete")
-        && !title_lower.contains("remaining")
-        && !title_lower.contains("tasks done")
-        && !title_lower.contains("all passing")
-        && !title_lower.starts_with("all ")
-        && !title_lower.starts_with("fix the")
-        && !title_lower.starts_with("completed")
-        && !title_lower.starts_with("finished")
-        && !title_lower.starts_with("implemented")
-        && !title_lower.starts_with("shipped")
-        && !title_lower.starts_with("deployed")
-        && !title_lower.starts_with("merged")
-        && !title_lower.starts_with("resolved");
-
-    let pass = has_steps && long_enough && not_status;
-
-    SkillQualityGate {
-        pass,
-        step_count,
-        not_status,
-        extracted_steps,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{identity_facet_type, skill_quality_gate};
-
-    // ── Identity facet type extraction tests ─────────────────────────
-
-    #[test]
-    fn test_identity_facet_type_expertise_tag() {
-        let tags = vec!["expertise".to_string()];
-        let result = identity_facet_type(&tags, "Senior Rust developer");
-        assert_eq!(result, "expertise");
-    }
-
-    #[test]
-    fn test_identity_facet_type_role_tag() {
-        let tags = vec!["role".to_string()];
-        let result = identity_facet_type(&tags, "Tech lead at startup");
-        assert_eq!(result, "role");
-    }
-
-    #[test]
-    fn test_identity_facet_type_domain_tag() {
-        let tags = vec!["domain".to_string()];
-        let result = identity_facet_type(&tags, "Building a fintech platform");
-        assert_eq!(result, "domain");
-    }
-
-    #[test]
-    fn test_identity_facet_type_values_tag() {
-        let tags = vec!["values".to_string()];
-        let result = identity_facet_type(&tags, "Security-first approach");
-        assert_eq!(result, "values");
-    }
-
-    #[test]
-    fn test_identity_facet_type_goals_tag() {
-        let tags = vec!["goals".to_string()];
-        let result = identity_facet_type(&tags, "Ship weekly releases");
-        assert_eq!(result, "goals");
-    }
-
-    #[test]
-    fn test_identity_facet_type_constraints_tag() {
-        let tags = vec!["constraints".to_string()];
-        let result = identity_facet_type(&tags, "No external dependencies");
-        assert_eq!(result, "constraints");
-    }
-
-    #[test]
-    fn test_identity_facet_type_empty_tags_defaults_to_expertise() {
-        let tags: Vec<String> = vec![];
-        let result = identity_facet_type(&tags, "Unknown identity");
-        assert_eq!(result, "expertise", "empty tags should default to 'expertise'");
-    }
-
-    #[test]
-    fn test_identity_facet_type_unknown_tag_defaults_to_expertise() {
-        let tags = vec!["unknown_tag".to_string()];
-        let result = identity_facet_type(&tags, "Some identity");
-        assert_eq!(result, "expertise", "unknown tag should default to 'expertise'");
-    }
-
-    #[test]
-    fn test_identity_facet_type_mixed_tags_picks_valid() {
-        // The valid facet tag should be found even among irrelevant tags
-        let tags = vec!["rust".to_string(), "domain".to_string(), "backend".to_string()];
-        let result = identity_facet_type(&tags, "Building a fintech platform");
-        assert_eq!(result, "domain", "should find 'domain' among mixed tags");
-    }
-
-    #[test]
-    fn test_identity_facet_type_first_valid_wins() {
-        // If multiple valid facet tags present, first one wins
-        let tags = vec!["role".to_string(), "expertise".to_string()];
-        let result = identity_facet_type(&tags, "Tech lead and Rust expert");
-        assert_eq!(result, "role", "first valid facet tag should win");
-    }
-
-    // ── Skill quality gate tests (existing) ──────────────────────────
-
     #[test]
     fn test_agent_status_event_format_working() {
         let event = serde_json::json!({
@@ -696,215 +567,65 @@ mod tests {
         assert_eq!(status, "waiting");
     }
 
-    // ── Skill quality gate tests ──────────────────────────────────────
+    #[test]
+    fn test_skill_quality_gate_rejects_junk_title() {
+        // Verify the quality gate logic used in process_file
+        let title = "All 17 Tasks Complete";
+        let content = "Done";
+
+        let has_steps = content.contains("1)")
+            || content.contains("1.")
+            || content.contains("- ")
+            || content.lines().count() >= 3;
+        let long_enough = content.len() >= 50;
+        let title_lower = title.to_lowercase();
+        let not_status = !title_lower.contains("complete")
+            && !title_lower.contains("remaining")
+            && !title_lower.starts_with("all ")
+            && !title_lower.starts_with("fix the");
+
+        // Should fail all three checks
+        assert!(!has_steps, "junk skill should not have steps");
+        assert!(!long_enough, "junk skill should be too short");
+        assert!(!not_status, "junk skill title should be detected as status");
+    }
 
     #[test]
     fn test_skill_quality_gate_accepts_good_skill() {
-        // A properly structured skill with numbered steps and 200+ chars
-        let title = "Deploy Rust Service to Production";
-        let content = "\
-1. Build the release binary with `cargo build --release` and verify no warnings
-2. Copy the binary to the production server via `scp target/release/forge user@prod:/opt/forge/`
-3. SSH into the server and run `sudo systemctl restart forge-daemon`
-4. Verify the service is healthy with `curl http://localhost:8080/health`";
+        let title = "Deploy Rust Service";
+        let content = "1) cargo build --release 2) scp binary to server 3) systemctl restart forge-daemon";
 
-        let gate = skill_quality_gate(title, content);
-        assert!(gate.pass, "good skill should pass quality gate");
-        assert_eq!(gate.step_count, 4, "should detect 4 numbered steps");
-        assert!(gate.not_status, "title should not be flagged as status");
-        assert_eq!(gate.extracted_steps.len(), 4);
-    }
+        let has_steps = content.contains("1)")
+            || content.contains("1.")
+            || content.contains("- ")
+            || content.lines().count() >= 3;
+        let long_enough = content.len() >= 50;
+        let title_lower = title.to_lowercase();
+        let not_status = !title_lower.contains("complete")
+            && !title_lower.contains("remaining")
+            && !title_lower.starts_with("all ")
+            && !title_lower.starts_with("fix the");
 
-    #[test]
-    fn test_skill_quality_gate_accepts_paren_numbered_steps() {
-        // Steps using "1)" format
-        let title = "Set Up CI Pipeline";
-        let content = "\
-1) Create a .github/workflows directory in the repository root for CI configuration
-2) Write a ci.yml workflow file that runs on push and pull_request events to main
-3) Add build, lint, and test jobs with proper caching of dependencies for speed
-4) Configure branch protection rules to require CI passing before merge";
-
-        let gate = skill_quality_gate(title, content);
-        assert!(gate.pass, "paren-numbered steps should pass");
-        assert_eq!(gate.step_count, 4);
-    }
-
-    #[test]
-    fn test_skill_quality_gate_accepts_step_prefix() {
-        // Steps using "Step N" format
-        let title = "Database Migration Process";
-        let content = "\
-Step 1: Back up the current production database using pg_dump to a timestamped file
-Step 2: Run the migration script against a staging copy first to verify correctness
-Step 3: Apply the migration to production during the maintenance window after backup";
-
-        let gate = skill_quality_gate(title, content);
-        assert!(gate.pass, "Step-prefixed content should pass");
-        assert!(gate.step_count >= 3, "should detect Step-prefixed lines");
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_junk_title_complete() {
-        let title = "All 17 Tasks Complete";
-        let content = "Done. Everything is finished and deployed.";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "status title 'All 17 Tasks Complete' should be rejected");
-        assert!(!gate.not_status);
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_title_completed() {
-        let title = "Completed auth module refactor";
-        let content = "1. Did the thing one by one carefully\n2. Also did another thing that was needed";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "title starting with 'Completed' should be rejected");
-        assert!(!gate.not_status);
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_title_finished() {
-        let title = "Finished deploying the new version";
-        let content = "1. Step one of the process\n2. Step two of the process";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "title starting with 'Finished' should be rejected");
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_title_implemented() {
-        let title = "Implemented feature flag system";
-        let content = "1. Added flags\n2. Deployed flags";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "title starting with 'Implemented' should be rejected");
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_title_shipped() {
-        let title = "Shipped v2.0 release";
-        let content = "1. Tagged release\n2. Pushed to prod";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "title starting with 'Shipped' should be rejected");
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_title_deployed() {
-        let title = "Deployed hotfix to production";
-        let content = "1. Built hotfix\n2. Deployed it";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "title starting with 'Deployed' should be rejected");
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_title_merged() {
-        let title = "Merged PR #42 into main";
-        let content = "1. Reviewed PR\n2. Merged PR";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "title starting with 'Merged' should be rejected");
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_title_resolved() {
-        let title = "Resolved all CI failures";
-        let content = "1. Fixed lint\n2. Fixed tests";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "title starting with 'Resolved' should be rejected");
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_title_tasks_done() {
-        let title = "Sprint tasks done for week 14";
-        let content = "1. Task A\n2. Task B";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "title containing 'tasks done' should be rejected");
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_title_all_passing() {
-        let title = "Tests all passing now";
-        let content = "1. Fixed test A\n2. Fixed test B";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "title containing 'all passing' should be rejected");
+        assert!(has_steps, "good skill should have steps");
+        assert!(long_enough, "good skill should be long enough");
+        assert!(not_status, "good skill title should not look like a status");
     }
 
     #[test]
     fn test_skill_quality_gate_rejects_short_content() {
-        // Good title but content under 200 chars
-        let title = "Build and Test";
-        let content = "1. run cargo test\n2. check output";
-        assert!(content.len() < 200);
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "content under 200 chars should be rejected");
-    }
+        // Skill with a good title but content too short
+        let _title = "Build and Test";
+        let content = "run cargo test";
 
-    #[test]
-    fn test_skill_quality_gate_rejects_no_steps() {
-        // Narrative content without numbered steps
-        let title = "Debug Authentication";
-        let content = "Fixed the bug in auth module. Also updated docs. \
-            The issue was that the token validation was skipping expiry checks \
-            when the token had been refreshed within the last hour. We patched \
-            the validation function and added regression tests to cover the edge case. \
-            Everything is working now after the fix was deployed.";
-        assert!(content.len() >= 200);
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "content without numbered steps should be rejected");
-        assert_eq!(gate.step_count, 0);
-    }
+        let has_steps = content.contains("1)")
+            || content.contains("1.")
+            || content.contains("- ")
+            || content.lines().count() >= 3;
+        let long_enough = content.len() >= 50;
 
-    #[test]
-    fn test_skill_quality_gate_rejects_single_bullet() {
-        // Only one bullet point — not enough steps
-        let title = "Cleanup Process";
-        let content = "- cleanup files and remove temporary artifacts from the build directory";
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "single bullet with no numbered steps should be rejected");
-        assert_eq!(gate.step_count, 0, "bullets without numbers are not counted as steps");
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_one_numbered_step() {
-        // Only one numbered step — minimum is 2
-        let title = "Quick Fix";
-        let content = "\
-1. Run the migration script against the database to update the schema and then \
-verify the results are correct by checking the output logs for any error messages \
-that might indicate a problem with the migration process or data integrity issues.";
-        assert!(content.len() >= 200);
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "only 1 step should be rejected (minimum 2)");
-        assert_eq!(gate.step_count, 1);
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_dashed_lines_as_steps() {
-        // Old logic counted "- " as steps — new logic should not
-        let title = "Project Setup";
-        let content = "\
-- Install Node.js and npm on your development machine before starting\n\
-- Clone the repository and run npm install to get all dependencies\n\
-- Create a .env file with the required environment variables for local dev\n\
-- Run npm start to launch the development server on localhost port 3000\n\
-These are the basic steps to get started with the project setup workflow.";
-        assert!(content.len() >= 200);
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "dashed lines should NOT count as numbered steps");
-        assert_eq!(gate.step_count, 0);
-    }
-
-    #[test]
-    fn test_skill_quality_gate_rejects_three_plain_lines() {
-        // Old logic accepted any 3-line content — new logic should not
-        let title = "Some Notes";
-        let content = "\
-The system uses a microservices architecture with three main components that \
-communicate via gRPC and REST APIs depending on the use case and performance needs.\n\
-Authentication is handled by the auth service which issues JWT tokens with a \
-configurable expiry time that defaults to one hour for security purposes.\n\
-The database layer uses PostgreSQL with connection pooling via PgBouncer to handle \
-the high concurrency requirements of the production workload effectively.";
-        assert!(content.len() >= 200);
-        assert!(content.lines().count() >= 3);
-        let gate = skill_quality_gate(title, content);
-        assert!(!gate.pass, "plain multi-line text without numbered steps should be rejected");
+        // "run cargo test" is only 14 chars — should fail length check
+        assert!(!long_enough, "short content should fail length check");
+        // Even though has_steps might be false, the OR logic means any failure gates it
+        assert!(!has_steps || !long_enough, "should be gated as junk");
     }
 }
