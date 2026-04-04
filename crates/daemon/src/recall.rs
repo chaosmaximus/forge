@@ -95,27 +95,24 @@ fn sql_neighbors(conn: &Connection, id: &str) -> Vec<String> {
 /// Query all edges (both outgoing and incoming) for a given memory ID.
 /// Returns up to 20 edges to prevent fan-out from heavily-connected nodes.
 fn query_edges_for_memory(conn: &Connection, memory_id: &str) -> Vec<MemoryEdge> {
-    let mut stmt = match conn.prepare(
-        "SELECT to_id, edge_type FROM edge WHERE from_id = ?1
+    let sql = "SELECT to_id, edge_type FROM edge WHERE from_id = ?1
          UNION ALL
          SELECT from_id, edge_type FROM edge WHERE to_id = ?1
-         LIMIT 20",
-    ) {
-        Ok(s) => s,
+         LIMIT 20";
+    let result: Result<Vec<MemoryEdge>, _> = conn.prepare(sql)
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![memory_id], |row| {
+                Ok(MemoryEdge {
+                    target_id: row.get(0)?,
+                    edge_type: row.get(1)?,
+                })
+            })?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        });
+    match result {
+        Ok(edges) => edges,
         Err(e) => {
             eprintln!("[recall] edge query error: {e}");
-            return Vec::new();
-        }
-    };
-    match stmt.query_map(params![memory_id], |row| {
-        Ok(MemoryEdge {
-            target_id: row.get(0)?,
-            edge_type: row.get(1)?,
-        })
-    }) {
-        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
-        Err(e) => {
-            eprintln!("[recall] edge query_map error: {e}");
             Vec::new()
         }
     }
