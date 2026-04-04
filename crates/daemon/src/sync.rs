@@ -294,6 +294,9 @@ pub fn sync_import(
         ));
     }
 
+    // Wrap in transaction for atomicity — all-or-nothing (Codex fix: partial writes on failure)
+    let tx = conn.unchecked_transaction()?;
+
     for line in lines {
         // SECURITY: skip oversized lines (>1MB per line)
         if line.len() > 1_048_576 {
@@ -388,6 +391,8 @@ pub fn sync_import(
             }
         }
     }
+
+    tx.commit()?;
 
     Ok(SyncImportResult {
         imported,
