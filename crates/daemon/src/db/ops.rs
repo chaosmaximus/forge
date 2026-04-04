@@ -137,12 +137,18 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
 /// Boost activation level for a memory (capped at 1.0).
 /// Used to track which memories are actively being used.
 /// Activation decays over time in the consolidator.
+/// Boost activation level for a memory. Best-effort: silently no-ops on read-only connections.
+/// This is called from CompileContext/Recall which run on read-only connections in the
+/// actor architecture. The boost is an optimization hint, not critical.
 pub fn boost_activation(conn: &Connection, memory_id: &str, amount: f64) -> rusqlite::Result<()> {
-    conn.execute(
+    match conn.execute(
         "UPDATE memory SET activation_level = MIN(1.0, COALESCE(activation_level, 0.0) + ?1) WHERE id = ?2",
         params![amount, memory_id],
-    )?;
-    Ok(())
+    ) {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("readonly") => Ok(()), // read-only conn — skip silently
+        Err(e) => Err(e),
+    }
 }
 
 /// Decay all activation levels by a multiplicative factor.

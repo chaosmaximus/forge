@@ -623,10 +623,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 14 (ManasHealth moved to parameterized)
         let unit_count = 14;
-        // Parameterized variants: 40 (ManasHealth + CleanupSessions)
-        let param_count = 40;
-        // Total: 54
-        let expected_total = 54;
+        // Parameterized variants: 44 (ManasHealth + CleanupSessions + 4 A2A: SessionSend/Respond/Messages/Ack)
+        let param_count = 44;
+        // Total: 58
+        let expected_total = 58;
 
         assert_eq!(
             unit_count + param_count,
@@ -703,6 +703,27 @@ mod tests {
                 Request::EndSession { id: "s".into() },
                 Request::Sessions { active_only: None },
                 Request::CleanupSessions { prefix: Some("hook-test".into()) },
+                Request::SessionSend {
+                    to: "s2".into(),
+                    kind: "notification".into(),
+                    topic: "test".into(),
+                    parts: vec![],
+                    project: None,
+                    timeout_secs: None,
+                },
+                Request::SessionRespond {
+                    message_id: "m1".into(),
+                    status: "completed".into(),
+                    parts: vec![],
+                },
+                Request::SessionMessages {
+                    session_id: "s1".into(),
+                    status: None,
+                    limit: None,
+                },
+                Request::SessionAck {
+                    message_ids: vec!["m1".into()],
+                },
                 Request::StorePlatform {
                     key: "k".into(),
                     value: "v".into(),

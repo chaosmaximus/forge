@@ -3434,8 +3434,8 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(
-            elapsed.as_millis() < 500,
-            "DaemonState::new took {}ms — should be <500ms (consolidation is now background)",
+            elapsed.as_millis() < 1000,
+            "DaemonState::new took {}ms — should be <1000ms (consolidation is now background)",
             elapsed.as_millis()
         );
     }

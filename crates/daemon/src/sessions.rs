@@ -253,9 +253,16 @@ pub fn send_message(
     project: Option<&str>,
     timeout_secs: Option<u64>,
 ) -> rusqlite::Result<String> {
-    let expires_at = timeout_secs.map(|secs| {
-        format!("datetime('now', '+{} seconds')", secs)
-    });
+    // Validate message size: parts_json must be under 64KB
+    if parts_json.len() > 65536 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "message parts exceed 64KB limit".to_string(),
+        ));
+    }
+
+    // Compute expires_at as a modifier string for SQLite datetime()
+    // timeout_secs is u64 so no SQL injection risk, but we use parameterized query anyway
+    let timeout_modifier = timeout_secs.map(|secs| format!("+{secs} seconds"));
 
     if to == "*" {
         // Broadcast: create one message per active session in the same project
@@ -276,44 +283,23 @@ pub fn send_message(
             }
         };
 
-        // Generate a broadcast group ID (the "main" message ID returned to sender)
         let broadcast_id = Ulid::new().to_string();
         for session_id in &sessions {
             let msg_id = Ulid::new().to_string();
-            if let Some(ref expr) = expires_at {
-                conn.execute(
-                    &format!(
-                        "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), {})", expr
-                    ),
-                    params![msg_id, from_session, session_id, kind, topic, parts_json, project],
-                )?;
-            } else {
-                conn.execute(
-                    "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'))",
-                    params![msg_id, from_session, session_id, kind, topic, parts_json, project],
-                )?;
-            }
+            conn.execute(
+                "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), CASE WHEN ?8 IS NOT NULL THEN datetime('now', ?8) ELSE NULL END)",
+                params![msg_id, from_session, session_id, kind, topic, parts_json, project, timeout_modifier],
+            )?;
         }
         Ok(broadcast_id)
     } else {
         let msg_id = Ulid::new().to_string();
-        if let Some(ref expr) = expires_at {
-            conn.execute(
-                &format!(
-                    "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), {})", expr
-                ),
-                params![msg_id, from_session, to, kind, topic, parts_json, project],
-            )?;
-        } else {
-            conn.execute(
-                "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'))",
-                params![msg_id, from_session, to, kind, topic, parts_json, project],
-            )?;
-        }
+        conn.execute(
+            "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), CASE WHEN ?8 IS NOT NULL THEN datetime('now', ?8) ELSE NULL END)",
+            params![msg_id, from_session, to, kind, topic, parts_json, project, timeout_modifier],
+        )?;
         Ok(msg_id)
     }
 }
@@ -719,5 +705,114 @@ mod tests {
 
         let active = list_sessions(&conn, true).unwrap();
         assert_eq!(active.len(), 1);
+    }
+
+    // ── A2A Message CRUD Tests ──
+
+    #[test]
+    fn test_send_and_list_message() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+
+        let msg_id = send_message(&conn, "s1", "s2", "notification", "file_changed", "[]", Some("forge"), None).unwrap();
+        assert!(!msg_id.is_empty());
+
+        let messages = list_messages(&conn, "s2", None, 10).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].from_session, "s1");
+        assert_eq!(messages[0].to_session, "s2");
+        assert_eq!(messages[0].kind, "notification");
+        assert_eq!(messages[0].topic, "file_changed");
+        assert_eq!(messages[0].status, "pending");
+    }
+
+    #[test]
+    fn test_broadcast_message() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s3", "codex", Some("forge"), None, None, None).unwrap();
+
+        send_message(&conn, "s1", "*", "notification", "schema_changed", "[]", Some("forge"), None).unwrap();
+
+        // s2 and s3 should each get a message, s1 (sender) should not
+        let s2_msgs = list_messages(&conn, "s2", None, 10).unwrap();
+        assert_eq!(s2_msgs.len(), 1, "s2 should receive broadcast");
+        let s3_msgs = list_messages(&conn, "s3", None, 10).unwrap();
+        assert_eq!(s3_msgs.len(), 1, "s3 should receive broadcast");
+        let s1_msgs = list_messages(&conn, "s1", None, 10).unwrap();
+        assert_eq!(s1_msgs.len(), 0, "sender should not receive own broadcast");
+    }
+
+    #[test]
+    fn test_respond_to_message() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+
+        let msg_id = send_message(&conn, "s1", "s2", "request", "review_code", "[]", None, None).unwrap();
+
+        let found = respond_to_message(&conn, &msg_id, "s2", "completed", r#"[{"kind":"text","text":"LGTM"}]"#).unwrap();
+        assert!(found, "should find and respond to original message");
+
+        // Original message status should be updated
+        let msgs = list_messages(&conn, "s2", Some("completed"), 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].status, "completed");
+    }
+
+    #[test]
+    fn test_ack_messages() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+
+        let id1 = send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None).unwrap();
+        let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None).unwrap();
+
+        let acked = ack_messages(&conn, &[id1.clone(), id2.clone()]).unwrap();
+        assert_eq!(acked, 2);
+
+        // Messages should now be "read"
+        let pending = list_messages(&conn, "s1", Some("pending"), 10).unwrap();
+        assert_eq!(pending.len(), 0, "no pending messages after ack");
+        let read = list_messages(&conn, "s1", Some("read"), 10).unwrap();
+        assert_eq!(read.len(), 2, "both messages should be read");
+    }
+
+    #[test]
+    fn test_respond_to_nonexistent_message() {
+        let conn = setup();
+        let found = respond_to_message(&conn, "nonexistent", "s1", "completed", "[]").unwrap();
+        assert!(!found, "should not find nonexistent message");
+    }
+
+    #[test]
+    fn test_register_session_with_capabilities() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None,
+            Some(r#"["code_edit","bash"]"#), Some("Building A2A")).unwrap();
+
+        let sessions = list_sessions(&conn, true).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].capabilities, r#"["code_edit","bash"]"#);
+        assert_eq!(sessions[0].current_task, "Building A2A");
+    }
+
+    #[test]
+    fn test_list_messages_with_status_filter() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+
+        send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None).unwrap();
+        let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None).unwrap();
+        ack_messages(&conn, &[id2]).unwrap();
+
+        let pending = list_messages(&conn, "s1", Some("pending"), 10).unwrap();
+        assert_eq!(pending.len(), 1, "should have 1 pending message");
+        let read = list_messages(&conn, "s1", Some("read"), 10).unwrap();
+        assert_eq!(read.len(), 1, "should have 1 read message");
+        let all = list_messages(&conn, "s1", None, 10).unwrap();
+        assert_eq!(all.len(), 2, "should have 2 total messages");
     }
 }
