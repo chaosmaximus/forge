@@ -510,13 +510,18 @@ pub fn compile_dynamic_suffix(
     let mut used = 0usize;
 
     // Decisions (accumulate — always show ALL, masking with empty tag if none)
+    // Recency boost: last 24h *1.5, last 7d *1.2, older *1.0
     {
         let decisions: Vec<(String, f64, String, f64)> = if let Some(proj) = project {
             conn.prepare(
                 "SELECT title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'decision' AND status = 'active'
                  AND (project = ?1 OR project IS NULL OR project = '')
-                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10",
+                 ORDER BY confidence * CASE
+                     WHEN created_at > datetime('now', '-1 day') THEN 1.5
+                     WHEN created_at > datetime('now', '-7 days') THEN 1.2
+                     ELSE 1.0
+                 END DESC, accessed_at DESC LIMIT 10",
             )
             .and_then(|mut stmt| {
                 stmt.query_map(params![proj], |row| {
@@ -529,7 +534,11 @@ pub fn compile_dynamic_suffix(
             conn.prepare(
                 "SELECT title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'decision' AND status = 'active'
-                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10",
+                 ORDER BY confidence * CASE
+                     WHEN created_at > datetime('now', '-1 day') THEN 1.5
+                     WHEN created_at > datetime('now', '-7 days') THEN 1.2
+                     ELSE 1.0
+                 END DESC, accessed_at DESC LIMIT 10",
             )
             .and_then(|mut stmt| {
                 stmt.query_map([], |row| {
@@ -565,13 +574,18 @@ pub fn compile_dynamic_suffix(
     }
 
     // Lessons (accumulate — always present)
+    // Recency boost: last 24h *1.5, last 7d *1.2, older *1.0
     {
         let lessons: Vec<(String, f64, String, f64)> = if let Some(proj) = project {
             conn.prepare(
                 "SELECT title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'lesson' AND status = 'active'
                  AND (project = ?1 OR project IS NULL OR project = '')
-                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5",
+                 ORDER BY confidence * CASE
+                     WHEN created_at > datetime('now', '-1 day') THEN 1.5
+                     WHEN created_at > datetime('now', '-7 days') THEN 1.2
+                     ELSE 1.0
+                 END DESC, accessed_at DESC LIMIT 5",
             )
             .and_then(|mut stmt| {
                 stmt.query_map(params![proj], |row| {
@@ -584,7 +598,11 @@ pub fn compile_dynamic_suffix(
             conn.prepare(
                 "SELECT title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'lesson' AND status = 'active'
-                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5",
+                 ORDER BY confidence * CASE
+                     WHEN created_at > datetime('now', '-1 day') THEN 1.5
+                     WHEN created_at > datetime('now', '-7 days') THEN 1.2
+                     ELSE 1.0
+                 END DESC, accessed_at DESC LIMIT 5",
             )
             .and_then(|mut stmt| {
                 stmt.query_map([], |row| {
@@ -1676,6 +1694,163 @@ mod tests {
         assert!(
             ctx.contains("<working-set>"),
             "working-set should be non-empty"
+        );
+    }
+
+    // ── recency boost tests ──
+
+    /// Helper: insert a memory with a specific created_at timestamp for recency testing.
+    fn insert_memory_with_created_at(
+        conn: &Connection,
+        id: &str,
+        title: &str,
+        memory_type: &str,
+        confidence: f64,
+        created_at: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, access_count)
+             VALUES (?1, ?2, ?3, 'content', ?4, 'active', NULL, '[]', ?5, ?5, 0)",
+            params![id, memory_type, title, confidence, created_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_recency_boost_recent_decision_outranks_old() {
+        let conn = setup();
+
+        // Old decision with high confidence (created 30 days ago)
+        insert_memory_with_created_at(
+            &conn,
+            "old-1",
+            "Use monolith architecture",
+            "decision",
+            1.0,
+            &forge_core::time::now_offset(-30 * 86400), // 30 days ago
+        );
+
+        // Recent decision with lower confidence (created 1 hour ago)
+        insert_memory_with_created_at(
+            &conn,
+            "new-1",
+            "Switch to microservices",
+            "decision",
+            0.8,
+            &forge_core::time::now_offset(-3600), // 1 hour ago
+        );
+
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+
+        // Recent decision (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
+        let micro_pos = suffix.find("Switch to microservices").expect("recent decision should be present");
+        let mono_pos = suffix.find("Use monolith architecture").expect("old decision should be present");
+        assert!(
+            micro_pos < mono_pos,
+            "recent decision (boosted: 0.8*1.5=1.2) should appear before old decision (1.0*1.0=1.0)"
+        );
+    }
+
+    #[test]
+    fn test_recency_boost_week_old_moderate_boost() {
+        let conn = setup();
+
+        // 30-day-old decision with confidence 1.0 (no boost: 1.0)
+        insert_memory_with_created_at(
+            &conn,
+            "old-1",
+            "Ancient pattern",
+            "decision",
+            1.0,
+            &forge_core::time::now_offset(-30 * 86400),
+        );
+
+        // 3-day-old decision with confidence 0.9 (7d boost: 0.9 * 1.2 = 1.08)
+        insert_memory_with_created_at(
+            &conn,
+            "mid-1",
+            "Recent week pattern",
+            "decision",
+            0.9,
+            &forge_core::time::now_offset(-3 * 86400), // 3 days ago
+        );
+
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+
+        // 3-day-old (0.9*1.2=1.08) should outrank 30-day-old (1.0*1.0=1.0)
+        let mid_pos = suffix.find("Recent week pattern").expect("mid-age decision should be present");
+        let old_pos = suffix.find("Ancient pattern").expect("old decision should be present");
+        assert!(
+            mid_pos < old_pos,
+            "week-old decision (0.9*1.2=1.08) should rank before month-old (1.0)"
+        );
+    }
+
+    #[test]
+    fn test_recency_boost_very_old_no_boost() {
+        let conn = setup();
+
+        // Both 30 days old — should rank by raw confidence only
+        insert_memory_with_created_at(
+            &conn,
+            "old-high",
+            "High confidence old",
+            "decision",
+            1.0,
+            &forge_core::time::now_offset(-30 * 86400),
+        );
+
+        insert_memory_with_created_at(
+            &conn,
+            "old-low",
+            "Low confidence old",
+            "decision",
+            0.5,
+            &forge_core::time::now_offset(-30 * 86400),
+        );
+
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+
+        let high_pos = suffix.find("High confidence old").expect("high confidence should be present");
+        let low_pos = suffix.find("Low confidence old").expect("low confidence should be present");
+        assert!(
+            high_pos < low_pos,
+            "without recency boost, higher confidence should rank first"
+        );
+    }
+
+    #[test]
+    fn test_recency_boost_lessons_also_boosted() {
+        let conn = setup();
+
+        // Old lesson with high confidence
+        insert_memory_with_created_at(
+            &conn,
+            "old-lesson",
+            "Old testing lesson",
+            "lesson",
+            1.0,
+            &forge_core::time::now_offset(-30 * 86400),
+        );
+
+        // Recent lesson with lower confidence
+        insert_memory_with_created_at(
+            &conn,
+            "new-lesson",
+            "Fresh testing lesson",
+            "lesson",
+            0.8,
+            &forge_core::time::now_offset(-3600), // 1 hour ago
+        );
+
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+
+        // Recent lesson (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
+        let fresh_pos = suffix.find("Fresh testing lesson").expect("recent lesson should be present");
+        let old_pos = suffix.find("Old testing lesson").expect("old lesson should be present");
+        assert!(
+            fresh_pos < old_pos,
+            "recent lesson (boosted: 0.8*1.5=1.2) should appear before old lesson (1.0*1.0=1.0)"
         );
     }
 }

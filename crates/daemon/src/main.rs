@@ -88,9 +88,44 @@ async fn main() {
         let _ = shutdown_for_signal.send(true);
     });
 
+    // Spawn startup tasks in background (consolidation, ingestion).
+    // These run AFTER the server starts accepting connections, ensuring the
+    // socket is available within ~100ms instead of waiting 2-5s for consolidation.
+    let startup_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        let locked = startup_state.lock().await;
+
+        // Consolidation (slow — can take 2-5s with many edges)
+        let cs = forge_daemon::workers::consolidator::run_all_phases(&locked.conn);
+        eprintln!(
+            "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",
+            cs.exact_dedup, cs.semantic_dedup, cs.linked, cs.faded, cs.promoted, cs.reconsolidated
+        );
+
+        // Project ingestion (Layer 7 — Declared Knowledge) + Domain DNA (Layer 4)
+        let project_dir = std::env::var("FORGE_PROJECT_DIR")
+            .or_else(|_| std::env::current_dir().map(|p| p.to_string_lossy().to_string()))
+            .unwrap_or_default();
+        if !project_dir.is_empty() {
+            match forge_daemon::db::manas::ingest_project_declared(&locked.conn, &project_dir) {
+                Ok((ingested, _)) if ingested > 0 => eprintln!("[daemon] ingested {} declared knowledge files", ingested),
+                Ok(_) => {},
+                Err(e) => eprintln!("[daemon] WARN: declared knowledge ingestion failed: {e}"),
+            }
+            match forge_daemon::db::manas::detect_domain_dna(&locked.conn, &project_dir) {
+                Ok(n) if n > 0 => eprintln!("[daemon] detected {} project type markers", n),
+                Ok(_) => {},
+                Err(e) => eprintln!("[daemon] WARN: domain DNA detection failed: {e}"),
+            }
+        }
+
+        drop(locked);
+        eprintln!("[daemon] startup tasks complete");
+    });
+
     eprintln!("forge-daemon: pid={pid} socket={socket_path} db={db_path}");
 
-    // Run the server (returns when shutdown signal received or IO error)
+    // Run the server IMMEDIATELY (no waiting for consolidation)
     if let Err(e) = run_server(&socket_path, state, shutdown_tx).await {
         eprintln!("error: server failed: {e}");
     }
