@@ -1,8 +1,9 @@
 //! sync.rs — Hybrid Logical Clock + memory sync protocol
 //!
-//! HLC format: "{wall_ms}-{counter}-{node_id}"
+//! HLC format: "{wall_ms}-{counter:010}-{node_id}"
 //! - wall_ms: milliseconds since epoch
-//! - counter: monotonic counter for same-millisecond events
+//! - counter: monotonic counter for same-millisecond events, zero-padded to 10 digits
+//!   so that lexicographic ordering matches numeric ordering (e.g. "0000000010" > "0000000009")
 //! - node_id: 8-char hex identifier for this daemon instance
 
 use std::sync::Mutex;
@@ -47,7 +48,7 @@ impl Hlc {
         } else {
             state.counter += 1;
         }
-        format!("{}-{}-{}", state.last_wall_ms, state.counter, self.node_id)
+        format!("{}-{:010}-{}", state.last_wall_ms, state.counter, self.node_id)
     }
 
     /// Merge with a remote HLC timestamp to maintain causal ordering.
@@ -665,13 +666,14 @@ mod tests {
     fn test_hlc_merge_remote() {
         let hlc = Hlc::new("local");
         let _local_ts = hlc.now();
-        // Simulate a remote timestamp from the future
+        // Simulate a remote timestamp from the future using the canonical zero-padded format.
+        // Remote peers always produce zero-padded counters, so the comparison is well-defined.
         let future_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
             + 10000;
-        let remote_ts = format!("{}-5-remote", future_ms);
+        let remote_ts = format!("{}-{:010}-remote", future_ms, 5u64);
         hlc.merge(&remote_ts);
         let after_merge = hlc.now();
         assert!(

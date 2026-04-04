@@ -66,10 +66,13 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     let status = status_str(&memory.status);
     let tags_json = serde_json::to_string(&memory.tags).unwrap_or_else(|_| "[]".to_string());
 
-    // Check for existing memory with same title and type
+    // Check for existing memory with same title, type, AND project.
+    // Including project in the dedup key prevents cross-project merging where a
+    // decision from "proj-a" silently overwrites an identically-titled decision
+    // from "proj-b".
     let existing_id: Option<String> = conn.query_row(
-        "SELECT id FROM memory WHERE title = ?1 AND memory_type = ?2 AND status = 'active'",
-        params![memory.title, mt],
+        "SELECT id FROM memory WHERE title = ?1 AND memory_type = ?2 AND COALESCE(project, '') = COALESCE(?3, '') AND status = 'active'",
+        params![memory.title, mt, memory.project],
         |row| row.get(0),
     ).optional()?;
 
