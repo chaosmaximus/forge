@@ -96,7 +96,9 @@ async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String]) {
     // Narrow lock scope: acquire per-file, not for entire batch (Codex fix)
     for file in files {
         let locked = state.lock().await;
-        let _ = diagnostics::clear_diagnostics(&locked.conn, file);
+        if let Err(e) = diagnostics::clear_diagnostics(&locked.conn, file) {
+            eprintln!("[diagnostics] failed to clear diagnostics for {}: {e}", file);
+        }
         run_consistency_check(&locked.conn, file);
         run_repeat_bug_check(&locked.conn, file);
         drop(locked); // Release between files to avoid blocking daemon
@@ -163,7 +165,9 @@ pub(crate) fn run_consistency_check(conn: &Connection, file: &str) {
                 created_at: forge_core::time::now_iso(),
                 expires_at: forge_core::time::now_offset(300), // 5 min TTL
             };
-            let _ = diagnostics::store_diagnostic(conn, &d);
+            if let Err(e) = diagnostics::store_diagnostic(conn, &d) {
+                eprintln!("[diagnostics] failed to store consistency diagnostic: {e}");
+            }
         }
     }
 }
@@ -213,7 +217,9 @@ pub(crate) fn run_repeat_bug_check(conn: &Connection, file: &str) {
                 created_at: forge_core::time::now_iso(),
                 expires_at: forge_core::time::now_offset(300),
             };
-            let _ = diagnostics::store_diagnostic(conn, &d);
+            if let Err(e) = diagnostics::store_diagnostic(conn, &d) {
+                eprintln!("[diagnostics] failed to store repeat-bug diagnostic: {e}");
+            }
         }
     }
 }

@@ -203,6 +203,21 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_disposition_agent ON disposition(agent);
         CREATE INDEX IF NOT EXISTS idx_disposition_trait ON disposition(trait_name);
 
+        -- Observability: metrics for extraction, embedding, and other operations
+        CREATE TABLE IF NOT EXISTS metrics (
+            id TEXT PRIMARY KEY,
+            metric_type TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            model TEXT,
+            tokens_in INTEGER DEFAULT 0,
+            tokens_out INTEGER DEFAULT 0,
+            latency_ms INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0.0,
+            status TEXT DEFAULT 'ok',
+            details TEXT DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_metrics_type_time ON metrics(metric_type, timestamp);
+
         -- Chitta: Proactive diagnostic cache
         CREATE TABLE IF NOT EXISTS diagnostic (
             id TEXT PRIMARY KEY,

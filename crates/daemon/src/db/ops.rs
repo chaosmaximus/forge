@@ -444,13 +444,15 @@ pub fn touch(conn: &Connection, ids: &[&str]) {
     for id in ids {
         // Codex fix: cap access_count at 1000, only increment if last access > 60s ago
         // Prevents gaming via repeated recall to inflate confidence
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "UPDATE memory SET accessed_at = datetime('now'),
              access_count = MIN(access_count + 1, 1000)
              WHERE id = ?1
              AND (accessed_at < datetime('now', '-60 seconds') OR access_count = 0)",
             params![id],
-        );
+        ) {
+            eprintln!("[ops] failed to touch memory {}: {e}", id);
+        }
     }
 }
 
@@ -614,6 +616,101 @@ pub fn store_edge(conn: &Connection, from_id: &str, to_id: &str, edge_type: &str
     Ok(())
 }
 
+// ── Observability: metrics tracking ──
+
+/// Aggregated stats for a time period.
+#[derive(Debug, Clone, Default)]
+pub struct StatsData {
+    pub period_hours: u64,
+    pub extractions: usize,
+    pub extraction_errors: usize,
+    pub tokens_in: usize,
+    pub tokens_out: usize,
+    pub total_cost_usd: f64,
+    pub avg_latency_ms: usize,
+    pub memories_created: usize,
+}
+
+/// Estimate cost in USD for an extraction call.
+/// Prices as of 2026 (approximate per million tokens).
+pub fn estimate_cost(model: &str, tokens_in: usize, tokens_out: usize) -> f64 {
+    let (price_in, price_out) = match model {
+        m if m.contains("haiku") => (0.25, 1.25),
+        m if m.contains("sonnet") => (3.0, 15.0),
+        m if m.contains("opus") => (15.0, 75.0),
+        m if m.contains("gpt-4o-mini") => (0.15, 0.60),
+        m if m.contains("gpt-4o") => (2.50, 10.0),
+        m if m.contains("gemini") => (0.0, 0.0),  // free tier
+        m if m.contains("gemma") => (0.0, 0.0),   // local/free
+        _ => (0.0, 0.0),                            // ollama = free
+    };
+    (tokens_in as f64 * price_in + tokens_out as f64 * price_out) / 1_000_000.0
+}
+
+/// Store a metric entry (extraction, embedding, etc.).
+pub fn store_metric(
+    conn: &Connection,
+    metric_type: &str,
+    model: &str,
+    tokens_in: usize,
+    tokens_out: usize,
+    latency_ms: u64,
+    status: &str,
+) -> rusqlite::Result<()> {
+    let cost = estimate_cost(model, tokens_in, tokens_out);
+    conn.execute(
+        "INSERT INTO metrics (id, metric_type, timestamp, model, tokens_in, tokens_out, latency_ms, cost_usd, status)
+         VALUES (?1, ?2, datetime('now'), ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            format!("metric-{}", ulid::Ulid::new()),
+            metric_type,
+            model,
+            tokens_in as i64,
+            tokens_out as i64,
+            latency_ms as i64,
+            cost,
+            status,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Query aggregated stats for a time period.
+pub fn query_stats(conn: &Connection, hours: u64) -> rusqlite::Result<StatsData> {
+    let (total_extractions, total_tokens_in, total_tokens_out, total_cost, avg_latency): (i64, i64, i64, f64, f64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0),
+                COALESCE(SUM(cost_usd), 0.0), COALESCE(AVG(latency_ms), 0.0)
+         FROM metrics WHERE metric_type = 'extraction'
+           AND timestamp > datetime('now', ?1)",
+        params![format!("-{} hours", hours)],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+
+    let errors: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM metrics WHERE metric_type = 'extraction' AND status != 'ok'
+           AND timestamp > datetime('now', ?1)",
+        params![format!("-{} hours", hours)],
+        |row| row.get(0),
+    )?;
+
+    let memory_growth: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory WHERE created_at > datetime('now', ?1)",
+        params![format!("-{} hours", hours)],
+        |row| row.get(0),
+    )?;
+
+    Ok(StatsData {
+        period_hours: hours,
+        extractions: total_extractions as usize,
+        extraction_errors: errors as usize,
+        tokens_in: total_tokens_in as usize,
+        tokens_out: total_tokens_out as usize,
+        total_cost_usd: total_cost,
+        avg_latency_ms: avg_latency as usize,
+        memories_created: memory_growth as usize,
+    })
+}
+
 /// Stop words filtered out before word-overlap comparison in semantic dedup.
 /// These inflate overlap scores for unrelated memories and should be excluded.
 const STOP_WORDS: &[&str] = &[
@@ -718,7 +815,9 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
 
     // Create "supersedes" edges for causal chain tracking
     for (superseded_id, survivor_id) in &superseded_by {
-        let _ = store_edge(conn, survivor_id, superseded_id, "supersedes", "{}");
+        if let Err(e) = store_edge(conn, survivor_id, superseded_id, "supersedes", "{}") {
+            eprintln!("[ops] failed to store supersedes edge: {e}");
+        }
     }
 
     Ok(merged)
@@ -890,7 +989,9 @@ pub fn promote_recurring_lessons(conn: &Connection) -> rusqlite::Result<usize> {
                 pattern.project = Some(p.clone());
             }
 
-            let _ = remember(conn, &pattern);
+            if let Err(e) = remember(conn, &pattern) {
+                eprintln!("[ops] failed to store promoted pattern '{}': {e}", title_a);
+            }
 
             // Supersede the individual lessons
             for &idx in &cluster {

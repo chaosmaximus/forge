@@ -268,6 +268,17 @@ pub enum ResponseData {
         value: String,
     },
 
+    Stats {
+        period_hours: u64,
+        extractions: usize,
+        extraction_errors: usize,
+        tokens_in: usize,
+        tokens_out: usize,
+        total_cost_usd: f64,
+        avg_latency_ms: usize,
+        memories_created: usize,
+    },
+
     Shutdown,
 }
 

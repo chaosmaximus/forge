@@ -95,10 +95,12 @@ pub fn run_all_phases(conn: &Connection) -> ConsolidationStats {
         Ok(candidates) => {
             for mem in &candidates {
                 let new_confidence = (mem.confidence + 0.05).min(1.0);
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "UPDATE memory SET confidence = ?1 WHERE id = ?2",
                     rusqlite::params![new_confidence, mem.id],
-                );
+                ) {
+                    eprintln!("[consolidator] failed to reconsolidate memory {}: {e}", mem.id);
+                }
             }
             stats.reconsolidated = candidates.len();
             if !candidates.is_empty() {

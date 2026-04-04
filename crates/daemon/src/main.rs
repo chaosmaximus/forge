@@ -21,7 +21,9 @@ async fn main() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
+            eprintln!("[daemon] WARN: failed to set permissions on {dir}: {e}");
+        }
     }
 
     // C2: Write PID file with advisory lock to prevent multiple daemon instances
@@ -59,7 +61,10 @@ async fn main() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: failed to open database {db_path}: {e}");
-            let _ = std::fs::remove_file(&pid_path);
+            // Best-effort cleanup of PID file
+            if let Err(e2) = std::fs::remove_file(&pid_path) {
+                eprintln!("[daemon] WARN: failed to remove PID file on error: {e2}");
+            }
             std::process::exit(1);
         }
     };
@@ -131,8 +136,12 @@ async fn main() {
     }
 
     // M6: Graceful cleanup after server stops (both success and error paths)
-    let _ = std::fs::remove_file(&socket_path);
-    let _ = std::fs::remove_file(&pid_path);
+    if let Err(e) = std::fs::remove_file(&socket_path) {
+        eprintln!("[daemon] WARN: failed to remove socket file: {e}");
+    }
+    if let Err(e) = std::fs::remove_file(&pid_path) {
+        eprintln!("[daemon] WARN: failed to remove PID file: {e}");
+    }
     eprintln!("[daemon] stopped");
     // _pid_file_guard drops here, releasing the advisory lock
 }

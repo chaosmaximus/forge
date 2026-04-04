@@ -430,7 +430,9 @@ async fn process_file(
                         if let Some(match_result) = results.first() {
                             // Only link if match score is strong enough (prevent weak false links)
                             if match_result.score.abs() > 0.001 {
-                                let _ = ops::store_edge(&locked.conn, &memory.id, &match_result.id, "motivated_by", "{}");
+                                if let Err(e) = ops::store_edge(&locked.conn, &memory.id, &match_result.id, "motivated_by", "{}") {
+                                    eprintln!("[extractor] failed to store motivated_by edge: {e}");
+                                }
                             }
                         }
                     }
@@ -452,13 +454,15 @@ async fn process_file(
                     // Wire affects field to graph edges (SQL edge table)
                     if !em.affects.is_empty() {
                         for affected in &em.affects {
-                            let _ = ops::store_edge(
+                            if let Err(e) = ops::store_edge(
                                 &locked.conn,
                                 &memory.id,
                                 &format!("file:{}", affected),
                                 "affects",
                                 "{}",
-                            );
+                            ) {
+                                eprintln!("[extractor] failed to store affects edge: {e}");
+                            }
                         }
                     }
                 }

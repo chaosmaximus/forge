@@ -197,5 +197,10 @@ pub enum Request {
         value: String,
     },
 
+    /// Query aggregated metrics/stats for a time period
+    GetStats {
+        hours: Option<u64>,
+    },
+
     Shutdown,
 }

@@ -316,7 +316,9 @@ async fn index_with_server(
         }
 
         // Close the document after processing (Serena pattern: didOpen/didClose lifecycle)
-        let _ = client.did_close(&uri).await;
+        if let Err(e) = client.did_close(&uri).await {
+            eprintln!("[indexer] failed to close document {}: {e}", file_path);
+        }
     }
 
     // Request references for callable symbols -> build "calls" edges
@@ -331,9 +333,12 @@ async fn index_with_server(
         for sym in callable_symbols.iter().take(100) {
             let sym_uri = file_uri(&sym.file_path);
             let content = std::fs::read_to_string(&sym.file_path).unwrap_or_default();
-            let _ = client
+            if let Err(e) = client
                 .did_open(&sym_uri, &config.language, &content)
-                .await;
+                .await
+            {
+                eprintln!("[indexer] failed to open document for references: {e}");
+            }
 
             match tokio::time::timeout(
                 Duration::from_secs(10),
@@ -355,7 +360,9 @@ async fn index_with_server(
                 _ => {}
             }
 
-            let _ = client.did_close(&sym_uri).await;
+            if let Err(e) = client.did_close(&sym_uri).await {
+                eprintln!("[indexer] failed to close document after references: {e}");
+            }
         }
     }
 
@@ -434,7 +441,9 @@ async fn run_index(
     }
 
     // Clear old "calls" edges before inserting fresh ones (prevents duplicates across runs)
-    let _ = locked.conn.execute("DELETE FROM edge WHERE edge_type = 'calls'", []);
+    if let Err(e) = locked.conn.execute("DELETE FROM edge WHERE edge_type = 'calls'", []) {
+        eprintln!("[indexer] failed to clear old calls edges: {e}");
+    }
 
     // Store "calls" edges
     let mut edges_stored = 0usize;

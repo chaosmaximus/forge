@@ -32,7 +32,9 @@ impl DaemonState {
         schema::create_schema(&conn)?;
 
         // Best-effort: detect and store platform info (OS, arch, shell, etc.)
-        let _ = crate::db::manas::detect_and_store_platform(&conn);
+        if let Err(e) = crate::db::manas::detect_and_store_platform(&conn) {
+            eprintln!("[daemon] WARN: failed to detect/store platform info: {e}");
+        }
 
         // Best-effort: detect and store available CLI tools
         let tools_discovered = crate::db::manas::detect_and_store_tools(&conn).unwrap_or(0);
@@ -660,7 +662,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::EndSession { id } => {
             // Save working set before ending the session
-            let _ = crate::sessions::save_working_set(&state.conn, &id);
+            if let Err(e) = crate::sessions::save_working_set(&state.conn, &id) {
+                eprintln!("[handler] failed to save working set for session {}: {e}", id);
+            }
 
             match crate::sessions::end_session(&state.conn, &id) {
                 Ok(found) => {
