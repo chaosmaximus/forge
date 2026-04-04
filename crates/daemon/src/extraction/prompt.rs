@@ -62,7 +62,7 @@ Return ONLY the JSON array, no other text."#;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExtractedMemory {
-    #[serde(rename = "type")]
+    #[serde(alias = "type", alias = "memory_type")]
     pub memory_type: String,
     pub title: String,
     pub content: String,
