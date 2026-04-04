@@ -710,6 +710,86 @@ pub async fn consolidate() {
     }
 }
 
+/// Trigger extraction on pending transcripts.
+pub async fn extract(force: bool) {
+    if !force {
+        println!("Hint: use --force to trigger extraction immediately.");
+        return;
+    }
+    match client::send(&Request::ForceExtract).await {
+        Ok(Response::Ok {
+            data: ResponseData::ExtractionTriggered { files_queued },
+        }) => {
+            println!("Extraction triggered: {} transcript file(s) need processing", files_queued);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Display current daemon configuration.
+pub async fn config_show() {
+    match client::send(&Request::GetConfig).await {
+        Ok(Response::Ok {
+            data:
+                ResponseData::ConfigData {
+                    backend,
+                    ollama_model,
+                    ollama_endpoint,
+                    claude_model,
+                    embedding_model,
+                },
+        }) => {
+            println!("Forge Configuration:");
+            println!("  extraction.backend:          {backend}");
+            println!("  extraction.claude.model:     {claude_model}");
+            println!("  extraction.ollama.model:     {ollama_model}");
+            println!("  extraction.ollama.endpoint:  {ollama_endpoint}");
+            println!("  embedding.model:             {embedding_model}");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Update a config value.
+pub async fn config_set(key: String, value: String) {
+    let req = Request::SetConfig {
+        key: key.clone(),
+        value: value.clone(),
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::ConfigUpdated { key, value },
+        }) => {
+            println!("Config updated: {key} = {value}");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
 }

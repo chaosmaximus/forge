@@ -215,6 +215,20 @@ pub enum ResponseData {
         strengthened: usize,
         contradictions: usize,
     },
+    ExtractionTriggered {
+        files_queued: usize,
+    },
+    ConfigData {
+        backend: String,
+        ollama_model: String,
+        ollama_endpoint: String,
+        claude_model: String,
+        embedding_model: String,
+    },
+    ConfigUpdated {
+        key: String,
+        value: String,
+    },
 
     Shutdown,
 }

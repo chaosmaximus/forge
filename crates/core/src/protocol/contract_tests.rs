@@ -531,17 +531,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 46 Request variants.
+    /// Ensure we cover ALL 49 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 13 (Health, HealthByProject, Status, Doctor, IngestClaude, LspStatus, ListPlatform, ListTools, ManasHealth, SyncConflicts, HlcBackfill, ForceConsolidate, Shutdown)
-        let unit_count = 13;
-        // Parameterized variants: 33 (Remember, Recall, Forget, ... StoreEvaluation, Bootstrap)
-        let param_count = 33;
-        // Total: 46
-        let expected_total = 46;
+        // Unit variants: 15 (added ForceExtract, GetConfig)
+        let unit_count = 15;
+        // Parameterized variants: 34 (added SetConfig)
+        let param_count = 34;
+        // Total: 49
+        let expected_total = 49;
 
         assert_eq!(
             unit_count + param_count,
@@ -567,6 +567,8 @@ mod tests {
                 Request::SyncConflicts,
                 Request::HlcBackfill,
                 Request::ForceConsolidate,
+                Request::ForceExtract,
+                Request::GetConfig,
                 Request::Shutdown,
                 // Parameterized variants
                 Request::Remember {
@@ -693,6 +695,10 @@ mod tests {
                 },
                 Request::Bootstrap {
                     project: None,
+                },
+                Request::SetConfig {
+                    key: "extraction.backend".into(),
+                    value: "claude".into(),
                 },
             ]
         }

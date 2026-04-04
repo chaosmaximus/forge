@@ -1356,6 +1356,56 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::ForceExtract => {
+            let adapters_list = crate::adapters::detect_adapters();
+            let all_files = crate::bootstrap::scan_transcripts(&adapters_list);
+            let mut files_queued = 0usize;
+            for (path, _adapter) in &all_files {
+                let hash = match crate::bootstrap::compute_content_hash(path) {
+                    Ok(h) => h,
+                    Err(_) => continue,
+                };
+                let (needs_work, _) = crate::bootstrap::needs_processing(&state.conn, path, &hash);
+                if needs_work {
+                    files_queued += 1;
+                }
+            }
+            eprintln!("[extract] force-extract: {} files need processing", files_queued);
+            Response::Ok {
+                data: ResponseData::ExtractionTriggered { files_queued },
+            }
+        }
+
+        Request::GetConfig => {
+            let config = crate::config::load_config();
+            Response::Ok {
+                data: ResponseData::ConfigData {
+                    backend: config.extraction.backend.clone(),
+                    ollama_model: config.extraction.ollama.model.clone(),
+                    ollama_endpoint: config.extraction.ollama.endpoint.clone(),
+                    claude_model: config.extraction.claude.model.clone(),
+                    embedding_model: config.embedding.model.clone(),
+                },
+            }
+        }
+
+        Request::SetConfig { key, value } => {
+            match crate::config::update_config(&key, &value) {
+                Ok(()) => {
+                    eprintln!("[config] updated {} = {}", key, value);
+                    Response::Ok {
+                        data: ResponseData::ConfigUpdated { key, value },
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[config] ERROR: failed to update {}: {}", key, e);
+                    Response::Error {
+                        message: format!("config update failed: {e}"),
+                    }
+                }
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

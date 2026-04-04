@@ -268,6 +268,32 @@ enum Commands {
     },
     /// Force-run all consolidation phases (dedup, decay, promotion, etc.)
     Consolidate,
+    /// Trigger extraction on pending transcripts
+    #[command(name = "extract")]
+    Extract {
+        /// Force extraction immediately, skipping debounce
+        #[arg(long)]
+        force: bool,
+    },
+    /// View or update daemon configuration
+    #[command(name = "config")]
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Display current daemon configuration
+    Show,
+    /// Update a config value (dotted key, e.g., extraction.backend)
+    Set {
+        /// Config key (e.g., extraction.backend, extraction.ollama.model)
+        key: String,
+        /// New value
+        value: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -461,5 +487,16 @@ async fn main() {
         Commands::Consolidate => {
             commands::system::consolidate().await;
         }
+        Commands::Extract { force } => {
+            commands::system::extract(force).await;
+        }
+        Commands::Config { action } => match action {
+            ConfigAction::Show => {
+                commands::system::config_show().await;
+            }
+            ConfigAction::Set { key, value } => {
+                commands::system::config_set(key, value).await;
+            }
+        },
     }
 }

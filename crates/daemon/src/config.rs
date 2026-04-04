@@ -134,6 +134,40 @@ pub fn load_config_from(path: &str) -> ForgeConfig {
     }
 }
 
+/// Update a config value by dotted key and persist to ~/.forge/config.toml.
+/// Supports 2-level (e.g., "extraction.backend") and 3-level (e.g., "extraction.ollama.model") keys.
+pub fn update_config(key: &str, value: &str) -> Result<(), String> {
+    let dir = forge_core::forge_dir();
+    let path = format!("{dir}/config.toml");
+    update_config_at(&path, key, value)
+}
+
+/// Update a config value at an arbitrary path (for testing).
+pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String> {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let parts: Vec<&str> = key.split('.').collect();
+
+    // Simple TOML manipulation without toml_edit dependency
+    // Parse existing config, update the value, serialize back
+    let mut config: ForgeConfig = toml::from_str(&content).unwrap_or_default();
+
+    match parts.as_slice() {
+        ["extraction", "backend"] => config.extraction.backend = value.to_string(),
+        ["extraction", "claude", "model"] => config.extraction.claude.model = value.to_string(),
+        ["extraction", "ollama", "model"] => config.extraction.ollama.model = value.to_string(),
+        ["extraction", "ollama", "endpoint"] => config.extraction.ollama.endpoint = value.to_string(),
+        ["embedding", "model"] => config.embedding.model = value.to_string(),
+        ["embedding", "dimensions"] => {
+            config.embedding.dimensions = value.parse().map_err(|e| format!("invalid dimensions: {e}"))?;
+        }
+        _ => return Err(format!("unknown config key: {key}")),
+    }
+
+    let toml_str = toml::to_string_pretty(&config).map_err(|e| format!("serialize error: {e}"))?;
+    std::fs::write(path, toml_str).map_err(|e| format!("write error: {e}"))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -180,6 +180,15 @@ pub enum Request {
     },
     /// Force-run ALL consolidation phases synchronously (exact dedup, semantic dedup, etc.)
     ForceConsolidate,
+    /// Trigger extraction on all pending transcripts (skip debounce)
+    ForceExtract,
+    /// Get current daemon configuration
+    GetConfig,
+    /// Update a config value by dotted key (e.g., "extraction.backend")
+    SetConfig {
+        key: String,
+        value: String,
+    },
 
     Shutdown,
 }

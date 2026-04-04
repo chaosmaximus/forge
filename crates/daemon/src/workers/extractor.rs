@@ -197,19 +197,40 @@ async fn process_file(
     // Detect backend
     let backend = extraction::detect_backend(config).await;
 
+    // Truncate more aggressively for local models (smaller context window)
+    let text_for_extraction = match &backend {
+        BackendChoice::Ollama if combined_text.len() > 15_000 => {
+            // Local models: limit to ~15KB to stay within context + speed
+            let mut start = combined_text.len() - 15_000;
+            while !combined_text.is_char_boundary(start) && start < combined_text.len() {
+                start += 1;
+            }
+            combined_text[start..].to_string()
+        }
+        _ => combined_text.clone(),
+    };
+
     // Extract memories (this is the slow part — LLM call)
     let extract_start = std::time::Instant::now();
     let result = match &backend {
         BackendChoice::ClaudeCli => {
-            extraction::claude_cli::extract(&config.extraction.claude.model, &combined_text).await
+            extraction::claude_cli::extract(&config.extraction.claude.model, &text_for_extraction).await
         }
         BackendChoice::Ollama => {
-            extraction::ollama::extract(
+            let ollama_result = extraction::ollama::extract(
                 &config.extraction.ollama.endpoint,
                 &config.extraction.ollama.model,
-                &combined_text,
+                &text_for_extraction,
             )
-            .await
+            .await;
+            // Fallback: if Ollama times out, try Claude Haiku
+            match &ollama_result {
+                extraction::ExtractionResult::Unavailable(reason) if reason.contains("timeout") => {
+                    eprintln!("[extractor] Ollama timed out, falling back to Claude Haiku");
+                    extraction::claude_cli::extract(&config.extraction.claude.model, &text_for_extraction).await
+                }
+                _ => ollama_result,
+            }
         }
         BackendChoice::None(reason) => {
             eprintln!("[extractor] no backend available: {reason}");
