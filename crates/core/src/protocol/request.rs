@@ -147,5 +147,8 @@ pub enum Request {
         keep_id: String,
     },
 
+    /// Backfill HLC timestamps on existing memories that have empty hlc_timestamp
+    HlcBackfill,
+
     Shutdown,
 }

@@ -18,6 +18,9 @@ pub async fn manas_health() {
                     declared_count,
                     identity_facets,
                     disposition_traits,
+                    experience_count,
+                    embedding_count,
+                    trait_names,
                 },
         }) => {
             println!("Manas 8-Layer Memory Health");
@@ -26,13 +29,17 @@ pub async fn manas_health() {
             println!("Layer 2 (Tool):         {:>3} tools", tool_count);
             println!("Layer 3 (Skill):        {:>3} skills", skill_count);
             println!("Layer 4 (Domain DNA):   {:>3} patterns", domain_dna_count);
-            println!("Layer 5 (Experience):   (in main memory)");
+            println!("Layer 5 (Experience):   {:>3} memories", experience_count);
             println!("Layer 6 (Perception):   {:>3} unconsumed", perception_unconsumed);
             println!("Layer 7 (Declared):     {:>3} documents", declared_count);
-            println!("Layer 8 (Latent):       (embeddings)");
+            println!("Layer 8 (Latent):       {:>3} embeddings", embedding_count);
             println!("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
             println!("Ahankara (Identity):    {} facets", identity_facets);
-            println!("Disposition:            {} traits", disposition_traits);
+            if trait_names.is_empty() {
+                println!("Disposition:            {} traits", disposition_traits);
+            } else {
+                println!("Disposition:            {} traits ({})", disposition_traits, trait_names.join(", "));
+            }
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

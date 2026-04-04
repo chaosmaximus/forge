@@ -40,6 +40,12 @@ impl DaemonState {
         let node_id = crate::sync::generate_node_id();
         let hlc = crate::sync::Hlc::new(&node_id);
 
+        // Backfill HLC timestamps on existing memories that lack them
+        let backfilled = crate::sync::backfill_hlc(&conn, &hlc).unwrap_or(0);
+        if backfilled > 0 {
+            eprintln!("[daemon] backfilled HLC timestamps on {} existing memories", backfilled);
+        }
+
         Ok(DaemonState {
             conn,
             events: crate::events::create_event_bus(),
@@ -969,6 +975,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         declared_count: mh.declared_entries,
                         identity_facets: mh.identity_facets_active,
                         disposition_traits: mh.dispositions,
+                        experience_count: mh.experience_count,
+                        embedding_count: mh.embedding_count,
+                        trait_names: mh.trait_names,
                     },
                 },
                 Err(e) => Response::Error {
@@ -1014,13 +1023,20 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::SyncImport { lines } => {
             let local_node_id = state.hlc.node_id().to_string();
             match crate::sync::sync_import(&state.conn, &lines, &local_node_id) {
-                Ok(result) => Response::Ok {
-                    data: ResponseData::SyncImported {
-                        imported: result.imported,
-                        conflicts: result.conflicts,
-                        skipped: result.skipped,
-                    },
-                },
+                Ok(result) => {
+                    crate::events::emit(&state.events, "sync_completed", serde_json::json!({
+                        "imported": result.imported,
+                        "conflicts": result.conflicts,
+                        "skipped": result.skipped,
+                    }));
+                    Response::Ok {
+                        data: ResponseData::SyncImported {
+                            imported: result.imported,
+                            conflicts: result.conflicts,
+                            skipped: result.skipped,
+                        },
+                    }
+                }
                 Err(e) => Response::Error {
                     message: format!("sync_import failed: {e}"),
                 },
@@ -1124,6 +1140,22 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 data: ResponseData::DiagnosticList {
                     diagnostics,
                     count,
+                },
+            }
+        }
+
+        Request::HlcBackfill => {
+            match crate::sync::backfill_hlc(&state.conn, &state.hlc) {
+                Ok(count) => {
+                    if count > 0 {
+                        eprintln!("[daemon] backfilled HLC timestamps on {} existing memories", count);
+                    }
+                    Response::Ok {
+                        data: ResponseData::HlcBackfilled { count },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("hlc_backfill failed: {e}"),
                 },
             }
         }
@@ -1812,6 +1844,9 @@ mod tests {
                     declared_count,
                     identity_facets,
                     disposition_traits,
+                    experience_count,
+                    embedding_count,
+                    trait_names,
                     ..
                 },
             } => {
@@ -1824,8 +1859,40 @@ mod tests {
                 assert_eq!(declared_count, 0);
                 assert_eq!(identity_facets, 0);
                 assert_eq!(disposition_traits, 0);
+                assert_eq!(experience_count, 0);
+                assert_eq!(embedding_count, 0);
+                assert!(trait_names.is_empty());
             }
             other => panic!("expected ManasHealthData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_hlc_backfill_handler() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Insert a memory with empty hlc_timestamp directly
+        state.conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
+             VALUES ('m-nohlc', 'decision', 'No HLC', 'test', 0.9, 'active', '', '[]', '2026-01-01', '2026-01-01', 'neutral', 0.0, '', '')",
+            [],
+        ).unwrap();
+
+        let resp = handle_request(&mut state, Request::HlcBackfill);
+        match resp {
+            Response::Ok { data: ResponseData::HlcBackfilled { count } } => {
+                assert_eq!(count, 1, "should backfill 1 memory");
+            }
+            other => panic!("expected HlcBackfilled, got {:?}", other),
+        }
+
+        // Second call should find 0
+        let resp = handle_request(&mut state, Request::HlcBackfill);
+        match resp {
+            Response::Ok { data: ResponseData::HlcBackfilled { count } } => {
+                assert_eq!(count, 0, "no more memories to backfill");
+            }
+            other => panic!("expected HlcBackfilled, got {:?}", other),
         }
     }
 

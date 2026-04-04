@@ -963,10 +963,13 @@ pub struct ManasHealth {
     pub tools: usize,
     pub skills: usize,
     pub domain_dna_entries: usize,
+    pub experience_count: usize,
     pub perceptions_unconsumed: usize,
     pub declared_entries: usize,
+    pub embedding_count: usize,
     pub identity_facets_active: usize,
     pub dispositions: usize,
+    pub trait_names: Vec<String>,
 }
 
 /// Gather health counts across all 8 Manas layers.
@@ -977,15 +980,25 @@ pub fn manas_health(conn: &Connection) -> rusqlite::Result<ManasHealth> {
             .map(|n| n as usize)
     };
 
+    // Trait names for disposition display
+    let trait_names: Vec<String> = conn.prepare(
+        "SELECT DISTINCT trait_name FROM disposition"
+    ).and_then(|mut stmt| {
+        stmt.query_map([], |row| row.get(0))?.collect()
+    }).unwrap_or_default();
+
     Ok(ManasHealth {
         platform_entries: count_table("platform", "")?,
         tools: count_table("tool", "")?,
         skills: count_table("skill", "")?,
         domain_dna_entries: count_table("domain_dna", "")?,
+        experience_count: count_table("memory", " WHERE status = 'active'")?,
         perceptions_unconsumed: count_table("perception", " WHERE consumed = 0")?,
         declared_entries: count_table("declared", "")?,
+        embedding_count: crate::db::vec::count_embeddings(conn).unwrap_or(0),
         identity_facets_active: count_table("identity", " WHERE active = 1")?,
         dispositions: count_table("disposition", "")?,
+        trait_names,
     })
 }
 

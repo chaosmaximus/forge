@@ -148,6 +148,12 @@ pub enum ResponseData {
         declared_count: usize,
         identity_facets: usize,
         disposition_traits: usize,
+        #[serde(default)]
+        experience_count: usize,
+        #[serde(default)]
+        embedding_count: usize,
+        #[serde(default)]
+        trait_names: Vec<String>,
     },
 
     CompiledContext {
@@ -174,6 +180,10 @@ pub enum ResponseData {
     SyncResolved {
         id: String,
         resolved: bool,
+    },
+
+    HlcBackfilled {
+        count: usize,
     },
 
     Shutdown,

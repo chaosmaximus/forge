@@ -250,6 +250,10 @@ enum Commands {
         /// Memory ID to keep
         id: String,
     },
+
+    /// Backfill HLC timestamps on existing memories that have empty hlc_timestamp
+    #[command(name = "hlc-backfill")]
+    HlcBackfill,
 }
 
 #[derive(Subcommand)]
@@ -433,6 +437,9 @@ async fn main() {
         }
         Commands::SyncResolve { id } => {
             commands::sync::sync_resolve(id).await;
+        }
+        Commands::HlcBackfill => {
+            commands::sync::hlc_backfill().await;
         }
     }
 }

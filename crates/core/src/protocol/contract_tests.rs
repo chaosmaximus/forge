@@ -31,6 +31,7 @@ mod tests {
             ("list_tools", Request::ListTools),
             ("manas_health", Request::ManasHealth),
             ("sync_conflicts", Request::SyncConflicts),
+            ("hlc_backfill", Request::HlcBackfill),
             ("shutdown", Request::Shutdown),
         ];
 
@@ -476,6 +477,7 @@ mod tests {
             ("list_tools", r#"{"method":"list_tools"}"#),
             ("manas_health", r#"{"method":"manas_health"}"#),
             ("sync_conflicts", r#"{"method":"sync_conflicts"}"#),
+            ("hlc_backfill", r#"{"method":"hlc_backfill"}"#),
             ("shutdown", r#"{"method":"shutdown"}"#),
         ];
 
@@ -495,17 +497,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 42 Request variants.
+    /// Ensure we cover ALL 43 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 11
-        let unit_count = 11;
+        // Unit variants: 12
+        let unit_count = 12;
         // Parameterized variants: 31
         let param_count = 31;
-        // Total: 42
-        let expected_total = 42;
+        // Total: 43
+        let expected_total = 43;
 
         assert_eq!(
             unit_count + param_count,
@@ -529,6 +531,7 @@ mod tests {
                 Request::ListTools,
                 Request::ManasHealth,
                 Request::SyncConflicts,
+                Request::HlcBackfill,
                 Request::Shutdown,
                 // Parameterized variants
                 Request::Remember {

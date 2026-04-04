@@ -99,6 +99,29 @@ pub fn generate_node_id() -> String {
     format!("{:016x}", hasher.finish())[..8].to_string()
 }
 
+// ── HLC Backfill ──
+
+/// Backfill HLC timestamps on existing memories that have empty hlc_timestamp.
+/// Returns the number of memories updated.
+pub fn backfill_hlc(conn: &Connection, hlc: &Hlc) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM memory WHERE hlc_timestamp = '' OR hlc_timestamp IS NULL"
+    )?;
+    let ids: Vec<String> = stmt.query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let node_id = hlc.node_id();
+    for id in &ids {
+        let ts = hlc.now();
+        conn.execute(
+            "UPDATE memory SET hlc_timestamp = ?1, node_id = ?2 WHERE id = ?3",
+            params![ts, node_id, id],
+        )?;
+    }
+    Ok(ids.len())
+}
+
 // ── Helper: memory_type string conversion ──
 
 fn type_str(mt: &MemoryType) -> &'static str {
@@ -573,6 +596,48 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         schema::create_schema(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn test_backfill_hlc() {
+        let conn = test_conn();
+        let hlc = Hlc::new("backfill_node");
+
+        // Insert a memory with empty hlc_timestamp directly via SQL
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
+             VALUES ('m-old1', 'decision', 'Old Memory', 'content', 0.9, 'active', '', '[]', '2026-01-01', '2026-01-01', 'neutral', 0.0, '', '')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
+             VALUES ('m-old2', 'lesson', 'Another Old', 'content2', 0.8, 'active', '', '[]', '2026-01-01', '2026-01-01', 'positive', 0.0, '', '')",
+            [],
+        ).unwrap();
+
+        // Also insert one that already has HLC
+        let mut mem = Memory::new(MemoryType::Decision, "Has HLC", "already stamped");
+        mem.set_hlc("1712345678000-0-existing".into(), "existing".into());
+        ops::remember(&conn, &mem).unwrap();
+
+        let count = backfill_hlc(&conn, &hlc).unwrap();
+        assert_eq!(count, 2, "should backfill exactly the 2 empty memories");
+
+        // Verify they now have HLC timestamps
+        let hlc_ts: String = conn
+            .query_row("SELECT hlc_timestamp FROM memory WHERE id = 'm-old1'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!hlc_ts.is_empty(), "backfilled memory should have HLC timestamp");
+        assert!(hlc_ts.contains("backfill_node"), "backfilled HLC should contain node_id");
+
+        let node: String = conn
+            .query_row("SELECT node_id FROM memory WHERE id = 'm-old2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(node, "backfill_node");
+
+        // Running again should find 0
+        let count2 = backfill_hlc(&conn, &hlc).unwrap();
+        assert_eq!(count2, 0, "second backfill should find nothing to update");
     }
 
     #[test]
