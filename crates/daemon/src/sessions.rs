@@ -159,6 +159,16 @@ pub fn get_session(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sessi
     }
 }
 
+/// Auto-cleanup sessions that have been ACTIVE for more than 24 hours.
+/// These are leaked sessions where the session-end hook never fired.
+/// Called on daemon startup to prevent unbounded session accumulation.
+pub fn cleanup_stale_sessions(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status = 'active' AND started_at < datetime('now', '-24 hours')",
+        [],
+    )
+}
+
 /// Backfill project on memories that have session_id but no project.
 /// Derives project from the linked session's project field.
 pub fn backfill_project(conn: &Connection) -> rusqlite::Result<usize> {
@@ -272,6 +282,63 @@ mod tests {
         // Backfill should not touch memories without session_id
         let updated = backfill_project(&conn).unwrap();
         assert_eq!(updated, 0);
+    }
+
+    #[test]
+    fn test_cleanup_stale_sessions() {
+        let conn = setup();
+
+        // Create a session with a started_at timestamp >24h ago
+        conn.execute(
+            "INSERT INTO session (id, agent, project, cwd, started_at, status) VALUES ('stale1', 'claude-code', 'proj', NULL, datetime('now', '-25 hours'), 'active')",
+            [],
+        ).unwrap();
+
+        // Create a recent active session (should NOT be cleaned up)
+        register_session(&conn, "recent1", "claude-code", Some("proj"), None).unwrap();
+
+        // Create an already-ended old session (should NOT be touched)
+        conn.execute(
+            "INSERT INTO session (id, agent, project, cwd, started_at, ended_at, status) VALUES ('ended1', 'claude-code', 'proj', NULL, datetime('now', '-48 hours'), datetime('now', '-47 hours'), 'ended')",
+            [],
+        ).unwrap();
+
+        // Verify initial state: 2 active sessions
+        let active = list_sessions(&conn, true).unwrap();
+        assert_eq!(active.len(), 2);
+
+        // Run cleanup
+        let cleaned = cleanup_stale_sessions(&conn).unwrap();
+        assert_eq!(cleaned, 1, "should clean up exactly 1 stale session");
+
+        // Verify: only recent session remains active
+        let active = list_sessions(&conn, true).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, "recent1");
+
+        // Verify: stale session is now ended
+        let stale = get_session(&conn, "stale1").unwrap().unwrap();
+        assert_eq!(stale.status, "ended");
+        assert!(stale.ended_at.is_some());
+
+        // Verify: already-ended session was not modified
+        let ended = get_session(&conn, "ended1").unwrap().unwrap();
+        assert_eq!(ended.status, "ended");
+    }
+
+    #[test]
+    fn test_cleanup_stale_sessions_none_to_clean() {
+        let conn = setup();
+
+        // Only recent sessions
+        register_session(&conn, "s1", "claude-code", None, None).unwrap();
+        register_session(&conn, "s2", "cline", None, None).unwrap();
+
+        let cleaned = cleanup_stale_sessions(&conn).unwrap();
+        assert_eq!(cleaned, 0, "should not clean up any recent sessions");
+
+        let active = list_sessions(&conn, true).unwrap();
+        assert_eq!(active.len(), 2);
     }
 
     #[test]

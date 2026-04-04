@@ -51,6 +51,13 @@ impl DaemonState {
             Err(e) => eprintln!("[daemon] project backfill error: {e}"),
         }
 
+        // Auto-cleanup sessions older than 24h that are still ACTIVE (leaked sessions)
+        match crate::sessions::cleanup_stale_sessions(&conn) {
+            Ok(n) if n > 0 => eprintln!("[daemon] auto-ended {} stale sessions (>24h active)", n),
+            Ok(_) => {},
+            Err(e) => eprintln!("[daemon] stale session cleanup error: {e}"),
+        }
+
         let node_id = crate::sync::generate_node_id();
         let hlc = crate::sync::Hlc::new(&node_id);
 
