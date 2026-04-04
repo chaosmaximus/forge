@@ -815,6 +815,230 @@ pub async fn config_set(key: String, value: String) {
     }
 }
 
+/// Manage daemon as a system service (install/start/stop/status/uninstall).
+pub async fn service(action: crate::ServiceAction) {
+    use crate::ServiceAction;
+    match action {
+        ServiceAction::Install => service_install(),
+        ServiceAction::Start => service_start(),
+        ServiceAction::Stop => service_stop(),
+        ServiceAction::Status => service_status(),
+        ServiceAction::Uninstall => service_uninstall(),
+    }
+}
+
+fn service_install() {
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    #[cfg(target_os = "linux")]
+    {
+        let service_dir = format!("{}/.config/systemd/user", home);
+        std::fs::create_dir_all(&service_dir).ok();
+
+        let daemon_path = format!("{}/.local/bin/forge-daemon", home);
+        let service_content = format!(
+            r#"[Unit]
+Description=Forge Daemon — Agent OS Memory System
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={daemon_path}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=HOME={home}
+Environment=FORGE_PROJECT_DIR={home}
+
+[Install]
+WantedBy=default.target
+"#
+        );
+
+        let service_path = format!("{}/forge-daemon.service", service_dir);
+        match std::fs::write(&service_path, service_content) {
+            Ok(()) => {
+                println!("Service file installed: {}", service_path);
+                // Enable and start
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "daemon-reload"])
+                    .status();
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "enable", "forge-daemon"])
+                    .status();
+                println!("Service enabled. Start with: forge-next service start");
+                println!("View logs with: journalctl --user -u forge-daemon -f");
+            }
+            Err(e) => {
+                eprintln!("error: failed to install service: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let daemon_path = "/usr/local/bin/forge-daemon";
+        let plist_content = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.forge.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{daemon_path}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/forge-daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/forge-daemon.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{home}</string>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>"#
+        );
+
+        let plist_path = format!("{}/Library/LaunchAgents/com.forge.daemon.plist", home);
+        match std::fs::write(&plist_path, plist_content) {
+            Ok(()) => {
+                println!("LaunchAgent installed: {}", plist_path);
+                println!("Start with: forge-next service start");
+                println!("View logs: tail -f /tmp/forge-daemon.err.log");
+            }
+            Err(e) => {
+                eprintln!("error: failed to install service: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        eprintln!("Service install not supported on this platform.");
+        eprintln!("Run the daemon manually: forge-daemon &");
+    }
+}
+
+fn service_start() {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "start", "forge-daemon"])
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("Forge daemon started."),
+            Ok(s) => {
+                eprintln!("systemctl start failed (exit {}). Is the service installed?", s);
+                eprintln!("Run: forge-next service install");
+            }
+            Err(e) => eprintln!("error: {e}"),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let plist = format!("{}/Library/LaunchAgents/com.forge.daemon.plist", home);
+        let status = std::process::Command::new("launchctl")
+            .args(["load", &plist])
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("Forge daemon started."),
+            Ok(s) => eprintln!("launchctl load failed (exit {})", s),
+            Err(e) => eprintln!("error: {e}"),
+        }
+    }
+}
+
+fn service_stop() {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "stop", "forge-daemon"])
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("Forge daemon stopped."),
+            _ => eprintln!("Failed to stop. Try: pkill -f forge-daemon"),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let plist = format!("{}/Library/LaunchAgents/com.forge.daemon.plist", home);
+        let _ = std::process::Command::new("launchctl")
+            .args(["unload", &plist])
+            .status();
+        println!("Forge daemon stopped.");
+    }
+}
+
+fn service_status() {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "status", "forge-daemon", "--no-pager"])
+            .status();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("launchctl")
+            .args(["list", "com.forge.daemon"])
+            .status();
+    }
+
+    // Also check if the daemon socket exists
+    let socket = forge_core::default_socket_path();
+    if std::path::Path::new(&socket).exists() {
+        println!("\nDaemon socket exists at: {}", socket);
+        println!("Run 'forge-next health' to verify it's responding.");
+    } else {
+        println!("\nDaemon socket NOT found. Service may not be running.");
+    }
+}
+
+fn service_uninstall() {
+    service_stop();
+
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let service_path = format!("{}/.config/systemd/user/forge-daemon.service", home);
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "disable", "forge-daemon"])
+            .status();
+        let _ = std::fs::remove_file(&service_path);
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status();
+        println!("Service uninstalled.");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let plist = format!("{}/Library/LaunchAgents/com.forge.daemon.plist", home);
+        let _ = std::fs::remove_file(&plist);
+        println!("LaunchAgent uninstalled.");
+    }
+}
+
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
 }

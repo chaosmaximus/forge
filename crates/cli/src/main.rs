@@ -281,6 +281,12 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Manage the daemon as a system service (install, start, stop, status)
+    #[command(name = "service")]
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -294,6 +300,20 @@ enum ConfigAction {
         /// New value
         value: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ServiceAction {
+    /// Install forge-daemon as a system service (systemd on Linux, launchd on macOS)
+    Install,
+    /// Start the daemon service
+    Start,
+    /// Stop the daemon service
+    Stop,
+    /// Show daemon service status
+    Status,
+    /// Uninstall the daemon service
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -498,5 +518,8 @@ async fn main() {
                 commands::system::config_set(key, value).await;
             }
         },
+        Commands::Service { action } => {
+            commands::system::service(action).await;
+        }
     }
 }

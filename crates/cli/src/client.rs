@@ -98,32 +98,58 @@ pub async fn connect() -> Result<UnixStream, String> {
         }
     }
 
-    // Start the daemon
+    // Start the daemon as a fully detached background process.
+    // Uses setsid on Linux to create a new process group (like Docker does).
     let daemon_path = find_daemon_binary();
+    let log_path = format!("{}/daemon.log", forge_core::forge_dir());
 
-    // Spawn daemon as a detached background process.
-    // Pass through FORGE_PROJECT and FORGE_DB if set in the CLI environment.
-    let mut cmd = tokio::process::Command::new(&daemon_path);
+    // Build env vars to forward
+    let mut envs: Vec<(String, String)> = Vec::new();
+    for key in &["FORGE_PROJECT", "FORGE_PROJECT_DIR", "FORGE_DB", "FORGE_SOCKET", "HOME", "PATH"] {
+        if let Ok(v) = std::env::var(key) {
+            envs.push((key.to_string(), v));
+        }
+    }
+
+    // Use std::process::Command (not tokio) with pre_exec to call setsid
+    // This creates a new session, fully detaching from the parent terminal
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("failed to open daemon log {log_path}: {e}"))?;
+    let log_err = log_file.try_clone()
+        .map_err(|e| format!("failed to clone log file: {e}"))?;
+
+    let mut cmd = std::process::Command::new(&daemon_path);
     cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(std::process::Stdio::from(log_file))
+        .stderr(std::process::Stdio::from(log_err));
 
-    // Forward relevant env vars to daemon
-    if let Ok(v) = std::env::var("FORGE_PROJECT") {
-        cmd.env("FORGE_PROJECT", v);
-    }
-    if let Ok(v) = std::env::var("FORGE_DB") {
-        cmd.env("FORGE_DB", v);
-    }
-    if let Ok(v) = std::env::var("FORGE_SOCKET") {
-        cmd.env("FORGE_SOCKET", v);
+    for (k, v) in &envs {
+        cmd.env(k, v);
     }
 
-    let child = cmd.spawn()
+    // On Unix: create a new session so daemon survives parent exit (like Docker)
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid() is async-signal-safe, called between fork and exec
+        unsafe {
+            cmd.pre_exec(|| {
+                // Create new session — daemon won't be killed when parent terminal closes
+                // setsid() is a direct libc call, no crate needed
+                extern "C" { fn setsid() -> i32; }
+                setsid();
+                Ok(())
+            });
+        }
+    }
+
+    cmd.spawn()
         .map_err(|e| format!("failed to start forge-daemon at '{}': {e}", daemon_path))?;
 
-    // Explicitly drop the child handle so the CLI doesn't hold a reference
-    drop(child);
+    eprintln!("[cli] daemon starting (log: {})", log_path);
 
     // Poll for socket availability (up to 3 seconds, every 100ms)
     let max_attempts = 30;

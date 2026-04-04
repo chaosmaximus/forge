@@ -1,0 +1,30 @@
+# Forge Daemon — systemd user service
+# Install: systemctl --user enable forge-daemon && systemctl --user start forge-daemon
+# Or:      forge-next service install
+#
+# This ensures the daemon persists across terminal sessions, restarts on crash,
+# and starts automatically on user login — just like Docker.
+
+[Unit]
+Description=Forge Daemon — Agent OS Memory System
+Documentation=https://github.com/chaosmaximus/forge
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/forge-daemon
+Restart=on-failure
+RestartSec=5
+# Log to journal (viewable via: journalctl --user -u forge-daemon)
+StandardOutput=journal
+StandardError=journal
+# Environment
+Environment=FORGE_PROJECT_DIR=%h
+Environment=HOME=%h
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=%h/.forge %h/.claude %h/.config %h/.codex
+
+[Install]
+WantedBy=default.target

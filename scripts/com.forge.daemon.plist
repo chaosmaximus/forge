@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Forge Daemon — macOS launchd service
+     Install: cp com.forge.daemon.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.forge.daemon.plist
+     Or:      forge-next service install
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.forge.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/forge-daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/forge-daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/forge-daemon.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/USER</string>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>
