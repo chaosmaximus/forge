@@ -186,9 +186,12 @@ async fn process_file(
         .map(|c| format!("[{}] {}", c.role, c.content))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let combined_text = if combined_text.len() > 50_000 {
-        // Find a safe UTF-8 char boundary near the 50KB mark from the end
-        let mut start = combined_text.len() - 50_000;
+    // Truncate to 15KB — keeps extraction fast and within context limits for all backends.
+    // 15KB ≈ last 5-10 conversation turns, which is enough for meaningful extraction.
+    // Larger transcripts caused Claude CLI to timeout (60s) and Gemini to truncate responses.
+    let max_extract_bytes = 15_000;
+    let combined_text = if combined_text.len() > max_extract_bytes {
+        let mut start = combined_text.len() - max_extract_bytes;
         while !combined_text.is_char_boundary(start) && start < combined_text.len() {
             start += 1;
         }

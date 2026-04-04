@@ -7,11 +7,11 @@ use serde::Deserialize;
 // ---------------------------------------------------------------------------
 
 pub const EXTRACTION_SYSTEM_PROMPT: &str = r#"Extract structured memories from this conversation.
-Return a JSON array of objects, each with:
-- type: "decision" | "lesson" | "pattern" | "preference" | "skill"
-- title: concise summary (under 80 chars)
-- content: full rationale/context
-- confidence: 0.0-1.0 (how certain this is a real decision/lesson)
+Return a JSON array of objects. EXACT field names required (do NOT rename fields):
+- "type": MUST be one of: "decision", "lesson", "pattern", "preference", "skill", "identity"
+- "title": concise summary string (under 80 chars)
+- "content": full rationale/context string
+- "confidence": number between 0.0 and 1.0 (how certain this is a real memory)
 - tags: array of relevant keywords
 - affects: array of file paths or symbol names mentioned
 - valence: "positive" | "negative" | "neutral" (emotional tone of this memory)
@@ -62,15 +62,17 @@ Return ONLY the JSON array, no other text."#;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExtractedMemory {
-    #[serde(alias = "type", alias = "memory_type")]
+    #[serde(alias = "type", alias = "memory_type", alias = "category")]
     pub memory_type: String,
+    #[serde(alias = "title", alias = "summary", alias = "name")]
     pub title: String,
+    #[serde(alias = "content", alias = "description", alias = "rationale", alias = "details")]
     pub content: String,
-    #[serde(default = "default_confidence")]
+    #[serde(default = "default_confidence", alias = "score")]
     pub confidence: f64,
-    #[serde(default)]
+    #[serde(default, alias = "keywords", alias = "labels")]
     pub tags: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "files", alias = "affected_files")]
     pub affects: Vec<String>,
     #[serde(default = "default_valence")]
     pub valence: String,

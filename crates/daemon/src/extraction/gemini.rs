@@ -31,14 +31,15 @@ pub async fn extract(api_key: &str, model: &str, conversation_text: &str) -> Ext
             }
         })
     } else {
-        // Gemini Flash: don't use responseMimeType with system_instruction
-        // (causes empty responses). The prompt says "return ONLY JSON" which works.
+        // Gemini Flash: use system_instruction without responseMimeType
+        // (responseMimeType causes empty responses with system_instruction).
         // Our parser handles ```json code fences.
+        // maxOutputTokens: 8192 to prevent truncation on large extractions.
         serde_json::json!({
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"parts": [{"text": user_message}]}],
             "generationConfig": {
-                "maxOutputTokens": 4096,
+                "maxOutputTokens": 8192,
                 "temperature": 0.1
             }
         })
