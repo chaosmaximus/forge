@@ -721,7 +721,15 @@ pub fn compile_dynamic_suffix(
             })
             .take(5)
             .collect();
-        if active_skills.is_empty() {
+        // Also fetch behavioral skills (sorted by observed_count)
+        let behavioral_skills: Vec<(String, String, u32)> = conn.prepare(
+            "SELECT name, description, observed_count FROM skill WHERE skill_type = 'behavioral' ORDER BY observed_count DESC, success_count DESC LIMIT 3"
+        ).and_then(|mut stmt| {
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, i32>(2).unwrap_or(1) as u32)))?
+            .collect()
+        }).unwrap_or_default();
+
+        if active_skills.is_empty() && behavioral_skills.is_empty() {
             xml.push_str("<skills/>\n");
         } else {
             let mut skill_xml = String::from(
@@ -738,6 +746,20 @@ pub fn compile_dynamic_suffix(
                     skill_xml.push_str(&entry);
                 }
             }
+
+            for (name, desc, count) in &behavioral_skills {
+                let truncated_desc: String = desc.chars().take(150).collect();
+                let entry = format!(
+                    "\n  <behavioral domain=\"learned\" observed=\"{}\">{}: {}</behavioral>",
+                    count,
+                    xml_escape(name),
+                    xml_escape(&truncated_desc)
+                );
+                if used + skill_xml.len() + entry.len() < budget {
+                    skill_xml.push_str(&entry);
+                }
+            }
+
             skill_xml.push_str("\n</skills>\n");
             used += skill_xml.len();
             xml.push_str(&skill_xml);

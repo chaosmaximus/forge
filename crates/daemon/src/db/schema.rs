@@ -266,6 +266,12 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Add activation_level column for activation tracking (safe to re-run)
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN activation_level REAL DEFAULT 0.0", []);
 
+    // Skill Intelligence: behavioral skill columns (safe to re-run — ignores if already exists)
+    let _ = conn.execute("ALTER TABLE skill ADD COLUMN skill_type TEXT NOT NULL DEFAULT 'procedural'", []);
+    let _ = conn.execute("ALTER TABLE skill ADD COLUMN user_specific INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE skill ADD COLUMN observed_count INTEGER NOT NULL DEFAULT 1", []);
+    let _ = conn.execute("ALTER TABLE skill ADD COLUMN correlation_ids TEXT NOT NULL DEFAULT '[]'", []);
+
     Ok(())
 }
 

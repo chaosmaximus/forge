@@ -64,6 +64,26 @@ pub struct Skill {
     pub source: String,
     pub version: u64,
     pub project: Option<String>,
+    /// "procedural" (numbered steps) or "behavioral" (observed user pattern)
+    #[serde(default = "default_skill_type")]
+    pub skill_type: String,
+    /// Whether this skill is specific to the user's working style
+    #[serde(default)]
+    pub user_specific: bool,
+    /// How many times this pattern has been independently observed
+    #[serde(default = "default_observed_count")]
+    pub observed_count: u32,
+    /// IDs of correlated memories (identity facets, decisions, patterns)
+    #[serde(default)]
+    pub correlation_ids: Vec<String>,
+}
+
+fn default_skill_type() -> String {
+    "procedural".to_string()
+}
+
+fn default_observed_count() -> u32 {
+    1
 }
 
 // ──────────────────────────────────────────────
@@ -231,10 +251,53 @@ mod tests {
             source: "learned".into(),
             version: 1,
             project: None,
+            skill_type: "procedural".into(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         let json = serde_json::to_string(&skill).expect("serialize Skill");
         let restored: Skill = serde_json::from_str(&json).expect("deserialize Skill");
         assert_eq!(skill, restored);
+    }
+
+    #[test]
+    fn test_skill_serde_defaults_backward_compat() {
+        // Simulates deserializing a skill stored BEFORE behavioral fields were added
+        let json = r#"{"id":"s1","name":"TDD","domain":"testing","description":"Test-driven development","steps":["write test"],"success_count":5,"fail_count":1,"last_used":null,"source":"learned","version":1,"project":null}"#;
+        let skill: Skill = serde_json::from_str(json).expect("deserialize old Skill format");
+        assert_eq!(skill.skill_type, "procedural");
+        assert!(!skill.user_specific);
+        assert_eq!(skill.observed_count, 1);
+        assert!(skill.correlation_ids.is_empty());
+    }
+
+    #[test]
+    fn test_behavioral_skill_serde() {
+        let skill = Skill {
+            id: "bs1".into(),
+            name: "Debug by tracing to system failure".into(),
+            domain: "debugging".into(),
+            description: "When encountering a bug, the user first asks 'why didn't the system catch this?' — traces the root cause to infrastructure design, not just the symptom.".into(),
+            steps: vec![],
+            success_count: 1,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+            skill_type: "behavioral".into(),
+            user_specific: true,
+            observed_count: 3,
+            correlation_ids: vec!["identity-abc".into(), "decision-xyz".into()],
+        };
+        let json = serde_json::to_string(&skill).expect("serialize behavioral Skill");
+        let restored: Skill = serde_json::from_str(&json).expect("deserialize behavioral Skill");
+        assert_eq!(skill, restored);
+        assert_eq!(restored.skill_type, "behavioral");
+        assert!(restored.user_specific);
+        assert_eq!(restored.observed_count, 3);
+        assert_eq!(restored.correlation_ids.len(), 2);
     }
 
     #[test]
