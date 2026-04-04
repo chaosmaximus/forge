@@ -16,7 +16,7 @@ fn parse_memory_type(s: &str) -> Result<MemoryType, String> {
 }
 
 /// Search memories (hybrid BM25 + vector + graph).
-pub async fn recall(query: String, type_filter: Option<String>, project: Option<String>, limit: usize) {
+pub async fn recall(query: String, type_filter: Option<String>, project: Option<String>, limit: usize, layer: Option<String>) {
     let memory_type = match type_filter {
         Some(t) => match parse_memory_type(&t) {
             Ok(mt) => Some(mt),
@@ -33,7 +33,7 @@ pub async fn recall(query: String, type_filter: Option<String>, project: Option<
         memory_type,
         project,
         limit: Some(limit),
-        layer: None,
+        layer,
     };
 
     match client::send(&request).await {

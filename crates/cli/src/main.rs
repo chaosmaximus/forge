@@ -25,6 +25,9 @@ enum Commands {
         /// Maximum number of results
         #[arg(long, default_value = "10")]
         limit: usize,
+        /// Filter by Manas layer (experience, declared, domain_dna, skill, perception, identity)
+        #[arg(long)]
+        layer: Option<String>,
     },
     /// Store a memory
     Remember {
@@ -284,8 +287,9 @@ async fn main() {
             r#type,
             project,
             limit,
+            layer,
         } => {
-            commands::memory::recall(query, r#type, project, limit).await;
+            commands::memory::recall(query, r#type, project, limit, layer).await;
         }
         Commands::Remember {
             r#type,
