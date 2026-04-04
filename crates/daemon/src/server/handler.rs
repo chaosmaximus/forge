@@ -699,9 +699,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::RegisterSession { id, agent, project, cwd, capabilities: _, current_task: _ } => {
+        Request::RegisterSession { id, agent, project, cwd, capabilities, current_task } => {
             let agent_clone = agent.clone();
-            match crate::sessions::register_session(&state.conn, &id, &agent, project.as_deref(), cwd.as_deref()) {
+            let caps_json = capabilities.map(|c| serde_json::to_string(&c).unwrap_or_else(|_| "[]".to_string()));
+            match crate::sessions::register_session(&state.conn, &id, &agent, project.as_deref(), cwd.as_deref(), caps_json.as_deref(), current_task.as_deref()) {
                 Ok(()) => {
                     crate::events::emit(&state.events, "session_changed", serde_json::json!({
                         "id": id,
@@ -747,12 +748,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 Ok(sessions) => {
                     let count = sessions.len();
                     let infos: Vec<forge_core::protocol::SessionInfo> = sessions.into_iter().map(|s| {
+                        let caps: Vec<String> = serde_json::from_str(&s.capabilities).unwrap_or_default();
                         forge_core::protocol::SessionInfo {
                             id: s.id, agent: s.agent, project: s.project,
                             cwd: s.cwd, started_at: s.started_at,
                             ended_at: s.ended_at, status: s.status,
-                            capabilities: Vec::new(),
-                            current_task: String::new(),
+                            capabilities: caps,
+                            current_task: s.current_task,
                         }
                     }).collect();
                     Response::Ok {
@@ -1653,19 +1655,64 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        // A2A FISP stubs — handler logic will be added in Wave 4
-        Request::SessionSend { .. } => Response::Error {
-            message: "session_send not yet implemented".into(),
-        },
-        Request::SessionRespond { .. } => Response::Error {
-            message: "session_respond not yet implemented".into(),
-        },
-        Request::SessionMessages { .. } => Response::Error {
-            message: "session_messages not yet implemented".into(),
-        },
-        Request::SessionAck { .. } => Response::Error {
-            message: "session_ack not yet implemented".into(),
-        },
+        // ── A2A Inter-Session Protocol (FISP) ──
+
+        Request::SessionSend { to, kind, topic, parts, project, timeout_secs } => {
+            let from = "api";
+            let parts_json = serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string());
+            match crate::sessions::send_message(&state.conn, from, &to, &kind, &topic, &parts_json, project.as_deref(), timeout_secs) {
+                Ok(id) => {
+                    crate::events::emit(&state.events, "session_message", serde_json::json!({
+                        "id": &id, "from": from, "to": &to, "kind": &kind, "topic": &topic,
+                    }));
+                    Response::Ok { data: ResponseData::MessageSent { id, status: "pending".into() } }
+                }
+                Err(e) => Response::Error { message: format!("send_message failed: {e}") },
+            }
+        }
+
+        Request::SessionRespond { message_id, status, parts } => {
+            let from = "api";
+            let parts_json = serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string());
+            match crate::sessions::respond_to_message(&state.conn, &message_id, from, &status, &parts_json) {
+                Ok(found) => {
+                    if !found {
+                        eprintln!("[handler] respond_to_message: original message {} not found", message_id);
+                    }
+                    crate::events::emit(&state.events, "session_message", serde_json::json!({
+                        "message_id": &message_id, "status": &status, "action": "responded",
+                    }));
+                    Response::Ok { data: ResponseData::MessageResponded { id: message_id, status } }
+                }
+                Err(e) => Response::Error { message: format!("respond_to_message failed: {e}") },
+            }
+        }
+
+        Request::SessionMessages { session_id, status, limit } => {
+            match crate::sessions::list_messages(&state.conn, &session_id, status.as_deref(), limit.unwrap_or(20)) {
+                Ok(rows) => {
+                    let messages: Vec<forge_core::protocol::SessionMessage> = rows.into_iter().map(|r| {
+                        let parts: Vec<forge_core::protocol::request::MessagePart> = serde_json::from_str(&r.parts).unwrap_or_default();
+                        forge_core::protocol::SessionMessage {
+                            id: r.id, from_session: r.from_session, to_session: r.to_session,
+                            kind: r.kind, topic: r.topic, parts, status: r.status,
+                            in_reply_to: r.in_reply_to, project: r.project,
+                            created_at: r.created_at, delivered_at: r.delivered_at,
+                        }
+                    }).collect();
+                    let count = messages.len();
+                    Response::Ok { data: ResponseData::SessionMessageList { messages, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_messages failed: {e}") },
+            }
+        }
+
+        Request::SessionAck { message_ids } => {
+            match crate::sessions::ack_messages(&state.conn, &message_ids) {
+                Ok(count) => Response::Ok { data: ResponseData::MessagesAcked { count } },
+                Err(e) => Response::Error { message: format!("ack_messages failed: {e}") },
+            }
+        }
 
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
@@ -3720,8 +3767,8 @@ mod tests {
         let mut state = DaemonState::new(":memory:").unwrap();
 
         // Register 2 sessions so cross-session perception triggers
-        crate::sessions::register_session(&state.conn, "s1", "claude-code", Some("forge"), None).unwrap();
-        crate::sessions::register_session(&state.conn, "s2", "cline", Some("forge"), None).unwrap();
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        crate::sessions::register_session(&state.conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
 
         // Store a decision
         let resp = handle_request(&mut state, Request::Remember {
@@ -3751,8 +3798,8 @@ mod tests {
         let mut state = DaemonState::new(":memory:").unwrap();
 
         // Register 2 sessions
-        crate::sessions::register_session(&state.conn, "s1", "claude-code", Some("forge"), None).unwrap();
-        crate::sessions::register_session(&state.conn, "s2", "cline", Some("forge"), None).unwrap();
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        crate::sessions::register_session(&state.conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
 
         // Store a lesson (NOT a decision)
         handle_request(&mut state, Request::Remember {
@@ -3777,7 +3824,7 @@ mod tests {
         let mut state = DaemonState::new(":memory:").unwrap();
 
         // Only 1 session — no cross-session perception needed
-        crate::sessions::register_session(&state.conn, "s1", "claude-code", Some("forge"), None).unwrap();
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
 
         handle_request(&mut state, Request::Remember {
             memory_type: MemoryType::Decision,

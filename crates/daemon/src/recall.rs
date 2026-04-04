@@ -2324,7 +2324,7 @@ mod tests {
         let conn = setup();
 
         // Only one session — active-sessions should NOT appear
-        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
+        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
 
         let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
         assert!(
@@ -2338,8 +2338,8 @@ mod tests {
         let conn = setup();
 
         // Two active sessions — active-sessions should appear
-        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
-        crate::sessions::register_session(&conn, "s2", "cline", Some("dashboard"), None).unwrap();
+        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        crate::sessions::register_session(&conn, "s2", "cline", Some("dashboard"), None, None, None).unwrap();
 
         let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
         assert!(
@@ -2368,8 +2368,8 @@ mod tests {
     fn test_active_sessions_hidden_after_end() {
         let conn = setup();
 
-        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
-        crate::sessions::register_session(&conn, "s2", "cline", None, None).unwrap();
+        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        crate::sessions::register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
 
         // End one session — should hide active-sessions again
         crate::sessions::end_session(&conn, "s2").unwrap();

@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use ulid::Ulid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -10,6 +11,26 @@ pub struct Session {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub status: String,
+    /// A2A: capabilities this session advertises (JSON array string)
+    pub capabilities: String,
+    /// A2A: what the session is currently working on
+    pub current_task: String,
+}
+
+/// A row from the session_message table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMessageRow {
+    pub id: String,
+    pub from_session: String,
+    pub to_session: String,
+    pub kind: String,
+    pub topic: String,
+    pub parts: String, // JSON
+    pub status: String,
+    pub in_reply_to: Option<String>,
+    pub project: Option<String>,
+    pub created_at: String,
+    pub delivered_at: Option<String>,
 }
 
 /// Register a new agent session. Uses INSERT OR REPLACE so re-registering
@@ -20,11 +41,15 @@ pub fn register_session(
     agent: &str,
     project: Option<&str>,
     cwd: Option<&str>,
+    capabilities: Option<&str>,
+    current_task: Option<&str>,
 ) -> rusqlite::Result<()> {
+    let caps = capabilities.unwrap_or("[]");
+    let task = current_task.unwrap_or("");
     conn.execute(
-        "INSERT OR REPLACE INTO session (id, agent, project, cwd, started_at, status)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'), 'active')",
-        params![id, agent, project, cwd],
+        "INSERT OR REPLACE INTO session (id, agent, project, cwd, started_at, status, capabilities, current_task)
+         VALUES (?1, ?2, ?3, ?4, datetime('now'), 'active', ?5, ?6)",
+        params![id, agent, project, cwd, caps, task],
     )?;
     Ok(())
 }
@@ -41,9 +66,9 @@ pub fn end_session(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 /// List sessions. If active_only is true, only return active sessions.
 pub fn list_sessions(conn: &Connection, active_only: bool) -> rusqlite::Result<Vec<Session>> {
     let sql = if active_only {
-        "SELECT id, agent, project, cwd, started_at, ended_at, status FROM session WHERE status = 'active' ORDER BY started_at DESC"
+        "SELECT id, agent, project, cwd, started_at, ended_at, status, capabilities, current_task FROM session WHERE status = 'active' ORDER BY started_at DESC"
     } else {
-        "SELECT id, agent, project, cwd, started_at, ended_at, status FROM session ORDER BY started_at DESC"
+        "SELECT id, agent, project, cwd, started_at, ended_at, status, capabilities, current_task FROM session ORDER BY started_at DESC"
     };
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map([], |row| {
@@ -55,6 +80,8 @@ pub fn list_sessions(conn: &Connection, active_only: bool) -> rusqlite::Result<V
             started_at: row.get(4)?,
             ended_at: row.get(5)?,
             status: row.get(6)?,
+            capabilities: row.get(7)?,
+            current_task: row.get(8)?,
         })
     })?;
     rows.collect()
@@ -141,7 +168,7 @@ pub fn get_last_working_set(conn: &Connection, agent: &str, project: Option<&str
 /// Get a single session by ID.
 pub fn get_session(conn: &Connection, id: &str) -> rusqlite::Result<Option<Session>> {
     let mut stmt = conn.prepare(
-        "SELECT id, agent, project, cwd, started_at, ended_at, status FROM session WHERE id = ?1",
+        "SELECT id, agent, project, cwd, started_at, ended_at, status, capabilities, current_task FROM session WHERE id = ?1",
     )?;
     let mut rows = stmt.query(params![id])?;
     if let Some(row) = rows.next()? {
@@ -153,6 +180,8 @@ pub fn get_session(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sessi
             started_at: row.get(4)?,
             ended_at: row.get(5)?,
             status: row.get(6)?,
+            capabilities: row.get(7)?,
+            current_task: row.get(8)?,
         }))
     } else {
         Ok(None)
@@ -209,6 +238,193 @@ pub fn backfill_project(conn: &Connection) -> rusqlite::Result<usize> {
     )
 }
 
+// ── A2A FISP: Message CRUD ──
+
+/// Send a message to another session (or broadcast to "*").
+/// Returns the message ID.
+#[allow(clippy::too_many_arguments)]
+pub fn send_message(
+    conn: &Connection,
+    from_session: &str,
+    to: &str,
+    kind: &str,
+    topic: &str,
+    parts_json: &str,
+    project: Option<&str>,
+    timeout_secs: Option<u64>,
+) -> rusqlite::Result<String> {
+    let expires_at = timeout_secs.map(|secs| {
+        format!("datetime('now', '+{} seconds')", secs)
+    });
+
+    if to == "*" {
+        // Broadcast: create one message per active session in the same project
+        let sessions = match project {
+            Some(proj) => {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM session WHERE status = 'active' AND project = ?1 AND id != ?2"
+                )?;
+                let rows = stmt.query_map(params![proj, from_session], |row| row.get::<_, String>(0))?;
+                rows.collect::<rusqlite::Result<Vec<String>>>()?
+            }
+            None => {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM session WHERE status = 'active' AND id != ?1"
+                )?;
+                let rows = stmt.query_map(params![from_session], |row| row.get::<_, String>(0))?;
+                rows.collect::<rusqlite::Result<Vec<String>>>()?
+            }
+        };
+
+        // Generate a broadcast group ID (the "main" message ID returned to sender)
+        let broadcast_id = Ulid::new().to_string();
+        for session_id in &sessions {
+            let msg_id = Ulid::new().to_string();
+            if let Some(ref expr) = expires_at {
+                conn.execute(
+                    &format!(
+                        "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), {})", expr
+                    ),
+                    params![msg_id, from_session, session_id, kind, topic, parts_json, project],
+                )?;
+            } else {
+                conn.execute(
+                    "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'))",
+                    params![msg_id, from_session, session_id, kind, topic, parts_json, project],
+                )?;
+            }
+        }
+        Ok(broadcast_id)
+    } else {
+        let msg_id = Ulid::new().to_string();
+        if let Some(ref expr) = expires_at {
+            conn.execute(
+                &format!(
+                    "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), {})", expr
+                ),
+                params![msg_id, from_session, to, kind, topic, parts_json, project],
+            )?;
+        } else {
+            conn.execute(
+                "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'))",
+                params![msg_id, from_session, to, kind, topic, parts_json, project],
+            )?;
+        }
+        Ok(msg_id)
+    }
+}
+
+/// Respond to a received request message.
+/// Creates a NEW message with kind="response" and in_reply_to=message_id.
+/// Updates the original message's status.
+/// Returns false if the original message was not found.
+pub fn respond_to_message(
+    conn: &Connection,
+    message_id: &str,
+    from_session: &str,
+    status: &str,
+    parts_json: &str,
+) -> rusqlite::Result<bool> {
+    // Check original message exists and get its from_session (to send response back)
+    let original = conn.query_row(
+        "SELECT from_session, to_session, topic, project FROM session_message WHERE id = ?1",
+        params![message_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        },
+    );
+
+    match original {
+        Ok((orig_from, _orig_to, topic, project)) => {
+            // Update the original message's status
+            conn.execute(
+                "UPDATE session_message SET status = ?1 WHERE id = ?2",
+                params![status, message_id],
+            )?;
+
+            // Create a new response message
+            let response_id = Ulid::new().to_string();
+            conn.execute(
+                "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at)
+                 VALUES (?1, ?2, ?3, 'response', ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+                params![response_id, from_session, orig_from, topic, parts_json, status, message_id, project],
+            )?;
+            Ok(true)
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// List messages for a session (inbox).
+pub fn list_messages(
+    conn: &Connection,
+    session_id: &str,
+    status_filter: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<SessionMessageRow>> {
+    let (sql, use_status) = match status_filter {
+        Some(_) => (
+            "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
+             FROM session_message WHERE to_session = ?1 AND status = ?2 ORDER BY created_at DESC LIMIT ?3",
+            true,
+        ),
+        None => (
+            "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
+             FROM session_message WHERE to_session = ?1 ORDER BY created_at DESC LIMIT ?2",
+            false,
+        ),
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let map_row = |row: &rusqlite::Row| -> rusqlite::Result<SessionMessageRow> {
+        Ok(SessionMessageRow {
+            id: row.get(0)?,
+            from_session: row.get(1)?,
+            to_session: row.get(2)?,
+            kind: row.get(3)?,
+            topic: row.get(4)?,
+            parts: row.get(5)?,
+            status: row.get(6)?,
+            in_reply_to: row.get(7)?,
+            project: row.get(8)?,
+            created_at: row.get(9)?,
+            delivered_at: row.get(10)?,
+        })
+    };
+    let rows: Vec<rusqlite::Result<SessionMessageRow>> = if use_status {
+        stmt.query_map(params![session_id, status_filter.unwrap_or(""), limit as i64], map_row)?.collect()
+    } else {
+        stmt.query_map(params![session_id, limit as i64], map_row)?.collect()
+    };
+    rows.into_iter().collect()
+}
+
+/// Mark messages as read/consumed.
+pub fn ack_messages(
+    conn: &Connection,
+    message_ids: &[String],
+) -> rusqlite::Result<usize> {
+    let mut count = 0;
+    for id in message_ids {
+        let updated = conn.execute(
+            "UPDATE session_message SET status = 'read', delivered_at = datetime('now') WHERE id = ?1",
+            params![id],
+        )?;
+        count += updated;
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,8 +440,8 @@ mod tests {
     #[test]
     fn test_register_and_list() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), Some("/project")).unwrap();
-        register_session(&conn, "s2", "cline", None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), Some("/project"), None, None).unwrap();
+        register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
 
         let active = list_sessions(&conn, true).unwrap();
         assert_eq!(active.len(), 2);
@@ -237,7 +453,7 @@ mod tests {
     #[test]
     fn test_end_session() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
 
         assert!(end_session(&conn, "s1").unwrap());
         assert!(!end_session(&conn, "s1").unwrap()); // already ended
@@ -254,8 +470,8 @@ mod tests {
     #[test]
     fn test_register_duplicate_updates() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("proj1"), None).unwrap();
-        register_session(&conn, "s1", "claude-code", Some("proj2"), None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("proj1"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("proj2"), None, None, None).unwrap();
 
         let all = list_sessions(&conn, false).unwrap();
         assert_eq!(all.len(), 1);
@@ -267,7 +483,7 @@ mod tests {
         let conn = setup();
 
         // Create a session with a project
-        register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
 
         // Create a memory with session_id but no project
         conn.execute(
@@ -324,7 +540,7 @@ mod tests {
         ).unwrap();
 
         // Create a recent active session (should NOT be cleaned up)
-        register_session(&conn, "recent1", "claude-code", Some("proj"), None).unwrap();
+        register_session(&conn, "recent1", "claude-code", Some("proj"), None, None, None).unwrap();
 
         // Create an already-ended old session (should NOT be touched)
         conn.execute(
@@ -360,8 +576,8 @@ mod tests {
         let conn = setup();
 
         // Only recent sessions
-        register_session(&conn, "s1", "claude-code", None, None).unwrap();
-        register_session(&conn, "s2", "cline", None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
 
         let cleaned = cleanup_stale_sessions(&conn).unwrap();
         assert_eq!(cleaned, 0, "should not clean up any recent sessions");
@@ -373,7 +589,7 @@ mod tests {
     #[test]
     fn test_get_session() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), Some("/cwd")).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), Some("/cwd"), None, None).unwrap();
 
         let s = get_session(&conn, "s1").unwrap().unwrap();
         assert_eq!(s.agent, "claude-code");
@@ -386,7 +602,7 @@ mod tests {
     #[test]
     fn test_tool_use_count_tracking() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
 
         // Initial count should be 0
         let count: i64 = conn.query_row(
@@ -431,8 +647,8 @@ mod tests {
         let conn = setup();
 
         // Register two sessions
-        register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
-        register_session(&conn, "s2", "cline", Some("forge"), None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
 
         // Verify there are 2 active sessions
         let active = list_sessions(&conn, true).unwrap();
@@ -466,9 +682,9 @@ mod tests {
     #[test]
     fn test_cleanup_sessions_with_prefix() {
         let conn = setup();
-        register_session(&conn, "hook-test-1", "claude-code", Some("forge"), None).unwrap();
-        register_session(&conn, "hook-test-2", "claude-code", Some("forge"), None).unwrap();
-        register_session(&conn, "real-session-1", "claude-code", Some("forge"), None).unwrap();
+        register_session(&conn, "hook-test-1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "hook-test-2", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "real-session-1", "claude-code", Some("forge"), None, None, None).unwrap();
 
         // Cleanup only hook-test sessions
         let ended = cleanup_sessions(&conn, Some("hook-test")).unwrap();
@@ -483,8 +699,8 @@ mod tests {
     #[test]
     fn test_cleanup_sessions_all() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", None, None).unwrap();
-        register_session(&conn, "s2", "cline", None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
 
         let ended = cleanup_sessions(&conn, None).unwrap();
         assert_eq!(ended, 2, "should end all active sessions");
@@ -496,7 +712,7 @@ mod tests {
     #[test]
     fn test_cleanup_sessions_no_match() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
 
         let ended = cleanup_sessions(&conn, Some("nonexistent")).unwrap();
         assert_eq!(ended, 0, "should not end any sessions");
