@@ -19,6 +19,17 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use super::detect::LspServerConfig;
 
+/// A diagnostic captured from a language server's `textDocument/publishDiagnostics` notification.
+#[derive(Debug, Clone)]
+pub struct LspDiagnostic {
+    pub file_uri: String,
+    pub severity: String, // "error", "warning", "information", "hint"
+    pub message: String,
+    pub line: u32,
+    pub column: u32,
+    pub source: String,
+}
+
 /// Convert an absolute filesystem path to a properly percent-encoded `file://` URI.
 ///
 /// Handles spaces, non-ASCII characters, and other reserved URI characters.
@@ -69,6 +80,8 @@ pub struct LspClient {
     /// Server capabilities returned from initialize.
     #[allow(dead_code)]
     server_caps: Option<InitializeResult>,
+    /// Captured diagnostics from `textDocument/publishDiagnostics` notifications.
+    pub diagnostics_buffer: Vec<LspDiagnostic>,
 }
 
 /// JSON-RPC request envelope.
@@ -86,6 +99,15 @@ struct JsonRpcNotification<P: Serialize> {
     jsonrpc: &'static str,
     method: &'static str,
     params: P,
+}
+
+/// JSON-RPC notification received from the server (for deserialization).
+#[derive(Deserialize)]
+struct ServerNotification {
+    #[allow(dead_code)]
+    jsonrpc: Option<String>,
+    method: Option<String>,
+    params: Option<serde_json::Value>,
 }
 
 /// JSON-RPC response envelope.
@@ -134,6 +156,7 @@ impl LspClient {
             stdout: BufReader::new(stdout),
             next_id: 1,
             server_caps: None,
+            diagnostics_buffer: Vec::new(),
         };
 
         // Build root URI.
@@ -227,6 +250,39 @@ impl LspClient {
             text_document: TextDocumentIdentifier { uri },
         };
         self.send_notification("textDocument/didClose", params).await
+    }
+
+    /// Notify the server that a file's content has changed.
+    pub async fn did_change(
+        &mut self,
+        file_uri: &str,
+        content: &str,
+        version: i32,
+    ) -> Result<(), String> {
+        let uri: Uri = file_uri.parse().map_err(|e| format!("Invalid URI: {e}"))?;
+        let params = lsp_types::DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri,
+                version,
+            },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: content.to_string(),
+            }],
+        };
+        self.send_notification("textDocument/didChange", params)
+            .await
+    }
+
+    /// Drain all captured diagnostics from the buffer.
+    pub fn drain_diagnostics(&mut self) -> Vec<LspDiagnostic> {
+        std::mem::take(&mut self.diagnostics_buffer)
+    }
+
+    /// Parse a `textDocument/publishDiagnostics` notification and store results.
+    fn capture_diagnostics(&mut self, params: serde_json::Value) {
+        parse_publish_diagnostics(params, &mut self.diagnostics_buffer);
     }
 
     /// Request document symbols for a file.
@@ -372,7 +428,14 @@ impl LspClient {
                     }
                 }
             }
-            // Not our response — probably a server notification; skip it.
+            // Not our response — check if it's a publishDiagnostics notification.
+            if let Ok(notif) = serde_json::from_str::<ServerNotification>(&body) {
+                if notif.method.as_deref() == Some("textDocument/publishDiagnostics") {
+                    if let Some(params) = notif.params {
+                        self.capture_diagnostics(params);
+                    }
+                }
+            }
             skipped += 1;
             if skipped > MAX_SKIPPED {
                 return Err(format!(
@@ -468,6 +531,65 @@ impl LspClient {
     }
 }
 
+/// Parse a `textDocument/publishDiagnostics` notification params into LspDiagnostic entries.
+fn parse_publish_diagnostics(params: serde_json::Value, buffer: &mut Vec<LspDiagnostic>) {
+    let uri = params
+        .get("uri")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let diagnostics = match params.get("diagnostics").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return,
+    };
+
+    for diag in diagnostics {
+        let severity_num = diag
+            .get("severity")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(4); // default to hint
+        let severity = match severity_num {
+            1 => "error",
+            2 => "warning",
+            3 => "information",
+            _ => "hint",
+        }
+        .to_string();
+
+        let message = diag
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let source = diag
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let range = diag.get("range").and_then(|r| r.get("start"));
+        let line = range
+            .and_then(|s| s.get("line"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let column = range
+            .and_then(|s| s.get("character"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+
+        buffer.push(LspDiagnostic {
+            file_uri: uri.clone(),
+            severity,
+            message,
+            line,
+            column,
+            source,
+        });
+    }
+}
+
 /// Convert an absolute filesystem path to a `file://` URI suitable for LSP.
 pub fn file_uri(path: &str) -> String {
     path_to_file_uri(path)
@@ -531,5 +653,96 @@ mod tests {
         ) {
             // Just verifying the types compile.
         }
+    }
+
+    #[test]
+    fn test_capture_diagnostics_parses_notification() {
+        // Simulate a publishDiagnostics params payload
+        let params = serde_json::json!({
+            "uri": "file:///tmp/test.py",
+            "diagnostics": [
+                {
+                    "range": {
+                        "start": {"line": 5, "character": 10},
+                        "end": {"line": 5, "character": 15}
+                    },
+                    "severity": 1,
+                    "message": "undefined variable 'foo'",
+                    "source": "pyright"
+                },
+                {
+                    "range": {
+                        "start": {"line": 12, "character": 0},
+                        "end": {"line": 12, "character": 20}
+                    },
+                    "severity": 2,
+                    "message": "unused import",
+                    "source": "pyright"
+                }
+            ]
+        });
+
+        // We can't construct a full LspClient without spawning a process,
+        // so test capture_diagnostics by creating a minimal buffer scenario.
+        // We'll test the parsing logic via a standalone helper.
+        let mut buffer: Vec<LspDiagnostic> = Vec::new();
+        parse_publish_diagnostics(params, &mut buffer);
+
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(buffer[0].file_uri, "file:///tmp/test.py");
+        assert_eq!(buffer[0].severity, "error");
+        assert_eq!(buffer[0].message, "undefined variable 'foo'");
+        assert_eq!(buffer[0].line, 5);
+        assert_eq!(buffer[0].column, 10);
+        assert_eq!(buffer[0].source, "pyright");
+
+        assert_eq!(buffer[1].severity, "warning");
+        assert_eq!(buffer[1].message, "unused import");
+        assert_eq!(buffer[1].line, 12);
+    }
+
+    #[test]
+    fn test_capture_diagnostics_empty_array() {
+        let params = serde_json::json!({
+            "uri": "file:///tmp/clean.py",
+            "diagnostics": []
+        });
+        let mut buffer: Vec<LspDiagnostic> = Vec::new();
+        parse_publish_diagnostics(params, &mut buffer);
+        assert_eq!(buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_capture_diagnostics_missing_fields() {
+        // Missing severity, source, range — should use defaults
+        let params = serde_json::json!({
+            "uri": "file:///tmp/bad.py",
+            "diagnostics": [
+                {
+                    "message": "something wrong"
+                }
+            ]
+        });
+        let mut buffer: Vec<LspDiagnostic> = Vec::new();
+        parse_publish_diagnostics(params, &mut buffer);
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer[0].severity, "hint"); // default for unknown severity
+        assert_eq!(buffer[0].source, "unknown");
+        assert_eq!(buffer[0].line, 0);
+        assert_eq!(buffer[0].column, 0);
+    }
+
+    #[test]
+    fn test_lsp_diagnostic_struct() {
+        let d = LspDiagnostic {
+            file_uri: "file:///tmp/test.rs".into(),
+            severity: "error".into(),
+            message: "test".into(),
+            line: 1,
+            column: 2,
+            source: "rust-analyzer".into(),
+        };
+        assert_eq!(d.line, 1);
+        assert_eq!(d.column, 2);
     }
 }

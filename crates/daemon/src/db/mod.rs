@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod manas;
 pub mod schema;
 pub mod ops;

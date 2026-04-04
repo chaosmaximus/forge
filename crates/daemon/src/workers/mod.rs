@@ -10,6 +10,7 @@
 //   disposition → analyzes session history and updates agent disposition traits
 
 pub mod consolidator;
+pub mod diagnostics;
 pub mod disposition;
 pub mod embedder;
 pub mod extractor;
@@ -57,6 +58,7 @@ pub fn spawn_workers(
     let indexer_shutdown = shutdown_tx.subscribe();
     let perception_shutdown = shutdown_tx.subscribe();
     let disposition_shutdown = shutdown_tx.subscribe();
+    let diagnostics_shutdown = shutdown_tx.subscribe();
 
     let extractor_state = Arc::clone(&state);
     let embedder_state = Arc::clone(&state);
@@ -64,6 +66,7 @@ pub fn spawn_workers(
     let indexer_state = Arc::clone(&state);
     let perception_state = Arc::clone(&state);
     let disposition_state = Arc::clone(&state);
+    let diagnostics_state = Arc::clone(&state);
 
     let extractor_config = config.clone();
     let embedder_config = config;
@@ -103,7 +106,19 @@ pub fn spawn_workers(
         disposition::run_disposition(disposition_state, disposition_shutdown).await;
     });
 
-    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer, perception, disposition");
+    // Diagnostics worker — debounced batch analysis
+    let (diag_tx, diag_rx) = mpsc::channel::<String>(100);
+    {
+        // Store the diagnostics sender in DaemonState so PostEditCheck can use it
+        let state_clone = Arc::clone(&state);
+        let mut locked = state_clone.blocking_lock();
+        locked.diagnostics_tx = Some(diag_tx);
+    }
+    let diagnostics_handle = tokio::spawn(async move {
+        diagnostics::run_diagnostics_worker(diagnostics_state, diag_rx, diagnostics_shutdown).await;
+    });
+
+    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics");
 
     vec![
         watcher_handle,
@@ -113,5 +128,6 @@ pub fn spawn_workers(
         indexer_handle,
         perception_handle,
         disposition_handle,
+        diagnostics_handle,
     ]
 }

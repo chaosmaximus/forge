@@ -12,6 +12,9 @@ pub struct DaemonState {
     pub events: EventSender,
     pub started_at: Instant,
     pub hlc: crate::sync::Hlc,
+    /// Channel to send edited file paths to the diagnostics worker.
+    /// Set after worker spawn; None before that.
+    pub diagnostics_tx: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl DaemonState {
@@ -42,6 +45,7 @@ impl DaemonState {
             events: crate::events::create_event_bus(),
             started_at: Instant::now(),
             hlc,
+            diagnostics_tx: None,
         })
     }
 }

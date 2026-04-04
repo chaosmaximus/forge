@@ -202,6 +202,21 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_disposition_agent ON disposition(agent);
         CREATE INDEX IF NOT EXISTS idx_disposition_trait ON disposition(trait_name);
+
+        -- Chitta: Proactive diagnostic cache
+        CREATE TABLE IF NOT EXISTS diagnostic (
+            id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            message TEXT NOT NULL,
+            source TEXT NOT NULL,
+            line INTEGER,
+            col INTEGER,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_diagnostic_file ON diagnostic(file_path);
+        CREATE INDEX IF NOT EXISTS idx_diagnostic_expires ON diagnostic(expires_at);
     ")?;
 
     // Add valence columns (safe to re-run — ignores if already exists)
@@ -286,6 +301,20 @@ mod tests {
         assert!(hlc.contains("abc12345"));
         let node: String = conn.query_row("SELECT node_id FROM memory WHERE id = 'h1'", [], |r| r.get(0)).unwrap();
         assert_eq!(node, "abc12345");
+    }
+
+    #[test]
+    fn test_diagnostic_table_exists() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO diagnostic (id, file_path, severity, message, source, line, created_at, expires_at)
+             VALUES ('d1', 'src/main.rs', 'error', 'undefined variable x', 'pyright', 10, datetime('now'), datetime('now', '+5 minutes'))",
+            [],
+        ).unwrap();
+        let msg: String = conn.query_row("SELECT message FROM diagnostic WHERE id = 'd1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(msg, "undefined variable x");
     }
 
     #[test]
