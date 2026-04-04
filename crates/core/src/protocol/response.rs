@@ -328,6 +328,17 @@ pub enum ResponseData {
         results: Vec<Vec<MemoryResult>>,
     },
 
+    // ── A2A Inter-Session Protocol (FISP) ──
+
+    /// A message was sent to another session
+    MessageSent { id: String, status: String },
+    /// A response was sent to a received message
+    MessageResponded { id: String, status: String },
+    /// List of messages for a session
+    SessionMessageList { messages: Vec<SessionMessage>, count: usize },
+    /// Messages were acknowledged
+    MessagesAcked { count: usize },
+
     Shutdown,
 }
 
@@ -379,6 +390,28 @@ pub struct SessionInfo {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub status: String,
+    /// A2A: capabilities this session advertises
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// A2A: what the session is currently working on
+    #[serde(default)]
+    pub current_task: String,
+}
+
+/// A message exchanged between sessions via the FISP protocol.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionMessage {
+    pub id: String,
+    pub from_session: String,
+    pub to_session: String,
+    pub kind: String,
+    pub topic: String,
+    pub parts: Vec<crate::protocol::request::MessagePart>,
+    pub status: String,
+    pub in_reply_to: Option<String>,
+    pub project: Option<String>,
+    pub created_at: String,
+    pub delivered_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

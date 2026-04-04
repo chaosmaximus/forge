@@ -51,6 +51,7 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::PostEditCheck { .. }
             | Request::BlastRadius { .. }
             | Request::Export { .. }
+            | Request::SessionMessages { .. }
     )
 }
 
@@ -206,6 +207,8 @@ mod tests {
             agent: "a".into(),
             project: None,
             cwd: None,
+            capabilities: None,
+            current_task: None,
         }));
         assert!(!is_read_only(&Request::EndSession { id: "s".into() }));
         assert!(!is_read_only(&Request::HlcBackfill));

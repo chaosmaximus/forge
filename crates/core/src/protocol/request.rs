@@ -22,6 +22,21 @@ pub struct RecallQuery {
     pub limit: Option<usize>,
 }
 
+/// A part of a session message (A2A-inspired).
+/// Supports text, file references, structured data, and memory references.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessagePart {
+    pub kind: String,              // "text", "file", "data", "memory_ref"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
@@ -104,6 +119,12 @@ pub enum Request {
         agent: String,
         project: Option<String>,
         cwd: Option<String>,
+        /// A2A: capabilities this session advertises (e.g., "code_review", "testing")
+        #[serde(default)]
+        capabilities: Option<Vec<String>>,
+        /// A2A: description of what this session is currently working on
+        #[serde(default)]
+        current_task: Option<String>,
     },
     /// Mark a session as ended
     EndSession { id: String },
@@ -239,6 +260,34 @@ pub enum Request {
     /// Batch recall — multiple queries in single request (eliminates N+1 for sidebar)
     BatchRecall {
         queries: Vec<RecallQuery>,
+    },
+
+    // ── A2A Inter-Session Protocol (FISP) ──
+
+    /// Send a message to another session (notification or request)
+    SessionSend {
+        to: String,                    // session ID or "*" for broadcast
+        kind: String,                  // "notification" or "request"
+        topic: String,
+        parts: Vec<MessagePart>,
+        project: Option<String>,
+        timeout_secs: Option<u64>,
+    },
+    /// Respond to a received request
+    SessionRespond {
+        message_id: String,
+        status: String,                // "accepted", "rejected", "completed", "failed"
+        parts: Vec<MessagePart>,
+    },
+    /// Get pending messages for a session
+    SessionMessages {
+        session_id: String,
+        status: Option<String>,
+        limit: Option<usize>,
+    },
+    /// Mark messages as read/consumed
+    SessionAck {
+        message_ids: Vec<String>,
     },
 
     Shutdown,
