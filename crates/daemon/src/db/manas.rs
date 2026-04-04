@@ -648,10 +648,8 @@ pub fn correlate_skill(conn: &Connection, skill_id: &str, skill_title: &str, ski
             "SELECT to_id FROM edge WHERE from_id = ?1 AND edge_type = 'correlates_with'"
         )?;
         let rows = stmt.query_map(params![skill_id], |row| row.get(0))?;
-        for r in rows {
-            if let Ok(id) = r {
-                edge_ids.push(id);
-            }
+        for id in rows.flatten() {
+            edge_ids.push(id);
         }
         let ids_json = serde_json::to_string(&edge_ids).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
