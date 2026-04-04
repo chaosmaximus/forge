@@ -266,6 +266,8 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Force-run all consolidation phases (dedup, decay, promotion, etc.)
+    Consolidate,
 }
 
 #[derive(Subcommand)]
@@ -455,6 +457,8 @@ async fn main() {
         }
         Commands::Bootstrap { project } => {
             commands::system::bootstrap(project).await;
+        Commands::Consolidate => {
+            commands::system::consolidate().await;
         }
     }
 }

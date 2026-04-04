@@ -178,6 +178,8 @@ pub enum Request {
     Bootstrap {
         project: Option<String>,
     },
+    /// Force-run ALL consolidation phases synchronously (exact dedup, semantic dedup, etc.)
+    ForceConsolidate,
 
     Shutdown,
 }

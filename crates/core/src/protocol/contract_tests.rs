@@ -32,6 +32,7 @@ mod tests {
             ("manas_health", Request::ManasHealth),
             ("sync_conflicts", Request::SyncConflicts),
             ("hlc_backfill", Request::HlcBackfill),
+            ("force_consolidate", Request::ForceConsolidate),
             ("shutdown", Request::Shutdown),
         ];
 
@@ -510,6 +511,7 @@ mod tests {
             ("manas_health", r#"{"method":"manas_health"}"#),
             ("sync_conflicts", r#"{"method":"sync_conflicts"}"#),
             ("hlc_backfill", r#"{"method":"hlc_backfill"}"#),
+            ("force_consolidate", r#"{"method":"force_consolidate"}"#),
             ("shutdown", r#"{"method":"shutdown"}"#),
         ];
 
@@ -529,17 +531,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 45 Request variants.
+    /// Ensure we cover ALL 46 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 12
-        let unit_count = 12;
-        // Parameterized variants: 33
+        // Unit variants: 13 (Health, HealthByProject, Status, Doctor, IngestClaude, LspStatus, ListPlatform, ListTools, ManasHealth, SyncConflicts, HlcBackfill, ForceConsolidate, Shutdown)
+        let unit_count = 13;
+        // Parameterized variants: 33 (Remember, Recall, Forget, ... StoreEvaluation, Bootstrap)
         let param_count = 33;
-        // Total: 45
-        let expected_total = 45;
+        // Total: 46
+        let expected_total = 46;
 
         assert_eq!(
             unit_count + param_count,
@@ -564,6 +566,7 @@ mod tests {
                 Request::ManasHealth,
                 Request::SyncConflicts,
                 Request::HlcBackfill,
+                Request::ForceConsolidate,
                 Request::Shutdown,
                 // Parameterized variants
                 Request::Remember {

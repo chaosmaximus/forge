@@ -204,6 +204,17 @@ pub enum ResponseData {
         memories_extracted: usize,
         errors: usize,
     },
+    ConsolidationComplete {
+        exact_dedup: usize,
+        semantic_dedup: usize,
+        linked: usize,
+        faded: usize,
+        promoted: usize,
+        reconsolidated: usize,
+        embedding_merged: usize,
+        strengthened: usize,
+        contradictions: usize,
+    },
 
     Shutdown,
 }
