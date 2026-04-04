@@ -721,13 +721,23 @@ pub fn compile_dynamic_suffix(
             })
             .take(5)
             .collect();
-        // Also fetch behavioral skills (sorted by observed_count)
-        let behavioral_skills: Vec<(String, String, u32)> = conn.prepare(
+        // Also fetch behavioral skills from skill table (extracted by extractor)
+        let mut behavioral_skills: Vec<(String, String, u32)> = conn.prepare(
             "SELECT name, description, observed_count FROM skill WHERE skill_type = 'behavioral' ORDER BY observed_count DESC, success_count DESC LIMIT 3"
         ).and_then(|mut stmt| {
             stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, i32>(2).unwrap_or(1) as u32)))?
             .collect()
         }).unwrap_or_default();
+
+        // Also check memory table for behavioral patterns (stored via remember with behavioral tags)
+        if behavioral_skills.is_empty() {
+            behavioral_skills = conn.prepare(
+                "SELECT title, content, 1 FROM memory WHERE memory_type = 'pattern' AND status = 'active' AND tags LIKE '%behavioral%' ORDER BY confidence DESC LIMIT 3"
+            ).and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, 1u32)))?
+                .collect()
+            }).unwrap_or_default();
+        }
 
         if active_skills.is_empty() && behavioral_skills.is_empty() {
             xml.push_str("<skills/>\n");
