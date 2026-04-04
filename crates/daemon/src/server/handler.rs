@@ -60,6 +60,13 @@ impl DaemonState {
             eprintln!("[daemon] backfilled HLC timestamps on {} existing memories", backfilled);
         }
 
+        // Run consolidation once on startup to clean stale data immediately
+        let cs = crate::workers::consolidator::run_all_phases(&conn);
+        eprintln!(
+            "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",
+            cs.exact_dedup, cs.semantic_dedup, cs.linked, cs.faded, cs.promoted, cs.reconsolidated
+        );
+
         Ok(DaemonState {
             conn,
             events: crate::events::create_event_bus(),
@@ -1202,6 +1209,23 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
                 Err(e) => Response::Error {
                     message: format!("hlc_backfill failed: {e}"),
+                },
+            }
+        }
+
+        Request::ForceConsolidate => {
+            let stats = crate::workers::consolidator::run_all_phases(&state.conn);
+            Response::Ok {
+                data: ResponseData::ConsolidationComplete {
+                    exact_dedup: stats.exact_dedup,
+                    semantic_dedup: stats.semantic_dedup,
+                    linked: stats.linked,
+                    faded: stats.faded,
+                    promoted: stats.promoted,
+                    reconsolidated: stats.reconsolidated,
+                    embedding_merged: stats.embedding_merged,
+                    strengthened: stats.strengthened,
+                    contradictions: stats.contradictions,
                 },
             }
         }
@@ -2631,6 +2655,73 @@ mod tests {
                 assert!(cached_diagnostics[0].contains("3 files call validate_token()"));
             }
             _ => panic!("expected PostEditChecked response"),
+        }
+    }
+
+    #[test]
+    fn test_force_consolidate_handler() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Insert duplicate memories using remember_raw to bypass upsert logic
+        let m1 = Memory::new(MemoryType::Decision, "Use JWT auth".to_string(), "For auth tokens".to_string());
+        let mut m2 = Memory::new(MemoryType::Decision, "Use JWT auth".to_string(), "For auth tokens".to_string());
+        m2.id = format!("dup-{}", m1.id); // different id, same title+type
+        ops::remember_raw(&state.conn, &m1).unwrap();
+        ops::remember_raw(&state.conn, &m2).unwrap();
+
+        let resp = handle_request(&mut state, Request::ForceConsolidate);
+        match resp {
+            Response::Ok {
+                data:
+                    ResponseData::ConsolidationComplete {
+                        exact_dedup,
+                        semantic_dedup: _,
+                        linked: _,
+                        faded: _,
+                        promoted: _,
+                        reconsolidated: _,
+                        embedding_merged: _,
+                        strengthened: _,
+                        contradictions: _,
+                    },
+            } => {
+                assert!(exact_dedup > 0, "should dedup at least 1 duplicate memory");
+            }
+            other => panic!("expected ConsolidationComplete, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_force_consolidate_empty_db() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let resp = handle_request(&mut state, Request::ForceConsolidate);
+        match resp {
+            Response::Ok {
+                data:
+                    ResponseData::ConsolidationComplete {
+                        exact_dedup,
+                        semantic_dedup,
+                        linked,
+                        faded,
+                        promoted,
+                        reconsolidated,
+                        embedding_merged,
+                        strengthened,
+                        contradictions,
+                    },
+            } => {
+                assert_eq!(exact_dedup, 0);
+                assert_eq!(semantic_dedup, 0);
+                assert_eq!(linked, 0);
+                assert_eq!(faded, 0);
+                assert_eq!(promoted, 0);
+                assert_eq!(reconsolidated, 0);
+                assert_eq!(embedding_merged, 0);
+                assert_eq!(strengthened, 0);
+                assert_eq!(contradictions, 0);
+            }
+            other => panic!("expected ConsolidationComplete, got {:?}", other),
         }
     }
 }

@@ -154,5 +154,8 @@ pub enum Request {
     /// Backfill HLC timestamps on existing memories that have empty hlc_timestamp
     HlcBackfill,
 
+    /// Force-run ALL consolidation phases synchronously (exact dedup, semantic dedup, etc.)
+    ForceConsolidate,
+
     Shutdown,
 }

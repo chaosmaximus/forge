@@ -32,6 +32,7 @@ mod tests {
             ("manas_health", Request::ManasHealth),
             ("sync_conflicts", Request::SyncConflicts),
             ("hlc_backfill", Request::HlcBackfill),
+            ("force_consolidate", Request::ForceConsolidate),
             ("shutdown", Request::Shutdown),
         ];
 
@@ -479,6 +480,7 @@ mod tests {
             ("manas_health", r#"{"method":"manas_health"}"#),
             ("sync_conflicts", r#"{"method":"sync_conflicts"}"#),
             ("hlc_backfill", r#"{"method":"hlc_backfill"}"#),
+            ("force_consolidate", r#"{"method":"force_consolidate"}"#),
             ("shutdown", r#"{"method":"shutdown"}"#),
         ];
 
@@ -498,17 +500,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 43 Request variants.
+    /// Ensure we cover ALL 44 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 12
-        let unit_count = 12;
+        // Unit variants: 13
+        let unit_count = 13;
         // Parameterized variants: 31
         let param_count = 31;
-        // Total: 43
-        let expected_total = 43;
+        // Total: 44
+        let expected_total = 44;
 
         assert_eq!(
             unit_count + param_count,
@@ -533,6 +535,7 @@ mod tests {
                 Request::ManasHealth,
                 Request::SyncConflicts,
                 Request::HlcBackfill,
+                Request::ForceConsolidate,
                 Request::Shutdown,
                 // Parameterized variants
                 Request::Remember {

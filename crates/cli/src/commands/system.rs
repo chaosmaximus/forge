@@ -638,6 +638,46 @@ pub async fn diagnostics(file: String) {
     }
 }
 
+/// Force-run all consolidation phases (dedup, decay, promotion, etc.)
+pub async fn consolidate() {
+    match client::send(&Request::ForceConsolidate).await {
+        Ok(Response::Ok {
+            data:
+                ResponseData::ConsolidationComplete {
+                    exact_dedup,
+                    semantic_dedup,
+                    linked,
+                    faded,
+                    promoted,
+                    reconsolidated,
+                    embedding_merged,
+                    strengthened,
+                    contradictions,
+                },
+        }) => {
+            println!("Consolidation complete:");
+            println!("  Exact dedup:     {}", exact_dedup);
+            println!("  Semantic dedup:  {}", semantic_dedup);
+            println!("  Linked:          {}", linked);
+            println!("  Faded:           {}", faded);
+            println!("  Promoted:        {}", promoted);
+            println!("  Reconsolidated:  {}", reconsolidated);
+            println!("  Embedding merge: {}", embedding_merged);
+            println!("  Strengthened:    {}", strengthened);
+            println!("  Contradictions:  {}", contradictions);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
 }
