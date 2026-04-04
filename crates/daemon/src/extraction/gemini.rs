@@ -17,11 +17,21 @@ pub async fn extract(api_key: &str, model: &str, conversation_text: &str) -> Ext
         model, api_key
     );
 
-    let body = serde_json::json!({
-        "system_instruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"parts": [{"text": user_message}]}],
-        "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.1}
-    });
+    // Gemma models don't support system_instruction — prepend to user message instead
+    let is_gemma = model.starts_with("gemma");
+    let body = if is_gemma {
+        let combined = format!("{}\n\n---\n\n{}", system_prompt, user_message);
+        serde_json::json!({
+            "contents": [{"parts": [{"text": combined}]}],
+            "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.1}
+        })
+    } else {
+        serde_json::json!({
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"parts": [{"text": user_message}]}],
+            "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.1}
+        })
+    };
 
     let resp = client
         .post(&url)
