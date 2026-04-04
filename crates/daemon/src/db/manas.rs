@@ -1412,6 +1412,8 @@ pub struct ManasHealth {
 
 /// Gather health counts across all 8 Manas layers.
 pub fn manas_health(conn: &Connection) -> rusqlite::Result<ManasHealth> {
+    // SAFETY: table and where_clause are always hardcoded literals from the callers below.
+    // No user input flows into this SQL. Using format! for DRY convenience only.
     let count_table = |table: &str, where_clause: &str| -> rusqlite::Result<usize> {
         let sql = format!("SELECT COUNT(*) FROM {}{}", table, where_clause);
         conn.query_row(&sql, [], |row| row.get::<_, i64>(0))

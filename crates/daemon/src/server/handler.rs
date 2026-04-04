@@ -1489,7 +1489,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::SetConfig { key, value } => {
             match crate::config::update_config(&key, &value) {
                 Ok(()) => {
-                    eprintln!("[config] updated {} = {}", key, value);
+                    // SECURITY: mask API key values in logs
+                    let log_value = if key.contains("api_key") || key.contains("secret") {
+                        "****".to_string()
+                    } else {
+                        value.clone()
+                    };
+                    eprintln!("[config] updated {} = {}", key, log_value);
                     Response::Ok {
                         data: ResponseData::ConfigUpdated { key, value },
                     }
