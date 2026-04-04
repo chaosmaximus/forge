@@ -512,9 +512,10 @@ pub fn available_tool_names(conn: &Connection) -> rusqlite::Result<std::collecti
 /// Store or update a skill.
 pub fn store_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
     let steps_json = serde_json::to_string(&skill.steps).unwrap_or_else(|_| "[]".to_string());
+    let correlation_ids_json = serde_json::to_string(&skill.correlation_ids).unwrap_or_else(|_| "[]".to_string());
     conn.execute(
-        "INSERT INTO skill (id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "INSERT INTO skill (id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             domain = excluded.domain,
@@ -523,7 +524,11 @@ pub fn store_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
             success_count = excluded.success_count,
             fail_count = excluded.fail_count,
             last_used = excluded.last_used,
-            version = excluded.version",
+            version = excluded.version,
+            skill_type = excluded.skill_type,
+            user_specific = excluded.user_specific,
+            observed_count = excluded.observed_count,
+            correlation_ids = excluded.correlation_ids",
         params![
             skill.id,
             skill.name,
@@ -536,23 +541,141 @@ pub fn store_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
             skill.source,
             skill.version as i64,
             skill.project,
+            skill.skill_type,
+            skill.user_specific as i32,
+            skill.observed_count as i32,
+            correlation_ids_json,
         ],
     )?;
     Ok(())
+}
+
+/// Store a skill, or if a similar one exists, increment its observed_count.
+/// Used for behavioral skills where observing the same pattern again means
+/// higher confidence rather than a duplicate entry.
+pub fn store_or_observe_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
+    // Check for existing skill with the same name (exact match)
+    let existing: Option<(String, u32)> = conn.query_row(
+        "SELECT id, observed_count FROM skill WHERE name = ?1 AND skill_type = 'behavioral'",
+        params![skill.name],
+        |row| Ok((row.get(0)?, row.get::<_, i32>(1).unwrap_or(1) as u32)),
+    ).ok();
+
+    if let Some((existing_id, count)) = existing {
+        // Increment observation count
+        conn.execute(
+            "UPDATE skill SET observed_count = ?1, last_used = ?2 WHERE id = ?3",
+            params![count as i32 + 1, now_offset(0), existing_id],
+        )?;
+        eprintln!("[skill-intelligence] observed pattern '{}' again (count: {})", skill.name, count + 1);
+        return Ok(());
+    }
+
+    // Also check for fuzzy match: skills with overlapping first 3 words in name
+    let words: Vec<&str> = skill.name.split_whitespace().take(3).collect();
+    if words.len() >= 2 {
+        let fuzzy_pattern = format!("%{}%", words.join("%"));
+        let fuzzy_match: Option<(String, u32)> = conn.query_row(
+            "SELECT id, observed_count FROM skill WHERE name LIKE ?1 AND skill_type = 'behavioral'",
+            params![fuzzy_pattern],
+            |row| Ok((row.get(0)?, row.get::<_, i32>(1).unwrap_or(1) as u32)),
+        ).ok();
+
+        if let Some((existing_id, count)) = fuzzy_match {
+            conn.execute(
+                "UPDATE skill SET observed_count = ?1, last_used = ?2 WHERE id = ?3",
+                params![count as i32 + 1, now_offset(0), existing_id],
+            )?;
+            eprintln!("[skill-intelligence] observed similar pattern '{}' again (count: {})", skill.name, count + 1);
+            return Ok(());
+        }
+    }
+
+    // New skill — store it
+    store_skill(conn, skill)
+}
+
+/// Find and create correlations between a behavioral skill and related memories.
+/// Returns the number of correlation edges created.
+pub fn correlate_skill(conn: &Connection, skill_id: &str, skill_title: &str, skill_tags: &[String]) -> rusqlite::Result<usize> {
+    let mut correlated = 0;
+
+    // Find identity facets with similar description
+    let words: Vec<&str> = skill_title.split_whitespace().take(3).collect();
+    if words.len() >= 2 {
+        let identity_pattern = format!("%{}%", words.join("%"));
+        let mut stmt = conn.prepare(
+            "SELECT id FROM identity WHERE active = 1 AND description LIKE ?1"
+        )?;
+        let identity_matches: Vec<String> = stmt.query_map(
+            params![identity_pattern],
+            |row| row.get(0),
+        )?.filter_map(|r| r.ok()).collect();
+
+        for id in &identity_matches {
+            if let Err(e) = crate::db::ops::store_edge(conn, skill_id, id, "correlates_with", "{}") {
+                eprintln!("[skill-intelligence] correlation edge error: {e}");
+            } else {
+                correlated += 1;
+            }
+        }
+    }
+
+    // Find decisions with matching tags
+    for tag in skill_tags {
+        if tag == "behavioral" { continue; }
+        let mut stmt = conn.prepare(
+            "SELECT id FROM memory WHERE memory_type = 'decision' AND status = 'active' AND tags LIKE ?1"
+        )?;
+        let decision_matches: Vec<String> = stmt.query_map(
+            params![format!("%{}%", tag)],
+            |row| row.get(0),
+        )?.filter_map(|r| r.ok()).collect();
+
+        for id in &decision_matches {
+            if let Err(e) = crate::db::ops::store_edge(conn, skill_id, id, "correlates_with", "{}") {
+                eprintln!("[skill-intelligence] correlation edge error: {e}");
+            } else {
+                correlated += 1;
+            }
+        }
+    }
+
+    // Update correlation_ids on the skill itself
+    if correlated > 0 {
+        let mut edge_ids: Vec<String> = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT to_id FROM edge WHERE from_id = ?1 AND edge_type = 'correlates_with'"
+        )?;
+        let rows = stmt.query_map(params![skill_id], |row| row.get(0))?;
+        for r in rows {
+            if let Ok(id) = r {
+                edge_ids.push(id);
+            }
+        }
+        let ids_json = serde_json::to_string(&edge_ids).unwrap_or_else(|_| "[]".to_string());
+        conn.execute(
+            "UPDATE skill SET correlation_ids = ?1 WHERE id = ?2",
+            params![ids_json, skill_id],
+        )?;
+        eprintln!("[skill-intelligence] created {} correlations for '{}'", correlated, skill_title);
+    }
+
+    Ok(correlated)
 }
 
 /// List all skills, optionally filtered by domain.
 pub fn list_skills(conn: &Connection, domain_filter: Option<&str>) -> rusqlite::Result<Vec<Skill>> {
     if let Some(d) = domain_filter {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids
              FROM skill WHERE domain = ?1 ORDER BY name"
         )?;
         let rows = stmt.query_map(params![d], row_to_skill)?;
         rows.collect()
     } else {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids
              FROM skill ORDER BY name"
         )?;
         let rows = stmt.query_map([], row_to_skill)?;
@@ -563,6 +686,8 @@ pub fn list_skills(conn: &Connection, domain_filter: Option<&str>) -> rusqlite::
 fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
     let steps_str: String = row.get(4)?;
     let steps: Vec<String> = serde_json::from_str(&steps_str).unwrap_or_default();
+    let correlation_ids_str: String = row.get::<_, String>(14).unwrap_or_else(|_| "[]".to_string());
+    let correlation_ids: Vec<String> = serde_json::from_str(&correlation_ids_str).unwrap_or_default();
     Ok(Skill {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -574,7 +699,11 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
         last_used: row.get(7)?,
         source: row.get(8)?,
         version: row.get::<_, i64>(9)? as u64,
-        project: row.get(10).ok().unwrap_or(None), // Optional — old rows may not have this column
+        project: row.get(10).ok().unwrap_or(None),
+        skill_type: row.get::<_, String>(11).unwrap_or_else(|_| "procedural".to_string()),
+        user_specific: row.get::<_, i32>(12).unwrap_or(0) != 0,
+        observed_count: row.get::<_, i32>(13).unwrap_or(1) as u32,
+        correlation_ids,
     })
 }
 
@@ -584,7 +713,7 @@ pub fn search_skills(conn: &Connection, query: &str, project: Option<&str>) -> r
     let search = format!("%{}%", query);
     if let Some(proj) = project {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids
              FROM skill WHERE (name LIKE ?1 OR description LIKE ?1 OR domain LIKE ?1)
              AND (project = ?2 OR project IS NULL OR project = '')
              ORDER BY success_count DESC LIMIT 5"
@@ -593,7 +722,7 @@ pub fn search_skills(conn: &Connection, query: &str, project: Option<&str>) -> r
         rows.collect()
     } else {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids
              FROM skill WHERE name LIKE ?1 OR description LIKE ?1 OR domain LIKE ?1
              ORDER BY success_count DESC LIMIT 5"
         )?;
@@ -618,10 +747,12 @@ pub fn record_skill_result(conn: &Connection, skill_id: &str, success: bool) -> 
 
 /// Prune low-quality skills (no steps, short descriptions, status-like names).
 /// Only removes skills with zero success_count to avoid deleting proven workflows.
+/// Behavioral skills are exempt from the "no steps" check since they don't have steps.
 pub fn prune_junk_skills(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM skill WHERE
-         (steps = '[]' OR steps = '' OR LENGTH(description) < 50)
+         skill_type != 'behavioral'
+         AND (steps = '[]' OR steps = '' OR LENGTH(description) < 50)
          AND success_count = 0",
         [],
     )

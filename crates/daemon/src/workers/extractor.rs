@@ -294,60 +294,123 @@ async fn process_file(
                 // skill extraction doesn't also create a duplicate memory entry.
                 // Quality gate: reject junk skills and demote them to lessons.
                 if em.memory_type == "skill" {
-                    let has_steps = em.content.contains("1)")
-                        || em.content.contains("1.")
-                        || em.content.contains("- ")
-                        || em.content.lines().count() >= 3;
-                    let long_enough = em.content.len() >= 50;
-                    let title_lower = em.title.to_lowercase();
-                    let not_status = !title_lower.contains("complete")
-                        && !title_lower.contains("remaining")
-                        && !title_lower.starts_with("all ")
-                        && !title_lower.starts_with("fix the");
+                    let is_behavioral = em.tags.iter().any(|t| t == "behavioral");
 
-                    if !has_steps || !long_enough || !not_status {
-                        // Demote to lesson — fall through to normal memory storage below
-                        eprintln!(
-                            "[extractor] demoted junk skill '{}' to lesson (has_steps={}, long_enough={}, not_status={})",
-                            em.title, has_steps, long_enough, not_status
-                        );
-                        // Don't continue — let it fall through to memory storage as a lesson
-                    } else {
-                        let skill = forge_core::types::Skill {
-                            id: format!("skill-{}", ulid::Ulid::new()),
-                            name: em.title.clone(),
-                            domain: em.tags.first().cloned().unwrap_or_else(|| "general".to_string()),
-                            description: em.content.clone(),
-                            steps: em.content.lines()
-                                .filter(|l| {
-                                    let trimmed = l.trim();
-                                    // Match numbered steps or bullet points
-                                    trimmed.starts_with(|c: char| c.is_ascii_digit())
-                                        || trimmed.starts_with('-')
-                                        || trimmed.starts_with('*')
-                                        || trimmed.starts_with("Step")
-                                })
-                                .map(|l| l.trim().to_string())
-                                .collect(),
-                            success_count: 1, // Extracted from a successful execution
-                            fail_count: 0,
-                            last_used: None,
-                            source: "extracted".to_string(),
-                            version: 1,
-                            project: None, // Skills are global — reusable across projects
-                        };
+                    if is_behavioral {
+                        // Behavioral skills: require meaningful description (>=100 chars), no step validation
+                        let long_enough = em.content.len() >= 100;
+                        let has_domain = em.tags.len() >= 2; // "behavioral" + domain tag
 
-                        if let Err(e) = crate::db::manas::store_skill(&locked.conn, &skill) {
-                            eprintln!("[extractor] failed to store skill '{}': {e}", em.title);
+                        if !long_enough || !has_domain {
+                            // Demote to pattern (behavioral skills too short = just a pattern)
+                            eprintln!(
+                                "[extractor] demoted weak behavioral skill '{}' to pattern (long_enough={}, has_domain={})",
+                                em.title, long_enough, has_domain
+                            );
+                            // Don't continue — let it fall through to memory storage as a pattern/lesson
                         } else {
-                            stored += 1;
-                            events::emit(&event_tx, "skill_extracted", serde_json::json!({
-                                "skill_id": skill.id,
-                                "name": skill.name,
-                                "domain": skill.domain,
-                            }));
+                            let skill = forge_core::types::Skill {
+                                id: format!("skill-{}", ulid::Ulid::new()),
+                                name: em.title.clone(),
+                                domain: em.tags.iter().find(|t| *t != "behavioral").cloned().unwrap_or_else(|| "general".to_string()),
+                                description: em.content.clone(),
+                                steps: vec![], // behavioral skills don't have steps
+                                success_count: 1,
+                                fail_count: 0,
+                                last_used: None,
+                                source: "extracted".to_string(),
+                                version: 1,
+                                project: None,
+                                skill_type: "behavioral".to_string(),
+                                user_specific: true,
+                                observed_count: 1,
+                                correlation_ids: vec![],
+                            };
+
+                            // Check for existing behavioral skill with similar name (observation counting)
+                            // If found, increment observed_count instead of creating duplicate
+                            if let Err(e) = crate::db::manas::store_or_observe_skill(&locked.conn, &skill) {
+                                eprintln!("[extractor] failed to store behavioral skill '{}': {e}", em.title);
+                            } else {
+                                stored += 1;
+                                // Run correlation engine to link to related identity/decisions
+                                let _ = crate::db::manas::correlate_skill(
+                                    &locked.conn,
+                                    &skill.id,
+                                    &skill.name,
+                                    &em.tags,
+                                );
+                                events::emit(&event_tx, "skill_extracted", serde_json::json!({
+                                    "skill_id": skill.id,
+                                    "name": skill.name,
+                                    "domain": skill.domain,
+                                    "skill_type": "behavioral",
+                                }));
+                            }
+                            continue; // Don't also store as memory
                         }
-                        continue; // Don't also store as memory
+                    } else {
+                        // Procedural skills: existing quality gate (numbered steps required)
+                        let has_steps = em.content.contains("1)")
+                            || em.content.contains("1.")
+                            || em.content.contains("- ")
+                            || em.content.lines().count() >= 3;
+                        let long_enough = em.content.len() >= 50;
+                        let title_lower = em.title.to_lowercase();
+                        let not_status = !title_lower.contains("complete")
+                            && !title_lower.contains("remaining")
+                            && !title_lower.starts_with("all ")
+                            && !title_lower.starts_with("fix the");
+
+                        if !has_steps || !long_enough || !not_status {
+                            // Demote to lesson — fall through to normal memory storage below
+                            eprintln!(
+                                "[extractor] demoted junk skill '{}' to lesson (has_steps={}, long_enough={}, not_status={})",
+                                em.title, has_steps, long_enough, not_status
+                            );
+                            // Don't continue — let it fall through to memory storage as a lesson
+                        } else {
+                            let skill = forge_core::types::Skill {
+                                id: format!("skill-{}", ulid::Ulid::new()),
+                                name: em.title.clone(),
+                                domain: em.tags.first().cloned().unwrap_or_else(|| "general".to_string()),
+                                description: em.content.clone(),
+                                steps: em.content.lines()
+                                    .filter(|l| {
+                                        let trimmed = l.trim();
+                                        // Match numbered steps or bullet points
+                                        trimmed.starts_with(|c: char| c.is_ascii_digit())
+                                            || trimmed.starts_with('-')
+                                            || trimmed.starts_with('*')
+                                            || trimmed.starts_with("Step")
+                                    })
+                                    .map(|l| l.trim().to_string())
+                                    .collect(),
+                                success_count: 1, // Extracted from a successful execution
+                                fail_count: 0,
+                                last_used: None,
+                                source: "extracted".to_string(),
+                                version: 1,
+                                project: None, // Skills are global — reusable across projects
+                                skill_type: "procedural".to_string(),
+                                user_specific: false,
+                                observed_count: 1,
+                                correlation_ids: vec![],
+                            };
+
+                            if let Err(e) = crate::db::manas::store_skill(&locked.conn, &skill) {
+                                eprintln!("[extractor] failed to store skill '{}': {e}", em.title);
+                            } else {
+                                stored += 1;
+                                events::emit(&event_tx, "skill_extracted", serde_json::json!({
+                                    "skill_id": skill.id,
+                                    "name": skill.name,
+                                    "domain": skill.domain,
+                                    "skill_type": "procedural",
+                                }));
+                            }
+                            continue; // Don't also store as memory
+                        }
                     }
                 }
 

@@ -33,24 +33,35 @@ Type guidance:
     {"type": "identity", "title": "Security-first approach", "content": "User explicitly prioritizes security in all design decisions", "confidence": 0.8, "tags": ["values"], "affects": []}
     {"type": "identity", "title": "Tech lead at startup", "content": "User mentioned leading a small engineering team", "confidence": 0.9, "tags": ["role"], "affects": []}
     {"type": "identity", "title": "Ship weekly releases", "content": "User wants to maintain a weekly release cadence", "confidence": 0.7, "tags": ["goals"], "affects": []}
-- "skill": a REUSABLE, GENERALIZABLE WORKFLOW with DISCRETE, NUMBERED STEPS.
-  ONLY extract as a skill if ALL of these are true:
-  1. The workflow was SUCCESSFULLY completed in this conversation
-  2. The workflow has at least 2 discrete steps that could be followed again
-  3. The workflow is GENERALIZABLE (not specific to one file/bug/task)
-  4. The title describes WHAT the workflow does, not a task status
+- "skill": a reusable pattern. TWO forms:
+
+  A) PROCEDURAL: an explicit workflow with DISCRETE, NUMBERED STEPS.
+     ONLY extract as a procedural skill if ALL of these are true:
+     1. The workflow was SUCCESSFULLY completed in this conversation
+     2. The workflow has at least 2 discrete steps that could be followed again
+     3. The workflow is GENERALIZABLE (not specific to one file/bug/task)
+     4. The title describes WHAT the workflow does, not a task status
+     The content MUST contain numbered steps (1. 2. 3.) or bullet points (- step1 - step2).
+     Include tag "procedural" plus a domain tag.
+     Examples:
+       {"type": "skill", "title": "Deploy Rust Service", "content": "1) cargo build --release 2) scp binary 3) systemctl restart", "confidence": 0.9, "tags": ["procedural", "deployment"], "affects": []}
+       {"type": "skill", "title": "Add New Protocol Endpoint", "content": "1) Add Request variant 2) Add Response variant 3) Add handler arm 4) Add contract test", "confidence": 0.85, "tags": ["procedural", "protocol"], "affects": []}
+
+  B) BEHAVIORAL: a pattern in HOW the user works — their debugging heuristic,
+     architecture approach, quality standard, or decision-making style.
+     Extract when you observe a REPEATED PATTERN in the user's behavior.
+     The content MUST be a meaningful description (at least 100 chars) of the pattern.
+     Include tag "behavioral" plus a domain tag.
+     Examples:
+       {"type": "skill", "title": "Debug by tracing to system failure", "content": "When encountering a bug, the user first asks 'why didn't the system catch this?' — traces the root cause to infrastructure design, not just the symptom.", "confidence": 0.85, "tags": ["behavioral", "debugging"], "affects": []}
+       {"type": "skill", "title": "Wave-based parallel architecture", "content": "The user breaks large tasks into independent waves, builds in parallel with agents, runs adversarial review per wave, then merges.", "confidence": 0.9, "tags": ["behavioral", "architecture"], "affects": []}
+       {"type": "skill", "title": "Fail-loud quality standard", "content": "The user insists on no silent error swallowing. Every error must be logged, every failure visible. Operations must truly succeed or fail visibly.", "confidence": 0.95, "tags": ["behavioral", "quality"], "affects": []}
 
   BAD (do NOT extract as skill):
   - "All 17 Tasks Complete" (status update, not a workflow)
   - "Fix the remaining 4 failures" (task-specific, not reusable)
   - "Cleanup Legacy Swift App" (one-off task)
-
-  GOOD (extract as skill):
-  - "Deploy Rust Service: 1) cargo build --release 2) scp binary 3) systemctl restart"
-  - "Add New Protocol Endpoint: 1) Add Request variant 2) Add Response variant 3) Add handler arm 4) Add contract test"
-
-  The content MUST contain numbered steps (1. 2. 3.) or bullet points (- step1 - step2).
-  If you can't identify at least 2 discrete steps, it's NOT a skill — extract as a "lesson" instead.
+  If you can't identify at least 2 discrete steps AND it's not a behavioral pattern, extract as a "lesson" instead.
 
 Only extract REAL decisions/lessons/skills. If unsure, skip it.
 Return [] if nothing worth remembering.
