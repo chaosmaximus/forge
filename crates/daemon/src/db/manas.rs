@@ -1446,6 +1446,17 @@ pub fn manas_health(conn: &Connection) -> rusqlite::Result<ManasHealth> {
     })
 }
 
+/// Returns true if the project has zero active memories in the memory table.
+/// Used to detect brand-new projects that need onboarding guidance.
+pub fn is_new_project(conn: &Connection, project: &str) -> rusqlite::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory WHERE project = ?1 AND status = 'active'",
+        params![project],
+        |row| row.get(0),
+    )?;
+    Ok(count == 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

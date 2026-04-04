@@ -145,7 +145,11 @@ pub enum Request {
     /// List disposition traits for an agent (Layer 7)
     ListDisposition { agent: String },
     /// Extended health across all 8 Manas layers
-    ManasHealth,
+    ManasHealth {
+        /// Optional project filter for is_new_project check.
+        #[serde(default)]
+        project: Option<String>,
+    },
 
     /// Compile optimized context from all Manas layers (for session-start)
     CompileContext {
@@ -155,6 +159,11 @@ pub enum Request {
         /// Used by session-start hook to cache the stable part for KV-cache optimization.
         #[serde(default)]
         static_only: Option<bool>,
+        /// Layer names to exclude from the dynamic suffix.
+        /// Valid names: "decisions", "lessons", "skills", "perceptions", "working_set", "active_sessions".
+        /// Excluded layers emit empty self-closing tags to maintain XML structure stability for KV-cache.
+        #[serde(default)]
+        excluded_layers: Option<Vec<String>>,
     },
 
     /// Compile context with full trace of considered/included/excluded memories + reasons.

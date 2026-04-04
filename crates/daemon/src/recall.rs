@@ -529,9 +529,27 @@ pub fn compile_prefetch_hints(
                 }
             }
 
-            // Step 3: Find 1-hop graph neighbors (bidirectional)
-            let neighbors: Vec<(String, String, i64)> = conn
-                .prepare(
+            // Step 3: Find 1-hop graph neighbors (bidirectional), project-bounded
+            let neighbors: Vec<(String, String, i64)> = if let Some(proj) = project {
+                conn.prepare(
+                    "SELECT DISTINCT m.id, m.title, m.access_count FROM memory m
+                     JOIN edge e ON (e.from_id = ?1 AND e.to_id = m.id)
+                        OR (e.to_id = ?1 AND e.from_id = m.id)
+                     WHERE m.status = 'active' AND (m.project = ?2 OR m.project IS NULL OR m.project = '')
+                     LIMIT 5",
+                )
+                .and_then(|mut stmt| {
+                    stmt.query_map(params![id, proj], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .collect()
+                })
+                .unwrap_or_else(|e| {
+                    eprintln!("[prefetch] failed to query neighbors for {id}: {e}");
+                    vec![]
+                })
+            } else {
+                conn.prepare(
                     "SELECT DISTINCT m.id, m.title, m.access_count FROM memory m
                      JOIN edge e ON (e.from_id = ?1 AND e.to_id = m.id)
                         OR (e.to_id = ?1 AND e.from_id = m.id)
@@ -547,7 +565,8 @@ pub fn compile_prefetch_hints(
                 .unwrap_or_else(|e| {
                     eprintln!("[prefetch] failed to query neighbors for {id}: {e}");
                     vec![]
-                });
+                })
+            };
 
             for (_nid, ntitle, naccess) in neighbors {
                 let nweighted = naccess as f64 * weight * 0.5; // neighbors get half weight
@@ -578,20 +597,27 @@ pub fn compile_dynamic_suffix(
     agent: &str,
     project: Option<&str>,
     budget: usize,
+    excluded_layers: &[String],
 ) -> String {
     let mut xml = String::from("<forge-dynamic>\n");
     let mut used = 0usize;
 
-    // Decisions (accumulate — always show ALL, masking with empty tag if none)
-    // Recency boost: last 24h *1.5, last 7d *1.2, older *1.0
-    // Context feedback: access_count >10 gives 1.3x, >3 gives 1.1x (flywheel ranking)
-    {
-        let decisions: Vec<(String, String, f64, String, f64)> = if let Some(proj) = project {
-            conn.prepare(
-                "SELECT id, title, confidence, valence, intensity FROM memory
-                 WHERE memory_type = 'decision' AND status = 'active'
-                 AND (project = ?1 OR project IS NULL OR project = '')
-                 ORDER BY confidence * CASE
+    // Domain DNA keywords for boosting (Feature 2: Domain DNA Boosting)
+    let domain_keywords: Vec<String> = if let Some(proj) = project {
+        crate::db::manas::list_domain_dna(conn, Some(proj))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|dna| dna.pattern.to_lowercase())
+            .collect()
+    } else {
+        vec![]
+    };
+
+    // (id, title, confidence, valence, intensity, tags_json, content, sql_rank)
+    type RankedRow = (String, String, f64, String, f64, String, String, f64);
+
+    // SQL ranking expression: recency * access * confidence (used for decisions + lessons)
+    let sql_rank = "confidence * CASE
                      WHEN created_at > datetime('now', '-1 day') THEN 1.5
                      WHEN created_at > datetime('now', '-7 days') THEN 1.2
                      ELSE 1.0
@@ -599,42 +625,64 @@ pub fn compile_dynamic_suffix(
                      WHEN access_count > 10 THEN 1.3
                      WHEN access_count > 3 THEN 1.1
                      ELSE 1.0
-                 END DESC, accessed_at DESC LIMIT 10",
-            )
+                 END";
+
+    // Decisions (accumulate — always show ALL, masking with empty tag if none)
+    if excluded_layers.iter().any(|l| l == "decisions") {
+        xml.push_str("<decisions/>\n");
+    } else {
+        // Fetch decisions with SQL-computed rank + Domain DNA boost
+        let raw_decisions: Vec<RankedRow> = if let Some(proj) = project {
+            conn.prepare(&format!(
+                "SELECT id, title, confidence, valence, intensity, COALESCE(tags, '[]'), content, ({sql_rank}) as sql_rank FROM memory
+                 WHERE memory_type = 'decision' AND status = 'active'
+                 AND (project = ?1 OR project IS NULL OR project = '')
+                 ORDER BY sql_rank DESC, accessed_at DESC LIMIT 10",
+            ))
             .and_then(|mut stmt| {
                 stmt.query_map(params![proj], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
                 })?
                 .collect()
             })
             .unwrap_or_default()
         } else {
-            conn.prepare(
-                "SELECT id, title, confidence, valence, intensity FROM memory
+            conn.prepare(&format!(
+                "SELECT id, title, confidence, valence, intensity, COALESCE(tags, '[]'), content, ({sql_rank}) as sql_rank FROM memory
                  WHERE memory_type = 'decision' AND status = 'active'
-                 ORDER BY confidence * CASE
-                     WHEN created_at > datetime('now', '-1 day') THEN 1.5
-                     WHEN created_at > datetime('now', '-7 days') THEN 1.2
-                     ELSE 1.0
-                 END * CASE
-                     WHEN access_count > 10 THEN 1.3
-                     WHEN access_count > 3 THEN 1.1
-                     ELSE 1.0
-                 END DESC, accessed_at DESC LIMIT 10",
-            )
+                 ORDER BY sql_rank DESC, accessed_at DESC LIMIT 10",
+            ))
             .and_then(|mut stmt| {
                 stmt.query_map([], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
                 })?
                 .collect()
             })
             .unwrap_or_default()
         };
+
+        // Apply Domain DNA boost: multiply SQL rank by domain relevance (1.3x for matches)
+        let mut decisions: Vec<(String, String, f64, String, f64, f64)> = raw_decisions
+            .into_iter()
+            .map(|(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
+                let mut boost = 1.0_f64;
+                if !domain_keywords.is_empty() {
+                    let searchable = format!("{} {} {}", tags, content, title).to_lowercase();
+                    if domain_keywords.iter().any(|kw| searchable.contains(kw)) {
+                        boost = 1.3;
+                    }
+                }
+                let rank_score = sql_rank * boost;
+                (id, title, confidence, valence, intensity, rank_score)
+            })
+            .collect();
+        decisions.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap_or(std::cmp::Ordering::Equal));
+
         if decisions.is_empty() {
             xml.push_str("<decisions/>\n");
         } else {
             let mut dec_xml = String::from("<decisions>");
-            for (id, title, confidence, _valence, intensity) in &decisions {
+            for (id, title, confidence, _valence, intensity, _rank_score) in &decisions {
                 let display_confidence = if *intensity > 0.5 {
                     (confidence * (1.0 + intensity * 0.5)).min(1.0)
                 } else {
@@ -662,56 +710,61 @@ pub fn compile_dynamic_suffix(
     // Lessons (accumulate — always present)
     // Recency boost: last 24h *1.5, last 7d *1.2, older *1.0
     // Context feedback: access_count >10 gives 1.3x, >3 gives 1.1x (flywheel ranking)
-    {
-        let lessons: Vec<(String, String, f64, String, f64)> = if let Some(proj) = project {
-            conn.prepare(
-                "SELECT id, title, confidence, valence, intensity FROM memory
+    if excluded_layers.iter().any(|l| l == "lessons") {
+        xml.push_str("<lessons/>\n");
+    } else {
+        // Fetch lessons with SQL-computed rank, then apply Domain DNA boost
+        let raw_lessons: Vec<RankedRow> = if let Some(proj) = project {
+            conn.prepare(&format!(
+                "SELECT id, title, confidence, valence, intensity, COALESCE(tags, '[]'), content, ({sql_rank}) as sql_rank FROM memory
                  WHERE memory_type = 'lesson' AND status = 'active'
                  AND (project = ?1 OR project IS NULL OR project = '')
-                 ORDER BY confidence * CASE
-                     WHEN created_at > datetime('now', '-1 day') THEN 1.5
-                     WHEN created_at > datetime('now', '-7 days') THEN 1.2
-                     ELSE 1.0
-                 END * CASE
-                     WHEN access_count > 10 THEN 1.3
-                     WHEN access_count > 3 THEN 1.1
-                     ELSE 1.0
-                 END DESC, accessed_at DESC LIMIT 5",
-            )
+                 ORDER BY sql_rank DESC, accessed_at DESC LIMIT 5",
+            ))
             .and_then(|mut stmt| {
                 stmt.query_map(params![proj], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
                 })?
                 .collect()
             })
             .unwrap_or_default()
         } else {
-            conn.prepare(
-                "SELECT id, title, confidence, valence, intensity FROM memory
+            conn.prepare(&format!(
+                "SELECT id, title, confidence, valence, intensity, COALESCE(tags, '[]'), content, ({sql_rank}) as sql_rank FROM memory
                  WHERE memory_type = 'lesson' AND status = 'active'
-                 ORDER BY confidence * CASE
-                     WHEN created_at > datetime('now', '-1 day') THEN 1.5
-                     WHEN created_at > datetime('now', '-7 days') THEN 1.2
-                     ELSE 1.0
-                 END * CASE
-                     WHEN access_count > 10 THEN 1.3
-                     WHEN access_count > 3 THEN 1.1
-                     ELSE 1.0
-                 END DESC, accessed_at DESC LIMIT 5",
-            )
+                 ORDER BY sql_rank DESC, accessed_at DESC LIMIT 5",
+            ))
             .and_then(|mut stmt| {
                 stmt.query_map([], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
                 })?
                 .collect()
             })
             .unwrap_or_default()
         };
+
+        // Apply Domain DNA boost on top of SQL rank (preserves recency/access boosts)
+        let mut lessons: Vec<(String, String, f64, String, f64, f64)> = raw_lessons
+            .into_iter()
+            .map(|(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
+                let mut boost = 1.0_f64;
+                if !domain_keywords.is_empty() {
+                    let searchable = format!("{} {} {}", tags, content, title).to_lowercase();
+                    if domain_keywords.iter().any(|kw| searchable.contains(kw)) {
+                        boost = 1.3;
+                    }
+                }
+                let rank_score = sql_rank * boost;
+                (id, title, confidence, valence, intensity, rank_score)
+            })
+            .collect();
+        lessons.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap_or(std::cmp::Ordering::Equal));
+
         if lessons.is_empty() {
             xml.push_str("<lessons/>\n");
         } else {
             let mut les_xml = String::from("<lessons>");
-            for (id, title, _confidence, _valence, _intensity) in &lessons {
+            for (id, title, _confidence, _valence, _intensity, _rank_score) in &lessons {
                 let entry = format!("\n  <lesson>{}</lesson>", xml_escape(title));
                 if used + les_xml.len() + entry.len() < budget {
                     les_xml.push_str(&entry);
@@ -729,7 +782,9 @@ pub fn compile_dynamic_suffix(
 
     // Skill summaries (lazy loading — 1-line each, agent pulls details on demand)
     // Skills: project-scoped AND tool-validated
-    {
+    if excluded_layers.iter().any(|l| l == "skills") {
+        xml.push_str("<skills/>\n");
+    } else {
         let available_tools = crate::db::manas::available_tool_names(conn).unwrap_or_default();
         let active_skills: Vec<_> = crate::db::manas::list_skills(conn, None)
             .unwrap_or_default()
@@ -825,7 +880,9 @@ pub fn compile_dynamic_suffix(
     }
 
     // Critical perceptions only (warnings/errors, unconsumed, project-scoped)
-    {
+    if excluded_layers.iter().any(|l| l == "perceptions") {
+        xml.push_str("<perceptions/>\n");
+    } else {
         let critical: Vec<_> = crate::db::manas::list_unconsumed_perceptions(conn, None)
             .unwrap_or_default()
             .into_iter()
@@ -866,7 +923,9 @@ pub fn compile_dynamic_suffix(
 
     // Active sessions — subtle hint, only if other sessions exist.
     // Enables cross-session awareness without aggressive prompting.
-    {
+    if excluded_layers.iter().any(|l| l == "active_sessions") {
+        // no-op: active-sessions is only rendered when multiple exist, no need for empty tag
+    } else {
         let active = crate::sessions::list_sessions(conn, true).unwrap_or_default();
         // Only show if there are at least 2 active sessions (the current one + others)
         if active.len() >= 2 {
@@ -890,7 +949,9 @@ pub fn compile_dynamic_suffix(
     }
 
     // Working set from last session + predictive prefetch hints
-    {
+    if excluded_layers.iter().any(|l| l == "working_set") {
+        xml.push_str("<working-set/>\n");
+    } else {
         let ws = crate::sessions::get_last_working_set(conn, agent, project)
             .unwrap_or_default();
         let prefetch = compile_prefetch_hints(conn, agent, project, 5);
@@ -941,7 +1002,7 @@ pub fn compile_context(
     project: Option<&str>,
 ) -> String {
     let prefix = compile_static_prefix(conn, agent);
-    let suffix = compile_dynamic_suffix(conn, agent, project, 3000);
+    let suffix = compile_dynamic_suffix(conn, agent, project, 3000, &[]);
     format!(
         "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
         prefix, suffix
@@ -1466,7 +1527,7 @@ mod tests {
     fn test_compile_dynamic_suffix_all_sections_present_empty_db() {
         let conn = setup();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
         assert!(suffix.contains("<forge-dynamic>"), "should contain opening tag");
         assert!(suffix.contains("</forge-dynamic>"), "should contain closing tag");
         assert!(suffix.contains("<decisions"), "decisions always present");
@@ -1480,7 +1541,7 @@ mod tests {
     fn test_compile_dynamic_suffix_changes_with_new_data() {
         let conn = setup();
 
-        let suffix1 = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix1 = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
         assert!(suffix1.contains("<decisions/>"), "no decisions yet");
 
         // Store a decision
@@ -1488,7 +1549,7 @@ mod tests {
             .with_confidence(0.9);
         ops::remember(&conn, &mem).unwrap();
 
-        let suffix2 = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix2 = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
         assert_ne!(suffix1, suffix2, "suffix should change when data is added");
         assert!(suffix2.contains("JWT"), "should contain the new decision");
     }
@@ -2076,7 +2137,7 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
 
         // Recent decision (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
         let micro_pos = suffix.find("Switch to microservices").expect("recent decision should be present");
@@ -2111,7 +2172,7 @@ mod tests {
             &forge_core::time::now_offset(-3 * 86400), // 3 days ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
 
         // 3-day-old (0.9*1.2=1.08) should outrank 30-day-old (1.0*1.0=1.0)
         let mid_pos = suffix.find("Recent week pattern").expect("mid-age decision should be present");
@@ -2145,7 +2206,7 @@ mod tests {
             &forge_core::time::now_offset(-30 * 86400),
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
 
         let high_pos = suffix.find("High confidence old").expect("high confidence should be present");
         let low_pos = suffix.find("Low confidence old").expect("low confidence should be present");
@@ -2179,7 +2240,7 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
 
         // Recent lesson (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
         let fresh_pos = suffix.find("Fresh testing lesson").expect("recent lesson should be present");
@@ -2265,7 +2326,7 @@ mod tests {
         // Only one session — active-sessions should NOT appear
         crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions with only 1 session"
@@ -2280,7 +2341,7 @@ mod tests {
         crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
         crate::sessions::register_session(&conn, "s2", "cline", Some("dashboard"), None).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
         assert!(
             suffix.contains("active-sessions"),
             "should show active-sessions with 2 sessions"
@@ -2313,7 +2374,7 @@ mod tests {
         // End one session — should hide active-sessions again
         crate::sessions::end_session(&conn, "s2").unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions when only 1 remains active"

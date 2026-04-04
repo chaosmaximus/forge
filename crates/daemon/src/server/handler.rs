@@ -1071,22 +1071,34 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::ManasHealth => {
+        Request::ManasHealth { project } => {
             match crate::db::manas::manas_health(&state.conn) {
-                Ok(mh) => Response::Ok {
-                    data: ResponseData::ManasHealthData {
-                        platform_count: mh.platform_entries,
-                        tool_count: mh.tools,
-                        skill_count: mh.skills,
-                        domain_dna_count: mh.domain_dna_entries,
-                        perception_unconsumed: mh.perceptions_unconsumed,
-                        declared_count: mh.declared_entries,
-                        identity_facets: mh.identity_facets_active,
-                        disposition_traits: mh.dispositions,
-                        experience_count: mh.experience_count,
-                        embedding_count: mh.embedding_count,
-                        trait_names: mh.trait_names,
-                    },
+                Ok(mh) => {
+                    let is_new = if let Some(ref proj) = project {
+                        crate::db::manas::is_new_project(&state.conn, proj)
+                            .unwrap_or_else(|e| {
+                                eprintln!("[manas_health] is_new_project failed: {e}");
+                                false
+                            })
+                    } else {
+                        false
+                    };
+                    Response::Ok {
+                        data: ResponseData::ManasHealthData {
+                            platform_count: mh.platform_entries,
+                            tool_count: mh.tools,
+                            skill_count: mh.skills,
+                            domain_dna_count: mh.domain_dna_entries,
+                            perception_unconsumed: mh.perceptions_unconsumed,
+                            declared_count: mh.declared_entries,
+                            identity_facets: mh.identity_facets_active,
+                            disposition_traits: mh.dispositions,
+                            experience_count: mh.experience_count,
+                            embedding_count: mh.embedding_count,
+                            trait_names: mh.trait_names,
+                            is_new_project: is_new,
+                        },
+                    }
                 },
                 Err(e) => Response::Error {
                     message: format!("manas_health failed: {e}"),
@@ -1094,8 +1106,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::CompileContext { agent, project, static_only } => {
+        Request::CompileContext { agent, project, static_only, excluded_layers } => {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
+            let excluded = excluded_layers.unwrap_or_default();
             let static_prefix = crate::recall::compile_static_prefix(&state.conn, agent_name);
 
             if static_only.unwrap_or(false) {
@@ -1118,7 +1131,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             } else {
                 let dynamic_suffix = crate::recall::compile_dynamic_suffix(
-                    &state.conn, agent_name, project.as_deref(), 3000,
+                    &state.conn, agent_name, project.as_deref(), 3000, &excluded,
                 );
                 let full = format!(
                     "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
@@ -2314,7 +2327,7 @@ mod tests {
     fn test_manas_health_handler() {
         let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
 
-        let resp = handle_request(&mut state, Request::ManasHealth);
+        let resp = handle_request(&mut state, Request::ManasHealth { project: None });
         match resp {
             Response::Ok {
                 data: ResponseData::ManasHealthData {
@@ -2843,6 +2856,7 @@ mod tests {
                 agent: None,
                 project: None,
                 static_only: None,
+                excluded_layers: None,
             },
         );
         match resp {
@@ -2875,6 +2889,7 @@ mod tests {
                 agent: None,
                 project: None,
                 static_only: Some(true),
+                excluded_layers: None,
             },
         );
         match resp {
