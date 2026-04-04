@@ -61,6 +61,8 @@ fn perception_kind_str(k: &PerceptionKind) -> &'static str {
         PerceptionKind::TestResult => "test_result",
         PerceptionKind::UserFeedback => "user_feedback",
         PerceptionKind::MissingTool => "missing_tool",
+        PerceptionKind::CrossSessionDecision => "cross_session_decision",
+        PerceptionKind::ActionSummary => "action_summary",
     }
 }
 
@@ -72,6 +74,8 @@ fn perception_kind_from_str(s: &str) -> PerceptionKind {
         "test_result" => PerceptionKind::TestResult,
         "user_feedback" => PerceptionKind::UserFeedback,
         "missing_tool" => PerceptionKind::MissingTool,
+        "cross_session_decision" => PerceptionKind::CrossSessionDecision,
+        "action_summary" => PerceptionKind::ActionSummary,
         other => {
             eprintln!("[manas] unknown perception kind '{}', defaulting to Error", other);
             PerceptionKind::Error

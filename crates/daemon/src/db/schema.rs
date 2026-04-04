@@ -272,6 +272,9 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE skill ADD COLUMN observed_count INTEGER NOT NULL DEFAULT 1", []);
     let _ = conn.execute("ALTER TABLE skill ADD COLUMN correlation_ids TEXT NOT NULL DEFAULT '[]'", []);
 
+    // Cross-session awareness: track tool_use count per session (safe to re-run)
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN tool_use_count INTEGER NOT NULL DEFAULT 0", []);
+
     Ok(())
 }
 

@@ -105,6 +105,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             project,
         } => {
             let type_str = format!("{:?}", memory_type);
+            let is_decision = matches!(memory_type, forge_core::types::MemoryType::Decision);
             let title_clone = title.clone();
             let mut memory = Memory::new(memory_type, title, content);
             if let Some(c) = confidence {
@@ -113,8 +114,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             if let Some(t) = tags {
                 memory = memory.with_tags(t);
             }
-            if let Some(p) = project {
-                memory = memory.with_project(p);
+            if let Some(ref p) = project {
+                memory = memory.with_project(p.clone());
             }
             // Assign active session ID so CLI-stored memories are linked to a session
             memory.session_id = crate::sessions::get_active_session_id(&state.conn, "cli")
@@ -129,6 +130,31 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         "memory_type": type_str,
                         "title": title_clone,
                     }));
+
+                    // Cross-session perception: when a decision is stored and there are
+                    // multiple active sessions, create a subtle perception so other sessions
+                    // become aware. Only for decisions (important enough to notify).
+                    if is_decision {
+                        let active_count = crate::sessions::list_sessions(&state.conn, true)
+                            .map(|s| s.len())
+                            .unwrap_or(0);
+                        if active_count > 1 {
+                            let perception = forge_core::types::manas::Perception {
+                                id: format!("xsession-{}", ulid::Ulid::new()),
+                                kind: forge_core::types::manas::PerceptionKind::CrossSessionDecision,
+                                data: format!("Another session stored decision: {}", title_clone),
+                                severity: forge_core::types::manas::Severity::Info,
+                                project: project.clone(),
+                                created_at: forge_core::time::now_iso(),
+                                expires_at: Some(forge_core::time::now_offset(600)), // 10 min TTL
+                                consumed: false,
+                            };
+                            if let Err(e) = crate::db::manas::store_perception(&state.conn, &perception) {
+                                eprintln!("[cross-session] failed to store perception: {e}");
+                            }
+                        }
+                    }
+
                     Response::Ok {
                         data: ResponseData::Stored { id },
                     }
@@ -3558,5 +3584,85 @@ mod tests {
             }
             other => panic!("expected ExtractionResult, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_remember_decision_creates_cross_session_perception() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Register 2 sessions so cross-session perception triggers
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", Some("forge"), None).unwrap();
+        crate::sessions::register_session(&state.conn, "s2", "cline", Some("forge"), None).unwrap();
+
+        // Store a decision
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use JWT for auth".into(),
+            content: "Security decision for API".into(),
+            confidence: Some(0.9),
+            tags: None,
+            project: Some("forge".into()),
+        });
+        assert!(matches!(resp, Response::Ok { data: ResponseData::Stored { .. } }));
+
+        // Verify cross-session perception was created
+        let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None).unwrap();
+        let cross = perceptions.iter().find(|p| {
+            p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
+        });
+        assert!(cross.is_some(), "cross-session perception should exist");
+        let cross = cross.unwrap();
+        assert!(cross.data.contains("JWT"), "perception should reference the decision");
+        assert_eq!(cross.project, Some("forge".into()), "should carry project");
+        assert!(cross.expires_at.is_some(), "should have TTL");
+    }
+
+    #[test]
+    fn test_remember_lesson_no_cross_session_perception() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Register 2 sessions
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", Some("forge"), None).unwrap();
+        crate::sessions::register_session(&state.conn, "s2", "cline", Some("forge"), None).unwrap();
+
+        // Store a lesson (NOT a decision)
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Lesson,
+            title: "TDD is great".into(),
+            content: "Write tests first".into(),
+            confidence: None,
+            tags: None,
+            project: Some("forge".into()),
+        });
+
+        // Verify NO cross-session perception was created
+        let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None).unwrap();
+        let cross = perceptions.iter().find(|p| {
+            p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
+        });
+        assert!(cross.is_none(), "lessons should not create cross-session perceptions");
+    }
+
+    #[test]
+    fn test_remember_decision_no_cross_session_when_single_session() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Only 1 session — no cross-session perception needed
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", Some("forge"), None).unwrap();
+
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use NDJSON protocol".into(),
+            content: "Daemon IPC format".into(),
+            confidence: None,
+            tags: None,
+            project: Some("forge".into()),
+        });
+
+        let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None).unwrap();
+        let cross = perceptions.iter().find(|p| {
+            p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
+        });
+        assert!(cross.is_none(), "single session should not create cross-session perception");
     }
 }

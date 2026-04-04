@@ -159,6 +159,16 @@ pub fn get_session(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sessi
     }
 }
 
+/// Increment tool_use_count for a session by a given delta.
+/// Used by the extractor to track how many tool_use chunks were detected.
+pub fn increment_tool_use_count(conn: &Connection, session_id: &str, delta: usize) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE session SET tool_use_count = tool_use_count + ?1 WHERE id = ?2",
+        params![delta as i64, session_id],
+    )?;
+    Ok(())
+}
+
 /// Auto-cleanup sessions that have been ACTIVE for more than 24 hours.
 /// These are leaked sessions where the session-end hook never fired.
 /// Called on daemon startup to prevent unbounded session accumulation.
@@ -352,5 +362,85 @@ mod tests {
         assert_eq!(s.cwd.as_deref(), Some("/cwd"));
 
         assert!(get_session(&conn, "nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_tool_use_count_tracking() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
+
+        // Initial count should be 0
+        let count: i64 = conn.query_row(
+            "SELECT tool_use_count FROM session WHERE id = 's1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 0, "initial tool_use_count should be 0");
+
+        // Increment by 3
+        increment_tool_use_count(&conn, "s1", 3).unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT tool_use_count FROM session WHERE id = 's1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 3, "tool_use_count should be 3 after increment");
+
+        // Increment again by 2
+        increment_tool_use_count(&conn, "s1", 2).unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT tool_use_count FROM session WHERE id = 's1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 5, "tool_use_count should accumulate to 5");
+    }
+
+    #[test]
+    fn test_tool_use_count_nonexistent_session() {
+        let conn = setup();
+
+        // Incrementing a non-existent session should not error (just 0 rows updated)
+        let result = increment_tool_use_count(&conn, "nonexistent", 1);
+        assert!(result.is_ok(), "should not error on nonexistent session");
+    }
+
+    #[test]
+    fn test_cross_session_perception() {
+        let conn = setup();
+
+        // Register two sessions
+        register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None).unwrap();
+
+        // Verify there are 2 active sessions
+        let active = list_sessions(&conn, true).unwrap();
+        assert_eq!(active.len(), 2, "should have 2 active sessions");
+
+        // Simulate cross-session perception (as handler.rs does for decisions)
+        let perception = forge_core::types::manas::Perception {
+            id: format!("xsession-{}", ulid::Ulid::new()),
+            kind: forge_core::types::manas::PerceptionKind::CrossSessionDecision,
+            data: "Another session stored decision: Use JWT for auth".to_string(),
+            severity: forge_core::types::manas::Severity::Info,
+            project: Some("forge".to_string()),
+            created_at: forge_core::time::now_iso(),
+            expires_at: Some(forge_core::time::now_offset(600)),
+            consumed: false,
+        };
+        crate::db::manas::store_perception(&conn, &perception).unwrap();
+
+        // Verify perception was stored
+        let perceptions = crate::db::manas::list_unconsumed_perceptions(&conn, None).unwrap();
+        let cross_session = perceptions.iter().find(|p| {
+            p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
+        });
+        assert!(cross_session.is_some(), "cross-session perception should be stored");
+        assert!(
+            cross_session.unwrap().data.contains("JWT"),
+            "perception should contain the decision title"
+        );
     }
 }

@@ -136,6 +136,8 @@ pub enum PerceptionKind {
     TestResult,
     UserFeedback,
     MissingTool,
+    CrossSessionDecision,
+    ActionSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

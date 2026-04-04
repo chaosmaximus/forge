@@ -816,6 +816,31 @@ pub fn compile_dynamic_suffix(
         }
     }
 
+    // Active sessions — subtle hint, only if other sessions exist.
+    // Enables cross-session awareness without aggressive prompting.
+    {
+        let active = crate::sessions::list_sessions(conn, true).unwrap_or_default();
+        // Only show if there are at least 2 active sessions (the current one + others)
+        if active.len() >= 2 {
+            let mut sessions_xml = String::from(
+                "<active-sessions hint=\"other sessions sharing this daemon\">"
+            );
+            for s in &active {
+                sessions_xml.push_str(&format!(
+                    "\n  <session id=\"{}\" project=\"{}\" agent=\"{}\" />",
+                    xml_escape(&s.id),
+                    xml_escape(&s.project.clone().unwrap_or_default()),
+                    xml_escape(&s.agent),
+                ));
+            }
+            sessions_xml.push_str("\n</active-sessions>\n");
+            if used + sessions_xml.len() < budget {
+                xml.push_str(&sessions_xml);
+                used += sessions_xml.len();
+            }
+        }
+    }
+
     // Working set from last session + predictive prefetch hints
     {
         let ws = crate::sessions::get_last_working_set(conn, agent, project)
@@ -2180,6 +2205,70 @@ mod tests {
         assert!(
             results[0].edges.is_empty(),
             "memory with no edges should have empty edges vec"
+        );
+    }
+
+    // ── Cross-session awareness tests ──
+
+    #[test]
+    fn test_active_sessions_in_context_hidden_when_single() {
+        let conn = setup();
+
+        // Only one session — active-sessions should NOT appear
+        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
+
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        assert!(
+            !suffix.contains("active-sessions"),
+            "should not show active-sessions with only 1 session"
+        );
+    }
+
+    #[test]
+    fn test_active_sessions_in_context_shown_when_multiple() {
+        let conn = setup();
+
+        // Two active sessions — active-sessions should appear
+        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
+        crate::sessions::register_session(&conn, "s2", "cline", Some("dashboard"), None).unwrap();
+
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        assert!(
+            suffix.contains("active-sessions"),
+            "should show active-sessions with 2 sessions"
+        );
+        assert!(
+            suffix.contains("claude-code"),
+            "should list claude-code session"
+        );
+        assert!(
+            suffix.contains("cline"),
+            "should list cline session"
+        );
+        assert!(
+            suffix.contains("forge"),
+            "should show forge project"
+        );
+        assert!(
+            suffix.contains("dashboard"),
+            "should show dashboard project"
+        );
+    }
+
+    #[test]
+    fn test_active_sessions_hidden_after_end() {
+        let conn = setup();
+
+        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
+        crate::sessions::register_session(&conn, "s2", "cline", None, None).unwrap();
+
+        // End one session — should hide active-sessions again
+        crate::sessions::end_session(&conn, "s2").unwrap();
+
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000);
+        assert!(
+            !suffix.contains("active-sessions"),
+            "should not show active-sessions when only 1 remains active"
         );
     }
 }

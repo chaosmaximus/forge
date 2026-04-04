@@ -179,6 +179,23 @@ async fn process_file(
         drop(locked);
     }
 
+    // Action tracking: count tool_use chunks and increment session counter.
+    // Lightweight — no LLM needed, just count detection from parsed chunks.
+    {
+        let tool_use_count = chunks.iter().filter(|c| c.has_tool_use).count();
+        if tool_use_count > 0 {
+            let locked = state.lock().await;
+            let session_id = crate::sessions::get_active_session_id(&locked.conn, adapter.name())
+                .unwrap_or_default();
+            if !session_id.is_empty() {
+                if let Err(e) = crate::sessions::increment_tool_use_count(&locked.conn, &session_id, tool_use_count) {
+                    eprintln!("[extractor] failed to increment tool_use_count: {e}");
+                }
+            }
+            drop(locked);
+        }
+    }
+
     // Combine chunk texts for extraction (limit to last 20 chunks / ~50KB to avoid oversized prompts)
     let recent_chunks: Vec<&_> = chunks.iter().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect();
     let combined_text: String = recent_chunks
