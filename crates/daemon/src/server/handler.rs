@@ -1471,6 +1471,27 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::GetStats { hours } => {
+            let h = hours.unwrap_or(24);
+            match crate::db::ops::query_stats(&state.conn, h) {
+                Ok(stats) => Response::Ok {
+                    data: ResponseData::Stats {
+                        period_hours: stats.period_hours,
+                        extractions: stats.extractions,
+                        extraction_errors: stats.extraction_errors,
+                        tokens_in: stats.tokens_in,
+                        tokens_out: stats.tokens_out,
+                        total_cost_usd: stats.total_cost_usd,
+                        avg_latency_ms: stats.avg_latency_ms,
+                        memories_created: stats.memories_created,
+                    },
+                },
+                Err(e) => Response::Error {
+                    message: format!("stats query failed: {e}"),
+                },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
