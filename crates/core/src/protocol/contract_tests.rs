@@ -29,7 +29,6 @@ mod tests {
             ("lsp_status", Request::LspStatus),
             ("list_platform", Request::ListPlatform),
             ("list_tools", Request::ListTools),
-            ("manas_health", Request::ManasHealth),
             ("sync_conflicts", Request::SyncConflicts),
             ("hlc_backfill", Request::HlcBackfill),
             ("force_consolidate", Request::ForceConsolidate),
@@ -260,11 +259,18 @@ mod tests {
                 },
             ),
             (
+                "manas_health",
+                Request::ManasHealth {
+                    project: Some("forge".into()),
+                },
+            ),
+            (
                 "compile_context",
                 Request::CompileContext {
                     agent: Some("claude-code".into()),
                     project: Some("forge".into()),
                     static_only: None,
+                    excluded_layers: Some(vec!["decisions".into()]),
                 },
             ),
             (
@@ -479,8 +485,20 @@ mod tests {
                 r#"{"method":"list_disposition","params":{"agent":"claude-code"}}"#,
             ),
             (
+                "manas_health",
+                r#"{"method":"manas_health","params":{"project":"forge"}}"#,
+            ),
+            (
+                "manas_health no project",
+                r#"{"method":"manas_health","params":{}}"#,
+            ),
+            (
                 "compile_context",
                 r#"{"method":"compile_context","params":{"agent":"claude-code"}}"#,
+            ),
+            (
+                "compile_context with excluded_layers",
+                r#"{"method":"compile_context","params":{"agent":"claude-code","excluded_layers":["decisions","perceptions"]}}"#,
             ),
             (
                 "compile_context_trace",
@@ -568,7 +586,6 @@ mod tests {
             ("lsp_status", r#"{"method":"lsp_status"}"#),
             ("list_platform", r#"{"method":"list_platform"}"#),
             ("list_tools", r#"{"method":"list_tools"}"#),
-            ("manas_health", r#"{"method":"manas_health"}"#),
             ("sync_conflicts", r#"{"method":"sync_conflicts"}"#),
             ("hlc_backfill", r#"{"method":"hlc_backfill"}"#),
             ("force_consolidate", r#"{"method":"force_consolidate"}"#),
@@ -597,10 +614,10 @@ mod tests {
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 15
-        let unit_count = 15;
-        // Parameterized variants: 38 (added GetGraphData, BatchRecall, ExtractWithProvider)
-        let param_count = 38;
+        // Unit variants: 14 (ManasHealth moved to parameterized)
+        let unit_count = 14;
+        // Parameterized variants: 39 (ManasHealth now parameterized with optional project)
+        let param_count = 39;
         // Total: 53
         let expected_total = 53;
 
@@ -624,7 +641,7 @@ mod tests {
                 Request::LspStatus,
                 Request::ListPlatform,
                 Request::ListTools,
-                Request::ManasHealth,
+                Request::ManasHealth { project: None },
                 Request::SyncConflicts,
                 Request::HlcBackfill,
                 Request::ForceConsolidate,
@@ -729,6 +746,7 @@ mod tests {
                     agent: None,
                     project: None,
                     static_only: None,
+                    excluded_layers: None,
                 },
                 Request::CompileContextTrace {
                     agent: None,

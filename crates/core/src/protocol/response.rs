@@ -199,6 +199,9 @@ pub enum ResponseData {
         embedding_count: usize,
         #[serde(default)]
         trait_names: Vec<String>,
+        /// True if the project has zero active memories (brand new project).
+        #[serde(default)]
+        is_new_project: bool,
     },
 
     CompiledContext {
