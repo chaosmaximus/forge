@@ -122,6 +122,25 @@ pub fn parse_extraction_output(output: &str) -> Vec<ExtractedMemory> {
         return filter_low_confidence(memories);
     }
 
+    // Try finding a JSON array embedded anywhere in the text (most robust)
+    // This handles: code fences, thinking blocks, prose around JSON, truncated fences
+    if let Some(json_str) = extract_json_array(trimmed) {
+        if let Ok(memories) = serde_json::from_str::<Vec<ExtractedMemory>>(json_str) {
+            return filter_low_confidence(memories);
+        }
+        // JSON array found but parse failed — try fixing common issues
+        // (e.g., trailing comma, truncated last element)
+        let cleaned = json_str.trim_end_matches(',').trim();
+        if !cleaned.ends_with(']') {
+            // Truncated — try adding closing bracket
+            let fixed = format!("{}]", cleaned.rsplit_once(',').map(|(before, _)| before).unwrap_or(cleaned));
+            if let Ok(memories) = serde_json::from_str::<Vec<ExtractedMemory>>(&fixed) {
+                eprintln!("[extraction] recovered truncated JSON array ({} memories)", memories.len());
+                return filter_low_confidence(memories);
+            }
+        }
+    }
+
     // Try extracting from ```json ... ``` code fences
     if let Some(json_str) = extract_code_fence(trimmed) {
         if let Ok(memories) = serde_json::from_str::<Vec<ExtractedMemory>>(json_str) {
@@ -129,17 +148,11 @@ pub fn parse_extraction_output(output: &str) -> Vec<ExtractedMemory> {
         }
     }
 
-    // Try finding a JSON array embedded in surrounding text
-    if let Some(json_str) = extract_json_array(trimmed) {
-        if let Ok(memories) = serde_json::from_str::<Vec<ExtractedMemory>>(json_str) {
-            return filter_low_confidence(memories);
-        }
-    }
-
-    // All parsing strategies failed — log so silent data loss is visible
+    // All parsing strategies failed — log content for debugging (fail-loud)
+    let preview: String = trimmed.chars().take(300).collect();
     eprintln!(
-        "[extraction] failed to parse LLM output as JSON array (len={})",
-        trimmed.len()
+        "[extraction] failed to parse LLM output as JSON array (len={}): {}",
+        trimmed.len(), preview
     );
     Vec::new()
 }
