@@ -19,7 +19,8 @@ const MAX_DELTA: f64 = 0.05;
 const DEFAULT_VALUE: f64 = 0.5;
 
 /// Default agent name for disposition tracking (fallback when no sessions exist).
-const DEFAULT_AGENT_NAME: &str = "forge";
+/// Uses "claude-code" as the fallback since it's the most common agent type.
+const DEFAULT_AGENT_NAME: &str = "claude-code";
 
 /// Sessions shorter than this (seconds) are considered "short" — may indicate errors/restarts.
 const SHORT_SESSION_THRESHOLD_SECS: i64 = 60;

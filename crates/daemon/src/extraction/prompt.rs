@@ -28,10 +28,24 @@ Type guidance:
   Examples: "Senior Rust developer", "Building a fintech platform", "Data scientist",
   "Prefers functional programming", "Works on GCP infrastructure"
   The title should be the identity signal, content should be the evidence.
-- "skill": a REUSABLE WORKFLOW successfully demonstrated in this conversation.
-  Only extract skills when the conversation shows a COMPLETE, SUCCESSFUL workflow
-  that could be replicated. The content should describe the steps clearly.
-  Example: "Deploy Rust service: 1) cargo build --release 2) copy binary to server 3) restart systemd unit"
+- "skill": a REUSABLE, GENERALIZABLE WORKFLOW with DISCRETE, NUMBERED STEPS.
+  ONLY extract as a skill if ALL of these are true:
+  1. The workflow was SUCCESSFULLY completed in this conversation
+  2. The workflow has at least 2 discrete steps that could be followed again
+  3. The workflow is GENERALIZABLE (not specific to one file/bug/task)
+  4. The title describes WHAT the workflow does, not a task status
+
+  BAD (do NOT extract as skill):
+  - "All 17 Tasks Complete" (status update, not a workflow)
+  - "Fix the remaining 4 failures" (task-specific, not reusable)
+  - "Cleanup Legacy Swift App" (one-off task)
+
+  GOOD (extract as skill):
+  - "Deploy Rust Service: 1) cargo build --release 2) scp binary 3) systemctl restart"
+  - "Add New Protocol Endpoint: 1) Add Request variant 2) Add Response variant 3) Add handler arm 4) Add contract test"
+
+  The content MUST contain numbered steps (1. 2. 3.) or bullet points (- step1 - step2).
+  If you can't identify at least 2 discrete steps, it's NOT a skill — extract as a "lesson" instead.
 
 Only extract REAL decisions/lessons/skills. If unsure, skip it.
 Return [] if nothing worth remembering.

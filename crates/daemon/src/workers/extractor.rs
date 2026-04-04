@@ -237,42 +237,63 @@ async fn process_file(
                 // Route skills to the skill table (Layer 2) instead of
                 // the memory table (Layer 5). The `continue` ensures a
                 // skill extraction doesn't also create a duplicate memory entry.
+                // Quality gate: reject junk skills and demote them to lessons.
                 if em.memory_type == "skill" {
-                    let skill = forge_core::types::Skill {
-                        id: format!("skill-{}", ulid::Ulid::new()),
-                        name: em.title.clone(),
-                        domain: em.tags.first().cloned().unwrap_or_else(|| "general".to_string()),
-                        description: em.content.clone(),
-                        steps: em.content.lines()
-                            .filter(|l| {
-                                let trimmed = l.trim();
-                                // Match numbered steps or bullet points
-                                trimmed.starts_with(|c: char| c.is_ascii_digit())
-                                    || trimmed.starts_with('-')
-                                    || trimmed.starts_with('*')
-                                    || trimmed.starts_with("Step")
-                            })
-                            .map(|l| l.trim().to_string())
-                            .collect(),
-                        success_count: 1, // Extracted from a successful execution
-                        fail_count: 0,
-                        last_used: None,
-                        source: "extracted".to_string(),
-                        version: 1,
-                        project: None, // Skills are global — reusable across projects
-                    };
+                    let has_steps = em.content.contains("1)")
+                        || em.content.contains("1.")
+                        || em.content.contains("- ")
+                        || em.content.lines().count() >= 3;
+                    let long_enough = em.content.len() >= 50;
+                    let title_lower = em.title.to_lowercase();
+                    let not_status = !title_lower.contains("complete")
+                        && !title_lower.contains("remaining")
+                        && !title_lower.starts_with("all ")
+                        && !title_lower.starts_with("fix the");
 
-                    if let Err(e) = crate::db::manas::store_skill(&locked.conn, &skill) {
-                        eprintln!("[extractor] failed to store skill '{}': {e}", em.title);
+                    if !has_steps || !long_enough || !not_status {
+                        // Demote to lesson — fall through to normal memory storage below
+                        eprintln!(
+                            "[extractor] demoted junk skill '{}' to lesson (has_steps={}, long_enough={}, not_status={})",
+                            em.title, has_steps, long_enough, not_status
+                        );
+                        // Don't continue — let it fall through to memory storage as a lesson
                     } else {
-                        stored += 1;
-                        events::emit(&event_tx, "skill_extracted", serde_json::json!({
-                            "skill_id": skill.id,
-                            "name": skill.name,
-                            "domain": skill.domain,
-                        }));
+                        let skill = forge_core::types::Skill {
+                            id: format!("skill-{}", ulid::Ulid::new()),
+                            name: em.title.clone(),
+                            domain: em.tags.first().cloned().unwrap_or_else(|| "general".to_string()),
+                            description: em.content.clone(),
+                            steps: em.content.lines()
+                                .filter(|l| {
+                                    let trimmed = l.trim();
+                                    // Match numbered steps or bullet points
+                                    trimmed.starts_with(|c: char| c.is_ascii_digit())
+                                        || trimmed.starts_with('-')
+                                        || trimmed.starts_with('*')
+                                        || trimmed.starts_with("Step")
+                                })
+                                .map(|l| l.trim().to_string())
+                                .collect(),
+                            success_count: 1, // Extracted from a successful execution
+                            fail_count: 0,
+                            last_used: None,
+                            source: "extracted".to_string(),
+                            version: 1,
+                            project: None, // Skills are global — reusable across projects
+                        };
+
+                        if let Err(e) = crate::db::manas::store_skill(&locked.conn, &skill) {
+                            eprintln!("[extractor] failed to store skill '{}': {e}", em.title);
+                        } else {
+                            stored += 1;
+                            events::emit(&event_tx, "skill_extracted", serde_json::json!({
+                                "skill_id": skill.id,
+                                "name": skill.name,
+                                "domain": skill.domain,
+                            }));
+                        }
+                        continue; // Don't also store as memory
                     }
-                    continue; // Don't also store as memory
                 }
 
                 // Route identity signals to the identity table (Ahankara)
@@ -504,5 +525,67 @@ mod tests {
             "waiting"
         };
         assert_eq!(status, "waiting");
+    }
+
+    #[test]
+    fn test_skill_quality_gate_rejects_junk_title() {
+        // Verify the quality gate logic used in process_file
+        let title = "All 17 Tasks Complete";
+        let content = "Done";
+
+        let has_steps = content.contains("1)")
+            || content.contains("1.")
+            || content.contains("- ")
+            || content.lines().count() >= 3;
+        let long_enough = content.len() >= 50;
+        let title_lower = title.to_lowercase();
+        let not_status = !title_lower.contains("complete")
+            && !title_lower.contains("remaining")
+            && !title_lower.starts_with("all ")
+            && !title_lower.starts_with("fix the");
+
+        // Should fail all three checks
+        assert!(!has_steps, "junk skill should not have steps");
+        assert!(!long_enough, "junk skill should be too short");
+        assert!(!not_status, "junk skill title should be detected as status");
+    }
+
+    #[test]
+    fn test_skill_quality_gate_accepts_good_skill() {
+        let title = "Deploy Rust Service";
+        let content = "1) cargo build --release 2) scp binary to server 3) systemctl restart forge-daemon";
+
+        let has_steps = content.contains("1)")
+            || content.contains("1.")
+            || content.contains("- ")
+            || content.lines().count() >= 3;
+        let long_enough = content.len() >= 50;
+        let title_lower = title.to_lowercase();
+        let not_status = !title_lower.contains("complete")
+            && !title_lower.contains("remaining")
+            && !title_lower.starts_with("all ")
+            && !title_lower.starts_with("fix the");
+
+        assert!(has_steps, "good skill should have steps");
+        assert!(long_enough, "good skill should be long enough");
+        assert!(not_status, "good skill title should not look like a status");
+    }
+
+    #[test]
+    fn test_skill_quality_gate_rejects_short_content() {
+        // Skill with a good title but content too short
+        let _title = "Build and Test";
+        let content = "run cargo test";
+
+        let has_steps = content.contains("1)")
+            || content.contains("1.")
+            || content.contains("- ")
+            || content.lines().count() >= 3;
+        let long_enough = content.len() >= 50;
+
+        // "run cargo test" is only 14 chars — should fail length check
+        assert!(!long_enough, "short content should fail length check");
+        // Even though has_steps might be false, the OR logic means any failure gates it
+        assert!(!has_steps || !long_enough, "should be gated as junk");
     }
 }

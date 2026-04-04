@@ -159,6 +159,17 @@ pub fn get_session(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sessi
     }
 }
 
+/// Backfill project on memories that have session_id but no project.
+/// Derives project from the linked session's project field.
+pub fn backfill_project(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE memory SET project = (
+            SELECT s.project FROM session s WHERE s.id = memory.session_id AND s.project IS NOT NULL
+        ) WHERE (project IS NULL OR project = '') AND session_id != ''",
+        [],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +221,57 @@ mod tests {
         let all = list_sessions(&conn, false).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].project.as_deref(), Some("proj2"));
+    }
+
+    #[test]
+    fn test_backfill_project() {
+        let conn = setup();
+
+        // Create a session with a project
+        register_session(&conn, "s1", "claude-code", Some("forge"), None).unwrap();
+
+        // Create a memory with session_id but no project
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, session_id)
+             VALUES ('m1', 'decision', 'Test Decision', 'content', 0.9, 'active', '', '[]', datetime('now'), datetime('now'), 's1')",
+            [],
+        ).unwrap();
+
+        // Verify memory has no project
+        let project: String = conn.query_row(
+            "SELECT COALESCE(project, '') FROM memory WHERE id = 'm1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(project, "");
+
+        // Run backfill
+        let updated = backfill_project(&conn).unwrap();
+        assert_eq!(updated, 1);
+
+        // Verify memory now has the session's project
+        let project: String = conn.query_row(
+            "SELECT project FROM memory WHERE id = 'm1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(project, "forge");
+    }
+
+    #[test]
+    fn test_backfill_project_no_session() {
+        let conn = setup();
+
+        // Create a memory with no session_id
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, session_id)
+             VALUES ('m1', 'decision', 'Test', 'content', 0.9, 'active', '', '[]', datetime('now'), datetime('now'), '')",
+            [],
+        ).unwrap();
+
+        // Backfill should not touch memories without session_id
+        let updated = backfill_project(&conn).unwrap();
+        assert_eq!(updated, 0);
     }
 
     #[test]

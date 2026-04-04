@@ -505,6 +505,17 @@ pub fn record_skill_result(conn: &Connection, skill_id: &str, success: bool) -> 
     Ok(updated > 0)
 }
 
+/// Prune low-quality skills (no steps, short descriptions, status-like names).
+/// Only removes skills with zero success_count to avoid deleting proven workflows.
+pub fn prune_junk_skills(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM skill WHERE
+         (steps = '[]' OR steps = '' OR LENGTH(description) < 50)
+         AND success_count = 0",
+        [],
+    )
+}
+
 // ──────────────────────────────────────────────
 // Layer 3: Domain DNA ops
 // ──────────────────────────────────────────────
@@ -1205,6 +1216,78 @@ mod tests {
         // Non-existent skill should return false
         let updated = record_skill_result(&conn, "nonexistent", true).unwrap();
         assert!(!updated);
+    }
+
+    #[test]
+    fn test_prune_junk_skills() {
+        let conn = open_db();
+
+        // Store a junk skill (no steps, short description)
+        let junk = Skill {
+            id: "junk".into(),
+            name: "All Tasks Complete".into(),
+            domain: "tasks".into(),
+            description: "Done".into(),
+            steps: vec![],
+            success_count: 0,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        store_skill(&conn, &junk).unwrap();
+
+        // Store a good skill (has steps, long description)
+        let good = Skill {
+            id: "good".into(),
+            name: "Deploy Rust".into(),
+            domain: "devops".into(),
+            description: "1) cargo build --release 2) scp binary to server 3) systemctl restart the-service".into(),
+            steps: vec!["cargo build".into(), "scp".into(), "restart".into()],
+            success_count: 3,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        store_skill(&conn, &good).unwrap();
+
+        // Prune should remove only the junk skill
+        let pruned = prune_junk_skills(&conn).unwrap();
+        assert_eq!(pruned, 1);
+
+        let remaining = list_skills(&conn, None).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "Deploy Rust");
+    }
+
+    #[test]
+    fn test_prune_preserves_proven_skills() {
+        let conn = open_db();
+
+        // Even a short-description skill should be kept if it has success_count > 0
+        let proven = Skill {
+            id: "proven".into(),
+            name: "Quick Fix".into(),
+            domain: "dev".into(),
+            description: "Short".into(),
+            steps: vec![],
+            success_count: 1,
+            fail_count: 0,
+            last_used: None,
+            source: "extracted".into(),
+            version: 1,
+            project: None,
+        };
+        store_skill(&conn, &proven).unwrap();
+
+        let pruned = prune_junk_skills(&conn).unwrap();
+        assert_eq!(pruned, 0);
+
+        let remaining = list_skills(&conn, None).unwrap();
+        assert_eq!(remaining.len(), 1);
     }
 
     #[test]

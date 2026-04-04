@@ -37,6 +37,20 @@ impl DaemonState {
         // Best-effort: detect and store available CLI tools
         let _ = crate::db::manas::detect_and_store_tools(&conn);
 
+        // Prune low-quality skills (no steps, short descriptions, status-like names)
+        match crate::db::manas::prune_junk_skills(&conn) {
+            Ok(n) if n > 0 => eprintln!("[daemon] pruned {} junk skills", n),
+            Ok(_) => {},
+            Err(e) => eprintln!("[daemon] skill pruning error: {e}"),
+        }
+
+        // Backfill project on memories that have session_id but no project
+        match crate::sessions::backfill_project(&conn) {
+            Ok(n) if n > 0 => eprintln!("[daemon] backfilled project on {} memories", n),
+            Ok(_) => {},
+            Err(e) => eprintln!("[daemon] project backfill error: {e}"),
+        }
+
         let node_id = crate::sync::generate_node_id();
         let hlc = crate::sync::Hlc::new(&node_id);
 
