@@ -107,6 +107,28 @@ pub async fn run_consolidator(
                     }
                 } // lock released
 
+                // Phase 6: Reconsolidation — boost confidence of heavily-accessed memories
+                let mut reconsolidated_count = 0usize;
+                {
+                    let locked = state.lock().await;
+                    match ops::find_reconsolidation_candidates(&locked.conn) {
+                        Ok(candidates) => {
+                            for mem in &candidates {
+                                let new_confidence = (mem.confidence + 0.05).min(1.0);
+                                let _ = locked.conn.execute(
+                                    "UPDATE memory SET confidence = ?1 WHERE id = ?2",
+                                    rusqlite::params![new_confidence, mem.id],
+                                );
+                            }
+                            reconsolidated_count = candidates.len();
+                            if !candidates.is_empty() {
+                                eprintln!("[consolidator] reconsolidated {} memories", candidates.len());
+                            }
+                        }
+                        Err(e) => eprintln!("[consolidator] reconsolidation error: {}", e),
+                    }
+                } // lock released
+
                 // Emit consolidation event
                 events::emit(&event_tx, "consolidation", serde_json::json!({
                     "exact_dedup": exact_dedup_count,
@@ -114,6 +136,7 @@ pub async fn run_consolidator(
                     "linked": linked_count,
                     "faded": faded_count,
                     "promoted": promoted_count,
+                    "reconsolidated": reconsolidated_count,
                 }));
             }
             _ = shutdown_rx.changed() => {

@@ -16,6 +16,7 @@ Return a JSON array of objects, each with:
 - affects: array of file paths or symbol names mentioned
 - valence: "positive" | "negative" | "neutral" (emotional tone of this memory)
 - intensity: 0.0-1.0 (how emotionally significant — production outage = 1.0, routine change = 0.1)
+- motivated_by: optional — title of a previous decision/lesson that motivated this one
 
 Type guidance:
 - "decision": a strategic choice made (e.g., "Use JWT for auth")
@@ -51,6 +52,9 @@ pub struct ExtractedMemory {
     pub valence: String,
     #[serde(default)]
     pub intensity: f64,
+    /// Optional: ID or title of a previous decision/lesson that motivated this one (causal chain)
+    #[serde(default)]
+    pub motivated_by: Option<String>,
 }
 
 fn default_confidence() -> f64 {
@@ -276,6 +280,7 @@ mod tests {
             affects: vec![],
             valence: "neutral".to_string(),
             intensity: 0.0,
+            motivated_by: None,
         };
         assert!(em.is_valid_type());
     }

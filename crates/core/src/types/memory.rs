@@ -42,6 +42,10 @@ pub struct Memory {
     pub hlc_timestamp: String, // HLC: "{wall_ms}-{counter}-{node_id}"
     #[serde(default)]
     pub node_id: String,       // 8-char hex node identifier
+    #[serde(default)]
+    pub session_id: String,    // Session that created this memory
+    #[serde(default)]
+    pub access_count: u64,     // How many times this memory has been accessed
 }
 
 fn default_valence() -> String {
@@ -67,6 +71,8 @@ impl Memory {
             intensity: 0.0,
             hlc_timestamp: String::new(),
             node_id: String::new(),
+            session_id: String::new(),
+            access_count: 0,
         }
     }
 

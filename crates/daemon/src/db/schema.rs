@@ -227,6 +227,13 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN hlc_timestamp TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN node_id TEXT NOT NULL DEFAULT ''", []);
 
+    // Add session provenance columns (safe to re-run — ignores if already exists)
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN session_id TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0", []);
+
+    // Add working set column to session table (safe to re-run)
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN working_set TEXT NOT NULL DEFAULT ''", []);
+
     Ok(())
 }
 

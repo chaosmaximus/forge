@@ -26,7 +26,7 @@ fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String,
 /// Fetch a single Memory record from SQLite by its ID.
 fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count
          FROM memory WHERE id = ?1",
     )?;
 
@@ -67,6 +67,8 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             intensity: row.get(11)?,
             hlc_timestamp: row.get(12)?,
             node_id: row.get(13)?,
+            session_id: row.get::<_, String>(14).unwrap_or_default(),
+            access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
         }))
     } else {
         Ok(None)
@@ -188,6 +190,19 @@ pub fn hybrid_recall(
     // Sort by score descending
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     results.truncate(limit);
+
+    // Temporal recency boost: recent memories get up to 1.5x score
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as f64;
+    for result in &mut results {
+        let created_secs = ops::parse_timestamp_to_epoch(&result.memory.created_at).unwrap_or(0.0);
+        let days_old = (now_secs - created_secs).max(0.0) / 86400.0;
+        let recency_boost = (-0.1 * days_old).exp();
+        result.score *= 1.0 + recency_boost * 0.5;
+    }
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
     // 6. Touch accessed_at for returned IDs
     let returned_ids: Vec<&str> = results.iter().map(|r| r.memory.id.as_str()).collect();
@@ -492,6 +507,19 @@ pub fn compile_context(
             }
             disp_xml.push_str("</disposition>");
             parts.push(disp_xml);
+        }
+    }
+
+    // Working set from last session (pick up where you left off)
+    if let Ok(ws) = crate::sessions::get_last_working_set(conn, agent, project) {
+        if !ws.is_empty() {
+            let mut ws_xml = String::from("<working-set hint=\"from your last session\">");
+            ws_xml.push_str(&xml_escape(&ws));
+            ws_xml.push_str("</working-set>");
+            if used + ws_xml.len() < budget {
+                parts.push(ws_xml);
+                // used += ws_xml.len(); // last item, no further budget checks needed
+            }
         }
     }
 

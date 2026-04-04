@@ -207,7 +207,8 @@ pub fn sync_export(
 
 fn build_export_query(project: Option<&str>, since: Option<&str>) -> (String, Vec<String>) {
     let base = "SELECT id, memory_type, title, content, confidence, status, project, tags,
-                       created_at, accessed_at, valence, intensity, hlc_timestamp, node_id
+                       created_at, accessed_at, valence, intensity, hlc_timestamp, node_id,
+                       session_id, access_count
                 FROM memory WHERE status = 'active'";
 
     let mut clauses = String::from(base);
@@ -258,6 +259,8 @@ fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         intensity: row.get(11)?,
         hlc_timestamp: row.get(12)?,
         node_id: row.get(13)?,
+        session_id: row.get::<_, String>(14).unwrap_or_default(),
+        access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
     })
 }
 
@@ -798,6 +801,8 @@ mod tests {
             intensity: 0.0,
             hlc_timestamp: "1712345678000-0-remote01".into(),
             node_id: "remote01".into(),
+            session_id: String::new(),
+            access_count: 0,
         })
         .unwrap();
 
@@ -833,6 +838,8 @@ mod tests {
             intensity: 0.0,
             hlc_timestamp: "1712345679000-0-remote01".into(),
             node_id: "remote01".into(),
+            session_id: String::new(),
+            access_count: 0,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -868,6 +875,8 @@ mod tests {
             intensity: 0.0,
             hlc_timestamp: "1712345679000-0-remote01".into(),
             node_id: "remote01".into(),
+            session_id: String::new(),
+            access_count: 0,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -912,6 +921,8 @@ mod tests {
             intensity: 0.0,
             hlc_timestamp: "1712345679000-0-local123".into(),
             node_id: "local123".into(),
+            session_id: String::new(),
+            access_count: 0,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -966,6 +977,8 @@ mod tests {
             intensity: 0.0,
             hlc_timestamp: "1712345679000-0-remote1".into(),
             node_id: "remote1".into(),
+            session_id: String::new(),
+            access_count: 0,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1002,6 +1015,8 @@ mod tests {
             intensity: 0.0,
             hlc_timestamp: "1712345679000-0-remote1".into(),
             node_id: "remote1".into(),
+            session_id: String::new(),
+            access_count: 0,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();

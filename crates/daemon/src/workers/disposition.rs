@@ -18,8 +18,8 @@ const MAX_DELTA: f64 = 0.05;
 /// Default trait value for new dispositions.
 const DEFAULT_VALUE: f64 = 0.5;
 
-/// Agent name for disposition tracking.
-const AGENT_NAME: &str = "forge";
+/// Default agent name for disposition tracking (fallback when no sessions exist).
+const DEFAULT_AGENT_NAME: &str = "forge";
 
 /// Sessions shorter than this (seconds) are considered "short" — may indicate errors/restarts.
 const SHORT_SESSION_THRESHOLD_SECS: i64 = 60;
@@ -52,11 +52,24 @@ pub async fn run_disposition(
 async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
     let locked = state.lock().await;
 
-    // 1. Query recent sessions (last 24 hours)
-    let sessions = match query_recent_sessions(&locked.conn) {
+    // Discover active agents from session table (last 24 hours)
+    let active_agents = query_active_agents(&locked.conn);
+    if active_agents.is_empty() {
+        return;
+    }
+
+    for agent_name in &active_agents {
+        tick_for_agent(&locked.conn, agent_name);
+    }
+}
+
+/// Compute and store disposition traits for a single agent.
+fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
+    // 1. Query recent sessions (last 24 hours) for this agent
+    let sessions = match query_recent_sessions_for_agent(conn, agent_name) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[disposition] session query error: {}", e);
+            eprintln!("[disposition] session query error for {}: {}", agent_name, e);
             return;
         }
     };
@@ -92,23 +105,23 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
     .clamp(-MAX_DELTA, MAX_DELTA);
 
     // 4. Load current values and update
-    let caution_current = get_current_value(&locked.conn, DispositionTrait::Caution);
-    let thoroughness_current = get_current_value(&locked.conn, DispositionTrait::Thoroughness);
+    let caution_current = get_current_value(conn, agent_name, DispositionTrait::Caution);
+    let thoroughness_current = get_current_value(conn, agent_name, DispositionTrait::Thoroughness);
 
     let new_caution = (caution_current + caution_delta).clamp(0.0, 1.0);
     let new_thoroughness = (thoroughness_current + thoroughness_delta).clamp(0.0, 1.0);
 
     let evidence = vec![format!(
-        "sessions={} short={} long={} short_ratio={:.2} long_ratio={:.2}",
-        total, short_count, long_count, short_ratio, long_ratio
+        "agent={} sessions={} short={} long={} short_ratio={:.2} long_ratio={:.2}",
+        agent_name, total, short_count, long_count, short_ratio, long_ratio
     )];
 
     // 5. Store updated dispositions
     let now = manas::now_offset(0);
 
     let caution = Disposition {
-        id: format!("{}-caution", AGENT_NAME),
-        agent: AGENT_NAME.to_string(),
+        id: format!("{}-caution", agent_name),
+        agent: agent_name.to_string(),
         disposition_trait: DispositionTrait::Caution,
         domain: None,
         value: new_caution,
@@ -118,8 +131,8 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
     };
 
     let thoroughness = Disposition {
-        id: format!("{}-thoroughness", AGENT_NAME),
-        agent: AGENT_NAME.to_string(),
+        id: format!("{}-thoroughness", agent_name),
+        agent: agent_name.to_string(),
         disposition_trait: DispositionTrait::Thoroughness,
         domain: None,
         value: new_thoroughness,
@@ -128,16 +141,16 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
         evidence,
     };
 
-    if let Err(e) = manas::store_disposition(&locked.conn, &caution) {
-        eprintln!("[disposition] store caution error: {}", e);
+    if let Err(e) = manas::store_disposition(conn, &caution) {
+        eprintln!("[disposition] store caution error for {}: {}", agent_name, e);
     }
-    if let Err(e) = manas::store_disposition(&locked.conn, &thoroughness) {
-        eprintln!("[disposition] store thoroughness error: {}", e);
+    if let Err(e) = manas::store_disposition(conn, &thoroughness) {
+        eprintln!("[disposition] store thoroughness error for {}: {}", agent_name, e);
     }
 
     eprintln!(
-        "[disposition] updated: caution={:.3} ({:?}), thoroughness={:.3} ({:?})",
-        new_caution, caution.trend, new_thoroughness, thoroughness.trend
+        "[disposition] updated {}: caution={:.3} ({:?}), thoroughness={:.3} ({:?})",
+        agent_name, new_caution, caution.trend, new_thoroughness, thoroughness.trend
     );
 }
 
@@ -146,19 +159,41 @@ struct SessionSummary {
     duration_secs: i64,
 }
 
-/// Query sessions from the last 24 hours.
-fn query_recent_sessions(
+/// Query distinct agent names from sessions in the last 24 hours (active or recently ended).
+fn query_active_agents(conn: &rusqlite::Connection) -> Vec<String> {
+    let cutoff = manas::now_offset(-86400);
+    let mut stmt = match conn.prepare(
+        "SELECT DISTINCT agent FROM session WHERE status = 'active' OR started_at > ?1"
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![DEFAULT_AGENT_NAME.to_string()],
+    };
+    let rows = match stmt.query_map(rusqlite::params![cutoff], |row| row.get(0)) {
+        Ok(r) => r,
+        Err(_) => return vec![DEFAULT_AGENT_NAME.to_string()],
+    };
+    let agents: Vec<String> = rows.filter_map(|r| r.ok()).collect();
+    if agents.is_empty() {
+        vec![DEFAULT_AGENT_NAME.to_string()]
+    } else {
+        agents
+    }
+}
+
+/// Query sessions from the last 24 hours for a specific agent.
+fn query_recent_sessions_for_agent(
     conn: &rusqlite::Connection,
+    agent: &str,
 ) -> rusqlite::Result<Vec<SessionSummary>> {
     let cutoff = manas::now_offset(-86400); // 24 hours ago
 
     let mut stmt = conn.prepare(
         "SELECT started_at, ended_at FROM session
-         WHERE started_at > ?1
+         WHERE agent = ?1 AND started_at > ?2
          ORDER BY started_at DESC",
     )?;
 
-    let rows = stmt.query_map(rusqlite::params![cutoff], |row| {
+    let rows = stmt.query_map(rusqlite::params![agent, cutoff], |row| {
         let started: String = row.get(0)?;
         let ended: Option<String> = row.get(1)?;
         Ok((started, ended))
@@ -246,14 +281,15 @@ fn rough_day_number(date_str: &str) -> i64 {
 /// Get current value for a disposition trait, defaulting to DEFAULT_VALUE.
 fn get_current_value(
     conn: &rusqlite::Connection,
+    agent_name: &str,
     trait_type: DispositionTrait,
 ) -> f64 {
     let id = match trait_type {
-        DispositionTrait::Caution => format!("{}-caution", AGENT_NAME),
-        DispositionTrait::Thoroughness => format!("{}-thoroughness", AGENT_NAME),
-        DispositionTrait::Autonomy => format!("{}-autonomy", AGENT_NAME),
-        DispositionTrait::Verbosity => format!("{}-verbosity", AGENT_NAME),
-        DispositionTrait::Creativity => format!("{}-creativity", AGENT_NAME),
+        DispositionTrait::Caution => format!("{}-caution", agent_name),
+        DispositionTrait::Thoroughness => format!("{}-thoroughness", agent_name),
+        DispositionTrait::Autonomy => format!("{}-autonomy", agent_name),
+        DispositionTrait::Verbosity => format!("{}-verbosity", agent_name),
+        DispositionTrait::Creativity => format!("{}-creativity", agent_name),
     };
 
     conn.query_row(
@@ -292,14 +328,14 @@ mod tests {
     fn test_disposition_initial_values() {
         let conn = open_db();
         // Before any disposition is stored, get_current_value should return DEFAULT_VALUE (0.5)
-        let caution = get_current_value(&conn, DispositionTrait::Caution);
+        let caution = get_current_value(&conn, DEFAULT_AGENT_NAME, DispositionTrait::Caution);
         assert!(
             (caution - DEFAULT_VALUE).abs() < f64::EPSILON,
             "initial caution should be {}",
             DEFAULT_VALUE
         );
 
-        let thoroughness = get_current_value(&conn, DispositionTrait::Thoroughness);
+        let thoroughness = get_current_value(&conn, DEFAULT_AGENT_NAME, DispositionTrait::Thoroughness);
         assert!(
             (thoroughness - DEFAULT_VALUE).abs() < f64::EPSILON,
             "initial thoroughness should be {}",
@@ -313,8 +349,8 @@ mod tests {
 
         // Store a disposition with value near 1.0
         let d = Disposition {
-            id: format!("{}-caution", AGENT_NAME),
-            agent: AGENT_NAME.to_string(),
+            id: format!("{}-caution", DEFAULT_AGENT_NAME),
+            agent: DEFAULT_AGENT_NAME.to_string(),
             disposition_trait: DispositionTrait::Caution,
             domain: None,
             value: 0.98,
@@ -325,7 +361,7 @@ mod tests {
         manas::store_disposition(&conn, &d).unwrap();
 
         // Simulate adding MAX_DELTA — should clamp to 1.0
-        let current = get_current_value(&conn, DispositionTrait::Caution);
+        let current = get_current_value(&conn, DEFAULT_AGENT_NAME, DispositionTrait::Caution);
         let new_val = (current + MAX_DELTA).clamp(0.0, 1.0);
         assert!(new_val <= 1.0, "value must not exceed 1.0, got {}", new_val);
         assert!(
@@ -335,8 +371,8 @@ mod tests {
 
         // Store a disposition with value near 0.0
         let d2 = Disposition {
-            id: format!("{}-thoroughness", AGENT_NAME),
-            agent: AGENT_NAME.to_string(),
+            id: format!("{}-thoroughness", DEFAULT_AGENT_NAME),
+            agent: DEFAULT_AGENT_NAME.to_string(),
             disposition_trait: DispositionTrait::Thoroughness,
             domain: None,
             value: 0.02,
@@ -347,7 +383,7 @@ mod tests {
         manas::store_disposition(&conn, &d2).unwrap();
 
         // Simulate subtracting MAX_DELTA — should clamp to 0.0
-        let current2 = get_current_value(&conn, DispositionTrait::Thoroughness);
+        let current2 = get_current_value(&conn, DEFAULT_AGENT_NAME, DispositionTrait::Thoroughness);
         let new_val2 = (current2 - MAX_DELTA).clamp(0.0, 1.0);
         assert!(
             new_val2 >= 0.0,

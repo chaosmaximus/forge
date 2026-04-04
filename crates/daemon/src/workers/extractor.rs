@@ -229,6 +229,10 @@ async fn process_file(
             let mut stored = 0usize;
             let event_tx = locked.events.clone();
 
+            // Detect active session for this agent to set session provenance
+            let session_id = crate::sessions::get_active_session_id(&locked.conn, adapter.name())
+                .unwrap_or_default();
+
             for em in &extracted {
                 // Route skills to the skill table (Layer 2) instead of
                 // the memory table (Layer 5). The `continue` ensures a
@@ -279,10 +283,20 @@ async fn process_file(
                     _ => MemoryType::Lesson,
                 };
 
-                let memory = Memory::new(memory_type, &em.title, &em.content)
+                let mut memory = Memory::new(memory_type, &em.title, &em.content)
                     .with_confidence(em.confidence)
                     .with_tags(em.tags.clone())
                     .with_valence(&em.valence, em.intensity);
+                memory.session_id = session_id.clone();
+
+                // Task 5: Causal chain — if motivated_by is present, link to referenced memory
+                if let Some(ref motivation) = em.motivated_by {
+                    if let Ok(results) = ops::recall_bm25_project(&locked.conn, motivation, None, 1) {
+                        if let Some(match_result) = results.first() {
+                            let _ = ops::store_edge(&locked.conn, &memory.id, &match_result.id, "motivated_by", "{}");
+                        }
+                    }
+                }
 
                 if let Err(e) = ops::remember(&locked.conn, &memory) {
                     eprintln!("[extractor] failed to store memory '{}': {e}", em.title);

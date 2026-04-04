@@ -611,6 +611,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::EndSession { id } => {
+            // Save working set before ending the session
+            let _ = crate::sessions::save_working_set(&state.conn, &id);
+
             match crate::sessions::end_session(&state.conn, &id) {
                 Ok(found) => {
                     if found {

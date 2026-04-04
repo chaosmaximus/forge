@@ -88,8 +88,8 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     } else {
         // Insert new
         conn.execute(
-            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 memory.id, mt, memory.title, memory.content,
                 memory.confidence, status,
@@ -97,6 +97,7 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
                 memory.created_at, memory.accessed_at,
                 memory.valence, memory.intensity,
                 memory.hlc_timestamp, memory.node_id,
+                memory.session_id, memory.access_count as i64,
             ],
         )?;
     }
@@ -111,8 +112,8 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
     let tags_json = serde_json::to_string(&memory.tags).unwrap_or_else(|_| "[]".to_string());
 
     conn.execute(
-        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             memory.id, mt, memory.title, memory.content,
             memory.confidence, status,
@@ -120,6 +121,7 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
             memory.created_at, memory.accessed_at,
             memory.valence, memory.intensity,
             memory.hlc_timestamp, memory.node_id,
+            memory.session_id, memory.access_count as i64,
         ],
     )?;
     Ok(())
@@ -383,7 +385,7 @@ pub fn decay_memories(conn: &Connection) -> rusqlite::Result<(usize, usize)> {
 /// Handles two formats produced by SQLite and Rust code:
 /// - Pure epoch seconds: "1743548000"
 /// - SQLite datetime: "2026-04-02 12:00:00" or ISO 8601 "2026-04-02T12:00:00Z"
-fn parse_timestamp_to_epoch(s: &str) -> Option<f64> {
+pub fn parse_timestamp_to_epoch(s: &str) -> Option<f64> {
     if s.is_empty() {
         return None;
     }
@@ -410,11 +412,11 @@ fn parse_timestamp_to_epoch(s: &str) -> Option<f64> {
     None
 }
 
-/// Update accessed_at for each given id (best-effort — errors are ignored).
+/// Update accessed_at and increment access_count for each given id (best-effort — errors are ignored).
 pub fn touch(conn: &Connection, ids: &[&str]) {
     for id in ids {
         let _ = conn.execute(
-            "UPDATE memory SET accessed_at = datetime('now') WHERE id = ?1",
+            "UPDATE memory SET accessed_at = datetime('now'), access_count = access_count + 1 WHERE id = ?1",
             params![id],
         );
     }
@@ -474,7 +476,7 @@ pub fn cleanup_stale_files(conn: &Connection, current_paths: &[&str]) -> rusqlit
 /// Export all active memories as full Memory objects.
 pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count
          FROM memory WHERE status = 'active' ORDER BY created_at DESC"
     )?;
     let rows = stmt.query_map([], |row| {
@@ -504,6 +506,8 @@ pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
             intensity: row.get(11)?,
             hlc_timestamp: row.get(12)?,
             node_id: row.get(13)?,
+            session_id: row.get::<_, String>(14).unwrap_or_default(),
+            access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
         })
     })?;
     rows.collect()
@@ -595,6 +599,8 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
 
     let mut merged = 0usize;
     let mut to_delete: HashSet<String> = HashSet::new();
+    // Track which survivor supersedes each deleted memory (for causal chain edges)
+    let mut superseded_by: Vec<(String, String)> = Vec::new(); // (superseded_id, survivor_id)
 
     for i in 0..memories.len() {
         let (ref id_a, ref title_a, ref type_a, ref project_a) = memories[i];
@@ -626,6 +632,7 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
                 // Mark the later one (id_b) for deletion
                 // ORDER BY confidence DESC ensures we keep the higher-confidence memory (Codex fix: deterministic survivor)
                 to_delete.insert(id_b.clone());
+                superseded_by.push((id_b.clone(), id_a.clone()));
                 merged += 1;
             }
         }
@@ -636,6 +643,11 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
             "UPDATE memory SET status = 'superseded' WHERE id = ?1",
             params![id],
         )?;
+    }
+
+    // Create "supersedes" edges for causal chain tracking
+    for (superseded_id, survivor_id) in &superseded_by {
+        let _ = store_edge(conn, survivor_id, superseded_id, "supersedes", "{}");
     }
 
     Ok(merged)
@@ -693,6 +705,49 @@ pub fn link_related_memories(conn: &Connection) -> rusqlite::Result<usize> {
     }
 
     Ok(created)
+}
+
+/// Find memories with high access_count (>= 5) for reconsolidation.
+/// These heavily-accessed memories are validated by usage and deserve a confidence boost.
+pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, memory_type, title, content, confidence, status, project, tags,
+                created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count
+         FROM memory WHERE status = 'active' AND access_count >= 5
+         ORDER BY access_count DESC LIMIT 5"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let mt_str: String = row.get(1)?;
+        let memory_type = match mt_str.as_str() {
+            "decision" => MemoryType::Decision,
+            "lesson" => MemoryType::Lesson,
+            "pattern" => MemoryType::Pattern,
+            "preference" => MemoryType::Preference,
+            _ => MemoryType::Decision,
+        };
+        let tags_json: String = row.get(7)?;
+        let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+        Ok(Memory {
+            id: row.get(0)?,
+            memory_type,
+            title: row.get(2)?,
+            content: row.get(3)?,
+            confidence: row.get(4)?,
+            status: status_from_str(&row.get::<_, String>(5)?),
+            project: row.get(6)?,
+            tags,
+            embedding: None,
+            created_at: row.get(8)?,
+            accessed_at: row.get(9)?,
+            valence: row.get(10)?,
+            intensity: row.get(11)?,
+            hlc_timestamp: row.get(12)?,
+            node_id: row.get(13)?,
+            session_id: row.get::<_, String>(14).unwrap_or_default(),
+            access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
+        })
+    })?;
+    rows.collect()
 }
 
 /// Promote recurring lessons to patterns (episodic -> semantic consolidation).

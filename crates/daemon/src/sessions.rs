@@ -60,6 +60,75 @@ pub fn list_sessions(conn: &Connection, active_only: bool) -> rusqlite::Result<V
     rows.collect()
 }
 
+/// Get the most recent active session ID for a given agent.
+pub fn get_active_session_id(conn: &Connection, agent: &str) -> rusqlite::Result<String> {
+    conn.query_row(
+        "SELECT id FROM session WHERE agent = ?1 AND status = 'active' ORDER BY started_at DESC LIMIT 1",
+        params![agent],
+        |row| row.get(0),
+    )
+}
+
+/// Save working set (files touched + memories created) for a session.
+/// Called at session-end to enable working set continuity.
+pub fn save_working_set(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
+    // Get session start time
+    let started_at: String = conn.query_row(
+        "SELECT started_at FROM session WHERE id = ?1",
+        params![session_id],
+        |row| row.get(0),
+    ).unwrap_or_default();
+
+    if started_at.is_empty() {
+        return Ok(());
+    }
+
+    // Get files from perceptions created during this session
+    let files: Vec<String> = conn.prepare(
+        "SELECT DISTINCT data FROM perception WHERE kind = 'file_change'
+         AND created_at >= ?1 ORDER BY created_at DESC LIMIT 10"
+    ).and_then(|mut stmt| {
+        stmt.query_map(params![started_at], |r| r.get(0))?.collect()
+    }).unwrap_or_default();
+
+    // Get memories created during this session
+    let memories: Vec<String> = conn.prepare(
+        "SELECT title FROM memory WHERE session_id = ?1 AND status = 'active' LIMIT 5"
+    ).and_then(|mut stmt| {
+        stmt.query_map(params![session_id], |r| r.get(0))?.collect()
+    }).unwrap_or_default();
+
+    let working_set = serde_json::json!({
+        "files": files,
+        "memories": memories,
+    }).to_string();
+
+    conn.execute(
+        "UPDATE session SET working_set = ?1 WHERE id = ?2",
+        params![working_set, session_id],
+    )?;
+    Ok(())
+}
+
+/// Get the working set from the last ended session for the same agent+project.
+/// Used at session-start to restore context from the previous session.
+pub fn get_last_working_set(conn: &Connection, agent: &str, project: Option<&str>) -> rusqlite::Result<String> {
+    match project {
+        Some(proj) => conn.query_row(
+            "SELECT working_set FROM session WHERE agent = ?1 AND project = ?2 AND status = 'ended' AND working_set != ''
+             ORDER BY ended_at DESC LIMIT 1",
+            params![agent, proj],
+            |row| row.get(0),
+        ),
+        None => conn.query_row(
+            "SELECT working_set FROM session WHERE agent = ?1 AND status = 'ended' AND working_set != ''
+             ORDER BY ended_at DESC LIMIT 1",
+            params![agent],
+            |row| row.get(0),
+        ),
+    }
+}
+
 /// Get a single session by ID.
 pub fn get_session(conn: &Connection, id: &str) -> rusqlite::Result<Option<Session>> {
     let mut stmt = conn.prepare(
