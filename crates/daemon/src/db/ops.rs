@@ -842,6 +842,229 @@ pub fn promote_recurring_lessons(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(promoted)
 }
 
+/// Merge memories with very high embedding similarity (>0.9 cosine).
+/// This catches duplicates that lexical overlap misses.
+/// Returns number of memories merged (marked as superseded).
+///
+/// Uses KNN search per active memory to find near-duplicates in embedding space.
+/// cosine_distance < 0.1 means similarity > 0.9.
+pub fn embedding_merge(conn: &Connection) -> rusqlite::Result<usize> {
+    // Get all active memory IDs that have embeddings
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.memory_type, m.confidence FROM memory m
+         JOIN memory_vec v ON v.id = m.id
+         WHERE m.status = 'active'
+         ORDER BY m.confidence DESC, m.created_at DESC"
+    )?;
+    let memories: Vec<(String, String, f64)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut merged = 0usize;
+    let mut already_superseded: HashSet<String> = HashSet::new();
+
+    for (id, mem_type, _confidence) in &memories {
+        if already_superseded.contains(id) {
+            continue;
+        }
+
+        // Retrieve embedding for this memory
+        let emb_result: rusqlite::Result<Vec<u8>> = conn.query_row(
+            "SELECT embedding FROM memory_vec WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        );
+        let emb_bytes = match emb_result {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // KNN search for similar embeddings (search for more than we need to filter)
+        let mut knn_stmt = conn.prepare(
+            "SELECT v.id, v.distance FROM memory_vec v
+             WHERE v.embedding MATCH ?1 AND k = 10"
+        )?;
+        let neighbors: Vec<(String, f64)> = knn_stmt
+            .query_map(params![emb_bytes], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (neighbor_id, distance) in &neighbors {
+            if neighbor_id == id {
+                continue; // skip self
+            }
+            if already_superseded.contains(neighbor_id) {
+                continue;
+            }
+            if *distance >= 0.1 {
+                continue; // cosine distance >= 0.1 means similarity < 0.9
+            }
+
+            // Check that neighbor is same type and active
+            let neighbor_info: Option<(String, String)> = conn.query_row(
+                "SELECT memory_type, status FROM memory WHERE id = ?1",
+                params![neighbor_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional()?;
+
+            match neighbor_info {
+                Some((ref n_type, ref n_status)) if n_type == mem_type && n_status == "active" => {
+                    // Mark the neighbor as superseded (current memory has higher confidence
+                    // due to ORDER BY confidence DESC)
+                    conn.execute(
+                        "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+                        params![neighbor_id],
+                    )?;
+                    // Create supersedes edge
+                    let _ = store_edge(conn, id, neighbor_id, "supersedes", "{}");
+                    already_superseded.insert(neighbor_id.clone());
+                    merged += 1;
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    Ok(merged)
+}
+
+/// Strengthen edges that connect frequently-accessed memories.
+/// Finds edges between memories that were both accessed in the last 24 hours
+/// and increments a "strength" property (capped at 1.0).
+/// Returns the number of edges strengthened.
+pub fn strengthen_active_edges(conn: &Connection) -> rusqlite::Result<usize> {
+    // Find edges between recently-accessed active memories
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.properties FROM edge e
+         JOIN memory m1 ON e.from_id = m1.id
+         JOIN memory m2 ON e.to_id = m2.id
+         WHERE m1.accessed_at > datetime('now', '-24 hours')
+           AND m2.accessed_at > datetime('now', '-24 hours')
+           AND m1.status = 'active'
+           AND m2.status = 'active'"
+    )?;
+
+    let edges: Vec<(String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut strengthened = 0usize;
+
+    for (edge_id, properties) in &edges {
+        let mut props: serde_json::Value =
+            serde_json::from_str(properties).unwrap_or(serde_json::json!({}));
+        let current = props.get("strength").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let new_strength = (current + 0.1_f64).min(1.0);
+        props["strength"] = serde_json::json!(new_strength);
+
+        conn.execute(
+            "UPDATE edge SET properties = ?1 WHERE id = ?2",
+            params![props.to_string(), edge_id],
+        )?;
+        strengthened += 1;
+    }
+
+    Ok(strengthened)
+}
+
+/// Detect contradictory memories: same tags but opposite valence.
+/// Creates diagnostic warnings for the agent to review.
+/// A contradiction is when two active memories share 2+ tags,
+/// one has valence='positive' and the other 'negative',
+/// and both have intensity > 0.5 (strong signals, not weak noise).
+/// Returns number of contradiction pairs found.
+pub fn detect_contradictions(conn: &Connection) -> rusqlite::Result<usize> {
+    use crate::db::diagnostics::{store_diagnostic, Diagnostic};
+
+    // Query all active memories with tags, valence, and intensity
+    let mut stmt = conn.prepare(
+        "SELECT id, title, tags, valence, intensity FROM memory
+         WHERE status = 'active' AND valence IN ('positive', 'negative') AND intensity > 0.5"
+    )?;
+
+    let memories: Vec<(String, String, Vec<String>, String, f64)> = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let title: String = row.get(1)?;
+            let tags_json: String = row.get(2)?;
+            let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+            let valence: String = row.get(3)?;
+            let intensity: f64 = row.get(4)?;
+            Ok((id, title, tags, valence, intensity))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut found = 0usize;
+
+    for i in 0..memories.len() {
+        let (ref id_a, ref title_a, ref tags_a, ref valence_a, _) = memories[i];
+        if tags_a.len() < 2 {
+            continue;
+        }
+
+        for (id_b, title_b, tags_b, valence_b, _) in memories.iter().skip(i + 1) {
+            if tags_b.len() < 2 {
+                continue;
+            }
+
+            // Must have opposite valence
+            if valence_a == valence_b {
+                continue;
+            }
+
+            // Count shared tags
+            let shared = tags_a.iter().filter(|t| tags_b.contains(t)).count();
+            if shared < 2 {
+                continue;
+            }
+
+            // Check if this contradiction diagnostic already exists
+            let diag_id = format!("contradiction-{}-{}", id_a, id_b);
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM diagnostic WHERE id = ?1",
+                    params![diag_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+
+            if exists {
+                continue;
+            }
+
+            // Create diagnostic warning
+            let message = format!(
+                "Contradictory memories detected: \"{}\" ({}) vs \"{}\" ({}). {} shared tags.",
+                title_a, valence_a, title_b, valence_b, shared
+            );
+            let diag = Diagnostic {
+                id: diag_id,
+                file_path: "memory://contradictions".to_string(),
+                severity: "warning".to_string(),
+                message,
+                source: "forge-consolidator".to_string(),
+                line: None,
+                column: None,
+                created_at: forge_core::time::now_iso(),
+                expires_at: forge_core::time::now_offset(86400), // 24 hours
+            };
+            store_diagnostic(conn, &diag)?;
+            found += 1;
+        }
+    }
+
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1362,5 +1585,176 @@ mod tests {
 
         let promoted = promote_recurring_lessons(&conn).unwrap();
         assert_eq!(promoted, 0, "unique lessons should not be promoted");
+    }
+
+    #[test]
+    fn test_embedding_merge_high_similarity() {
+        let conn = open_db();
+        use crate::db::vec::store_embedding;
+
+        // Create two memories with identical embeddings (distance = 0, similarity = 1.0)
+        let m1 = Memory::new(MemoryType::Decision, "Use Postgres for data", "Postgres is great")
+            .with_confidence(0.9);
+        let m2 = Memory::new(MemoryType::Decision, "PostgreSQL for storage", "PG is reliable")
+            .with_confidence(0.7);
+        remember(&conn, &m1).unwrap();
+        remember(&conn, &m2).unwrap();
+
+        // Store identical embeddings for both
+        let emb: Vec<f32> = (0..768).map(|j| (j as f32 * 0.01).sin()).collect();
+        store_embedding(&conn, &m1.id, &emb).unwrap();
+        store_embedding(&conn, &m2.id, &emb).unwrap();
+
+        let merged = embedding_merge(&conn).unwrap();
+        assert_eq!(merged, 1, "should merge 1 near-duplicate");
+
+        // The higher-confidence one (m1, 0.9) should survive
+        let m1_status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1", params![m1.id], |row| row.get(0),
+        ).unwrap();
+        let m2_status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1", params![m2.id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(m1_status, "active", "higher confidence memory should survive");
+        assert_eq!(m2_status, "superseded", "lower confidence memory should be superseded");
+
+        // Verify supersedes edge was created
+        let edge_exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM edge WHERE from_id = ?1 AND to_id = ?2 AND edge_type = 'supersedes'",
+            params![m1.id, m2.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(edge_exists, "supersedes edge should exist");
+    }
+
+    #[test]
+    fn test_embedding_merge_low_similarity() {
+        let conn = open_db();
+        use crate::db::vec::store_embedding;
+
+        // Create two memories with very different embeddings
+        let m1 = Memory::new(MemoryType::Decision, "Use Rust for backend", "Performance")
+            .with_confidence(0.9);
+        let m2 = Memory::new(MemoryType::Decision, "Use React for frontend", "UI framework")
+            .with_confidence(0.8);
+        remember(&conn, &m1).unwrap();
+        remember(&conn, &m2).unwrap();
+
+        // Store very different embeddings
+        let emb1: Vec<f32> = (0..768).map(|j| (j as f32 * 0.01).sin()).collect();
+        let emb2: Vec<f32> = (0..768).map(|j| (j as f32 * 0.01 + 100.0).cos()).collect();
+        store_embedding(&conn, &m1.id, &emb1).unwrap();
+        store_embedding(&conn, &m2.id, &emb2).unwrap();
+
+        let merged = embedding_merge(&conn).unwrap();
+        assert_eq!(merged, 0, "dissimilar memories should not be merged");
+
+        // Both should still be active
+        let m1_status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1", params![m1.id], |row| row.get(0),
+        ).unwrap();
+        let m2_status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1", params![m2.id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(m1_status, "active");
+        assert_eq!(m2_status, "active");
+    }
+
+    #[test]
+    fn test_strengthen_active_edges() {
+        let conn = open_db();
+
+        // Create two memories accessed recently (now)
+        let m1 = Memory::new(MemoryType::Decision, "Use JWT", "Auth tokens");
+        let m2 = Memory::new(MemoryType::Decision, "Use HTTPS", "Security");
+        remember(&conn, &m1).unwrap();
+        remember(&conn, &m2).unwrap();
+
+        // Create edge between them
+        store_edge(&conn, &m1.id, &m2.id, "related_to", "{}").unwrap();
+
+        // Strengthen edges
+        let strengthened = strengthen_active_edges(&conn).unwrap();
+        assert_eq!(strengthened, 1, "should strengthen 1 edge");
+
+        // Verify strength property was set
+        let props_str: String = conn.query_row(
+            "SELECT properties FROM edge WHERE from_id = ?1 AND to_id = ?2",
+            params![m1.id, m2.id],
+            |row| row.get(0),
+        ).unwrap();
+        let props: serde_json::Value = serde_json::from_str(&props_str).unwrap();
+        let strength = props.get("strength").and_then(|v| v.as_f64()).unwrap();
+        assert!((strength - 0.1).abs() < 0.001, "strength should be 0.1 after first increment");
+
+        // Strengthen again — should increment to 0.2
+        let strengthened2 = strengthen_active_edges(&conn).unwrap();
+        assert_eq!(strengthened2, 1);
+        let props_str2: String = conn.query_row(
+            "SELECT properties FROM edge WHERE from_id = ?1 AND to_id = ?2",
+            params![m1.id, m2.id],
+            |row| row.get(0),
+        ).unwrap();
+        let props2: serde_json::Value = serde_json::from_str(&props_str2).unwrap();
+        let strength2 = props2.get("strength").and_then(|v| v.as_f64()).unwrap();
+        assert!((strength2 - 0.2).abs() < 0.001, "strength should be 0.2 after second increment");
+    }
+
+    #[test]
+    fn test_detect_contradictions() {
+        let conn = open_db();
+        use crate::db::diagnostics;
+
+        // Create two memories with shared tags but opposite valence and high intensity
+        let m1 = Memory::new(MemoryType::Decision, "Microservices are great", "They scale well")
+            .with_tags(vec!["architecture".into(), "scaling".into(), "design".into()])
+            .with_valence("positive", 0.8);
+        let m2 = Memory::new(MemoryType::Decision, "Microservices cause problems", "Too complex")
+            .with_tags(vec!["architecture".into(), "scaling".into(), "complexity".into()])
+            .with_valence("negative", 0.9);
+        remember(&conn, &m1).unwrap();
+        remember(&conn, &m2).unwrap();
+
+        let found = detect_contradictions(&conn).unwrap();
+        assert_eq!(found, 1, "should detect 1 contradiction");
+
+        // Verify diagnostic was created
+        let diags = diagnostics::get_all_active_diagnostics(&conn).unwrap();
+        let contradiction_diags: Vec<_> = diags.iter()
+            .filter(|d| d.source == "forge-consolidator" && d.severity == "warning")
+            .collect();
+        assert_eq!(contradiction_diags.len(), 1, "should have 1 contradiction diagnostic");
+        assert!(contradiction_diags[0].message.contains("Microservices are great"));
+        assert!(contradiction_diags[0].message.contains("Microservices cause problems"));
+
+        // Running again should not create duplicate diagnostics
+        let found2 = detect_contradictions(&conn).unwrap();
+        assert_eq!(found2, 0, "should not re-detect same contradiction");
+    }
+
+    #[test]
+    fn test_detect_contradictions_ignores_low_intensity() {
+        let conn = open_db();
+        use crate::db::diagnostics;
+
+        // Create two memories with shared tags, opposite valence, but LOW intensity (< 0.5)
+        let m1 = Memory::new(MemoryType::Decision, "REST might be ok", "Acceptable")
+            .with_tags(vec!["api".into(), "design".into()])
+            .with_valence("positive", 0.3);
+        let m2 = Memory::new(MemoryType::Decision, "REST has issues", "Some downsides")
+            .with_tags(vec!["api".into(), "design".into()])
+            .with_valence("negative", 0.2);
+        remember(&conn, &m1).unwrap();
+        remember(&conn, &m2).unwrap();
+
+        let found = detect_contradictions(&conn).unwrap();
+        assert_eq!(found, 0, "should not detect weak contradictions (intensity < 0.5)");
+
+        // Verify no diagnostics were created
+        let diags = diagnostics::get_all_active_diagnostics(&conn).unwrap();
+        let contradiction_diags: Vec<_> = diags.iter()
+            .filter(|d| d.source == "forge-consolidator")
+            .collect();
+        assert_eq!(contradiction_diags.len(), 0, "no contradiction diagnostics for weak signals");
     }
 }
