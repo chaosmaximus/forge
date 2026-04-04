@@ -737,6 +737,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     dangerous_patterns: result.dangerous_patterns,
                     applicable_skills: result.applicable_skills,
                     decisions_to_review: result.decisions_to_review,
+                    cached_diagnostics: result.cached_diagnostics,
                 },
             }
         }
@@ -1045,6 +1046,84 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 },
                 Err(e) => Response::Error {
                     message: format!("resolve_conflict failed: {e}"),
+                },
+            }
+        }
+
+        Request::Verify { file } => {
+            match file {
+                Some(f) => {
+                    // Run checks on a specific file and return its diagnostics
+                    let diags = crate::db::diagnostics::get_diagnostics(&state.conn, &f).unwrap_or_default();
+                    let errors = diags.iter().filter(|d| d.severity == "error").count();
+                    let warnings = diags.iter().filter(|d| d.severity == "warning").count();
+                    let diagnostics: Vec<forge_core::protocol::DiagnosticEntry> = diags.iter().map(|d| {
+                        forge_core::protocol::DiagnosticEntry {
+                            file_path: d.file_path.clone(),
+                            severity: d.severity.clone(),
+                            message: d.message.clone(),
+                            source: d.source.clone(),
+                            line: d.line,
+                        }
+                    }).collect();
+                    Response::Ok {
+                        data: ResponseData::VerifyResult {
+                            files_checked: 1,
+                            errors,
+                            warnings,
+                            diagnostics,
+                        },
+                    }
+                }
+                None => {
+                    // Return all active diagnostics
+                    let diags = crate::db::diagnostics::get_all_active_diagnostics(&state.conn).unwrap_or_default();
+                    let errors = diags.iter().filter(|d| d.severity == "error").count();
+                    let warnings = diags.iter().filter(|d| d.severity == "warning").count();
+                    // Count unique files
+                    let files_checked = {
+                        let mut files: Vec<&str> = diags.iter().map(|d| d.file_path.as_str()).collect();
+                        files.sort();
+                        files.dedup();
+                        files.len()
+                    };
+                    let diagnostics: Vec<forge_core::protocol::DiagnosticEntry> = diags.iter().map(|d| {
+                        forge_core::protocol::DiagnosticEntry {
+                            file_path: d.file_path.clone(),
+                            severity: d.severity.clone(),
+                            message: d.message.clone(),
+                            source: d.source.clone(),
+                            line: d.line,
+                        }
+                    }).collect();
+                    Response::Ok {
+                        data: ResponseData::VerifyResult {
+                            files_checked,
+                            errors,
+                            warnings,
+                            diagnostics,
+                        },
+                    }
+                }
+            }
+        }
+
+        Request::GetDiagnostics { file } => {
+            let diags = crate::db::diagnostics::get_diagnostics(&state.conn, &file).unwrap_or_default();
+            let count = diags.len();
+            let diagnostics: Vec<forge_core::protocol::DiagnosticEntry> = diags.iter().map(|d| {
+                forge_core::protocol::DiagnosticEntry {
+                    file_path: d.file_path.clone(),
+                    severity: d.severity.clone(),
+                    message: d.message.clone(),
+                    source: d.source.clone(),
+                    line: d.line,
+                }
+            }).collect();
+            Response::Ok {
+                data: ResponseData::DiagnosticList {
+                    diagnostics,
+                    count,
                 },
             }
         }
@@ -1472,6 +1551,7 @@ mod tests {
             Response::Ok { data: ResponseData::PostEditChecked {
                 file, callers_count, calling_files, relevant_lessons,
                 dangerous_patterns, applicable_skills, decisions_to_review,
+                cached_diagnostics,
             } } => {
                 assert_eq!(file, "src/lib.rs");
                 assert_eq!(callers_count, 0);
@@ -1480,6 +1560,7 @@ mod tests {
                 assert!(dangerous_patterns.is_empty());
                 assert!(applicable_skills.is_empty());
                 assert!(decisions_to_review.is_empty());
+                assert!(cached_diagnostics.is_empty());
             }
             _ => panic!("expected PostEditChecked response"),
         }
@@ -2219,6 +2300,178 @@ mod tests {
                 assert!(chars > 0, "chars should be > 0");
             }
             other => panic!("expected CompiledContext, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_no_file_empty_db() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::Verify { file: None });
+        match resp {
+            Response::Ok { data: ResponseData::VerifyResult {
+                files_checked, errors, warnings, diagnostics,
+            } } => {
+                assert_eq!(files_checked, 0);
+                assert_eq!(errors, 0);
+                assert_eq!(warnings, 0);
+                assert!(diagnostics.is_empty());
+            }
+            _ => panic!("expected VerifyResult response"),
+        }
+    }
+
+    #[test]
+    fn test_verify_with_file() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a diagnostic
+        let d = crate::db::diagnostics::Diagnostic {
+            id: "v-1".into(),
+            file_path: "src/main.rs".into(),
+            severity: "error".into(),
+            message: "undefined variable".into(),
+            source: "forge-consistency".into(),
+            line: Some(10),
+            column: None,
+            created_at: forge_core::time::now_iso(),
+            expires_at: forge_core::time::now_offset(300),
+        };
+        crate::db::diagnostics::store_diagnostic(&state.conn, &d).unwrap();
+
+        let resp = handle_request(&mut state, Request::Verify {
+            file: Some("src/main.rs".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::VerifyResult {
+                files_checked, errors, warnings, diagnostics,
+            } } => {
+                assert_eq!(files_checked, 1);
+                assert_eq!(errors, 1);
+                assert_eq!(warnings, 0);
+                assert_eq!(diagnostics.len(), 1);
+                assert_eq!(diagnostics[0].message, "undefined variable");
+                assert_eq!(diagnostics[0].source, "forge-consistency");
+                assert_eq!(diagnostics[0].line, Some(10));
+            }
+            _ => panic!("expected VerifyResult response"),
+        }
+    }
+
+    #[test]
+    fn test_verify_all_active_diagnostics() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store diagnostics for two files
+        for (id, file, sev) in &[("d1", "src/a.rs", "error"), ("d2", "src/b.rs", "warning")] {
+            let d = crate::db::diagnostics::Diagnostic {
+                id: id.to_string(),
+                file_path: file.to_string(),
+                severity: sev.to_string(),
+                message: format!("{} in {}", sev, file),
+                source: "forge-consistency".into(),
+                line: None,
+                column: None,
+                created_at: forge_core::time::now_iso(),
+                expires_at: forge_core::time::now_offset(300),
+            };
+            crate::db::diagnostics::store_diagnostic(&state.conn, &d).unwrap();
+        }
+
+        let resp = handle_request(&mut state, Request::Verify { file: None });
+        match resp {
+            Response::Ok { data: ResponseData::VerifyResult {
+                files_checked, errors, warnings, diagnostics,
+            } } => {
+                assert_eq!(files_checked, 2);
+                assert_eq!(errors, 1);
+                assert_eq!(warnings, 1);
+                assert_eq!(diagnostics.len(), 2);
+            }
+            _ => panic!("expected VerifyResult response"),
+        }
+    }
+
+    #[test]
+    fn test_get_diagnostics() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let d = crate::db::diagnostics::Diagnostic {
+            id: "gd-1".into(),
+            file_path: "src/lib.rs".into(),
+            severity: "warning".into(),
+            message: "unused import".into(),
+            source: "rust-analyzer".into(),
+            line: Some(3),
+            column: None,
+            created_at: forge_core::time::now_iso(),
+            expires_at: forge_core::time::now_offset(300),
+        };
+        crate::db::diagnostics::store_diagnostic(&state.conn, &d).unwrap();
+
+        let resp = handle_request(&mut state, Request::GetDiagnostics {
+            file: "src/lib.rs".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::DiagnosticList {
+                diagnostics, count,
+            } } => {
+                assert_eq!(count, 1);
+                assert_eq!(diagnostics.len(), 1);
+                assert_eq!(diagnostics[0].message, "unused import");
+                assert_eq!(diagnostics[0].source, "rust-analyzer");
+                assert_eq!(diagnostics[0].line, Some(3));
+            }
+            _ => panic!("expected DiagnosticList response"),
+        }
+    }
+
+    #[test]
+    fn test_get_diagnostics_empty() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::GetDiagnostics {
+            file: "nonexistent.rs".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::DiagnosticList {
+                diagnostics, count,
+            } } => {
+                assert_eq!(count, 0);
+                assert!(diagnostics.is_empty());
+            }
+            _ => panic!("expected DiagnosticList response"),
+        }
+    }
+
+    #[test]
+    fn test_post_edit_check_with_cached_diagnostics() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a diagnostic for the file
+        let d = crate::db::diagnostics::Diagnostic {
+            id: "pe-diag-1".into(),
+            file_path: "src/auth.rs".into(),
+            severity: "error".into(),
+            message: "3 files call validate_token()".into(),
+            source: "forge-consistency".into(),
+            line: None,
+            column: None,
+            created_at: forge_core::time::now_iso(),
+            expires_at: forge_core::time::now_offset(300),
+        };
+        crate::db::diagnostics::store_diagnostic(&state.conn, &d).unwrap();
+
+        let resp = handle_request(&mut state, Request::PostEditCheck {
+            file: "src/auth.rs".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::PostEditChecked {
+                cached_diagnostics, ..
+            } } => {
+                assert!(!cached_diagnostics.is_empty(), "should include cached diagnostics");
+                assert!(cached_diagnostics[0].contains("forge-consistency"));
+                assert!(cached_diagnostics[0].contains("3 files call validate_token()"));
+            }
+            _ => panic!("expected PostEditChecked response"),
         }
     }
 }

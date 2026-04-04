@@ -91,6 +91,11 @@ pub enum Request {
     /// Query which language servers are available for the current project
     LspStatus,
 
+    /// Run proactive checks on a file or show all active diagnostics
+    Verify { file: Option<String> },
+    /// Show cached diagnostics for a file
+    GetDiagnostics { file: String },
+
     // ── Manas Layer Operations ──
 
     /// Store a platform key-value pair (Layer 0)

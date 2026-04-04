@@ -94,6 +94,7 @@ pub enum ResponseData {
         dangerous_patterns: Vec<String>,
         applicable_skills: Vec<String>,
         decisions_to_review: Vec<String>,
+        cached_diagnostics: Vec<String>,
     },
     PreBashChecked {
         safe: bool,
@@ -113,6 +114,17 @@ pub enum ResponseData {
     SessionEnded { id: String, found: bool },
     Sessions { sessions: Vec<SessionInfo>, count: usize },
     LspStatus { servers: Vec<LspServerInfo> },
+
+    VerifyResult {
+        files_checked: usize,
+        errors: usize,
+        warnings: usize,
+        diagnostics: Vec<DiagnosticEntry>,
+    },
+    DiagnosticList {
+        diagnostics: Vec<DiagnosticEntry>,
+        count: usize,
+    },
 
     // ── Manas Layer Responses ──
 
@@ -222,6 +234,15 @@ pub struct LspServerInfo {
     pub language: String,
     pub command: String,
     pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiagnosticEntry {
+    pub file_path: String,
+    pub severity: String,
+    pub message: String,
+    pub source: String,
+    pub line: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

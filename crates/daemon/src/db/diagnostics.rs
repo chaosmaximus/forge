@@ -82,6 +82,29 @@ pub fn expire_diagnostics(conn: &Connection) -> rusqlite::Result<usize> {
     )
 }
 
+/// Get all active (non-expired) diagnostics across all files.
+pub fn get_all_active_diagnostics(conn: &Connection) -> rusqlite::Result<Vec<Diagnostic>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, file_path, severity, message, source, line, col, created_at, expires_at
+         FROM diagnostic WHERE expires_at > datetime('now')
+         ORDER BY severity, file_path, line",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(Diagnostic {
+            id: row.get(0)?,
+            file_path: row.get(1)?,
+            severity: row.get(2)?,
+            message: row.get(3)?,
+            source: row.get(4)?,
+            line: row.get(5)?,
+            column: row.get(6)?,
+            created_at: row.get(7)?,
+            expires_at: row.get(8)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// Count active diagnostics by severity.
 /// Returns (errors, warnings, hints).
 pub fn diagnostic_summary(conn: &Connection) -> rusqlite::Result<(usize, usize, usize)> {

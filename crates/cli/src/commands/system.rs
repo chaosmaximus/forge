@@ -360,8 +360,12 @@ pub async fn post_edit_check(file: String) {
                 dangerous_patterns,
                 applicable_skills,
                 decisions_to_review,
+                cached_diagnostics,
             },
         }) => {
+            for diag in &cached_diagnostics {
+                println!("{diag}");
+            }
             if callers_count > 0 {
                 println!("callers: {} file(s) call symbols in {file}", callers_count);
                 for cf in &calling_files {
@@ -555,6 +559,82 @@ pub async fn end_session(id: String) {
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
         Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+/// Run proactive checks on a file or show all active diagnostics.
+pub async fn verify(file: Option<String>) {
+    let req = Request::Verify { file: file.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::VerifyResult {
+                files_checked, errors, warnings, diagnostics,
+            },
+        }) => {
+            let target = file.as_deref().unwrap_or("all files");
+            println!("Verify: {target}");
+            println!("  Files checked: {files_checked}");
+            println!("  Errors:        {errors}");
+            println!("  Warnings:      {warnings}");
+            if !diagnostics.is_empty() {
+                println!();
+                for d in &diagnostics {
+                    let line_str = d.line.map(|l| format!(":{l}")).unwrap_or_default();
+                    println!("  [{severity}] {file_path}{line_str}: {message} ({source})",
+                        severity = d.severity,
+                        file_path = d.file_path,
+                        message = d.message,
+                        source = d.source,
+                    );
+                }
+            }
+            if errors > 0 {
+                std::process::exit(1);
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Show cached diagnostics for a file.
+pub async fn diagnostics(file: String) {
+    let req = Request::GetDiagnostics { file: file.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::DiagnosticList { diagnostics, count },
+        }) => {
+            if diagnostics.is_empty() {
+                println!("No diagnostics for {file}");
+            } else {
+                println!("{count} diagnostic(s) for {file}:");
+                for d in &diagnostics {
+                    let line_str = d.line.map(|l| format!(":{l}")).unwrap_or_default();
+                    println!("  [{severity}] {file_path}{line_str}: {message} ({source})",
+                        severity = d.severity,
+                        file_path = d.file_path,
+                        message = d.message,
+                        source = d.source,
+                    );
+                }
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     }
 }
 

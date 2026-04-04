@@ -94,7 +94,7 @@ pub fn check_action(conn: &Connection, file: &str, action: &str) -> GuardrailRes
 }
 
 /// Result of a post-edit check for a file.
-/// Surfaces callers, lessons, patterns, skills, and decisions for review.
+/// Surfaces callers, lessons, patterns, skills, decisions, and cached diagnostics for review.
 #[derive(Debug, Clone)]
 pub struct PostEditResult {
     pub file: String,
@@ -104,11 +104,12 @@ pub struct PostEditResult {
     pub dangerous_patterns: Vec<String>,
     pub applicable_skills: Vec<String>,
     pub decisions_to_review: Vec<String>,
+    pub cached_diagnostics: Vec<String>,
 }
 
 /// Post-edit check: after a file has been modified, surface relevant context
 /// from the knowledge graph so the agent is aware of callers, lessons,
-/// dangerous patterns, applicable skills, and linked decisions.
+/// dangerous patterns, applicable skills, linked decisions, and cached diagnostics.
 ///
 /// This does NOT parse the new file content. It uses the EXISTING code graph
 /// to surface what the agent should be aware of after editing.
@@ -128,6 +129,12 @@ pub fn post_edit_check(conn: &Connection, file: &str) -> PostEditResult {
         .map(|(_, title, _)| title.clone())
         .collect();
 
+    // Query cached diagnostics from the diagnostic table
+    let cached = crate::db::diagnostics::get_diagnostics(conn, file).unwrap_or_default();
+    let cached_diagnostics: Vec<String> = cached.iter()
+        .map(|d| format!("[{}:{}] {}", d.source, d.severity, d.message))
+        .collect();
+
     PostEditResult {
         file: file.to_string(),
         callers_count,
@@ -136,6 +143,7 @@ pub fn post_edit_check(conn: &Connection, file: &str) -> PostEditResult {
         dangerous_patterns,
         applicable_skills,
         decisions_to_review,
+        cached_diagnostics,
     }
 }
 

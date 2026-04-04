@@ -195,6 +195,19 @@ enum Commands {
         id: String,
     },
 
+    /// Run proactive checks on a file or show all active diagnostics
+    Verify {
+        /// File to check (omit to show all active diagnostics)
+        #[arg(long)]
+        file: Option<String>,
+    },
+    /// Show cached diagnostics for a file
+    Diagnostics {
+        /// File path to query diagnostics for
+        #[arg(long)]
+        file: String,
+    },
+
     // ── Sync Commands ──
 
     /// Export memories as NDJSON with HLC metadata (for sync)
@@ -393,6 +406,13 @@ async fn main() {
         }
         Commands::Perceptions { project, limit } => {
             commands::manas::perceptions(project, limit).await;
+        }
+
+        Commands::Verify { file } => {
+            commands::system::verify(file).await;
+        }
+        Commands::Diagnostics { file } => {
+            commands::system::diagnostics(file).await;
         }
 
         // ── Sync Commands ──

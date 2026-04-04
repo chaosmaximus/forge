@@ -283,6 +283,18 @@ mod tests {
                     keep_id: "abc".into(),
                 },
             ),
+            (
+                "verify",
+                Request::Verify {
+                    file: Some("src/main.rs".into()),
+                },
+            ),
+            (
+                "get_diagnostics",
+                Request::GetDiagnostics {
+                    file: "src/main.rs".into(),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -428,6 +440,14 @@ mod tests {
                 "sync_resolve",
                 r#"{"method":"sync_resolve","params":{"keep_id":"abc"}}"#,
             ),
+            (
+                "verify",
+                r#"{"method":"verify","params":{"file":"src/main.rs"}}"#,
+            ),
+            (
+                "get_diagnostics",
+                r#"{"method":"get_diagnostics","params":{"file":"src/main.rs"}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -475,17 +495,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 40 Request variants.
+    /// Ensure we cover ALL 42 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
         // Unit variants: 11
         let unit_count = 11;
-        // Parameterized variants: 29
-        let param_count = 29;
-        // Total: 40
-        let expected_total = 40;
+        // Parameterized variants: 31
+        let param_count = 31;
+        // Total: 42
+        let expected_total = 42;
 
         assert_eq!(
             unit_count + param_count,
@@ -615,6 +635,12 @@ mod tests {
                 Request::SyncImport { lines: vec![] },
                 Request::SyncResolve {
                     keep_id: "k".into(),
+                },
+                Request::Verify {
+                    file: Some("f".into()),
+                },
+                Request::GetDiagnostics {
+                    file: "f".into(),
                 },
             ]
         }
