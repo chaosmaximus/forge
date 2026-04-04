@@ -281,6 +281,13 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Show extraction metrics, token usage, and cost tracking
+    #[command(name = "stats")]
+    Stats {
+        /// Time period in hours (default: 24)
+        #[arg(long, default_value = "24")]
+        hours: u64,
+    },
     /// Manage the daemon as a system service (install, start, stop, status)
     #[command(name = "service")]
     Service {
@@ -520,6 +527,9 @@ async fn main() {
         },
         Commands::Service { action } => {
             commands::system::service(action).await;
+        }
+        Commands::Stats { hours } => {
+            commands::system::stats(hours).await;
         }
     }
 }

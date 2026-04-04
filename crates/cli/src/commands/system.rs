@@ -815,6 +815,41 @@ pub async fn config_set(key: String, value: String) {
     }
 }
 
+/// Show extraction metrics, token usage, and cost tracking.
+pub async fn stats(hours: u64) {
+    let req = Request::GetStats { hours: Some(hours) };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::Stats {
+                period_hours,
+                extractions,
+                extraction_errors,
+                tokens_in,
+                tokens_out,
+                total_cost_usd,
+                avg_latency_ms,
+                memories_created,
+            },
+        }) => {
+            println!("Forge Stats (last {}h):", period_hours);
+            println!("  Extractions:      {} ({} errors)", extractions, extraction_errors);
+            println!("  Tokens:           {} in / {} out", tokens_in, tokens_out);
+            println!("  Cost:             ${:.4}", total_cost_usd);
+            println!("  Avg latency:      {}ms", avg_latency_ms);
+            println!("  Memories created: {}", memories_created);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Manage daemon as a system service (install/start/stop/status/uninstall).
 pub async fn service(action: crate::ServiceAction) {
     use crate::ServiceAction;
