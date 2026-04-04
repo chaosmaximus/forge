@@ -508,7 +508,7 @@ pub fn cleanup_stale_files(conn: &Connection, current_paths: &[&str]) -> rusqlit
 /// Export all active memories as full Memory objects.
 pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0)
          FROM memory WHERE status = 'active' ORDER BY created_at DESC"
     )?;
     let rows = stmt.query_map([], |row| {
@@ -540,6 +540,7 @@ pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
             node_id: row.get(13)?,
             session_id: row.get::<_, String>(14).unwrap_or_default(),
             access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
+            activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
         })
     })?;
     rows.collect()
@@ -782,7 +783,7 @@ pub fn link_related_memories(conn: &Connection) -> rusqlite::Result<usize> {
 pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
         "SELECT id, memory_type, title, content, confidence, status, project, tags,
-                created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count
+                created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0)
          FROM memory WHERE status = 'active' AND access_count >= 5
          ORDER BY access_count DESC LIMIT 5"
     )?;
@@ -815,6 +816,7 @@ pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Ve
             node_id: row.get(13)?,
             session_id: row.get::<_, String>(14).unwrap_or_default(),
             access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
+            activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
         })
     })?;
     rows.collect()

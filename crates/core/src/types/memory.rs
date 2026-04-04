@@ -46,6 +46,8 @@ pub struct Memory {
     pub session_id: String,    // Session that created this memory
     #[serde(default)]
     pub access_count: u64,     // How many times this memory has been accessed
+    #[serde(default)]
+    pub activation_level: f64, // 0.0-1.0, boosted on recall/context, decayed each consolidation
 }
 
 fn default_valence() -> String {
@@ -73,6 +75,7 @@ impl Memory {
             node_id: String::new(),
             session_id: String::new(),
             access_count: 0,
+            activation_level: 0.0,
         }
     }
 

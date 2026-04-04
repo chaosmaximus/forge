@@ -26,7 +26,7 @@ fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String,
 /// Fetch a single Memory record from SQLite by its ID.
 fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0)
          FROM memory WHERE id = ?1",
     )?;
 
@@ -69,6 +69,7 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             node_id: row.get(13)?,
             session_id: row.get::<_, String>(14).unwrap_or_default(),
             access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
+            activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
         }))
     } else {
         Ok(None)
