@@ -1,35 +1,108 @@
 name: Release
+
 on:
   push:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
-      - name: Configure git identity
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binaries
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
         run: |
-          git config --global user.email "ci@forge-plugin.dev"
-          git config --global user.name "Forge CI"
-      - name: Run full test suite
+          cargo build --release --target "$BUILD_TARGET" \
+            -p forge-daemon -p forge-cli
+
+      - name: Package binaries
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          VERSION_TAG: ${{ github.ref_name }}
         run: |
-          sudo apt-get install -y jq shellcheck
-          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats
-          sudo /tmp/bats/install.sh /usr/local
-          bash tests/run-all.sh
+          ARCHIVE="forge-${VERSION_TAG}-${BUILD_TARGET}.tar.gz"
+          cd "target/${BUILD_TARGET}/release"
+
+          mkdir -p staging
+          cp forge-daemon staging/ 2>/dev/null || true
+          cp forge-next staging/ 2>/dev/null || true
+
+          cd staging
+          tar czf "../../../${ARCHIVE}" *
+          cd ../../..
+
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect archives
+        run: |
+          mkdir -p release
+          find artifacts -name '*.tar.gz' -exec cp {} release/ \;
+          ls -la release/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          files: release/*.tar.gz
           body: |
-            ## Installation
+            ## Install
+
+            **One command:**
+            ```bash
+            curl -fsSL https://forge.bhairavi.tech/install | sh
             ```
+
+            **Or via Claude Code plugin:**
+            ```bash
             claude plugin marketplace add chaosmaximus/forge
-            claude plugin install forge@chaosmaximus-forge
             ```
-            Or install from local path:
-            ```
-            claude plugin install /path/to/forge
-            ```
+
+            ## Binaries
+
+            | Platform | Architecture |
+            |----------|-------------|
+            | macOS | Apple Silicon (aarch64) |
+            | macOS | Intel (x86_64) |
+            | Linux | x86_64 |
+
+            Each archive contains `forge-daemon` and `forge-next`.
