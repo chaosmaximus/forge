@@ -179,6 +179,24 @@ pub fn sync_export(
         }
     };
 
+    for mem in &rows {
+        if mem.hlc_timestamp.is_empty() {
+            eprintln!(
+                "[sync] WARN: memory {} has empty HLC — run backfill before syncing",
+                mem.id
+            );
+        }
+    }
+
+    // Reject export if ANY memory has empty HLC — forces backfill first
+    let empty_hlc_count = rows.iter().filter(|m| m.hlc_timestamp.is_empty()).count();
+    if empty_hlc_count > 0 {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "{} memories have empty HLC timestamps — run HLC backfill before export",
+            empty_hlc_count
+        )));
+    }
+
     for mem in rows {
         if let Ok(json) = serde_json::to_string(&mem) {
             lines.push(json);
@@ -350,6 +368,23 @@ pub fn sync_import(
                 if existing_content == remote_mem.content {
                     // Same content, no action needed
                     skipped += 1;
+                } else if existing_hlc.is_empty() {
+                    // SAFETY: local memory was never HLC-backfilled — empty string
+                    // comparison is semantically dangerous (any non-empty remote wins).
+                    // Treat as conflict to prevent silent overwrites.
+                    eprintln!(
+                        "[sync] WARN: local memory {} has empty HLC — treating as conflict for safety",
+                        existing_id
+                    );
+                    conn.execute(
+                        "UPDATE memory SET status = 'conflict' WHERE id = ?1",
+                        params![existing_id],
+                    )?;
+                    let mut conflict_mem = remote_mem;
+                    conflict_mem.status = MemoryStatus::Conflict;
+                    conflict_mem.id = format!("conflict-{}", ulid::Ulid::new());
+                    crate::db::ops::remember_raw(conn, &conflict_mem)?;
+                    conflicts += 1;
                 } else if remote_mem.node_id == local_node_id {
                     // Memory originated from THIS node (round-trip sync) => update if HLC newer
                     // SECURITY: compare against local_node_id, NOT existing record's node_id
@@ -1100,11 +1135,141 @@ mod tests {
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
+        // Must also have at least one memory with valid HLC for export to succeed
+        let mut mem = Memory::new(MemoryType::Decision, "Placeholder", "content");
+        mem.set_hlc("1712345678000-0000000000-node1".into(), "node1".into());
+        ops::remember(&conn, &mem).unwrap();
+
         let exported = sync_export(&conn, None, None).unwrap();
         let has_identity = exported.iter().any(|l| l.contains("\"_type\":\"identity\""));
         assert!(
             has_identity,
             "export should include identity facets with _type marker"
         );
+    }
+
+    // ── Bug 7 tests: HLC sync safety ──
+
+    #[test]
+    fn test_sync_import_empty_local_hlc_creates_conflict() {
+        let conn = test_conn();
+
+        // Insert a local memory with empty HLC (un-backfilled) directly via SQL
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags,
+             created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
+             VALUES ('m-empty-hlc', 'decision', 'Unversioned', 'Local content', 0.9, 'active', '', '[]',
+                     '2026-01-01', '2026-01-01', 'neutral', 0.0, '', '')",
+            [],
+        ).unwrap();
+
+        // Import remote memory with same title but different content
+        let remote = Memory {
+            id: "m-remote-hlc".into(),
+            memory_type: MemoryType::Decision,
+            title: "Unversioned".into(),
+            content: "Remote content".into(),
+            confidence: 0.9,
+            status: MemoryStatus::Active,
+            project: None,
+            tags: vec![],
+            embedding: None,
+            created_at: "2026-04-03".into(),
+            accessed_at: "2026-04-03".into(),
+            valence: "neutral".into(),
+            intensity: 0.0,
+            hlc_timestamp: "1712345678000-0000000000-remote01".into(),
+            node_id: "remote01".into(),
+            session_id: String::new(),
+            access_count: 0,
+        };
+        let line = serde_json::to_string(&remote).unwrap();
+
+        let result = sync_import(&conn, &[line], "local123").unwrap();
+        assert_eq!(result.conflicts, 1, "empty local HLC should create conflict, not silent overwrite");
+        assert_eq!(result.imported, 0, "should NOT import when local HLC is empty");
+
+        // Verify both are marked as conflicts
+        let conflict_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE status = 'conflict'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(conflict_count, 2, "both local and remote should be conflict");
+    }
+
+    #[test]
+    fn test_sync_import_empty_local_hlc_same_content_skips() {
+        let conn = test_conn();
+
+        // Insert a local memory with empty HLC but same content as remote
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags,
+             created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
+             VALUES ('m-empty-hlc2', 'decision', 'Same Title', 'Same content', 0.9, 'active', '', '[]',
+                     '2026-01-01', '2026-01-01', 'neutral', 0.0, '', '')",
+            [],
+        ).unwrap();
+
+        // Import remote with same content — should skip (content match comes first)
+        let remote = Memory {
+            id: "m-remote-same".into(),
+            memory_type: MemoryType::Decision,
+            title: "Same Title".into(),
+            content: "Same content".into(),
+            confidence: 0.9,
+            status: MemoryStatus::Active,
+            project: None,
+            tags: vec![],
+            embedding: None,
+            created_at: "2026-04-03".into(),
+            accessed_at: "2026-04-03".into(),
+            valence: "neutral".into(),
+            intensity: 0.0,
+            hlc_timestamp: "1712345678000-0000000000-remote01".into(),
+            node_id: "remote01".into(),
+            session_id: String::new(),
+            access_count: 0,
+        };
+        let line = serde_json::to_string(&remote).unwrap();
+
+        let result = sync_import(&conn, &[line], "local123").unwrap();
+        assert_eq!(result.skipped, 1, "same content should skip even with empty local HLC");
+        assert_eq!(result.conflicts, 0);
+    }
+
+    #[test]
+    fn test_sync_export_rejects_empty_hlc() {
+        let conn = test_conn();
+
+        // Insert a memory with empty HLC directly via SQL (bypassing backfill)
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags,
+             created_at, accessed_at, valence, intensity, hlc_timestamp, node_id)
+             VALUES ('m-no-hlc', 'decision', 'No HLC', 'content', 0.9, 'active', '', '[]',
+                     '2026-01-01', '2026-01-01', 'neutral', 0.0, '', '')",
+            [],
+        ).unwrap();
+
+        // Export should fail because of empty HLC
+        let result = sync_export(&conn, None, None);
+        assert!(result.is_err(), "sync_export should reject memories with empty HLC");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("empty HLC"), "error should mention empty HLC: {}", err_msg);
+    }
+
+    #[test]
+    fn test_sync_export_succeeds_with_valid_hlc() {
+        let conn = test_conn();
+
+        // Insert a memory with valid HLC
+        let mut mem = Memory::new(MemoryType::Decision, "Valid HLC", "content");
+        mem.set_hlc("1712345678000-0000000000-node1".into(), "node1".into());
+        ops::remember(&conn, &mem).unwrap();
+
+        let result = sync_export(&conn, None, None);
+        assert!(result.is_ok(), "sync_export should succeed when all memories have HLC");
     }
 }

@@ -55,9 +55,10 @@ impl DaemonState {
         let hlc = crate::sync::Hlc::new(&node_id);
 
         // Backfill HLC timestamps on existing memories that lack them
-        let backfilled = crate::sync::backfill_hlc(&conn, &hlc).unwrap_or(0);
-        if backfilled > 0 {
-            eprintln!("[daemon] backfilled HLC timestamps on {} existing memories", backfilled);
+        match crate::sync::backfill_hlc(&conn, &hlc) {
+            Ok(count) if count > 0 => eprintln!("[daemon] backfilled HLC timestamps on {} existing memories", count),
+            Ok(_) => {},
+            Err(e) => eprintln!("[daemon] WARN: HLC backfill failed: {e} — sync may be unreliable"),
         }
 
         Ok(DaemonState {
