@@ -96,11 +96,14 @@ pub async fn run_extractor(
 
 /// Process a single transcript file: read, parse incrementally, extract, and store.
 /// Logs timing for each phase (parse, extract, store) for observability.
+///
+/// Config is reloaded from disk on each call so that `forge-next config set`
+/// takes effect without daemon restart.
 async fn process_file(
     path: &PathBuf,
     offsets: &mut HashMap<PathBuf, usize>,
     state: &Arc<Mutex<crate::server::handler::DaemonState>>,
-    config: &ForgeConfig,
+    _config: &ForgeConfig,
     agent_adapters: &[Box<dyn AgentAdapter>],
 ) -> Result<(), String> {
     let total_start = std::time::Instant::now();
@@ -194,8 +197,12 @@ async fn process_file(
         combined_text
     };
 
+    // Reload config from disk so `forge-next config set` takes effect without restart.
+    // File read is ~1ms, negligible compared to the LLM extraction call.
+    let config = crate::config::load_config();
+
     // Detect backend
-    let backend = extraction::detect_backend(config).await;
+    let backend = extraction::detect_backend(&config).await;
 
     // Extract memories (this is the slow part — LLM call)
     let extract_start = std::time::Instant::now();

@@ -427,4 +427,41 @@ model = "gemini-1.5-pro"
         assert_eq!(result, None);
         std::env::remove_var("FORGE_TEST_EMPTY_KEY");
     }
+
+    #[test]
+    fn test_config_reload_from_disk() {
+        // Write initial config to temp file
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let path_str = path.to_str().unwrap();
+
+        let initial_toml = r#"
+[extraction]
+backend = "ollama"
+
+[extraction.ollama]
+model = "gemma3:1b"
+"#;
+        std::fs::write(&path, initial_toml).unwrap();
+
+        // Load initial config
+        let cfg1 = load_config_from(path_str);
+        assert_eq!(cfg1.extraction.backend, "ollama");
+        assert_eq!(cfg1.extraction.ollama.model, "gemma3:1b");
+
+        // Change config on disk (simulates `forge-next config set`)
+        let updated_toml = r#"
+[extraction]
+backend = "claude_api"
+
+[extraction.ollama]
+model = "llama3:70b"
+"#;
+        std::fs::write(&path, updated_toml).unwrap();
+
+        // Reload — should see new values without restart
+        let cfg2 = load_config_from(path_str);
+        assert_eq!(cfg2.extraction.backend, "claude_api", "backend should reflect disk change");
+        assert_eq!(cfg2.extraction.ollama.model, "llama3:70b", "model should reflect disk change");
+    }
 }

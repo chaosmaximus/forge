@@ -68,30 +68,9 @@ impl DaemonState {
             Err(e) => eprintln!("[daemon] WARN: HLC backfill failed: {e} — sync may be unreliable"),
         }
 
-        // Run consolidation once on startup to clean stale data immediately
-        let cs = crate::workers::consolidator::run_all_phases(&conn);
-        eprintln!(
-            "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",
-            cs.exact_dedup, cs.semantic_dedup, cs.linked, cs.faded, cs.promoted, cs.reconsolidated
-        );
-
-        // Ingest project documentation (Layer 7 — Declared Knowledge)
-        // and detect project type (Layer 4 — Domain DNA)
-        let project_dir = std::env::var("FORGE_PROJECT_DIR")
-            .or_else(|_| std::env::current_dir().map(|p| p.to_string_lossy().to_string()))
-            .unwrap_or_default();
-        if !project_dir.is_empty() {
-            match crate::db::manas::ingest_project_declared(&conn, &project_dir) {
-                Ok((ingested, _)) if ingested > 0 => eprintln!("[daemon] ingested {} declared knowledge files", ingested),
-                Ok(_) => {},
-                Err(e) => eprintln!("[daemon] WARN: declared knowledge ingestion failed: {e}"),
-            }
-            match crate::db::manas::detect_domain_dna(&conn, &project_dir) {
-                Ok(n) if n > 0 => eprintln!("[daemon] detected {} project type markers", n),
-                Ok(_) => {},
-                Err(e) => eprintln!("[daemon] WARN: domain DNA detection failed: {e}"),
-            }
-        }
+        // NOTE: Consolidation + project ingestion moved to background task
+        // (spawned after socket server starts) to avoid blocking socket startup.
+        // See main.rs `spawn_startup_tasks()`.
 
         Ok(DaemonState {
             conn,
@@ -3079,6 +3058,21 @@ mod tests {
             }
             other => panic!("expected Memories, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_daemon_state_new_is_fast() {
+        // DaemonState::new should complete in <500ms since consolidation
+        // and ingestion were moved to background tasks.
+        let start = std::time::Instant::now();
+        let _state = DaemonState::new(":memory:").expect("DaemonState::new should succeed");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_millis() < 500,
+            "DaemonState::new took {}ms — should be <500ms (consolidation is now background)",
+            elapsed.as_millis()
+        );
     }
 
     #[test]
