@@ -189,6 +189,14 @@ pub enum Request {
     ForceConsolidate,
     /// Trigger extraction on all pending transcripts (skip debounce)
     ForceExtract,
+    /// Extract memories using a specific provider (for testing/comparison in app).
+    /// Does NOT store memories — returns a preview of what WOULD be extracted.
+    ExtractWithProvider {
+        provider: String,         // "ollama", "claude", "claude_api", "openai", "gemini"
+        model: Option<String>,    // override model, or use default for provider
+        text: String,             // conversation text to extract from
+    },
+
     /// Get current daemon configuration
     GetConfig,
     /// Update a config value by dotted key (e.g., "extraction.backend")

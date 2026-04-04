@@ -324,6 +324,14 @@ mod tests {
                     project: Some("forge".into()),
                 },
             ),
+            (
+                "extract_with_provider",
+                Request::ExtractWithProvider {
+                    provider: "ollama".into(),
+                    model: Some("qwen3:4b".into()),
+                    text: "User decided to use Rust for the daemon.".into(),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -493,6 +501,14 @@ mod tests {
                 "bootstrap no project",
                 r#"{"method":"bootstrap","params":{}}"#,
             ),
+            (
+                "extract_with_provider",
+                r#"{"method":"extract_with_provider","params":{"provider":"ollama","text":"some conversation"}}"#,
+            ),
+            (
+                "extract_with_provider with model",
+                r#"{"method":"extract_with_provider","params":{"provider":"claude_api","model":"claude-3-haiku","text":"some conversation"}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -542,17 +558,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 50 Request variants.
+    /// Ensure we cover ALL 51 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
         // Unit variants: 15 (added ForceExtract, GetConfig)
         let unit_count = 15;
-        // Parameterized variants: 35 (added SetConfig, CompileContextTrace)
-        let param_count = 35;
-        // Total: 50
-        let expected_total = 50;
+        // Parameterized variants: 36 (added ExtractWithProvider)
+        let param_count = 36;
+        // Total: 51
+        let expected_total = 51;
 
         assert_eq!(
             unit_count + param_count,
@@ -714,6 +730,11 @@ mod tests {
                 Request::SetConfig {
                     key: "extraction.backend".into(),
                     value: "claude".into(),
+                },
+                Request::ExtractWithProvider {
+                    provider: "ollama".into(),
+                    model: None,
+                    text: "test".into(),
                 },
             ]
         }
