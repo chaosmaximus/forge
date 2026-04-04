@@ -78,6 +78,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             if let Some(p) = project {
                 memory = memory.with_project(p);
             }
+            // Assign active session ID so CLI-stored memories are linked to a session
+            memory.session_id = crate::sessions::get_active_session_id(&state.conn, "cli")
+                .unwrap_or_default();
             // Stamp HLC before storing
             memory.set_hlc(state.hlc.now(), state.hlc.node_id().to_string());
             let id = memory.id.clone();
@@ -359,6 +362,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         "embedder".into(),
                         "consolidator".into(),
                         "indexer".into(),
+                        "perception".into(),
+                        "disposition".into(),
+                        "diagnostics".into(),
                     ],
                     uptime_secs: state.started_at.elapsed().as_secs(),
                     platform_count: mh.platform_entries,
@@ -1318,7 +1324,7 @@ mod tests {
                 assert_eq!(file_count, 0);
                 assert_eq!(symbol_count, 0);
                 assert_eq!(edge_count, 0);
-                assert_eq!(workers.len(), 5);
+                assert_eq!(workers.len(), 8);
                 assert!(workers.contains(&"indexer".to_string()));
                 // Manas layer counts: detect_and_store_platform and detect_and_store_tools
                 // may have stored some entries. The rest should be 0.

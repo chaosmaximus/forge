@@ -344,26 +344,42 @@ pub fn compile_context(
         }
     }
 
-    // Top decisions (highest confidence, most recent access)
-    // Boost high-intensity memories: intensity > 0.5 gets up to 1.5x score multiplier
-    if let Ok(decisions) = ops::recall_bm25_project(conn, "decision architecture", project, 10) {
-        let mut decisions: Vec<_> = decisions
-            .into_iter()
-            .filter(|d| d.memory_type == "decision")
-            .map(|mut d| {
-                if d.intensity > 0.5 {
-                    d.score *= 1.0 + d.intensity * 0.5;
-                }
-                d
-            })
-            .collect();
-        decisions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    // Top decisions — direct query (not BM25) to ensure ALL decisions appear
+    {
+        let decisions: Vec<(String, f64, String, f64)> = if let Some(proj) = project {
+            conn.prepare(
+                "SELECT title, confidence, valence, intensity FROM memory
+                 WHERE memory_type = 'decision' AND status = 'active'
+                 AND (project = ?1 OR project IS NULL OR project = '')
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10"
+            ).and_then(|mut stmt| {
+                stmt.query_map(params![proj], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?.collect()
+            }).unwrap_or_default()
+        } else {
+            conn.prepare(
+                "SELECT title, confidence, valence, intensity FROM memory
+                 WHERE memory_type = 'decision' AND status = 'active'
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10"
+            ).and_then(|mut stmt| {
+                stmt.query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?.collect()
+            }).unwrap_or_default()
+        };
         if !decisions.is_empty() {
             let mut dec_xml = String::from("<decisions>");
-            for d in &decisions {
+            for (title, confidence, _valence, intensity) in &decisions {
+                // Boost high-intensity memories in display ordering
+                let display_confidence = if *intensity > 0.5 {
+                    (confidence * (1.0 + intensity * 0.5)).min(1.0)
+                } else {
+                    *confidence
+                };
                 let entry = format!(
                     "\n  <decision confidence=\"{:.1}\">{}</decision>",
-                    d.confidence, xml_escape(&d.title)
+                    display_confidence, xml_escape(title)
                 );
                 if used + dec_xml.len() + entry.len() < budget {
                     dec_xml.push_str(&entry);
@@ -375,24 +391,34 @@ pub fn compile_context(
         }
     }
 
-    // Top lessons
-    // Boost high-intensity memories: intensity > 0.5 gets up to 1.5x score multiplier
-    if let Ok(lessons) = ops::recall_bm25_project(conn, "lesson learned pattern", project, 5) {
-        let mut lessons: Vec<_> = lessons
-            .into_iter()
-            .filter(|l| l.memory_type == "lesson")
-            .map(|mut l| {
-                if l.intensity > 0.5 {
-                    l.score *= 1.0 + l.intensity * 0.5;
-                }
-                l
-            })
-            .collect();
-        lessons.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    // Top lessons — direct query (not BM25) to ensure ALL lessons appear
+    {
+        let lessons: Vec<(String, f64, String, f64)> = if let Some(proj) = project {
+            conn.prepare(
+                "SELECT title, confidence, valence, intensity FROM memory
+                 WHERE memory_type = 'lesson' AND status = 'active'
+                 AND (project = ?1 OR project IS NULL OR project = '')
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5"
+            ).and_then(|mut stmt| {
+                stmt.query_map(params![proj], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?.collect()
+            }).unwrap_or_default()
+        } else {
+            conn.prepare(
+                "SELECT title, confidence, valence, intensity FROM memory
+                 WHERE memory_type = 'lesson' AND status = 'active'
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5"
+            ).and_then(|mut stmt| {
+                stmt.query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?.collect()
+            }).unwrap_or_default()
+        };
         if !lessons.is_empty() {
             let mut les_xml = String::from("<lessons>");
-            for l in &lessons {
-                let entry = format!("\n  <lesson>{}</lesson>", xml_escape(&l.title));
+            for (title, _confidence, _valence, _intensity) in &lessons {
+                let entry = format!("\n  <lesson>{}</lesson>", xml_escape(title));
                 if used + les_xml.len() + entry.len() < budget {
                     les_xml.push_str(&entry);
                 }
