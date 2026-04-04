@@ -124,6 +124,21 @@ async fn main() {
             }
         }
 
+        // Clean duplicate identity facets (same description → keep highest strength)
+        match locked.conn.execute(
+            "DELETE FROM identity WHERE id NOT IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (PARTITION BY agent, description ORDER BY strength DESC) as rn
+                    FROM identity WHERE active = 1
+                ) WHERE rn = 1
+            ) AND active = 1",
+            [],
+        ) {
+            Ok(n) if n > 0 => eprintln!("[daemon] cleaned {} duplicate identity facets", n),
+            Ok(_) => {},
+            Err(e) => eprintln!("[daemon] WARN: identity dedup failed: {e}"),
+        }
+
         drop(locked);
         eprintln!("[daemon] startup tasks complete");
     });
