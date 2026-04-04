@@ -587,6 +587,7 @@ fn test_manas_health_after_mass_insert() {
                 declared_count,
                 identity_facets,
                 disposition_traits,
+                ..
             },
         } => {
             // Platform may have auto-detected entries from DaemonState::new, so >= 10
@@ -991,6 +992,7 @@ fn test_manas_health_includes_all_layers() {
                 declared_count,
                 identity_facets,
                 disposition_traits,
+                ..
             },
         } => {
             assert!(platform_count > 0, "platform_count should be > 0, got: {}", platform_count);

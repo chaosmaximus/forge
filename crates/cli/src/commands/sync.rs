@@ -322,6 +322,35 @@ pub async fn sync_resolve(id: String) {
     }
 }
 
+/// Backfill HLC timestamps on existing memories that have empty hlc_timestamp.
+pub async fn hlc_backfill() {
+    let request = Request::HlcBackfill;
+
+    match client::send(&request).await {
+        Ok(Response::Ok {
+            data: ResponseData::HlcBackfilled { count },
+        }) => {
+            if count == 0 {
+                println!("All memories already have HLC timestamps.");
+            } else {
+                println!("Backfilled {count} memories with HLC timestamps.");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()

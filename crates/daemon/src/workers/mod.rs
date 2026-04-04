@@ -109,10 +109,13 @@ pub fn spawn_workers(
     // Diagnostics worker — debounced batch analysis
     let (diag_tx, diag_rx) = mpsc::channel::<String>(100);
     {
-        // Store the diagnostics sender in DaemonState so PostEditCheck can use it
+        // Store the diagnostics sender in DaemonState so PostEditCheck can use it.
+        // Spawn a short-lived task to avoid blocking_lock panic in tokio runtime.
         let state_clone = Arc::clone(&state);
-        let mut locked = state_clone.blocking_lock();
-        locked.diagnostics_tx = Some(diag_tx);
+        tokio::spawn(async move {
+            let mut locked = state_clone.lock().await;
+            locked.diagnostics_tx = Some(diag_tx);
+        });
     }
     let diagnostics_handle = tokio::spawn(async move {
         diagnostics::run_diagnostics_worker(diagnostics_state, diag_rx, diagnostics_shutdown).await;
