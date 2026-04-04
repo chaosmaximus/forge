@@ -699,7 +699,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::RegisterSession { id, agent, project, cwd } => {
+        Request::RegisterSession { id, agent, project, cwd, capabilities: _, current_task: _ } => {
             let agent_clone = agent.clone();
             match crate::sessions::register_session(&state.conn, &id, &agent, project.as_deref(), cwd.as_deref()) {
                 Ok(()) => {
@@ -751,6 +751,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             id: s.id, agent: s.agent, project: s.project,
                             cwd: s.cwd, started_at: s.started_at,
                             ended_at: s.ended_at, status: s.status,
+                            capabilities: Vec::new(),
+                            current_task: String::new(),
                         }
                     }).collect();
                     Response::Ok {
@@ -1651,6 +1653,20 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // A2A FISP stubs — handler logic will be added in Wave 4
+        Request::SessionSend { .. } => Response::Error {
+            message: "session_send not yet implemented".into(),
+        },
+        Request::SessionRespond { .. } => Response::Error {
+            message: "session_respond not yet implemented".into(),
+        },
+        Request::SessionMessages { .. } => Response::Error {
+            message: "session_messages not yet implemented".into(),
+        },
+        Request::SessionAck { .. } => Response::Error {
+            message: "session_ack not yet implemented".into(),
+        },
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
@@ -2158,6 +2174,8 @@ mod tests {
             agent: "claude-code".into(),
             project: Some("forge".into()),
             cwd: Some("/project".into()),
+            capabilities: None,
+            current_task: None,
         });
         match resp1 {
             Response::Ok { data: ResponseData::SessionRegistered { id } } => assert_eq!(id, "s1"),
@@ -2169,6 +2187,8 @@ mod tests {
             agent: "cline".into(),
             project: None,
             cwd: None,
+            capabilities: None,
+            current_task: None,
         });
         match resp2 {
             Response::Ok { data: ResponseData::SessionRegistered { id } } => assert_eq!(id, "s2"),
@@ -2196,6 +2216,8 @@ mod tests {
             agent: "claude-code".into(),
             project: None,
             cwd: None,
+            capabilities: None,
+            current_task: None,
         });
 
         // End
@@ -2230,6 +2252,8 @@ mod tests {
                 agent: "claude-code".into(),
                 project: Some("forge".into()),
                 cwd: None,
+                capabilities: None,
+                current_task: None,
             });
         }
 
@@ -2559,6 +2583,8 @@ mod tests {
             agent: "claude-code".into(),
             project: None,
             cwd: None,
+            capabilities: None,
+            current_task: None,
         });
 
         let event = rx.try_recv().unwrap();
@@ -2578,6 +2604,8 @@ mod tests {
             agent: "claude-code".into(),
             project: None,
             cwd: None,
+            capabilities: None,
+            current_task: None,
         });
 
         let mut rx = state.events.subscribe();

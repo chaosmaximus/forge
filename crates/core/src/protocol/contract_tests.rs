@@ -164,6 +164,8 @@ mod tests {
                     agent: "claude-code".into(),
                     project: Some("forge".into()),
                     cwd: Some("/tmp".into()),
+                    capabilities: None,
+                    current_task: None,
                 },
             ),
             (
@@ -695,6 +697,8 @@ mod tests {
                     agent: "a".into(),
                     project: None,
                     cwd: None,
+                    capabilities: None,
+                    current_task: None,
                 },
                 Request::EndSession { id: "s".into() },
                 Request::Sessions { active_only: None },

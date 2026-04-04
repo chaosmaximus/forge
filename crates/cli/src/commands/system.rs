@@ -536,7 +536,7 @@ pub async fn lsp_status() {
 
 /// Register an active agent session.
 pub async fn register_session(id: String, agent: String, project: Option<String>, cwd: Option<String>) {
-    match client::send(&Request::RegisterSession { id: id.clone(), agent, project, cwd }).await {
+    match client::send(&Request::RegisterSession { id: id.clone(), agent, project, cwd, capabilities: None, current_task: None }).await {
         Ok(Response::Ok { data: ResponseData::SessionRegistered { .. } }) => {
             println!("Session registered: {id}");
         }

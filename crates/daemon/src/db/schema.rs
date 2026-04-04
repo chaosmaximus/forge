@@ -248,6 +248,28 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
     ")?;
 
+    // A2A FISP: inter-session message queue
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS session_message (
+            id TEXT PRIMARY KEY,
+            from_session TEXT NOT NULL,
+            to_session TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            topic TEXT NOT NULL DEFAULT '',
+            parts TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'pending',
+            in_reply_to TEXT,
+            project TEXT,
+            timeout_secs INTEGER,
+            created_at TEXT NOT NULL,
+            delivered_at TEXT,
+            expires_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_msg_to ON session_message(to_session, status);
+        CREATE INDEX IF NOT EXISTS idx_msg_from ON session_message(from_session);
+        CREATE INDEX IF NOT EXISTS idx_msg_reply ON session_message(in_reply_to);
+    ")?;
+
     // Add valence columns (safe to re-run — ignores if already exists)
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN valence TEXT NOT NULL DEFAULT 'neutral'", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN intensity REAL NOT NULL DEFAULT 0.0", []);
@@ -277,6 +299,10 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Counterfactual + relational memory columns (safe to re-run — ignores if already exists)
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN alternatives TEXT NOT NULL DEFAULT '[]'", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN participants TEXT NOT NULL DEFAULT '[]'", []);
+
+    // A2A FISP: session capabilities and current task (safe to re-run — ignores if already exists)
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN current_task TEXT NOT NULL DEFAULT ''", []);
 
     Ok(())
 }
