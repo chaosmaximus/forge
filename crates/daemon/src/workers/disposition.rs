@@ -53,9 +53,11 @@ pub async fn run_disposition(
 async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
     let locked = state.lock().await;
 
-    // Discover active agents from session table (last 24 hours)
+    // Discover active agents from session table (last 24 hours or still active)
     let active_agents = query_active_agents(&locked.conn);
+    // query_active_agents always returns at least DEFAULT_AGENT_NAME, so this is defensive
     if active_agents.is_empty() {
+        eprintln!("[disposition] WARN: no agents found at all — this should not happen");
         return;
     }
 
@@ -76,6 +78,7 @@ fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
     };
 
     if sessions.is_empty() {
+        eprintln!("[disposition] no sessions found for agent '{}' — cannot compute traits", agent_name);
         return;
     }
 
@@ -167,21 +170,29 @@ fn query_active_agents(conn: &rusqlite::Connection) -> Vec<String> {
         "SELECT DISTINCT agent FROM session WHERE status = 'active' OR started_at > ?1"
     ) {
         Ok(s) => s,
-        Err(_) => return vec![DEFAULT_AGENT_NAME.to_string()],
+        Err(e) => {
+            eprintln!("[disposition] WARN: failed to prepare agent query: {e}");
+            return vec![DEFAULT_AGENT_NAME.to_string()];
+        }
     };
     let rows = match stmt.query_map(rusqlite::params![cutoff], |row| row.get(0)) {
         Ok(r) => r,
-        Err(_) => return vec![DEFAULT_AGENT_NAME.to_string()],
+        Err(e) => {
+            eprintln!("[disposition] WARN: failed to query agents: {e}");
+            return vec![DEFAULT_AGENT_NAME.to_string()];
+        }
     };
     let agents: Vec<String> = rows.filter_map(|r| r.ok()).collect();
     if agents.is_empty() {
+        eprintln!("[disposition] no active agents found, using default: {}", DEFAULT_AGENT_NAME);
         vec![DEFAULT_AGENT_NAME.to_string()]
     } else {
         agents
     }
 }
 
-/// Query sessions from the last 24 hours for a specific agent.
+/// Query recent sessions for a specific agent.
+/// Includes: sessions from last 24h OR still-active sessions (regardless of age).
 fn query_recent_sessions_for_agent(
     conn: &rusqlite::Connection,
     agent: &str,
@@ -190,7 +201,7 @@ fn query_recent_sessions_for_agent(
 
     let mut stmt = conn.prepare(
         "SELECT started_at, ended_at FROM session
-         WHERE agent = ?1 AND started_at > ?2
+         WHERE agent = ?1 AND (started_at > ?2 OR (status = 'active' AND ended_at IS NULL))
          ORDER BY started_at DESC",
     )?;
 
@@ -293,12 +304,18 @@ fn get_current_value(
         DispositionTrait::Creativity => format!("{}-creativity", agent_name),
     };
 
-    conn.query_row(
+    match conn.query_row(
         "SELECT value FROM disposition WHERE id = ?1",
         rusqlite::params![id],
         |row| row.get::<_, f64>(0),
-    )
-    .unwrap_or(DEFAULT_VALUE)
+    ) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => DEFAULT_VALUE, // Expected: first-time trait
+        Err(e) => {
+            eprintln!("[disposition] WARN: failed to read {:?} for {}: {e}", trait_type, agent_name);
+            DEFAULT_VALUE
+        }
+    }
 }
 
 /// Determine trend from old→new value.
@@ -427,5 +444,75 @@ mod tests {
 
         let delta2 = (MAX_DELTA * 1.5).clamp(-MAX_DELTA, MAX_DELTA);
         assert!((delta2 - MAX_DELTA).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_tick_for_agent_produces_traits() {
+        let conn = open_db();
+        // Insert a recent active session
+        conn.execute(
+            "INSERT INTO session (id, agent, project, cwd, status, started_at) VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+            rusqlite::params!["test-session-1", "claude-code", "test-project", "/tmp", manas::now_offset(-300)],
+        ).unwrap();
+
+        // Run the tick
+        tick_for_agent(&conn, "claude-code");
+
+        // Verify traits were stored
+        let caution: f64 = conn.query_row(
+            "SELECT value FROM disposition WHERE id = 'claude-code-caution'",
+            [],
+            |row| row.get(0),
+        ).expect("caution trait should exist after tick");
+        assert!(caution >= 0.0 && caution <= 1.0, "caution should be in [0,1], got {}", caution);
+
+        let thoroughness: f64 = conn.query_row(
+            "SELECT value FROM disposition WHERE id = 'claude-code-thoroughness'",
+            [],
+            |row| row.get(0),
+        ).expect("thoroughness trait should exist after tick");
+        assert!(thoroughness >= 0.0 && thoroughness <= 1.0, "thoroughness should be in [0,1], got {}", thoroughness);
+    }
+
+    #[test]
+    fn test_tick_for_agent_with_old_active_sessions() {
+        let conn = open_db();
+        // Insert an OLD active session (48 hours ago) — previously would have been missed
+        conn.execute(
+            "INSERT INTO session (id, agent, project, cwd, status, started_at) VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+            rusqlite::params!["old-session", "claude-code", "test-project", "/tmp", manas::now_offset(-172800)],
+        ).unwrap();
+
+        // Run the tick — should find the old active session
+        tick_for_agent(&conn, "claude-code");
+
+        // Verify traits were stored (not skipped due to empty sessions)
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM disposition WHERE agent = 'claude-code'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(count >= 2, "should have at least 2 traits (caution + thoroughness), got {}", count);
+    }
+
+    #[test]
+    fn test_query_active_agents_finds_active_sessions() {
+        let conn = open_db();
+        // Insert an active session
+        conn.execute(
+            "INSERT INTO session (id, agent, project, cwd, status, started_at) VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+            rusqlite::params!["sess-1", "claude-code", "proj", "/tmp", manas::now_offset(-7200)],
+        ).unwrap();
+
+        let agents = query_active_agents(&conn);
+        assert!(agents.contains(&"claude-code".to_string()), "should find claude-code agent");
+    }
+
+    #[test]
+    fn test_query_active_agents_defaults_when_empty() {
+        let conn = open_db();
+        // No sessions at all
+        let agents = query_active_agents(&conn);
+        assert_eq!(agents, vec![DEFAULT_AGENT_NAME.to_string()], "should fallback to default agent");
     }
 }

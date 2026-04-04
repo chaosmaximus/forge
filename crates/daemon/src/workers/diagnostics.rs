@@ -437,7 +437,7 @@ mod tests {
         let state = Arc::new(Mutex::new(DaemonState::new(":memory:").unwrap()));
         // Re-setup the test data in the state's connection
         {
-            let mut locked = state.lock().await;
+            let locked = state.lock().await;
             let sym = CodeSymbol {
                 id: "sym-target".into(),
                 name: "process_data".into(),
