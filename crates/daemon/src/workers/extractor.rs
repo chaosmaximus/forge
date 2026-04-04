@@ -272,15 +272,20 @@ async fn process_file(
                 return Ok(());
             }
 
-            let locked = state.lock().await;
             let mut stored = 0usize;
-            let event_tx = locked.events.clone();
 
-            // Detect active session for this agent to set session provenance
-            let session_id = crate::sessions::get_active_session_id(&locked.conn, adapter.name())
-                .unwrap_or_default();
+            // Quick lock to get event channel + session ID, then release
+            let (event_tx, session_id) = {
+                let locked = state.lock().await;
+                let tx = locked.events.clone();
+                let sid = crate::sessions::get_active_session_id(&locked.conn, adapter.name())
+                    .unwrap_or_default();
+                (tx, sid)
+            }; // lock released — socket handler can serve requests during memory processing
 
             for em in &extracted {
+                // Re-acquire lock per memory write (short hold, doesn't block socket for long)
+                let locked = state.lock().await;
                 // Route skills to the skill table (Layer 2) instead of
                 // the memory table (Layer 5). The `continue` ensures a
                 // skill extraction doesn't also create a duplicate memory entry.

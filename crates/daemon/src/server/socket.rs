@@ -209,10 +209,18 @@ pub async fn run_server(
                         // Check for shutdown before acquiring lock so we can respond then exit
                         let is_shutdown = matches!(request, Request::Shutdown);
 
-                        // Handle request
-                        let response = {
-                            let mut locked = state_clone.lock().await;
-                            handle_request(&mut locked, request)
+                        // Handle request with mutex timeout — prevents blocking during extraction
+                        let response = match tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            state_clone.lock()
+                        ).await {
+                            Ok(mut locked) => handle_request(&mut locked, request),
+                            Err(_) => {
+                                eprintln!("[socket] WARN: state mutex busy (extraction in progress?) — request timed out");
+                                Response::Error {
+                                    message: "daemon busy (extraction in progress), retry in a few seconds".to_string(),
+                                }
+                            }
                         };
 
                         // Write response + newline
