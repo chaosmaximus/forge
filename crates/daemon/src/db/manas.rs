@@ -60,6 +60,7 @@ fn perception_kind_str(k: &PerceptionKind) -> &'static str {
         PerceptionKind::BuildResult => "build_result",
         PerceptionKind::TestResult => "test_result",
         PerceptionKind::UserFeedback => "user_feedback",
+        PerceptionKind::MissingTool => "missing_tool",
     }
 }
 
@@ -70,6 +71,7 @@ fn perception_kind_from_str(s: &str) -> PerceptionKind {
         "build_result" => PerceptionKind::BuildResult,
         "test_result" => PerceptionKind::TestResult,
         "user_feedback" => PerceptionKind::UserFeedback,
+        "missing_tool" => PerceptionKind::MissingTool,
         other => {
             eprintln!("[manas] unknown perception kind '{}', defaulting to Error", other);
             PerceptionKind::Error
@@ -338,10 +340,95 @@ fn command_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Additional developer tools beyond the core known set.
+/// Format: (binary_name, category, capabilities)
+const EXTRA_TOOL_PATTERNS: &[(&str, &str, &[&str])] = &[
+    // Languages/Runtimes
+    ("python",   "runtime",          &["python-runtime"]),
+    ("ruby",     "runtime",          &["ruby-runtime"]),
+    ("go",       "runtime",          &["go-build", "go-test", "go-modules"]),
+    ("java",     "runtime",          &["java-runtime"]),
+    ("javac",    "compiler",         &["java-compiler"]),
+    ("swift",    "compiler",         &["swift-compiler", "swift-build"]),
+    ("zig",      "compiler",         &["zig-build", "zig-test"]),
+    ("flutter",  "sdk",             &["flutter-build", "flutter-test", "dart-analyze"]),
+    ("dart",     "runtime",          &["dart-runtime", "dart-analyze"]),
+    ("deno",     "runtime",          &["deno-runtime", "deno-test"]),
+    ("bun",      "runtime",          &["bun-runtime", "bun-test"]),
+
+    // Package managers
+    ("yarn",     "package-manager",  &["yarn-packages", "yarn-scripts"]),
+    ("pnpm",     "package-manager",  &["pnpm-packages", "pnpm-scripts"]),
+    ("pip3",     "package-manager",  &["python-packages"]),
+    ("pipenv",   "package-manager",  &["python-venv"]),
+    ("poetry",   "package-manager",  &["python-build", "python-packages"]),
+    ("bundler",  "package-manager",  &["ruby-packages"]),
+    ("gem",      "package-manager",  &["ruby-gems"]),
+    ("gradle",   "build",           &["gradle-build", "gradle-test"]),
+    ("mvn",      "build",           &["maven-build", "maven-test"]),
+    ("cmake",    "build",           &["cmake-build", "cmake-config"]),
+    ("bazel",    "build",           &["bazel-build", "bazel-test"]),
+
+    // Test frameworks
+    ("pytest",   "test",            &["python-test", "pytest-fixtures"]),
+    ("jest",     "test",            &["js-test", "snapshot-test"]),
+    ("vitest",   "test",            &["js-test", "vite-test"]),
+    ("mocha",    "test",            &["js-test"]),
+    ("rspec",    "test",            &["ruby-test"]),
+
+    // Linters/Formatters
+    ("eslint",           "lint",    &["js-lint"]),
+    ("prettier",         "format",  &["js-format"]),
+    ("ruff",             "lint",    &["python-lint", "python-format"]),
+    ("flake8",           "lint",    &["python-lint"]),
+    ("black",            "format",  &["python-format"]),
+    ("rubocop",          "lint",    &["ruby-lint"]),
+    ("golangci-lint",    "lint",    &["go-lint"]),
+    ("clippy-driver",    "lint",    &["rust-lint"]),
+    ("rustfmt",          "format",  &["rust-format"]),
+    ("hadolint",         "lint",    &["dockerfile-lint"]),
+    ("shellcheck",       "lint",    &["shell-lint"]),
+    ("tflint",           "lint",    &["terraform-lint"]),
+
+    // DevOps
+    ("helm",      "deploy",         &["kubernetes-helm", "chart-management"]),
+    ("ansible",   "deploy",         &["infrastructure-automation"]),
+    ("vagrant",   "vm",             &["virtual-machines"]),
+    ("podman",    "container",       &["containers"]),
+    ("kind",      "kubernetes",      &["local-kubernetes"]),
+    ("minikube",  "kubernetes",      &["local-kubernetes"]),
+
+    // Cloud CLIs
+    ("az",        "cloud",           &["azure"]),
+    ("doctl",     "cloud",           &["digitalocean"]),
+    ("flyctl",    "cloud",           &["fly-io"]),
+    ("vercel",    "deploy",          &["vercel-deploy"]),
+    ("netlify",   "deploy",          &["netlify-deploy"]),
+    ("railway",   "deploy",          &["railway-deploy"]),
+
+    // Editors/Tools
+    ("code",      "editor",          &["vscode"]),
+    ("nvim",      "editor",          &["neovim"]),
+    ("vim",       "editor",          &["vim"]),
+    ("emacs",     "editor",          &["emacs"]),
+    ("screen",    "terminal",        &["terminal-multiplexer"]),
+
+    // Search/Files
+    ("fzf",       "search",          &["fuzzy-search"]),
+    ("bat",       "viewer",          &["file-viewer"]),
+    ("eza",       "search",          &["ls-replacement"]),
+    ("delta",     "diff",            &["diff-viewer"]),
+    ("tokei",     "analysis",        &["code-stats"]),
+    ("hyperfine", "benchmark",       &["benchmarking"]),
+];
+
 /// Scan PATH for common developer tools and store in the tool table.
+/// Phase 1: Known tools with rich, curated capabilities.
+/// Phase 2: Extended discovery from EXTRA_TOOL_PATTERNS with category metadata.
 /// Returns the number of tools found.
 pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
-    let tools_to_check: &[(&str, &[&str])] = &[
+    // Phase 1: Known tools — curated with rich capabilities
+    let known_tools: &[(&str, &[&str])] = &[
         ("git",       &["version-control", "diff", "merge", "branch"]),
         ("cargo",     &["rust-build", "rust-test", "rust-publish"]),
         ("rustc",     &["rust-compiler"]),
@@ -368,7 +455,8 @@ pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
 
     let mut found = 0;
     let now = now_iso();
-    for (name, caps) in tools_to_check {
+
+    for (name, caps) in known_tools {
         if command_exists(name) {
             let tool = Tool {
                 id: format!("cli:{}", name),
@@ -385,6 +473,29 @@ pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
             found += 1;
         }
     }
+
+    // Phase 2: Extended discovery — additional developer tools with category
+    for (name, category, caps) in EXTRA_TOOL_PATTERNS {
+        if command_exists(name) {
+            let tool = Tool {
+                id: format!("cli:{}", name),
+                name: name.to_string(),
+                kind: ToolKind::Cli,
+                capabilities: caps.iter().map(|s| s.to_string()).collect(),
+                config: Some(
+                    serde_json::json!({"category": category}).to_string(),
+                ),
+                health: ToolHealth::Healthy,
+                last_used: None,
+                use_count: 0,
+                discovered_at: now.clone(),
+            };
+            store_tool(conn, &tool)?;
+            found += 1;
+        }
+    }
+
+    eprintln!("[tools] discovered {} tools on PATH", found);
     Ok(found)
 }
 
@@ -583,10 +694,11 @@ fn row_to_domain_dna(row: &rusqlite::Row) -> rusqlite::Result<DomainDna> {
 // Layer 4: Perception ops
 // ──────────────────────────────────────────────
 
-/// Store a perception event.
+/// Store a perception event. Uses INSERT OR REPLACE so repeated calls with the same ID
+/// update the perception rather than failing.
 pub fn store_perception(conn: &Connection, p: &Perception) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO perception (id, kind, data, severity, project, created_at, expires_at, consumed)
+        "INSERT OR REPLACE INTO perception (id, kind, data, severity, project, created_at, expires_at, consumed)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             p.id,

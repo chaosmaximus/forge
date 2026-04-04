@@ -93,6 +93,7 @@ pub enum PerceptionKind {
     BuildResult,
     TestResult,
     UserFeedback,
+    MissingTool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

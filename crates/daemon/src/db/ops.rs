@@ -127,6 +127,33 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
     Ok(())
 }
 
+/// Boost activation level for a memory (capped at 1.0).
+/// Used to track which memories are actively being used.
+/// Activation decays over time in the consolidator.
+pub fn boost_activation(conn: &Connection, memory_id: &str, amount: f64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE memory SET activation_level = MIN(1.0, COALESCE(activation_level, 0.0) + ?1) WHERE id = ?2",
+        params![amount, memory_id],
+    )?;
+    Ok(())
+}
+
+/// Decay all activation levels by a multiplicative factor.
+/// Memories with activation_level <= threshold are zeroed out to avoid float dust.
+/// Returns the number of rows updated.
+pub fn decay_activation_levels(conn: &Connection) -> rusqlite::Result<usize> {
+    let updated = conn.execute(
+        "UPDATE memory SET activation_level = activation_level * 0.95 WHERE activation_level > 0.01",
+        [],
+    )?;
+    // Zero out dust
+    conn.execute(
+        "UPDATE memory SET activation_level = 0.0 WHERE activation_level > 0.0 AND activation_level <= 0.01",
+        [],
+    )?;
+    Ok(updated)
+}
+
 /// Remove duplicate memories, keeping the one with highest confidence for each title+type.
 /// Returns the number of rows deleted.
 pub fn dedup_memories(conn: &Connection) -> rusqlite::Result<usize> {

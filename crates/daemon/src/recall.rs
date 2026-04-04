@@ -208,6 +208,13 @@ pub fn hybrid_recall(
     let returned_ids: Vec<&str> = results.iter().map(|r| r.memory.id.as_str()).collect();
     ops::touch(conn, &returned_ids);
 
+    // 7. Boost activation for recalled memories (+0.3)
+    for result in &results {
+        if let Err(e) = ops::boost_activation(conn, &result.memory.id, 0.3) {
+            eprintln!("[recall] activation boost error for {}: {e}", result.memory.id);
+        }
+    }
+
     results
 }
 
@@ -512,9 +519,9 @@ pub fn compile_dynamic_suffix(
     // Decisions (accumulate — always show ALL, masking with empty tag if none)
     // Recency boost: last 24h *1.5, last 7d *1.2, older *1.0
     {
-        let decisions: Vec<(String, f64, String, f64)> = if let Some(proj) = project {
+        let decisions: Vec<(String, String, f64, String, f64)> = if let Some(proj) = project {
             conn.prepare(
-                "SELECT title, confidence, valence, intensity FROM memory
+                "SELECT id, title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'decision' AND status = 'active'
                  AND (project = ?1 OR project IS NULL OR project = '')
                  ORDER BY confidence * CASE
@@ -525,14 +532,14 @@ pub fn compile_dynamic_suffix(
             )
             .and_then(|mut stmt| {
                 stmt.query_map(params![proj], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
                 })?
                 .collect()
             })
             .unwrap_or_default()
         } else {
             conn.prepare(
-                "SELECT title, confidence, valence, intensity FROM memory
+                "SELECT id, title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'decision' AND status = 'active'
                  ORDER BY confidence * CASE
                      WHEN created_at > datetime('now', '-1 day') THEN 1.5
@@ -542,7 +549,7 @@ pub fn compile_dynamic_suffix(
             )
             .and_then(|mut stmt| {
                 stmt.query_map([], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
                 })?
                 .collect()
             })
@@ -552,7 +559,7 @@ pub fn compile_dynamic_suffix(
             xml.push_str("<decisions/>\n");
         } else {
             let mut dec_xml = String::from("<decisions>");
-            for (title, confidence, _valence, intensity) in &decisions {
+            for (id, title, confidence, _valence, intensity) in &decisions {
                 let display_confidence = if *intensity > 0.5 {
                     (confidence * (1.0 + intensity * 0.5)).min(1.0)
                 } else {
@@ -565,6 +572,10 @@ pub fn compile_dynamic_suffix(
                 );
                 if used + dec_xml.len() + entry.len() < budget {
                     dec_xml.push_str(&entry);
+                    // Boost activation for included decisions (+0.1)
+                    if let Err(e) = ops::boost_activation(conn, id, 0.1) {
+                        eprintln!("[compile_context] activation boost error for decision {id}: {e}");
+                    }
                 }
             }
             dec_xml.push_str("\n</decisions>\n");
@@ -576,9 +587,9 @@ pub fn compile_dynamic_suffix(
     // Lessons (accumulate — always present)
     // Recency boost: last 24h *1.5, last 7d *1.2, older *1.0
     {
-        let lessons: Vec<(String, f64, String, f64)> = if let Some(proj) = project {
+        let lessons: Vec<(String, String, f64, String, f64)> = if let Some(proj) = project {
             conn.prepare(
-                "SELECT title, confidence, valence, intensity FROM memory
+                "SELECT id, title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'lesson' AND status = 'active'
                  AND (project = ?1 OR project IS NULL OR project = '')
                  ORDER BY confidence * CASE
@@ -589,14 +600,14 @@ pub fn compile_dynamic_suffix(
             )
             .and_then(|mut stmt| {
                 stmt.query_map(params![proj], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
                 })?
                 .collect()
             })
             .unwrap_or_default()
         } else {
             conn.prepare(
-                "SELECT title, confidence, valence, intensity FROM memory
+                "SELECT id, title, confidence, valence, intensity FROM memory
                  WHERE memory_type = 'lesson' AND status = 'active'
                  ORDER BY confidence * CASE
                      WHEN created_at > datetime('now', '-1 day') THEN 1.5
@@ -606,7 +617,7 @@ pub fn compile_dynamic_suffix(
             )
             .and_then(|mut stmt| {
                 stmt.query_map([], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
                 })?
                 .collect()
             })
@@ -616,10 +627,14 @@ pub fn compile_dynamic_suffix(
             xml.push_str("<lessons/>\n");
         } else {
             let mut les_xml = String::from("<lessons>");
-            for (title, _confidence, _valence, _intensity) in &lessons {
+            for (id, title, _confidence, _valence, _intensity) in &lessons {
                 let entry = format!("\n  <lesson>{}</lesson>", xml_escape(title));
                 if used + les_xml.len() + entry.len() < budget {
                     les_xml.push_str(&entry);
+                    // Boost activation for included lessons (+0.1)
+                    if let Err(e) = ops::boost_activation(conn, id, 0.1) {
+                        eprintln!("[compile_context] activation boost error for lesson {id}: {e}");
+                    }
                 }
             }
             les_xml.push_str("\n</lessons>\n");
@@ -790,6 +805,166 @@ pub fn compile_context(
         "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
         prefix, suffix
     )
+}
+
+/// Compile context trace: mirrors compile_dynamic_suffix logic but collects
+/// trace entries showing why each memory was considered, included, or excluded.
+///
+/// Returns data for the ContextTrace response variant.
+pub fn compile_context_trace(
+    conn: &Connection,
+    _agent: &str,
+    project: Option<&str>,
+) -> ContextTraceData {
+    use forge_core::protocol::TraceEntry;
+
+    let budget: usize = 3000;
+    let mut used = 0usize;
+    let mut considered = Vec::new();
+    let mut included = Vec::new();
+    let mut excluded = Vec::new();
+    let mut layer_chars: HashMap<String, usize> = HashMap::new();
+
+    // Decisions
+    {
+        let decisions: Vec<(String, String, f64, f64)> = if let Some(proj) = project {
+            conn.prepare(
+                "SELECT id, title, confidence, COALESCE(activation_level, 0.0) FROM memory
+                 WHERE memory_type = 'decision' AND status = 'active'
+                 AND (project = ?1 OR project IS NULL OR project = '')
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![proj], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
+        } else {
+            conn.prepare(
+                "SELECT id, title, confidence, COALESCE(activation_level, 0.0) FROM memory
+                 WHERE memory_type = 'decision' AND status = 'active'
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 10",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
+        };
+
+        let mut decision_chars = 0usize;
+        for (id, title, confidence, activation) in &decisions {
+            let entry = TraceEntry {
+                id: id.clone(),
+                title: title.clone(),
+                memory_type: "decision".into(),
+                confidence: *confidence,
+                activation_level: *activation,
+                reason: String::new(), // will be set below
+            };
+            considered.push(entry.clone());
+
+            let approx_chars = 60 + title.len(); // rough XML entry size
+            if used + approx_chars < budget {
+                used += approx_chars;
+                decision_chars += approx_chars;
+                included.push(TraceEntry {
+                    reason: format!("included: decision rank {}", included.len() + 1),
+                    ..entry
+                });
+            } else {
+                excluded.push(TraceEntry {
+                    reason: "excluded: budget overflow".into(),
+                    ..entry
+                });
+            }
+        }
+        layer_chars.insert("decisions".into(), decision_chars);
+    }
+
+    // Lessons
+    {
+        let lessons: Vec<(String, String, f64, f64)> = if let Some(proj) = project {
+            conn.prepare(
+                "SELECT id, title, confidence, COALESCE(activation_level, 0.0) FROM memory
+                 WHERE memory_type = 'lesson' AND status = 'active'
+                 AND (project = ?1 OR project IS NULL OR project = '')
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![proj], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
+        } else {
+            conn.prepare(
+                "SELECT id, title, confidence, COALESCE(activation_level, 0.0) FROM memory
+                 WHERE memory_type = 'lesson' AND status = 'active'
+                 ORDER BY confidence DESC, accessed_at DESC LIMIT 5",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
+        };
+
+        let mut lesson_chars = 0usize;
+        for (id, title, confidence, activation) in &lessons {
+            let entry = TraceEntry {
+                id: id.clone(),
+                title: title.clone(),
+                memory_type: "lesson".into(),
+                confidence: *confidence,
+                activation_level: *activation,
+                reason: String::new(),
+            };
+            considered.push(entry.clone());
+
+            let approx_chars = 40 + title.len();
+            if used + approx_chars < budget {
+                used += approx_chars;
+                lesson_chars += approx_chars;
+                included.push(TraceEntry {
+                    reason: format!("included: lesson rank {}", included.len() + 1),
+                    ..entry
+                });
+            } else {
+                excluded.push(TraceEntry {
+                    reason: "excluded: budget overflow".into(),
+                    ..entry
+                });
+            }
+        }
+        layer_chars.insert("lessons".into(), lesson_chars);
+    }
+
+    ContextTraceData {
+        considered,
+        included,
+        excluded,
+        budget_total: budget,
+        budget_used: used,
+        layer_chars,
+    }
+}
+
+/// Return type for compile_context_trace.
+pub struct ContextTraceData {
+    pub considered: Vec<forge_core::protocol::TraceEntry>,
+    pub included: Vec<forge_core::protocol::TraceEntry>,
+    pub excluded: Vec<forge_core::protocol::TraceEntry>,
+    pub budget_total: usize,
+    pub budget_used: usize,
+    pub layer_chars: HashMap<String, usize>,
 }
 
 #[cfg(test)]

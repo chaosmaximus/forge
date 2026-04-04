@@ -248,6 +248,9 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Add working set column to session table (safe to re-run)
     let _ = conn.execute("ALTER TABLE session ADD COLUMN working_set TEXT NOT NULL DEFAULT ''", []);
 
+    // Add activation_level column for activation tracking (safe to re-run)
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN activation_level REAL DEFAULT 0.0", []);
+
     Ok(())
 }
 

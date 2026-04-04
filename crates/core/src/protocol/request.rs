@@ -146,6 +146,13 @@ pub enum Request {
         static_only: Option<bool>,
     },
 
+    /// Compile context with full trace of considered/included/excluded memories + reasons.
+    /// Used for debugging and visualization of the context assembly process.
+    CompileContextTrace {
+        agent: Option<String>,
+        project: Option<String>,
+    },
+
     // ── Sync Operations ──
 
     /// Export memories as NDJSON lines with HLC metadata for sync

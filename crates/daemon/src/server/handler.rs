@@ -35,7 +35,7 @@ impl DaemonState {
         let _ = crate::db::manas::detect_and_store_platform(&conn);
 
         // Best-effort: detect and store available CLI tools
-        let _ = crate::db::manas::detect_and_store_tools(&conn);
+        let tools_discovered = crate::db::manas::detect_and_store_tools(&conn).unwrap_or(0);
 
         // Prune low-quality skills (no steps, short descriptions, status-like names)
         match crate::db::manas::prune_junk_skills(&conn) {
@@ -72,9 +72,19 @@ impl DaemonState {
         // (spawned after socket server starts) to avoid blocking socket startup.
         // See main.rs `spawn_startup_tasks()`.
 
+        let events = crate::events::create_event_bus();
+
+        // Emit tool_discovered event for tools found during startup
+        if tools_discovered > 0 {
+            crate::events::emit(&events, "tool_discovered", serde_json::json!({
+                "count": tools_discovered,
+                "source": "startup_scan",
+            }));
+        }
+
         Ok(DaemonState {
             conn,
-            events: crate::events::create_event_bus(),
+            events,
             started_at: Instant::now(),
             hlc,
             diagnostics_tx: None,
@@ -852,10 +862,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::StoreTool { tool } => {
             let id = tool.id.clone();
+            let tool_name = tool.name.clone();
             match crate::db::manas::store_tool(&state.conn, &tool) {
-                Ok(()) => Response::Ok {
-                    data: ResponseData::ToolStored { id },
-                },
+                Ok(()) => {
+                    crate::events::emit(&state.events, "tool_discovered", serde_json::json!({
+                        "id": id,
+                        "name": tool_name,
+                        "source": "manual",
+                    }));
+                    Response::Ok {
+                        data: ResponseData::ToolStored { id },
+                    }
+                }
                 Err(e) => Response::Error {
                     message: format!("store_tool failed: {e}"),
                 },
@@ -1027,6 +1045,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             if static_only.unwrap_or(false) {
                 let chars = static_prefix.len();
+                // Emit context_compiled event
+                crate::events::emit(&state.events, "context_compiled", serde_json::json!({
+                    "static_chars": chars,
+                    "dynamic_chars": 0,
+                    "total_chars": chars,
+                    "static_only": true,
+                }));
                 Response::Ok {
                     data: ResponseData::CompiledContext {
                         context: static_prefix.clone(),
@@ -1045,6 +1070,23 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     static_prefix, dynamic_suffix
                 );
                 let chars = full.len();
+                // Emit context_compiled event
+                crate::events::emit(&state.events, "context_compiled", serde_json::json!({
+                    "static_chars": static_prefix.len(),
+                    "dynamic_chars": dynamic_suffix.len(),
+                    "total_chars": chars,
+                    "layers_used": 9,
+                }));
+                // Emit prefetch_loaded event if prefetch hints were generated
+                let prefetch_hints = crate::recall::compile_prefetch_hints(
+                    &state.conn, agent_name, project.as_deref(), 5,
+                );
+                if !prefetch_hints.is_empty() {
+                    crate::events::emit(&state.events, "prefetch_loaded", serde_json::json!({
+                        "hints_count": prefetch_hints.len(),
+                        "hints": prefetch_hints,
+                    }));
+                }
                 Response::Ok {
                     data: ResponseData::CompiledContext {
                         context: full,
@@ -1054,6 +1096,23 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         chars,
                     },
                 }
+            }
+        }
+
+        Request::CompileContextTrace { agent, project } => {
+            let agent_name = agent.as_deref().unwrap_or("claude-code");
+            let trace = crate::recall::compile_context_trace(
+                &state.conn, agent_name, project.as_deref(),
+            );
+            Response::Ok {
+                data: ResponseData::ContextTrace {
+                    considered: trace.considered,
+                    included: trace.included,
+                    excluded: trace.excluded,
+                    budget_total: trace.budget_total,
+                    budget_used: trace.budget_used,
+                    layer_chars: trace.layer_chars,
+                },
             }
         }
 

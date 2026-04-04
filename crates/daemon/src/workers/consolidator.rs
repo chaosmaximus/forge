@@ -141,6 +141,16 @@ pub fn run_all_phases(conn: &Connection) -> ConsolidationStats {
         Err(e) => eprintln!("[consolidator] contradiction detection error: {}", e),
     }
 
+    // Phase 10: Decay activation levels (fast — single UPDATE)
+    match ops::decay_activation_levels(conn) {
+        Ok(n) => {
+            if n > 0 {
+                eprintln!("[consolidator] decayed {} activation levels", n);
+            }
+        }
+        Err(e) => eprintln!("[consolidator] activation decay error: {e}"),
+    }
+
     stats
 }
 
@@ -177,6 +187,13 @@ pub async fn run_consolidator(
                     "strengthened": stats.strengthened,
                     "contradictions": stats.contradictions,
                 }));
+
+                // Emit contradiction_detected event if any contradictions were found
+                if stats.contradictions > 0 {
+                    events::emit(&event_tx, "contradiction_detected", serde_json::json!({
+                        "count": stats.contradictions,
+                    }));
+                }
             }
             _ = shutdown_rx.changed() => {
                 eprintln!("[consolidator] shutting down");

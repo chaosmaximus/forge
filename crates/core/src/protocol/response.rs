@@ -3,6 +3,17 @@ use std::collections::HashMap;
 use crate::types::code::{CodeFile, CodeSymbol};
 use crate::types::memory::Memory;
 
+/// A single trace entry from context compilation, showing why a memory was included or excluded.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TraceEntry {
+    pub id: String,
+    pub title: String,
+    pub memory_type: String,
+    pub confidence: f64,
+    pub activation_level: f64,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryResult {
     #[serde(flatten)]
@@ -168,6 +179,15 @@ pub enum ResponseData {
         dynamic_suffix: String,
         layers_used: usize,
         chars: usize,
+    },
+
+    ContextTrace {
+        considered: Vec<TraceEntry>,
+        included: Vec<TraceEntry>,
+        excluded: Vec<TraceEntry>,
+        budget_total: usize,
+        budget_used: usize,
+        layer_chars: HashMap<String, usize>,
     },
 
     // ── Sync Responses ──

@@ -268,6 +268,13 @@ mod tests {
                 },
             ),
             (
+                "compile_context_trace",
+                Request::CompileContextTrace {
+                    agent: Some("claude-code".into()),
+                    project: Some("forge".into()),
+                },
+            ),
+            (
                 "sync_export",
                 Request::SyncExport {
                     project: Some("forge".into()),
@@ -451,6 +458,10 @@ mod tests {
                 r#"{"method":"compile_context","params":{"agent":"claude-code"}}"#,
             ),
             (
+                "compile_context_trace",
+                r#"{"method":"compile_context_trace","params":{"agent":"claude-code"}}"#,
+            ),
+            (
                 "sync_export",
                 r#"{"method":"sync_export","params":{}}"#,
             ),
@@ -531,17 +542,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 49 Request variants.
+    /// Ensure we cover ALL 50 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
         // Unit variants: 15 (added ForceExtract, GetConfig)
         let unit_count = 15;
-        // Parameterized variants: 34 (added SetConfig)
-        let param_count = 34;
-        // Total: 49
-        let expected_total = 49;
+        // Parameterized variants: 35 (added SetConfig, CompileContextTrace)
+        let param_count = 35;
+        // Total: 50
+        let expected_total = 50;
 
         assert_eq!(
             unit_count + param_count,
@@ -668,6 +679,10 @@ mod tests {
                     agent: None,
                     project: None,
                     static_only: None,
+                },
+                Request::CompileContextTrace {
+                    agent: None,
+                    project: None,
                 },
                 Request::SyncExport {
                     project: None,
