@@ -1206,6 +1206,91 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::StoreEvaluation { findings, project, session_id } => {
+            let mut lessons_created = 0usize;
+            let mut diagnostics_created = 0usize;
+
+            for finding in &findings {
+                // Determine valence from category
+                let valence = match finding.category.as_str() {
+                    "good_pattern" => "positive",
+                    _ => "negative",
+                };
+                let intensity = match finding.severity.as_str() {
+                    "critical" => 0.95,
+                    "high" => 0.8,
+                    "medium" => 0.6,
+                    "low" => 0.4,
+                    _ => 0.3,
+                };
+
+                // Store as lesson memory
+                let mut memory = Memory::new(
+                    forge_core::types::MemoryType::Lesson,
+                    finding.description.clone(),
+                    format!("[{}] {}: {}", finding.severity, finding.category, finding.description),
+                ).with_confidence(intensity)
+                 .with_valence(valence, intensity)
+                 .with_tags(vec![
+                     format!("eval:{}", finding.category),
+                     "auto-evaluation".to_string(),
+                 ]);
+
+                if let Some(ref p) = project {
+                    memory = memory.with_project(p.clone());
+                }
+                if let Some(ref sid) = session_id {
+                    memory.session_id = sid.clone();
+                }
+
+                let mem_id = memory.id.clone();
+
+                if let Err(e) = ops::remember(&state.conn, &memory) {
+                    eprintln!("[eval-feedback] failed to store lesson: {e}");
+                    continue;
+                }
+                lessons_created += 1;
+
+                // Create "affects" edges to files
+                for file in &finding.files {
+                    let file_node_id = format!("file:{}", file);
+                    if let Err(e) = ops::store_edge(&state.conn, &mem_id, &file_node_id, "affects", "{}") {
+                        eprintln!("[eval-feedback] failed to create affects edge: {e}");
+                    }
+                }
+
+                // For high+ severity: create diagnostic so proactive intelligence warns
+                if matches!(finding.severity.as_str(), "critical" | "high") {
+                    for file in &finding.files {
+                        let diag = crate::db::diagnostics::Diagnostic {
+                            id: format!("eval-diag-{}", ulid::Ulid::new()),
+                            file_path: file.clone(),
+                            severity: finding.severity.clone(),
+                            message: finding.description.clone(),
+                            source: "forge-evaluator".to_string(),
+                            line: None,
+                            column: None,
+                            created_at: forge_core::time::now_iso(),
+                            expires_at: forge_core::time::now_offset(86400), // 24h TTL
+                        };
+                        if let Err(e) = crate::db::diagnostics::store_diagnostic(&state.conn, &diag) {
+                            eprintln!("[eval-feedback] failed to create diagnostic: {e}");
+                        } else {
+                            diagnostics_created += 1;
+                        }
+                    }
+                }
+            }
+
+            if lessons_created > 0 || diagnostics_created > 0 {
+                eprintln!("[eval-feedback] stored {} lessons, {} diagnostics from evaluation", lessons_created, diagnostics_created);
+            }
+
+            Response::Ok {
+                data: ResponseData::EvaluationStored { lessons_created, diagnostics_created },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
@@ -2631,6 +2716,203 @@ mod tests {
                 assert!(cached_diagnostics[0].contains("3 files call validate_token()"));
             }
             _ => panic!("expected PostEditChecked response"),
+        }
+    }
+
+    // ── StoreEvaluation tests ──
+
+    #[test]
+    fn test_store_evaluation_creates_lessons() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let req = Request::StoreEvaluation {
+            findings: vec![forge_core::protocol::EvaluationFinding {
+                description: "Missing error handling in auth.rs:42".into(),
+                severity: "medium".into(),
+                files: vec!["src/auth.rs".into()],
+                category: "bug".into(),
+            }],
+            project: Some("test-project".into()),
+            session_id: None,
+        };
+        let resp = handle_request(&mut state, req);
+
+        match resp {
+            Response::Ok { data: ResponseData::EvaluationStored { lessons_created, diagnostics_created } } => {
+                assert_eq!(lessons_created, 1, "should create 1 lesson");
+                assert_eq!(diagnostics_created, 0, "medium severity should not create diagnostics");
+            }
+            other => panic!("expected EvaluationStored, got {:?}", other),
+        }
+
+        // Verify the lesson is recallable
+        let recall_resp = handle_request(&mut state, Request::Recall {
+            query: "Missing error handling".into(),
+            memory_type: None,
+            project: None,
+            limit: Some(5),
+            layer: None,
+        });
+        match recall_resp {
+            Response::Ok { data: ResponseData::Memories { results, count } } => {
+                assert_eq!(count, 1, "should recall exactly 1 lesson");
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].memory.valence, "negative", "bug should have negative valence");
+                assert!((results[0].memory.intensity - 0.6).abs() < 0.01, "medium severity should have 0.6 intensity");
+            }
+            other => panic!("expected Memories, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_store_evaluation_creates_edges() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let req = Request::StoreEvaluation {
+            findings: vec![forge_core::protocol::EvaluationFinding {
+                description: "SQL injection risk in query builder".into(),
+                severity: "high".into(),
+                files: vec!["src/db/query.rs".into(), "src/db/ops.rs".into()],
+                category: "security".into(),
+            }],
+            project: None,
+            session_id: None,
+        };
+        handle_request(&mut state, req);
+
+        // Verify edges were created
+        let edges = ops::export_edges(&state.conn).unwrap();
+        let affects_edges: Vec<_> = edges.iter()
+            .filter(|e| e.2 == "affects")
+            .collect();
+        assert_eq!(affects_edges.len(), 2, "should create 2 affects edges (one per file)");
+
+        // Check edge targets
+        let targets: Vec<&String> = affects_edges.iter().map(|e| &e.1).collect();
+        assert!(targets.contains(&&"file:src/db/query.rs".to_string()), "should have edge to file:src/db/query.rs");
+        assert!(targets.contains(&&"file:src/db/ops.rs".to_string()), "should have edge to file:src/db/ops.rs");
+    }
+
+    #[test]
+    fn test_store_evaluation_creates_diagnostics_for_high_severity() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let req = Request::StoreEvaluation {
+            findings: vec![
+                forge_core::protocol::EvaluationFinding {
+                    description: "Critical: unvalidated user input".into(),
+                    severity: "critical".into(),
+                    files: vec!["src/api/handler.rs".into()],
+                    category: "security".into(),
+                },
+                forge_core::protocol::EvaluationFinding {
+                    description: "High: missing auth check".into(),
+                    severity: "high".into(),
+                    files: vec!["src/api/routes.rs".into()],
+                    category: "bug".into(),
+                },
+            ],
+            project: None,
+            session_id: None,
+        };
+        let resp = handle_request(&mut state, req);
+
+        match resp {
+            Response::Ok { data: ResponseData::EvaluationStored { lessons_created, diagnostics_created } } => {
+                assert_eq!(lessons_created, 2, "should create 2 lessons");
+                assert_eq!(diagnostics_created, 2, "should create 2 diagnostics (both high+)");
+            }
+            other => panic!("expected EvaluationStored, got {:?}", other),
+        }
+
+        // Verify diagnostics exist and are retrievable
+        let diags = crate::db::diagnostics::get_diagnostics(&state.conn, "src/api/handler.rs").unwrap();
+        assert_eq!(diags.len(), 1, "should have 1 diagnostic for handler.rs");
+        assert_eq!(diags[0].source, "forge-evaluator");
+        assert_eq!(diags[0].severity, "critical");
+        assert!(diags[0].message.contains("unvalidated user input"));
+
+        let diags2 = crate::db::diagnostics::get_diagnostics(&state.conn, "src/api/routes.rs").unwrap();
+        assert_eq!(diags2.len(), 1, "should have 1 diagnostic for routes.rs");
+        assert_eq!(diags2[0].severity, "high");
+    }
+
+    #[test]
+    fn test_store_evaluation_no_diagnostic_for_low_severity() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let req = Request::StoreEvaluation {
+            findings: vec![
+                forge_core::protocol::EvaluationFinding {
+                    description: "Minor style issue: inconsistent naming".into(),
+                    severity: "low".into(),
+                    files: vec!["src/utils.rs".into()],
+                    category: "style".into(),
+                },
+                forge_core::protocol::EvaluationFinding {
+                    description: "Info: consider using const".into(),
+                    severity: "info".into(),
+                    files: vec!["src/config.rs".into()],
+                    category: "style".into(),
+                },
+            ],
+            project: None,
+            session_id: None,
+        };
+        let resp = handle_request(&mut state, req);
+
+        match resp {
+            Response::Ok { data: ResponseData::EvaluationStored { lessons_created, diagnostics_created } } => {
+                assert_eq!(lessons_created, 2, "should create 2 lessons even for low severity");
+                assert_eq!(diagnostics_created, 0, "should NOT create diagnostics for low/info severity");
+            }
+            other => panic!("expected EvaluationStored, got {:?}", other),
+        }
+
+        // Double-check no diagnostics in DB
+        let diags = crate::db::diagnostics::get_diagnostics(&state.conn, "src/utils.rs").unwrap();
+        assert_eq!(diags.len(), 0, "no diagnostics for low-severity findings");
+        let diags2 = crate::db::diagnostics::get_diagnostics(&state.conn, "src/config.rs").unwrap();
+        assert_eq!(diags2.len(), 0, "no diagnostics for info-severity findings");
+    }
+
+    #[test]
+    fn test_store_evaluation_good_pattern_positive_valence() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let req = Request::StoreEvaluation {
+            findings: vec![forge_core::protocol::EvaluationFinding {
+                description: "Excellent error handling with context propagation".into(),
+                severity: "info".into(),
+                files: vec!["src/error.rs".into()],
+                category: "good_pattern".into(),
+            }],
+            project: None,
+            session_id: None,
+        };
+        let resp = handle_request(&mut state, req);
+
+        match resp {
+            Response::Ok { data: ResponseData::EvaluationStored { lessons_created, .. } } => {
+                assert_eq!(lessons_created, 1);
+            }
+            other => panic!("expected EvaluationStored, got {:?}", other),
+        }
+
+        // Verify positive valence
+        let recall_resp = handle_request(&mut state, Request::Recall {
+            query: "error handling context propagation".into(),
+            memory_type: None,
+            project: None,
+            limit: Some(5),
+            layer: None,
+        });
+        match recall_resp {
+            Response::Ok { data: ResponseData::Memories { results, count } } => {
+                assert_eq!(count, 1);
+                assert_eq!(results[0].memory.valence, "positive", "good_pattern should have positive valence");
+            }
+            other => panic!("expected Memories, got {:?}", other),
         }
     }
 }

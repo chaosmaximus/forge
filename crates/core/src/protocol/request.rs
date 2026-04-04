@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 use crate::types::memory::MemoryType;
 
+/// A single finding from an evaluator review.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvaluationFinding {
+    /// What was found (e.g., "Missing error handling in auth.rs:42")
+    pub description: String,
+    /// Severity: "critical", "high", "medium", "low", "info"
+    pub severity: String,
+    /// File paths affected
+    pub files: Vec<String>,
+    /// Category: "bug", "security", "performance", "style", "good_pattern"
+    pub category: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
@@ -153,6 +166,14 @@ pub enum Request {
 
     /// Backfill HLC timestamps on existing memories that have empty hlc_timestamp
     HlcBackfill,
+
+    /// Store evaluation findings as lessons for the agent self-evaluation feedback loop.
+    /// Each finding becomes a lesson memory; high-severity findings also create diagnostics.
+    StoreEvaluation {
+        findings: Vec<EvaluationFinding>,
+        project: Option<String>,
+        session_id: Option<String>,
+    },
 
     Shutdown,
 }
