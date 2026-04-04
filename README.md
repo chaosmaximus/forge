@@ -154,11 +154,11 @@ The daemon runs in the background. You never start it manually. It extracts memo
 <tr>
 <td width="50%" valign="top">
 
-### Identity & Disposition
+### Intelligence & Identity
+- **Behavioral pattern learning** — learns HOW you think, not just what you did
 - **Agent persona** — role, expertise, values per agent
-- **Behavioral profiling** — slow-changing traits over time
-- **Per-agent scoping** — each agent develops its own profile
-- **Causal chains** — decisions linked with `supersedes` edges
+- **Disposition engine** — slow-changing traits from session evidence
+- **Tool intelligence** — discovers 50+ tools, surfaces the right one in context
 - **Memory valence** — positive/negative emotional weighting
 - **Reconsolidation** — memories evolve when recalled
 
@@ -184,8 +184,8 @@ The daemon runs in the background. You never start it manually. It extracts memo
 | # | Layer | What It Stores | How It Grows |
 |---|-------|---------------|-------------|
 | 1 | **Platform** | OS, CPU, shell, hostname | Auto-detected at startup |
-| 2 | **Tool** | Available tools, APIs, CLIs | Auto-detected, 22+ tools |
-| 3 | **Skill** | Learned workflows | Extracted from successful sessions |
+| 2 | **Tool** | Available tools, APIs, CLIs | Auto-detected, 50+ tools |
+| 3 | **Skill** | Workflows + behavioral patterns | Extracted from sessions (procedural + behavioral) |
 | 4 | **Domain DNA** | Project conventions | Detected from codebase structure |
 | 5 | **Experience** | Decisions, lessons, patterns | LLM extraction from transcripts |
 | 6 | **Perception** | Git state, file changes | Perception worker (30s cycle) |
