@@ -917,7 +917,10 @@ pub fn embedding_merge(conn: &Connection) -> rusqlite::Result<usize> {
         );
         let emb_bytes = match emb_result {
             Ok(b) => b,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("[consolidator] embedding lookup failed for {}: {e}", id);
+                continue;
+            }
         };
 
         // KNN search for similar embeddings (search for more than we need to filter)
@@ -959,7 +962,9 @@ pub fn embedding_merge(conn: &Connection) -> rusqlite::Result<usize> {
                         params![neighbor_id],
                     )?;
                     // Create supersedes edge
-                    let _ = store_edge(conn, id, neighbor_id, "supersedes", "{}");
+                    if let Err(e) = store_edge(conn, id, neighbor_id, "supersedes", "{}") {
+                        eprintln!("[consolidator] failed to create supersedes edge: {e}");
+                    }
                     already_superseded.insert(neighbor_id.clone());
                     merged += 1;
                 }
