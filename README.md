@@ -20,11 +20,17 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-560%2B%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-1%2C077%20passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/commands-60%2B-blue" alt="Commands" />
   <img src="https://img.shields.io/badge/workers-9-orange" alt="Workers" />
   <img src="https://img.shields.io/badge/memory%20layers-8-purple" alt="Memory Layers" />
   <img src="https://img.shields.io/badge/rust-1.88-orange" alt="Rust" />
+</p>
+
+---
+
+<p align="center">
+  <em>Demo recording coming soon — <a href="https://forge.bhairavi.tech">visit the website</a> for screenshots and details.</em>
 </p>
 
 ---
@@ -74,50 +80,35 @@ The daemon runs in the background. You never start it manually. It extracts memo
 
 ## How It Works
 
-```
-                        ┌─────────────────────────────────────┐
-                        │           FORGE DAEMON              │
-                        │         (always-on Rust binary)     │
-                        │                                     │
- Agent sessions ───────>│  ┌─────────┐    ┌───────────────┐  │
- (Claude Code,          │  │ Watcher │───>│   Extractor   │  │
-  Codex, Cursor,        │  └─────────┘    │ (multi-model)  │  │
-  Cline, Gemini)        │                 └───────┬───────┘  │
-                        │                         │          │
-                        │                         v          │
-                        │  ┌──────────────────────────────┐  │
-                        │  │    8-LAYER MANAS MEMORY      │  │
-                        │  │                              │  │
-                        │  │  Platform · Tool · Skill     │  │
-                        │  │  Domain DNA · Experience     │  │
-                        │  │  Perception · Declared       │  │
-                        │  │  Latent (embeddings)         │  │
-                        │  └──────────────────────────────┘  │
-                        │         │              │           │
-                        │         v              v           │
-                        │  ┌───────────┐  ┌────────────┐    │
-                        │  │ Guardrails│  │  Identity   │    │
-                        │  │  Engine   │  │  (Ahankara) │    │
-                        │  └───────────┘  └────────────┘    │
-                        │         │              │           │
-                        │         v              v           │
-                        │  ┌──────────────────────────────┐  │
-                        │  │      9 Background Workers    │  │
-                        │  │  embed · consolidate · index │  │
-                        │  │  perceive · sleep-cycle      │  │
-                        │  │  disposition · diagnostics   │  │
-                        │  └──────────────────────────────┘  │
-                        └───────────────┬─────────────────────┘
-                                        │
-                                   Unix Socket
-                                   (NDJSON)
-                                        │
-                        ┌───────────────┴─────────────────┐
-                        │          CLI / App / Hooks       │
-                        │  forge-next recall "auth"        │
-                        │  Pre-edit guardrail checks       │
-                        │  Session-start context injection │
-                        └─────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph App["Forge App — Tauri v2"]
+        UI["SolidJS Frontend"]
+        Cortex["Cortex 3D Visualization"]
+        Terminal["xterm.js Terminal"]
+        IPC["Rust IPC Layer"]
+    end
+
+    subgraph Daemon["Forge Daemon — Rust"]
+        Socket["Unix Socket API · 60+ commands"]
+        Manas["8-Layer Manas Memory"]
+        Workers["9 Background Workers"]
+        Guards["Guardrails Engine"]
+        Identity["Identity · Disposition · Skills"]
+    end
+
+    UI --> IPC
+    Cortex --> IPC
+    Terminal --> IPC
+    IPC -->|NDJSON| Socket
+    Socket --> Manas
+    Socket --> Workers
+    Socket --> Guards
+    Socket --> Identity
+
+    Claude["Claude Code"] -->|Adapter| Socket
+    Codex["Codex CLI"] -->|Adapter| Socket
+    Gemini["Gemini CLI"] -->|Adapter| Socket
 ```
 
 **The agent never writes to memory.** Extraction happens silently in the background. The agent only needs to recall. The graph grows automatically.
@@ -276,16 +267,18 @@ Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to re
 
 ```
 60+ protocol commands · 9 background workers · 8 memory layers
-560+ tests · 6 adversarial security reviews · 0 warnings (clippy)
+1,077 tests · 6 adversarial security reviews · 0 warnings (clippy)
 ```
 
-| Component | What | Tests |
-|-----------|------|-------|
-| `forge-daemon` | 8-layer Manas, workers, socket API | 395+ |
-| `forge-core` | Shared types + protocol | 40 |
-| `forge-cli` | Thin socket client | 20 |
-| `forge-app` | Tauri v2 (SolidJS + Rust) | 85 |
-| **Total** | | **560+** |
+| Component | Tests | Framework |
+|-----------|-------|-----------|
+| forge-core | 40 | Rust |
+| forge-daemon | 445 | Rust |
+| forge-cli | 20 | Rust |
+| forge app (Rust) | 53 | Rust |
+| forge app (TypeScript) | 505 | Vitest |
+| Install scripts | 14 | Bash |
+| **Total** | **1,077** | |
 
 ```bash
 cargo test --workspace              # full suite
@@ -320,7 +313,7 @@ The 8-layer memory, identity system, disposition engine, perception pipeline, an
 
 ## Contributing
 
-Forge is open source (MIT) for the daemon and CLI. We welcome contributions.
+We welcome contributions. Forge is proprietary software — see [LICENSE](LICENSE) for terms.
 
 ```bash
 # Clone and build
@@ -341,9 +334,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Join the [discussion](htt
 
 ## License
 
-MIT License for `forge-daemon`, `forge-core`, and `forge-cli`.
-
-The native app (`forge-app`) is proprietary.
+Proprietary. See [LICENSE](LICENSE) for details.
 
 ---
 
