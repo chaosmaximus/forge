@@ -5,243 +5,346 @@
 <h1 align="center">Forge</h1>
 
 <p align="center">
-  <strong>The operating system for AI agents.</strong>
+  <strong>Cognitive infrastructure for AI agents.</strong>
 </p>
 
 <p align="center">
-  Multi-layered memory. Proactive perception. Identity. Guardrails.<br />
-  One daemon — any agent, any domain. Coding is the first vertical.
+  Persistent memory. Intelligent guardrails. Self-healing knowledge graph.<br/>
+  One daemon. Any agent. Install once, remember everything.
 </p>
 
 <p align="center">
-  <a href="https://forge.bhairavi.tech">Website</a> ·
-  <a href="https://github.com/chaosmaximus/forge/discussions">Discussions</a> ·
+  <a href="https://forge.bhairavi.tech">Website</a> &middot;
+  <a href="https://github.com/chaosmaximus/forge/discussions">Discussions</a> &middot;
   <a href="https://github.com/sponsors/chaosmaximus">Sponsor</a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-378%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-560%2B%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/commands-60%2B-blue" alt="Commands" />
+  <img src="https://img.shields.io/badge/workers-9-orange" alt="Workers" />
+  <img src="https://img.shields.io/badge/memory%20layers-8-purple" alt="Memory Layers" />
   <img src="https://img.shields.io/badge/rust-1.88-orange" alt="Rust" />
-  <a href="https://github.com/sponsors/chaosmaximus"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa" alt="Sponsor" /></a>
-  <a href="https://github.com/chaosmaximus/forge/discussions"><img src="https://img.shields.io/badge/community-Discussions-blue" alt="Discussions" /></a>
 </p>
-
-<!-- TODO: Replace with actual demo recording
-<p align="center">
-  <img src="docs/images/demo.gif" alt="Forge demo — forge recall with guardrail warning" width="720" />
-</p>
--->
 
 ---
 
-## Why Forge?
+## The Problem
 
-AI agents are bare metal. Powerful reasoning engines with no nervous system. Every capability must be manually wired. The agent spends half its cognitive budget figuring out *how* to do things instead of *doing* things.
+AI agents forget everything. Every session starts from zero. You explain your auth strategy, your database schema, your deployment pipeline — and next session, it's gone. You maintain `MEMORY.md` files by hand. You copy-paste context. You repeat yourself endlessly.
 
-**Forge changes this. The agent thinks. Forge does everything else.**
+Your agent has the reasoning power of a senior engineer and the memory of a goldfish.
 
-```
-Session 1: Agent learns "Use JWT for auth, RS256 signing, rotating keys"
-            → Forge extracts and stores as a Decision in the knowledge graph
+## The Solution
 
-Session 2: Agent runs `forge recall "auth"` → gets the decision back in <10ms
-            → Guardrail warning: "auth/middleware.rs has 3 linked decisions"
-```
+Forge is an always-on daemon that gives AI agents persistent memory, intelligent guardrails, and a self-healing knowledge graph. Install it, bootstrap from your existing transcripts, and your agent remembers everything — across sessions, across projects, across machines.
 
-No manual tagging. No MEMORY.md flat files. A real knowledge graph with 8 layers.
+**Install. Bootstrap. 100 memories in 60 seconds.**
 
 ---
 
-## Install
+## Quick Start
 
 ```bash
+# 1. Install
 curl -fsSL https://forge.bhairavi.tech/install | sh
+
+# 2. Bootstrap from your existing Claude Code / Codex / Cursor transcripts
+forge-next bootstrap
+
+#    ███████████████████████████░░░  Processing 47 sessions...
+#    ✓ 143 memories extracted in 58s
+
+# 3. Search your memory
+forge-next recall "auth"
+
+#    ╭──────────────────────────────────────────────────╮
+#    │ [decision] Use JWT with RS256 signing keys       │
+#    │ project: api-server  confidence: 0.94            │
+#    │ Rotating keys stored in Vault, 24h expiry.       │
+#    │ 3 linked files · 2 related decisions             │
+#    ╰──────────────────────────────────────────────────╯
+
+# 4. Your agent gets this context automatically on next session start
 ```
 
-Or via Claude Code plugin:
-```bash
-claude plugin marketplace add chaosmaximus/forge
-```
-
-The daemon auto-starts on first command. No manual setup needed.
-
-### Prerequisites (optional)
-
-- [Ollama](https://ollama.ai) — for local LLM extraction (recommended)
-- The daemon works without Ollama but auto-extraction requires a local model
+The daemon runs in the background. You never start it manually. It extracts memories from every agent session, builds a knowledge graph, and injects relevant context when your agent needs it.
 
 ---
 
-## Two Layers, One App
+## How It Works
 
-### Layer 1: The Terminal
+```
+                        ┌─────────────────────────────────────┐
+                        │           FORGE DAEMON              │
+                        │         (always-on Rust binary)     │
+                        │                                     │
+ Agent sessions ───────>│  ┌─────────┐    ┌───────────────┐  │
+ (Claude Code,          │  │ Watcher │───>│   Extractor   │  │
+  Codex, Cursor,        │  └─────────┘    │ (multi-model)  │  │
+  Cline, Gemini)        │                 └───────┬───────┘  │
+                        │                         │          │
+                        │                         v          │
+                        │  ┌──────────────────────────────┐  │
+                        │  │    8-LAYER MANAS MEMORY      │  │
+                        │  │                              │  │
+                        │  │  Platform · Tool · Skill     │  │
+                        │  │  Domain DNA · Experience     │  │
+                        │  │  Perception · Declared       │  │
+                        │  │  Latent (embeddings)         │  │
+                        │  └──────────────────────────────┘  │
+                        │         │              │           │
+                        │         v              v           │
+                        │  ┌───────────┐  ┌────────────┐    │
+                        │  │ Guardrails│  │  Identity   │    │
+                        │  │  Engine   │  │  (Ahankara) │    │
+                        │  └───────────┘  └────────────┘    │
+                        │         │              │           │
+                        │         v              v           │
+                        │  ┌──────────────────────────────┐  │
+                        │  │      9 Background Workers    │  │
+                        │  │  embed · consolidate · index │  │
+                        │  │  perceive · sleep-cycle      │  │
+                        │  │  disposition · diagnostics   │  │
+                        │  └──────────────────────────────┘  │
+                        └───────────────┬─────────────────────┘
+                                        │
+                                   Unix Socket
+                                   (NDJSON)
+                                        │
+                        ┌───────────────┴─────────────────┐
+                        │          CLI / App / Hooks       │
+                        │  forge-next recall "auth"        │
+                        │  Pre-edit guardrail checks       │
+                        │  Session-start context injection │
+                        └─────────────────────────────────┘
+```
 
-A Tauri v2 desktop terminal (SolidJS + Rust) built to replace iTerm2/Ghostty:
-
-| Feature | Description |
-|---------|-------------|
-| **Terminal** | xterm.js with WebGL rendering, GPU-accelerated |
-| **Multi-tab** | Shell, tmux, Claude Code, Codex, Gemini, SSH — each with its own PTY |
-| **Cmd+K Search** | Spotlight-style memory search across all 8 layers |
-| **Brain Map** | Canvas 2D visualization with breathing animation — see what Forge knows |
-| **Guardrails** | Inline warnings when agents edit files with linked architectural decisions |
-| **SSH** | Built-in SSH with `~/.ssh/config` parsing and key management |
-| **Agent Status** | Real-time working/waiting/idle detection per tab |
-
-### Layer 2: The Daemon
-
-An always-on Rust daemon with the Manas 8-layer memory architecture:
-
-| Layer | What It Stores | How It Grows |
-|-------|---------------|-------------|
-| 1. Platform | OS, CPU, shell, hostname | Auto-detected at startup |
-| 2. Tool | Available tools, APIs | User/app registered |
-| 3. Skill | Learned workflows | Extracted from sessions |
-| 4. Domain DNA | Project conventions | Detected from codebase |
-| 5. Experience | Decisions, lessons, patterns | LLM extraction (core) |
-| 6. Perception | Git state, file changes | Perception worker (30s) |
-| 7. Declared | CLAUDE.md, README, docs | Ingested from files |
-| 8. Latent | Embedding vectors | Embedder worker (60s) |
-
-Plus: Identity system (agent persona), Disposition engine (behavioral tendencies), Guardrails engine (blast radius + decision tracking), and Proactive context compiler.
-
-**7 background workers** running continuously. Auto-extraction. Zero config.
+**The agent never writes to memory.** Extraction happens silently in the background. The agent only needs to recall. The graph grows automatically.
 
 ---
 
-## CLI
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### Memory
+- **8-layer knowledge graph** with SQLite FTS5 + vector search
+- **Auto-extraction** from agent transcripts (zero manual tagging)
+- **Multi-provider** — Ollama (local), Claude, OpenAI, Gemini
+- **Bootstrap** — 100+ memories from existing transcripts in 60s
+- **Cross-session** — decisions persist across sessions and projects
+- **Semantic search** — BM25 + vector + graph traversal via RRF
+
+</td>
+<td width="50%" valign="top">
+
+### Guardrails
+- **Blast radius analysis** — know what breaks before you edit
+- **Decision tracking** — files linked to architectural decisions
+- **Secret scanning** — SHA256 fingerprints, never stores values
+- **Pre-edit warnings** — inline alerts for high-impact changes
+- **Memory-aware** — guardrails query the knowledge graph
+- **Cross-file consistency** — detects when edits break callers
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Identity & Disposition
+- **Agent persona** — role, expertise, values per agent
+- **Behavioral profiling** — slow-changing traits over time
+- **Per-agent scoping** — each agent develops its own profile
+- **Causal chains** — decisions linked with `supersedes` edges
+- **Memory valence** — positive/negative emotional weighting
+- **Reconsolidation** — memories evolve when recalled
+
+</td>
+<td width="50%" valign="top">
+
+### Infrastructure
+- **Persistent daemon** — launchd/systemd, starts at boot
+- **9 background workers** — continuous ambient processing
+- **Self-healing graph** — sleep-cycle consolidation overnight
+- **Predictive prefetch** — zero cold-start context injection
+- **Memory sync** — encrypted peer-to-peer across machines
+- **Event stream** — 12 real-time event types for UI integration
+
+</td>
+</tr>
+</table>
+
+---
+
+## Manas: 8-Layer Memory
+
+| # | Layer | What It Stores | How It Grows |
+|---|-------|---------------|-------------|
+| 1 | **Platform** | OS, CPU, shell, hostname | Auto-detected at startup |
+| 2 | **Tool** | Available tools, APIs, CLIs | Auto-detected, 22+ tools |
+| 3 | **Skill** | Learned workflows | Extracted from successful sessions |
+| 4 | **Domain DNA** | Project conventions | Detected from codebase structure |
+| 5 | **Experience** | Decisions, lessons, patterns | LLM extraction from transcripts |
+| 6 | **Perception** | Git state, file changes | Perception worker (30s cycle) |
+| 7 | **Declared** | CLAUDE.md, README, docs | Ingested from project files |
+| 8 | **Latent** | Embedding vectors | Embedder worker (60s cycle) |
+
+Plus: **Identity engine** (agent persona), **Disposition engine** (behavioral traits), **Proactive intelligence** (7 hook points with context-budgeted output).
+
+---
+
+## CLI Reference
 
 ```bash
-# Memory
-forge-next recall "auth" --project forge --limit 10
-forge-next remember --type decision --title "Use JWT" --content "..."
-forge-next forget <id>
+# Search your memory
+forge-next recall "database schema"
+forge-next recall "auth" --project api-server --limit 5
+forge-next recall "deployment" --layer skill
 
-# 8-layer health
-forge-next health                    # experience layer counts
+# Store a decision
+forge-next remember --type decision --title "Use PostgreSQL" \
+  --content "Chose Postgres over MySQL for JSON support and pg_vector"
+
+# Bootstrap from existing transcripts
+forge-next bootstrap
+
+# Check before editing
+forge-next check --file src/auth/middleware.rs
+forge-next blast-radius --file src/auth/middleware.rs
+
+# Health & diagnostics
+forge-next health
 forge-next manas-health              # all 8 layers
-forge-next platform                  # platform layer entries
+forge-next doctor                    # full system diagnostics
 
 # Identity
-forge-next identity set --facet role --description "Senior Rust dev"
+forge-next identity set --facet role --description "Senior Rust developer"
+forge-next identity list
 
-# Guardrails
-forge-next check --file src/main.rs
-forge-next blast-radius --file src/main.rs
+# Sync across machines
+forge-next sync-push workstation --project myproject
+forge-next sync-pull laptop --project myproject
 
-# Memory sync
-forge-next sync-pull <host> --project myproject
-forge-next sync-push <host> --project myproject
+# Configuration
+forge-next config set extraction.provider claude
+forge-next config set extraction.model claude-3-haiku
 
 # System
-forge-next doctor                    # full diagnostics
-forge-next compile-context           # proactive context assembly
+forge-next sessions                  # active agent sessions
+forge-next perceptions               # current git state
+forge-next platform                  # system info
+forge-next tools                     # detected tools
 ```
 
 ---
 
-## Architecture
+## Works With Any Agent
 
-```
-forge-core (shared types + protocol)
-    ↑
-forge-daemon (8-layer Manas, 7 workers, socket API)
-    ↑
-forge-cli (thin socket client)
+Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to recall. The daemon extracts from all of them simultaneously.
 
-forge app (Tauri v2 — SolidJS + Rust IPC → daemon socket)
-    ├── xterm.js terminal (WebGL)
-    ├── Sidebar (agents + memory + brain map)
-    ├── Search overlay (Cmd+K)
-    └── Guardrail warnings
-```
+| Agent | Extraction | Recall | Status |
+|-------|-----------|--------|--------|
+| **Claude Code** | Automatic | Native | Shipped |
+| **Codex CLI** | Automatic | Native | Shipped |
+| **Cursor** | Automatic | Via MCP | Shipped |
+| **Cline** | Automatic | Via MCP | Shipped |
+| **Gemini CLI** | Automatic | Native | Planned |
 
-**Communication:** Unix domain socket, NDJSON protocol.
-
-**Works with any agent:** Claude Code, Codex, Gemini, Cursor, Cline — thin adapters teach each agent to recall. The daemon extracts. The graph grows.
+**One knowledge graph. All your agents. Shared memory.**
 
 ---
 
-## Security
+## Comparison
 
-- **Socket validation** — lstat + is_socket + UID ownership check
-- **Shell whitelist** — only `/bin/`, `/usr/bin/`, `/opt/homebrew/bin/` paths
-- **Session name sanitization** — prevents shell/flag injection
-- **Secret scanning** — SHA256 fingerprints, never stores actual values
-- **Parameterized queries** — no SQL injection
-- **CSP enabled** — default-src 'self', restricted connect-src
-- **IPC permissions** — minimal Tauri capabilities
-- **5 adversarial reviews** completed (Codex gpt-5.4)
+| | **Forge** | Mem0 | Claude Code | Cursor | Warp |
+|--|----------|------|-------------|--------|------|
+| Persistent memory | 8-layer graph | Key-value (cloud) | MEMORY.md (flat file) | None | None |
+| Auto-extraction | From transcripts | Manual SDK calls | Manual | None | None |
+| Guardrails | Blast radius + decisions | None | None | None | None |
+| Knowledge graph | SQLite + vectors + edges | Cloud graph ($249/mo) | None | None | None |
+| Self-healing | Sleep-cycle consolidation | None | None | None | None |
+| Multi-agent | Any agent, shared graph | API-only | Claude only | Cursor only | None |
+| Local-first | Everything local | Cloud-first | Local file | Cloud sync | Cloud |
+| Price | **Free / $12/mo** | $249/mo | $20/mo (Max) | $20/mo | $18/mo |
 
 ---
 
-## Tests
+## Under the Hood
 
-| Component | Tests | Framework |
-|-----------|-------|-----------|
-| forge-core | 35 | Rust |
-| forge-daemon | 261 | Rust |
-| forge app (Rust) | 47 | Rust |
-| forge app (frontend) | 17 | Vitest |
-| **Total** | **378** | |
+```
+60+ protocol commands · 9 background workers · 8 memory layers
+560+ tests · 3 adversarial security reviews · 0 warnings (clippy)
+```
+
+| Component | What | Tests |
+|-----------|------|-------|
+| `forge-daemon` | 8-layer Manas, workers, socket API | 395+ |
+| `forge-core` | Shared types + protocol | 40 |
+| `forge-cli` | Thin socket client | 20 |
+| `forge-app` | Tauri v2 (SolidJS + Rust) | 85 |
+| **Total** | | **560+** |
 
 ```bash
-cargo test --workspace           # full suite
-cargo clippy --workspace -- -W clippy::all  # zero warnings
+cargo test --workspace              # full suite
+cargo clippy --workspace -- -W clippy::all   # zero warnings
 ```
 
 ---
 
 ## Pricing
 
-| | Free | Pro $12/mo | Team $19/seat | Enterprise |
-|--|------|----------|--------------|-----------|
-| Terminal | Full | Full | Full | Full |
+| | Free | Pro | Team | Enterprise |
+|--|------|-----|------|-----------|
+| **Price** | $0 | **$12/mo** | $19/seat/mo | Custom |
 | Memory | 200 | Unlimited | Unlimited | Unlimited |
-| Brain map | Preview | Interactive | Interactive | Interactive |
+| Extraction | Ollama (local) | + Claude, OpenAI, Gemini | All | All + custom |
 | Agents | 1 | Unlimited | Unlimited | Unlimited |
+| Sync | -- | 3 machines | Unlimited | Unlimited |
+| Brain map | Preview | Interactive | Interactive | Interactive |
 | SSH | Unlimited | Unlimited | Unlimited | Unlimited |
-| Sync | — | 3 machines | Unlimited | Unlimited |
 
-**Zero marginal cost per user** — everything runs locally.
-
----
-
-## Competitive Position
-
-Nobody else combines: premium terminal + 8-layer knowledge graph + brain map + guardrails + $12/mo + local-first.
-
-| Product | Terminal | Memory Graph | Brain Map | Guardrails | Price |
-|---------|----------|-------------|-----------|-----------|-------|
-| **Forge** | **Yes** | **8-layer** | **Yes** | **Yes** | **$12/mo** |
-| Warp | Yes | No | No | No | $18/mo |
-| Mem0 | No | Yes (cloud) | No | No | $249/mo |
-| Claude Code | CLI | MEMORY.md | No | No | $20/mo |
+**Zero marginal cost per user.** Everything runs on your machine. Your data never leaves your computer unless you choose to sync.
 
 ---
 
-## The Vision
+## The Architecture is Domain-Agnostic
 
-The same architecture that makes a coding agent powerful can make *any* agent powerful. The daemon is domain-agnostic. The 8-layer memory, identity system, disposition engine, perception pipeline, and guardrails work for any agent in any domain.
-
-| Phase | Vertical | What Ships |
-|-------|----------|-----------|
-| **Now** | Coding | Terminal + daemon for coding agents |
-| **Next** | DevOps | Infrastructure agent adapters |
-| **Then** | Research | Knowledge management UI |
-| **Later** | Any domain | Marketplace for domain modules |
-
-See [`product/`](product/) for full product documents:
-[Vision](product/vision.md) · [Positioning](product/positioning.md) · [Pricing](product/pricing.md) · [Competitive landscape](product/competitive-landscape-2026-04.md) · [User stories](product/user-stories.md)
+The 8-layer memory, identity system, disposition engine, perception pipeline, and guardrails are not coding-specific. They are general-purpose cognitive primitives. Today, Forge makes coding agents powerful. The same architecture can make any agent powerful.
 
 ---
 
-## Acknowledgments
+## Contributing
 
-Built on: [Tauri](https://tauri.app/) · [SolidJS](https://solidjs.com/) · [xterm.js](https://xtermjs.org/) · [SQLite](https://sqlite.org/) · [portable-pty](https://github.com/wez/wezterm/tree/main/pty) · [Superpowers](https://github.com/obra/superpowers)
+Forge is open source (MIT) for the daemon and CLI. We welcome contributions.
+
+```bash
+# Clone and build
+git clone https://github.com/chaosmaximus/forge.git
+cd forge
+cargo build --workspace
+
+# Run tests
+cargo test --workspace
+
+# Check for warnings
+cargo clippy --workspace -- -W clippy::all
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Join the [discussion](https://github.com/chaosmaximus/forge/discussions).
+
+---
+
+## License
+
+MIT License for `forge-daemon`, `forge-core`, and `forge-cli`.
+
+The native app (`forge-app`) is proprietary.
 
 ---
 
 <p align="center">
-  <sub>Built by <a href="https://bhairavi.tech">Bhairavi Tech</a> · <a href="https://forge.bhairavi.tech">forge.bhairavi.tech</a></sub>
+  <sub>Built by <a href="https://bhairavi.tech">Bhairavi Tech</a> &middot; <a href="https://forge.bhairavi.tech">forge.bhairavi.tech</a></sub>
 </p>
