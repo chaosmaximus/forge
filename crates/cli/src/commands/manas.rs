@@ -4,7 +4,7 @@ use forge_core::types::manas::IdentityFacet;
 
 /// Print Manas 8-layer memory health.
 pub async fn manas_health() {
-    let request = Request::ManasHealth;
+    let request = Request::ManasHealth { project: None };
 
     match client::send(&request).await {
         Ok(Response::Ok {
@@ -21,6 +21,7 @@ pub async fn manas_health() {
                     experience_count,
                     embedding_count,
                     trait_names,
+                    is_new_project: _,
                 },
         }) => {
             println!("Manas 8-Layer Memory Health");
@@ -293,6 +294,7 @@ pub async fn compile_context(agent: String, project: Option<String>, static_only
         agent: Some(agent),
         project,
         static_only: if static_only { Some(true) } else { None },
+        excluded_layers: None,
     };
 
     match client::send(&request).await {
