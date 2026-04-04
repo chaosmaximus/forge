@@ -129,6 +129,51 @@ pub async fn run_consolidator(
                     }
                 } // lock released
 
+                // Phase 7: Embedding-based merge (sleep cycle — deep structural cleanup)
+                let mut embedding_merged_count = 0usize;
+                {
+                    let locked = state.lock().await;
+                    match ops::embedding_merge(&locked.conn) {
+                        Ok(merged) => {
+                            embedding_merged_count = merged;
+                            if merged > 0 {
+                                eprintln!("[consolidator] embedding merge: {} similar memories merged", merged);
+                            }
+                        }
+                        Err(e) => eprintln!("[consolidator] embedding merge error: {}", e),
+                    }
+                } // lock released
+
+                // Phase 8: Strengthen active edges
+                let mut strengthened_count = 0usize;
+                {
+                    let locked = state.lock().await;
+                    match ops::strengthen_active_edges(&locked.conn) {
+                        Ok(strengthened) => {
+                            strengthened_count = strengthened;
+                            if strengthened > 0 {
+                                eprintln!("[consolidator] strengthened {} active edges", strengthened);
+                            }
+                        }
+                        Err(e) => eprintln!("[consolidator] edge strengthening error: {}", e),
+                    }
+                } // lock released
+
+                // Phase 9: Contradiction detection
+                let mut contradiction_count = 0usize;
+                {
+                    let locked = state.lock().await;
+                    match ops::detect_contradictions(&locked.conn) {
+                        Ok(found) => {
+                            contradiction_count = found;
+                            if found > 0 {
+                                eprintln!("[consolidator] detected {} contradictory memory pairs", found);
+                            }
+                        }
+                        Err(e) => eprintln!("[consolidator] contradiction detection error: {}", e),
+                    }
+                } // lock released
+
                 // Emit consolidation event
                 events::emit(&event_tx, "consolidation", serde_json::json!({
                     "exact_dedup": exact_dedup_count,
@@ -137,6 +182,9 @@ pub async fn run_consolidator(
                     "faded": faded_count,
                     "promoted": promoted_count,
                     "reconsolidated": reconsolidated_count,
+                    "embedding_merged": embedding_merged_count,
+                    "strengthened": strengthened_count,
+                    "contradictions": contradiction_count,
                 }));
             }
             _ = shutdown_rx.changed() => {
