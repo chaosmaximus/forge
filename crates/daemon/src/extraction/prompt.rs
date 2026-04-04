@@ -23,6 +23,11 @@ Type guidance:
 - "lesson": something learned from experience (e.g., "Always run tests before push")
 - "pattern": a recurring approach (e.g., "Error handling uses Result<T, AppError>")
 - "preference": a user preference or working style (e.g., "Prefers TDD")
+- "identity": a signal about the user's role, expertise, or working context.
+  Extract when the user reveals WHO THEY ARE or WHAT THEY DO.
+  Examples: "Senior Rust developer", "Building a fintech platform", "Data scientist",
+  "Prefers functional programming", "Works on GCP infrastructure"
+  The title should be the identity signal, content should be the evidence.
 - "skill": a REUSABLE WORKFLOW successfully demonstrated in this conversation.
   Only extract skills when the conversation shows a COMPLETE, SUCCESSFUL workflow
   that could be replicated. The content should describe the steps clearly.
@@ -70,7 +75,7 @@ impl ExtractedMemory {
     pub fn is_valid_type(&self) -> bool {
         matches!(
             self.memory_type.as_str(),
-            "decision" | "lesson" | "pattern" | "preference" | "skill"
+            "decision" | "lesson" | "pattern" | "preference" | "skill" | "identity"
         )
     }
 }

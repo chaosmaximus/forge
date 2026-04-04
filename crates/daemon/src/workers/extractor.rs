@@ -275,6 +275,33 @@ async fn process_file(
                     continue; // Don't also store as memory
                 }
 
+                // Route identity signals to the identity table (Ahankara)
+                if em.memory_type == "identity" {
+                    let facet_type = em.tags.first().cloned().unwrap_or_else(|| "expertise".to_string());
+                    let facet = forge_core::types::manas::IdentityFacet {
+                        id: format!("identity-{}", ulid::Ulid::new()),
+                        agent: adapter.name().to_string(),
+                        facet: facet_type,
+                        description: em.title.clone(),
+                        strength: em.confidence.clamp(0.0, 1.0),
+                        source: "extracted".to_string(),
+                        active: true,
+                        created_at: forge_core::time::now_iso(),
+                    };
+                    if let Err(e) = crate::db::manas::store_identity(&locked.conn, &facet) {
+                        eprintln!("[extractor] failed to store identity '{}': {e}", em.title);
+                    } else {
+                        stored += 1;
+                        events::emit(&event_tx, "identity_updated", serde_json::json!({
+                            "id": facet.id,
+                            "facet": facet.facet,
+                            "agent": facet.agent,
+                            "source": "extracted",
+                        }));
+                    }
+                    continue; // Don't also store as memory
+                }
+
                 let memory_type = match em.memory_type.as_str() {
                     "decision" => MemoryType::Decision,
                     "lesson" => MemoryType::Lesson,
