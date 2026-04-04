@@ -47,7 +47,7 @@ fn test_platform_sql_injection_key() {
     }
 
     // Verify the platform table still exists (not DROPped)
-    let resp = handle_request(&mut state, Request::ManasHealth);
+    let resp = handle_request(&mut state, Request::ManasHealth { project: None });
     match resp {
         Response::Ok { data: ResponseData::ManasHealthData { platform_count, .. } } => {
             assert!(platform_count > 0, "platform table should still exist with entries");
@@ -579,7 +579,7 @@ fn test_manas_health_after_mass_insert() {
     }
 
     // Call manas_health and verify counts
-    let resp = handle_request(&mut state, Request::ManasHealth);
+    let resp = handle_request(&mut state, Request::ManasHealth { project: None });
     match resp {
         Response::Ok {
             data: ResponseData::ManasHealthData {
@@ -996,7 +996,7 @@ fn test_manas_health_includes_all_layers() {
     manas::store_disposition(&state.conn, &disposition).unwrap();
 
     // Verify ALL ManasHealth counts are > 0
-    let resp = handle_request(&mut state, Request::ManasHealth);
+    let resp = handle_request(&mut state, Request::ManasHealth { project: None });
     match resp {
         Response::Ok {
             data: ResponseData::ManasHealthData {

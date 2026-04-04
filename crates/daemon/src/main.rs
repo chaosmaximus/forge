@@ -1,9 +1,9 @@
-use forge_daemon::server::{DaemonState, run_server};
+use forge_daemon::server::{DaemonState, WriterActor, run_server};
 use forge_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
 use fs2::FileExt;
 use std::io::Write;
 use std::sync::Arc;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 
 #[tokio::main]
 async fn main() {
@@ -56,7 +56,7 @@ async fn main() {
     // Keep pid_file alive (holds the advisory lock) for the lifetime of main()
     let _pid_file_guard = pid_file;
 
-    // Create DaemonState (opens/creates DB)
+    // Create DaemonState (opens/creates DB with write connection)
     let state = match DaemonState::new(&db_path) {
         Ok(s) => s,
         Err(e) => {
@@ -69,6 +69,12 @@ async fn main() {
         }
     };
 
+    // Extract shared resources from the write state BEFORE wrapping in Arc<Mutex>.
+    // These are shared between the socket handler (read path) and the writer actor.
+    let events = state.events.clone();
+    let hlc = Arc::clone(&state.hlc);
+    let started_at = state.started_at;
+
     let state = Arc::new(Mutex::new(state));
 
     // C1: Create shutdown watch channel
@@ -78,12 +84,20 @@ async fn main() {
     let config = forge_daemon::config::load_config();
     eprintln!("[daemon] extraction backend: {}", config.extraction.backend);
 
-    // Spawn background workers
+    // Spawn background workers (they keep Arc<Mutex<DaemonState>> — unchanged)
     let _worker_handles = forge_daemon::workers::spawn_workers(
         Arc::clone(&state),
         config,
         &shutdown_tx,
     );
+
+    // Spawn writer actor: serializes all write operations through a single connection.
+    // The writer holds a clone of the same Arc<Mutex<DaemonState>> that workers use.
+    // Socket handler sends write requests to the writer via mpsc channel,
+    // ensuring it NEVER blocks on the worker mutex.
+    let (write_tx, write_rx) = mpsc::channel::<forge_daemon::server::WriteCommand>(256);
+    let writer = WriterActor { state: Arc::clone(&state) };
+    tokio::spawn(async move { writer.run(write_rx).await });
 
     // I3: Spawn signal handler that sends on shutdown channel instead of process::exit
     let shutdown_for_signal = shutdown_tx.clone();
@@ -159,8 +173,18 @@ async fn main() {
 
     eprintln!("forge-daemon: pid={pid} socket={socket_path} db={db_path}");
 
-    // Run the server IMMEDIATELY (no waiting for consolidation)
-    if let Err(e) = run_server(&socket_path, state, shutdown_tx).await {
+    // Run the server IMMEDIATELY (no waiting for consolidation).
+    // Socket handler opens per-connection read-only SQLite connections for reads
+    // and sends writes through the writer actor via mpsc channel.
+    if let Err(e) = run_server(
+        &socket_path,
+        db_path,
+        events,
+        hlc,
+        started_at,
+        write_tx,
+        shutdown_tx,
+    ).await {
         eprintln!("error: server failed: {e}");
     }
 

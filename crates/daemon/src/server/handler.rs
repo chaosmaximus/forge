@@ -5,13 +5,14 @@ use crate::recall::hybrid_recall;
 use forge_core::protocol::*;
 use forge_core::types::{Memory, CodeFile, CodeSymbol};
 use rusqlite::Connection;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub struct DaemonState {
     pub conn: Connection,
     pub events: EventSender,
     pub started_at: Instant,
-    pub hlc: crate::sync::Hlc,
+    pub hlc: Arc<crate::sync::Hlc>,
     /// Channel to send edited file paths to the diagnostics worker.
     /// Set after worker spawn; None before that.
     pub diagnostics_tx: Option<tokio::sync::mpsc::Sender<String>>,
@@ -88,7 +89,38 @@ impl DaemonState {
             conn,
             events,
             started_at: Instant::now(),
+            hlc: Arc::new(hlc),
+            diagnostics_tx: None,
+        })
+    }
+
+    /// Create a read-only state for serving read requests on a per-connection
+    /// basis. No schema creation, no workers, no platform detection -- just a
+    /// read-only SQLite connection for queries.
+    ///
+    /// Shares the event bus, HLC, and started_at from the write state so that
+    /// read handlers (e.g. CompileContext, GuardrailsCheck) can emit events
+    /// and Status can report uptime.
+    pub fn new_reader(
+        db_path: &str,
+        events: EventSender,
+        hlc: Arc<crate::sync::Hlc>,
+        started_at: Instant,
+    ) -> Result<Self, String> {
+        // Must init sqlite-vec extension before opening any connection
+        crate::db::vec::init_sqlite_vec();
+
+        let conn = Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| format!("open read-only db: {e}"))?;
+        conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
+        Ok(Self {
+            conn,
+            events,
             hlc,
+            started_at,
             diagnostics_tx: None,
         })
     }

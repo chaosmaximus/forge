@@ -1,9 +1,12 @@
+use crate::events::EventSender;
 use crate::server::handler::{handle_request, DaemonState};
+use crate::server::writer::{is_read_only, WriteCommand};
 use forge_core::protocol::{decode_request, encode_response, Request, Response};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::{timeout, Duration};
 
 /// Maximum allowed line length (1 MB). Requests or responses exceeding this
@@ -79,7 +82,11 @@ pub fn is_daemon_alive() -> bool {
 
 pub async fn run_server(
     socket_path: &str,
-    state: Arc<Mutex<DaemonState>>,
+    db_path: String,
+    events: EventSender,
+    hlc: Arc<crate::sync::Hlc>,
+    started_at: Instant,
+    write_tx: mpsc::Sender<WriteCommand>,
     shutdown_tx: watch::Sender<bool>,
 ) -> std::io::Result<()> {
     // M1: Before removing the socket, check if another daemon is actually alive
@@ -117,10 +124,25 @@ pub async fn run_server(
         tokio::select! {
             result = listener.accept() => {
                 let (stream, _addr) = result?;
-                let state_clone: Arc<Mutex<DaemonState>> = Arc::clone(&state);
+                let write_tx = write_tx.clone();
                 let shutdown_tx_clone = shutdown_tx.clone();
+                let db_path = db_path.clone();
+                let events = events.clone();
+                let hlc = Arc::clone(&hlc);
 
                 tokio::spawn(async move {
+                    // Open a per-connection read-only SQLite connection.
+                    // This allows read requests to be served without ANY mutex.
+                    let mut reader_state = match DaemonState::new_reader(
+                        &db_path, events.clone(), hlc, started_at,
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("[socket] ERROR: failed to open read-only connection: {e}");
+                            return;
+                        }
+                    };
+
                     let (read_half, mut write_half) = tokio::io::split(stream);
                     let mut reader = BufReader::new(read_half);
                     let mut line = String::new();
@@ -173,10 +195,7 @@ pub async fn run_server(
 
                         // If it's a Subscribe request, enter streaming mode
                         if let Request::Subscribe { events: ref filter } = request {
-                            let mut rx = {
-                                let locked = state_clone.lock().await;
-                                locked.events.subscribe()
-                            };
+                            let mut rx = events.subscribe();
                             let filter = filter.clone();
                             let mut sub_shutdown_rx = shutdown_tx_clone.subscribe();
 
@@ -206,20 +225,29 @@ pub async fn run_server(
                             break; // Exit the connection loop after streaming ends
                         }
 
-                        // Check for shutdown before acquiring lock so we can respond then exit
+                        // Check for shutdown before processing
                         let is_shutdown = matches!(request, Request::Shutdown);
 
-                        // Handle request with mutex timeout — prevents blocking during extraction
-                        let response = match tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
-                            state_clone.lock()
-                        ).await {
-                            Ok(mut locked) => handle_request(&mut locked, request),
-                            Err(_) => {
-                                eprintln!("[socket] WARN: state mutex busy (extraction in progress?) — request timed out");
-                                Response::Error {
-                                    message: "daemon busy (extraction in progress), retry in a few seconds".to_string(),
+                        // Route: read-only requests use the per-connection read-only SQLite
+                        // connection (no mutex, no contention). Write requests are sent to
+                        // the writer actor via mpsc channel.
+                        let response = if is_read_only(&request) {
+                            handle_request(&mut reader_state, request)
+                        } else {
+                            // Send write request to writer actor
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            match write_tx.send(WriteCommand::Raw { request, reply: reply_tx }).await {
+                                Ok(()) => {
+                                    match reply_rx.await {
+                                        Ok(resp) => resp,
+                                        Err(_) => Response::Error {
+                                            message: "writer actor closed unexpectedly".to_string(),
+                                        },
+                                    }
                                 }
+                                Err(_) => Response::Error {
+                                    message: "daemon writer unavailable".to_string(),
+                                },
                             }
                         };
 
