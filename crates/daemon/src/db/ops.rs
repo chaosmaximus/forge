@@ -65,6 +65,8 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     let mt = type_str(&memory.memory_type);
     let status = status_str(&memory.status);
     let tags_json = serde_json::to_string(&memory.tags).unwrap_or_else(|_| "[]".to_string());
+    let alternatives_json = serde_json::to_string(&memory.alternatives).unwrap_or_else(|_| "[]".to_string());
+    let participants_json = serde_json::to_string(&memory.participants).unwrap_or_else(|_| "[]".to_string());
 
     // Check for existing memory with same title, type, AND project.
     // Including project in the dedup key prevents cross-project merging where a
@@ -77,19 +79,20 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     ).optional()?;
 
     if let Some(existing_id) = existing_id {
-        // Update existing — bump confidence if higher, update content
+        // Update existing — bump confidence if higher, update content + alternatives/participants
         conn.execute(
             "UPDATE memory SET content = ?1, confidence = MAX(confidence, ?2), accessed_at = ?3,
-             hlc_timestamp = ?4, node_id = ?5
-             WHERE id = ?6",
+             hlc_timestamp = ?4, node_id = ?5, alternatives = ?6, participants = ?7
+             WHERE id = ?8",
             params![memory.content, memory.confidence, memory.accessed_at,
-                    memory.hlc_timestamp, memory.node_id, existing_id],
+                    memory.hlc_timestamp, memory.node_id,
+                    alternatives_json, participants_json, existing_id],
         )?;
     } else {
         // Insert new
         conn.execute(
-            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 memory.id, mt, memory.title, memory.content,
                 memory.confidence, status,
@@ -98,6 +101,7 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
                 memory.valence, memory.intensity,
                 memory.hlc_timestamp, memory.node_id,
                 memory.session_id, memory.access_count as i64,
+                alternatives_json, participants_json,
             ],
         )?;
     }
@@ -110,10 +114,12 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
     let mt = type_str(&memory.memory_type);
     let status = status_str(&memory.status);
     let tags_json = serde_json::to_string(&memory.tags).unwrap_or_else(|_| "[]".to_string());
+    let alternatives_json = serde_json::to_string(&memory.alternatives).unwrap_or_else(|_| "[]".to_string());
+    let participants_json = serde_json::to_string(&memory.participants).unwrap_or_else(|_| "[]".to_string());
 
     conn.execute(
-        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             memory.id, mt, memory.title, memory.content,
             memory.confidence, status,
@@ -122,6 +128,7 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
             memory.valence, memory.intensity,
             memory.hlc_timestamp, memory.node_id,
             memory.session_id, memory.access_count as i64,
+            alternatives_json, participants_json,
         ],
     )?;
     Ok(())
@@ -543,6 +550,8 @@ pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
             session_id: row.get::<_, String>(14).unwrap_or_default(),
             access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
             activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
+            alternatives: Vec::new(),
+            participants: Vec::new(),
         })
     })?;
     rows.collect()
@@ -916,6 +925,8 @@ pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Ve
             session_id: row.get::<_, String>(14).unwrap_or_default(),
             access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
             activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
+            alternatives: Vec::new(),
+            participants: Vec::new(),
         })
     })?;
     rows.collect()

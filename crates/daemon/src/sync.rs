@@ -226,7 +226,8 @@ pub fn sync_export(
 fn build_export_query(project: Option<&str>, since: Option<&str>) -> (String, Vec<String>) {
     let base = "SELECT id, memory_type, title, content, confidence, status, project, tags,
                        created_at, accessed_at, valence, intensity, hlc_timestamp, node_id,
-                       session_id, access_count, COALESCE(activation_level, 0.0)
+                       session_id, access_count, COALESCE(activation_level, 0.0),
+                       COALESCE(alternatives, '[]'), COALESCE(participants, '[]')
                 FROM memory WHERE status = 'active'";
 
     let mut clauses = String::from(base);
@@ -256,10 +257,14 @@ fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
     let status_s: String = row.get(5)?;
     let project: Option<String> = row.get(6)?;
     let tags_json: String = row.get(7)?;
+    let alternatives_json: String = row.get::<_, String>(17).unwrap_or_else(|_| "[]".to_string());
+    let participants_json: String = row.get::<_, String>(18).unwrap_or_else(|_| "[]".to_string());
 
     let memory_type = type_from_str(&type_s);
     let status = crate::db::ops::status_from_str(&status_s);
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    let alternatives: Vec<String> = serde_json::from_str(&alternatives_json).unwrap_or_default();
+    let participants: Vec<String> = serde_json::from_str(&participants_json).unwrap_or_default();
 
     Ok(Memory {
         id: row.get(0)?,
@@ -280,6 +285,8 @@ fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         session_id: row.get::<_, String>(14).unwrap_or_default(),
         access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
         activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
+        alternatives,
+        participants,
     })
 }
 
@@ -840,6 +847,8 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
+            alternatives: vec![],
+            participants: vec![],
         })
         .unwrap();
 
@@ -878,6 +887,8 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
+        alternatives: Vec::new(),
+        participants: Vec::new(),
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -916,6 +927,8 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
+        alternatives: Vec::new(),
+        participants: Vec::new(),
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -963,6 +976,8 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
+        alternatives: Vec::new(),
+        participants: Vec::new(),
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1020,6 +1035,8 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
+        alternatives: Vec::new(),
+        participants: Vec::new(),
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1059,6 +1076,8 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
+        alternatives: Vec::new(),
+        participants: Vec::new(),
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1190,6 +1209,8 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
+        alternatives: Vec::new(),
+        participants: Vec::new(),
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1241,6 +1262,8 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
+        alternatives: Vec::new(),
+        participants: Vec::new(),
         };
         let line = serde_json::to_string(&remote).unwrap();
 

@@ -26,7 +26,7 @@ fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String,
 /// Fetch a single Memory record from SQLite by its ID.
 fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0)
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), COALESCE(alternatives, '[]'), COALESCE(participants, '[]')
          FROM memory WHERE id = ?1",
     )?;
 
@@ -37,6 +37,8 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
         let status_str: String = row.get(5)?;
         let project: Option<String> = row.get(6)?;
         let tags_json: String = row.get(7)?;
+        let alternatives_json: String = row.get::<_, String>(17).unwrap_or_else(|_| "[]".to_string());
+        let participants_json: String = row.get::<_, String>(18).unwrap_or_else(|_| "[]".to_string());
 
         let memory_type = match type_str.as_str() {
             "decision" => MemoryType::Decision,
@@ -50,6 +52,10 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
 
         let tags: Vec<String> =
             serde_json::from_str(&tags_json).unwrap_or_default();
+        let alternatives: Vec<String> =
+            serde_json::from_str(&alternatives_json).unwrap_or_default();
+        let participants: Vec<String> =
+            serde_json::from_str(&participants_json).unwrap_or_default();
 
         Ok(Some(Memory {
             id: row.get(0)?,
@@ -70,6 +76,8 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             session_id: row.get::<_, String>(14).unwrap_or_default(),
             access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
             activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
+            alternatives,
+            participants,
         }))
     } else {
         Ok(None)
@@ -426,12 +434,15 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str) -> String {
     xml
 }
 
-/// Predict what memories will be needed based on last session's access patterns.
+/// Predict what memories will be needed based on recent session access patterns.
 ///
 /// Returns up to `limit` memory titles as prefetch hints.
-/// Uses the last ended session's time window to find memories accessed during that
-/// session (by `accessed_at`), then expands to 1-hop graph neighbors via the edge table.
-/// Results are deduplicated and ranked by access_count descending.
+/// Uses the last 3 ended sessions' time windows to find memories accessed during
+/// those sessions (by `accessed_at`), with recency weighting:
+///   - Last session: weight 1.0
+///   - Session before: weight 0.7
+///   - Session before that: weight 0.5
+/// Results are expanded to 1-hop graph neighbors, deduplicated, and ranked.
 ///
 /// FAIL-LOUD: all errors are logged via `eprintln!`, never silently swallowed.
 pub fn compile_prefetch_hints(
@@ -440,100 +451,118 @@ pub fn compile_prefetch_hints(
     project: Option<&str>,
     limit: usize,
 ) -> Vec<String> {
-    // Step 1: Find the last ended session for this agent+project
-    let session: Option<(String, String, String)> = match project {
-        Some(proj) => conn.query_row(
+    // Step 1: Find the last 3 ended sessions for this agent+project
+    let sessions: Vec<(String, String, String)> = match project {
+        Some(proj) => conn.prepare(
             "SELECT id, started_at, ended_at FROM session
              WHERE agent = ?1 AND status = 'ended' AND project = ?2
-             ORDER BY ended_at DESC LIMIT 1",
-            params![agent, proj],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ),
-        None => conn.query_row(
-            "SELECT id, started_at, ended_at FROM session
-             WHERE agent = ?1 AND status = 'ended'
-             ORDER BY ended_at DESC LIMIT 1",
-            params![agent],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ),
-    }
-    .map(Some)
-    .unwrap_or_else(|e| {
-        if e != rusqlite::Error::QueryReturnedNoRows {
-            eprintln!("[prefetch] failed to query last session: {e}");
-        }
-        None
-    });
-
-    let (_session_id, started_at, ended_at) = match session {
-        Some(s) => s,
-        None => return vec![], // No ended sessions — nothing to prefetch
-    };
-
-    // Step 2: Find memories accessed during that session window
-    // (accessed_at BETWEEN session start and end, ordered by access_count)
-    let hot_memories: Vec<(String, String, i64)> = conn
-        .prepare(
-            "SELECT id, title, access_count FROM memory
-             WHERE status = 'active'
-             AND accessed_at >= ?1 AND accessed_at <= ?2
-             ORDER BY access_count DESC
-             LIMIT 10",
+             ORDER BY ended_at DESC LIMIT 3",
         )
         .and_then(|mut stmt| {
-            stmt.query_map(params![started_at, ended_at], |row| {
+            stmt.query_map(params![agent, proj], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?
             .collect()
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("[prefetch] failed to query hot memories: {e}");
-            vec![]
-        });
+        }),
+        None => conn.prepare(
+            "SELECT id, started_at, ended_at FROM session
+             WHERE agent = ?1 AND status = 'ended'
+             ORDER BY ended_at DESC LIMIT 3",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![agent], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect()
+        }),
+    }
+    .unwrap_or_else(|e| {
+        if e != rusqlite::Error::QueryReturnedNoRows {
+            eprintln!("[prefetch] failed to query sessions: {e}");
+        }
+        vec![]
+    });
 
-    if hot_memories.is_empty() {
+    if sessions.is_empty() {
         return vec![];
     }
 
-    // Collect titles with their access counts for ranking
-    // Use (title, access_count) — title as the dedup key
+    // Recency weights: most recent session gets 1.0, then 0.7, then 0.5
+    let weights = [1.0_f64, 0.7, 0.5];
+
+    // Collect titles with their weighted access scores for ranking
     let mut seen_titles: HashSet<String> = HashSet::new();
-    let mut ranked: Vec<(String, i64)> = Vec::new();
+    let mut ranked: Vec<(String, f64)> = Vec::new();
 
-    for (id, title, access_count) in &hot_memories {
-        if seen_titles.insert(title.clone()) {
-            ranked.push((title.clone(), *access_count));
-        }
+    for (session_idx, (_session_id, started_at, ended_at)) in sessions.iter().enumerate() {
+        let weight = weights.get(session_idx).copied().unwrap_or(0.5);
 
-        // Step 3: Find 1-hop graph neighbors (bidirectional)
-        let neighbors: Vec<(String, String, i64)> = conn
+        // Step 2: Find memories accessed during that session window
+        let hot_memories: Vec<(String, String, i64)> = conn
             .prepare(
-                "SELECT DISTINCT m.id, m.title, m.access_count FROM memory m
-                 JOIN edge e ON (e.from_id = ?1 AND e.to_id = m.id)
-                    OR (e.to_id = ?1 AND e.from_id = m.id)
-                 WHERE m.status = 'active'
-                 LIMIT 5",
+                "SELECT id, title, access_count FROM memory
+                 WHERE status = 'active'
+                 AND accessed_at >= ?1 AND accessed_at <= ?2
+                 ORDER BY access_count DESC
+                 LIMIT 10",
             )
             .and_then(|mut stmt| {
-                stmt.query_map(params![id], |row| {
+                stmt.query_map(params![started_at, ended_at], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?))
                 })?
                 .collect()
             })
             .unwrap_or_else(|e| {
-                eprintln!("[prefetch] failed to query neighbors for {id}: {e}");
+                eprintln!("[prefetch] failed to query hot memories: {e}");
                 vec![]
             });
 
-        for (_nid, ntitle, naccess) in neighbors {
-            if seen_titles.insert(ntitle.clone()) {
-                ranked.push((ntitle, naccess));
+        for (id, title, access_count) in &hot_memories {
+            let weighted_score = *access_count as f64 * weight;
+            if seen_titles.insert(title.clone()) {
+                ranked.push((title.clone(), weighted_score));
+            } else {
+                // Accumulate score for already-seen title
+                if let Some(entry) = ranked.iter_mut().find(|(t, _)| t == title) {
+                    entry.1 += weighted_score;
+                }
+            }
+
+            // Step 3: Find 1-hop graph neighbors (bidirectional)
+            let neighbors: Vec<(String, String, i64)> = conn
+                .prepare(
+                    "SELECT DISTINCT m.id, m.title, m.access_count FROM memory m
+                     JOIN edge e ON (e.from_id = ?1 AND e.to_id = m.id)
+                        OR (e.to_id = ?1 AND e.from_id = m.id)
+                     WHERE m.status = 'active'
+                     LIMIT 5",
+                )
+                .and_then(|mut stmt| {
+                    stmt.query_map(params![id], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .collect()
+                })
+                .unwrap_or_else(|e| {
+                    eprintln!("[prefetch] failed to query neighbors for {id}: {e}");
+                    vec![]
+                });
+
+            for (_nid, ntitle, naccess) in neighbors {
+                let nweighted = naccess as f64 * weight * 0.5; // neighbors get half weight
+                if seen_titles.insert(ntitle.clone()) {
+                    ranked.push((ntitle, nweighted));
+                } else {
+                    if let Some(entry) = ranked.iter_mut().find(|(t, _)| t == &ntitle) {
+                        entry.1 += nweighted;
+                    }
+                }
             }
         }
     }
 
-    // Step 4: Sort by access_count descending, take top-N
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    // Step 4: Sort by weighted score descending, take top-N
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     ranked.truncate(limit);
 
     // Step 5: Return titles
@@ -554,6 +583,7 @@ pub fn compile_dynamic_suffix(
 
     // Decisions (accumulate — always show ALL, masking with empty tag if none)
     // Recency boost: last 24h *1.5, last 7d *1.2, older *1.0
+    // Context feedback: access_count >10 gives 1.3x, >3 gives 1.1x (flywheel ranking)
     {
         let decisions: Vec<(String, String, f64, String, f64)> = if let Some(proj) = project {
             conn.prepare(
@@ -563,6 +593,10 @@ pub fn compile_dynamic_suffix(
                  ORDER BY confidence * CASE
                      WHEN created_at > datetime('now', '-1 day') THEN 1.5
                      WHEN created_at > datetime('now', '-7 days') THEN 1.2
+                     ELSE 1.0
+                 END * CASE
+                     WHEN access_count > 10 THEN 1.3
+                     WHEN access_count > 3 THEN 1.1
                      ELSE 1.0
                  END DESC, accessed_at DESC LIMIT 10",
             )
@@ -580,6 +614,10 @@ pub fn compile_dynamic_suffix(
                  ORDER BY confidence * CASE
                      WHEN created_at > datetime('now', '-1 day') THEN 1.5
                      WHEN created_at > datetime('now', '-7 days') THEN 1.2
+                     ELSE 1.0
+                 END * CASE
+                     WHEN access_count > 10 THEN 1.3
+                     WHEN access_count > 3 THEN 1.1
                      ELSE 1.0
                  END DESC, accessed_at DESC LIMIT 10",
             )
@@ -622,6 +660,7 @@ pub fn compile_dynamic_suffix(
 
     // Lessons (accumulate — always present)
     // Recency boost: last 24h *1.5, last 7d *1.2, older *1.0
+    // Context feedback: access_count >10 gives 1.3x, >3 gives 1.1x (flywheel ranking)
     {
         let lessons: Vec<(String, String, f64, String, f64)> = if let Some(proj) = project {
             conn.prepare(
@@ -631,6 +670,10 @@ pub fn compile_dynamic_suffix(
                  ORDER BY confidence * CASE
                      WHEN created_at > datetime('now', '-1 day') THEN 1.5
                      WHEN created_at > datetime('now', '-7 days') THEN 1.2
+                     ELSE 1.0
+                 END * CASE
+                     WHEN access_count > 10 THEN 1.3
+                     WHEN access_count > 3 THEN 1.1
                      ELSE 1.0
                  END DESC, accessed_at DESC LIMIT 5",
             )
@@ -648,6 +691,10 @@ pub fn compile_dynamic_suffix(
                  ORDER BY confidence * CASE
                      WHEN created_at > datetime('now', '-1 day') THEN 1.5
                      WHEN created_at > datetime('now', '-7 days') THEN 1.2
+                     ELSE 1.0
+                 END * CASE
+                     WHEN access_count > 10 THEN 1.3
+                     WHEN access_count > 3 THEN 1.1
                      ELSE 1.0
                  END DESC, accessed_at DESC LIMIT 5",
             )

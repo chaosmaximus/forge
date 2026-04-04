@@ -48,6 +48,10 @@ pub struct Memory {
     pub access_count: u64,     // How many times this memory has been accessed
     #[serde(default)]
     pub activation_level: f64, // 0.0-1.0, boosted on recall/context, decayed each consolidation
+    #[serde(default)]
+    pub alternatives: Vec<String>,  // What was considered but rejected (counterfactual memory)
+    #[serde(default)]
+    pub participants: Vec<String>,  // Who was involved (relational memory)
 }
 
 fn default_valence() -> String {
@@ -76,6 +80,8 @@ impl Memory {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
+            alternatives: Vec::new(),
+            participants: Vec::new(),
         }
     }
 
@@ -97,6 +103,16 @@ impl Memory {
     pub fn with_valence(mut self, valence: &str, intensity: f64) -> Self {
         self.valence = valence.to_string();
         self.intensity = intensity.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn with_alternatives(mut self, alternatives: Vec<String>) -> Self {
+        self.alternatives = alternatives;
+        self
+    }
+
+    pub fn with_participants(mut self, participants: Vec<String>) -> Self {
+        self.participants = participants;
         self
     }
 

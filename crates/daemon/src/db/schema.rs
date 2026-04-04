@@ -274,6 +274,9 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 
     // Cross-session awareness: track tool_use count per session (safe to re-run)
     let _ = conn.execute("ALTER TABLE session ADD COLUMN tool_use_count INTEGER NOT NULL DEFAULT 0", []);
+    // Counterfactual + relational memory columns (safe to re-run — ignores if already exists)
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN alternatives TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN participants TEXT NOT NULL DEFAULT '[]'", []);
 
     Ok(())
 }

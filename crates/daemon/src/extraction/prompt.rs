@@ -17,6 +17,8 @@ Return a JSON array of objects. EXACT field names required (do NOT rename fields
 - valence: "positive" | "negative" | "neutral" (emotional tone of this memory)
 - intensity: 0.0-1.0 (how emotionally significant — production outage = 1.0, routine change = 0.1)
 - motivated_by: optional — title of a previous decision/lesson that motivated this one
+- alternatives: optional array of alternatives that were considered but rejected (e.g., ["MongoDB — rejected for lack of ACID", "Redis — rejected as too volatile"]). Only include when the conversation explicitly discusses alternatives.
+- participants: optional array of people mentioned as involved (e.g., ["Alice — suggested this approach", "Bob — reviewed"]). Only include when specific people are mentioned.
 
 Type guidance:
 - "decision": a strategic choice made (e.g., "Use JWT for auth")
@@ -92,6 +94,12 @@ pub struct ExtractedMemory {
     /// Optional: ID or title of a previous decision/lesson that motivated this one (causal chain)
     #[serde(default)]
     pub motivated_by: Option<String>,
+    /// Optional: alternatives considered but rejected (counterfactual memory)
+    #[serde(default)]
+    pub alternatives: Vec<String>,
+    /// Optional: people involved in this decision/lesson (relational memory)
+    #[serde(default)]
+    pub participants: Vec<String>,
 }
 
 fn default_confidence() -> f64 {
@@ -331,6 +339,8 @@ mod tests {
             valence: "neutral".to_string(),
             intensity: 0.0,
             motivated_by: None,
+            alternatives: vec![],
+            participants: vec![],
         };
         assert!(em.is_valid_type());
     }
@@ -414,6 +424,8 @@ Done. I found 1 memory worth extracting."#;
             valence: "neutral".to_string(),
             intensity: 0.0,
             motivated_by: None,
+            alternatives: vec![],
+            participants: vec![],
         };
         assert!(em.is_valid_type(), "'identity' should be a valid type");
     }

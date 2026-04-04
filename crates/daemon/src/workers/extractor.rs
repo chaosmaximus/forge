@@ -469,7 +469,9 @@ async fn process_file(
                 let mut memory = Memory::new(memory_type, &em.title, &em.content)
                     .with_confidence(em.confidence)
                     .with_tags(em.tags.clone())
-                    .with_valence(&em.valence, em.intensity);
+                    .with_valence(&em.valence, em.intensity)
+                    .with_alternatives(em.alternatives.clone())
+                    .with_participants(em.participants.clone());
                 memory.session_id = session_id.clone();
 
                 // Stamp HLC + node_id so sync protocol works for extracted memories
