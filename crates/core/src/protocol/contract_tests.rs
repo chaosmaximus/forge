@@ -7,7 +7,7 @@
 #[cfg(test)]
 mod tests {
     use crate::protocol::codec::decode_request;
-    use crate::protocol::request::Request;
+    use crate::protocol::request::{EvaluationFinding, Request};
     use crate::types::manas::{
         IdentityFacet, Perception, PerceptionKind, Severity, Tool, ToolHealth, ToolKind,
     };
@@ -297,6 +297,19 @@ mod tests {
                     file: "src/main.rs".into(),
                 },
             ),
+            (
+                "store_evaluation",
+                Request::StoreEvaluation {
+                    findings: vec![EvaluationFinding {
+                        description: "Missing error handling".into(),
+                        severity: "high".into(),
+                        files: vec!["src/auth.rs".into()],
+                        category: "bug".into(),
+                    }],
+                    project: Some("forge".into()),
+                    session_id: Some("s1".into()),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -450,6 +463,10 @@ mod tests {
                 "get_diagnostics",
                 r#"{"method":"get_diagnostics","params":{"file":"src/main.rs"}}"#,
             ),
+            (
+                "store_evaluation",
+                r#"{"method":"store_evaluation","params":{"findings":[{"description":"bug found","severity":"high","files":["src/main.rs"],"category":"bug"}],"project":"forge","session_id":"s1"}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -498,17 +515,17 @@ mod tests {
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
 
-    /// Ensure we cover ALL 43 Request variants.
+    /// Ensure we cover ALL 44 Request variants.
     /// If a new variant is added without updating these tests,
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
         // Unit variants: 12
         let unit_count = 12;
-        // Parameterized variants: 31
-        let param_count = 31;
-        // Total: 43
-        let expected_total = 43;
+        // Parameterized variants: 32
+        let param_count = 32;
+        // Total: 44
+        let expected_total = 44;
 
         assert_eq!(
             unit_count + param_count,
@@ -646,6 +663,16 @@ mod tests {
                 },
                 Request::GetDiagnostics {
                     file: "f".into(),
+                },
+                Request::StoreEvaluation {
+                    findings: vec![EvaluationFinding {
+                        description: "test".into(),
+                        severity: "low".into(),
+                        files: vec![],
+                        category: "style".into(),
+                    }],
+                    project: None,
+                    session_id: None,
                 },
             ]
         }
