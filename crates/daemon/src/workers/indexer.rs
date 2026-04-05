@@ -492,6 +492,10 @@ async fn run_index(
 /// Extract import edges from already-indexed files and store them.
 /// Returns the number of import edges stored.
 pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize {
+    // Disable FK checks — edge table has FK to memory(id) but import edges
+    // use file paths as from_id/to_id, not memory IDs
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF;");
+
     // Clear old import edges before re-indexing
     if let Err(e) = conn.execute("DELETE FROM edge WHERE edge_type = 'imports'", []) {
         eprintln!("[indexer] failed to clear old import edges: {e}");
@@ -499,18 +503,27 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
     }
 
     let mut import_edges_stored = 0usize;
+    let mut files_read = 0usize;
+    let mut total_imports_found = 0usize;
     for file in files {
         let content = match std::fs::read_to_string(&file.path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("[indexer] cannot read {}: {e}", file.path);
+                continue;
+            }
         };
+        files_read += 1;
         let imports = extract_imports(&content, &file.language, &file.path);
+        total_imports_found += imports.len();
         for (from_path, imported_module) in &imports {
-            if ops::store_edge(conn, from_path, imported_module, "imports", "{}").is_ok() {
-                import_edges_stored += 1;
+            match ops::store_edge(conn, from_path, imported_module, "imports", "{}") {
+                Ok(_) => import_edges_stored += 1,
+                Err(e) => eprintln!("[indexer] store_edge failed: {e}"),
             }
         }
     }
+    eprintln!("[indexer] import extraction: {files_read} files read, {total_imports_found} imports found, {import_edges_stored} edges stored");
     import_edges_stored
 }
 

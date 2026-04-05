@@ -98,25 +98,50 @@ fn find_importers(conn: &Connection, file_target: &str) -> Vec<String> {
     result
 }
 
-/// Find files that call symbols in the given file.
-/// Searches for edges where edge_type = 'calls' and to_id contains the file path.
+/// Find files that call/import symbols in the given file.
+/// Searches both 'calls' and 'imports' edge types.
+/// For imports: converts file path to module path pattern (e.g., src/server/handler.rs → server::handler).
 /// Returns (caller_count, calling_file_paths).
 fn find_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
     // Escape LIKE wildcards in file path to prevent pattern injection
     let escaped = file.replace('%', "\\%").replace('_', "\\_");
-    let pattern = format!("%{escaped}%");
+    let file_pattern = format!("%{escaped}%");
+
+    // Convert file path to Rust module pattern for import edge matching
+    // e.g., "crates/daemon/src/server/handler.rs" → "%server::handler%"
+    let module_pattern = {
+        let stem = file
+            .trim_end_matches(".rs")
+            .trim_end_matches(".py")
+            .trim_end_matches(".ts")
+            .trim_end_matches(".tsx")
+            .trim_end_matches(".js")
+            .trim_end_matches(".go");
+        // Take last 2 path segments as module path
+        let parts: Vec<&str> = stem.split('/').collect();
+        let module = if parts.len() >= 2 {
+            format!("%{}::{}%", parts[parts.len()-2], parts[parts.len()-1])
+        } else if !parts.is_empty() {
+            format!("%{}%", parts[parts.len()-1])
+        } else {
+            file_pattern.clone()
+        };
+        module.replace('%', "\\%").replace('_', "\\_");
+        format!("%{}%", parts.last().map(|s| s.replace('%', "\\%").replace('_', "\\_")).unwrap_or_default())
+    };
+
     let sql = "
         SELECT DISTINCT from_id
         FROM edge
-        WHERE edge_type = 'calls'
-          AND to_id LIKE ?1
+        WHERE (edge_type = 'calls' AND to_id LIKE ?1)
+           OR (edge_type = 'imports' AND to_id LIKE ?2)
         LIMIT 100
     ";
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return (0, Vec::new()),
     };
-    let files: Vec<String> = match stmt.query_map(rusqlite::params![pattern], |row| {
+    let files: Vec<String> = match stmt.query_map(rusqlite::params![file_pattern, module_pattern], |row| {
         row.get::<_, String>(0)
     }) {
         Ok(rows) => rows
