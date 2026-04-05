@@ -79,17 +79,29 @@ pub fn delete_agent_template(conn: &Connection, id: &str) -> rusqlite::Result<bo
     Ok(count > 0)
 }
 
+/// Fields to update on an agent template. All None = no-op.
+pub struct TemplateUpdate<'a> {
+    pub name: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub system_context: Option<&'a str>,
+    pub identity_facets: Option<&'a str>,
+    pub config_overrides: Option<&'a str>,
+    pub knowledge_domains: Option<&'a str>,
+    pub decision_style: Option<&'a str>,
+}
+
 pub fn update_agent_template(
     conn: &Connection,
     id: &str,
-    name: Option<&str>,
-    description: Option<&str>,
-    system_context: Option<&str>,
-    identity_facets: Option<&str>,
-    config_overrides: Option<&str>,
-    knowledge_domains: Option<&str>,
-    decision_style: Option<&str>,
+    update: &TemplateUpdate<'_>,
 ) -> rusqlite::Result<bool> {
+    let name = update.name;
+    let description = update.description;
+    let system_context = update.system_context;
+    let identity_facets = update.identity_facets;
+    let config_overrides = update.config_overrides;
+    let knowledge_domains = update.knowledge_domains;
+    let decision_style = update.decision_style;
     let mut sets = Vec::new();
     let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     let mut idx = 1;
@@ -923,10 +935,13 @@ mod tests {
 
         let updated = update_agent_template(
             &conn, &t.id,
-            Some("Chief Tech Officer"),
-            Some("Updated description"),
-            None, None, None, None,
-            Some("conservative"),
+            &TemplateUpdate {
+                name: Some("Chief Tech Officer"),
+                description: Some("Updated description"),
+                system_context: None, identity_facets: None,
+                config_overrides: None, knowledge_domains: None,
+                decision_style: Some("conservative"),
+            },
         ).unwrap();
         assert!(updated);
 

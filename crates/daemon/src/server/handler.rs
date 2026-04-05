@@ -2377,12 +2377,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             id, name, description, system_context,
             identity_facets, config_overrides, knowledge_domains, decision_style,
         } => {
-            match crate::teams::update_agent_template(
-                &state.conn, &id,
-                name.as_deref(), description.as_deref(), system_context.as_deref(),
-                identity_facets.as_deref(), config_overrides.as_deref(),
-                knowledge_domains.as_deref(), decision_style.as_deref(),
-            ) {
+            let update = crate::teams::TemplateUpdate {
+                name: name.as_deref(), description: description.as_deref(),
+                system_context: system_context.as_deref(),
+                identity_facets: identity_facets.as_deref(),
+                config_overrides: config_overrides.as_deref(),
+                knowledge_domains: knowledge_domains.as_deref(),
+                decision_style: decision_style.as_deref(),
+            };
+            match crate::teams::update_agent_template(&state.conn, &id, &update) {
                 Ok(updated) => Response::Ok { data: ResponseData::AgentTemplateUpdated { id, updated } },
                 Err(e) => Response::Error { message: format!("update_agent_template failed: {e}") },
             }

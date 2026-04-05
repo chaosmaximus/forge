@@ -600,6 +600,7 @@ pub struct FileMemoryInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // ResponseData has many variants by design
 pub enum Response {
     Ok { data: ResponseData },
     Error { message: String },
