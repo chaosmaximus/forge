@@ -1203,8 +1203,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     },
                 }
             } else {
+                let config = crate::config::load_config();
+                let ctx_config = config.context.validated();
                 let dynamic_suffix = crate::recall::compile_dynamic_suffix(
-                    &state.conn, agent_name, project.as_deref(), 3000, &excluded,
+                    &state.conn, agent_name, project.as_deref(), &ctx_config, &excluded,
                 );
                 let full = format!(
                     "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
@@ -1242,8 +1244,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::CompileContextTrace { agent, project } => {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
+            let trace_config = crate::config::load_config();
+            let trace_ctx_config = trace_config.context.validated();
             let trace = crate::recall::compile_context_trace(
-                &state.conn, agent_name, project.as_deref(),
+                &state.conn, agent_name, project.as_deref(), &trace_ctx_config,
             );
             Response::Ok {
                 data: ResponseData::ContextTrace {
@@ -1519,7 +1523,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
         Request::ForceConsolidate => {
-            let stats = crate::workers::consolidator::run_all_phases(&state.conn);
+            let consol_config = crate::config::load_config().consolidation.validated();
+            let stats = crate::workers::consolidator::run_all_phases(&state.conn, &consol_config);
             Response::Ok {
                 data: ResponseData::ConsolidationComplete {
                     exact_dedup: stats.exact_dedup,
