@@ -367,5 +367,13 @@ pub enum Request {
         limit: Option<usize>,
     },
 
+    /// List all known realities (projects) in an organization.
+    ListRealities {
+        organization_id: Option<String>,
+    },
+
+    /// Force-trigger the code indexer and return current index counts.
+    ForceIndex,
+
     Shutdown,
 }

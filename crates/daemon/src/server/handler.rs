@@ -2222,6 +2222,31 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::ListRealities { organization_id } => {
+            let org_id = organization_id.as_deref().unwrap_or("default");
+            match ops::list_realities(&state.conn, org_id) {
+                Ok(realities) => Response::Ok {
+                    data: ResponseData::RealitiesList { realities },
+                },
+                Err(e) => Response::Error {
+                    message: format!("list_realities failed: {e}"),
+                },
+            }
+        }
+
+        Request::ForceIndex => {
+            // Return current index counts (files and symbols in the code tables)
+            let files_indexed: usize = state.conn
+                .query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0))
+                .unwrap_or(0);
+            let symbols_indexed: usize = state.conn
+                .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
+                .unwrap_or(0);
+            Response::Ok {
+                data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

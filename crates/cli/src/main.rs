@@ -302,7 +302,11 @@ enum Commands {
     },
     /// List all known realities (projects)
     #[command(name = "realities")]
-    Realities,
+    Realities {
+        /// Organization ID (default: "default")
+        #[arg(long)]
+        organization: Option<String>,
+    },
     /// Search code symbols by name pattern
     #[command(name = "code-search")]
     CodeSearch {
@@ -315,6 +319,10 @@ enum Commands {
         #[arg(long, default_value = "20")]
         limit: usize,
     },
+
+    /// Force-trigger the code indexer and show current index counts
+    #[command(name = "force-index")]
+    ForceIndex,
 
     /// Run proactive checks on a file or show all active diagnostics
     Verify {
@@ -423,6 +431,58 @@ enum ConfigAction {
         key: String,
         /// New value
         value: String,
+    },
+    /// Set a scoped config value at a specific scope level
+    SetScoped {
+        /// Scope type: organization, team, user, reality, agent, session
+        #[arg(long)]
+        scope: String,
+        /// Scope entity ID
+        #[arg(long, name = "scope-id")]
+        scope_id: String,
+        /// Config key (e.g., context.budget_chars)
+        #[arg(long)]
+        key: String,
+        /// Config value
+        #[arg(long)]
+        value: String,
+        /// Lock this value (prevent lower scopes from overriding)
+        #[arg(long)]
+        locked: bool,
+        /// Set a ceiling for numeric values
+        #[arg(long)]
+        ceiling: Option<f64>,
+    },
+    /// Get the effective (resolved) config for a session context
+    GetEffective {
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        reality: Option<String>,
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        organization: Option<String>,
+    },
+    /// List all scoped config entries for a scope
+    ListScoped {
+        #[arg(long)]
+        scope: String,
+        #[arg(long, name = "scope-id")]
+        scope_id: String,
+    },
+    /// Delete a scoped config entry
+    DeleteScoped {
+        #[arg(long)]
+        scope: String,
+        #[arg(long, name = "scope-id")]
+        scope_id: String,
+        #[arg(long)]
+        key: String,
     },
 }
 
@@ -626,11 +686,15 @@ async fn main() {
         Commands::DetectReality { path } => {
             commands::system::detect_reality(path).await;
         }
-        Commands::Realities => {
-            commands::system::list_realities().await;
+        Commands::Realities { organization } => {
+            commands::system::list_realities(organization).await;
         }
         Commands::CodeSearch { query, kind, limit } => {
             commands::system::code_search(query, kind, limit).await;
+        }
+
+        Commands::ForceIndex => {
+            commands::system::force_index().await;
         }
 
         Commands::Verify { file } => {
@@ -677,6 +741,18 @@ async fn main() {
             }
             ConfigAction::Set { key, value } => {
                 commands::system::config_set(key, value).await;
+            }
+            ConfigAction::SetScoped { scope, scope_id, key, value, locked, ceiling } => {
+                commands::system::config_set_scoped(scope, scope_id, key, value, locked, ceiling).await;
+            }
+            ConfigAction::GetEffective { session, agent, reality, user, team, organization } => {
+                commands::system::config_get_effective(session, agent, reality, user, team, organization).await;
+            }
+            ConfigAction::ListScoped { scope, scope_id } => {
+                commands::system::config_list_scoped(scope, scope_id).await;
+            }
+            ConfigAction::DeleteScoped { scope, scope_id, key } => {
+                commands::system::config_delete_scoped(scope, scope_id, key).await;
             }
         },
         Commands::Service { action } => {
@@ -752,8 +828,114 @@ mod tests {
         let cli = Cli::try_parse_from(["forge-next", "realities"]);
         assert!(cli.is_ok(), "realities should parse: {:?}", cli.err());
         match cli.unwrap().command {
-            Commands::Realities => {}
+            Commands::Realities { organization } => {
+                assert!(organization.is_none());
+            }
             other => panic!("expected Realities, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_config_set_scoped_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "config", "set-scoped",
+            "--scope", "organization",
+            "--scope-id", "default",
+            "--key", "context.budget_chars",
+            "--value", "50000",
+            "--locked",
+            "--ceiling", "100000",
+        ]);
+        assert!(cli.is_ok(), "config set-scoped should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Config { action } => match action {
+                ConfigAction::SetScoped { scope, scope_id, key, value, locked, ceiling } => {
+                    assert_eq!(scope, "organization");
+                    assert_eq!(scope_id, "default");
+                    assert_eq!(key, "context.budget_chars");
+                    assert_eq!(value, "50000");
+                    assert!(locked);
+                    assert_eq!(ceiling, Some(100000.0));
+                }
+                other => panic!("expected SetScoped, got {:?}", other),
+            },
+            other => panic!("expected Config, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_config_get_effective_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "config", "get-effective",
+            "--organization", "default",
+            "--agent", "claude-code",
+        ]);
+        assert!(cli.is_ok(), "config get-effective should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Config { action } => match action {
+                ConfigAction::GetEffective { session, agent, reality, user, team, organization } => {
+                    assert!(session.is_none());
+                    assert_eq!(agent.as_deref(), Some("claude-code"));
+                    assert!(reality.is_none());
+                    assert!(user.is_none());
+                    assert!(team.is_none());
+                    assert_eq!(organization.as_deref(), Some("default"));
+                }
+                other => panic!("expected GetEffective, got {:?}", other),
+            },
+            other => panic!("expected Config, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_config_list_scoped_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "config", "list-scoped",
+            "--scope", "reality",
+            "--scope-id", "r1",
+        ]);
+        assert!(cli.is_ok(), "config list-scoped should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Config { action } => match action {
+                ConfigAction::ListScoped { scope, scope_id } => {
+                    assert_eq!(scope, "reality");
+                    assert_eq!(scope_id, "r1");
+                }
+                other => panic!("expected ListScoped, got {:?}", other),
+            },
+            other => panic!("expected Config, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_config_delete_scoped_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "config", "delete-scoped",
+            "--scope", "organization",
+            "--scope-id", "default",
+            "--key", "max_tokens",
+        ]);
+        assert!(cli.is_ok(), "config delete-scoped should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Config { action } => match action {
+                ConfigAction::DeleteScoped { scope, scope_id, key } => {
+                    assert_eq!(scope, "organization");
+                    assert_eq!(scope_id, "default");
+                    assert_eq!(key, "max_tokens");
+                }
+                other => panic!("expected DeleteScoped, got {:?}", other),
+            },
+            other => panic!("expected Config, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_force_index_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "force-index"]);
+        assert!(cli.is_ok(), "force-index should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::ForceIndex => {}
+            other => panic!("expected ForceIndex, got {:?}", other),
         }
     }
 }

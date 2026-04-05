@@ -36,7 +36,7 @@ pub struct TeamMember {
     pub joined_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Reality {
     pub id: String,
     pub name: String,

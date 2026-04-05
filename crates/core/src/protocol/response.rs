@@ -426,6 +426,17 @@ pub enum ResponseData {
         hits: Vec<serde_json::Value>,
     },
 
+    /// List of known realities (projects).
+    RealitiesList {
+        realities: Vec<crate::types::entity::Reality>,
+    },
+
+    /// Code index counts after a force-index trigger.
+    IndexComplete {
+        files_indexed: usize,
+        symbols_indexed: usize,
+    },
+
     Shutdown,
 }
 

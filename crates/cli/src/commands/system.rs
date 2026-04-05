@@ -1017,6 +1017,171 @@ pub async fn config_set(key: String, value: String) {
     }
 }
 
+/// Set a scoped configuration value at a specific scope level.
+pub async fn config_set_scoped(scope: String, scope_id: String, key: String, value: String, locked: bool, ceiling: Option<f64>) {
+    let req = Request::SetScopedConfig {
+        scope_type: scope.clone(),
+        scope_id: scope_id.clone(),
+        key: key.clone(),
+        value: value.clone(),
+        locked,
+        ceiling,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::ScopedConfigSet { scope_type, scope_id, key },
+        }) => {
+            println!("Scoped config set: {key} at {scope_type}/{scope_id}");
+            if locked {
+                println!("  Locked: yes (lower scopes cannot override)");
+            }
+            if let Some(c) = ceiling {
+                println!("  Ceiling: {c}");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Get the effective (resolved) config for a session context.
+pub async fn config_get_effective(
+    session: Option<String>,
+    agent: Option<String>,
+    reality: Option<String>,
+    user: Option<String>,
+    team: Option<String>,
+    organization: Option<String>,
+) {
+    let req = Request::GetEffectiveConfig {
+        session_id: session,
+        agent,
+        reality_id: reality,
+        user_id: user,
+        team_id: team,
+        organization_id: organization,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::EffectiveConfig { config },
+        }) => {
+            if config.is_empty() {
+                println!("No scoped configuration values set.");
+                return;
+            }
+            println!("Effective configuration ({} key(s)):\n", config.len());
+            let mut keys: Vec<_> = config.keys().collect();
+            keys.sort();
+            for key in keys {
+                let resolved = &config[key];
+                println!("  {key} = {}", resolved.value);
+                println!("    from: {}/{} (locked: {})",
+                    resolved.source_scope_type, resolved.source_scope_id, resolved.locked);
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// List all scoped config entries for a scope.
+pub async fn config_list_scoped(scope: String, scope_id: String) {
+    let req = Request::ListScopedConfig {
+        scope_type: scope.clone(),
+        scope_id: scope_id.clone(),
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::ScopedConfigList { entries },
+        }) => {
+            if entries.is_empty() {
+                println!("No config entries for {scope}/{scope_id}.");
+                return;
+            }
+            println!("{} config entry(ies) for {scope}/{scope_id}:\n", entries.len());
+            for e in &entries {
+                let locked_str = if e.locked { " [LOCKED]" } else { "" };
+                let ceiling_str = e.ceiling.map(|c| format!(" (ceiling: {c})")).unwrap_or_default();
+                println!("  {} = {}{}{}", e.key, e.value, locked_str, ceiling_str);
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Delete a scoped config entry.
+pub async fn config_delete_scoped(scope: String, scope_id: String, key: String) {
+    let req = Request::DeleteScopedConfig {
+        scope_type: scope.clone(),
+        scope_id: scope_id.clone(),
+        key: key.clone(),
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::ScopedConfigDeleted { deleted },
+        }) => {
+            if deleted {
+                println!("Deleted: {key} from {scope}/{scope_id}");
+            } else {
+                println!("Not found: {key} in {scope}/{scope_id}");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Force-trigger the code indexer and show current index counts.
+pub async fn force_index() {
+    match client::send(&Request::ForceIndex).await {
+        Ok(Response::Ok {
+            data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
+        }) => {
+            println!("Index status:");
+            println!("  Files indexed:   {files_indexed}");
+            println!("  Symbols indexed: {symbols_indexed}");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Show extraction metrics, token usage, and cost tracking.
 pub async fn stats(hours: u64) {
     let req = Request::GetStats { hours: Some(hours) };
@@ -1320,16 +1485,24 @@ pub async fn detect_reality(path: Option<String>) {
 }
 
 /// List all known realities (projects).
-/// Note: No ListRealities protocol endpoint exists yet.
-/// This is a placeholder that suggests using detect-reality.
-pub async fn list_realities() {
-    // Use Doctor to at least confirm the daemon is reachable
-    match client::send(&Request::Doctor).await {
-        Ok(Response::Ok { data: ResponseData::Doctor { file_count, .. } }) => {
-            println!("Realities listing not yet available via protocol.");
-            println!("  Files indexed: {file_count}");
-            println!();
-            println!("Tip: Use 'forge-next detect-reality --path <dir>' to detect and register a project.");
+pub async fn list_realities(organization: Option<String>) {
+    let req = Request::ListRealities { organization_id: organization };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::RealitiesList { realities } }) => {
+            if realities.is_empty() {
+                println!("No realities registered.");
+                println!("Tip: Use 'forge-next detect-reality --path <dir>' to detect and register a project.");
+                return;
+            }
+            println!("{} reality(ies):\n", realities.len());
+            for r in &realities {
+                let domain = r.domain.as_deref().unwrap_or("unknown");
+                let path = r.project_path.as_deref().unwrap_or("(no path)");
+                println!("  {} ({}) — {} [{}]", r.name, r.reality_type, domain, r.engine_status);
+                println!("    ID:   {}", r.id);
+                println!("    Path: {}", path);
+                println!("    Last: {}", r.last_active);
+            }
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

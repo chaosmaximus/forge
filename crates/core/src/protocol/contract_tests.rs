@@ -32,6 +32,7 @@ mod tests {
             ("sync_conflicts", Request::SyncConflicts),
             ("hlc_backfill", Request::HlcBackfill),
             ("force_consolidate", Request::ForceConsolidate),
+            ("force_index", Request::ForceIndex),
             ("list_permissions", Request::ListPermissions),
             ("shutdown", Request::Shutdown),
         ];
@@ -442,6 +443,12 @@ mod tests {
                     limit: Some(10),
                 },
             ),
+            (
+                "list_realities",
+                Request::ListRealities {
+                    organization_id: Some("default".into()),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -703,6 +710,14 @@ mod tests {
                 "code_search with kind",
                 r#"{"method":"code_search","params":{"query":"handle_request","kind":"function","limit":10}}"#,
             ),
+            (
+                "list_realities",
+                r#"{"method":"list_realities","params":{}}"#,
+            ),
+            (
+                "list_realities with org",
+                r#"{"method":"list_realities","params":{"organization_id":"default"}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -732,6 +747,7 @@ mod tests {
             ("sync_conflicts", r#"{"method":"sync_conflicts"}"#),
             ("hlc_backfill", r#"{"method":"hlc_backfill"}"#),
             ("force_consolidate", r#"{"method":"force_consolidate"}"#),
+            ("force_index", r#"{"method":"force_index"}"#),
             ("list_permissions", r#"{"method":"list_permissions"}"#),
             ("shutdown", r#"{"method":"shutdown"}"#),
         ];
@@ -757,12 +773,12 @@ mod tests {
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 15 (ManasHealth moved to parameterized, +ListPermissions)
-        let unit_count = 15;
-        // Parameterized variants: 55 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality, CrossEngineQuery, FileMemoryMap, CodeSearch)
-        let param_count = 55;
-        // Total: 70
-        let expected_total = 70;
+        // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
+        let unit_count = 16;
+        // Parameterized variants: 56 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality, CrossEngineQuery, FileMemoryMap, CodeSearch, ListRealities)
+        let param_count = 56;
+        // Total: 72
+        let expected_total = 72;
 
         assert_eq!(
             unit_count + param_count,
@@ -789,6 +805,7 @@ mod tests {
                 Request::HlcBackfill,
                 Request::ForceConsolidate,
                 Request::ForceExtract,
+                Request::ForceIndex,
                 Request::GetConfig,
                 Request::Shutdown,
                 // Parameterized variants
@@ -1018,6 +1035,9 @@ mod tests {
                     query: "test".into(),
                     kind: None,
                     limit: None,
+                },
+                Request::ListRealities {
+                    organization_id: Some("default".into()),
                 },
             ]
         }

@@ -59,7 +59,9 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::CrossEngineQuery { .. }
             | Request::FileMemoryMap { .. }
             | Request::CodeSearch { .. }
+            | Request::ListRealities { .. }
             // NOTE: DetectReality is NOT read-only — it may create a reality record
+            // NOTE: ForceIndex is NOT read-only — it triggers indexing
     )
 }
 
@@ -284,6 +286,14 @@ mod tests {
             kind: None,
             limit: None,
         }));
+
+        // ListRealities: read-only
+        assert!(is_read_only(&Request::ListRealities {
+            organization_id: Some("default".into()),
+        }));
+
+        // ForceIndex: write (triggers indexing)
+        assert!(!is_read_only(&Request::ForceIndex));
 
         // Scoped config: write
         assert!(!is_read_only(&Request::SetScopedConfig {
