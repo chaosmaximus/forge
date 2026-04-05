@@ -107,7 +107,7 @@ fn find_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
     let escaped = file.replace('%', "\\%").replace('_', "\\_");
     let file_pattern = format!("%{escaped}%");
 
-    // Convert file path to Rust module pattern for import edge matching
+    // Convert file path to module pattern for import edge matching
     // e.g., "crates/daemon/src/server/handler.rs" → "%server::handler%"
     let module_pattern = {
         let stem = file
@@ -117,24 +117,23 @@ fn find_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
             .trim_end_matches(".tsx")
             .trim_end_matches(".js")
             .trim_end_matches(".go");
-        // Take last 2 path segments as module path
         let parts: Vec<&str> = stem.split('/').collect();
-        let module = if parts.len() >= 2 {
-            format!("%{}::{}%", parts[parts.len()-2], parts[parts.len()-1])
+        let raw = if parts.len() >= 2 {
+            format!("{}::{}", parts[parts.len()-2], parts[parts.len()-1])
         } else if !parts.is_empty() {
-            format!("%{}%", parts[parts.len()-1])
+            parts[parts.len()-1].to_string()
         } else {
-            file_pattern.clone()
+            return (0, Vec::new());
         };
-        module.replace('%', "\\%").replace('_', "\\_");
-        format!("%{}%", parts.last().map(|s| s.replace('%', "\\%").replace('_', "\\_")).unwrap_or_default())
+        let escaped_mod = raw.replace('%', "\\%").replace('_', "\\_");
+        format!("%{escaped_mod}%")
     };
 
     let sql = "
         SELECT DISTINCT from_id
         FROM edge
-        WHERE (edge_type = 'calls' AND to_id LIKE ?1)
-           OR (edge_type = 'imports' AND to_id LIKE ?2)
+        WHERE (edge_type = 'calls' AND to_id LIKE ?1 ESCAPE '\\')
+           OR (edge_type = 'imports' AND to_id LIKE ?2 ESCAPE '\\')
         LIMIT 100
     ";
     let mut stmt = match conn.prepare(sql) {
