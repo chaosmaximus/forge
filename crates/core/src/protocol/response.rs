@@ -350,6 +350,15 @@ pub enum ResponseData {
     /// Messages were acknowledged
     MessagesAcked { count: usize },
 
+    // ── A2A Permission Responses ──
+
+    /// A permission was granted
+    PermissionGranted { id: String },
+    /// A permission was revoked
+    PermissionRevoked { id: String, found: bool },
+    /// List of all A2A permissions
+    PermissionList { permissions: Vec<A2aPermission>, count: usize },
+
     Shutdown,
 }
 
@@ -439,6 +448,19 @@ pub struct DiagnosticEntry {
     pub message: String,
     pub source: String,
     pub line: Option<i64>,
+}
+
+/// An A2A permission rule controlling inter-session messaging in "controlled" mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct A2aPermission {
+    pub id: String,
+    pub from_agent: String,
+    pub to_agent: String,
+    pub from_project: Option<String>,
+    pub to_project: Option<String>,
+    pub allowed: bool,
+    pub created_by: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

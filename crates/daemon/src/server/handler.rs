@@ -1661,7 +1661,46 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         // ── A2A Inter-Session Protocol (FISP) ──
 
         Request::SessionSend { to, kind, topic, parts, project, timeout_secs } => {
+            // A2A permission enforcement
+            let config = crate::config::load_config();
+            if !config.a2a.enabled {
+                return Response::Error { message: "A2A messaging is disabled".into() };
+            }
+
             let from = "api";
+
+            // In controlled mode, check permissions before sending
+            if config.a2a.trust == "controlled" {
+                // Get sender agent type (from session if available, else "api")
+                let from_agent = "api";
+                let from_project: Option<String> = None;
+
+                // Get recipient agent type and project
+                let (to_agent, to_proj) = if to == "*" {
+                    // Broadcast: use wildcard for permission check
+                    ("*".to_string(), project.clone())
+                } else {
+                    // Look up recipient session to get agent type
+                    match crate::sessions::get_session(&state.conn, &to) {
+                        Ok(Some(session)) => (session.agent.clone(), session.project.clone()),
+                        _ => (to.clone(), project.clone()),
+                    }
+                };
+
+                if !crate::sessions::check_a2a_permission(
+                    &state.conn,
+                    &config.a2a.trust,
+                    from_agent,
+                    &to_agent,
+                    from_project.as_deref(),
+                    to_proj.as_deref(),
+                ) {
+                    return Response::Error {
+                        message: format!("A2A permission denied: {} -> {}", from_agent, to_agent),
+                    };
+                }
+            }
+
             let parts_json = serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string());
             match crate::sessions::send_message(&state.conn, from, &to, &kind, &topic, &parts_json, project.as_deref(), timeout_secs) {
                 Ok(id) => {
@@ -1730,6 +1769,35 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 Err(e) => Response::Error {
                     message: format!("list_entities failed: {e}"),
                 },
+            }
+        }
+
+        // ── A2A Permission Management ──
+
+        Request::GrantPermission { from_agent, to_agent, from_project, to_project } => {
+            match crate::sessions::grant_a2a_permission(
+                &state.conn, &from_agent, &to_agent,
+                from_project.as_deref(), to_project.as_deref(),
+            ) {
+                Ok(id) => Response::Ok { data: ResponseData::PermissionGranted { id } },
+                Err(e) => Response::Error { message: format!("grant_permission failed: {e}") },
+            }
+        }
+
+        Request::RevokePermission { id } => {
+            match crate::sessions::revoke_a2a_permission(&state.conn, &id) {
+                Ok(found) => Response::Ok { data: ResponseData::PermissionRevoked { id, found } },
+                Err(e) => Response::Error { message: format!("revoke_permission failed: {e}") },
+            }
+        }
+
+        Request::ListPermissions => {
+            match crate::sessions::list_a2a_permissions(&state.conn) {
+                Ok(permissions) => {
+                    let count = permissions.len();
+                    Response::Ok { data: ResponseData::PermissionList { permissions, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_permissions failed: {e}") },
             }
         }
 
