@@ -499,5 +499,20 @@ pub enum Request {
         confidence: Option<f64>,
     },
 
+    // ── Notification Engine ──
+
+    /// List notifications with optional filters
+    ListNotifications {
+        status: Option<String>,
+        category: Option<String>,
+        limit: Option<usize>,
+    },
+    /// Acknowledge a notification
+    AckNotification { id: String },
+    /// Dismiss a notification
+    DismissNotification { id: String },
+    /// Act on a confirmation notification (approve or reject)
+    ActOnNotification { id: String, approved: bool },
+
     Shutdown,
 }

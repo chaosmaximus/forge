@@ -632,3 +632,111 @@ pub async fn meeting_transcript(meeting_id: String) {
         }
     }
 }
+
+// ── Notifications ──
+
+pub async fn list_notifications(status: Option<String>, category: Option<String>, limit: usize) {
+    let req = Request::ListNotifications {
+        status,
+        category,
+        limit: Some(limit),
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::NotificationList { notifications, count } }) => {
+            if count == 0 {
+                println!("No notifications.");
+                return;
+            }
+            println!("{count} notification(s):");
+            for n in &notifications {
+                let id = n["id"].as_str().unwrap_or("?");
+                let short_id = &id[..13.min(id.len())];
+                let priority = n["priority"].as_str().unwrap_or("?");
+                let cat = n["category"].as_str().unwrap_or("?");
+                let title = n["title"].as_str().unwrap_or("?");
+                let status_val = n["status"].as_str().unwrap_or("?");
+                println!("  [{priority}] {short_id} ({cat}/{status_val}) {title}");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn ack_notification(id: String) {
+    let req = Request::AckNotification { id: id.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::NotificationAcked { id } }) => {
+            println!("Acknowledged: {}", &id[..13.min(id.len())]);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn dismiss_notification(id: String) {
+    let req = Request::DismissNotification { id: id.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::NotificationDismissed { id } }) => {
+            println!("Dismissed: {}", &id[..13.min(id.len())]);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn act_on_notification(id: String, approved: bool) {
+    let req = Request::ActOnNotification { id: id.clone(), approved };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::NotificationActed { id, result } }) => {
+            let action = if approved { "Approved" } else { "Rejected" };
+            let short_id = &id[..13.min(id.len())];
+            match result {
+                Some(r) => println!("{action}: {short_id} (result: {r})"),
+                None => println!("{action}: {short_id}"),
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}

@@ -577,6 +577,47 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_template ON session(template_id)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_agent_status ON session(agent_status)", []);
 
+    // ── v2.2: Notification Engine ──
+
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS notification (
+            id TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            source TEXT NOT NULL,
+            source_id TEXT,
+            target_type TEXT DEFAULT 'broadcast',
+            target_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            action_type TEXT,
+            action_payload TEXT,
+            action_result TEXT,
+            created_at TEXT NOT NULL,
+            delivered_at TEXT,
+            acknowledged_at TEXT,
+            expires_at TEXT,
+            organization_id TEXT DEFAULT 'default',
+            reality_id TEXT,
+            topic TEXT,
+            metadata TEXT DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_notif_status ON notification(status, priority);
+        CREATE INDEX IF NOT EXISTS idx_notif_target ON notification(target_type, target_id, status);
+        CREATE INDEX IF NOT EXISTS idx_notif_topic ON notification(topic, created_at);
+
+        CREATE TABLE IF NOT EXISTS notification_tuning (
+            topic TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'local',
+            dismiss_count INTEGER NOT NULL DEFAULT 0,
+            ack_count INTEGER NOT NULL DEFAULT 0,
+            last_adjusted_at TEXT,
+            priority_override TEXT,
+            PRIMARY KEY (topic, user_id)
+        );
+    ")?;
+
     Ok(())
 }
 

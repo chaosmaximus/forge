@@ -475,6 +475,47 @@ enum Commands {
         #[command(subcommand)]
         action: MeetingAction,
     },
+
+    // ── Notifications ──
+
+    /// List notifications
+    #[command(name = "notifications")]
+    Notifications {
+        /// Filter by status (pending, acknowledged, dismissed)
+        #[arg(long)]
+        status: Option<String>,
+        /// Filter by category (alert, insight, confirmation, progress)
+        #[arg(long)]
+        category: Option<String>,
+        /// Maximum results
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+    /// Acknowledge a notification
+    #[command(name = "ack-notification")]
+    AckNotification {
+        /// Notification ID
+        id: String,
+    },
+    /// Dismiss a notification
+    #[command(name = "dismiss-notification")]
+    DismissNotification {
+        /// Notification ID
+        id: String,
+    },
+    /// Act on a confirmation notification
+    #[command(name = "act-notification")]
+    ActNotification {
+        /// Notification ID
+        #[arg(long)]
+        id: String,
+        /// Approve the action
+        #[arg(long, conflicts_with = "reject")]
+        approve: bool,
+        /// Reject the action
+        #[arg(long, conflicts_with = "approve")]
+        reject: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1072,6 +1113,21 @@ async fn main() {
                 commands::teams::meeting_transcript(id).await;
             }
         },
+
+        // ── Notifications ──
+        Commands::Notifications { status, category, limit } => {
+            commands::teams::list_notifications(status, category, limit).await;
+        }
+        Commands::AckNotification { id } => {
+            commands::teams::ack_notification(id).await;
+        }
+        Commands::DismissNotification { id } => {
+            commands::teams::dismiss_notification(id).await;
+        }
+        Commands::ActNotification { id, approve, reject } => {
+            let approved = if reject { false } else { approve };
+            commands::teams::act_on_notification(id, approved).await;
+        }
     }
 }
 
