@@ -762,6 +762,7 @@ pub async fn consolidate() {
                     embedding_merged,
                     strengthened,
                     contradictions,
+                    ..
                 },
         }) => {
             println!("Consolidation complete:");
