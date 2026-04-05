@@ -479,25 +479,41 @@ pub fn reweave_memories(conn: &Connection) -> usize {
                 continue;
             }
 
-            // Enrich older with newer content, mark newer as "merged"
-            let enriched_content = format!("{}\n\n[Update]: {}", rows[i].content, rows[j].content);
-
+            // Transaction: read current content, enrich, mark newer as merged (atomic)
             if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
                 eprintln!("[consolidator] reweave begin error: {e}");
                 continue;
             }
-            if conn.execute(
+            // Re-read content inside transaction to avoid TOCTOU race
+            let current_content: String = match conn.query_row(
+                "SELECT content FROM memory WHERE id = ?1 AND status = 'active'",
+                rusqlite::params![rows[i].id],
+                |row| row.get(0),
+            ) {
+                Ok(c) => c,
+                Err(_) => { let _ = conn.execute_batch("ROLLBACK"); continue; }
+            };
+            let enriched_content = format!("{}\n\n[Update]: {}", current_content, rows[j].content);
+
+            let update1 = conn.execute(
                 "UPDATE memory SET content = ?1 WHERE id = ?2 AND status = 'active'",
                 rusqlite::params![enriched_content, rows[i].id],
-            ).is_err() || conn.execute(
+            );
+            let update2 = conn.execute(
                 "UPDATE memory SET status = 'merged' WHERE id = ?1 AND status = 'active'",
                 rusqlite::params![rows[j].id],
-            ).is_err() {
+            );
+            if update1.is_err() || update2.is_err()
+                || update1.unwrap_or(0) != 1 || update2.unwrap_or(0) != 1
+            {
                 eprintln!("[consolidator] reweave update error — rolling back");
                 let _ = conn.execute_batch("ROLLBACK");
                 continue;
             }
-            let _ = conn.execute_batch("COMMIT");
+            if let Err(e) = conn.execute_batch("COMMIT") {
+                eprintln!("[consolidator] reweave commit error: {e}");
+                continue;
+            }
 
             merged_ids.insert(rows[j].id.clone());
             reweaved += 1;
@@ -557,7 +573,7 @@ pub fn score_memory_quality(conn: &Connection) -> usize {
         let freshness = (1.0 - weeks * 0.1).clamp(0.1, 1.0);
 
         // utility (0-1): min(access_count / 10.0, 1.0)
-        let utility = (row.access_count as f64 / 10.0).min(1.0);
+        let utility = (row.access_count as f64 / 10.0).clamp(0.0, 1.0);
 
         // completeness (0-1): min(content.len() / 200.0, 1.0)
         let completeness = (row.content_len as f64 / 200.0).min(1.0);
