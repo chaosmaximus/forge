@@ -1707,6 +1707,7 @@ mod tests {
             source: "user_defined".into(),
             active: true,
             created_at: "2026-04-03".into(),
+            user_id: None,
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
@@ -1807,6 +1808,7 @@ mod tests {
             source: "user_defined".into(),
             active: true,
             created_at: "2026-04-03".into(),
+            user_id: None,
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 

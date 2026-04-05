@@ -643,7 +643,7 @@ pub async fn ack_messages(ids: Vec<String>) {
         eprintln!("error: no message IDs provided");
         return;
     }
-    let req = Request::SessionAck { message_ids: ids };
+    let req = Request::SessionAck { message_ids: ids, session_id: None };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::MessagesAcked { count } }) => {
             println!("Acknowledged {count} message(s).");

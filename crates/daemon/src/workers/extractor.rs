@@ -461,6 +461,7 @@ async fn process_file(
                         source: "extracted".to_string(),
                         active: true,
                         created_at: forge_core::time::now_iso(),
+                        user_id: None,
                     };
                     if let Err(e) = crate::db::manas::store_identity(&locked.conn, &facet) {
                         eprintln!("[extractor] failed to store identity '{}': {e}", em.title);

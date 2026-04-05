@@ -60,6 +60,8 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::FileMemoryMap { .. }
             | Request::CodeSearch { .. }
             | Request::ListRealities { .. }
+            | Request::ListAgentTemplates { .. }
+            | Request::GetAgentTemplate { .. }
             // NOTE: DetectReality is NOT read-only — it may create a reality record
             // NOTE: ForceIndex is NOT read-only — it triggers indexing
     )

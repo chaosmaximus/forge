@@ -499,6 +499,84 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Filtered: only applies to non-NULL project_path values.
     let _ = conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reality_path_unique ON reality(project_path) WHERE project_path IS NOT NULL", []);
 
+    // ── v2.1: Agent Teams ──
+
+    // Agent template: reusable definition for agent roles
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS agent_template (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            agent_type TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT 'default',
+            system_context TEXT NOT NULL DEFAULT '',
+            identity_facets TEXT NOT NULL DEFAULT '[]',
+            config_overrides TEXT NOT NULL DEFAULT '{}',
+            knowledge_domains TEXT NOT NULL DEFAULT '[]',
+            decision_style TEXT NOT NULL DEFAULT 'analytical',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_template_name ON agent_template(name, organization_id);
+        CREATE INDEX IF NOT EXISTS idx_agent_template_org ON agent_template(organization_id);
+    ")?;
+
+    // Meeting: structured multi-agent deliberation
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS meeting (
+            id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            context TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            orchestrator_session_id TEXT NOT NULL,
+            synthesis TEXT,
+            decision TEXT,
+            decision_memory_id TEXT,
+            created_at TEXT NOT NULL,
+            decided_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_meeting_team ON meeting(team_id, status);
+        CREATE INDEX IF NOT EXISTS idx_meeting_orchestrator ON meeting(orchestrator_session_id);
+    ")?;
+
+    // Meeting participant: tracks each agent's response in a meeting
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS meeting_participant (
+            id TEXT PRIMARY KEY,
+            meeting_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            template_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            response TEXT,
+            responded_at TEXT,
+            confidence REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mp_meeting ON meeting_participant(meeting_id, status);
+        CREATE INDEX IF NOT EXISTS idx_mp_session ON meeting_participant(session_id);
+    ")?;
+
+    // Agent lifecycle: session gains template tracking, agent status, last activity
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN template_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN agent_status TEXT DEFAULT 'idle'", []);
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN last_activity_at TEXT", []);
+
+    // Team enhancements: type, orchestrator, purpose
+    let _ = conn.execute("ALTER TABLE team ADD COLUMN team_type TEXT DEFAULT 'human'", []);
+    let _ = conn.execute("ALTER TABLE team ADD COLUMN orchestrator_session_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE team ADD COLUMN purpose TEXT", []);
+
+    // Team member: support agent sessions (not just user_id)
+    let _ = conn.execute("ALTER TABLE team_member ADD COLUMN session_id TEXT", []);
+
+    // FISP: meeting_id for deterministic response matching
+    let _ = conn.execute("ALTER TABLE session_message ADD COLUMN meeting_id TEXT", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_meeting ON session_message(meeting_id)", []);
+
+    // Agent team indexes
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_template ON session(template_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_agent_status ON session(agent_status)", []);
+
     Ok(())
 }
 

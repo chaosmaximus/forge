@@ -249,6 +249,7 @@ mod tests {
                         source: "declared".into(),
                         active: true,
                         created_at: "2026-04-03 12:00:00".into(),
+                        user_id: None,
                     },
                 },
             ),
@@ -789,10 +790,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
         let unit_count = 16;
-        // Parameterized variants: 57 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality, CrossEngineQuery, FileMemoryMap, CodeSearch, ListRealities, GetStats)
-        let param_count = 57;
+        // Parameterized variants: 62 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality, CrossEngineQuery, FileMemoryMap, CodeSearch, ListRealities, GetStats, AgentTemplates)
+        let param_count = 62;
         // Total: 73
-        let expected_total = 73;
+        let expected_total = 78;
 
         assert_eq!(
             unit_count + param_count,
@@ -821,6 +822,21 @@ mod tests {
                 Request::ForceExtract,
                 Request::ForceIndex,
                 Request::GetConfig,
+                // Agent Teams
+                Request::CreateAgentTemplate {
+                    name: "CTO".into(), description: "tech lead".into(),
+                    agent_type: "claude-code".into(), organization_id: None,
+                    system_context: None, identity_facets: None, config_overrides: None,
+                    knowledge_domains: None, decision_style: None,
+                },
+                Request::ListAgentTemplates { organization_id: None, limit: None },
+                Request::GetAgentTemplate { id: Some("t1".into()), name: None },
+                Request::DeleteAgentTemplate { id: "t1".into() },
+                Request::UpdateAgentTemplate {
+                    id: "t1".into(), name: Some("CTO v2".into()),
+                    description: None, system_context: None, identity_facets: None,
+                    config_overrides: None, knowledge_domains: None, decision_style: None,
+                },
                 Request::Shutdown,
                 // Parameterized variants
                 Request::Remember {
@@ -890,6 +906,7 @@ mod tests {
                 },
                 Request::SessionAck {
                     message_ids: vec!["m1".into()],
+                    session_id: None,
                 },
                 Request::StorePlatform {
                     key: "k".into(),
@@ -935,6 +952,7 @@ mod tests {
                         source: "s".into(),
                         active: true,
                         created_at: "2026-01-01 00:00:00".into(),
+                        user_id: None,
                     },
                 },
                 Request::ListIdentity { agent: "a".into() },

@@ -4,8 +4,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::{timeout, Duration};
 
-/// Maximum allowed response line length (1 MB).
-const MAX_RESPONSE_LINE_BYTES: usize = 1_048_576;
+/// Maximum allowed response line length (16 MB).
+/// Export/import of large memory stores can produce multi-MB NDJSON lines.
+const MAX_RESPONSE_LINE_BYTES: usize = 16 * 1_048_576;
 
 /// NEW-7: Read timeout for daemon responses (30 seconds).
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);

@@ -9,9 +9,9 @@ use tokio::net::UnixListener;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::{timeout, Duration};
 
-/// Maximum allowed line length (1 MB). Requests or responses exceeding this
-/// are rejected and the client is disconnected.
-const MAX_LINE_BYTES: usize = 1_048_576;
+/// Maximum allowed line length (16 MB). Export/import of large memory stores
+/// can produce multi-MB NDJSON lines.
+const MAX_LINE_BYTES: usize = 16 * 1_048_576;
 
 /// Read timeout for idle clients (30 seconds).
 const READ_TIMEOUT: Duration = Duration::from_secs(30);

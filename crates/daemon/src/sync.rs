@@ -513,6 +513,7 @@ fn import_identity_facet(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
+                user_id: None,
             };
             crate::db::manas::store_identity(conn, &facet_obj)
         }
@@ -1158,6 +1159,7 @@ mod tests {
             source: "user".into(),
             active: true,
             created_at: "2026-04-03".into(),
+            user_id: None,
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 

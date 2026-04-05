@@ -421,6 +421,24 @@ pub fn ack_messages(
     Ok(count)
 }
 
+/// Admin/CLI ack: mark messages as read regardless of to_session.
+/// Used when the CLI doesn't have a session context.
+pub fn ack_messages_admin(
+    conn: &Connection,
+    message_ids: &[String],
+) -> rusqlite::Result<usize> {
+    let mut count = 0;
+    for id in message_ids {
+        let updated = conn.execute(
+            "UPDATE session_message SET status = 'read', delivered_at = datetime('now')
+             WHERE id = ?1",
+            params![id],
+        )?;
+        count += updated;
+    }
+    Ok(count)
+}
+
 // ── A2A Permission Model ──
 
 /// Check if a message from one agent type to another is allowed.

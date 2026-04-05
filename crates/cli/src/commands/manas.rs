@@ -117,6 +117,7 @@ pub async fn identity_set(
         source: "cli".to_string(),
         active: true,
         created_at,
+        user_id: None,
     };
 
     let request = Request::StoreIdentity { facet: identity_facet };

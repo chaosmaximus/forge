@@ -304,6 +304,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                 source: row.get(5)?,
                                 active: row.get::<_, i32>(6)? != 0,
                                 created_at: row.get(7)?,
+                                user_id: None,
                             })
                         })?.collect()
                     }).unwrap_or_default();
@@ -1154,6 +1155,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::StoreIdentity { mut facet } => {
             facet.strength = facet.strength.clamp(0.0, 1.0);
+            // v2.0: tag identity facets with current user (forge_user.id, not raw OS username)
+            if facet.user_id.is_none() {
+                let login = std::env::var("USER").unwrap_or_else(|_| "local".into());
+                facet.user_id = ops::get_user(&state.conn, &login)
+                    .ok()
+                    .flatten()
+                    .map(|u| u.id)
+                    .or_else(|| Some("local".into()));
+            }
             let id = facet.id.clone();
             let facet_name = facet.facet.clone();
             let agent_name = facet.agent.clone();
@@ -1869,9 +1879,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::SessionAck { message_ids } => {
-            // "api" as caller — in future, hooks will pass the actual session ID
-            match crate::sessions::ack_messages(&state.conn, &message_ids, "api") {
+        Request::SessionAck { message_ids, session_id } => {
+            let result = if let Some(sid) = session_id {
+                // Scoped ack: only messages addressed to this session
+                crate::sessions::ack_messages(&state.conn, &message_ids, &sid)
+            } else {
+                // Admin/CLI ack: ack regardless of to_session
+                crate::sessions::ack_messages_admin(&state.conn, &message_ids)
+            };
+            match result {
                 Ok(count) => Response::Ok { data: ResponseData::MessagesAcked { count } },
                 Err(e) => Response::Error { message: format!("ack_messages failed: {e}") },
             }
@@ -2263,6 +2279,88 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             Response::Ok {
                 data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
+            }
+        }
+
+        // ── Agent Teams: Template CRUD ──
+
+        Request::CreateAgentTemplate {
+            name, description, agent_type, organization_id,
+            system_context, identity_facets, config_overrides,
+            knowledge_domains, decision_style,
+        } => {
+            let now = chrono_now();
+            let template = forge_core::types::team::AgentTemplate {
+                id: ulid::Ulid::new().to_string(),
+                name: name.clone(),
+                description,
+                agent_type,
+                organization_id: organization_id.unwrap_or_else(|| "default".into()),
+                system_context: system_context.unwrap_or_default(),
+                identity_facets: identity_facets.unwrap_or_else(|| "[]".into()),
+                config_overrides: config_overrides.unwrap_or_else(|| "{}".into()),
+                knowledge_domains: knowledge_domains.unwrap_or_else(|| "[]".into()),
+                decision_style: decision_style.unwrap_or_else(|| "analytical".into()),
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            let id = template.id.clone();
+            match crate::teams::create_agent_template(&state.conn, &template) {
+                Ok(()) => {
+                    crate::events::emit(&state.events, "agent_template_created", serde_json::json!({
+                        "id": id, "name": name,
+                    }));
+                    Response::Ok { data: ResponseData::AgentTemplateCreated { id, name } }
+                }
+                Err(e) => Response::Error { message: format!("create_agent_template failed: {e}") },
+            }
+        }
+
+        Request::ListAgentTemplates { organization_id, limit } => {
+            let lim = limit.unwrap_or(50).min(200);
+            match crate::teams::list_agent_templates(&state.conn, organization_id.as_deref(), lim) {
+                Ok(templates) => {
+                    let count = templates.len();
+                    Response::Ok { data: ResponseData::AgentTemplateList { templates, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_agent_templates failed: {e}") },
+            }
+        }
+
+        Request::GetAgentTemplate { id, name } => {
+            let result = if let Some(id) = id {
+                crate::teams::get_agent_template(&state.conn, &id)
+            } else if let Some(name) = name {
+                crate::teams::get_agent_template_by_name(&state.conn, &name, "default")
+            } else {
+                return Response::Error { message: "either id or name required".into() };
+            };
+            match result {
+                Ok(Some(template)) => Response::Ok { data: ResponseData::AgentTemplateData { template } },
+                Ok(None) => Response::Error { message: "agent template not found".into() },
+                Err(e) => Response::Error { message: format!("get_agent_template failed: {e}") },
+            }
+        }
+
+        Request::DeleteAgentTemplate { id } => {
+            match crate::teams::delete_agent_template(&state.conn, &id) {
+                Ok(found) => Response::Ok { data: ResponseData::AgentTemplateDeleted { id, found } },
+                Err(e) => Response::Error { message: format!("delete_agent_template failed: {e}") },
+            }
+        }
+
+        Request::UpdateAgentTemplate {
+            id, name, description, system_context,
+            identity_facets, config_overrides, knowledge_domains, decision_style,
+        } => {
+            match crate::teams::update_agent_template(
+                &state.conn, &id,
+                name.as_deref(), description.as_deref(), system_context.as_deref(),
+                identity_facets.as_deref(), config_overrides.as_deref(),
+                knowledge_domains.as_deref(), decision_style.as_deref(),
+            ) {
+                Ok(updated) => Response::Ok { data: ResponseData::AgentTemplateUpdated { id, updated } },
+                Err(e) => Response::Error { message: format!("update_agent_template failed: {e}") },
             }
         }
 
@@ -2933,6 +3031,7 @@ mod tests {
             source: "declared".into(),
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
+            user_id: None,
         };
         let resp = handle_request(&mut state, Request::StoreIdentity { facet });
         match resp {
@@ -3284,6 +3383,7 @@ mod tests {
             source: "declared".into(),
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
+            user_id: None,
         };
         handle_request(&mut state, Request::StoreIdentity { facet });
 
@@ -3384,6 +3484,7 @@ mod tests {
             source: "declared".into(),
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
+            user_id: None,
         };
         handle_request(&mut state, Request::StoreIdentity { facet });
 

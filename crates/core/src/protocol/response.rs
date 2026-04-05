@@ -437,6 +437,19 @@ pub enum ResponseData {
         symbols_indexed: usize,
     },
 
+    // ── Agent Teams ──
+
+    /// Agent template was created
+    AgentTemplateCreated { id: String, name: String },
+    /// Single agent template
+    AgentTemplateData { template: crate::types::team::AgentTemplate },
+    /// List of agent templates
+    AgentTemplateList { templates: Vec<crate::types::team::AgentTemplate>, count: usize },
+    /// Agent template was deleted
+    AgentTemplateDeleted { id: String, found: bool },
+    /// Agent template was updated
+    AgentTemplateUpdated { id: String, updated: bool },
+
     Shutdown,
 }
 

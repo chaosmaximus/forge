@@ -288,6 +288,9 @@ pub enum Request {
     /// Mark messages as read/consumed
     SessionAck {
         message_ids: Vec<String>,
+        /// If set, only ack messages addressed to this session (ownership check).
+        /// If None, ack messages regardless of to_session (CLI/admin usage).
+        session_id: Option<String>,
     },
 
     /// List entities (Knowledge Intelligence)
@@ -374,6 +377,44 @@ pub enum Request {
 
     /// Force-trigger the code indexer and return current index counts.
     ForceIndex,
+
+    // ── Agent Teams ──
+
+    /// Create a reusable agent template (CTO, CMO, etc.)
+    CreateAgentTemplate {
+        name: String,
+        description: String,
+        agent_type: String,
+        organization_id: Option<String>,
+        system_context: Option<String>,
+        identity_facets: Option<String>,
+        config_overrides: Option<String>,
+        knowledge_domains: Option<String>,
+        decision_style: Option<String>,
+    },
+    /// List agent templates, optionally filtered by organization
+    ListAgentTemplates {
+        organization_id: Option<String>,
+        limit: Option<usize>,
+    },
+    /// Get a single agent template by ID or name
+    GetAgentTemplate {
+        id: Option<String>,
+        name: Option<String>,
+    },
+    /// Delete an agent template
+    DeleteAgentTemplate { id: String },
+    /// Update fields on an agent template
+    UpdateAgentTemplate {
+        id: String,
+        name: Option<String>,
+        description: Option<String>,
+        system_context: Option<String>,
+        identity_facets: Option<String>,
+        config_overrides: Option<String>,
+        knowledge_domains: Option<String>,
+        decision_style: Option<String>,
+    },
 
     Shutdown,
 }
