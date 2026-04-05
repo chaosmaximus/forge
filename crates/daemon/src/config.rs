@@ -518,6 +518,34 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         ["consolidation", "reweave_limit"] => {
             config.consolidation.reweave_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
+        // Recall boost factors
+        ["recall", "recency_24h_boost"] => {
+            config.recall.recency_24h_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["recall", "recency_7d_boost"] => {
+            config.recall.recency_7d_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["recall", "access_high_threshold"] => {
+            config.recall.access_high_threshold = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["recall", "access_high_boost"] => {
+            config.recall.access_high_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["recall", "access_medium_threshold"] => {
+            config.recall.access_medium_threshold = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["recall", "access_medium_boost"] => {
+            config.recall.access_medium_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["recall", "domain_dna_boost"] => {
+            config.recall.domain_dna_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["recall", "activation_on_recall"] => {
+            config.recall.activation_on_recall = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["recall", "activation_on_context"] => {
+            config.recall.activation_on_context = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
         _ => return Err(format!("unknown config key: {key}")),
     }
 
