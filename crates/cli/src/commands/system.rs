@@ -639,6 +639,63 @@ pub async fn ack_messages(ids: Vec<String>) {
     }
 }
 
+// ── A2A Permission Management ──
+
+pub async fn grant_permission(from: String, to: String, from_project: Option<String>, to_project: Option<String>) {
+    let req = Request::GrantPermission { from_agent: from.clone(), to_agent: to.clone(), from_project: from_project.clone(), to_project: to_project.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::PermissionGranted { id } }) => {
+            println!("Permission granted: {id} ({from} → {to}{})", match (&from_project, &to_project) {
+                (Some(fp), Some(tp)) => format!(", {fp} → {tp}"),
+                _ => String::new(),
+            });
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+pub async fn revoke_permission(id: String) {
+    let req = Request::RevokePermission { id: id.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::PermissionRevoked { id: _, found } }) => {
+            if found { println!("Permission revoked: {id}"); }
+            else { println!("Permission not found: {id}"); }
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+pub async fn list_permissions() {
+    let req = Request::ListPermissions;
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::PermissionList { permissions, count } }) => {
+            if count == 0 {
+                println!("No A2A permissions configured (trust mode: open by default).");
+                return;
+            }
+            println!("{count} permission(s):\n");
+            for p in &permissions {
+                let proj = match (&p.from_project, &p.to_project) {
+                    (Some(fp), Some(tp)) => format!(" ({fp} → {tp})"),
+                    (Some(fp), None) => format!(" (from {fp})"),
+                    (None, Some(tp)) => format!(" (to {tp})"),
+                    _ => String::new(),
+                };
+                println!("  [{}] {} → {}{} ({})",
+                    if p.allowed { "ALLOW" } else { "DENY" },
+                    p.from_agent, p.to_agent, proj, &p.id[..8.min(p.id.len())]);
+            }
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
 /// Run proactive checks on a file or show all active diagnostics.
 pub async fn verify(file: Option<String>) {
     let req = Request::Verify { file: file.clone() };

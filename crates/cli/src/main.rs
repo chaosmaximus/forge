@@ -250,6 +250,30 @@ enum Commands {
         ids: Vec<String>,
     },
 
+    // ── A2A Permission Management ──
+
+    /// Grant A2A permission (from agent → to agent)
+    #[command(name = "grant-permission")]
+    GrantPermission {
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        from_project: Option<String>,
+        #[arg(long)]
+        to_project: Option<String>,
+    },
+    /// Revoke an A2A permission by ID
+    #[command(name = "revoke-permission")]
+    RevokePermission {
+        #[arg(long)]
+        id: String,
+    },
+    /// List all A2A permissions
+    #[command(name = "list-permissions")]
+    ListPermissions,
+
     /// Run proactive checks on a file or show all active diagnostics
     Verify {
         /// File to check (omit to show all active diagnostics)
@@ -509,6 +533,15 @@ async fn main() {
         }
         Commands::Ack { ids } => {
             commands::system::ack_messages(ids).await;
+        }
+        Commands::GrantPermission { from, to, from_project, to_project } => {
+            commands::system::grant_permission(from, to, from_project, to_project).await;
+        }
+        Commands::RevokePermission { id } => {
+            commands::system::revoke_permission(id).await;
+        }
+        Commands::ListPermissions => {
+            commands::system::list_permissions().await;
         }
         Commands::CompileContext { agent, project, static_only } => {
             commands::manas::compile_context(agent, project, static_only).await;
