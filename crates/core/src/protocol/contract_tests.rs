@@ -516,6 +516,57 @@ mod tests {
                     team_name: "leadership".into(),
                 },
             ),
+            // ── Meeting Protocol ──
+            (
+                "create_meeting",
+                Request::CreateMeeting {
+                    team_id: "t1".into(),
+                    topic: "Architecture review".into(),
+                    context: Some("Q2 planning".into()),
+                    orchestrator_session_id: "s-orch".into(),
+                    participant_session_ids: vec!["s-cto".into(), "s-cmo".into()],
+                },
+            ),
+            (
+                "meeting_status",
+                Request::MeetingStatus {
+                    meeting_id: "m1".into(),
+                },
+            ),
+            (
+                "meeting_responses",
+                Request::MeetingResponses {
+                    meeting_id: "m1".into(),
+                },
+            ),
+            (
+                "meeting_synthesize",
+                Request::MeetingSynthesize {
+                    meeting_id: "m1".into(),
+                    synthesis: "All agree on Rust".into(),
+                },
+            ),
+            (
+                "meeting_decide",
+                Request::MeetingDecide {
+                    meeting_id: "m1".into(),
+                    decision: "Use Rust for the daemon".into(),
+                },
+            ),
+            (
+                "list_meetings",
+                Request::ListMeetings {
+                    team_id: Some("t1".into()),
+                    status: Some("collecting".into()),
+                    limit: Some(10),
+                },
+            ),
+            (
+                "meeting_transcript",
+                Request::MeetingTranscript {
+                    meeting_id: "m1".into(),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -843,6 +894,43 @@ mod tests {
                 "team_status",
                 r#"{"method":"team_status","params":{"team_name":"leadership"}}"#,
             ),
+            // ── Meeting Protocol ──
+            (
+                "create_meeting",
+                r#"{"method":"create_meeting","params":{"team_id":"t1","topic":"Architecture","orchestrator_session_id":"s-orch","participant_session_ids":["s-cto","s-cmo"]}}"#,
+            ),
+            (
+                "create_meeting with context",
+                r#"{"method":"create_meeting","params":{"team_id":"t1","topic":"Architecture","context":"Q2","orchestrator_session_id":"s-orch","participant_session_ids":["s-cto"]}}"#,
+            ),
+            (
+                "meeting_status",
+                r#"{"method":"meeting_status","params":{"meeting_id":"m1"}}"#,
+            ),
+            (
+                "meeting_responses",
+                r#"{"method":"meeting_responses","params":{"meeting_id":"m1"}}"#,
+            ),
+            (
+                "meeting_synthesize",
+                r#"{"method":"meeting_synthesize","params":{"meeting_id":"m1","synthesis":"All agree"}}"#,
+            ),
+            (
+                "meeting_decide",
+                r#"{"method":"meeting_decide","params":{"meeting_id":"m1","decision":"Use Rust"}}"#,
+            ),
+            (
+                "list_meetings",
+                r#"{"method":"list_meetings","params":{}}"#,
+            ),
+            (
+                "list_meetings with filters",
+                r#"{"method":"list_meetings","params":{"team_id":"t1","status":"collecting","limit":10}}"#,
+            ),
+            (
+                "meeting_transcript",
+                r#"{"method":"meeting_transcript","params":{"meeting_id":"m1"}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -900,10 +988,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
         let unit_count = 16;
-        // Parameterized variants: 70 (62 + 8 new: SpawnAgent, ListAgents, UpdateAgentStatus, RetireAgent, CreateTeam, ListTeamMembers, SetTeamOrchestrator, TeamStatus)
-        let param_count = 70;
-        // Total: 86
-        let expected_total = 86;
+        // Parameterized variants: 77 (70 + 7 new: CreateMeeting, MeetingStatus, MeetingResponses, MeetingSynthesize, MeetingDecide, ListMeetings, MeetingTranscript)
+        let param_count = 77;
+        // Total: 93
+        let expected_total = 93;
 
         assert_eq!(
             unit_count + param_count,
@@ -1219,6 +1307,36 @@ mod tests {
                 },
                 Request::TeamStatus {
                     team_name: "leadership".into(),
+                },
+                // Meeting Protocol
+                Request::CreateMeeting {
+                    team_id: "t1".into(),
+                    topic: "Architecture review".into(),
+                    context: Some("Q2 planning".into()),
+                    orchestrator_session_id: "s-orch".into(),
+                    participant_session_ids: vec!["s-cto".into(), "s-cmo".into()],
+                },
+                Request::MeetingStatus {
+                    meeting_id: "m1".into(),
+                },
+                Request::MeetingResponses {
+                    meeting_id: "m1".into(),
+                },
+                Request::MeetingSynthesize {
+                    meeting_id: "m1".into(),
+                    synthesis: "All agree on Rust".into(),
+                },
+                Request::MeetingDecide {
+                    meeting_id: "m1".into(),
+                    decision: "Use Rust for the daemon".into(),
+                },
+                Request::ListMeetings {
+                    team_id: Some("t1".into()),
+                    status: Some("collecting".into()),
+                    limit: Some(10),
+                },
+                Request::MeetingTranscript {
+                    meeting_id: "m1".into(),
                 },
             ]
         }

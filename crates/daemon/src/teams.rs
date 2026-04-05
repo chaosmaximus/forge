@@ -462,6 +462,357 @@ pub fn team_status(
     }))
 }
 
+// ── Meeting Protocol ──
+
+/// Create a meeting — sends FISP messages to all participants.
+/// Returns (meeting_id, participant_count).
+pub fn create_meeting(
+    conn: &Connection,
+    team_id: &str,
+    topic: &str,
+    context: Option<&str>,
+    orchestrator_session_id: &str,
+    participant_session_ids: &[String],
+) -> rusqlite::Result<(String, usize)> {
+    let meeting_id = ulid::Ulid::new().to_string();
+    let now = forge_core::time::now_iso();
+
+    conn.execute(
+        "INSERT INTO meeting (id, team_id, topic, context, status, orchestrator_session_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'collecting', ?5, ?6)",
+        params![meeting_id, team_id, topic, context, orchestrator_session_id, now],
+    )?;
+
+    for session_id in participant_session_ids {
+        // Look up template_name from session.template_id -> agent_template.name
+        let template_name: String = conn.query_row(
+            "SELECT COALESCE(at.name, s.id)
+             FROM session s
+             LEFT JOIN agent_template at ON at.id = s.template_id
+             WHERE s.id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        ).unwrap_or_else(|_| session_id.clone());
+
+        let participant_id = ulid::Ulid::new().to_string();
+        conn.execute(
+            "INSERT INTO meeting_participant (id, meeting_id, session_id, template_name, status)
+             VALUES (?1, ?2, ?3, ?4, 'pending')",
+            params![participant_id, meeting_id, session_id, template_name],
+        )?;
+
+        // Send FISP message to participant
+        let msg_body = serde_json::json!({
+            "meeting_id": meeting_id,
+            "topic": topic,
+            "context": context,
+        });
+        crate::sessions::send_message(
+            conn,
+            orchestrator_session_id,
+            session_id,
+            "request",
+            "meeting",
+            &msg_body.to_string(),
+            None,
+            None,
+            Some(&meeting_id),
+        )?;
+    }
+
+    Ok((meeting_id, participant_session_ids.len()))
+}
+
+/// Get meeting status + participant response statuses.
+pub fn get_meeting_status(
+    conn: &Connection,
+    meeting_id: &str,
+) -> rusqlite::Result<(Value, Vec<Value>)> {
+    let meeting = conn.query_row(
+        "SELECT id, team_id, topic, context, status, orchestrator_session_id, synthesis, decision, decision_memory_id, created_at, decided_at
+         FROM meeting WHERE id = ?1",
+        params![meeting_id],
+        |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "team_id": row.get::<_, String>(1)?,
+                "topic": row.get::<_, String>(2)?,
+                "context": row.get::<_, Option<String>>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "orchestrator_session_id": row.get::<_, String>(5)?,
+                "synthesis": row.get::<_, Option<String>>(6)?,
+                "decision": row.get::<_, Option<String>>(7)?,
+                "decision_memory_id": row.get::<_, Option<String>>(8)?,
+                "created_at": row.get::<_, String>(9)?,
+                "decided_at": row.get::<_, Option<String>>(10)?,
+            }))
+        },
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, meeting_id, session_id, template_name, status, response, responded_at, confidence
+         FROM meeting_participant WHERE meeting_id = ?1"
+    )?;
+    let rows = stmt.query_map(params![meeting_id], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "meeting_id": row.get::<_, String>(1)?,
+            "session_id": row.get::<_, String>(2)?,
+            "template_name": row.get::<_, String>(3)?,
+            "status": row.get::<_, String>(4)?,
+            "response": row.get::<_, Option<String>>(5)?,
+            "responded_at": row.get::<_, Option<String>>(6)?,
+            "confidence": row.get::<_, Option<f64>>(7)?,
+        }))
+    })?;
+
+    let mut participants = Vec::new();
+    for row in rows {
+        participants.push(row?);
+    }
+
+    Ok((meeting, participants))
+}
+
+/// Get all participant responses for a meeting (only those who responded).
+pub fn get_meeting_responses(
+    conn: &Connection,
+    meeting_id: &str,
+) -> rusqlite::Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session_id, template_name, response, responded_at, confidence
+         FROM meeting_participant
+         WHERE meeting_id = ?1 AND status = 'responded'"
+    )?;
+    let rows = stmt.query_map(params![meeting_id], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "session_id": row.get::<_, String>(1)?,
+            "template_name": row.get::<_, String>(2)?,
+            "response": row.get::<_, Option<String>>(3)?,
+            "responded_at": row.get::<_, Option<String>>(4)?,
+            "confidence": row.get::<_, Option<f64>>(5)?,
+        }))
+    })?;
+
+    let mut responses = Vec::new();
+    for row in rows {
+        responses.push(row?);
+    }
+    Ok(responses)
+}
+
+/// Record a participant's response to a meeting.
+/// Returns true if all participants have now responded.
+pub fn record_meeting_response(
+    conn: &Connection,
+    meeting_id: &str,
+    session_id: &str,
+    response: &str,
+    confidence: Option<f64>,
+) -> rusqlite::Result<bool> {
+    let now = forge_core::time::now_iso();
+    let conf = confidence.unwrap_or(0.8);
+
+    let updated = conn.execute(
+        "UPDATE meeting_participant SET status = 'responded', response = ?1, responded_at = ?2, confidence = ?3
+         WHERE meeting_id = ?4 AND session_id = ?5 AND status = 'pending'",
+        params![response, now, conf, meeting_id, session_id],
+    )?;
+
+    if updated == 0 {
+        return Ok(false);
+    }
+
+    // Check if all participants have responded
+    let pending: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM meeting_participant WHERE meeting_id = ?1 AND status = 'pending'",
+        params![meeting_id],
+        |row| row.get(0),
+    )?;
+
+    Ok(pending == 0)
+}
+
+/// Store orchestrator synthesis for a meeting.
+pub fn synthesize_meeting(
+    conn: &Connection,
+    meeting_id: &str,
+    synthesis: &str,
+) -> rusqlite::Result<bool> {
+    let count = conn.execute(
+        "UPDATE meeting SET synthesis = ?1, status = 'synthesizing'
+         WHERE id = ?2 AND status IN ('collecting', 'timed_out')",
+        params![synthesis, meeting_id],
+    )?;
+    Ok(count > 0)
+}
+
+/// Record decision, store as memory, close meeting.
+/// Returns (updated, decision_memory_id).
+pub fn decide_meeting(
+    conn: &Connection,
+    meeting_id: &str,
+    decision: &str,
+) -> rusqlite::Result<(bool, String)> {
+    let now = forge_core::time::now_iso();
+
+    // Get the meeting topic for the memory title
+    let topic: String = conn.query_row(
+        "SELECT topic FROM meeting WHERE id = ?1",
+        params![meeting_id],
+        |row| row.get(0),
+    )?;
+
+    // Store decision as memory
+    let memory_id = ulid::Ulid::new().to_string();
+    conn.execute(
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, created_at, accessed_at)
+         VALUES (?1, 'decision', ?2, ?3, 0.9, 'active', ?4, ?5)",
+        params![memory_id, topic, decision, now, now],
+    )?;
+
+    // Update meeting
+    let count = conn.execute(
+        "UPDATE meeting SET decision = ?1, decision_memory_id = ?2, status = 'decided', decided_at = ?3
+         WHERE id = ?4",
+        params![decision, memory_id, now, meeting_id],
+    )?;
+
+    Ok((count > 0, memory_id))
+}
+
+/// List meetings, optionally filtered by team_id and status.
+pub fn list_meetings(
+    conn: &Connection,
+    team_id: Option<&str>,
+    status: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<Value>> {
+    let mut sql = String::from(
+        "SELECT m.id, m.team_id, m.topic, m.status, m.created_at, m.decided_at,
+                (SELECT COUNT(*) FROM meeting_participant mp WHERE mp.meeting_id = m.id AND mp.status = 'responded') as responded,
+                (SELECT COUNT(*) FROM meeting_participant mp2 WHERE mp2.meeting_id = m.id) as total
+         FROM meeting m WHERE 1=1"
+    );
+    let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut idx = 1;
+
+    if let Some(tid) = team_id {
+        sql.push_str(&format!(" AND m.team_id = ?{idx}"));
+        values.push(Box::new(tid.to_string()));
+        idx += 1;
+    }
+    if let Some(st) = status {
+        sql.push_str(&format!(" AND m.status = ?{idx}"));
+        values.push(Box::new(st.to_string()));
+        idx += 1;
+    }
+
+    sql.push_str(&format!(" ORDER BY m.created_at DESC LIMIT ?{idx}"));
+    values.push(Box::new(limit as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+        values.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(params_ref.as_slice(), |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "team_id": row.get::<_, String>(1)?,
+            "topic": row.get::<_, String>(2)?,
+            "status": row.get::<_, String>(3)?,
+            "created_at": row.get::<_, String>(4)?,
+            "decided_at": row.get::<_, Option<String>>(5)?,
+            "responded": row.get::<_, i64>(6)?,
+            "total": row.get::<_, i64>(7)?,
+        }))
+    })?;
+
+    let mut meetings = Vec::new();
+    for row in rows {
+        meetings.push(row?);
+    }
+    Ok(meetings)
+}
+
+/// Get full meeting transcript including all responses and FISP messages.
+pub fn get_meeting_transcript(
+    conn: &Connection,
+    meeting_id: &str,
+) -> rusqlite::Result<Value> {
+    // Get meeting details
+    let meeting = conn.query_row(
+        "SELECT id, team_id, topic, context, status, orchestrator_session_id, synthesis, decision, decision_memory_id, created_at, decided_at
+         FROM meeting WHERE id = ?1",
+        params![meeting_id],
+        |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "team_id": row.get::<_, String>(1)?,
+                "topic": row.get::<_, String>(2)?,
+                "context": row.get::<_, Option<String>>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "orchestrator_session_id": row.get::<_, String>(5)?,
+                "synthesis": row.get::<_, Option<String>>(6)?,
+                "decision": row.get::<_, Option<String>>(7)?,
+                "decision_memory_id": row.get::<_, Option<String>>(8)?,
+                "created_at": row.get::<_, String>(9)?,
+                "decided_at": row.get::<_, Option<String>>(10)?,
+            }))
+        },
+    )?;
+
+    // Get all participants with responses
+    let mut stmt = conn.prepare(
+        "SELECT session_id, template_name, status, response, responded_at, confidence
+         FROM meeting_participant WHERE meeting_id = ?1
+         ORDER BY responded_at"
+    )?;
+    let rows = stmt.query_map(params![meeting_id], |row| {
+        Ok(serde_json::json!({
+            "session_id": row.get::<_, String>(0)?,
+            "template_name": row.get::<_, String>(1)?,
+            "status": row.get::<_, String>(2)?,
+            "response": row.get::<_, Option<String>>(3)?,
+            "responded_at": row.get::<_, Option<String>>(4)?,
+            "confidence": row.get::<_, Option<f64>>(5)?,
+        }))
+    })?;
+    let mut participants = Vec::new();
+    for row in rows {
+        participants.push(row?);
+    }
+
+    // Get FISP messages for this meeting
+    let mut msg_stmt = conn.prepare(
+        "SELECT id, from_session, to_session, kind, topic, parts, status, created_at
+         FROM session_message WHERE meeting_id = ?1
+         ORDER BY created_at"
+    )?;
+    let msg_rows = msg_stmt.query_map(params![meeting_id], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "from_session": row.get::<_, String>(1)?,
+            "to_session": row.get::<_, String>(2)?,
+            "kind": row.get::<_, String>(3)?,
+            "topic": row.get::<_, String>(4)?,
+            "parts": row.get::<_, String>(5)?,
+            "status": row.get::<_, String>(6)?,
+            "created_at": row.get::<_, String>(7)?,
+        }))
+    })?;
+    let mut messages = Vec::new();
+    for row in msg_rows {
+        messages.push(row?);
+    }
+
+    Ok(serde_json::json!({
+        "meeting": meeting,
+        "participants": participants,
+        "messages": messages,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,5 +1169,331 @@ mod tests {
         assert_eq!(status["purpose"], "testing");
         assert_eq!(status["member_count"], 1);
         assert_eq!(status["active_agents"], 1);
+    }
+
+    // ── Meeting Protocol Tests ──
+
+    fn setup_meeting_env(conn: &Connection) -> (String, String, String, String) {
+        // Create templates
+        let t1 = make_template("CTO");
+        let t2 = make_template("CMO");
+        create_agent_template(conn, &t1).unwrap();
+        create_agent_template(conn, &t2).unwrap();
+
+        // Create team
+        let team_id = create_team(conn, "leadership", Some("agent"), None, None).unwrap();
+
+        // Spawn agents (creates sessions)
+        spawn_agent(conn, "CTO", "s-cto-m", Some("forge"), Some("leadership")).unwrap();
+        spawn_agent(conn, "CMO", "s-cmo-m", Some("forge"), Some("leadership")).unwrap();
+
+        // Create orchestrator session
+        crate::sessions::register_session(conn, "s-orch-m", "orchestrator", Some("forge"), None, None, None).unwrap();
+
+        (team_id, "s-orch-m".into(), "s-cto-m".into(), "s-cmo-m".into())
+    }
+
+    #[test]
+    fn test_create_meeting() {
+        let conn = setup();
+        let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, count) = create_meeting(
+            &conn, &team_id, "Architecture review", Some("Q2 planning"),
+            &orch, &[cto, cmo],
+        ).unwrap();
+
+        assert!(!meeting_id.is_empty());
+        assert_eq!(count, 2);
+
+        // Verify participants in pending status
+        let pending: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM meeting_participant WHERE meeting_id = ?1 AND status = 'pending'",
+            params![meeting_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(pending, 2);
+
+        // Verify meeting status is 'collecting'
+        let status: String = conn.query_row(
+            "SELECT status FROM meeting WHERE id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "collecting");
+    }
+
+    #[test]
+    fn test_meeting_status() {
+        let conn = setup();
+        let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, _) = create_meeting(
+            &conn, &team_id, "Status check", None, &orch, &[cto, cmo],
+        ).unwrap();
+
+        let (meeting, participants) = get_meeting_status(&conn, &meeting_id).unwrap();
+        assert_eq!(meeting["topic"], "Status check");
+        assert_eq!(meeting["status"], "collecting");
+        assert_eq!(participants.len(), 2);
+        assert_eq!(participants[0]["status"], "pending");
+        assert_eq!(participants[1]["status"], "pending");
+    }
+
+    #[test]
+    fn test_record_response() {
+        let conn = setup();
+        let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, _) = create_meeting(
+            &conn, &team_id, "Response test", None, &orch, &[cto.clone()],
+        ).unwrap();
+
+        // Record response
+        let all_responded = record_meeting_response(
+            &conn, &meeting_id, &cto, "I think we should use Rust", Some(0.95),
+        ).unwrap();
+
+        // Only one participant, so all responded
+        assert!(all_responded);
+
+        // Verify participant status changed
+        let status: String = conn.query_row(
+            "SELECT status FROM meeting_participant WHERE meeting_id = ?1 AND session_id = ?2",
+            params![meeting_id, cto],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "responded");
+    }
+
+    #[test]
+    fn test_all_responded() {
+        let conn = setup();
+        let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, _) = create_meeting(
+            &conn, &team_id, "All respond test", None, &orch, &[cto.clone(), cmo.clone()],
+        ).unwrap();
+
+        // First response — not all responded yet
+        let all = record_meeting_response(&conn, &meeting_id, &cto, "Yes", Some(0.9)).unwrap();
+        assert!(!all);
+
+        // Second response — all responded
+        let all = record_meeting_response(&conn, &meeting_id, &cmo, "Agreed", Some(0.85)).unwrap();
+        assert!(all);
+    }
+
+    #[test]
+    fn test_partial_response() {
+        let conn = setup();
+        let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, _) = create_meeting(
+            &conn, &team_id, "Partial test", None, &orch, &[cto.clone(), cmo],
+        ).unwrap();
+
+        // Only CTO responds
+        let all = record_meeting_response(&conn, &meeting_id, &cto, "Agree", None).unwrap();
+        assert!(!all, "not all responded yet");
+
+        // Only 1 response should be returned
+        let responses = get_meeting_responses(&conn, &meeting_id).unwrap();
+        assert_eq!(responses.len(), 1);
+    }
+
+    #[test]
+    fn test_synthesize_meeting() {
+        let conn = setup();
+        let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, _) = create_meeting(
+            &conn, &team_id, "Synthesis test", None, &orch, &[cto],
+        ).unwrap();
+
+        let updated = synthesize_meeting(&conn, &meeting_id, "Everyone agrees on Rust").unwrap();
+        assert!(updated);
+
+        // Verify status changed
+        let status: String = conn.query_row(
+            "SELECT status FROM meeting WHERE id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "synthesizing");
+
+        // Verify synthesis stored
+        let synthesis: String = conn.query_row(
+            "SELECT synthesis FROM meeting WHERE id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(synthesis, "Everyone agrees on Rust");
+    }
+
+    #[test]
+    fn test_decide_meeting() {
+        let conn = setup();
+        let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, _) = create_meeting(
+            &conn, &team_id, "Decision test", None, &orch, &[cto],
+        ).unwrap();
+
+        let (updated, memory_id) = decide_meeting(&conn, &meeting_id, "We will use Rust").unwrap();
+        assert!(updated);
+        assert!(!memory_id.is_empty());
+
+        // Verify status changed
+        let status: String = conn.query_row(
+            "SELECT status FROM meeting WHERE id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "decided");
+
+        // Verify decision_memory_id is set
+        let stored_mid: String = conn.query_row(
+            "SELECT decision_memory_id FROM meeting WHERE id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored_mid, memory_id);
+    }
+
+    #[test]
+    fn test_decide_creates_memory() {
+        let conn = setup();
+        let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, _) = create_meeting(
+            &conn, &team_id, "Memory check", None, &orch, &[cto],
+        ).unwrap();
+
+        let (_, memory_id) = decide_meeting(&conn, &meeting_id, "Rust is the way").unwrap();
+
+        // Verify memory record exists
+        let title: String = conn.query_row(
+            "SELECT title FROM memory WHERE id = ?1",
+            params![memory_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(title, "Memory check");
+
+        let content: String = conn.query_row(
+            "SELECT content FROM memory WHERE id = ?1",
+            params![memory_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(content, "Rust is the way");
+
+        let mem_type: String = conn.query_row(
+            "SELECT memory_type FROM memory WHERE id = ?1",
+            params![memory_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(mem_type, "decision");
+    }
+
+    #[test]
+    fn test_list_meetings() {
+        let conn = setup();
+        let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
+
+        create_meeting(&conn, &team_id, "Meeting 1", None, &orch, &[cto.clone()]).unwrap();
+        create_meeting(&conn, &team_id, "Meeting 2", None, &orch, &[cmo.clone()]).unwrap();
+
+        // List all meetings for team
+        let meetings = list_meetings(&conn, Some(&team_id), None, 50).unwrap();
+        assert_eq!(meetings.len(), 2);
+
+        // List by status
+        let collecting = list_meetings(&conn, Some(&team_id), Some("collecting"), 50).unwrap();
+        assert_eq!(collecting.len(), 2);
+
+        let decided = list_meetings(&conn, Some(&team_id), Some("decided"), 50).unwrap();
+        assert_eq!(decided.len(), 0);
+    }
+
+    #[test]
+    fn test_meeting_transcript() {
+        let conn = setup();
+        let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, _) = create_meeting(
+            &conn, &team_id, "Transcript test", Some("Full context"), &orch, &[cto.clone(), cmo.clone()],
+        ).unwrap();
+
+        // Record responses
+        record_meeting_response(&conn, &meeting_id, &cto, "CTO says yes", Some(0.9)).unwrap();
+        record_meeting_response(&conn, &meeting_id, &cmo, "CMO agrees", Some(0.85)).unwrap();
+
+        // Synthesize and decide
+        synthesize_meeting(&conn, &meeting_id, "Unanimous agreement").unwrap();
+        decide_meeting(&conn, &meeting_id, "Approved for Q2").unwrap();
+
+        // Get transcript
+        let transcript = get_meeting_transcript(&conn, &meeting_id).unwrap();
+        assert_eq!(transcript["meeting"]["topic"], "Transcript test");
+        assert_eq!(transcript["meeting"]["context"], "Full context");
+        assert_eq!(transcript["meeting"]["synthesis"], "Unanimous agreement");
+        assert_eq!(transcript["meeting"]["decision"], "Approved for Q2");
+        assert_eq!(transcript["participants"].as_array().unwrap().len(), 2);
+        // FISP messages should be present (one per participant from create_meeting)
+        assert!(transcript["messages"].as_array().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn test_state_machine_guard() {
+        let conn = setup();
+        let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
+
+        let (meeting_id, _) = create_meeting(
+            &conn, &team_id, "Guard test", None, &orch, &[cto],
+        ).unwrap();
+
+        // Decide (changes status to 'decided')
+        decide_meeting(&conn, &meeting_id, "Done").unwrap();
+
+        // Cannot synthesize a decided meeting (status must be 'collecting' or 'timed_out')
+        let updated = synthesize_meeting(&conn, &meeting_id, "Late synthesis").unwrap();
+        assert!(!updated, "should not be able to synthesize a decided meeting");
+    }
+
+    #[test]
+    fn test_cross_team_meeting() {
+        let conn = setup();
+        // Create two teams
+        let team1_id = create_team(&conn, "team-alpha", Some("agent"), None, None).unwrap();
+        let _team2_id = create_team(&conn, "team-beta", Some("agent"), None, None).unwrap();
+
+        // Create templates and spawn agents into different teams
+        let t1 = make_template("CTO");
+        let t2 = make_template("CMO");
+        create_agent_template(&conn, &t1).unwrap();
+        create_agent_template(&conn, &t2).unwrap();
+
+        spawn_agent(&conn, "CTO", "s-alpha-cto", Some("forge"), Some("team-alpha")).unwrap();
+        spawn_agent(&conn, "CMO", "s-beta-cmo", Some("forge"), Some("team-beta")).unwrap();
+
+        // Create orchestrator
+        crate::sessions::register_session(&conn, "s-cross-orch", "orchestrator", Some("forge"), None, None, None).unwrap();
+
+        // Create meeting under team1 but with participant from team2
+        let (meeting_id, count) = create_meeting(
+            &conn, &team1_id, "Cross-team sync", None,
+            "s-cross-orch", &["s-alpha-cto".into(), "s-beta-cmo".into()],
+        ).unwrap();
+
+        assert_eq!(count, 2);
+
+        // Both can respond
+        let _ = record_meeting_response(&conn, &meeting_id, "s-alpha-cto", "Alpha input", Some(0.9)).unwrap();
+        let all = record_meeting_response(&conn, &meeting_id, "s-beta-cmo", "Beta input", Some(0.85)).unwrap();
+        assert!(all, "both participants responded");
+
+        // Responses from both teams
+        let responses = get_meeting_responses(&conn, &meeting_id).unwrap();
+        assert_eq!(responses.len(), 2);
     }
 }

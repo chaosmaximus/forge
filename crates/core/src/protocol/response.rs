@@ -468,6 +468,23 @@ pub enum ResponseData {
     /// Full team status data
     TeamStatusData { team: serde_json::Value },
 
+    // ── Meeting Protocol ──
+
+    /// A meeting was created
+    MeetingCreated { meeting_id: String, participant_count: usize },
+    /// Meeting status + participant statuses
+    MeetingStatusData { meeting: serde_json::Value, participants: Vec<serde_json::Value> },
+    /// List of participant responses for a meeting
+    MeetingResponseList { responses: Vec<serde_json::Value>, count: usize },
+    /// Synthesis was stored
+    MeetingSynthesized { meeting_id: String },
+    /// Decision was recorded and stored as memory
+    MeetingDecided { meeting_id: String, decision_memory_id: String },
+    /// List of meetings
+    MeetingList { meetings: Vec<serde_json::Value>, count: usize },
+    /// Full meeting transcript
+    MeetingTranscriptData { transcript: serde_json::Value },
+
     Shutdown,
 }
 

@@ -1832,7 +1832,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
 
             let parts_json = serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string());
-            match crate::sessions::send_message(&state.conn, from, &to, &kind, &topic, &parts_json, project.as_deref(), timeout_secs) {
+            match crate::sessions::send_message(&state.conn, from, &to, &kind, &topic, &parts_json, project.as_deref(), timeout_secs, None) {
                 Ok(id) => {
                     crate::events::emit(&state.events, "session_message", serde_json::json!({
                         "id": &id, "from": from, "to": &to, "kind": &kind, "topic": &topic,
@@ -2470,6 +2470,88 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             match crate::teams::team_status(&state.conn, &team_name) {
                 Ok(team) => Response::Ok { data: ResponseData::TeamStatusData { team } },
                 Err(e) => Response::Error { message: format!("team_status failed: {e}") },
+            }
+        }
+
+        // ── Meeting Protocol ──
+
+        Request::CreateMeeting { team_id, topic, context, orchestrator_session_id, participant_session_ids } => {
+            match crate::teams::create_meeting(
+                &state.conn, &team_id, &topic, context.as_deref(),
+                &orchestrator_session_id, &participant_session_ids,
+            ) {
+                Ok((meeting_id, participant_count)) => {
+                    crate::events::emit(&state.events, "meeting_created", serde_json::json!({
+                        "meeting_id": meeting_id, "team_id": team_id, "topic": topic, "participant_count": participant_count,
+                    }));
+                    Response::Ok { data: ResponseData::MeetingCreated { meeting_id, participant_count } }
+                }
+                Err(e) => Response::Error { message: format!("create_meeting failed: {e}") },
+            }
+        }
+
+        Request::MeetingStatus { meeting_id } => {
+            match crate::teams::get_meeting_status(&state.conn, &meeting_id) {
+                Ok((meeting, participants)) => {
+                    Response::Ok { data: ResponseData::MeetingStatusData { meeting, participants } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_status failed: {e}") },
+            }
+        }
+
+        Request::MeetingResponses { meeting_id } => {
+            match crate::teams::get_meeting_responses(&state.conn, &meeting_id) {
+                Ok(responses) => {
+                    let count = responses.len();
+                    Response::Ok { data: ResponseData::MeetingResponseList { responses, count } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_responses failed: {e}") },
+            }
+        }
+
+        Request::MeetingSynthesize { meeting_id, synthesis } => {
+            match crate::teams::synthesize_meeting(&state.conn, &meeting_id, &synthesis) {
+                Ok(_updated) => {
+                    Response::Ok { data: ResponseData::MeetingSynthesized { meeting_id } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_synthesize failed: {e}") },
+            }
+        }
+
+        Request::MeetingDecide { meeting_id, decision } => {
+            match crate::teams::decide_meeting(&state.conn, &meeting_id, &decision) {
+                Ok((_, decision_memory_id)) => {
+                    let summary = if decision.len() > 80 {
+                        format!("{}...", &decision[..80])
+                    } else {
+                        decision
+                    };
+                    crate::events::emit(&state.events, "meeting_decided", serde_json::json!({
+                        "meeting_id": meeting_id, "decision_summary": summary,
+                    }));
+                    Response::Ok { data: ResponseData::MeetingDecided { meeting_id, decision_memory_id } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_decide failed: {e}") },
+            }
+        }
+
+        Request::ListMeetings { team_id, status, limit } => {
+            let lim = limit.unwrap_or(50).min(200);
+            match crate::teams::list_meetings(&state.conn, team_id.as_deref(), status.as_deref(), lim) {
+                Ok(meetings) => {
+                    let count = meetings.len();
+                    Response::Ok { data: ResponseData::MeetingList { meetings, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_meetings failed: {e}") },
+            }
+        }
+
+        Request::MeetingTranscript { meeting_id } => {
+            match crate::teams::get_meeting_transcript(&state.conn, &meeting_id) {
+                Ok(transcript) => {
+                    Response::Ok { data: ResponseData::MeetingTranscriptData { transcript } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_transcript failed: {e}") },
             }
         }
 

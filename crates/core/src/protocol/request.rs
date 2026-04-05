@@ -460,5 +460,28 @@ pub enum Request {
         team_name: String,
     },
 
+    // ── Meeting Protocol ──
+
+    /// Create a meeting — sends FISP messages to all participants
+    CreateMeeting {
+        team_id: String,
+        topic: String,
+        context: Option<String>,
+        orchestrator_session_id: String,
+        participant_session_ids: Vec<String>,
+    },
+    /// Get meeting status + participant response statuses
+    MeetingStatus { meeting_id: String },
+    /// Get all participant responses for a meeting
+    MeetingResponses { meeting_id: String },
+    /// Store orchestrator synthesis
+    MeetingSynthesize { meeting_id: String, synthesis: String },
+    /// Record decision, store as memory, close meeting
+    MeetingDecide { meeting_id: String, decision: String },
+    /// List meetings for a team
+    ListMeetings { team_id: Option<String>, status: Option<String>, limit: Option<usize> },
+    /// Full meeting transcript (topic + context + responses + synthesis + decision)
+    MeetingTranscript { meeting_id: String },
+
     Shutdown,
 }
