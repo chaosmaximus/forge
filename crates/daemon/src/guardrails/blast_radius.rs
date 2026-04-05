@@ -102,7 +102,9 @@ fn find_importers(conn: &Connection, file_target: &str) -> Vec<String> {
 /// Searches for edges where edge_type = 'calls' and to_id contains the file path.
 /// Returns (caller_count, calling_file_paths).
 fn find_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
-    let pattern = format!("%{file}%");
+    // Escape LIKE wildcards in file path to prevent pattern injection
+    let escaped = file.replace('%', "\\%").replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
     let sql = "
         SELECT DISTINCT from_id
         FROM edge
