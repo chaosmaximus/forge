@@ -33,6 +33,8 @@ pub struct ForgeConfig {
     pub workers: WorkerConfig,
     pub context: ContextConfig,
     pub consolidation: ConsolidationConfig,
+    #[serde(default)]
+    pub recall: RecallConfig,
 }
 
 /// Worker interval configuration — all values in seconds.
@@ -113,6 +115,70 @@ impl Default for ConsolidationConfig {
         Self {
             batch_limit: 200,
             reweave_limit: 50,
+        }
+    }
+}
+
+/// Recall ranking configuration — boost factors for memory ranking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecallConfig {
+    /// Recency boost for memories < 24h old
+    pub recency_24h_boost: f64,
+    /// Recency boost for memories < 7d old
+    pub recency_7d_boost: f64,
+    /// Access count boost threshold (high)
+    pub access_high_threshold: i64,
+    /// Access count boost factor (high)
+    pub access_high_boost: f64,
+    /// Access count boost threshold (medium)
+    pub access_medium_threshold: i64,
+    /// Access count boost factor (medium)
+    pub access_medium_boost: f64,
+    /// Domain DNA match boost factor
+    pub domain_dna_boost: f64,
+    /// Activation boost on recall
+    pub activation_on_recall: f64,
+    /// Activation boost on context inclusion
+    pub activation_on_context: f64,
+    /// Prefetch session recency weights
+    pub prefetch_weights: Vec<f64>,
+}
+
+impl Default for RecallConfig {
+    fn default() -> Self {
+        Self {
+            recency_24h_boost: 1.5,
+            recency_7d_boost: 1.2,
+            access_high_threshold: 10,
+            access_high_boost: 1.3,
+            access_medium_threshold: 3,
+            access_medium_boost: 1.1,
+            domain_dna_boost: 1.3,
+            activation_on_recall: 0.3,
+            activation_on_context: 0.1,
+            prefetch_weights: vec![1.0, 0.7, 0.5],
+        }
+    }
+}
+
+impl RecallConfig {
+    pub fn validated(&self) -> Self {
+        Self {
+            recency_24h_boost: self.recency_24h_boost.clamp(1.0, 5.0),
+            recency_7d_boost: self.recency_7d_boost.clamp(1.0, 5.0),
+            access_high_threshold: self.access_high_threshold.max(1),
+            access_high_boost: self.access_high_boost.clamp(1.0, 5.0),
+            access_medium_threshold: self.access_medium_threshold.max(1),
+            access_medium_boost: self.access_medium_boost.clamp(1.0, 5.0),
+            domain_dna_boost: self.domain_dna_boost.clamp(1.0, 5.0),
+            activation_on_recall: self.activation_on_recall.clamp(0.0, 1.0),
+            activation_on_context: self.activation_on_context.clamp(0.0, 1.0),
+            prefetch_weights: if self.prefetch_weights.is_empty() {
+                vec![1.0, 0.7, 0.5]
+            } else {
+                self.prefetch_weights.clone()
+            },
         }
     }
 }

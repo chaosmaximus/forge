@@ -696,6 +696,58 @@ pub async fn list_permissions() {
     }
 }
 
+// ── Knowledge Intelligence ──
+
+pub async fn list_entities(project: Option<String>, limit: usize) {
+    let req = Request::ListEntities { project, limit: Some(limit) };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::EntityList { entities, count } }) => {
+            if count == 0 {
+                println!("No entities detected yet. Run forge-next consolidate to detect entities from memory titles.");
+                return;
+            }
+            println!("{count} entity(ies):\n");
+            for e in &entities {
+                println!("  {} ({}) — {} mentions, first seen {}",
+                    e.name, e.entity_type, e.mention_count,
+                    &e.first_seen[..10.min(e.first_seen.len())]);
+            }
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+pub async fn context_trace(agent: String, project: Option<String>) {
+    let req = Request::CompileContextTrace { agent: Some(agent), project };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::ContextTrace {
+            considered, included, excluded, budget_total, budget_used, ..
+        } }) => {
+            println!("Context Compilation Trace");
+            println!("Budget: {budget_used}/{budget_total} chars\n");
+            println!("INCLUDED ({}):", included.len());
+            for t in &included {
+                println!("  [{}] {} (conf={:.2}, activation={:.2}) — {}",
+                    t.memory_type, &t.title[..60.min(t.title.len())],
+                    t.confidence, t.activation_level, t.reason);
+            }
+            if !excluded.is_empty() {
+                println!("\nEXCLUDED ({}):", excluded.len());
+                for t in &excluded {
+                    println!("  [{}] {} — {}",
+                        t.memory_type, &t.title[..60.min(t.title.len())], t.reason);
+                }
+            }
+            println!("\nTotal considered: {}", considered.len());
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
 /// Run proactive checks on a file or show all active diagnostics.
 pub async fn verify(file: Option<String>) {
     let req = Request::Verify { file: file.clone() };

@@ -274,6 +274,25 @@ enum Commands {
     #[command(name = "list-permissions")]
     ListPermissions,
 
+    // ── Knowledge Intelligence ──
+
+    /// List detected entities (recurring concepts in project memories)
+    #[command(name = "entities")]
+    Entities {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+    /// Show context compilation trace (which memories included/excluded and why)
+    #[command(name = "context-trace")]
+    ContextTrace {
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+
     /// Run proactive checks on a file or show all active diagnostics
     Verify {
         /// File to check (omit to show all active diagnostics)
@@ -542,6 +561,12 @@ async fn main() {
         }
         Commands::ListPermissions => {
             commands::system::list_permissions().await;
+        }
+        Commands::Entities { project, limit } => {
+            commands::system::list_entities(project, limit).await;
+        }
+        Commands::ContextTrace { agent, project } => {
+            commands::system::context_trace(agent, project).await;
         }
         Commands::CompileContext { agent, project, static_only } => {
             commands::manas::compile_context(agent, project, static_only).await;
