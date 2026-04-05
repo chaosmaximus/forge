@@ -69,6 +69,8 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::MeetingResponses { .. }
             | Request::ListMeetings { .. }
             | Request::MeetingTranscript { .. }
+            | Request::ListNotifications { .. }
+            // NOTE: AckNotification, DismissNotification, ActOnNotification are writes
             // NOTE: DetectReality is NOT read-only — it may create a reality record
             // NOTE: CreateMeeting, MeetingSynthesize, MeetingDecide are writes
             // NOTE: ForceIndex is NOT read-only — it triggers indexing
