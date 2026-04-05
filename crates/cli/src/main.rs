@@ -419,6 +419,62 @@ enum Commands {
         #[command(subcommand)]
         action: ServiceAction,
     },
+
+    // ── Agent Teams ──
+
+    /// Manage agent templates
+    #[command(name = "agent-template")]
+    AgentTemplate {
+        #[command(subcommand)]
+        action: AgentTemplateAction,
+    },
+
+    /// Spawn an agent from a template
+    #[command(name = "agent")]
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+
+    /// List active agents
+    #[command(name = "agents")]
+    Agents {
+        /// Filter by team
+        #[arg(long)]
+        team: Option<String>,
+    },
+
+    /// Update an agent's status
+    #[command(name = "agent-status")]
+    AgentStatus {
+        /// Session ID of the agent
+        #[arg(long)]
+        session: String,
+        /// New status (idle, thinking, responding, in_meeting, error)
+        #[arg(long)]
+        status: String,
+        /// Current task description
+        #[arg(long)]
+        task: Option<String>,
+    },
+
+    // ── Teams ──
+
+    /// Manage teams
+    #[command(name = "team")]
+    Team {
+        #[command(subcommand)]
+        action: TeamAction,
+    },
+
+    // ── Meetings ──
+
+    /// Manage meetings
+    #[command(name = "meeting")]
+    Meeting {
+        #[command(subcommand)]
+        action: MeetingAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -498,6 +554,188 @@ pub enum ServiceAction {
     Status,
     /// Uninstall the daemon service
     Uninstall,
+}
+
+#[derive(Subcommand, Debug)]
+enum AgentTemplateAction {
+    /// Create a reusable agent template
+    Create {
+        /// Template name (e.g., CTO, CMO)
+        #[arg(long)]
+        name: String,
+        /// Description of the agent's role
+        #[arg(long)]
+        description: String,
+        /// Agent type (e.g., claude-code, cline)
+        #[arg(long, name = "agent-type")]
+        agent_type: String,
+        /// System context / prompt
+        #[arg(long, name = "system-context")]
+        system_context: Option<String>,
+        /// Identity facets as JSON array
+        #[arg(long, name = "identity-facets")]
+        identity_facets: Option<String>,
+        /// Config overrides as JSON object
+        #[arg(long, name = "config-overrides")]
+        config_overrides: Option<String>,
+        /// Knowledge domains as JSON array
+        #[arg(long, name = "knowledge-domains")]
+        knowledge_domains: Option<String>,
+        /// Decision style (analytical, intuitive, consensus, directive)
+        #[arg(long, name = "decision-style")]
+        decision_style: Option<String>,
+    },
+    /// List agent templates
+    List {
+        /// Filter by organization ID
+        #[arg(long)]
+        org: Option<String>,
+    },
+    /// Get a single agent template
+    Get {
+        /// Template name
+        #[arg(long)]
+        name: Option<String>,
+        /// Template ID
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Delete an agent template
+    Delete {
+        /// Template ID to delete
+        #[arg(long)]
+        id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AgentAction {
+    /// Spawn an agent from a template
+    Spawn {
+        /// Template name to spawn from
+        #[arg(long)]
+        template: String,
+        /// Session ID for the new agent
+        #[arg(long, name = "session-id")]
+        session_id: String,
+        /// Project scope
+        #[arg(long)]
+        project: Option<String>,
+        /// Team to join
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Retire an agent (soft delete)
+    Retire {
+        /// Session ID of the agent to retire
+        #[arg(long)]
+        session: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TeamAction {
+    /// Create a team
+    Create {
+        /// Team name
+        #[arg(long)]
+        name: String,
+        /// Team type: human, agent, or mixed
+        #[arg(long = "type")]
+        team_type: Option<String>,
+        /// Purpose of the team
+        #[arg(long)]
+        purpose: Option<String>,
+    },
+    /// List team members
+    Members {
+        /// Team name
+        #[arg(long)]
+        name: String,
+    },
+    /// Set the orchestrator session for a team
+    #[command(name = "set-orchestrator")]
+    SetOrchestrator {
+        /// Team name
+        #[arg(long)]
+        name: String,
+        /// Orchestrator session ID
+        #[arg(long)]
+        session: String,
+    },
+    /// Show full team status
+    Status {
+        /// Team name
+        #[arg(long)]
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MeetingAction {
+    /// Create a meeting
+    Create {
+        /// Team ID
+        #[arg(long)]
+        team: String,
+        /// Meeting topic
+        #[arg(long)]
+        topic: String,
+        /// Additional context
+        #[arg(long)]
+        context: Option<String>,
+        /// Orchestrator session ID
+        #[arg(long)]
+        orchestrator: String,
+        /// Participant session IDs (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        participants: Vec<String>,
+    },
+    /// Get meeting status
+    Status {
+        /// Meeting ID
+        #[arg(long)]
+        id: String,
+    },
+    /// Get participant responses
+    Responses {
+        /// Meeting ID
+        #[arg(long)]
+        id: String,
+    },
+    /// Store orchestrator synthesis
+    Synthesize {
+        /// Meeting ID
+        #[arg(long)]
+        id: String,
+        /// Synthesis text
+        #[arg(long)]
+        synthesis: String,
+    },
+    /// Record decision and close meeting
+    Decide {
+        /// Meeting ID
+        #[arg(long)]
+        id: String,
+        /// Decision text
+        #[arg(long)]
+        decision: String,
+    },
+    /// List meetings
+    List {
+        /// Filter by team ID
+        #[arg(long)]
+        team: Option<String>,
+        /// Filter by status
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Show full meeting transcript
+    Transcript {
+        /// Meeting ID
+        #[arg(long)]
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -761,6 +999,79 @@ async fn main() {
         Commands::Stats { hours } => {
             commands::system::stats(hours).await;
         }
+
+        // ── Agent Teams ──
+        Commands::AgentTemplate { action } => match action {
+            AgentTemplateAction::Create {
+                name, description, agent_type, system_context,
+                identity_facets, config_overrides, knowledge_domains, decision_style,
+            } => {
+                commands::teams::create_agent_template(
+                    name, description, agent_type, system_context,
+                    identity_facets, config_overrides, knowledge_domains, decision_style,
+                ).await;
+            }
+            AgentTemplateAction::List { org } => {
+                commands::teams::list_agent_templates(org).await;
+            }
+            AgentTemplateAction::Get { name, id } => {
+                commands::teams::get_agent_template(id, name).await;
+            }
+            AgentTemplateAction::Delete { id } => {
+                commands::teams::delete_agent_template(id).await;
+            }
+        },
+        Commands::Agent { action } => match action {
+            AgentAction::Spawn { template, session_id, project, team } => {
+                commands::teams::spawn_agent(template, session_id, project, team).await;
+            }
+            AgentAction::Retire { session } => {
+                commands::teams::retire_agent(session).await;
+            }
+        },
+        Commands::Agents { team } => {
+            commands::teams::list_agents(team).await;
+        }
+        Commands::AgentStatus { session, status, task } => {
+            commands::teams::update_agent_status(session, status, task).await;
+        }
+        Commands::Team { action } => match action {
+            TeamAction::Create { name, team_type, purpose } => {
+                commands::teams::create_team(name, team_type, purpose).await;
+            }
+            TeamAction::Members { name } => {
+                commands::teams::list_team_members(name).await;
+            }
+            TeamAction::SetOrchestrator { name, session } => {
+                commands::teams::set_team_orchestrator(name, session).await;
+            }
+            TeamAction::Status { name } => {
+                commands::teams::team_status(name).await;
+            }
+        },
+        Commands::Meeting { action } => match action {
+            MeetingAction::Create { team, topic, context, orchestrator, participants } => {
+                commands::teams::create_meeting(team, topic, context, orchestrator, participants).await;
+            }
+            MeetingAction::Status { id } => {
+                commands::teams::meeting_status(id).await;
+            }
+            MeetingAction::Responses { id } => {
+                commands::teams::meeting_responses(id).await;
+            }
+            MeetingAction::Synthesize { id, synthesis } => {
+                commands::teams::meeting_synthesize(id, synthesis).await;
+            }
+            MeetingAction::Decide { id, decision } => {
+                commands::teams::meeting_decide(id, decision).await;
+            }
+            MeetingAction::List { team, status } => {
+                commands::teams::list_meetings(team, status).await;
+            }
+            MeetingAction::Transcript { id } => {
+                commands::teams::meeting_transcript(id).await;
+            }
+        },
     }
 }
 
@@ -936,6 +1247,387 @@ mod tests {
         match cli.unwrap().command {
             Commands::ForceIndex => {}
             other => panic!("expected ForceIndex, got {:?}", other),
+        }
+    }
+
+    // ── Agent Template tests ──
+
+    #[test]
+    fn test_agent_template_create_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "agent-template", "create",
+            "--name", "CTO",
+            "--description", "Chief Technology Officer",
+            "--agent-type", "claude-code",
+            "--system-context", "You are the CTO",
+            "--decision-style", "analytical",
+        ]);
+        assert!(cli.is_ok(), "agent-template create should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::AgentTemplate { action } => match action {
+                AgentTemplateAction::Create { name, description, agent_type, system_context, decision_style, .. } => {
+                    assert_eq!(name, "CTO");
+                    assert_eq!(description, "Chief Technology Officer");
+                    assert_eq!(agent_type, "claude-code");
+                    assert_eq!(system_context.as_deref(), Some("You are the CTO"));
+                    assert_eq!(decision_style.as_deref(), Some("analytical"));
+                }
+                other => panic!("expected Create, got {:?}", other),
+            },
+            other => panic!("expected AgentTemplate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_agent_template_list_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "agent-template", "list"]);
+        assert!(cli.is_ok(), "agent-template list should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::AgentTemplate { action } => match action {
+                AgentTemplateAction::List { org } => {
+                    assert!(org.is_none());
+                }
+                other => panic!("expected List, got {:?}", other),
+            },
+            other => panic!("expected AgentTemplate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_agent_template_get_by_name_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "agent-template", "get", "--name", "CTO"]);
+        assert!(cli.is_ok(), "agent-template get should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::AgentTemplate { action } => match action {
+                AgentTemplateAction::Get { name, id } => {
+                    assert_eq!(name.as_deref(), Some("CTO"));
+                    assert!(id.is_none());
+                }
+                other => panic!("expected Get, got {:?}", other),
+            },
+            other => panic!("expected AgentTemplate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_agent_template_delete_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "agent-template", "delete", "--id", "01KNF123"]);
+        assert!(cli.is_ok(), "agent-template delete should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::AgentTemplate { action } => match action {
+                AgentTemplateAction::Delete { id } => {
+                    assert_eq!(id, "01KNF123");
+                }
+                other => panic!("expected Delete, got {:?}", other),
+            },
+            other => panic!("expected AgentTemplate, got {:?}", other),
+        }
+    }
+
+    // ── Agent tests ──
+
+    #[test]
+    fn test_agent_spawn_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "agent", "spawn",
+            "--template", "CTO",
+            "--session-id", "cto-board",
+            "--project", "forge",
+            "--team", "board",
+        ]);
+        assert!(cli.is_ok(), "agent spawn should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Agent { action } => match action {
+                AgentAction::Spawn { template, session_id, project, team } => {
+                    assert_eq!(template, "CTO");
+                    assert_eq!(session_id, "cto-board");
+                    assert_eq!(project.as_deref(), Some("forge"));
+                    assert_eq!(team.as_deref(), Some("board"));
+                }
+                other => panic!("expected Spawn, got {:?}", other),
+            },
+            other => panic!("expected Agent, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_agent_retire_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "agent", "retire", "--session", "cto-board"]);
+        assert!(cli.is_ok(), "agent retire should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Agent { action } => match action {
+                AgentAction::Retire { session } => {
+                    assert_eq!(session, "cto-board");
+                }
+                other => panic!("expected Retire, got {:?}", other),
+            },
+            other => panic!("expected Agent, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_agents_list_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "agents", "--team", "board"]);
+        assert!(cli.is_ok(), "agents should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Agents { team } => {
+                assert_eq!(team.as_deref(), Some("board"));
+            }
+            other => panic!("expected Agents, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_agents_list_no_filter_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "agents"]);
+        assert!(cli.is_ok(), "agents without filter should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Agents { team } => {
+                assert!(team.is_none());
+            }
+            other => panic!("expected Agents, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_agent_status_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "agent-status",
+            "--session", "cto-board",
+            "--status", "thinking",
+            "--task", "reviewing architecture",
+        ]);
+        assert!(cli.is_ok(), "agent-status should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::AgentStatus { session, status, task } => {
+                assert_eq!(session, "cto-board");
+                assert_eq!(status, "thinking");
+                assert_eq!(task.as_deref(), Some("reviewing architecture"));
+            }
+            other => panic!("expected AgentStatus, got {:?}", other),
+        }
+    }
+
+    // ── Team tests ──
+
+    #[test]
+    fn test_team_create_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "team", "create",
+            "--name", "board",
+            "--type", "agent",
+            "--purpose", "Strategic decisions",
+        ]);
+        assert!(cli.is_ok(), "team create should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::Create { name, team_type, purpose } => {
+                    assert_eq!(name, "board");
+                    assert_eq!(team_type.as_deref(), Some("agent"));
+                    assert_eq!(purpose.as_deref(), Some("Strategic decisions"));
+                }
+                other => panic!("expected Create, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_members_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "team", "members", "--name", "board"]);
+        assert!(cli.is_ok(), "team members should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::Members { name } => {
+                    assert_eq!(name, "board");
+                }
+                other => panic!("expected Members, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_set_orchestrator_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "team", "set-orchestrator",
+            "--name", "board",
+            "--session", "cto-board",
+        ]);
+        assert!(cli.is_ok(), "team set-orchestrator should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::SetOrchestrator { name, session } => {
+                    assert_eq!(name, "board");
+                    assert_eq!(session, "cto-board");
+                }
+                other => panic!("expected SetOrchestrator, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_status_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "team", "status", "--name", "board"]);
+        assert!(cli.is_ok(), "team status should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::Status { name } => {
+                    assert_eq!(name, "board");
+                }
+                other => panic!("expected Status, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
+    }
+
+    // ── Meeting tests ──
+
+    #[test]
+    fn test_meeting_create_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "meeting", "create",
+            "--team", "team-01",
+            "--topic", "Architecture review",
+            "--context", "We need to decide on the DB",
+            "--orchestrator", "ceo-session",
+            "--participants", "cto-board,cmo-board,cfo-board",
+        ]);
+        assert!(cli.is_ok(), "meeting create should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Meeting { action } => match action {
+                MeetingAction::Create { team, topic, context, orchestrator, participants } => {
+                    assert_eq!(team, "team-01");
+                    assert_eq!(topic, "Architecture review");
+                    assert_eq!(context.as_deref(), Some("We need to decide on the DB"));
+                    assert_eq!(orchestrator, "ceo-session");
+                    assert_eq!(participants, vec!["cto-board", "cmo-board", "cfo-board"]);
+                }
+                other => panic!("expected Create, got {:?}", other),
+            },
+            other => panic!("expected Meeting, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_meeting_status_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "meeting", "status", "--id", "m-01"]);
+        assert!(cli.is_ok(), "meeting status should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Meeting { action } => match action {
+                MeetingAction::Status { id } => {
+                    assert_eq!(id, "m-01");
+                }
+                other => panic!("expected Status, got {:?}", other),
+            },
+            other => panic!("expected Meeting, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_meeting_responses_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "meeting", "responses", "--id", "m-01"]);
+        assert!(cli.is_ok(), "meeting responses should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Meeting { action } => match action {
+                MeetingAction::Responses { id } => {
+                    assert_eq!(id, "m-01");
+                }
+                other => panic!("expected Responses, got {:?}", other),
+            },
+            other => panic!("expected Meeting, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_meeting_synthesize_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "meeting", "synthesize",
+            "--id", "m-01",
+            "--synthesis", "All agreed on PostgreSQL",
+        ]);
+        assert!(cli.is_ok(), "meeting synthesize should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Meeting { action } => match action {
+                MeetingAction::Synthesize { id, synthesis } => {
+                    assert_eq!(id, "m-01");
+                    assert_eq!(synthesis, "All agreed on PostgreSQL");
+                }
+                other => panic!("expected Synthesize, got {:?}", other),
+            },
+            other => panic!("expected Meeting, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_meeting_decide_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "meeting", "decide",
+            "--id", "m-01",
+            "--decision", "Use PostgreSQL for prod",
+        ]);
+        assert!(cli.is_ok(), "meeting decide should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Meeting { action } => match action {
+                MeetingAction::Decide { id, decision } => {
+                    assert_eq!(id, "m-01");
+                    assert_eq!(decision, "Use PostgreSQL for prod");
+                }
+                other => panic!("expected Decide, got {:?}", other),
+            },
+            other => panic!("expected Meeting, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_meeting_list_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "meeting", "list",
+            "--team", "team-01",
+            "--status", "open",
+        ]);
+        assert!(cli.is_ok(), "meeting list should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Meeting { action } => match action {
+                MeetingAction::List { team, status } => {
+                    assert_eq!(team.as_deref(), Some("team-01"));
+                    assert_eq!(status.as_deref(), Some("open"));
+                }
+                other => panic!("expected List, got {:?}", other),
+            },
+            other => panic!("expected Meeting, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_meeting_list_no_filter_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "meeting", "list"]);
+        assert!(cli.is_ok(), "meeting list without filter should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Meeting { action } => match action {
+                MeetingAction::List { team, status } => {
+                    assert!(team.is_none());
+                    assert!(status.is_none());
+                }
+                other => panic!("expected List, got {:?}", other),
+            },
+            other => panic!("expected Meeting, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_meeting_transcript_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "meeting", "transcript", "--id", "m-01"]);
+        assert!(cli.is_ok(), "meeting transcript should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Meeting { action } => match action {
+                MeetingAction::Transcript { id } => {
+                    assert_eq!(id, "m-01");
+                }
+                other => panic!("expected Transcript, got {:?}", other),
+            },
+            other => panic!("expected Meeting, got {:?}", other),
         }
     }
 }
