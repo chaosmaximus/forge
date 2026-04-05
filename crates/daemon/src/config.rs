@@ -221,6 +221,34 @@ impl Default for RealityConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct MeetingConfig {
+    #[serde(default = "default_300_u64")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_10_u64")]
+    pub max_participants: u64,
+}
+
+impl Default for MeetingConfig {
+    fn default() -> Self {
+        Self { timeout_secs: 300, max_participants: 10 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    #[serde(default = "default_true")]
+    pub auto_status: bool,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self { auto_status: true }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct A2aConfig {
     /// Whether A2A inter-session messaging is enabled at all.
     pub enabled: bool,
@@ -595,6 +623,17 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         ["reality", "max_index_files"] => {
             let v: usize = value.parse().map_err(|e| format!("invalid value: {e}"))?;
             config.reality.max_index_files = v.clamp(100, 50000);
+        }
+        // Meeting
+        ["meeting", "timeout_secs"] => {
+            config.meeting.timeout_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["meeting", "max_participants"] => {
+            config.meeting.max_participants = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        // Agent
+        ["agent", "auto_status"] => {
+            config.agent.auto_status = value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         _ => return Err(format!("unknown config key: {key}")),
     }
