@@ -1,12 +1,15 @@
-// workers/consolidator.rs — Memory consolidator (9 phases)
+// workers/consolidator.rs — Memory consolidator (13 phases)
 //
 // Periodically runs: exact dedup, semantic dedup, link related, confidence decay,
 // episodic->semantic promotion, reconsolidation, embedding merge,
-// edge strengthening, and contradiction detection.
+// edge strengthening, contradiction detection, activation decay,
+// entity detection, contradiction synthesis, and knowledge gap detection.
 // Memories that fall below 0.1 effective confidence are marked "faded".
 
 use crate::db::ops;
 use crate::events;
+use forge_core::types::memory::{Memory, MemoryType};
+use forge_core::types::manas::{Perception, PerceptionKind, Severity};
 use rusqlite::Connection;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +30,8 @@ pub struct ConsolidationStats {
     pub strengthened: usize,
     pub contradictions: usize,
     pub entities_detected: usize,
+    pub synthesized: usize,
+    pub gaps_detected: usize,
 }
 
 /// Run all consolidation phases synchronously. Used by:
@@ -165,7 +170,194 @@ pub fn run_all_phases(conn: &Connection) -> ConsolidationStats {
         Err(e) => eprintln!("[consolidator] entity detection error: {e}"),
     }
 
+    // Phase 12: Contradiction synthesis — resolve detected contradictions
+    let synthesized = synthesize_contradictions(conn);
+    stats.synthesized = synthesized;
+    if synthesized > 0 {
+        eprintln!("[consolidator] synthesized {} contradiction resolutions", synthesized);
+    }
+
+    // Phase 13: Knowledge gap detection — surface concepts without entities
+    let gaps = detect_and_surface_gaps(conn);
+    stats.gaps_detected = gaps;
+    if gaps > 0 {
+        eprintln!("[consolidator] detected {} knowledge gaps", gaps);
+    }
+
     stats
+}
+
+/// Synthesize contradictions: find pairs of conflicting memories (same tags,
+/// opposite valence, both active), create a resolution memory, and mark
+/// originals as "superseded". Returns count of resolutions created.
+pub fn synthesize_contradictions(conn: &Connection) -> usize {
+    // Find pairs of active memories with opposite valence, shared tags, high intensity
+    let mut stmt = match conn.prepare(
+        "SELECT id, title, content, tags, valence, intensity, confidence, project FROM memory
+         WHERE status = 'active' AND valence IN ('positive', 'negative') AND intensity > 0.5"
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[consolidator] synthesize query error: {e}");
+            return 0;
+        }
+    };
+
+    struct ConflictRow {
+        id: String,
+        title: String,
+        content: String,
+        tags: Vec<String>,
+        valence: String,
+        confidence: f64,
+        project: Option<String>,
+    }
+
+    let rows: Vec<ConflictRow> = match stmt.query_map([], |row| {
+        let tags_json: String = row.get(3)?;
+        Ok(ConflictRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            content: row.get(2)?,
+            tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+            valence: row.get(4)?,
+            confidence: row.get(6)?,
+            project: row.get(7)?,
+        })
+    }) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            eprintln!("[consolidator] synthesize row error: {e}");
+            return 0;
+        }
+    };
+
+    let mut synthesized = 0usize;
+    // Track which memory IDs have already been superseded in this run
+    let mut superseded_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for i in 0..rows.len() {
+        if superseded_ids.contains(&rows[i].id) {
+            continue;
+        }
+        if rows[i].tags.len() < 2 {
+            continue;
+        }
+
+        for j in (i + 1)..rows.len() {
+            if superseded_ids.contains(&rows[j].id) {
+                continue;
+            }
+            if rows[j].tags.len() < 2 {
+                continue;
+            }
+
+            // Must have opposite valence
+            if rows[i].valence == rows[j].valence {
+                continue;
+            }
+
+            // Count shared tags
+            let shared: usize = rows[i].tags.iter().filter(|t| rows[j].tags.contains(t)).count();
+            if shared < 2 {
+                continue;
+            }
+
+            // Reference both conflict rows
+            let (a, b) = (&rows[i], &rows[j]);
+
+            // Create resolution memory
+            let resolution_title = format!("Resolution: {} vs {}", a.title, b.title);
+            let resolution_content = format!(
+                "Previously: {}. Later: {}. The later decision supersedes the earlier one.",
+                a.content, b.content
+            );
+
+            // Tags: union + "resolution"
+            let mut union_tags: Vec<String> = a.tags.clone();
+            for t in &b.tags {
+                if !union_tags.contains(t) {
+                    union_tags.push(t.clone());
+                }
+            }
+            union_tags.push("resolution".to_string());
+
+            let conf = a.confidence.max(b.confidence);
+
+            let resolution = Memory::new(MemoryType::Decision, &resolution_title, &resolution_content)
+                .with_tags(union_tags);
+            // Set confidence manually
+            let mut resolution = resolution;
+            resolution.confidence = conf;
+            resolution.project = a.project.clone();
+
+            if let Err(e) = ops::remember(conn, &resolution) {
+                eprintln!("[consolidator] failed to store resolution: {e}");
+                continue;
+            }
+
+            // Mark originals as superseded
+            let _ = conn.execute(
+                "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+                rusqlite::params![a.id],
+            );
+            let _ = conn.execute(
+                "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+                rusqlite::params![b.id],
+            );
+
+            superseded_ids.insert(a.id.clone());
+            superseded_ids.insert(b.id.clone());
+            synthesized += 1;
+        }
+    }
+
+    synthesized
+}
+
+/// Detect knowledge gaps and surface them as perceptions.
+/// A knowledge gap is a word appearing in 3+ memory titles but with no entity.
+/// Returns count of gap perceptions created.
+pub fn detect_and_surface_gaps(conn: &Connection) -> usize {
+    let gaps = match crate::db::manas::detect_knowledge_gaps(conn, None) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("[consolidator] knowledge gap detection error: {e}");
+            return 0;
+        }
+    };
+
+    let mut count = 0;
+    for word in &gaps {
+        // Count how many titles reference this word
+        let freq: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE status = 'active' AND LOWER(title) LIKE ?1",
+                rusqlite::params![format!("%{}%", word)],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        let perception_id = format!("gap-{}", ulid::Ulid::new());
+        let p = Perception {
+            id: perception_id,
+            kind: PerceptionKind::KnowledgeGap,
+            data: format!("Knowledge gap: no entity for '{}' despite {} references", word, freq),
+            severity: Severity::Info,
+            project: None,
+            created_at: forge_core::time::now_iso(),
+            expires_at: Some(forge_core::time::now_offset(86400)), // 24 hours
+            consumed: false,
+        };
+
+        if let Err(e) = crate::db::manas::store_perception(conn, &p) {
+            eprintln!("[consolidator] failed to store gap perception: {e}");
+            continue;
+        }
+        count += 1;
+    }
+
+    count
 }
 
 pub async fn run_consolidator(
@@ -201,6 +393,8 @@ pub async fn run_consolidator(
                     "strengthened": stats.strengthened,
                     "contradictions": stats.contradictions,
                     "entities_detected": stats.entities_detected,
+                    "synthesized": stats.synthesized,
+                    "gaps_detected": stats.gaps_detected,
                 }));
 
                 // Emit contradiction_detected event if any contradictions were found

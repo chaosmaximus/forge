@@ -273,6 +273,10 @@ pub enum ResponseData {
         strengthened: usize,
         contradictions: usize,
         entities_detected: usize,
+        #[serde(default)]
+        synthesized: usize,
+        #[serde(default)]
+        gaps_detected: usize,
     },
     ExtractionTriggered {
         files_queued: usize,

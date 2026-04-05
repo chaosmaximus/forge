@@ -64,6 +64,7 @@ fn perception_kind_str(k: &PerceptionKind) -> &'static str {
         PerceptionKind::MissingTool => "missing_tool",
         PerceptionKind::CrossSessionDecision => "cross_session_decision",
         PerceptionKind::ActionSummary => "action_summary",
+        PerceptionKind::KnowledgeGap => "knowledge_gap",
     }
 }
 
@@ -77,6 +78,7 @@ fn perception_kind_from_str(s: &str) -> PerceptionKind {
         "missing_tool" => PerceptionKind::MissingTool,
         "cross_session_decision" => PerceptionKind::CrossSessionDecision,
         "action_summary" => PerceptionKind::ActionSummary,
+        "knowledge_gap" => PerceptionKind::KnowledgeGap,
         other => {
             eprintln!("[manas] unknown perception kind '{}', defaulting to Error", other);
             PerceptionKind::Error
@@ -1712,6 +1714,91 @@ fn increment_entity_mention_with_count(
         )?;
     }
     Ok(())
+}
+
+/// Find knowledge gaps: words that appear in 3+ memory titles but have no entity.
+/// Returns the list of gap words (lowercase).
+pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqlite::Result<Vec<String>> {
+    // Stop words to exclude
+    let stop_words: std::collections::HashSet<&str> = [
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "can", "need", "must",
+        "in", "on", "at", "to", "for", "with", "by", "from", "of", "about",
+        "into", "through", "during", "before", "after", "above", "below",
+        "and", "or", "but", "not", "no", "nor", "so", "yet",
+        "it", "its", "this", "that", "these", "those", "my", "your", "his",
+        "her", "our", "their", "what", "which", "who", "whom", "how", "when",
+        "where", "why", "all", "each", "every", "both", "few", "more", "most",
+        "other", "some", "any", "such", "only", "own", "same", "than", "too",
+        "very", "just", "also", "then", "now", "here", "there", "up", "out",
+        "if", "as", "use", "used", "using", "new", "add", "set", "get",
+    ].iter().copied().collect();
+
+    // 1. Get all active memory titles for the project
+    let rows: Vec<String> = if let Some(proj) = project {
+        let mut stmt = conn.prepare(
+            "SELECT title FROM memory WHERE status = 'active' AND (project = ?1 OR project IS NULL OR project = '')"
+        )?;
+        let mapped = stmt.query_map(params![proj], |row| row.get::<_, String>(0))?;
+        mapped.filter_map(|r| r.ok()).collect()
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT title FROM memory WHERE status = 'active'"
+        )?;
+        let mapped = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        mapped.filter_map(|r| r.ok()).collect()
+    };
+
+    // 2. Tokenize into words (split whitespace, lowercase, skip stop words)
+    let mut word_freq: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for title in &rows {
+        let normalized: String = title.to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { ' ' })
+            .collect();
+
+        // Dedup within one title
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for word in normalized.split_whitespace() {
+            if word.len() < 3 || stop_words.contains(word) || word.parse::<f64>().is_ok() {
+                continue;
+            }
+            if seen.insert(word.to_string()) {
+                *word_freq.entry(word.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // 3. For words appearing 3+ times, check if entity exists
+    let mut gaps = Vec::new();
+    for (word, count) in &word_freq {
+        if *count < 3 {
+            continue;
+        }
+
+        // Check if entity exists for this word
+        let entity_exists: bool = if let Some(proj) = project {
+            conn.query_row(
+                "SELECT COUNT(*) > 0 FROM entity WHERE name = ?1 AND (project = ?2 OR project IS NULL)",
+                params![word, proj],
+                |row| row.get(0),
+            ).unwrap_or(false)
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) > 0 FROM entity WHERE name = ?1",
+                params![word],
+                |row| row.get(0),
+            ).unwrap_or(false)
+        };
+
+        if !entity_exists {
+            gaps.push(word.clone());
+        }
+    }
+
+    gaps.sort(); // deterministic ordering
+    Ok(gaps)
 }
 
 #[cfg(test)]

@@ -138,6 +138,7 @@ pub enum PerceptionKind {
     MissingTool,
     CrossSessionDecision,
     ActionSummary,
+    KnowledgeGap,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
