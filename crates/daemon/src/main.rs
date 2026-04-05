@@ -1,4 +1,4 @@
-use forge_daemon::server::{DaemonState, WriterActor, run_http_server, run_server};
+use forge_daemon::server::{DaemonState, WriterActor, run_http_server_with_listener, run_server};
 use forge_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
 use fs2::FileExt;
 use std::io::Write;
@@ -203,21 +203,34 @@ async fn main() {
     });
 
     // Conditionally spawn HTTP server alongside Unix socket when enabled.
-    // Runs as a separate tokio task — does not block socket server startup.
+    // HTTP bind failure is fatal — if the operator explicitly enabled HTTP, we must serve it.
     if config.http.enabled {
         let http_config = config.clone();
         let http_db = db_path.clone();
         let http_events = events.clone();
         let http_hlc = Arc::clone(&hlc);
         let http_write_tx = write_tx.clone();
+        let http_shutdown_rx = shutdown_tx.subscribe();
+        // Pre-bind the listener synchronously so bind failures are caught before we proceed
+        let http_addr = format!("{}:{}", http_config.http.bind, http_config.http.port);
+        let http_listener = match tokio::net::TcpListener::bind(&http_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(addr = %http_addr, "failed to bind HTTP server: {e}");
+                std::process::exit(1);
+            }
+        };
+        tracing::info!(addr = %http_addr, "HTTP server listening");
         tokio::spawn(async move {
-            if let Err(e) = run_http_server(
+            if let Err(e) = run_http_server_with_listener(
                 &http_config,
                 http_db,
                 http_events,
                 http_hlc,
                 started_at,
                 http_write_tx,
+                http_shutdown_rx,
+                http_listener,
             )
             .await
             {

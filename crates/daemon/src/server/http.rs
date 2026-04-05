@@ -35,6 +35,7 @@ pub struct AppState {
 
 /// POST /api — accepts JSON matching the protocol Request type.
 /// Routes reads to per-request read-only connections, writes through the writer actor.
+/// Returns proper HTTP status codes: 200 for success, 503 for infrastructure failures.
 async fn api_handler(
     State(state): State<AppState>,
     Json(request): Json<Request>,
@@ -48,39 +49,94 @@ async fn api_handler(
             state.started_at,
         ) {
             Ok(mut reader) => handle_request(&mut reader, request),
-            Err(e) => Response::Error {
-                message: format!("failed to open read-only connection: {e}"),
-            },
+            Err(e) => {
+                tracing::error!("failed to open read-only connection: {e}");
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    Json(Response::Error {
+                        message: "database unavailable".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
         }
     } else {
-        // Send write request through the writer actor (same as socket.rs)
+        // Send write request through the writer actor with timeout (same as socket.rs)
         let (reply_tx, reply_rx) = oneshot::channel();
-        match state
-            .write_tx
-            .send(WriteCommand::Raw {
+        match tokio::time::timeout(
+            Duration::from_secs(30),
+            state.write_tx.send(WriteCommand::Raw {
                 request,
                 reply: reply_tx,
-            })
-            .await
+            }),
+        )
+        .await
         {
-            Ok(()) => match reply_rx.await {
-                Ok(resp) => resp,
-                Err(_) => Response::Error {
-                    message: "writer actor closed unexpectedly".to_string(),
-                },
-            },
-            Err(_) => Response::Error {
-                message: "daemon writer unavailable".to_string(),
-            },
+            Ok(Ok(())) => {
+                match tokio::time::timeout(Duration::from_secs(30), reply_rx).await {
+                    Ok(Ok(resp)) => resp,
+                    Ok(Err(_)) => {
+                        tracing::error!("writer actor closed unexpectedly");
+                        return (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            Json(Response::Error {
+                                message: "writer unavailable".to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                    Err(_) => {
+                        tracing::error!("write request timed out after 30s");
+                        return (
+                            axum::http::StatusCode::GATEWAY_TIMEOUT,
+                            Json(Response::Error {
+                                message: "write request timed out".to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            Ok(Err(_)) => {
+                tracing::error!("daemon writer channel closed");
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    Json(Response::Error {
+                        message: "writer unavailable".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(_) => {
+                tracing::error!("write channel send timed out after 30s");
+                return (
+                    axum::http::StatusCode::GATEWAY_TIMEOUT,
+                    Json(Response::Error {
+                        message: "write request timed out".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
         }
     };
 
-    Json(response)
+    // Protocol-level errors still return 200 (they're valid protocol responses)
+    // Infrastructure failures above return 503/504
+    Json(response).into_response()
 }
 
 /// Build the CORS layer from config.
+/// When auth is disabled and origins contain "*", log a security warning.
 fn build_cors_layer(config: &ForgeConfig) -> CorsLayer {
-    let layer = if config.cors.allowed_origins.contains(&"*".to_string()) {
+    let is_wildcard = config.cors.allowed_origins.contains(&"*".to_string());
+    let layer = if is_wildcard {
+        if !config.auth.enabled {
+            tracing::warn!(
+                "CORS wildcard (*) is active with auth DISABLED — \
+                 the API is browser-callable from any origin. \
+                 Set cors.allowed_origins to specific origins or enable auth for production."
+            );
+        }
         CorsLayer::new().allow_origin(Any)
     } else {
         let origins: Vec<axum::http::HeaderValue> = config
@@ -98,17 +154,62 @@ fn build_cors_layer(config: &ForgeConfig) -> CorsLayer {
         .max_age(Duration::from_secs(config.cors.max_age_secs))
 }
 
-/// Start the HTTP server. Call from main.rs inside a tokio::spawn.
-pub async fn run_http_server(
+/// Build the axum router with all routes.
+///
+/// Health probes are EXEMPT from auth (K8s must access them without tokens).
+/// When `config.auth.enabled` is true, POST /api requires a valid JWT.
+pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
+    let cors = build_cors_layer(config);
+
+    // Health probes — always unauthenticated
+    let health_routes = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/startupz", get(startupz))
+        .with_state(state.clone());
+
+    // API routes — optionally protected by JWT auth
+    let api_routes = if config.auth.enabled {
+        let jwks_cache = super::auth::new_jwks_cache();
+        let auth_config = config.auth.clone();
+        tracing::info!(
+            issuer = %config.auth.issuer_url,
+            audience = %config.auth.audience,
+            "JWT auth enabled for POST /api"
+        );
+        Router::new()
+            .route("/api", post(api_handler))
+            .layer(axum::middleware::from_fn(move |req, next| {
+                let cache = jwks_cache.clone();
+                let cfg = auth_config.clone();
+                super::auth::auth_middleware(req, next, cache, cfg)
+            }))
+            .with_state(state)
+    } else {
+        Router::new()
+            .route("/api", post(api_handler))
+            .with_state(state)
+    };
+
+    Router::new()
+        .merge(health_routes)
+        .merge(api_routes)
+        .layer(cors)
+}
+
+/// Start the HTTP server with a pre-bound listener and graceful shutdown.
+/// main.rs binds the listener early so bind failures are caught at startup.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_http_server_with_listener(
     config: &ForgeConfig,
     db_path: String,
     events: EventSender,
     hlc: Arc<crate::sync::Hlc>,
     started_at: Instant,
     write_tx: mpsc::Sender<WriteCommand>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    listener: tokio::net::TcpListener,
 ) -> std::io::Result<()> {
-    let cors = build_cors_layer(config);
-
     let state = AppState {
         db_path,
         events,
@@ -117,18 +218,15 @@ pub async fn run_http_server(
         write_tx,
     };
 
-    let app = Router::new()
-        .route("/api", post(api_handler))
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .route("/startupz", get(startupz))
-        .layer(cors)
-        .with_state(state);
+    let app = build_router(config, state);
 
-    let addr = format!("{}:{}", config.http.bind, config.http.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!(addr = %addr, "HTTP server listening");
-    axum::serve(listener, app).await?;
+    // Graceful shutdown: drain in-flight requests when shutdown signal received
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+            tracing::info!("HTTP server shutting down gracefully");
+        })
+        .await?;
     Ok(())
 }
 
@@ -149,9 +247,10 @@ mod tests {
         let _state = DaemonState::new(&db_path).unwrap();
         let (events, _) = tokio::sync::broadcast::channel(16);
         let hlc = Arc::new(Hlc::new("test"));
-        let (write_tx, _write_rx) = mpsc::channel(16);
-        // Keep temp file alive
+        let (write_tx, write_rx) = mpsc::channel(16);
+        // Keep temp file and write_rx alive (test only)
         std::mem::forget(tmp);
+        std::mem::forget(write_rx);
         AppState {
             db_path,
             events,
@@ -163,14 +262,7 @@ mod tests {
 
     fn test_router(state: AppState) -> Router {
         let config = ForgeConfig::default();
-        let cors = build_cors_layer(&config);
-        Router::new()
-            .route("/api", post(api_handler))
-            .route("/healthz", get(healthz))
-            .route("/readyz", get(readyz))
-            .route("/startupz", get(startupz))
-            .layer(cors)
-            .with_state(state)
+        build_router(&config, state)
     }
 
     #[tokio::test]

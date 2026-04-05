@@ -37,10 +37,10 @@ pub async fn healthz() -> impl IntoResponse {
     Json(LivenessResponse { status: "ok" })
 }
 
-/// GET /readyz — readiness probe. Verifies the database connection works
-/// by opening a read-only connection and running SELECT 1.
+/// GET /readyz — readiness probe. Verifies both the database connection
+/// and the write path (writer actor channel) are healthy.
 pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
-    // Attempt to open a read-only connection and verify it works
+    // Check 1: Read path — open a read-only connection and verify it works
     match crate::server::handler::DaemonState::new_reader(
         &state.db_path,
         state.events.clone(),
@@ -51,33 +51,49 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
             // Verify DB is actually responsive with a simple query
             match reader.conn.query_row("SELECT 1", [], |row| row.get::<_, i32>(0)) {
                 Ok(_) => {
-                    // Count worker types — we have 5 worker types in the system
-                    // (extraction, embedding, consolidation, indexer, adapter)
-                    let workers = 5;
+                    // Check 2: Write path — verify the writer actor channel is open
+                    // (if closed, all writes would fail)
+                    if state.write_tx.is_closed() {
+                        tracing::error!("readyz: writer actor channel is closed");
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(serde_json::json!({"status": "error", "message": "writer unavailable"})),
+                        )
+                            .into_response();
+                    }
+                    // 8 workers: watcher, extractor, embedder, consolidator,
+                    // indexer, perception, disposition, diagnostics
+                    let workers = 8;
                     Json(ReadinessResponse {
                         status: "ok",
                         workers,
                     })
                     .into_response()
                 }
-                Err(e) => (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(serde_json::json!({"status": "error", "message": format!("db query failed: {e}")})),
-                )
-                    .into_response(),
+                Err(e) => {
+                    tracing::error!("readyz: db query failed: {e}");
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(serde_json::json!({"status": "error", "message": "database not responding"})),
+                    )
+                        .into_response()
+                }
             }
         }
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"status": "error", "message": format!("db connection failed: {e}")})),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("readyz: db connection failed: {e}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"status": "error", "message": "database unavailable"})),
+            )
+                .into_response()
+        }
     }
 }
 
 /// GET /startupz — startup probe. Reports whether initial indexing has completed.
-/// We check by verifying the DB connection works and looking for the presence of
-/// indexed data (any memories exist = indexing has started/completed).
+/// Returns 503 while startup is in progress (indexed=false), 200 when ready.
+/// K8s uses this to know when the container is ready to accept traffic.
 pub async fn startupz(State(state): State<AppState>) -> impl IntoResponse {
     match crate::server::handler::DaemonState::new_reader(
         &state.db_path,
@@ -94,17 +110,32 @@ pub async fn startupz(State(state): State<AppState>) -> impl IntoResponse {
                 })
                 .unwrap_or(0)
                 > 0;
-            Json(StartupResponse {
-                status: "ok",
-                indexed,
-            })
-            .into_response()
+            if indexed {
+                Json(StartupResponse {
+                    status: "ok",
+                    indexed,
+                })
+                .into_response()
+            } else {
+                // Return 503 while startup is incomplete — K8s will retry
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(StartupResponse {
+                        status: "starting",
+                        indexed,
+                    }),
+                )
+                    .into_response()
+            }
         }
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"status": "error", "message": format!("db connection failed: {e}")})),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("startupz: db connection failed: {e}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"status": "error", "message": "database unavailable"})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -129,9 +160,10 @@ mod tests {
         let _state = DaemonState::new(&db_path).unwrap();
         let (events, _) = tokio::sync::broadcast::channel(16);
         let hlc = Arc::new(Hlc::new("test"));
-        let (write_tx, _write_rx) = mpsc::channel(16);
-        // Keep the temp file alive by leaking it (test only)
+        let (write_tx, write_rx) = mpsc::channel(16);
+        // Keep temp file and write_rx alive (test only — prevents is_closed() returning true)
         std::mem::forget(tmp);
+        std::mem::forget(write_rx);
         AppState {
             db_path,
             events,
@@ -193,7 +225,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_startupz_returns_ok_with_indexed() {
+    async fn test_startupz_returns_503_when_not_indexed() {
         let state = test_app_state();
         let app = test_router(state);
 
@@ -207,11 +239,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        // Empty test DB has no memories → indexed=false → 503
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["status"], "ok");
-        // indexed can be true or false depending on whether test DB has memories
-        assert!(json["indexed"].is_boolean());
+        assert_eq!(json["status"], "starting");
+        assert_eq!(json["indexed"], false);
     }
 }
