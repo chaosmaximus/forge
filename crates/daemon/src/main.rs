@@ -1,4 +1,4 @@
-use forge_daemon::server::{DaemonState, WriterActor, run_server};
+use forge_daemon::server::{DaemonState, WriterActor, run_http_server, run_server};
 use forge_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
 use fs2::FileExt;
 use std::io::Write;
@@ -103,7 +103,7 @@ async fn main() {
     // Spawn background workers (they keep Arc<Mutex<DaemonState>> — unchanged)
     let _worker_handles = forge_daemon::workers::spawn_workers(
         Arc::clone(&state),
-        config,
+        config.clone(),
         &shutdown_tx,
         db_path.clone(),
     );
@@ -201,6 +201,30 @@ async fn main() {
 
         eprintln!("[daemon] startup tasks complete");
     });
+
+    // Conditionally spawn HTTP server alongside Unix socket when enabled.
+    // Runs as a separate tokio task — does not block socket server startup.
+    if config.http.enabled {
+        let http_config = config.clone();
+        let http_db = db_path.clone();
+        let http_events = events.clone();
+        let http_hlc = Arc::clone(&hlc);
+        let http_write_tx = write_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_http_server(
+                &http_config,
+                http_db,
+                http_events,
+                http_hlc,
+                started_at,
+                http_write_tx,
+            )
+            .await
+            {
+                tracing::error!("HTTP server failed: {e}");
+            }
+        });
+    }
 
     tracing::info!(pid = pid, socket = %socket_path, db = %db_path, "forge-daemon starting");
 
