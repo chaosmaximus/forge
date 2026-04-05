@@ -28,8 +28,8 @@ impl DaemonState {
         } else {
             Connection::open(db_path)?
         };
-        // Enable WAL mode for better concurrent read/write performance
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        // Enable WAL mode + busy timeout for concurrent multi-connection writes
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
         schema::create_schema(&conn)?;
 
         // Best-effort: detect and store platform info (OS, arch, shell, etc.)
@@ -117,7 +117,7 @@ impl DaemonState {
             Connection::open(db_path)
                 .map_err(|e| format!("open writer db: {e}"))?
         };
-        conn.execute_batch("PRAGMA journal_mode=WAL;")
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
             .map_err(|e| format!("set WAL mode: {e}"))?;
         // Ensure schema exists on this connection (idempotent)
         schema::create_schema(&conn)
@@ -152,7 +152,7 @@ impl DaemonState {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|e| format!("open read-only db: {e}"))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").ok();
         Ok(Self {
             conn,
             events,

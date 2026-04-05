@@ -37,7 +37,7 @@ pub fn open_read_conn(db_path: &str) -> Option<rusqlite::Connection> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
         Ok(conn) => {
-            conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").ok();
             Some(conn)
         }
         Err(e) => {
