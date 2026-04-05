@@ -1,9 +1,10 @@
-// workers/consolidator.rs — Memory consolidator (13 phases)
+// workers/consolidator.rs — Memory consolidator (15 phases)
 //
 // Periodically runs: exact dedup, semantic dedup, link related, confidence decay,
 // episodic->semantic promotion, reconsolidation, embedding merge,
 // edge strengthening, contradiction detection, activation decay,
-// entity detection, contradiction synthesis, and knowledge gap detection.
+// entity detection, contradiction synthesis, knowledge gap detection,
+// memory reweave, and quality scoring.
 // Memories that fall below 0.1 effective confidence are marked "faded".
 
 use crate::db::ops;
@@ -32,6 +33,8 @@ pub struct ConsolidationStats {
     pub entities_detected: usize,
     pub synthesized: usize,
     pub gaps_detected: usize,
+    pub reweaved: usize,
+    pub scored: usize,
 }
 
 /// Run all consolidation phases synchronously. Used by:
@@ -182,6 +185,20 @@ pub fn run_all_phases(conn: &Connection) -> ConsolidationStats {
     stats.gaps_detected = gaps;
     if gaps > 0 {
         eprintln!("[consolidator] detected {} knowledge gaps", gaps);
+    }
+
+    // Phase 14: Memory reweave — enrich older memories with newer context sharing tags
+    let reweaved = reweave_memories(conn);
+    stats.reweaved = reweaved;
+    if reweaved > 0 {
+        eprintln!("[consolidator] reweaved {} memory pairs", reweaved);
+    }
+
+    // Phase 15: Quality scoring — compute quality scores for active memories
+    let scored = score_memory_quality(conn);
+    stats.scored = scored;
+    if scored > 0 {
+        eprintln!("[consolidator] scored {} memories", scored);
     }
 
     stats
@@ -366,6 +383,203 @@ pub fn detect_and_surface_gaps(conn: &Connection) -> usize {
     count
 }
 
+/// Reweave memories: when a newer memory shares 2+ tags with an older memory
+/// and both are active with the same project and memory_type, enrich the older
+/// memory by appending the newer content and mark the newer one as "merged".
+/// Returns count of reweaves performed.
+pub fn reweave_memories(conn: &Connection) -> usize {
+    // Find candidate pairs: newer memory shares 2+ tags with older memory,
+    // same project, same memory_type, both active
+    let mut stmt = match conn.prepare(
+        "SELECT id, title, content, tags, memory_type, project, created_at FROM memory
+         WHERE status = 'active' AND tags != '[]'
+         ORDER BY created_at ASC
+         LIMIT 200"
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[consolidator] reweave query error: {e}");
+            return 0;
+        }
+    };
+
+    struct ReweaveRow {
+        id: String,
+        content: String,
+        tags: Vec<String>,
+        memory_type: String,
+        project: Option<String>,
+        created_at: String,
+    }
+
+    let rows: Vec<ReweaveRow> = match stmt.query_map([], |row| {
+        let tags_json: String = row.get(3)?;
+        Ok(ReweaveRow {
+            id: row.get(0)?,
+            content: row.get(2)?,
+            tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+            memory_type: row.get(4)?,
+            project: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    }) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            eprintln!("[consolidator] reweave row error: {e}");
+            return 0;
+        }
+    };
+
+    let mut reweaved = 0usize;
+    let mut merged_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let limit = 50;
+
+    for i in 0..rows.len() {
+        if reweaved >= limit {
+            break;
+        }
+        if merged_ids.contains(&rows[i].id) {
+            continue;
+        }
+        if rows[i].tags.len() < 2 {
+            continue;
+        }
+
+        for j in (i + 1)..rows.len() {
+            if reweaved >= limit {
+                break;
+            }
+            if merged_ids.contains(&rows[j].id) {
+                continue;
+            }
+            if rows[j].tags.len() < 2 {
+                continue;
+            }
+
+            // Must have same memory_type
+            if rows[i].memory_type != rows[j].memory_type {
+                continue;
+            }
+
+            // Must have same project (both None or both same value)
+            if rows[i].project != rows[j].project {
+                continue;
+            }
+
+            // Count shared tags
+            let tags_i: std::collections::HashSet<&str> = rows[i].tags.iter().map(|s| s.as_str()).collect();
+            let shared: usize = rows[j].tags.iter().filter(|t| tags_i.contains(t.as_str())).count();
+            if shared < 2 {
+                continue;
+            }
+
+            // rows[i] is older (ordered by created_at ASC), rows[j] is newer
+            // Verify j is indeed newer (or at least not the same)
+            if rows[j].created_at <= rows[i].created_at {
+                continue;
+            }
+
+            // Enrich older with newer content, mark newer as "merged"
+            let enriched_content = format!("{}\n\n[Update]: {}", rows[i].content, rows[j].content);
+
+            if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+                eprintln!("[consolidator] reweave begin error: {e}");
+                continue;
+            }
+            if conn.execute(
+                "UPDATE memory SET content = ?1 WHERE id = ?2 AND status = 'active'",
+                rusqlite::params![enriched_content, rows[i].id],
+            ).is_err() || conn.execute(
+                "UPDATE memory SET status = 'merged' WHERE id = ?1 AND status = 'active'",
+                rusqlite::params![rows[j].id],
+            ).is_err() {
+                eprintln!("[consolidator] reweave update error — rolling back");
+                let _ = conn.execute_batch("ROLLBACK");
+                continue;
+            }
+            let _ = conn.execute_batch("COMMIT");
+
+            merged_ids.insert(rows[j].id.clone());
+            reweaved += 1;
+        }
+    }
+
+    reweaved
+}
+
+/// Score memory quality for active memories. Computes a quality score (0.0 to 1.0)
+/// based on freshness, utility (access_count), completeness (content length),
+/// and activation_level. Stores the result in the quality_score column.
+/// Returns count of memories scored.
+pub fn score_memory_quality(conn: &Connection) -> usize {
+    let mut stmt = match conn.prepare(
+        "SELECT id, content, access_count, activation_level,
+                julianday('now') - julianday(created_at) as age_days
+         FROM memory WHERE status = 'active'
+         LIMIT 200"
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[consolidator] quality score query error: {e}");
+            return 0;
+        }
+    };
+
+    struct ScoreRow {
+        id: String,
+        content_len: usize,
+        access_count: i64,
+        activation_level: f64,
+        age_days: f64,
+    }
+
+    let rows: Vec<ScoreRow> = match stmt.query_map([], |row| {
+        let content: String = row.get(1)?;
+        Ok(ScoreRow {
+            id: row.get(0)?,
+            content_len: content.len(),
+            access_count: row.get(2)?,
+            activation_level: row.get::<_, f64>(3).unwrap_or(0.0),
+            age_days: row.get::<_, f64>(4).unwrap_or(0.0),
+        })
+    }) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            eprintln!("[consolidator] quality score row error: {e}");
+            return 0;
+        }
+    };
+
+    let mut scored = 0usize;
+    for row in &rows {
+        // freshness (0-1): 1.0 for today, decays by 0.1 per week, min 0.1
+        let weeks = row.age_days / 7.0;
+        let freshness = (1.0 - weeks * 0.1).clamp(0.1, 1.0);
+
+        // utility (0-1): min(access_count / 10.0, 1.0)
+        let utility = (row.access_count as f64 / 10.0).min(1.0);
+
+        // completeness (0-1): min(content.len() / 200.0, 1.0)
+        let completeness = (row.content_len as f64 / 200.0).min(1.0);
+
+        // activation (0-1): activation_level (already 0-1)
+        let activation = row.activation_level.clamp(0.0, 1.0);
+
+        let quality_score = freshness * 0.3 + utility * 0.3 + completeness * 0.2 + activation * 0.2;
+
+        if let Err(e) = conn.execute(
+            "UPDATE memory SET quality_score = ?1 WHERE id = ?2",
+            rusqlite::params![quality_score, row.id],
+        ) {
+            eprintln!("[consolidator] quality score update error for {}: {e}", row.id);
+            continue;
+        }
+        scored += 1;
+    }
+
+    scored
+}
+
 pub async fn run_consolidator(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -401,6 +615,8 @@ pub async fn run_consolidator(
                     "entities_detected": stats.entities_detected,
                     "synthesized": stats.synthesized,
                     "gaps_detected": stats.gaps_detected,
+                    "reweaved": stats.reweaved,
+                    "scored": stats.scored,
                 }));
 
                 // Emit contradiction_detected event if any contradictions were found
@@ -440,5 +656,144 @@ mod tests {
         assert_eq!(stats.embedding_merged, 0);
         assert_eq!(stats.strengthened, 0);
         assert_eq!(stats.contradictions, 0);
+    }
+
+    #[test]
+    fn test_reweave_memories() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create an older memory with tags
+        let older = Memory::new(MemoryType::Decision, "Use JWT auth", "We chose JWT for authentication")
+            .with_tags(vec!["auth".to_string(), "security".to_string(), "jwt".to_string()]);
+        ops::remember(&conn, &older).unwrap();
+
+        // Create a newer memory with shared tags (same project, same type)
+        // Need a slight delay in created_at to ensure ordering
+        let newer = Memory::new(MemoryType::Decision, "JWT rotation policy", "Rotate JWT tokens every 24h")
+            .with_tags(vec!["auth".to_string(), "security".to_string(), "rotation".to_string()]);
+        // Manually set a later created_at
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, project)
+             VALUES (?1, 'decision', 'JWT rotation policy', 'Rotate JWT tokens every 24h', 0.9, 'active',
+                     '[\"auth\",\"security\",\"rotation\"]', datetime('now', '+1 second'), datetime('now'), NULL)",
+            rusqlite::params![newer.id],
+        ).unwrap();
+
+        let count = reweave_memories(&conn);
+        assert_eq!(count, 1, "should reweave 1 pair");
+
+        // Verify older memory was enriched
+        let content: String = conn.query_row(
+            "SELECT content FROM memory WHERE id = ?1",
+            rusqlite::params![older.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(content.contains("[Update]:"), "older memory should contain [Update] marker");
+        assert!(content.contains("Rotate JWT tokens every 24h"), "older memory should contain newer content");
+
+        // Verify newer memory was marked as merged
+        let status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1",
+            rusqlite::params![newer.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "merged", "newer memory should be marked as merged");
+    }
+
+    #[test]
+    fn test_reweave_different_types_skipped() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create a decision memory
+        let decision = Memory::new(MemoryType::Decision, "Use JWT auth", "JWT for authentication")
+            .with_tags(vec!["auth".to_string(), "security".to_string()]);
+        ops::remember(&conn, &decision).unwrap();
+
+        // Create a lesson memory with same tags — different type should NOT reweave
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, project)
+             VALUES ('lesson-1', 'lesson', 'Auth lesson', 'Learned about auth', 0.9, 'active',
+                     '[\"auth\",\"security\"]', datetime('now', '+1 second'), datetime('now'), NULL)",
+            [],
+        ).unwrap();
+
+        let count = reweave_memories(&conn);
+        assert_eq!(count, 0, "should not reweave memories of different types");
+    }
+
+    #[test]
+    fn test_quality_score_computation() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create a memory with known parameters
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags,
+                                 created_at, accessed_at, access_count, activation_level, project)
+             VALUES ('qs-1', 'decision', 'Test quality', ?1, 0.9, 'active', '[]',
+                     datetime('now'), datetime('now'), 5, 0.5, NULL)",
+            rusqlite::params!["A".repeat(200)], // content_len = 200 -> completeness = 1.0
+        ).unwrap();
+
+        let count = score_memory_quality(&conn);
+        assert_eq!(count, 1, "should score 1 memory");
+
+        let score: f64 = conn.query_row(
+            "SELECT quality_score FROM memory WHERE id = 'qs-1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+
+        // freshness: created today = 1.0
+        // utility: 5/10 = 0.5
+        // completeness: 200/200 = 1.0
+        // activation: 0.5
+        // expected = 1.0*0.3 + 0.5*0.3 + 1.0*0.2 + 0.5*0.2 = 0.3 + 0.15 + 0.2 + 0.1 = 0.75
+        assert!((score - 0.75).abs() < 0.05, "score should be ~0.75, got {}", score);
+    }
+
+    #[test]
+    fn test_quality_score_fresh_vs_old() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Fresh memory — created now
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags,
+                                 created_at, accessed_at, access_count, activation_level, project)
+             VALUES ('fresh-1', 'decision', 'Fresh memory', 'Some content here', 0.9, 'active', '[]',
+                     datetime('now'), datetime('now'), 0, 0.0, NULL)",
+            [],
+        ).unwrap();
+
+        // Old memory — created 70 days ago (10 weeks = freshness decayed to 0.1)
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags,
+                                 created_at, accessed_at, access_count, activation_level, project)
+             VALUES ('old-1', 'decision', 'Old memory', 'Some content here', 0.9, 'active', '[]',
+                     datetime('now', '-70 days'), datetime('now'), 0, 0.0, NULL)",
+            [],
+        ).unwrap();
+
+        score_memory_quality(&conn);
+
+        let fresh_score: f64 = conn.query_row(
+            "SELECT quality_score FROM memory WHERE id = 'fresh-1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let old_score: f64 = conn.query_row(
+            "SELECT quality_score FROM memory WHERE id = 'old-1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+
+        assert!(fresh_score > old_score, "fresh memory score ({}) should be higher than old ({})", fresh_score, old_score);
     }
 }

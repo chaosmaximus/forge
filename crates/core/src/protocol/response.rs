@@ -277,6 +277,10 @@ pub enum ResponseData {
         synthesized: usize,
         #[serde(default)]
         gaps_detected: usize,
+        #[serde(default)]
+        reweaved: usize,
+        #[serde(default)]
+        scored: usize,
     },
     ExtractionTriggered {
         files_queued: usize,

@@ -1497,6 +1497,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     entities_detected: stats.entities_detected,
                     synthesized: stats.synthesized,
                     gaps_detected: stats.gaps_detected,
+                    reweaved: stats.reweaved,
+                    scored: stats.scored,
                 },
             }
         }

@@ -335,6 +335,9 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE session ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'", []);
     let _ = conn.execute("ALTER TABLE session ADD COLUMN current_task TEXT NOT NULL DEFAULT ''", []);
 
+    // Memory Intelligence: quality score column (safe to re-run — ignores if already exists)
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN quality_score REAL DEFAULT 0.5", []);
+
     Ok(())
 }
 
