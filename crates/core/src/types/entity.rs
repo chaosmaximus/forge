@@ -134,7 +134,7 @@ impl Visibility {
             "inherited" => Visibility::Inherited,
             "local" => Visibility::Local,
             "private" => Visibility::Private,
-            _ => Visibility::Inherited,
+            _ => Visibility::Private,
         }
     }
 }

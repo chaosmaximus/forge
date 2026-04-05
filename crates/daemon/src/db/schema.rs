@@ -480,6 +480,17 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_edge_reality ON edge(reality_id, edge_type)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_code_file_reality ON code_file(reality_id)", []);
 
+    // v2.0 fix: Missing indexes for cross-org query performance
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_org ON session(organization_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_team ON session(team_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_identity_org ON identity(organization_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_user ON entity(user_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_team_member_user ON team_member(user_id)", []);
+
+    // v2.0 fix: Unique constraint on reality(project_path) to prevent duplicate path rows.
+    // Filtered: only applies to non-NULL project_path values.
+    let _ = conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reality_path_unique ON reality(project_path) WHERE project_path IS NOT NULL", []);
+
     Ok(())
 }
 

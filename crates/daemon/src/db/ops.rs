@@ -1546,11 +1546,11 @@ pub fn create_team(conn: &Connection, name: &str, org_id: &str, created_by: &str
     Ok(id)
 }
 
-/// Get a team by ID.
-pub fn get_team(conn: &Connection, id: &str) -> rusqlite::Result<Option<Team>> {
+/// Get a team by ID, scoped to the given organization.
+pub fn get_team(conn: &Connection, id: &str, org_id: &str) -> rusqlite::Result<Option<Team>> {
     conn.query_row(
-        "SELECT id, name, organization_id, created_by, status, created_at FROM team WHERE id = ?1",
-        params![id],
+        "SELECT id, name, organization_id, created_by, status, created_at FROM team WHERE id = ?1 AND organization_id = ?2",
+        params![id, org_id],
         |row| Ok(Team {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -1578,8 +1578,17 @@ pub fn list_teams(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<Team>
     rows.collect()
 }
 
-/// Add a member to a team.
-pub fn add_team_member(conn: &Connection, team_id: &str, user_id: &str, role: &str) -> rusqlite::Result<()> {
+/// Add a member to a team. Verifies the team belongs to the given organization first.
+pub fn add_team_member(conn: &Connection, team_id: &str, user_id: &str, role: &str, org_id: &str) -> rusqlite::Result<()> {
+    // Verify the team belongs to the specified organization
+    let team_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM team WHERE id = ?1 AND organization_id = ?2",
+        params![team_id, org_id],
+        |row| row.get(0),
+    )?;
+    if !team_exists {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
     conn.execute(
         "INSERT OR REPLACE INTO team_member (team_id, user_id, role, joined_at)
          VALUES (?1, ?2, ?3, datetime('now'))",
@@ -1588,8 +1597,17 @@ pub fn add_team_member(conn: &Connection, team_id: &str, user_id: &str, role: &s
     Ok(())
 }
 
-/// List members of a team.
-pub fn list_team_members(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<TeamMember>> {
+/// List members of a team. Verifies the team belongs to the given organization first.
+pub fn list_team_members(conn: &Connection, team_id: &str, org_id: &str) -> rusqlite::Result<Vec<TeamMember>> {
+    // Verify the team belongs to the specified organization
+    let team_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM team WHERE id = ?1 AND organization_id = ?2",
+        params![team_id, org_id],
+        |row| row.get(0),
+    )?;
+    if !team_exists {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
     let mut stmt = conn.prepare(
         "SELECT team_id, user_id, role, joined_at FROM team_member WHERE team_id = ?1 ORDER BY joined_at"
     )?;
@@ -1618,12 +1636,12 @@ pub fn store_reality(conn: &Connection, reality: &Reality) -> rusqlite::Result<(
     Ok(())
 }
 
-/// Get a reality by ID.
-pub fn get_reality(conn: &Connection, id: &str) -> rusqlite::Result<Option<Reality>> {
+/// Get a reality by ID, scoped to the given organization.
+pub fn get_reality(conn: &Connection, id: &str, org_id: &str) -> rusqlite::Result<Option<Reality>> {
     conn.query_row(
-        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata
-         FROM reality WHERE id = ?1",
-        params![id],
+        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
+         FROM reality WHERE id = ?1 AND organization_id = ?2",
+        params![id, org_id],
         |row| Ok(Reality {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -1643,12 +1661,12 @@ pub fn get_reality(conn: &Connection, id: &str) -> rusqlite::Result<Option<Reali
     ).optional()
 }
 
-/// Get a reality by its project path.
-pub fn get_reality_by_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<Reality>> {
+/// Get a reality by its project path, scoped to the given organization.
+pub fn get_reality_by_path(conn: &Connection, path: &str, org_id: &str) -> rusqlite::Result<Option<Reality>> {
     conn.query_row(
-        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata
-         FROM reality WHERE project_path = ?1",
-        params![path],
+        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
+         FROM reality WHERE project_path = ?1 AND organization_id = ?2 LIMIT 1",
+        params![path, org_id],
         |row| Ok(Reality {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -1671,7 +1689,7 @@ pub fn get_reality_by_path(conn: &Connection, path: &str) -> rusqlite::Result<Op
 /// List realities in an organization.
 pub fn list_realities(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<Reality>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata
+        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
          FROM reality WHERE organization_id = ?1 ORDER BY last_active DESC"
     )?;
     let rows = stmt.query_map(params![org_id], |row| Ok(Reality {
@@ -1693,11 +1711,11 @@ pub fn list_realities(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<R
     rows.collect()
 }
 
-/// Update the last_active timestamp for a reality.
-pub fn update_reality_last_active(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+/// Update the last_active timestamp for a reality, scoped to the given organization.
+pub fn update_reality_last_active(conn: &Connection, id: &str, org_id: &str) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE reality SET last_active = datetime('now') WHERE id = ?1",
-        params![id],
+        "UPDATE reality SET last_active = datetime('now') WHERE id = ?1 AND organization_id = ?2",
+        params![id, org_id],
     )?;
     Ok(())
 }
@@ -2680,8 +2698,8 @@ mod tests {
         let team_id = create_team(&conn, "Backend Team", "default", "local").unwrap();
         assert!(!team_id.is_empty());
 
-        // Get team
-        let team = get_team(&conn, &team_id).unwrap().unwrap();
+        // Get team (with correct org)
+        let team = get_team(&conn, &team_id, "default").unwrap().unwrap();
         assert_eq!(team.name, "Backend Team");
         assert_eq!(team.organization_id, "default");
         assert_eq!(team.created_by, "local");
@@ -2692,8 +2710,24 @@ mod tests {
         assert_eq!(teams.len(), 1);
 
         // Get non-existent team
-        let none = get_team(&conn, "nonexistent").unwrap();
+        let none = get_team(&conn, "nonexistent", "default").unwrap();
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn test_team_cross_org_access_denied() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+
+        let team_id = create_team(&conn, "Secret Team", "default", "local").unwrap();
+
+        // Accessing with wrong org_id should return None
+        let none = get_team(&conn, &team_id, "wrong_org").unwrap();
+        assert!(none.is_none(), "get_team with wrong org_id must return None");
+
+        // Accessing with correct org_id should succeed
+        let some = get_team(&conn, &team_id, "default").unwrap();
+        assert!(some.is_some());
     }
 
     #[test]
@@ -2702,12 +2736,12 @@ mod tests {
         ensure_defaults(&conn).unwrap();
         let team_id = create_team(&conn, "Frontend Team", "default", "local").unwrap();
 
-        // Add members
-        add_team_member(&conn, &team_id, "local", "admin").unwrap();
-        add_team_member(&conn, &team_id, "user2", "member").unwrap();
+        // Add members (with org verification)
+        add_team_member(&conn, &team_id, "local", "admin", "default").unwrap();
+        add_team_member(&conn, &team_id, "user2", "member", "default").unwrap();
 
-        // List members
-        let members = list_team_members(&conn, &team_id).unwrap();
+        // List members (with org verification)
+        let members = list_team_members(&conn, &team_id, "default").unwrap();
         assert_eq!(members.len(), 2);
 
         // Verify roles
@@ -2717,11 +2751,27 @@ mod tests {
         assert_eq!(member.role, "member");
 
         // Re-add with different role should replace
-        add_team_member(&conn, &team_id, "local", "member").unwrap();
-        let members2 = list_team_members(&conn, &team_id).unwrap();
+        add_team_member(&conn, &team_id, "local", "member", "default").unwrap();
+        let members2 = list_team_members(&conn, &team_id, "default").unwrap();
         assert_eq!(members2.len(), 2);
         let updated = members2.iter().find(|m| m.user_id == "local").unwrap();
         assert_eq!(updated.role, "member");
+    }
+
+    #[test]
+    fn test_team_member_cross_org_denied() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+        let team_id = create_team(&conn, "Secure Team", "default", "local").unwrap();
+        add_team_member(&conn, &team_id, "local", "admin", "default").unwrap();
+
+        // add_team_member with wrong org should fail
+        let result = add_team_member(&conn, &team_id, "attacker", "admin", "wrong_org");
+        assert!(result.is_err(), "add_team_member with wrong org must fail");
+
+        // list_team_members with wrong org should fail
+        let result = list_team_members(&conn, &team_id, "wrong_org");
+        assert!(result.is_err(), "list_team_members with wrong org must fail");
     }
 
     #[test]
@@ -2749,8 +2799,8 @@ mod tests {
         // Store
         store_reality(&conn, &reality).unwrap();
 
-        // Get by ID
-        let got = get_reality(&conn, "r1").unwrap().unwrap();
+        // Get by ID (with correct org)
+        let got = get_reality(&conn, "r1", "default").unwrap().unwrap();
         assert_eq!(got.name, "forge");
         assert_eq!(got.reality_type, "code");
         assert_eq!(got.detected_from.as_deref(), Some("git"));
@@ -2758,8 +2808,8 @@ mod tests {
         assert_eq!(got.domain.as_deref(), Some("rust"));
         assert!(got.engine_pid.is_none());
 
-        // Get by path
-        let by_path = get_reality_by_path(&conn, "/home/user/forge").unwrap().unwrap();
+        // Get by path (with correct org)
+        let by_path = get_reality_by_path(&conn, "/home/user/forge", "default").unwrap().unwrap();
         assert_eq!(by_path.id, "r1");
 
         // List
@@ -2767,10 +2817,48 @@ mod tests {
         assert_eq!(realities.len(), 1);
 
         // Get non-existent
-        let none = get_reality(&conn, "nonexistent").unwrap();
+        let none = get_reality(&conn, "nonexistent", "default").unwrap();
         assert!(none.is_none());
-        let none_path = get_reality_by_path(&conn, "/nonexistent").unwrap();
+        let none_path = get_reality_by_path(&conn, "/nonexistent", "default").unwrap();
         assert!(none_path.is_none());
+    }
+
+    #[test]
+    fn test_reality_cross_org_access_denied() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+
+        let reality = Reality {
+            id: "r_sec".to_string(),
+            name: "secret-project".to_string(),
+            reality_type: "code".to_string(),
+            detected_from: None,
+            project_path: Some("/home/user/secret".to_string()),
+            domain: None,
+            organization_id: "default".to_string(),
+            owner_type: "user".to_string(),
+            owner_id: "local".to_string(),
+            engine_status: "idle".to_string(),
+            engine_pid: None,
+            created_at: "2026-04-05T00:00:00Z".to_string(),
+            last_active: "2026-04-05T00:00:00Z".to_string(),
+            metadata: "{}".to_string(),
+        };
+        store_reality(&conn, &reality).unwrap();
+
+        // get_reality with wrong org_id should return None
+        let none = get_reality(&conn, "r_sec", "wrong_org").unwrap();
+        assert!(none.is_none(), "get_reality with wrong org_id must return None");
+
+        // get_reality_by_path with wrong org_id should return None
+        let none = get_reality_by_path(&conn, "/home/user/secret", "wrong_org").unwrap();
+        assert!(none.is_none(), "get_reality_by_path with wrong org_id must return None");
+
+        // update_reality_last_active with wrong org should NOT update
+        let before = get_reality(&conn, "r_sec", "default").unwrap().unwrap();
+        update_reality_last_active(&conn, "r_sec", "wrong_org").unwrap();
+        let after = get_reality(&conn, "r_sec", "default").unwrap().unwrap();
+        assert_eq!(before.last_active, after.last_active, "wrong org should not update last_active");
     }
 
     #[test]
@@ -2796,11 +2884,11 @@ mod tests {
         };
         store_reality(&conn, &reality).unwrap();
 
-        // Update last_active
-        update_reality_last_active(&conn, "r2").unwrap();
+        // Update last_active (with correct org)
+        update_reality_last_active(&conn, "r2", "default").unwrap();
 
         // Verify it changed
-        let updated = get_reality(&conn, "r2").unwrap().unwrap();
+        let updated = get_reality(&conn, "r2", "default").unwrap().unwrap();
         assert_ne!(updated.last_active, "2026-01-01T00:00:00Z", "last_active should have been updated");
     }
 
@@ -2834,7 +2922,98 @@ mod tests {
         };
         store_reality(&conn, &updated).unwrap();
 
-        let got = get_reality(&conn, "r3").unwrap().unwrap();
+        let got = get_reality(&conn, "r3", "default").unwrap().unwrap();
         assert_eq!(got.name, "updated");
+    }
+
+    #[test]
+    fn test_reality_null_metadata_loads() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+
+        // Insert a reality directly with NULL metadata to simulate legacy data
+        conn.execute(
+            "INSERT INTO reality (id, name, reality_type, organization_id, owner_type, owner_id, engine_status, created_at, last_active, metadata)
+             VALUES ('r_null', 'null-meta', 'code', 'default', 'user', 'local', 'idle', datetime('now'), datetime('now'), NULL)",
+            [],
+        ).unwrap();
+
+        // get_reality should handle NULL metadata via COALESCE
+        let got = get_reality(&conn, "r_null", "default").unwrap().unwrap();
+        assert_eq!(got.metadata, "{}", "NULL metadata should default to empty JSON object");
+
+        // list_realities should also handle it
+        let realities = list_realities(&conn, "default").unwrap();
+        let null_one = realities.iter().find(|r| r.id == "r_null").unwrap();
+        assert_eq!(null_one.metadata, "{}", "NULL metadata in list should default to empty JSON object");
+    }
+
+    #[test]
+    fn test_visibility_parse_fail_closed() {
+        use forge_core::types::Visibility;
+
+        // Known values parse correctly
+        assert_eq!(Visibility::parse("universal"), Visibility::Universal);
+        assert_eq!(Visibility::parse("inherited"), Visibility::Inherited);
+        assert_eq!(Visibility::parse("local"), Visibility::Local);
+        assert_eq!(Visibility::parse("private"), Visibility::Private);
+
+        // Unknown/garbage/empty values default to Private (fail-closed)
+        assert_eq!(Visibility::parse("garbage"), Visibility::Private);
+        assert_eq!(Visibility::parse(""), Visibility::Private);
+        assert_eq!(Visibility::parse("PUBLIC"), Visibility::Private);
+    }
+
+    #[test]
+    fn test_unique_reality_path_constraint() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+
+        let reality1 = Reality {
+            id: "r_dup1".to_string(),
+            name: "first".to_string(),
+            reality_type: "code".to_string(),
+            detected_from: None,
+            project_path: Some("/unique/path".to_string()),
+            domain: None,
+            organization_id: "default".to_string(),
+            owner_type: "user".to_string(),
+            owner_id: "local".to_string(),
+            engine_status: "idle".to_string(),
+            engine_pid: None,
+            created_at: "2026-04-05T00:00:00Z".to_string(),
+            last_active: "2026-04-05T00:00:00Z".to_string(),
+            metadata: "{}".to_string(),
+        };
+        store_reality(&conn, &reality1).unwrap();
+
+        // Attempting to insert a different reality with the same project_path should fail
+        // (because store_reality uses INSERT OR REPLACE which keys on id, not project_path)
+        // The unique index should prevent a raw INSERT with duplicate project_path
+        let result = conn.execute(
+            "INSERT INTO reality (id, name, reality_type, organization_id, owner_type, owner_id, engine_status, created_at, last_active, metadata, project_path)
+             VALUES ('r_dup2', 'second', 'code', 'default', 'user', 'local', 'idle', datetime('now'), datetime('now'), '{}', '/unique/path')",
+            [],
+        );
+        assert!(result.is_err(), "duplicate project_path should violate unique index");
+
+        // NULL project_path should be allowed for multiple realities
+        let null1 = Reality {
+            id: "r_null1".to_string(),
+            project_path: None,
+            ..reality1.clone()
+        };
+        let null2 = Reality {
+            id: "r_null2".to_string(),
+            name: "second-null".to_string(),
+            project_path: None,
+            ..reality1
+        };
+        store_reality(&conn, &null1).unwrap();
+        store_reality(&conn, &null2).unwrap();
+        // Both should exist
+        let realities = list_realities(&conn, "default").unwrap();
+        let null_count = realities.iter().filter(|r| r.project_path.is_none()).count();
+        assert!(null_count >= 2, "multiple realities with NULL project_path should be allowed");
     }
 }
