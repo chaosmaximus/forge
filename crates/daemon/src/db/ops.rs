@@ -2040,14 +2040,23 @@ pub fn classify_portability(conn: &Connection, batch_limit: usize) -> rusqlite::
 
     let mut classified = 0usize;
     for (id, memory_type, _title, content, tags) in &rows {
-        let portability = if memory_type == "preference" {
+        let has_locality = contains_file_path(content) || contains_port_number(content);
+
+        // Locality evidence DOMINATES — if content references specific files/ports,
+        // it's reality_bound regardless of tags or type.
+        let portability = if has_locality {
+            "reality_bound"
+        } else if memory_type == "preference" {
             "universal"
         } else {
-            let tags_lower = tags.to_lowercase();
-            if tags_lower.contains("principle") || tags_lower.contains("heuristic") {
+            // Parse tags as JSON array for exact matching (not substring)
+            let parsed_tags: Vec<String> = serde_json::from_str(tags).unwrap_or_default();
+            let has_universal_tag = parsed_tags.iter().any(|t| {
+                let lower = t.to_lowercase();
+                lower == "principle" || lower == "heuristic"
+            });
+            if has_universal_tag {
                 "universal"
-            } else if contains_file_path(content) || contains_port_number(content) {
-                "reality_bound"
             } else {
                 "domain_transferable"
             }

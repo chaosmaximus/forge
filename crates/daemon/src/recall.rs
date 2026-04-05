@@ -239,20 +239,29 @@ pub fn hybrid_recall_scoped(
         results.retain(|r| &r.memory.memory_type == mt);
     }
 
-    // Filter by reality_id if specified: keep memories that belong to this reality or have no reality
+    // Filter by reality_id if specified: batch-load reality_ids to avoid N+1 queries
     if let Some(rid) = reality_id {
-        results.retain(|r| {
-            let mem_reality: Option<String> = conn.query_row(
-                "SELECT reality_id FROM memory WHERE id = ?1",
-                params![r.memory.id],
-                |row| row.get(0),
-            ).unwrap_or(None);
-            match mem_reality {
-                None => true,  // NULL reality_id = visible everywhere
-                Some(ref mr) if mr.is_empty() => true,
-                Some(ref mr) => mr == rid,
-            }
-        });
+        if !results.is_empty() {
+            // Batch-load reality_ids for all result memory IDs in one query
+            let ids: Vec<&str> = results.iter().map(|r| r.memory.id.as_str()).collect();
+            let placeholders: String = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+            let sql = format!("SELECT id, reality_id FROM memory WHERE id IN ({placeholders})");
+            let mut stmt = conn.prepare(&sql).unwrap();
+            let reality_map: std::collections::HashMap<String, Option<String>> = stmt
+                .query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+
+            results.retain(|r| {
+                match reality_map.get(&r.memory.id) {
+                    Some(Some(mr)) if !mr.is_empty() => mr == rid,
+                    _ => true, // NULL or empty reality_id = visible everywhere
+                }
+            });
+        }
     }
 
     // Sort by score descending
