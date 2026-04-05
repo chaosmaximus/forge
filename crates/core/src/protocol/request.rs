@@ -278,6 +278,9 @@ pub enum Request {
         parts: Vec<MessagePart>,
         project: Option<String>,
         timeout_secs: Option<u64>,
+        /// If set, this message is a response to a meeting question.
+        /// The daemon auto-records it as a meeting participant response.
+        meeting_id: Option<String>,
     },
     /// Respond to a received request
     SessionRespond {

@@ -1093,6 +1093,7 @@ mod tests {
                     parts: vec![],
                     project: None,
                     timeout_secs: None,
+                    meeting_id: None,
                 },
                 Request::SessionRespond {
                     message_id: "m1".into(),

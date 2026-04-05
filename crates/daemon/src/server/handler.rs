@@ -1790,7 +1790,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         // ── A2A Inter-Session Protocol (FISP) ──
 
-        Request::SessionSend { to, kind, topic, parts, project, timeout_secs } => {
+        Request::SessionSend { to, kind, topic, parts, project, timeout_secs, meeting_id } => {
             // A2A permission enforcement
             let config = crate::config::load_config();
             if !config.a2a.enabled {
@@ -1832,7 +1832,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
 
             let parts_json = serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string());
-            match crate::sessions::send_message(&state.conn, from, &to, &kind, &topic, &parts_json, project.as_deref(), timeout_secs, None) {
+            match crate::sessions::send_message(&state.conn, from, &to, &kind, &topic, &parts_json, project.as_deref(), timeout_secs, meeting_id.as_deref()) {
                 Ok(id) => {
                     crate::events::emit(&state.events, "session_message", serde_json::json!({
                         "id": &id, "from": from, "to": &to, "kind": &kind, "topic": &topic,
@@ -1845,6 +1845,22 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         "topic": &topic,
                         "preview": preview,
                     }));
+                    // If this is a meeting response, auto-record it
+                    if let Some(ref mid) = meeting_id {
+                        let confidence = None; // Could be extracted from parts in future
+                        if let Ok(all_responded) = crate::teams::record_meeting_response(
+                            &state.conn, mid, from, &parts_json, confidence,
+                        ) {
+                            crate::events::emit(&state.events, "meeting_response", serde_json::json!({
+                                "meeting_id": mid, "session_id": from, "topic": &topic,
+                            }));
+                            if all_responded {
+                                crate::events::emit(&state.events, "meeting_all_responded", serde_json::json!({
+                                    "meeting_id": mid,
+                                }));
+                            }
+                        }
+                    }
                     Response::Ok { data: ResponseData::MessageSent { id, status: "pending".into() } }
                 }
                 Err(e) => Response::Error { message: format!("send_message failed: {e}") },
