@@ -119,6 +119,13 @@ forge-next identity remove <id>
 forge-next check --file <path> [--action edit]
 forge-next blast-radius --file <path>
 
+# A2A inter-session messaging (FISP protocol)
+forge-next send --to <session-id> --kind notification --topic <topic> --text "..."
+forge-next send --to "*" --kind notification --topic schema_changed --text "..." --project P
+forge-next messages --session <session-id> [--status pending] [--limit N]
+forge-next ack <message-id-1> <message-id-2> ...
+forge-next cleanup-sessions [--prefix hook-test]
+
 # Import/export
 forge-next export [--format json]
 forge-next import [--file F]
@@ -158,20 +165,25 @@ forge-next remember --type decision --title "..." --content "..."
 
 ---
 
-## Architecture (v0.6.0 — Manas)
+## Architecture (v0.7.0 — FISP)
 
-**Daemon-first. CLI-first. No MCP server. 8-layer memory. 9 workers. 560+ tests.**
+**Daemon-first. CLI-first. No MCP server. 8-layer memory. Actor model. 468+ tests.**
 
 ```
 forge-daemon (Rust, single binary) — always-on daemon, Unix socket API
-  ├── SQLite FTS5 + sqlite-vec (memory + vectors + edges, single file)
-  ├── 8-layer memory (episodic, semantic, procedural, decision, identity, perception, disposition, working)
-  ├── 9 background workers (extraction, embedding, compaction, sync, health, adapters, events, perception, disposition)
+  ├── Actor architecture (hot/cold path separation, like Docker)
+  │   ├── Socket handler: per-connection read-only SQLite (NEVER blocks)
+  │   ├── Writer actor: serializes writes via mpsc channel
+  │   └── Workers: background tasks (extraction, embedding, consolidation, etc.)
+  ├── SQLite FTS5 + sqlite-vec (memory + vectors + edges, single file, WAL mode)
+  ├── 8-layer Manas memory (platform, tools, skills, domain DNA, experience, perception, declared, latent)
+  ├── A2A/FISP protocol (inter-session messaging, broadcast, delegation)
+  ├── Context intelligence (excluded_layers, domain DNA boost, project-scoped prefetch)
   ├── Guardrails engine (check + blast_radius)
   ├── Multi-agent adapters (Claude Code + Cline + Codex CLI)
-  ├── Auto-extraction (claude -p --model haiku / ollama qwen3:4b)
-  ├── Session tracking (active agent sessions)
-  └── Event bus (tokio::broadcast for Mac app)
+  ├── Auto-extraction (Gemini 2.5 Flash / Claude Haiku / Ollama)
+  ├── Session tracking + session cards (capabilities, current_task)
+  └── Event bus (tokio::broadcast for Mac app + A2A notifications)
 
 forge-next (Rust CLI)  — client for daemon, auto-starts daemon
 forge-hud (Rust)       — StatusLine rendering

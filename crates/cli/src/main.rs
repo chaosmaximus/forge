@@ -206,6 +206,50 @@ enum Commands {
         prefix: Option<String>,
     },
 
+    // ── A2A Inter-Session Messaging ──
+
+    /// Send a message to another session
+    #[command(name = "send")]
+    Send {
+        /// Target session ID (or "*" for broadcast)
+        #[arg(long)]
+        to: String,
+        /// Message kind: "notification" or "request"
+        #[arg(long)]
+        kind: String,
+        /// Topic (e.g., "file_changed", "review_code")
+        #[arg(long)]
+        topic: String,
+        /// Message text
+        #[arg(long)]
+        text: String,
+        /// Project scope (for broadcasts)
+        #[arg(long)]
+        project: Option<String>,
+        /// Timeout in seconds (for requests)
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+    /// Get pending messages for a session
+    #[command(name = "messages")]
+    Messages {
+        /// Session ID to check inbox for
+        #[arg(long)]
+        session: String,
+        /// Filter by status (pending, read, completed)
+        #[arg(long)]
+        status: Option<String>,
+        /// Max messages to return
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Acknowledge (mark as read) messages by ID
+    #[command(name = "ack")]
+    Ack {
+        /// Message IDs to acknowledge
+        ids: Vec<String>,
+    },
+
     /// Run proactive checks on a file or show all active diagnostics
     Verify {
         /// File to check (omit to show all active diagnostics)
@@ -456,6 +500,15 @@ async fn main() {
         }
         Commands::CleanupSessions { prefix } => {
             commands::system::cleanup_sessions(prefix).await;
+        }
+        Commands::Send { to, kind, topic, text, project, timeout } => {
+            commands::system::send_message(to, kind, topic, text, project, timeout).await;
+        }
+        Commands::Messages { session, status, limit } => {
+            commands::system::list_messages(session, status, limit).await;
+        }
+        Commands::Ack { ids } => {
+            commands::system::ack_messages(ids).await;
         }
         Commands::CompileContext { agent, project, static_only } => {
             commands::manas::compile_context(agent, project, static_only).await;

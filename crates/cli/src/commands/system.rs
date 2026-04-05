@@ -576,6 +576,69 @@ pub async fn cleanup_sessions(prefix: Option<String>) {
     }
 }
 
+// ── A2A Inter-Session Messaging ──
+
+pub async fn send_message(to: String, kind: String, topic: String, text: String, project: Option<String>, timeout: Option<u64>) {
+    let parts = vec![forge_core::protocol::MessagePart {
+        kind: "text".to_string(),
+        text: Some(text),
+        path: None,
+        data: None,
+        memory_id: None,
+    }];
+    let req = Request::SessionSend { to, kind, topic, parts, project, timeout_secs: timeout };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::MessageSent { id, status } }) => {
+            println!("Message sent: {id} (status: {status})");
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+pub async fn list_messages(session: String, status: Option<String>, limit: Option<usize>) {
+    let req = Request::SessionMessages { session_id: session, status, limit };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::SessionMessageList { messages, count } }) => {
+            if count == 0 {
+                println!("No messages.");
+                return;
+            }
+            println!("{count} message(s):\n");
+            for m in &messages {
+                let parts_preview: String = m.parts.iter()
+                    .filter_map(|p| p.text.as_deref())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let preview = if parts_preview.len() > 80 { &parts_preview[..80] } else { &parts_preview };
+                println!("  [{status}] {id} from {from} — {topic}: {preview}",
+                    status = m.status, id = &m.id[..8.min(m.id.len())],
+                    from = m.from_session, topic = m.topic, preview = preview);
+            }
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+pub async fn ack_messages(ids: Vec<String>) {
+    if ids.is_empty() {
+        eprintln!("error: no message IDs provided");
+        return;
+    }
+    let req = Request::SessionAck { message_ids: ids };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::MessagesAcked { count } }) => {
+            println!("Acknowledged {count} message(s).");
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
 /// Run proactive checks on a file or show all active diagnostics.
 pub async fn verify(file: Option<String>) {
     let req = Request::Verify { file: file.clone() };
