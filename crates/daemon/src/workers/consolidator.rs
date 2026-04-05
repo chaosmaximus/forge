@@ -26,6 +26,7 @@ pub struct ConsolidationStats {
     pub embedding_merged: usize,
     pub strengthened: usize,
     pub contradictions: usize,
+    pub entities_detected: usize,
 }
 
 /// Run all consolidation phases synchronously. Used by:
@@ -153,6 +154,17 @@ pub fn run_all_phases(conn: &Connection) -> ConsolidationStats {
         Err(e) => eprintln!("[consolidator] activation decay error: {e}"),
     }
 
+    // Phase 11: Entity detection (Knowledge Intelligence)
+    match crate::db::manas::detect_entities(conn) {
+        Ok(detected) => {
+            stats.entities_detected = detected;
+            if detected > 0 {
+                eprintln!("[consolidator] detected/updated {} entities from memory titles", detected);
+            }
+        }
+        Err(e) => eprintln!("[consolidator] entity detection error: {e}"),
+    }
+
     stats
 }
 
@@ -188,6 +200,7 @@ pub async fn run_consolidator(
                     "embedding_merged": stats.embedding_merged,
                     "strengthened": stats.strengthened,
                     "contradictions": stats.contradictions,
+                    "entities_detected": stats.entities_detected,
                 }));
 
                 // Emit contradiction_detected event if any contradictions were found

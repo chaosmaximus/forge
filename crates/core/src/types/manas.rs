@@ -227,6 +227,25 @@ pub struct Disposition {
     pub evidence: Vec<String>,
 }
 
+// ──────────────────────────────────────────────
+// Entity: first-class concept tracking
+// ──────────────────────────────────────────────
+
+/// A named entity detected from recurring mentions across memories.
+/// Entities elevate frequently-referenced concepts (tools, frameworks,
+/// patterns, etc.) to first-class trackable objects.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Entity {
+    pub id: String,
+    pub name: String,
+    pub entity_type: String,
+    pub description: String,
+    pub mention_count: u64,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub project: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

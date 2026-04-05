@@ -290,5 +290,11 @@ pub enum Request {
         message_ids: Vec<String>,
     },
 
+    /// List entities (Knowledge Intelligence)
+    ListEntities {
+        project: Option<String>,
+        limit: Option<usize>,
+    },
+
     Shutdown,
 }

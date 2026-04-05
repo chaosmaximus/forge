@@ -272,6 +272,7 @@ pub enum ResponseData {
         embedding_merged: usize,
         strengthened: usize,
         contradictions: usize,
+        entities_detected: usize,
     },
     ExtractionTriggered {
         files_queued: usize,
@@ -326,6 +327,12 @@ pub enum ResponseData {
     /// Batch recall results — one result set per query
     BatchRecallResults {
         results: Vec<Vec<MemoryResult>>,
+    },
+
+    /// Entity list for Knowledge Intelligence
+    EntityList {
+        entities: Vec<crate::types::manas::Entity>,
+        count: usize,
     },
 
     // ── A2A Inter-Session Protocol (FISP) ──
