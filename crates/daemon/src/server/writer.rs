@@ -54,6 +54,8 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::SessionMessages { .. }
             | Request::ListEntities { .. }
             | Request::ListPermissions
+            | Request::GetEffectiveConfig { .. }
+            | Request::ListScopedConfig { .. }
     )
 }
 
@@ -248,6 +250,35 @@ mod tests {
         }));
         assert!(!is_read_only(&Request::RevokePermission {
             id: "perm-1".into(),
+        }));
+
+        // Scoped config: read-only
+        assert!(is_read_only(&Request::GetEffectiveConfig {
+            session_id: None,
+            agent: None,
+            reality_id: None,
+            user_id: None,
+            team_id: None,
+            organization_id: Some("default".into()),
+        }));
+        assert!(is_read_only(&Request::ListScopedConfig {
+            scope_type: "organization".into(),
+            scope_id: "default".into(),
+        }));
+
+        // Scoped config: write
+        assert!(!is_read_only(&Request::SetScopedConfig {
+            scope_type: "organization".into(),
+            scope_id: "default".into(),
+            key: "max_tokens".into(),
+            value: "4096".into(),
+            locked: false,
+            ceiling: None,
+        }));
+        assert!(!is_read_only(&Request::DeleteScopedConfig {
+            scope_type: "organization".into(),
+            scope_id: "default".into(),
+            key: "max_tokens".into(),
         }));
     }
 

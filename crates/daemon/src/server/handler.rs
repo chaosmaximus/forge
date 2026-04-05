@@ -1845,6 +1845,75 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Scoped Configuration ──
+
+        Request::SetScopedConfig { scope_type, scope_id, key, value, locked, ceiling } => {
+            if !ops::validate_scope_type(&scope_type) {
+                return Response::Error {
+                    message: format!("invalid scope_type '{}': must be one of session, agent, reality, user, team, organization", scope_type),
+                };
+            }
+            match ops::set_scoped_config(&state.conn, &scope_type, &scope_id, &key, &value, locked, ceiling, "user") {
+                Ok(()) => Response::Ok {
+                    data: ResponseData::ScopedConfigSet { scope_type, scope_id, key },
+                },
+                Err(e) => Response::Error {
+                    message: format!("set_scoped_config failed: {e}"),
+                },
+            }
+        }
+
+        Request::DeleteScopedConfig { scope_type, scope_id, key } => {
+            if !ops::validate_scope_type(&scope_type) {
+                return Response::Error {
+                    message: format!("invalid scope_type '{}': must be one of session, agent, reality, user, team, organization", scope_type),
+                };
+            }
+            match ops::delete_scoped_config(&state.conn, &scope_type, &scope_id, &key) {
+                Ok(deleted) => Response::Ok {
+                    data: ResponseData::ScopedConfigDeleted { deleted },
+                },
+                Err(e) => Response::Error {
+                    message: format!("delete_scoped_config failed: {e}"),
+                },
+            }
+        }
+
+        Request::ListScopedConfig { scope_type, scope_id } => {
+            if !ops::validate_scope_type(&scope_type) {
+                return Response::Error {
+                    message: format!("invalid scope_type '{}': must be one of session, agent, reality, user, team, organization", scope_type),
+                };
+            }
+            match ops::list_scoped_config(&state.conn, &scope_type, &scope_id) {
+                Ok(entries) => Response::Ok {
+                    data: ResponseData::ScopedConfigList { entries },
+                },
+                Err(e) => Response::Error {
+                    message: format!("list_scoped_config failed: {e}"),
+                },
+            }
+        }
+
+        Request::GetEffectiveConfig { session_id, agent, reality_id, user_id, team_id, organization_id } => {
+            match ops::resolve_effective_config(
+                &state.conn,
+                session_id.as_deref(),
+                agent.as_deref(),
+                reality_id.as_deref(),
+                user_id.as_deref(),
+                team_id.as_deref(),
+                organization_id.as_deref(),
+            ) {
+                Ok(config) => Response::Ok {
+                    data: ResponseData::EffectiveConfig { config },
+                },
+                Err(e) => Response::Error {
+                    message: format!("resolve_effective_config failed: {e}"),
+                },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

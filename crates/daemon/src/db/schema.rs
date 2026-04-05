@@ -661,13 +661,13 @@ mod tests {
 
         // Insert a config entry
         conn.execute(
-            "INSERT INTO config_scope (id, scope_type, scope_id, key, value, set_at) VALUES ('c1', 'org', 'default', 'max_tokens', '4096', datetime('now'))",
+            "INSERT INTO config_scope (id, scope_type, scope_id, key, value, set_at) VALUES ('c1', 'organization', 'default', 'max_tokens', '4096', datetime('now'))",
             [],
         ).unwrap();
 
         // Duplicate (scope_type, scope_id, key) should fail
         let result = conn.execute(
-            "INSERT INTO config_scope (id, scope_type, scope_id, key, value, set_at) VALUES ('c2', 'org', 'default', 'max_tokens', '8192', datetime('now'))",
+            "INSERT INTO config_scope (id, scope_type, scope_id, key, value, set_at) VALUES ('c2', 'organization', 'default', 'max_tokens', '8192', datetime('now'))",
             [],
         );
         assert!(result.is_err(), "duplicate config scope entry should fail");

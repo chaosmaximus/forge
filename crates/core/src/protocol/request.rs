@@ -310,5 +310,37 @@ pub enum Request {
     /// List all A2A permissions
     ListPermissions,
 
+    // ── Scoped Configuration ──
+
+    /// Get effective (resolved) config for a scope chain
+    GetEffectiveConfig {
+        session_id: Option<String>,
+        agent: Option<String>,
+        reality_id: Option<String>,
+        user_id: Option<String>,
+        team_id: Option<String>,
+        organization_id: Option<String>,
+    },
+    /// Set a scoped configuration value
+    SetScopedConfig {
+        scope_type: String,
+        scope_id: String,
+        key: String,
+        value: String,
+        locked: bool,
+        ceiling: Option<f64>,
+    },
+    /// Delete a scoped configuration value
+    DeleteScopedConfig {
+        scope_type: String,
+        scope_id: String,
+        key: String,
+    },
+    /// List all configuration entries for a scope
+    ListScopedConfig {
+        scope_type: String,
+        scope_id: String,
+    },
+
     Shutdown,
 }

@@ -363,6 +363,27 @@ pub enum ResponseData {
     /// List of all A2A permissions
     PermissionList { permissions: Vec<A2aPermission>, count: usize },
 
+    // ── Scoped Configuration Responses ──
+
+    /// Effective (resolved) configuration for a scope chain
+    EffectiveConfig {
+        config: std::collections::HashMap<String, crate::types::entity::ResolvedConfigValue>,
+    },
+    /// A scoped config entry was set
+    ScopedConfigSet {
+        scope_type: String,
+        scope_id: String,
+        key: String,
+    },
+    /// A scoped config entry was deleted
+    ScopedConfigDeleted {
+        deleted: bool,
+    },
+    /// List of scoped config entries
+    ScopedConfigList {
+        entries: Vec<crate::types::entity::ConfigScopeEntry>,
+    },
+
     Shutdown,
 }
 

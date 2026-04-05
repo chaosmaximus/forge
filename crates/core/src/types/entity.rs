@@ -54,7 +54,7 @@ pub struct Reality {
     pub metadata: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConfigScopeEntry {
     pub id: String,
     pub scope_type: String,
@@ -67,13 +67,14 @@ pub struct ConfigScopeEntry {
     pub set_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResolvedConfigValue {
+    pub key: String,
     pub value: String,
-    pub source: String,
+    pub source_scope_type: String,
+    pub source_scope_id: String,
     pub locked: bool,
-    pub ceiling: Option<f64>,
-    pub ceiling_source: Option<String>,
+    pub ceiling_applied: bool,
 }
 
 /// Memory portability classification

@@ -377,6 +377,43 @@ mod tests {
                 "revoke_permission",
                 Request::RevokePermission { id: "perm-123".into() },
             ),
+            (
+                "get_effective_config",
+                Request::GetEffectiveConfig {
+                    session_id: Some("s1".into()),
+                    agent: Some("claude-code".into()),
+                    reality_id: Some("r1".into()),
+                    user_id: Some("local".into()),
+                    team_id: None,
+                    organization_id: Some("default".into()),
+                },
+            ),
+            (
+                "set_scoped_config",
+                Request::SetScopedConfig {
+                    scope_type: "organization".into(),
+                    scope_id: "default".into(),
+                    key: "max_tokens".into(),
+                    value: "4096".into(),
+                    locked: false,
+                    ceiling: Some(10000.0),
+                },
+            ),
+            (
+                "delete_scoped_config",
+                Request::DeleteScopedConfig {
+                    scope_type: "organization".into(),
+                    scope_id: "default".into(),
+                    key: "max_tokens".into(),
+                },
+            ),
+            (
+                "list_scoped_config",
+                Request::ListScopedConfig {
+                    scope_type: "organization".into(),
+                    scope_id: "default".into(),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -594,6 +631,30 @@ mod tests {
                 "revoke_permission",
                 r#"{"method":"revoke_permission","params":{"id":"perm-123"}}"#,
             ),
+            (
+                "get_effective_config",
+                r#"{"method":"get_effective_config","params":{"organization_id":"default"}}"#,
+            ),
+            (
+                "get_effective_config all params",
+                r#"{"method":"get_effective_config","params":{"session_id":"s1","agent":"claude-code","reality_id":"r1","user_id":"local","team_id":"t1","organization_id":"default"}}"#,
+            ),
+            (
+                "set_scoped_config",
+                r#"{"method":"set_scoped_config","params":{"scope_type":"organization","scope_id":"default","key":"max_tokens","value":"4096","locked":false}}"#,
+            ),
+            (
+                "set_scoped_config with ceiling",
+                r#"{"method":"set_scoped_config","params":{"scope_type":"reality","scope_id":"r1","key":"max_tokens","value":"8192","locked":true,"ceiling":10000.0}}"#,
+            ),
+            (
+                "delete_scoped_config",
+                r#"{"method":"delete_scoped_config","params":{"scope_type":"organization","scope_id":"default","key":"max_tokens"}}"#,
+            ),
+            (
+                "list_scoped_config",
+                r#"{"method":"list_scoped_config","params":{"scope_type":"organization","scope_id":"default"}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -650,10 +711,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 15 (ManasHealth moved to parameterized, +ListPermissions)
         let unit_count = 15;
-        // Parameterized variants: 47 (including ListEntities, A2A FISP, A2A permissions)
-        let param_count = 47;
-        // Total: 62
-        let expected_total = 62;
+        // Parameterized variants: 51 (including ListEntities, A2A FISP, A2A permissions, Scoped Config)
+        let param_count = 51;
+        // Total: 66
+        let expected_total = 66;
 
         assert_eq!(
             unit_count + param_count,
@@ -869,6 +930,31 @@ mod tests {
                 },
                 Request::RevokePermission { id: "perm-1".into() },
                 Request::ListPermissions,
+                Request::GetEffectiveConfig {
+                    session_id: None,
+                    agent: None,
+                    reality_id: None,
+                    user_id: None,
+                    team_id: None,
+                    organization_id: Some("default".into()),
+                },
+                Request::SetScopedConfig {
+                    scope_type: "organization".into(),
+                    scope_id: "default".into(),
+                    key: "max_tokens".into(),
+                    value: "4096".into(),
+                    locked: false,
+                    ceiling: None,
+                },
+                Request::DeleteScopedConfig {
+                    scope_type: "organization".into(),
+                    scope_id: "default".into(),
+                    key: "max_tokens".into(),
+                },
+                Request::ListScopedConfig {
+                    scope_type: "organization".into(),
+                    scope_id: "default".into(),
+                },
             ]
         }
 

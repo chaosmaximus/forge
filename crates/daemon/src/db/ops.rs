@@ -1720,6 +1720,298 @@ pub fn update_reality_last_active(conn: &Connection, id: &str, org_id: &str) -> 
     Ok(())
 }
 
+// ── v2.0 Scoped Configuration CRUD + Resolution ──
+
+use forge_core::types::entity::{ConfigScopeEntry, ResolvedConfigValue};
+use std::collections::HashMap;
+
+/// Valid scope types for configuration resolution, ordered from most specific to least specific.
+const VALID_SCOPE_TYPES: &[&str] = &[
+    "session",
+    "agent",
+    "reality",
+    "user",
+    "team",
+    "organization",
+];
+
+/// Validate that a scope_type string is one of the known scope types.
+pub fn validate_scope_type(scope_type: &str) -> bool {
+    VALID_SCOPE_TYPES.contains(&scope_type)
+}
+
+/// Set (upsert) a scoped configuration entry.
+pub fn set_scoped_config(
+    conn: &Connection,
+    scope_type: &str,
+    scope_id: &str,
+    key: &str,
+    value: &str,
+    locked: bool,
+    ceiling: Option<f64>,
+    set_by: &str,
+) -> rusqlite::Result<()> {
+    let id = ulid::Ulid::new().to_string();
+    conn.execute(
+        "INSERT INTO config_scope (id, scope_type, scope_id, key, value, locked, ceiling, set_by, set_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+         ON CONFLICT(scope_type, scope_id, key) DO UPDATE SET
+           value = excluded.value,
+           locked = excluded.locked,
+           ceiling = excluded.ceiling,
+           set_by = excluded.set_by,
+           set_at = excluded.set_at",
+        params![id, scope_type, scope_id, key, value, locked as i32, ceiling, set_by],
+    )?;
+    Ok(())
+}
+
+/// Get a single scoped configuration entry.
+pub fn get_scoped_config(
+    conn: &Connection,
+    scope_type: &str,
+    scope_id: &str,
+    key: &str,
+) -> rusqlite::Result<Option<ConfigScopeEntry>> {
+    conn.query_row(
+        "SELECT id, scope_type, scope_id, key, value, locked, ceiling, set_by, set_at
+         FROM config_scope WHERE scope_type = ?1 AND scope_id = ?2 AND key = ?3",
+        params![scope_type, scope_id, key],
+        |row| {
+            let locked_int: i32 = row.get(5)?;
+            Ok(ConfigScopeEntry {
+                id: row.get(0)?,
+                scope_type: row.get(1)?,
+                scope_id: row.get(2)?,
+                key: row.get(3)?,
+                value: row.get(4)?,
+                locked: locked_int != 0,
+                ceiling: row.get(6)?,
+                set_by: row.get(7)?,
+                set_at: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// List all scoped configuration entries for a given scope.
+pub fn list_scoped_config(
+    conn: &Connection,
+    scope_type: &str,
+    scope_id: &str,
+) -> rusqlite::Result<Vec<ConfigScopeEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, scope_type, scope_id, key, value, locked, ceiling, set_by, set_at
+         FROM config_scope WHERE scope_type = ?1 AND scope_id = ?2 ORDER BY key",
+    )?;
+    let rows = stmt.query_map(params![scope_type, scope_id], |row| {
+        let locked_int: i32 = row.get(5)?;
+        Ok(ConfigScopeEntry {
+            id: row.get(0)?,
+            scope_type: row.get(1)?,
+            scope_id: row.get(2)?,
+            key: row.get(3)?,
+            value: row.get(4)?,
+            locked: locked_int != 0,
+            ceiling: row.get(6)?,
+            set_by: row.get(7)?,
+            set_at: row.get(8)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Delete a scoped configuration entry. Returns true if a row was deleted.
+pub fn delete_scoped_config(
+    conn: &Connection,
+    scope_type: &str,
+    scope_id: &str,
+    key: &str,
+) -> rusqlite::Result<bool> {
+    let changes = conn.execute(
+        "DELETE FROM config_scope WHERE scope_type = ?1 AND scope_id = ?2 AND key = ?3",
+        params![scope_type, scope_id, key],
+    )?;
+    Ok(changes > 0)
+}
+
+/// Resolve a single configuration key through the scope chain.
+///
+/// Resolution algorithm:
+/// 1. Build scope chain from most-specific to least-specific (session->agent->reality->user->team->org)
+/// 2. Walk from LEAST specific to MOST specific:
+///    - If entry is locked, set result = this value, mark locked
+///    - Track tightest ceiling from any ancestor
+///    - If NOT locked by ancestor, set result = this value (most-specific wins)
+/// 3. Apply ceiling: if final value is numeric and exceeds ceiling, clamp it
+pub fn resolve_scoped_config(
+    conn: &Connection,
+    key: &str,
+    session_id: Option<&str>,
+    agent: Option<&str>,
+    reality_id: Option<&str>,
+    user_id: Option<&str>,
+    team_id: Option<&str>,
+    org_id: Option<&str>,
+) -> rusqlite::Result<Option<ResolvedConfigValue>> {
+    // Build scope chain from least-specific to most-specific
+    let mut scope_chain: Vec<(&str, &str)> = Vec::new();
+    if let Some(id) = org_id {
+        scope_chain.push(("organization", id));
+    }
+    if let Some(id) = team_id {
+        scope_chain.push(("team", id));
+    }
+    if let Some(id) = user_id {
+        scope_chain.push(("user", id));
+    }
+    if let Some(id) = reality_id {
+        scope_chain.push(("reality", id));
+    }
+    if let Some(id) = agent {
+        scope_chain.push(("agent", id));
+    }
+    if let Some(id) = session_id {
+        scope_chain.push(("session", id));
+    }
+
+    if scope_chain.is_empty() {
+        return Ok(None);
+    }
+
+    // Fetch entries for this key from all scope levels
+    let mut entries: Vec<(usize, ConfigScopeEntry)> = Vec::new();
+    for (idx, (st, sid)) in scope_chain.iter().enumerate() {
+        if let Some(entry) = get_scoped_config(conn, st, sid, key)? {
+            entries.push((idx, entry));
+        }
+    }
+
+    if entries.is_empty() {
+        return Ok(None);
+    }
+
+    // Walk from least-specific (lowest index) to most-specific (highest index)
+    let mut result_value: Option<String> = None;
+    let mut result_scope_type: Option<String> = None;
+    let mut result_scope_id: Option<String> = None;
+    let mut is_locked = false;
+    let mut tightest_ceiling: Option<f64> = None;
+
+    // Entries are already ordered by index (least-specific first)
+    for (_, entry) in &entries {
+        // Track tightest ceiling from any level
+        if let Some(c) = entry.ceiling {
+            tightest_ceiling = Some(match tightest_ceiling {
+                Some(existing) => existing.min(c),
+                None => c,
+            });
+        }
+
+        if is_locked {
+            // A less-specific scope locked it; don't override
+            continue;
+        }
+
+        // Most-specific wins (we walk least-specific first, so keep overwriting)
+        result_value = Some(entry.value.clone());
+        result_scope_type = Some(entry.scope_type.clone());
+        result_scope_id = Some(entry.scope_id.clone());
+
+        if entry.locked {
+            is_locked = true;
+        }
+    }
+
+    let mut final_value = match result_value {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    // Apply ceiling: if final value is numeric and exceeds ceiling, clamp it
+    let mut ceiling_applied = false;
+    if let Some(ceiling) = tightest_ceiling {
+        if let Ok(numeric) = final_value.parse::<f64>() {
+            if numeric > ceiling {
+                final_value = ceiling.to_string();
+                ceiling_applied = true;
+            }
+        }
+    }
+
+    Ok(Some(ResolvedConfigValue {
+        key: key.to_string(),
+        value: final_value,
+        source_scope_type: result_scope_type.unwrap_or_default(),
+        source_scope_id: result_scope_id.unwrap_or_default(),
+        locked: is_locked,
+        ceiling_applied,
+    }))
+}
+
+/// Resolve effective configuration for all keys in the scope chain.
+///
+/// Collects all unique keys from every scope level, then resolves each one.
+pub fn resolve_effective_config(
+    conn: &Connection,
+    session_id: Option<&str>,
+    agent: Option<&str>,
+    reality_id: Option<&str>,
+    user_id: Option<&str>,
+    team_id: Option<&str>,
+    org_id: Option<&str>,
+) -> rusqlite::Result<HashMap<String, ResolvedConfigValue>> {
+    // Build scope chain to collect all keys
+    let mut scope_chain: Vec<(&str, &str)> = Vec::new();
+    if let Some(id) = org_id {
+        scope_chain.push(("organization", id));
+    }
+    if let Some(id) = team_id {
+        scope_chain.push(("team", id));
+    }
+    if let Some(id) = user_id {
+        scope_chain.push(("user", id));
+    }
+    if let Some(id) = reality_id {
+        scope_chain.push(("reality", id));
+    }
+    if let Some(id) = agent {
+        scope_chain.push(("agent", id));
+    }
+    if let Some(id) = session_id {
+        scope_chain.push(("session", id));
+    }
+
+    // Collect all unique keys across all scope levels
+    let mut all_keys: HashSet<String> = HashSet::new();
+    for (st, sid) in &scope_chain {
+        let entries = list_scoped_config(conn, st, sid)?;
+        for entry in entries {
+            all_keys.insert(entry.key);
+        }
+    }
+
+    // Resolve each key
+    let mut result = HashMap::new();
+    for key in &all_keys {
+        if let Some(resolved) = resolve_scoped_config(
+            conn,
+            key,
+            session_id,
+            agent,
+            reality_id,
+            user_id,
+            team_id,
+            org_id,
+        )? {
+            result.insert(key.clone(), resolved);
+        }
+    }
+
+    Ok(result)
+}
+
 /// Ensure default organization and local user exist (idempotent, called on first run).
 pub fn ensure_defaults(conn: &Connection) -> rusqlite::Result<()> {
     create_default_org(conn)?;
@@ -3015,5 +3307,186 @@ mod tests {
         let realities = list_realities(&conn, "default").unwrap();
         let null_count = realities.iter().filter(|r| r.project_path.is_none()).count();
         assert!(null_count >= 2, "multiple realities with NULL project_path should be allowed");
+    }
+
+    // ── Scoped Configuration Tests ──
+
+    #[test]
+    fn test_set_scoped_config_roundtrip() {
+        let conn = open_db();
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "4096", false, None, "user").unwrap();
+        let entry = get_scoped_config(&conn, "organization", "default", "max_tokens").unwrap();
+        assert!(entry.is_some(), "config entry should exist after set");
+        let entry = entry.unwrap();
+        assert_eq!(entry.scope_type, "organization");
+        assert_eq!(entry.scope_id, "default");
+        assert_eq!(entry.key, "max_tokens");
+        assert_eq!(entry.value, "4096");
+        assert!(!entry.locked);
+        assert!(entry.ceiling.is_none());
+        assert_eq!(entry.set_by, "user");
+    }
+
+    #[test]
+    fn test_set_scoped_config_upsert() {
+        let conn = open_db();
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "4096", false, None, "user").unwrap();
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "8192", true, Some(10000.0), "admin").unwrap();
+        let entry = get_scoped_config(&conn, "organization", "default", "max_tokens").unwrap().unwrap();
+        assert_eq!(entry.value, "8192", "upsert should update value");
+        assert!(entry.locked, "upsert should update locked");
+        assert_eq!(entry.ceiling, Some(10000.0), "upsert should update ceiling");
+        assert_eq!(entry.set_by, "admin", "upsert should update set_by");
+    }
+
+    #[test]
+    fn test_delete_scoped_config_exists() {
+        let conn = open_db();
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "4096", false, None, "user").unwrap();
+        let deleted = delete_scoped_config(&conn, "organization", "default", "max_tokens").unwrap();
+        assert!(deleted, "delete should return true when entry exists");
+        let entry = get_scoped_config(&conn, "organization", "default", "max_tokens").unwrap();
+        assert!(entry.is_none(), "entry should be gone after delete");
+    }
+
+    #[test]
+    fn test_delete_scoped_config_not_exists() {
+        let conn = open_db();
+        let deleted = delete_scoped_config(&conn, "organization", "default", "nonexistent").unwrap();
+        assert!(!deleted, "delete should return false when entry does not exist");
+    }
+
+    #[test]
+    fn test_list_scoped_config_scope_filtering() {
+        let conn = open_db();
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "4096", false, None, "user").unwrap();
+        set_scoped_config(&conn, "organization", "default", "model", "gpt-4", false, None, "user").unwrap();
+        set_scoped_config(&conn, "reality", "r1", "max_tokens", "8192", false, None, "user").unwrap();
+
+        let entries = list_scoped_config(&conn, "organization", "default").unwrap();
+        assert_eq!(entries.len(), 2, "should return only entries for that scope");
+        let keys: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+        assert!(keys.contains(&"max_tokens"));
+        assert!(keys.contains(&"model"));
+
+        let reality_entries = list_scoped_config(&conn, "reality", "r1").unwrap();
+        assert_eq!(reality_entries.len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_no_scoped_config() {
+        let conn = open_db();
+        let result = resolve_scoped_config(&conn, "max_tokens", None, None, None, None, None, Some("default")).unwrap();
+        assert!(result.is_none(), "should return None when no config exists");
+    }
+
+    #[test]
+    fn test_resolve_single_scope_level() {
+        let conn = open_db();
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "3000", false, None, "user").unwrap();
+        let resolved = resolve_scoped_config(&conn, "max_tokens", None, None, None, None, None, Some("default")).unwrap();
+        assert!(resolved.is_some());
+        let resolved = resolved.unwrap();
+        assert_eq!(resolved.value, "3000");
+        assert_eq!(resolved.source_scope_type, "organization");
+        assert_eq!(resolved.source_scope_id, "default");
+        assert!(!resolved.locked);
+        assert!(!resolved.ceiling_applied);
+    }
+
+    #[test]
+    fn test_resolve_most_specific_wins() {
+        let conn = open_db();
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "3000", false, None, "user").unwrap();
+        set_scoped_config(&conn, "reality", "r1", "max_tokens", "5000", false, None, "user").unwrap();
+        let resolved = resolve_scoped_config(&conn, "max_tokens", None, None, Some("r1"), None, None, Some("default")).unwrap().unwrap();
+        assert_eq!(resolved.value, "5000", "most-specific (reality) should win over org");
+        assert_eq!(resolved.source_scope_type, "reality");
+    }
+
+    #[test]
+    fn test_resolve_locked_field() {
+        let conn = open_db();
+        // Org locks the value
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "3000", true, None, "admin").unwrap();
+        // Reality tries to override
+        set_scoped_config(&conn, "reality", "r1", "max_tokens", "5000", false, None, "user").unwrap();
+        let resolved = resolve_scoped_config(&conn, "max_tokens", None, None, Some("r1"), None, None, Some("default")).unwrap().unwrap();
+        assert_eq!(resolved.value, "3000", "locked org value should not be overridden by reality");
+        assert!(resolved.locked, "result should be marked as locked");
+        assert_eq!(resolved.source_scope_type, "organization");
+    }
+
+    #[test]
+    fn test_resolve_ceiling_enforcement() {
+        let conn = open_db();
+        // Org sets ceiling of 10000
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "3000", false, Some(10000.0), "admin").unwrap();
+        // Reality sets 15000 (exceeds ceiling)
+        set_scoped_config(&conn, "reality", "r1", "max_tokens", "15000", false, None, "user").unwrap();
+        let resolved = resolve_scoped_config(&conn, "max_tokens", None, None, Some("r1"), None, None, Some("default")).unwrap().unwrap();
+        assert_eq!(resolved.value, "10000", "value should be clamped to ceiling");
+        assert!(resolved.ceiling_applied, "ceiling_applied should be true");
+        assert_eq!(resolved.source_scope_type, "reality", "source should still be reality (before clamping)");
+    }
+
+    #[test]
+    fn test_resolve_ceiling_plus_most_specific() {
+        let conn = open_db();
+        // Org ceiling = 10000
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "3000", false, Some(10000.0), "admin").unwrap();
+        // User = 5000, under ceiling
+        set_scoped_config(&conn, "user", "local", "max_tokens", "5000", false, None, "user").unwrap();
+        // Reality = 8000, under ceiling
+        set_scoped_config(&conn, "reality", "r1", "max_tokens", "8000", false, None, "user").unwrap();
+        let resolved = resolve_scoped_config(&conn, "max_tokens", None, None, Some("r1"), Some("local"), None, Some("default")).unwrap().unwrap();
+        assert_eq!(resolved.value, "8000", "reality is more specific than user, and under ceiling");
+        assert!(!resolved.ceiling_applied, "8000 < 10000 ceiling, not clamped");
+        assert_eq!(resolved.source_scope_type, "reality");
+    }
+
+    #[test]
+    fn test_resolve_non_numeric_with_ceiling() {
+        let conn = open_db();
+        // Org sets ceiling (which only applies to numeric values)
+        set_scoped_config(&conn, "organization", "default", "model", "gpt-4", false, Some(10000.0), "admin").unwrap();
+        // Reality overrides with non-numeric
+        set_scoped_config(&conn, "reality", "r1", "model", "claude-opus-4", false, None, "user").unwrap();
+        let resolved = resolve_scoped_config(&conn, "model", None, None, Some("r1"), None, None, Some("default")).unwrap().unwrap();
+        assert_eq!(resolved.value, "claude-opus-4", "non-numeric value should not be clamped");
+        assert!(!resolved.ceiling_applied, "ceiling should be ignored for non-numeric values");
+    }
+
+    #[test]
+    fn test_resolve_effective_config_returns_all_keys() {
+        let conn = open_db();
+        set_scoped_config(&conn, "organization", "default", "max_tokens", "4096", false, None, "user").unwrap();
+        set_scoped_config(&conn, "organization", "default", "model", "gpt-4", false, None, "user").unwrap();
+        set_scoped_config(&conn, "reality", "r1", "temperature", "0.7", false, None, "user").unwrap();
+
+        let effective = resolve_effective_config(&conn, None, None, Some("r1"), None, None, Some("default")).unwrap();
+        assert_eq!(effective.len(), 3, "should have 3 resolved keys");
+        assert!(effective.contains_key("max_tokens"));
+        assert!(effective.contains_key("model"));
+        assert!(effective.contains_key("temperature"));
+        assert_eq!(effective["temperature"].source_scope_type, "reality");
+    }
+
+    #[test]
+    fn test_validate_scope_type_valid() {
+        assert!(validate_scope_type("organization"));
+        assert!(validate_scope_type("team"));
+        assert!(validate_scope_type("user"));
+        assert!(validate_scope_type("reality"));
+        assert!(validate_scope_type("agent"));
+        assert!(validate_scope_type("session"));
+    }
+
+    #[test]
+    fn test_validate_scope_type_invalid() {
+        assert!(!validate_scope_type("invalid"));
+        assert!(!validate_scope_type(""));
+        assert!(!validate_scope_type("global"));
+        assert!(!validate_scope_type("ORGANIZATION"));
     }
 }
