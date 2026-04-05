@@ -19,6 +19,7 @@ pub async fn run_embedder(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
     config: ForgeConfig,
     mut shutdown_rx: watch::Receiver<bool>,
+    db_path: String,
 ) {
     eprintln!("[embedder] started, interval = 60s");
 
@@ -33,8 +34,10 @@ pub async fn run_embedder(
             }
         }
 
-        // Get unembedded memories (under lock, but fast — just SQLite queries)
-        let to_embed: Vec<(String, String)> = {
+        // Get unembedded memories using read-only connection (no mutex contention)
+        let to_embed: Vec<(String, String)> = if let Some(rc) = super::open_read_conn(&db_path) {
+            get_unembedded_memories(&rc)
+        } else {
             let locked = state.lock().await;
             get_unembedded_memories(&locked.conn)
         };

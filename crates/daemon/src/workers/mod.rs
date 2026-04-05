@@ -24,6 +24,29 @@ use crate::server::handler::DaemonState;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 
+/// Open a read-only SQLite connection for worker use.
+/// Workers use this for SELECT queries to avoid contending with the write mutex.
+/// Returns None for :memory: databases (tests) or on open failure — caller falls back to state lock.
+pub fn open_read_conn(db_path: &str) -> Option<rusqlite::Connection> {
+    if db_path == ":memory:" {
+        return None; // in-memory DBs can't share across connections
+    }
+    crate::db::vec::init_sqlite_vec();
+    match rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(conn) => {
+            conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
+            Some(conn)
+        }
+        Err(e) => {
+            eprintln!("[worker] WARN: failed to open read-only connection: {e} — falling back to state lock");
+            None
+        }
+    }
+}
+
 /// Spawn all background workers. Returns join handles for graceful shutdown.
 ///
 /// Detects installed agent adapters and configures the watcher + extractor
@@ -32,6 +55,7 @@ pub fn spawn_workers(
     state: Arc<Mutex<DaemonState>>,
     config: ForgeConfig,
     shutdown_tx: &watch::Sender<bool>,
+    db_path: String,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     // Detect installed agent adapters
     let detected = adapters::detect_adapters();
@@ -71,6 +95,12 @@ pub fn spawn_workers(
     let extractor_config = config.clone();
     let embedder_config = config;
 
+    // Clone db_path for each worker that uses read-only connections
+    let extractor_db_path = db_path.clone();
+    let embedder_db_path = db_path.clone();
+    let disposition_db_path = db_path.clone();
+    let diagnostics_db_path = db_path;
+
     let watcher_handle = tokio::spawn(async move {
         watcher::run_watcher(file_tx, watch_configs, watcher_shutdown).await;
     });
@@ -82,12 +112,13 @@ pub fn spawn_workers(
             extractor_config,
             agent_adapters,
             extractor_shutdown,
+            extractor_db_path,
         )
         .await;
     });
 
     let embedder_handle = tokio::spawn(async move {
-        embedder::run_embedder(embedder_state, embedder_config, embedder_shutdown).await;
+        embedder::run_embedder(embedder_state, embedder_config, embedder_shutdown, embedder_db_path).await;
     });
 
     let consolidator_handle = tokio::spawn(async move {
@@ -103,7 +134,7 @@ pub fn spawn_workers(
     });
 
     let disposition_handle = tokio::spawn(async move {
-        disposition::run_disposition(disposition_state, disposition_shutdown).await;
+        disposition::run_disposition(disposition_state, disposition_shutdown, disposition_db_path).await;
     });
 
     // Diagnostics worker — debounced batch analysis
@@ -118,7 +149,7 @@ pub fn spawn_workers(
         });
     }
     let diagnostics_handle = tokio::spawn(async move {
-        diagnostics::run_diagnostics_worker(diagnostics_state, diag_rx, diagnostics_shutdown).await;
+        diagnostics::run_diagnostics_worker(diagnostics_state, diag_rx, diagnostics_shutdown, diagnostics_db_path).await;
     });
 
     eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics");

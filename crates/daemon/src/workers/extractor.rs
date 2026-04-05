@@ -28,6 +28,7 @@ pub async fn run_extractor(
     config: ForgeConfig,
     agent_adapters: Arc<Vec<Box<dyn AgentAdapter>>>,
     mut shutdown_rx: watch::Receiver<bool>,
+    db_path: String,
 ) {
     let mut offsets: HashMap<PathBuf, usize> = HashMap::new();
     let mut pending: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
@@ -49,7 +50,7 @@ pub async fn run_extractor(
                 if *shutdown_rx.borrow() {
                     // Process any pending files before shutdown
                     for path in pending.drain() {
-                        let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters).await;
+                        let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters, &db_path).await;
                     }
                     eprintln!("[extractor] shutdown received");
                     return;
@@ -72,7 +73,7 @@ pub async fn run_extractor(
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
                         for path in pending.drain() {
-                            let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters).await;
+                            let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters, &db_path).await;
                         }
                         eprintln!("[extractor] shutdown received during debounce");
                         return;
@@ -86,7 +87,7 @@ pub async fn run_extractor(
         if !files_to_process.is_empty() {
             eprintln!("[extractor] processing {} files after activity gap", files_to_process.len());
             for path in &files_to_process {
-                if let Err(e) = process_file(path, &mut offsets, &state, &config, &agent_adapters).await {
+                if let Err(e) = process_file(path, &mut offsets, &state, &config, &agent_adapters, &db_path).await {
                     eprintln!("[extractor] error processing {}: {e}", path.display());
                 }
             }
@@ -105,6 +106,7 @@ async fn process_file(
     state: &Arc<Mutex<crate::server::handler::DaemonState>>,
     _config: &ForgeConfig,
     agent_adapters: &[Box<dyn AgentAdapter>],
+    db_path: &str,
 ) -> Result<(), String> {
     let total_start = std::time::Instant::now();
     // Resolve symlinks and verify the canonical path still matches an adapter.
@@ -160,7 +162,13 @@ async fn process_file(
         return Ok(());
     }
 
-    // Emit agent_status based on transcript activity
+    // Grab event sender once (no DB needed — events is Clone)
+    let event_tx_for_status = {
+        let locked = state.lock().await;
+        locked.events.clone()
+    };
+
+    // Emit agent_status based on transcript activity (no DB access needed)
     {
         let last_chunk = chunks.last().unwrap();
         let status = if last_chunk.has_tool_use {
@@ -170,29 +178,38 @@ async fn process_file(
         } else {
             "waiting"
         };
-        let locked = state.lock().await;
-        crate::events::emit(&locked.events, "agent_status", serde_json::json!({
+        crate::events::emit(&event_tx_for_status, "agent_status", serde_json::json!({
             "agent": adapter.name(),
             "status": status,
             "transcript": path.to_string_lossy(),
         }));
-        drop(locked);
     }
 
     // Action tracking: count tool_use chunks and increment session counter.
     // Lightweight — no LLM needed, just count detection from parsed chunks.
+    // Uses read conn for session lookup (SELECT), write lock only for increment (UPDATE).
     {
         let tool_use_count = chunks.iter().filter(|c| c.has_tool_use).count();
         if tool_use_count > 0 {
-            let locked = state.lock().await;
-            let session_id = crate::sessions::get_active_session_id(&locked.conn, adapter.name())
-                .unwrap_or_default();
+            // Read session ID using read-only connection (no mutex contention)
+            let session_id = if let Some(rc) = super::open_read_conn(db_path) {
+                let sid = crate::sessions::get_active_session_id(&rc, adapter.name()).unwrap_or_default();
+                drop(rc);
+                sid
+            } else {
+                let locked = state.lock().await;
+                let sid = crate::sessions::get_active_session_id(&locked.conn, adapter.name()).unwrap_or_default();
+                drop(locked);
+                sid
+            };
             if !session_id.is_empty() {
+                // Write: brief lock for the UPDATE
+                let locked = state.lock().await;
                 if let Err(e) = crate::sessions::increment_tool_use_count(&locked.conn, &session_id, tool_use_count) {
                     eprintln!("[extractor] failed to increment tool_use_count: {e}");
                 }
+                drop(locked);
             }
-            drop(locked);
         }
     }
 
@@ -294,14 +311,14 @@ async fn process_file(
 
             let mut stored = 0usize;
 
-            // Quick lock to get event channel + session ID, then release
-            let (event_tx, session_id) = {
+            // Get event channel (already cloned above) + session ID via read conn
+            let event_tx = event_tx_for_status.clone();
+            let session_id = if let Some(rc) = super::open_read_conn(db_path) {
+                crate::sessions::get_active_session_id(&rc, adapter.name()).unwrap_or_default()
+            } else {
                 let locked = state.lock().await;
-                let tx = locked.events.clone();
-                let sid = crate::sessions::get_active_session_id(&locked.conn, adapter.name())
-                    .unwrap_or_default();
-                (tx, sid)
-            }; // lock released — socket handler can serve requests during memory processing
+                crate::sessions::get_active_session_id(&locked.conn, adapter.name()).unwrap_or_default()
+            };
 
             for em in &extracted {
                 // Re-acquire lock per memory write (short hold, doesn't block socket for long)

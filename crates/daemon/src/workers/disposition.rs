@@ -31,6 +31,7 @@ const LONG_SESSION_THRESHOLD_SECS: i64 = 600;
 pub async fn run_disposition(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
     mut shutdown_rx: watch::Receiver<bool>,
+    db_path: String,
 ) {
     eprintln!(
         "[disposition] started, interval = {:?}",
@@ -40,7 +41,7 @@ pub async fn run_disposition(
     loop {
         tokio::select! {
             _ = tokio::time::sleep(DISPOSITION_INTERVAL) => {
-                tick(&state).await;
+                tick(&state, &db_path).await;
             }
             _ = shutdown_rx.changed() => {
                 eprintln!("[disposition] shutting down");
@@ -50,17 +51,27 @@ pub async fn run_disposition(
     }
 }
 
-async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
-    let locked = state.lock().await;
+async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>, db_path: &str) {
+    // Use read-only connection for agent discovery (SELECT queries)
+    let active_agents = if let Some(rc) = super::open_read_conn(db_path) {
+        let agents = query_active_agents(&rc);
+        drop(rc);
+        agents
+    } else {
+        let locked = state.lock().await;
+        let agents = query_active_agents(&locked.conn);
+        drop(locked);
+        agents
+    };
 
-    // Discover active agents from session table (last 24 hours or still active)
-    let active_agents = query_active_agents(&locked.conn);
     // query_active_agents always returns at least DEFAULT_AGENT_NAME, so this is defensive
     if active_agents.is_empty() {
         eprintln!("[disposition] WARN: no agents found at all — this should not happen");
         return;
     }
 
+    // Lock state for writes (tick_for_agent does both reads and writes — store_disposition)
+    let locked = state.lock().await;
     for agent_name in &active_agents {
         tick_for_agent(&locked.conn, agent_name);
     }

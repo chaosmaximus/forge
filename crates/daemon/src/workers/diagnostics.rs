@@ -25,6 +25,7 @@ pub async fn run_diagnostics_worker(
     state: Arc<Mutex<DaemonState>>,
     mut file_rx: mpsc::Receiver<String>,
     mut shutdown_rx: watch::Receiver<bool>,
+    db_path: String,
 ) {
     let mut pending_files: HashSet<String> = HashSet::new();
     eprintln!(
@@ -43,7 +44,7 @@ pub async fn run_diagnostics_worker(
                     // Process any pending files before shutdown
                     if !pending_files.is_empty() {
                         let files: Vec<String> = pending_files.drain().collect();
-                        run_batch_analysis(&state, &files).await;
+                        run_batch_analysis(&state, &files, &db_path).await;
                     }
                     eprintln!("[diagnostics] shutdown received");
                     return;
@@ -75,7 +76,7 @@ pub async fn run_diagnostics_worker(
                     if *shutdown_rx.borrow() {
                         if !pending_files.is_empty() {
                             let files: Vec<String> = pending_files.drain().collect();
-                            run_batch_analysis(&state, &files).await;
+                            run_batch_analysis(&state, &files, &db_path).await;
                         }
                         eprintln!("[diagnostics] shutdown during debounce");
                         return;
@@ -86,28 +87,85 @@ pub async fn run_diagnostics_worker(
 
         // Process the batch
         let files: Vec<String> = pending_files.drain().collect();
-        run_batch_analysis(&state, &files).await;
+        run_batch_analysis(&state, &files, &db_path).await;
     }
 }
 
-async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String]) {
+async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String], db_path: &str) {
     eprintln!("[diagnostics] batch analysis on {} files", files.len());
 
-    // Narrow lock scope: acquire per-file, not for entire batch (Codex fix)
+    // For :memory: databases (tests), fall back to state lock for all operations.
+    // Read-only connections can't share data with in-memory databases.
+    let use_read_conn = db_path != ":memory:";
+
     for file in files {
-        let locked = state.lock().await;
-        if let Err(e) = diagnostics::clear_diagnostics(&locked.conn, file) {
-            eprintln!("[diagnostics] failed to clear diagnostics for {}: {e}", file);
+        if use_read_conn {
+            // Brief lock for the DELETE (clear old diagnostics)
+            {
+                let locked = state.lock().await;
+                if let Err(e) = diagnostics::clear_diagnostics(&locked.conn, file) {
+                    eprintln!("[diagnostics] failed to clear diagnostics for {}: {e}", file);
+                }
+            } // lock released
+
+            // Read-only queries + write lock per diagnostic stored
+            {
+                let (diags, bug_diags) = if let Some(rc) = super::open_read_conn(db_path) {
+                    let d = collect_consistency_diagnostics(&rc, file);
+                    let b = collect_repeat_bug_diagnostics(&rc, file);
+                    (d, b)
+                } else {
+                    let locked = state.lock().await;
+                    let d = collect_consistency_diagnostics(&locked.conn, file);
+                    let b = collect_repeat_bug_diagnostics(&locked.conn, file);
+                    drop(locked);
+                    (d, b)
+                };
+
+                // Brief lock for storing diagnostics
+                if !diags.is_empty() || !bug_diags.is_empty() {
+                    let locked = state.lock().await;
+                    for d in &diags {
+                        if let Err(e) = diagnostics::store_diagnostic(&locked.conn, d) {
+                            eprintln!("[diagnostics] failed to store consistency diagnostic: {e}");
+                        }
+                    }
+                    for d in &bug_diags {
+                        if let Err(e) = diagnostics::store_diagnostic(&locked.conn, d) {
+                            eprintln!("[diagnostics] failed to store repeat-bug diagnostic: {e}");
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fallback: use state lock for everything (tests with :memory: databases)
+            let locked = state.lock().await;
+            if let Err(e) = diagnostics::clear_diagnostics(&locked.conn, file) {
+                eprintln!("[diagnostics] failed to clear diagnostics for {}: {e}", file);
+            }
+            let diags = collect_consistency_diagnostics(&locked.conn, file);
+            let bug_diags = collect_repeat_bug_diagnostics(&locked.conn, file);
+            for d in &diags {
+                if let Err(e) = diagnostics::store_diagnostic(&locked.conn, d) {
+                    eprintln!("[diagnostics] failed to store consistency diagnostic: {e}");
+                }
+            }
+            for d in &bug_diags {
+                if let Err(e) = diagnostics::store_diagnostic(&locked.conn, d) {
+                    eprintln!("[diagnostics] failed to store repeat-bug diagnostic: {e}");
+                }
+            }
+            drop(locked);
         }
-        run_consistency_check(&locked.conn, file);
-        run_repeat_bug_check(&locked.conn, file);
-        drop(locked); // Release between files to avoid blocking daemon
     }
 
-    // Emit event (brief lock)
-    let locked = state.lock().await;
+    // Emit event (brief lock to get event sender)
+    let event_tx = {
+        let locked = state.lock().await;
+        locked.events.clone()
+    };
     crate::events::emit(
-        &locked.events,
+        &event_tx,
         "diagnostics_ready",
         serde_json::json!({
             "files": files,
@@ -119,8 +177,20 @@ async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String]) {
 /// Cross-file consistency check: finds symbols defined in the edited file,
 /// looks for callers from OTHER files via "calls" edges, and stores a
 /// diagnostic warning when callers exist.
+#[cfg(test)]
 pub(crate) fn run_consistency_check(conn: &Connection, file: &str) {
+    let diags = collect_consistency_diagnostics(conn, file);
+    for d in &diags {
+        if let Err(e) = diagnostics::store_diagnostic(conn, d) {
+            eprintln!("[diagnostics] failed to store consistency diagnostic: {e}");
+        }
+    }
+}
+
+/// Collect consistency diagnostics (read-only). Returns diagnostics without storing.
+fn collect_consistency_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnostic> {
     let like_pattern = format!("%{}", file);
+    let mut result = Vec::new();
 
     // Find symbols defined in this file
     let symbols: Vec<(String, String)> = conn
@@ -151,7 +221,7 @@ pub(crate) fn run_consistency_check(conn: &Connection, file: &str) {
             .unwrap_or(0);
 
         if caller_count > 0 {
-            let d = Diagnostic {
+            result.push(Diagnostic {
                 id: format!("consistency-{}", sym_id),
                 file_path: file.to_string(),
                 severity: "warning".into(),
@@ -164,19 +234,30 @@ pub(crate) fn run_consistency_check(conn: &Connection, file: &str) {
                 column: None,
                 created_at: forge_core::time::now_iso(),
                 expires_at: forge_core::time::now_offset(300), // 5 min TTL
-            };
-            if let Err(e) = diagnostics::store_diagnostic(conn, &d) {
-                eprintln!("[diagnostics] failed to store consistency diagnostic: {e}");
-            }
+            });
         }
     }
+
+    result
 }
 
 /// Memory-informed repeat-bug detector: matches the edited file against
 /// high-intensity negative-valence lessons in memory.
+#[cfg(test)]
 pub(crate) fn run_repeat_bug_check(conn: &Connection, file: &str) {
+    let diags = collect_repeat_bug_diagnostics(conn, file);
+    for d in &diags {
+        if let Err(e) = diagnostics::store_diagnostic(conn, d) {
+            eprintln!("[diagnostics] failed to store repeat-bug diagnostic: {e}");
+        }
+    }
+}
+
+/// Collect repeat-bug diagnostics (read-only). Returns diagnostics without storing.
+fn collect_repeat_bug_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnostic> {
     let file_stem = file.rsplit('/').next().unwrap_or(file);
     let dir = file.rsplit('/').nth(1).unwrap_or("");
+    let mut result = Vec::new();
 
     let search_terms = [format!("%{}%", file_stem), format!("%{}%", dir)];
 
@@ -201,7 +282,7 @@ pub(crate) fn run_repeat_bug_check(conn: &Connection, file: &str) {
             .unwrap_or_default();
 
         for (title, intensity) in &lessons {
-            let d = Diagnostic {
+            result.push(Diagnostic {
                 id: format!("repeat-bug-{}-{}", file_stem, title.len()),
                 file_path: file.to_string(),
                 severity: if *intensity > 0.8 {
@@ -216,12 +297,11 @@ pub(crate) fn run_repeat_bug_check(conn: &Connection, file: &str) {
                 column: None,
                 created_at: forge_core::time::now_iso(),
                 expires_at: forge_core::time::now_offset(300),
-            };
-            if let Err(e) = diagnostics::store_diagnostic(conn, &d) {
-                eprintln!("[diagnostics] failed to store repeat-bug diagnostic: {e}");
-            }
+            });
         }
     }
+
+    result
 }
 
 #[cfg(test)]
@@ -390,7 +470,7 @@ mod tests {
         // Spawn the worker
         let worker_state = Arc::clone(&state);
         let handle = tokio::spawn(async move {
-            run_diagnostics_worker(worker_state, file_rx, shutdown_rx).await;
+            run_diagnostics_worker(worker_state, file_rx, shutdown_rx, ":memory:".to_string()).await;
         });
 
         // Send some file paths
@@ -473,7 +553,7 @@ mod tests {
 
         let worker_state = Arc::clone(&state);
         let handle = tokio::spawn(async move {
-            run_diagnostics_worker(worker_state, file_rx, shutdown_rx).await;
+            run_diagnostics_worker(worker_state, file_rx, shutdown_rx, ":memory:".to_string()).await;
         });
 
         // Send the file that has callers
