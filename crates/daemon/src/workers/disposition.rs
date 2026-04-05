@@ -53,9 +53,16 @@ pub async fn run_disposition(
 
 async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>, db_path: &str) {
     // Use read-only connection for agent discovery (SELECT queries)
-    let read_conn = super::open_read_conn(db_path);
-    let active_agents = query_active_agents(&read_conn);
-    drop(read_conn);
+    let active_agents = if let Some(rc) = super::open_read_conn(db_path) {
+        let agents = query_active_agents(&rc);
+        drop(rc);
+        agents
+    } else {
+        let locked = state.lock().await;
+        let agents = query_active_agents(&locked.conn);
+        drop(locked);
+        agents
+    };
 
     // query_active_agents always returns at least DEFAULT_AGENT_NAME, so this is defensive
     if active_agents.is_empty() {

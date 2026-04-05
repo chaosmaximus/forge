@@ -192,10 +192,16 @@ async fn process_file(
         let tool_use_count = chunks.iter().filter(|c| c.has_tool_use).count();
         if tool_use_count > 0 {
             // Read session ID using read-only connection (no mutex contention)
-            let read_conn = super::open_read_conn(db_path);
-            let session_id = crate::sessions::get_active_session_id(&read_conn, adapter.name())
-                .unwrap_or_default();
-            drop(read_conn);
+            let session_id = if let Some(rc) = super::open_read_conn(db_path) {
+                let sid = crate::sessions::get_active_session_id(&rc, adapter.name()).unwrap_or_default();
+                drop(rc);
+                sid
+            } else {
+                let locked = state.lock().await;
+                let sid = crate::sessions::get_active_session_id(&locked.conn, adapter.name()).unwrap_or_default();
+                drop(locked);
+                sid
+            };
             if !session_id.is_empty() {
                 // Write: brief lock for the UPDATE
                 let locked = state.lock().await;
@@ -307,12 +313,12 @@ async fn process_file(
 
             // Get event channel (already cloned above) + session ID via read conn
             let event_tx = event_tx_for_status.clone();
-            let session_id = {
-                let read_conn = super::open_read_conn(db_path);
-                let sid = crate::sessions::get_active_session_id(&read_conn, adapter.name())
-                    .unwrap_or_default();
-                sid
-            }; // read conn dropped — no mutex contention
+            let session_id = if let Some(rc) = super::open_read_conn(db_path) {
+                crate::sessions::get_active_session_id(&rc, adapter.name()).unwrap_or_default()
+            } else {
+                let locked = state.lock().await;
+                crate::sessions::get_active_session_id(&locked.conn, adapter.name()).unwrap_or_default()
+            };
 
             for em in &extracted {
                 // Re-acquire lock per memory write (short hold, doesn't block socket for long)

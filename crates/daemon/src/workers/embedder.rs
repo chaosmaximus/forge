@@ -35,9 +35,11 @@ pub async fn run_embedder(
         }
 
         // Get unembedded memories using read-only connection (no mutex contention)
-        let to_embed: Vec<(String, String)> = {
-            let read_conn = super::open_read_conn(&db_path);
-            get_unembedded_memories(&read_conn)
+        let to_embed: Vec<(String, String)> = if let Some(rc) = super::open_read_conn(&db_path) {
+            get_unembedded_memories(&rc)
+        } else {
+            let locked = state.lock().await;
+            get_unembedded_memories(&locked.conn)
         };
 
         if to_embed.is_empty() {

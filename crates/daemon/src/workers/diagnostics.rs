@@ -110,10 +110,17 @@ async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String], d
 
             // Read-only queries + write lock per diagnostic stored
             {
-                let read_conn = super::open_read_conn(db_path);
-                let diags = collect_consistency_diagnostics(&read_conn, file);
-                let bug_diags = collect_repeat_bug_diagnostics(&read_conn, file);
-                drop(read_conn);
+                let (diags, bug_diags) = if let Some(rc) = super::open_read_conn(db_path) {
+                    let d = collect_consistency_diagnostics(&rc, file);
+                    let b = collect_repeat_bug_diagnostics(&rc, file);
+                    (d, b)
+                } else {
+                    let locked = state.lock().await;
+                    let d = collect_consistency_diagnostics(&locked.conn, file);
+                    let b = collect_repeat_bug_diagnostics(&locked.conn, file);
+                    drop(locked);
+                    (d, b)
+                };
 
                 // Brief lock for storing diagnostics
                 if !diags.is_empty() || !bug_diags.is_empty() {

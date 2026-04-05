@@ -26,15 +26,25 @@ use tokio::sync::{mpsc, watch, Mutex};
 
 /// Open a read-only SQLite connection for worker use.
 /// Workers use this for SELECT queries to avoid contending with the write mutex.
-pub fn open_read_conn(db_path: &str) -> rusqlite::Connection {
+/// Returns None for :memory: databases (tests) or on open failure — caller falls back to state lock.
+pub fn open_read_conn(db_path: &str) -> Option<rusqlite::Connection> {
+    if db_path == ":memory:" {
+        return None; // in-memory DBs can't share across connections
+    }
     crate::db::vec::init_sqlite_vec();
-    let conn = rusqlite::Connection::open_with_flags(
+    match rusqlite::Connection::open_with_flags(
         db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .expect("open read-only worker connection");
-    conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
-    conn
+    ) {
+        Ok(conn) => {
+            conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
+            Some(conn)
+        }
+        Err(e) => {
+            eprintln!("[worker] WARN: failed to open read-only connection: {e} — falling back to state lock");
+            None
+        }
+    }
 }
 
 /// Spawn all background workers. Returns join handles for graceful shutdown.
