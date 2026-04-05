@@ -416,5 +416,49 @@ pub enum Request {
         decision_style: Option<String>,
     },
 
+    /// Spawn an agent from a template — creates session, sets identity, joins team
+    SpawnAgent {
+        template_name: String,
+        session_id: String,
+        project: Option<String>,
+        team: Option<String>,
+    },
+    /// List active agents (sessions with template_id set)
+    ListAgents {
+        team: Option<String>,
+        limit: Option<usize>,
+    },
+    /// Manually update an agent's status
+    UpdateAgentStatus {
+        session_id: String,
+        status: String,
+        current_task: Option<String>,
+    },
+    /// Retire an agent (soft delete — preserves memories)
+    RetireAgent {
+        session_id: String,
+    },
+
+    /// Create a team with type (human/agent/mixed)
+    CreateTeam {
+        name: String,
+        team_type: Option<String>,
+        purpose: Option<String>,
+        organization_id: Option<String>,
+    },
+    /// List members of a team (including agent sessions)
+    ListTeamMembers {
+        team_name: String,
+    },
+    /// Set the orchestrator session for a team
+    SetTeamOrchestrator {
+        team_name: String,
+        session_id: String,
+    },
+    /// Get full team status (members, meetings, decisions)
+    TeamStatus {
+        team_name: String,
+    },
+
     Shutdown,
 }

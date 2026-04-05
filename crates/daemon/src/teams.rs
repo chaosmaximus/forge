@@ -1,5 +1,6 @@
 use forge_core::types::team::AgentTemplate;
 use rusqlite::{params, Connection};
+use serde_json::Value;
 
 // ── Agent Template CRUD ──
 
@@ -149,6 +150,318 @@ fn row_to_template(row: &rusqlite::Row) -> rusqlite::Result<AgentTemplate> {
     })
 }
 
+// ── Agent Lifecycle ──
+
+/// Spawn an agent from a template — creates session, sets identity, joins team.
+pub fn spawn_agent(
+    conn: &Connection,
+    template_name: &str,
+    session_id: &str,
+    project: Option<&str>,
+    team: Option<&str>,
+) -> rusqlite::Result<()> {
+    // Look up template by name (org_id="default")
+    let template = get_agent_template_by_name(conn, template_name, "default")?
+        .ok_or_else(|| {
+            rusqlite::Error::QueryReturnedNoRows
+        })?;
+
+    let now = forge_core::time::now_iso();
+
+    // Register the session
+    crate::sessions::register_session(
+        conn,
+        session_id,
+        &template.agent_type,
+        project,
+        None, // cwd
+        None, // capabilities
+        None, // current_task
+    )?;
+
+    // Set template_id, agent_status, last_activity_at on the session
+    conn.execute(
+        "UPDATE session SET template_id = ?1, agent_status = 'idle', last_activity_at = ?2 WHERE id = ?3",
+        params![template.id, now, session_id],
+    )?;
+
+    // Parse identity_facets JSON array and store each facet
+    if let Ok(facets) = serde_json::from_str::<Vec<serde_json::Value>>(&template.identity_facets) {
+        for facet_val in facets {
+            let facet_name = facet_val.get("facet")
+                .and_then(|v| v.as_str())
+                .unwrap_or("role");
+            let description = facet_val.get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let strength = facet_val.get("strength")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.8);
+
+            let identity = forge_core::types::manas::IdentityFacet {
+                id: ulid::Ulid::new().to_string(),
+                agent: template.agent_type.clone(),
+                facet: facet_name.to_string(),
+                description: description.to_string(),
+                strength,
+                source: format!("template:{}", template.name),
+                active: true,
+                created_at: now.clone(),
+                user_id: None,
+            };
+            crate::db::manas::store_identity(conn, &identity)?;
+        }
+    }
+
+    // If team specified: add session to team
+    if let Some(team_name) = team {
+        // Look up team by name
+        let team_id: Option<String> = conn.query_row(
+            "SELECT id FROM team WHERE name = ?1",
+            params![team_name],
+            |row| row.get(0),
+        ).ok();
+
+        if let Some(tid) = team_id {
+            conn.execute(
+                "INSERT OR IGNORE INTO team_member (team_id, user_id, role, joined_at, session_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![tid, session_id, template.name, now, session_id],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// List active agents (sessions with template_id set).
+pub fn list_agents(
+    conn: &Connection,
+    team: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<Value>> {
+    let mut agents = Vec::new();
+
+    match team {
+        Some(team_name) => {
+            let mut stmt = conn.prepare(
+                "SELECT s.id, s.agent, s.template_id, s.agent_status, s.current_task, s.last_activity_at, s.project
+                 FROM session s
+                 JOIN team_member tm ON tm.session_id = s.id
+                 JOIN team t ON t.id = tm.team_id
+                 WHERE s.template_id IS NOT NULL AND s.status = 'active'
+                   AND t.name = ?1
+                 ORDER BY s.last_activity_at DESC
+                 LIMIT ?2"
+            )?;
+            let rows = stmt.query_map(params![team_name, limit as i64], |row| {
+                Ok(serde_json::json!({
+                    "session_id": row.get::<_, String>(0)?,
+                    "agent": row.get::<_, String>(1)?,
+                    "template_id": row.get::<_, Option<String>>(2)?,
+                    "agent_status": row.get::<_, Option<String>>(3)?,
+                    "current_task": row.get::<_, Option<String>>(4)?,
+                    "last_activity_at": row.get::<_, Option<String>>(5)?,
+                    "project": row.get::<_, Option<String>>(6)?,
+                }))
+            })?;
+            for row in rows {
+                agents.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare(
+                "SELECT id, agent, template_id, agent_status, current_task, last_activity_at, project
+                 FROM session
+                 WHERE template_id IS NOT NULL AND status = 'active'
+                 ORDER BY last_activity_at DESC
+                 LIMIT ?1"
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |row| {
+                Ok(serde_json::json!({
+                    "session_id": row.get::<_, String>(0)?,
+                    "agent": row.get::<_, String>(1)?,
+                    "template_id": row.get::<_, Option<String>>(2)?,
+                    "agent_status": row.get::<_, Option<String>>(3)?,
+                    "current_task": row.get::<_, Option<String>>(4)?,
+                    "last_activity_at": row.get::<_, Option<String>>(5)?,
+                    "project": row.get::<_, Option<String>>(6)?,
+                }))
+            })?;
+            for row in rows {
+                agents.push(row?);
+            }
+        }
+    }
+
+    Ok(agents)
+}
+
+/// Manually update an agent's status.
+pub fn update_agent_status(
+    conn: &Connection,
+    session_id: &str,
+    status: &str,
+    task: Option<&str>,
+) -> rusqlite::Result<bool> {
+    let now = forge_core::time::now_iso();
+    let count = conn.execute(
+        "UPDATE session SET agent_status = ?1, current_task = ?2, last_activity_at = ?3 WHERE id = ?4",
+        params![status, task.unwrap_or(""), now, session_id],
+    )?;
+    Ok(count > 0)
+}
+
+/// Retire an agent (soft delete — preserves memories).
+pub fn retire_agent(conn: &Connection, session_id: &str) -> rusqlite::Result<bool> {
+    let now = forge_core::time::now_iso();
+    let count = conn.execute(
+        "UPDATE session SET agent_status = 'retired', ended_at = ?1, status = 'ended' WHERE id = ?2",
+        params![now, session_id],
+    )?;
+    Ok(count > 0)
+}
+
+// ── Team Functions ──
+
+/// Create a team with type (human/agent/mixed).
+pub fn create_team(
+    conn: &Connection,
+    name: &str,
+    team_type: Option<&str>,
+    purpose: Option<&str>,
+    org_id: Option<&str>,
+) -> rusqlite::Result<String> {
+    let id = ulid::Ulid::new().to_string();
+    let now = forge_core::time::now_iso();
+    let org = org_id.unwrap_or("default");
+    let tt = team_type.unwrap_or("human");
+
+    conn.execute(
+        "INSERT INTO team (id, name, organization_id, created_by, status, created_at, team_type, purpose)
+         VALUES (?1, ?2, ?3, 'system', 'active', ?4, ?5, ?6)",
+        params![id, name, org, now, tt, purpose],
+    )?;
+
+    Ok(id)
+}
+
+/// List members of a team (including agent sessions).
+pub fn list_team_members(
+    conn: &Connection,
+    team_name: &str,
+) -> rusqlite::Result<Vec<Value>> {
+    let mut members = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT tm.user_id, tm.role, tm.joined_at, tm.session_id,
+                s.agent, s.agent_status, s.current_task, s.template_id
+         FROM team_member tm
+         JOIN team t ON t.id = tm.team_id
+         LEFT JOIN session s ON s.id = tm.session_id
+         WHERE t.name = ?1
+         ORDER BY tm.joined_at"
+    )?;
+    let rows = stmt.query_map(params![team_name], |row| {
+        Ok(serde_json::json!({
+            "user_id": row.get::<_, String>(0)?,
+            "role": row.get::<_, String>(1)?,
+            "joined_at": row.get::<_, String>(2)?,
+            "session_id": row.get::<_, Option<String>>(3)?,
+            "agent": row.get::<_, Option<String>>(4)?,
+            "agent_status": row.get::<_, Option<String>>(5)?,
+            "current_task": row.get::<_, Option<String>>(6)?,
+            "template_id": row.get::<_, Option<String>>(7)?,
+        }))
+    })?;
+    for row in rows {
+        members.push(row?);
+    }
+    Ok(members)
+}
+
+/// Set the orchestrator session for a team.
+pub fn set_team_orchestrator(
+    conn: &Connection,
+    team_name: &str,
+    session_id: &str,
+) -> rusqlite::Result<bool> {
+    let count = conn.execute(
+        "UPDATE team SET orchestrator_session_id = ?1 WHERE name = ?2",
+        params![session_id, team_name],
+    )?;
+    Ok(count > 0)
+}
+
+/// Get full team status (members, active agents, meeting count).
+pub fn team_status(
+    conn: &Connection,
+    team_name: &str,
+) -> rusqlite::Result<Value> {
+    // Get team info
+    struct TeamRow { id: String, name: String, status: String, team_type: Option<String>, purpose: Option<String> }
+    let team_row: Option<TeamRow> = conn.query_row(
+        "SELECT id, name, status, team_type, purpose FROM team WHERE name = ?1",
+        params![team_name],
+        |row| Ok(TeamRow {
+            id: row.get(0)?, name: row.get(1)?, status: row.get(2)?,
+            team_type: row.get(3)?, purpose: row.get(4)?,
+        }),
+    ).ok();
+
+    let tr = match team_row {
+        Some(r) => r,
+        None => return Ok(serde_json::json!({"error": "team not found"})),
+    };
+
+    let team_id = tr.id;
+    let name = tr.name;
+    let status = tr.status;
+    let team_type = tr.team_type;
+    let purpose = tr.purpose;
+
+    // Count members
+    let member_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM team_member WHERE team_id = ?1",
+        params![team_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    // Count active agents in team
+    let active_agents: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM team_member tm
+         JOIN session s ON s.id = tm.session_id
+         WHERE tm.team_id = ?1 AND s.status = 'active' AND s.template_id IS NOT NULL",
+        params![team_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    // Count meetings for this team (if meeting table exists)
+    let meeting_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM meeting WHERE team_id = ?1",
+        params![team_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    // Get orchestrator
+    let orchestrator: Option<String> = conn.query_row(
+        "SELECT orchestrator_session_id FROM team WHERE id = ?1",
+        params![team_id],
+        |row| row.get(0),
+    ).unwrap_or(None);
+
+    Ok(serde_json::json!({
+        "id": team_id,
+        "name": name,
+        "status": status,
+        "team_type": team_type,
+        "purpose": purpose,
+        "member_count": member_count,
+        "active_agents": active_agents,
+        "meeting_count": meeting_count,
+        "orchestrator_session_id": orchestrator,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +608,215 @@ mod tests {
         create_agent_template(&conn, &t).unwrap();
         let fetched = get_agent_template(&conn, &t.id).unwrap().unwrap();
         assert_eq!(fetched.name, "CTO");
+    }
+
+    // ── Agent Lifecycle Tests ──
+
+    #[test]
+    fn test_spawn_agent_from_template() {
+        let conn = setup();
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+
+        spawn_agent(&conn, "CTO", "s-cto-1", Some("forge"), None).unwrap();
+
+        // Verify session exists with template_id set
+        let template_id: Option<String> = conn.query_row(
+            "SELECT template_id FROM session WHERE id = 's-cto-1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(template_id, Some(t.id));
+
+        // Verify agent_status is 'idle'
+        let status: String = conn.query_row(
+            "SELECT agent_status FROM session WHERE id = 's-cto-1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "idle");
+    }
+
+    #[test]
+    fn test_spawn_agent_sets_identity() {
+        let conn = setup();
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+
+        spawn_agent(&conn, "CTO", "s-cto-2", None, None).unwrap();
+
+        // The template has identity_facets: [{"facet":"role","description":"test"}]
+        // Verify at least one identity facet was stored
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM identity WHERE source LIKE 'template:%'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(count >= 1, "expected at least 1 identity facet, got {count}");
+    }
+
+    #[test]
+    fn test_spawn_invalid_template() {
+        let conn = setup();
+        let result = spawn_agent(&conn, "NonExistent", "s-bad", None, None);
+        assert!(result.is_err(), "spawning from nonexistent template should fail");
+    }
+
+    #[test]
+    fn test_list_agents() {
+        let conn = setup();
+        let t1 = make_template("CTO");
+        let t2 = make_template("CMO");
+        create_agent_template(&conn, &t1).unwrap();
+        create_agent_template(&conn, &t2).unwrap();
+
+        spawn_agent(&conn, "CTO", "s-cto-3", Some("forge"), None).unwrap();
+        spawn_agent(&conn, "CMO", "s-cmo-3", Some("forge"), None).unwrap();
+
+        let agents = list_agents(&conn, None, 50).unwrap();
+        assert_eq!(agents.len(), 2, "expected 2 agents");
+    }
+
+    #[test]
+    fn test_list_agents_by_team() {
+        let conn = setup();
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+
+        // Create a team
+        let team_id = create_team(&conn, "leadership", Some("agent"), None, None).unwrap();
+        assert!(!team_id.is_empty());
+
+        // Spawn agent into team
+        spawn_agent(&conn, "CTO", "s-cto-team", Some("forge"), Some("leadership")).unwrap();
+
+        // Spawn another agent NOT in team
+        let t2 = make_template("CFO");
+        create_agent_template(&conn, &t2).unwrap();
+        spawn_agent(&conn, "CFO", "s-cfo-noteam", Some("forge"), None).unwrap();
+
+        // List by team should only return the one in leadership
+        let agents = list_agents(&conn, Some("leadership"), 50).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0]["session_id"], "s-cto-team");
+
+        // List all should return both
+        let all = list_agents(&conn, None, 50).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_update_agent_status() {
+        let conn = setup();
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+        spawn_agent(&conn, "CTO", "s-cto-4", None, None).unwrap();
+
+        let updated = update_agent_status(&conn, "s-cto-4", "thinking", Some("reviewing architecture")).unwrap();
+        assert!(updated);
+
+        let status: String = conn.query_row(
+            "SELECT agent_status FROM session WHERE id = 's-cto-4'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "thinking");
+
+        let task: String = conn.query_row(
+            "SELECT current_task FROM session WHERE id = 's-cto-4'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(task, "reviewing architecture");
+    }
+
+    #[test]
+    fn test_retire_agent() {
+        let conn = setup();
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+        spawn_agent(&conn, "CTO", "s-cto-5", None, None).unwrap();
+
+        let retired = retire_agent(&conn, "s-cto-5").unwrap();
+        assert!(retired);
+
+        let status: String = conn.query_row(
+            "SELECT agent_status FROM session WHERE id = 's-cto-5'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "retired");
+
+        let session_status: String = conn.query_row(
+            "SELECT status FROM session WHERE id = 's-cto-5'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(session_status, "ended");
+
+        // Retired agents should not appear in list_agents (status != 'active')
+        let agents = list_agents(&conn, None, 50).unwrap();
+        assert_eq!(agents.len(), 0);
+    }
+
+    // ── Team Tests ──
+
+    #[test]
+    fn test_create_team_agent_type() {
+        let conn = setup();
+        let id = create_team(&conn, "ai-team", Some("agent"), Some("AI research"), None).unwrap();
+        assert!(!id.is_empty());
+
+        let tt: String = conn.query_row(
+            "SELECT team_type FROM team WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(tt, "agent");
+
+        let purpose: Option<String> = conn.query_row(
+            "SELECT purpose FROM team WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(purpose, Some("AI research".to_string()));
+    }
+
+    #[test]
+    fn test_set_orchestrator() {
+        let conn = setup();
+        create_team(&conn, "orch-team", Some("agent"), None, None).unwrap();
+
+        // Create a session to be orchestrator
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+        spawn_agent(&conn, "CTO", "s-orch", None, None).unwrap();
+
+        let set = set_team_orchestrator(&conn, "orch-team", "s-orch").unwrap();
+        assert!(set);
+
+        let orch: Option<String> = conn.query_row(
+            "SELECT orchestrator_session_id FROM team WHERE name = 'orch-team'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(orch, Some("s-orch".to_string()));
+    }
+
+    #[test]
+    fn test_team_status() {
+        let conn = setup();
+        create_team(&conn, "status-team", Some("mixed"), Some("testing"), None).unwrap();
+
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+        spawn_agent(&conn, "CTO", "s-status-1", None, Some("status-team")).unwrap();
+
+        let status = team_status(&conn, "status-team").unwrap();
+        assert_eq!(status["name"], "status-team");
+        assert_eq!(status["team_type"], "mixed");
+        assert_eq!(status["purpose"], "testing");
+        assert_eq!(status["member_count"], 1);
+        assert_eq!(status["active_agents"], 1);
     }
 }
