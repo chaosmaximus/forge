@@ -1,0 +1,15 @@
+[ 4592931ms] ReferenceError: BrainMap is not defined
+    at http://localhost:1420/src/components/Sidebar.tsx?t=1775323602979:401:40
+    at _$$component.location (http://localhost:1420/src/components/Sidebar.tsx?t=1775323602979:451:5)
+    at http://localhost:1420/@solid-refresh:25:42
+    at untrack (http://localhost:1420/node_modules/.vite/deps/chunk-P5AEBATJ.js?v=8bb974be:459:12)
+    at HMRComp.createMemo.name [as fn] (http://localhost:1420/@solid-refresh:25:28)
+    at runComputation (http://localhost:1420/node_modules/.vite/deps/chunk-P5AEBATJ.js?v=8bb974be:731:22)
+    at updateComputation (http://localhost:1420/node_modules/.vite/deps/chunk-P5AEBATJ.js?v=8bb974be:714:3)
+    at runTop (http://localhost:1420/node_modules/.vite/deps/chunk-P5AEBATJ.js?v=8bb974be:835:7)
+    at runQueue (http://localhost:1420/node_modules/.vite/deps/chunk-P5AEBATJ.js?v=8bb974be:909:42)
+    at completeUpdates (http://localhost:1420/node_modules/.vite/deps/chunk-P5AEBATJ.js?v=8bb974be:864:10)
+[ 4601223ms] [WARNING] daemon_list_tools failed: TypeError: Failed to fetch
+    at invoke (http://localhost:1420/src/lib/bridge.ts:10:22)
+    at fetchTools (http://localhost:1420/src/stores/daemon.ts:26:24)
+    at refresh (http://localhost:1420/src/stores/daemon.ts:129:11) @ http://localhost:1420/src/stores/daemon.ts:30
