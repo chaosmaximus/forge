@@ -26,6 +26,16 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 notify = "7"
 ulid = "1"
 
+# HTTP transport (opt-in)
+axum = "0.7"
+tower-http = { version = "0.6", features = ["cors"] }
+jsonwebtoken = "9"
+base64 = "0.22"
+
+# Structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
 # LSP client
 lsp-types = "0.97"
 
