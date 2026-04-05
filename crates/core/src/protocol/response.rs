@@ -450,6 +450,24 @@ pub enum ResponseData {
     /// Agent template was updated
     AgentTemplateUpdated { id: String, updated: bool },
 
+    /// Agent was spawned from a template
+    AgentSpawned { session_id: String, template_name: String, team: Option<String> },
+    /// List of active agents
+    AgentList { agents: Vec<serde_json::Value>, count: usize },
+    /// Agent status was updated
+    AgentStatusUpdated { session_id: String, status: String },
+    /// Agent was retired
+    AgentRetired { session_id: String },
+
+    /// Team was created
+    TeamCreated { id: String, name: String },
+    /// List of team members
+    TeamMemberList { members: Vec<serde_json::Value>, count: usize },
+    /// Team orchestrator was set
+    TeamOrchestratorSet { team_name: String, session_id: String },
+    /// Full team status data
+    TeamStatusData { team: serde_json::Value },
+
     Shutdown,
 }
 

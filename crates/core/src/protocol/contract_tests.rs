@@ -456,6 +456,66 @@ mod tests {
                     hours: Some(24),
                 },
             ),
+            // ── Agent Lifecycle ──
+            (
+                "spawn_agent",
+                Request::SpawnAgent {
+                    template_name: "CTO".into(),
+                    session_id: "s-cto-1".into(),
+                    project: Some("forge".into()),
+                    team: Some("leadership".into()),
+                },
+            ),
+            (
+                "list_agents",
+                Request::ListAgents {
+                    team: Some("leadership".into()),
+                    limit: Some(10),
+                },
+            ),
+            (
+                "update_agent_status",
+                Request::UpdateAgentStatus {
+                    session_id: "s-cto-1".into(),
+                    status: "thinking".into(),
+                    current_task: Some("reviewing architecture".into()),
+                },
+            ),
+            (
+                "retire_agent",
+                Request::RetireAgent {
+                    session_id: "s-cto-1".into(),
+                },
+            ),
+            // ── Team Enhancements ──
+            (
+                "create_team",
+                Request::CreateTeam {
+                    name: "leadership".into(),
+                    team_type: Some("agent".into()),
+                    purpose: Some("strategic decisions".into()),
+                    organization_id: Some("default".into()),
+                },
+            ),
+            (
+                "list_team_members",
+                Request::ListTeamMembers {
+                    team_name: "leadership".into(),
+                },
+            ),
+            (
+                "set_team_orchestrator",
+                Request::SetTeamOrchestrator {
+                    team_name: "leadership".into(),
+                    session_id: "s-cto-1".into(),
+                },
+            ),
+            (
+                "team_status",
+                Request::TeamStatus {
+                    team_name: "leadership".into(),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -733,6 +793,56 @@ mod tests {
                 "get_stats no params",
                 r#"{"method":"get_stats","params":{}}"#,
             ),
+            // ── Agent Lifecycle ──
+            (
+                "spawn_agent",
+                r#"{"method":"spawn_agent","params":{"template_name":"CTO","session_id":"s1"}}"#,
+            ),
+            (
+                "spawn_agent with team",
+                r#"{"method":"spawn_agent","params":{"template_name":"CMO","session_id":"s2","project":"forge","team":"leadership"}}"#,
+            ),
+            (
+                "list_agents",
+                r#"{"method":"list_agents","params":{}}"#,
+            ),
+            (
+                "list_agents with team",
+                r#"{"method":"list_agents","params":{"team":"leadership","limit":10}}"#,
+            ),
+            (
+                "update_agent_status",
+                r#"{"method":"update_agent_status","params":{"session_id":"s1","status":"thinking"}}"#,
+            ),
+            (
+                "update_agent_status with task",
+                r#"{"method":"update_agent_status","params":{"session_id":"s1","status":"responding","current_task":"code review"}}"#,
+            ),
+            (
+                "retire_agent",
+                r#"{"method":"retire_agent","params":{"session_id":"s1"}}"#,
+            ),
+            // ── Team Enhancements ──
+            (
+                "create_team",
+                r#"{"method":"create_team","params":{"name":"leadership"}}"#,
+            ),
+            (
+                "create_team with type",
+                r#"{"method":"create_team","params":{"name":"leadership","team_type":"agent","purpose":"strategic decisions","organization_id":"default"}}"#,
+            ),
+            (
+                "list_team_members",
+                r#"{"method":"list_team_members","params":{"team_name":"leadership"}}"#,
+            ),
+            (
+                "set_team_orchestrator",
+                r#"{"method":"set_team_orchestrator","params":{"team_name":"leadership","session_id":"s1"}}"#,
+            ),
+            (
+                "team_status",
+                r#"{"method":"team_status","params":{"team_name":"leadership"}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -790,10 +900,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
         let unit_count = 16;
-        // Parameterized variants: 62 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality, CrossEngineQuery, FileMemoryMap, CodeSearch, ListRealities, GetStats, AgentTemplates)
-        let param_count = 62;
-        // Total: 73
-        let expected_total = 78;
+        // Parameterized variants: 70 (62 + 8 new: SpawnAgent, ListAgents, UpdateAgentStatus, RetireAgent, CreateTeam, ListTeamMembers, SetTeamOrchestrator, TeamStatus)
+        let param_count = 70;
+        // Total: 86
+        let expected_total = 86;
 
         assert_eq!(
             unit_count + param_count,
@@ -1073,6 +1183,42 @@ mod tests {
                 },
                 Request::GetStats {
                     hours: Some(24),
+                },
+                // Agent Lifecycle
+                Request::SpawnAgent {
+                    template_name: "CTO".into(),
+                    session_id: "s-cto".into(),
+                    project: Some("forge".into()),
+                    team: Some("leadership".into()),
+                },
+                Request::ListAgents {
+                    team: None,
+                    limit: Some(50),
+                },
+                Request::UpdateAgentStatus {
+                    session_id: "s-cto".into(),
+                    status: "thinking".into(),
+                    current_task: Some("reviewing".into()),
+                },
+                Request::RetireAgent {
+                    session_id: "s-cto".into(),
+                },
+                // Team Enhancements
+                Request::CreateTeam {
+                    name: "leadership".into(),
+                    team_type: Some("agent".into()),
+                    purpose: Some("strategic decisions".into()),
+                    organization_id: Some("default".into()),
+                },
+                Request::ListTeamMembers {
+                    team_name: "leadership".into(),
+                },
+                Request::SetTeamOrchestrator {
+                    team_name: "leadership".into(),
+                    session_id: "s-cto".into(),
+                },
+                Request::TeamStatus {
+                    team_name: "leadership".into(),
                 },
             ]
         }

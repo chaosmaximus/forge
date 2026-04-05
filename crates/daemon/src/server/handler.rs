@@ -2364,6 +2364,115 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Agent Lifecycle ──
+
+        Request::SpawnAgent { template_name, session_id, project, team } => {
+            match crate::teams::spawn_agent(
+                &state.conn, &template_name, &session_id,
+                project.as_deref(), team.as_deref(),
+            ) {
+                Ok(()) => {
+                    crate::events::emit(&state.events, "agent_spawned", serde_json::json!({
+                        "session_id": session_id, "template_name": template_name, "team": team,
+                    }));
+                    Response::Ok { data: ResponseData::AgentSpawned {
+                        session_id, template_name, team,
+                    }}
+                }
+                Err(e) => Response::Error { message: format!("spawn_agent failed: {e}") },
+            }
+        }
+
+        Request::ListAgents { team, limit } => {
+            let lim = limit.unwrap_or(50).min(200);
+            match crate::teams::list_agents(&state.conn, team.as_deref(), lim) {
+                Ok(agents) => {
+                    let count = agents.len();
+                    Response::Ok { data: ResponseData::AgentList { agents, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_agents failed: {e}") },
+            }
+        }
+
+        Request::UpdateAgentStatus { session_id, status, current_task } => {
+            // Get old status for event
+            let old_status: String = state.conn.query_row(
+                "SELECT COALESCE(agent_status, 'unknown') FROM session WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            ).unwrap_or_else(|_| "unknown".into());
+
+            match crate::teams::update_agent_status(
+                &state.conn, &session_id, &status, current_task.as_deref(),
+            ) {
+                Ok(_updated) => {
+                    crate::events::emit(&state.events, "agent_status_changed", serde_json::json!({
+                        "session_id": session_id, "old_status": old_status, "new_status": status,
+                        "current_task": current_task,
+                    }));
+                    Response::Ok { data: ResponseData::AgentStatusUpdated { session_id, status } }
+                }
+                Err(e) => Response::Error { message: format!("update_agent_status failed: {e}") },
+            }
+        }
+
+        Request::RetireAgent { session_id } => {
+            // Get template name for event
+            let template_name: String = state.conn.query_row(
+                "SELECT COALESCE(at.name, '') FROM session s
+                 LEFT JOIN agent_template at ON at.id = s.template_id
+                 WHERE s.id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            ).unwrap_or_default();
+
+            match crate::teams::retire_agent(&state.conn, &session_id) {
+                Ok(_retired) => {
+                    crate::events::emit(&state.events, "agent_retired", serde_json::json!({
+                        "session_id": session_id, "template_name": template_name,
+                    }));
+                    Response::Ok { data: ResponseData::AgentRetired { session_id } }
+                }
+                Err(e) => Response::Error { message: format!("retire_agent failed: {e}") },
+            }
+        }
+
+        // ── Team Enhancements ──
+
+        Request::CreateTeam { name, team_type, purpose, organization_id } => {
+            match crate::teams::create_team(
+                &state.conn, &name, team_type.as_deref(),
+                purpose.as_deref(), organization_id.as_deref(),
+            ) {
+                Ok(id) => Response::Ok { data: ResponseData::TeamCreated { id, name } },
+                Err(e) => Response::Error { message: format!("create_team failed: {e}") },
+            }
+        }
+
+        Request::ListTeamMembers { team_name } => {
+            match crate::teams::list_team_members(&state.conn, &team_name) {
+                Ok(members) => {
+                    let count = members.len();
+                    Response::Ok { data: ResponseData::TeamMemberList { members, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_team_members failed: {e}") },
+            }
+        }
+
+        Request::SetTeamOrchestrator { team_name, session_id } => {
+            match crate::teams::set_team_orchestrator(&state.conn, &team_name, &session_id) {
+                Ok(_set) => Response::Ok { data: ResponseData::TeamOrchestratorSet { team_name, session_id } },
+                Err(e) => Response::Error { message: format!("set_team_orchestrator failed: {e}") },
+            }
+        }
+
+        Request::TeamStatus { team_name } => {
+            match crate::teams::team_status(&state.conn, &team_name) {
+                Ok(team) => Response::Ok { data: ResponseData::TeamStatusData { team } },
+                Err(e) => Response::Error { message: format!("team_status failed: {e}") },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

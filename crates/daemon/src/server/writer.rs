@@ -62,8 +62,12 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::ListRealities { .. }
             | Request::ListAgentTemplates { .. }
             | Request::GetAgentTemplate { .. }
+            | Request::ListAgents { .. }
+            | Request::ListTeamMembers { .. }
+            | Request::TeamStatus { .. }
             // NOTE: DetectReality is NOT read-only — it may create a reality record
             // NOTE: ForceIndex is NOT read-only — it triggers indexing
+            // NOTE: SpawnAgent, UpdateAgentStatus, RetireAgent, CreateTeam, SetTeamOrchestrator are writes
     )
 }
 
