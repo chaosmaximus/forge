@@ -1190,21 +1190,16 @@ pub fn compile_dynamic_suffix(
                 .unwrap_or_default();
 
             if !protocols.is_empty() {
-                let mut proto_xml = String::from(
-                    "<active-protocols hint=\"process rules for this project — follow these\">\n",
-                );
+                // Protocols are exempt from budget — they're process-critical
+                xml.push_str("<active-protocols hint=\"process rules for this project — follow these\">\n");
                 for (title, content) in &protocols {
-                    proto_xml.push_str(&format!(
+                    xml.push_str(&format!(
                         "  <protocol name=\"{}\">{}</protocol>\n",
                         xml_escape(title),
                         xml_escape(content),
                     ));
                 }
-                proto_xml.push_str("</active-protocols>\n");
-                if used + proto_xml.len() < budget {
-                    xml.push_str(&proto_xml);
-                    // used += proto_xml.len();
-                }
+                xml.push_str("</active-protocols>\n");
             }
         }
     }

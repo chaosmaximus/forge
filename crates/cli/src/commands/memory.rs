@@ -9,8 +9,9 @@ fn parse_memory_type(s: &str) -> Result<MemoryType, String> {
         "lesson" => Ok(MemoryType::Lesson),
         "pattern" => Ok(MemoryType::Pattern),
         "preference" => Ok(MemoryType::Preference),
+        "protocol" => Ok(MemoryType::Protocol),
         _ => Err(format!(
-            "unknown memory type: '{s}'. Expected: decision, lesson, pattern, preference"
+            "unknown memory type: '{s}'. Expected: decision, lesson, pattern, preference, protocol"
         )),
     }
 }
