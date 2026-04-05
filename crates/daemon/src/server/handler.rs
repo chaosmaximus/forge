@@ -2582,6 +2582,25 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::RecordMeetingResponse { meeting_id, session_id, response, confidence } => {
+            match crate::teams::record_meeting_response(
+                &state.conn, &meeting_id, &session_id, &response, confidence,
+            ) {
+                Ok(all_responded) => {
+                    crate::events::emit(&state.events, "meeting_response", serde_json::json!({
+                        "meeting_id": &meeting_id, "session_id": &session_id,
+                    }));
+                    if all_responded {
+                        crate::events::emit(&state.events, "meeting_all_responded", serde_json::json!({
+                            "meeting_id": &meeting_id,
+                        }));
+                    }
+                    Response::Ok { data: ResponseData::MeetingResponseRecorded { meeting_id, all_responded } }
+                }
+                Err(e) => Response::Error { message: format!("record_meeting_response failed: {e}") },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

@@ -484,6 +484,8 @@ pub enum ResponseData {
     MeetingList { meetings: Vec<serde_json::Value>, count: usize },
     /// Full meeting transcript
     MeetingTranscriptData { transcript: serde_json::Value },
+    /// Meeting response recorded
+    MeetingResponseRecorded { meeting_id: String, all_responded: bool },
 
     Shutdown,
 }

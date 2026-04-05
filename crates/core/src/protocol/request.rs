@@ -491,6 +491,13 @@ pub enum Request {
     ListMeetings { team_id: Option<String>, status: Option<String>, limit: Option<usize> },
     /// Full meeting transcript (topic + context + responses + synthesis + decision)
     MeetingTranscript { meeting_id: String },
+    /// Directly record a meeting participant's response (alternative to FISP side-effect)
+    RecordMeetingResponse {
+        meeting_id: String,
+        session_id: String,
+        response: String,
+        confidence: Option<f64>,
+    },
 
     Shutdown,
 }

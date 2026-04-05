@@ -991,9 +991,9 @@ mod tests {
         // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
         let unit_count = 16;
         // Parameterized variants: 77 (70 + 7 new: CreateMeeting, MeetingStatus, MeetingResponses, MeetingSynthesize, MeetingDecide, ListMeetings, MeetingTranscript)
-        let param_count = 77;
-        // Total: 93
-        let expected_total = 93;
+        let param_count = 78;
+        // Total: 94
+        let expected_total = 94;
 
         assert_eq!(
             unit_count + param_count,
@@ -1340,6 +1340,12 @@ mod tests {
                 },
                 Request::MeetingTranscript {
                     meeting_id: "m1".into(),
+                },
+                Request::RecordMeetingResponse {
+                    meeting_id: "m1".into(),
+                    session_id: "s1".into(),
+                    response: "I agree".into(),
+                    confidence: Some(0.9),
                 },
             ]
         }
