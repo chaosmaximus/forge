@@ -1223,8 +1223,11 @@ pub fn compile_dynamic_suffix(
             if !guards.is_empty() {
                 xml.push_str("<guardrails hint=\"known pitfalls — avoid these\">\n");
                 for (title, content) in &guards {
-                    // Truncate content to 150 chars for brevity
-                    let brief = if content.len() > 150 { &content[..150] } else { content };
+                    // Truncate content to ~150 chars for brevity (UTF-8 safe)
+                    let brief: &str = match content.char_indices().nth(150) {
+                        Some((idx, _)) => &content[..idx],
+                        None => content,
+                    };
                     xml.push_str(&format!(
                         "  <avoid name=\"{}\">{}</avoid>\n",
                         xml_escape(title),
