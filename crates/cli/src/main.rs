@@ -10,7 +10,7 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Commands {
     /// Search memories (hybrid BM25 + vector + graph)
     Recall {
@@ -293,6 +293,29 @@ enum Commands {
         project: Option<String>,
     },
 
+    /// Detect the reality (project type) for a path
+    #[command(name = "detect-reality")]
+    DetectReality {
+        /// Path to detect (defaults to current directory)
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// List all known realities (projects)
+    #[command(name = "realities")]
+    Realities,
+    /// Search code symbols by name pattern
+    #[command(name = "code-search")]
+    CodeSearch {
+        /// Search query (symbol name pattern)
+        query: String,
+        /// Filter by symbol kind: function, class, file
+        #[arg(long)]
+        kind: Option<String>,
+        /// Maximum number of results
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
     /// Run proactive checks on a file or show all active diagnostics
     Verify {
         /// File to check (omit to show all active diagnostics)
@@ -390,7 +413,7 @@ enum Commands {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum ConfigAction {
     /// Display current daemon configuration
     Show,
@@ -403,7 +426,7 @@ enum ConfigAction {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum ServiceAction {
     /// Install forge-daemon as a system service (systemd on Linux, launchd on macOS)
     Install,
@@ -417,7 +440,7 @@ pub enum ServiceAction {
     Uninstall,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum DaemonAction {
     /// Show daemon status (uptime, memory count)
     Status,
@@ -425,7 +448,7 @@ enum DaemonAction {
     Stop,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum IdentityAction {
     /// List identity facets
     List {
@@ -600,6 +623,16 @@ async fn main() {
             commands::manas::perceptions(project, limit).await;
         }
 
+        Commands::DetectReality { path } => {
+            commands::system::detect_reality(path).await;
+        }
+        Commands::Realities => {
+            commands::system::list_realities().await;
+        }
+        Commands::CodeSearch { query, kind, limit } => {
+            commands::system::code_search(query, kind, limit).await;
+        }
+
         Commands::Verify { file } => {
             commands::system::verify(file).await;
         }
@@ -651,6 +684,76 @@ async fn main() {
         }
         Commands::Stats { hours } => {
             commands::system::stats(hours).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_detect_reality_command_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "detect-reality", "--path", "/tmp/myproject"]);
+        assert!(cli.is_ok(), "detect-reality should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::DetectReality { path } => {
+                assert_eq!(path.as_deref(), Some("/tmp/myproject"));
+            }
+            other => panic!("expected DetectReality, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_reality_command_parse_no_path() {
+        let cli = Cli::try_parse_from(["forge-next", "detect-reality"]);
+        assert!(cli.is_ok(), "detect-reality without --path should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::DetectReality { path } => {
+                assert!(path.is_none());
+            }
+            other => panic!("expected DetectReality, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_code_search_command_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "code-search", "authenticate", "--kind", "function", "--limit", "5",
+        ]);
+        assert!(cli.is_ok(), "code-search should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::CodeSearch { query, kind, limit } => {
+                assert_eq!(query, "authenticate");
+                assert_eq!(kind.as_deref(), Some("function"));
+                assert_eq!(limit, 5);
+            }
+            other => panic!("expected CodeSearch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_code_search_command_parse_defaults() {
+        let cli = Cli::try_parse_from(["forge-next", "code-search", "MyClass"]);
+        assert!(cli.is_ok(), "code-search with defaults should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::CodeSearch { query, kind, limit } => {
+                assert_eq!(query, "MyClass");
+                assert!(kind.is_none());
+                assert_eq!(limit, 20);
+            }
+            other => panic!("expected CodeSearch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_realities_command_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "realities"]);
+        assert!(cli.is_ok(), "realities should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Realities => {}
+            other => panic!("expected Realities, got {:?}", other),
         }
     }
 }

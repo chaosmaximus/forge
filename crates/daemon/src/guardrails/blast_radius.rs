@@ -12,6 +12,12 @@ pub struct BlastRadius {
     pub importers: Vec<String>,
     /// Other files affected by the same decisions (excluding the target file)
     pub files_affected: Vec<String>,
+    /// Cluster this file belongs to (from community detection), if any.
+    pub cluster_name: Option<String>,
+    /// Other files in the same cluster.
+    pub cluster_files: Vec<String>,
+    /// Files that call symbols in this file (from edge table).
+    pub calling_files: Vec<String>,
 }
 
 /// Main entry point: analyse the blast radius of changing `file`.
@@ -20,16 +26,20 @@ pub fn analyze_blast_radius(conn: &Connection, file: &str) -> BlastRadius {
 
     let decisions = find_decisions(conn, &file_target);
     let importers = find_importers(conn, &file_target);
+    let (callers, calling_files) = find_callers(conn, file);
+    let (cluster_name, cluster_files) = find_cluster(conn, file);
 
     let decision_ids: Vec<String> = decisions.iter().map(|(id, _, _)| id.clone()).collect();
     let files_affected = find_co_affected_files(conn, &decision_ids, &file_target);
 
     BlastRadius {
         decisions,
-        // No "calls" edges exist yet — LSP indexing (Phase 4) will populate these.
-        callers: 0,
+        callers,
         importers,
         files_affected,
+        cluster_name,
+        cluster_files,
+        calling_files,
     }
 }
 
@@ -86,6 +96,86 @@ fn find_importers(conn: &Connection, file_target: &str) -> Vec<String> {
         Err(_) => Vec::new(),
     };
     result
+}
+
+/// Find files that call symbols in the given file.
+/// Searches for edges where edge_type = 'calls' and to_id contains the file path.
+/// Returns (caller_count, calling_file_paths).
+fn find_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
+    let pattern = format!("%{file}%");
+    let sql = "
+        SELECT DISTINCT from_id
+        FROM edge
+        WHERE edge_type = 'calls'
+          AND to_id LIKE ?1
+        LIMIT 100
+    ";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return (0, Vec::new()),
+    };
+    let files: Vec<String> = match stmt.query_map(rusqlite::params![pattern], |row| {
+        row.get::<_, String>(0)
+    }) {
+        Ok(rows) => rows
+            .filter_map(|r| r.ok())
+            .map(|s| s.strip_prefix("file:").unwrap_or(&s).to_string())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    let count = files.len();
+    (count, files)
+}
+
+/// Find the cluster this file belongs to, and all other files in that cluster.
+/// Returns (cluster_name, cluster_files) — cluster_files excludes the target file.
+fn find_cluster(conn: &Connection, file: &str) -> (Option<String>, Vec<String>) {
+    // Step 1: Find which cluster this file belongs to
+    let cluster_sql = "
+        SELECT to_id
+        FROM edge
+        WHERE edge_type = 'belongs_to_cluster'
+          AND from_id = ?1
+        LIMIT 1
+    ";
+    let file_id = format!("file:{file}");
+    let cluster_id: Option<String> = conn
+        .prepare(cluster_sql)
+        .ok()
+        .and_then(|mut stmt| {
+            stmt.query_map(rusqlite::params![file_id], |row| row.get::<_, String>(0))
+                .ok()
+                .and_then(|mut rows| rows.next().and_then(|r| r.ok()))
+        });
+
+    let cluster_id = match cluster_id {
+        Some(id) => id,
+        None => return (None, Vec::new()),
+    };
+
+    // Step 2: Find all other files in the same cluster
+    let members_sql = "
+        SELECT from_id
+        FROM edge
+        WHERE edge_type = 'belongs_to_cluster'
+          AND to_id = ?1
+    ";
+    let mut stmt = match conn.prepare(members_sql) {
+        Ok(s) => s,
+        Err(_) => return (Some(cluster_id.clone()), Vec::new()),
+    };
+    let files: Vec<String> = match stmt.query_map(rusqlite::params![cluster_id], |row| {
+        row.get::<_, String>(0)
+    }) {
+        Ok(rows) => rows
+            .filter_map(|r| r.ok())
+            .filter(|s| s != &file_id)
+            .map(|s| s.strip_prefix("file:").unwrap_or(&s).to_string())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    (Some(cluster_id), files)
 }
 
 /// Find other files affected by the same decisions, excluding the target file itself.
@@ -209,5 +299,70 @@ mod tests {
         assert_eq!(br.importers.len(), 2);
         assert!(br.importers.contains(&"src/main.rs".to_string()));
         assert!(br.importers.contains(&"src/routes.rs".to_string()));
+    }
+
+    #[test]
+    fn test_blast_radius_real_callers() {
+        let conn = setup_db();
+
+        // Create call edges: main.rs and routes.rs call symbols in auth.rs
+        store_edge(&conn, "file:src/main.rs", "sym:src/auth.rs::authenticate", "calls", "{}").unwrap();
+        store_edge(&conn, "file:src/routes.rs", "sym:src/auth.rs::verify_token", "calls", "{}").unwrap();
+
+        let br = analyze_blast_radius(&conn, "src/auth.rs");
+        assert_eq!(br.callers, 2, "expected 2 callers, got {}", br.callers);
+        assert!(br.calling_files.contains(&"src/main.rs".to_string()));
+        assert!(br.calling_files.contains(&"src/routes.rs".to_string()));
+    }
+
+    #[test]
+    fn test_blast_radius_cluster_info() {
+        let conn = setup_db();
+
+        // Create cluster edges
+        store_edge(&conn, "file:src/auth.rs", "cluster:auth-cluster", "belongs_to_cluster", "{}").unwrap();
+        store_edge(&conn, "file:src/session.rs", "cluster:auth-cluster", "belongs_to_cluster", "{}").unwrap();
+        store_edge(&conn, "file:src/tokens.rs", "cluster:auth-cluster", "belongs_to_cluster", "{}").unwrap();
+
+        let br = analyze_blast_radius(&conn, "src/auth.rs");
+        assert_eq!(br.cluster_name.as_deref(), Some("cluster:auth-cluster"));
+        assert_eq!(br.cluster_files.len(), 2, "expected 2 cluster files (excluding self), got {:?}", br.cluster_files);
+        assert!(br.cluster_files.contains(&"src/session.rs".to_string()));
+        assert!(br.cluster_files.contains(&"src/tokens.rs".to_string()));
+        // The target file itself should not appear in cluster_files
+        assert!(!br.cluster_files.contains(&"src/auth.rs".to_string()));
+    }
+
+    #[test]
+    fn test_blast_radius_empty_backward_compat() {
+        let conn = setup_db();
+
+        let br = analyze_blast_radius(&conn, "src/nonexistent.rs");
+        assert_eq!(br.callers, 0);
+        assert!(br.calling_files.is_empty());
+        assert!(br.cluster_name.is_none());
+        assert!(br.cluster_files.is_empty());
+        assert!(br.decisions.is_empty());
+        assert!(br.importers.is_empty());
+        assert!(br.files_affected.is_empty());
+    }
+
+    #[test]
+    fn test_blast_radius_cross_file_callers() {
+        let conn = setup_db();
+
+        // Multiple callers from different files targeting different symbols in the same file
+        store_edge(&conn, "file:src/api.rs", "sym:src/db.rs::query", "calls", "{}").unwrap();
+        store_edge(&conn, "file:src/service.rs", "sym:src/db.rs::insert", "calls", "{}").unwrap();
+        store_edge(&conn, "file:src/worker.rs", "sym:src/db.rs::delete", "calls", "{}").unwrap();
+        // A call within the same file (should still be counted)
+        store_edge(&conn, "file:src/db.rs", "sym:src/db.rs::connect", "calls", "{}").unwrap();
+
+        let br = analyze_blast_radius(&conn, "src/db.rs");
+        assert_eq!(br.callers, 4, "expected 4 distinct callers, got {}", br.callers);
+        assert!(br.calling_files.contains(&"src/api.rs".to_string()));
+        assert!(br.calling_files.contains(&"src/service.rs".to_string()));
+        assert!(br.calling_files.contains(&"src/worker.rs".to_string()));
+        assert!(br.calling_files.contains(&"src/db.rs".to_string()));
     }
 }

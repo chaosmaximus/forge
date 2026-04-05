@@ -154,6 +154,15 @@ pub enum ResponseData {
         callers: usize,
         importers: Vec<String>,
         files_affected: Vec<String>,
+        /// Cluster this file belongs to (from community detection), if any.
+        #[serde(default)]
+        cluster_name: Option<String>,
+        /// Other files in the same cluster.
+        #[serde(default)]
+        cluster_files: Vec<String>,
+        /// Files that call symbols in this file (from edge table).
+        #[serde(default)]
+        calling_files: Vec<String>,
     },
     SessionRegistered { id: String },
     SessionEnded { id: String, found: bool },

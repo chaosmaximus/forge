@@ -401,7 +401,10 @@ pub async fn post_edit_check(file: String) {
 pub async fn blast_radius(file: String) {
     match client::send(&Request::BlastRadius { file: file.clone() }).await {
         Ok(Response::Ok {
-            data: ResponseData::BlastRadius { decisions, callers, importers, files_affected },
+            data: ResponseData::BlastRadius {
+                decisions, callers, importers, files_affected,
+                cluster_name, cluster_files, calling_files,
+            },
         }) => {
             println!("Blast radius for {file}:");
             println!("  Decisions:         {}", decisions.len());
@@ -409,6 +412,11 @@ pub async fn blast_radius(file: String) {
                 println!("    - {} (confidence: {:.2}) [{}]", d.title, d.confidence, d.id);
             }
             println!("  Callers:           {callers}");
+            if !calling_files.is_empty() {
+                for cf in &calling_files {
+                    println!("    - {cf}");
+                }
+            }
             println!("  Importers:         {}", importers.len());
             for imp in &importers {
                 println!("    - {imp}");
@@ -416,6 +424,13 @@ pub async fn blast_radius(file: String) {
             println!("  Co-affected files: {}", files_affected.len());
             for f in &files_affected {
                 println!("    - {f}");
+            }
+            if let Some(ref cluster) = cluster_name {
+                println!("  Cluster:           {cluster}");
+                println!("  Cluster files:     {}", cluster_files.len());
+                for cf in &cluster_files {
+                    println!("    - {cf}");
+                }
             }
         }
         Ok(Response::Error { message }) => {
@@ -1258,6 +1273,113 @@ fn service_uninstall() {
         let plist = format!("{}/Library/LaunchAgents/com.forge.daemon.plist", home);
         let _ = std::fs::remove_file(&plist);
         println!("LaunchAgent uninstalled.");
+    }
+}
+
+/// Detect the reality (project type) for a path.
+pub async fn detect_reality(path: Option<String>) {
+    let path = path.unwrap_or_else(|| {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string())
+    });
+    let req = Request::DetectReality { path: path.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data:
+                ResponseData::RealityDetected {
+                    reality_id,
+                    name,
+                    reality_type,
+                    domain,
+                    detected_from,
+                    confidence,
+                    is_new,
+                    ..
+                },
+        }) => {
+            let status = if is_new { "NEW" } else { "existing" };
+            println!("Reality detected ({status}):");
+            println!("  ID:            {reality_id}");
+            println!("  Name:          {name}");
+            println!("  Type:          {reality_type}");
+            println!("  Domain:        {domain}");
+            println!("  Detected from: {detected_from}");
+            println!("  Confidence:    {confidence:.2}");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// List all known realities (projects).
+/// Note: No ListRealities protocol endpoint exists yet.
+/// This is a placeholder that suggests using detect-reality.
+pub async fn list_realities() {
+    // Use Doctor to at least confirm the daemon is reachable
+    match client::send(&Request::Doctor).await {
+        Ok(Response::Ok { data: ResponseData::Doctor { file_count, .. } }) => {
+            println!("Realities listing not yet available via protocol.");
+            println!("  Files indexed: {file_count}");
+            println!();
+            println!("Tip: Use 'forge-next detect-reality --path <dir>' to detect and register a project.");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Code search: find symbols by name pattern.
+pub async fn code_search(query: String, kind: Option<String>, limit: usize) {
+    let req = Request::CodeSearch {
+        query: query.clone(),
+        kind,
+        limit: Some(limit),
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::CodeSearchResult { hits },
+        }) => {
+            if hits.is_empty() {
+                println!("No symbols found matching '{query}'.");
+                return;
+            }
+            println!("{} result(s) for '{query}':\n", hits.len());
+            for hit in &hits {
+                let name = hit.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let kind = hit.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let file_path = hit.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+                let line_start = hit
+                    .get("line_start")
+                    .and_then(|v| v.as_i64())
+                    .map(|l| format!(":{l}"))
+                    .unwrap_or_default();
+                println!("  {name} ({kind}) — {file_path}{line_start}");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     }
 }
 

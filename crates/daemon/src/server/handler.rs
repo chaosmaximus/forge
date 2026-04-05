@@ -1002,6 +1002,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     callers: br.callers,
                     importers: br.importers,
                     files_affected: br.files_affected,
+                    cluster_name: br.cluster_name,
+                    cluster_files: br.cluster_files,
+                    calling_files: br.calling_files,
                 },
             }
         }
@@ -2706,11 +2709,14 @@ mod tests {
             file: "src/lib.rs".into(),
         });
         match resp {
-            Response::Ok { data: ResponseData::BlastRadius { decisions, callers, importers, files_affected } } => {
+            Response::Ok { data: ResponseData::BlastRadius { decisions, callers, importers, files_affected, cluster_name, cluster_files, calling_files } } => {
                 assert!(decisions.is_empty());
                 assert_eq!(callers, 0);
                 assert!(importers.is_empty());
                 assert!(files_affected.is_empty());
+                assert!(cluster_name.is_none());
+                assert!(cluster_files.is_empty());
+                assert!(calling_files.is_empty());
             }
             _ => panic!("expected BlastRadius response"),
         }
