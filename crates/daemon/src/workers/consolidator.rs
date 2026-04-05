@@ -42,7 +42,7 @@ pub struct ConsolidationStats {
 /// - The periodic consolidator worker (every 30 min)
 /// - The ForceConsolidate handler (on demand)
 /// - Daemon startup (once)
-pub fn run_all_phases(conn: &Connection) -> ConsolidationStats {
+pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationConfig) -> ConsolidationStats {
     let mut stats = ConsolidationStats::default();
 
     // Phase 1: Exact dedup (fast)
@@ -175,7 +175,7 @@ pub fn run_all_phases(conn: &Connection) -> ConsolidationStats {
     }
 
     // Phase 12: Contradiction synthesis — resolve detected contradictions
-    let synthesized = synthesize_contradictions(conn);
+    let synthesized = synthesize_contradictions(conn, config.batch_limit);
     stats.synthesized = synthesized;
     if synthesized > 0 {
         eprintln!("[consolidator] synthesized {} contradiction resolutions", synthesized);
@@ -189,14 +189,14 @@ pub fn run_all_phases(conn: &Connection) -> ConsolidationStats {
     }
 
     // Phase 14: Memory reweave — enrich older memories with newer context sharing tags
-    let reweaved = reweave_memories(conn);
+    let reweaved = reweave_memories(conn, config.batch_limit, config.reweave_limit);
     stats.reweaved = reweaved;
     if reweaved > 0 {
         eprintln!("[consolidator] reweaved {} memory pairs", reweaved);
     }
 
     // Phase 15: Quality scoring — compute quality scores for active memories
-    let scored = score_memory_quality(conn);
+    let scored = score_memory_quality(conn, config.batch_limit);
     stats.scored = scored;
     if scored > 0 {
         eprintln!("[consolidator] scored {} memories", scored);
@@ -208,13 +208,13 @@ pub fn run_all_phases(conn: &Connection) -> ConsolidationStats {
 /// Synthesize contradictions: find pairs of conflicting memories (same tags,
 /// opposite valence, both active), create a resolution memory, and mark
 /// originals as "superseded". Returns count of resolutions created.
-pub fn synthesize_contradictions(conn: &Connection) -> usize {
+pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize {
     // Find pairs of active memories with opposite valence, shared tags, high intensity
-    let mut stmt = match conn.prepare(
+    let mut stmt = match conn.prepare(&format!(
         "SELECT id, title, content, tags, valence, intensity, confidence, project FROM memory
          WHERE status = 'active' AND valence IN ('positive', 'negative') AND intensity > 0.5
-         LIMIT 200"
-    ) {
+         LIMIT {batch_limit}"
+    )) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[consolidator] synthesize query error: {e}");
@@ -388,15 +388,15 @@ pub fn detect_and_surface_gaps(conn: &Connection) -> usize {
 /// and both are active with the same project and memory_type, enrich the older
 /// memory by appending the newer content and mark the newer one as "merged".
 /// Returns count of reweaves performed.
-pub fn reweave_memories(conn: &Connection) -> usize {
+pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: usize) -> usize {
     // Find candidate pairs: newer memory shares 2+ tags with older memory,
     // same project, same memory_type, both active
-    let mut stmt = match conn.prepare(
+    let mut stmt = match conn.prepare(&format!(
         "SELECT id, title, content, tags, memory_type, project, created_at FROM memory
          WHERE status = 'active' AND tags != '[]'
          ORDER BY created_at ASC
-         LIMIT 200"
-    ) {
+         LIMIT {batch_limit}"
+    )) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[consolidator] reweave query error: {e}");
@@ -433,7 +433,7 @@ pub fn reweave_memories(conn: &Connection) -> usize {
 
     let mut reweaved = 0usize;
     let mut merged_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let limit = 50;
+    let limit = reweave_limit;
 
     for i in 0..rows.len() {
         if reweaved >= limit {
@@ -528,13 +528,13 @@ pub fn reweave_memories(conn: &Connection) -> usize {
 /// based on freshness, utility (access_count), completeness (content length),
 /// and activation_level. Stores the result in the quality_score column.
 /// Returns count of memories scored.
-pub fn score_memory_quality(conn: &Connection) -> usize {
-    let mut stmt = match conn.prepare(
+pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
+    let mut stmt = match conn.prepare(&format!(
         "SELECT id, content, access_count, activation_level,
                 julianday('now') - julianday(created_at) as age_days
          FROM memory WHERE status = 'active'
-         LIMIT 200"
-    ) {
+         LIMIT {batch_limit}"
+    )) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[consolidator] quality score query error: {e}");
@@ -614,10 +614,11 @@ pub async fn run_consolidator(
                     locked.events.clone()
                 };
 
-                // Run all 9 phases (acquires conn from state)
+                // Run all 15 phases (acquires conn from state)
                 let stats = {
+                    let consol_config = crate::config::load_config().consolidation.validated();
                     let locked = state.lock().await;
-                    run_all_phases(&locked.conn)
+                    run_all_phases(&locked.conn, &consol_config)
                 };
 
                 // Emit consolidation event with stats
@@ -665,7 +666,8 @@ mod tests {
         crate::db::schema::create_schema(&conn).unwrap();
 
         // On an empty DB, all stats should be 0
-        let stats = run_all_phases(&conn);
+        let config = crate::config::ConsolidationConfig::default();
+        let stats = run_all_phases(&conn, &config);
         assert_eq!(stats.exact_dedup, 0);
         assert_eq!(stats.semantic_dedup, 0);
         assert_eq!(stats.linked, 0);
@@ -700,7 +702,7 @@ mod tests {
             rusqlite::params![newer.id],
         ).unwrap();
 
-        let count = reweave_memories(&conn);
+        let count = reweave_memories(&conn, 200, 50);
         assert_eq!(count, 1, "should reweave 1 pair");
 
         // Verify older memory was enriched
@@ -740,7 +742,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let count = reweave_memories(&conn);
+        let count = reweave_memories(&conn, 200, 50);
         assert_eq!(count, 0, "should not reweave memories of different types");
     }
 
@@ -759,7 +761,7 @@ mod tests {
             rusqlite::params!["A".repeat(200)], // content_len = 200 -> completeness = 1.0
         ).unwrap();
 
-        let count = score_memory_quality(&conn);
+        let count = score_memory_quality(&conn, 200);
         assert_eq!(count, 1, "should score 1 memory");
 
         let score: f64 = conn.query_row(
@@ -800,7 +802,7 @@ mod tests {
             [],
         ).unwrap();
 
-        score_memory_quality(&conn);
+        score_memory_quality(&conn, 200);
 
         let fresh_score: f64 = conn.query_row(
             "SELECT quality_score FROM memory WHERE id = 'fresh-1'",

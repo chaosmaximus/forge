@@ -134,8 +134,9 @@ async fn main() {
     tokio::spawn(async move {
         // Phase 1: Consolidation (2-5s with many edges — short lock per phase)
         {
+            let startup_consol_config = forge_daemon::config::load_config().consolidation.validated();
             let locked = startup_state.lock().await;
-            let cs = forge_daemon::workers::consolidator::run_all_phases(&locked.conn);
+            let cs = forge_daemon::workers::consolidator::run_all_phases(&locked.conn, &startup_consol_config);
             eprintln!(
                 "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",
                 cs.exact_dedup, cs.semantic_dedup, cs.linked, cs.faded, cs.promoted, cs.reconsolidated

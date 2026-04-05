@@ -259,6 +259,44 @@ impl Default for A2aConfig {
     }
 }
 
+impl WorkerConfig {
+    /// Return a copy with all values clamped to sane bounds.
+    pub fn validated(&self) -> Self {
+        Self {
+            extraction_debounce_secs: self.extraction_debounce_secs.max(1),
+            consolidation_interval_secs: self.consolidation_interval_secs.clamp(60, 86400),
+            embedding_interval_secs: self.embedding_interval_secs.clamp(10, 86400),
+            perception_interval_secs: self.perception_interval_secs.clamp(5, 86400),
+            disposition_interval_secs: self.disposition_interval_secs.clamp(60, 86400),
+            indexer_interval_secs: self.indexer_interval_secs.clamp(60, 86400),
+            diagnostics_debounce_secs: self.diagnostics_debounce_secs.max(1),
+        }
+    }
+}
+
+impl ContextConfig {
+    /// Return a copy with all values clamped to sane bounds.
+    pub fn validated(&self) -> Self {
+        Self {
+            budget_chars: self.budget_chars.clamp(256, 50000),
+            decisions_limit: self.decisions_limit.clamp(1, 100),
+            lessons_limit: self.lessons_limit.clamp(1, 100),
+            entities_limit: self.entities_limit.clamp(0, 50),
+            entities_min_mentions: self.entities_min_mentions.clamp(1, 100),
+        }
+    }
+}
+
+impl ConsolidationConfig {
+    /// Return a copy with all values clamped to sane bounds.
+    pub fn validated(&self) -> Self {
+        Self {
+            batch_limit: self.batch_limit.clamp(1, 1000),
+            reweave_limit: self.reweave_limit.clamp(1, 500),
+        }
+    }
+}
+
 impl ForgeConfig {
     /// Validate that config fields are sensible.
     pub fn validate(&self) -> Result<(), String> {
