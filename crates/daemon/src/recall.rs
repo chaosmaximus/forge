@@ -1290,6 +1290,67 @@ pub fn compile_dynamic_suffix(
         ));
     }
 
+    // ── Pending Notifications ──
+    // Surface notifications that need user attention (budget-exempt like protocols)
+    {
+        // Adaptive learning: exclude topics where user has set priority_override='low'
+        // and we're filtering for medium+. Also apply the override to effective priority.
+        let notif_sql = "SELECT n.id, n.category,
+            COALESCE(nt.priority_override, n.priority) as effective_priority,
+            n.title, n.content, n.action_type
+            FROM notification n
+            LEFT JOIN notification_tuning nt ON n.topic = nt.topic AND nt.user_id = 'local'
+            WHERE n.status = 'pending'
+            AND COALESCE(nt.priority_override, n.priority) IN ('critical', 'high', 'medium')
+            ORDER BY CASE COALESCE(nt.priority_override, n.priority)
+                WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+            n.created_at DESC LIMIT 3";
+        if let Ok(mut stmt) = conn.prepare(notif_sql) {
+            let notifications: Vec<(String, String, String, String, String, Option<String>)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default();
+
+            if notifications.is_empty() {
+                xml.push_str("<notifications count=\"0\" />\n");
+            } else {
+                xml.push_str(&format!(
+                    "<notifications count=\"{}\" hint=\"Forge wants your attention on these\">\n",
+                    notifications.len(),
+                ));
+                for (id, category, priority, title, content, action_type) in &notifications {
+                    xml.push_str(&format!(
+                        "  <notification id=\"{}\" category=\"{}\" priority=\"{}\">\n    <title>{}</title>\n    <content>{}</content>\n",
+                        xml_escape(id),
+                        xml_escape(category),
+                        xml_escape(priority),
+                        xml_escape(title),
+                        xml_escape(content),
+                    ));
+                    if let Some(at) = action_type {
+                        xml.push_str(&format!(
+                            "    <action>Respond with: forge-next act-notification --id {} --approve (action: {})</action>\n",
+                            xml_escape(id),
+                            xml_escape(at),
+                        ));
+                    }
+                    xml.push_str("  </notification>\n");
+                }
+                xml.push_str("</notifications>\n");
+            }
+        }
+    }
+
     xml.push_str("</forge-dynamic>");
     xml
 }

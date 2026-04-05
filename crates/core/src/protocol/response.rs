@@ -484,6 +484,19 @@ pub enum ResponseData {
     MeetingList { meetings: Vec<serde_json::Value>, count: usize },
     /// Full meeting transcript
     MeetingTranscriptData { transcript: serde_json::Value },
+    /// Meeting response recorded
+    MeetingResponseRecorded { meeting_id: String, all_responded: bool },
+
+    // ── Notification Engine ──
+
+    /// List of notifications
+    NotificationList { notifications: Vec<serde_json::Value>, count: usize },
+    /// A notification was acknowledged
+    NotificationAcked { id: String },
+    /// A notification was dismissed
+    NotificationDismissed { id: String },
+    /// A notification action was taken
+    NotificationActed { id: String, result: Option<String> },
 
     Shutdown,
 }

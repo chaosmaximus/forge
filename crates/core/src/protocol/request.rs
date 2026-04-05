@@ -491,6 +491,28 @@ pub enum Request {
     ListMeetings { team_id: Option<String>, status: Option<String>, limit: Option<usize> },
     /// Full meeting transcript (topic + context + responses + synthesis + decision)
     MeetingTranscript { meeting_id: String },
+    /// Directly record a meeting participant's response (alternative to FISP side-effect)
+    RecordMeetingResponse {
+        meeting_id: String,
+        session_id: String,
+        response: String,
+        confidence: Option<f64>,
+    },
+
+    // ── Notification Engine ──
+
+    /// List notifications with optional filters
+    ListNotifications {
+        status: Option<String>,
+        category: Option<String>,
+        limit: Option<usize>,
+    },
+    /// Acknowledge a notification
+    AckNotification { id: String },
+    /// Dismiss a notification
+    DismissNotification { id: String },
+    /// Act on a confirmation notification (approve or reject)
+    ActOnNotification { id: String, approved: bool },
 
     Shutdown,
 }

@@ -228,6 +228,108 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         eprintln!("[consolidator] tagged {} anti-patterns from lessons", antipatterns);
     }
 
+    // Phase 19: Generate notifications from consolidation findings
+    let mut notifs_generated = 0;
+
+    // 19a: Protocol suggestion notifications
+    if protocols > 0
+        && !crate::notifications::check_throttle(conn, "protocol_suggestion", "local", 3600)
+            .unwrap_or(true)
+    {
+            if let Err(e) = crate::notifications::NotificationBuilder::new(
+                "confirmation", "medium",
+                &format!("Forge extracted {} new protocol(s) from behavior patterns", protocols),
+                "Review the new protocols with: forge-next recall --type protocol. Approve or dismiss.",
+                "consolidator",
+            )
+            .topic("protocol_suggestion")
+            .action("review_protocols", "{}")
+            .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
+        notifs_generated += 1;
+    }
+
+    // 19b: Contradiction notifications
+    if stats.contradictions > 0
+        && !crate::notifications::check_throttle(conn, "contradiction", "local", 1800)
+            .unwrap_or(true)
+    {
+        let _ = crate::notifications::NotificationBuilder::new(
+            "insight", "high",
+            &format!("{} contradiction(s) detected between active decisions", stats.contradictions),
+            "Review with: forge-next recall --type decision. Resolve conflicting decisions.",
+            "consolidator",
+        )
+        .topic("contradiction")
+        .build(conn);
+        notifs_generated += 1;
+    }
+
+    // 19c: Quality decline check
+    {
+        let avg_quality: f64 = conn
+            .query_row(
+                "SELECT COALESCE(AVG(quality_score), 0.5) FROM memory
+                 WHERE status='active' AND created_at > datetime('now', '-7 days')",
+                [], |row| row.get(0),
+            )
+            .unwrap_or(0.5);
+
+        if avg_quality < 0.3
+            && !crate::notifications::check_throttle(conn, "quality_decline", "local", 86400)
+                .unwrap_or(true)
+        {
+            if let Err(e) = crate::notifications::NotificationBuilder::new(
+                "insight", "medium",
+                "Memory quality declining",
+                &format!("Average quality score for recent memories is {:.2}. Consider reviewing and cleaning up low-quality entries.", avg_quality),
+                "consolidator",
+            )
+            .topic("quality_decline")
+            .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
+            notifs_generated += 1;
+        }
+    }
+
+    // 19d: Meeting timeout detection
+    {
+        let timeout_secs = crate::config::load_config().meeting.timeout_secs;
+        let timeout_modifier = format!("-{} seconds", timeout_secs);
+        let timed_out: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT id, topic FROM meeting
+                 WHERE status IN ('open', 'collecting')
+                 AND created_at < datetime('now', ?1)",
+            )
+            .ok()
+            .and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![timeout_modifier], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            })
+            .unwrap_or_default();
+
+        for (meeting_id, topic) in &timed_out {
+            let _ = conn.execute(
+                "UPDATE meeting SET status = 'timed_out' WHERE id = ?1",
+                rusqlite::params![meeting_id],
+            );
+            if let Err(e) = crate::notifications::NotificationBuilder::new(
+                "alert", "high",
+                &format!("Meeting '{}' timed out", topic),
+                &format!("Meeting {} exceeded timeout. Partial responses may be available.", meeting_id),
+                "meeting_engine",
+            )
+            .topic("meeting_timeout")
+            .source_id(meeting_id)
+            .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
+            notifs_generated += 1;
+        }
+    }
+
+    if notifs_generated > 0 {
+        eprintln!("[consolidator] generated {} notifications", notifs_generated);
+    }
+
     stats
 }
 
@@ -688,20 +790,29 @@ pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
         }
 
         // Rust-side validation: content must describe a process (not just mention a keyword)
-        // Process signals: imperative verbs, workflow instructions
         let content_lower = content.to_lowercase();
+        let title_lower = title.to_lowercase();
+
+        // Positive: imperative verbs, workflow instructions
         let has_process_signal = content_lower.contains("always ")
             || content_lower.contains("never ")
-            || content_lower.contains("before ")
-            || content_lower.contains("after ")
             || content_lower.contains("must ")
             || content_lower.contains("require")
             || content_lower.contains("workflow")
-            || content_lower.contains("process")
-            || content_lower.contains("step ")
-            || content_lower.contains("rule:");
+            || content_lower.contains("rule:")
+            || title_lower.starts_with("behavioral:");
 
-        if !has_process_signal {
+        // Negative: observations, facts, goals — these are NOT process rules
+        let is_observation = content_lower.contains("discovered")
+            || content_lower.contains("observed that")
+            || content_lower.contains("validates")
+            || content_lower.contains("proved that")
+            || title_lower.contains("user goal")
+            || title_lower.contains("user dogfoods")
+            || title_lower.contains("pipeline")
+            || title_lower.contains("test pattern:");
+
+        if !has_process_signal || is_observation {
             continue;
         }
 

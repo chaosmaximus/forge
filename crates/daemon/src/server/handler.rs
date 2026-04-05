@@ -2582,6 +2582,86 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::RecordMeetingResponse { meeting_id, session_id, response, confidence } => {
+            match crate::teams::record_meeting_response(
+                &state.conn, &meeting_id, &session_id, &response, confidence,
+            ) {
+                Ok(all_responded) => {
+                    crate::events::emit(&state.events, "meeting_response", serde_json::json!({
+                        "meeting_id": &meeting_id, "session_id": &session_id,
+                    }));
+                    if all_responded {
+                        crate::events::emit(&state.events, "meeting_all_responded", serde_json::json!({
+                            "meeting_id": &meeting_id,
+                        }));
+                    }
+                    Response::Ok { data: ResponseData::MeetingResponseRecorded { meeting_id, all_responded } }
+                }
+                Err(e) => Response::Error { message: format!("record_meeting_response failed: {e}") },
+            }
+        }
+
+        // ── Notification Engine ──
+
+        Request::ListNotifications { status, category, limit } => {
+            let lim = limit.unwrap_or(50);
+            match crate::notifications::list_notifications(
+                &state.conn,
+                status.as_deref(),
+                category.as_deref(),
+                None,
+                None,
+                lim,
+            ) {
+                Ok(notifs) => {
+                    let count = notifs.len();
+                    let vals: Vec<serde_json::Value> = notifs.iter().map(|n| {
+                        serde_json::json!({
+                            "id": n.id,
+                            "category": n.category,
+                            "priority": n.priority,
+                            "title": n.title,
+                            "content": n.content,
+                            "source": n.source,
+                            "source_id": n.source_id,
+                            "target_type": n.target_type,
+                            "target_id": n.target_id,
+                            "status": n.status,
+                            "action_type": n.action_type,
+                            "action_payload": n.action_payload,
+                            "action_result": n.action_result,
+                            "topic": n.topic,
+                            "created_at": n.created_at,
+                            "metadata": n.metadata,
+                        })
+                    }).collect();
+                    Response::Ok { data: ResponseData::NotificationList { notifications: vals, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_notifications failed: {e}") },
+            }
+        }
+
+        Request::AckNotification { id } => {
+            match crate::notifications::ack_notification(&state.conn, &id) {
+                Ok(_) => Response::Ok { data: ResponseData::NotificationAcked { id } },
+                Err(e) => Response::Error { message: format!("ack_notification failed: {e}") },
+            }
+        }
+
+        Request::DismissNotification { id } => {
+            match crate::notifications::dismiss_notification(&state.conn, &id) {
+                Ok(_) => Response::Ok { data: ResponseData::NotificationDismissed { id } },
+                Err(e) => Response::Error { message: format!("dismiss_notification failed: {e}") },
+            }
+        }
+
+        Request::ActOnNotification { id, approved } => {
+            match crate::notifications::act_on_notification(&state.conn, &id, approved) {
+                Ok(result) => Response::Ok { data: ResponseData::NotificationActed { id, result } },
+                Err(e) => Response::Error { message: format!("act_on_notification failed: {e}") },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

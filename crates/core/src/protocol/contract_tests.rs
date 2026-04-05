@@ -569,6 +569,34 @@ mod tests {
                     meeting_id: "m1".into(),
                 },
             ),
+            // ── Notification Engine ──
+            (
+                "list_notifications",
+                Request::ListNotifications {
+                    status: Some("pending".into()),
+                    category: Some("alert".into()),
+                    limit: Some(10),
+                },
+            ),
+            (
+                "ack_notification",
+                Request::AckNotification {
+                    id: "n1".into(),
+                },
+            ),
+            (
+                "dismiss_notification",
+                Request::DismissNotification {
+                    id: "n1".into(),
+                },
+            ),
+            (
+                "act_on_notification",
+                Request::ActOnNotification {
+                    id: "n1".into(),
+                    approved: true,
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -933,6 +961,31 @@ mod tests {
                 "meeting_transcript",
                 r#"{"method":"meeting_transcript","params":{"meeting_id":"m1"}}"#,
             ),
+            // ── Notification Engine ──
+            (
+                "list_notifications",
+                r#"{"method":"list_notifications","params":{}}"#,
+            ),
+            (
+                "list_notifications with filters",
+                r#"{"method":"list_notifications","params":{"status":"pending","category":"alert","limit":10}}"#,
+            ),
+            (
+                "ack_notification",
+                r#"{"method":"ack_notification","params":{"id":"n1"}}"#,
+            ),
+            (
+                "dismiss_notification",
+                r#"{"method":"dismiss_notification","params":{"id":"n1"}}"#,
+            ),
+            (
+                "act_on_notification",
+                r#"{"method":"act_on_notification","params":{"id":"n1","approved":true}}"#,
+            ),
+            (
+                "act_on_notification reject",
+                r#"{"method":"act_on_notification","params":{"id":"n1","approved":false}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -990,10 +1043,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
         let unit_count = 16;
-        // Parameterized variants: 77 (70 + 7 new: CreateMeeting, MeetingStatus, MeetingResponses, MeetingSynthesize, MeetingDecide, ListMeetings, MeetingTranscript)
-        let param_count = 77;
-        // Total: 93
-        let expected_total = 93;
+        // Parameterized variants: 82 (78 + 4 notification: ListNotifications, AckNotification, DismissNotification, ActOnNotification)
+        let param_count = 82;
+        // Total: 98
+        let expected_total = 98;
 
         assert_eq!(
             unit_count + param_count,
@@ -1341,6 +1394,21 @@ mod tests {
                 Request::MeetingTranscript {
                     meeting_id: "m1".into(),
                 },
+                Request::RecordMeetingResponse {
+                    meeting_id: "m1".into(),
+                    session_id: "s1".into(),
+                    response: "I agree".into(),
+                    confidence: Some(0.9),
+                },
+                // Notification Engine
+                Request::ListNotifications {
+                    status: Some("pending".into()),
+                    category: Some("alert".into()),
+                    limit: Some(10),
+                },
+                Request::AckNotification { id: "n1".into() },
+                Request::DismissNotification { id: "n1".into() },
+                Request::ActOnNotification { id: "n1".into(), approved: true },
             ]
         }
 
