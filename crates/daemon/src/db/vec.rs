@@ -101,7 +101,13 @@ pub fn create_code_vec_table(conn: &Connection) -> rusqlite::Result<()> {
 
 /// Store a code embedding for a symbol/file ID.
 /// Idempotent: deletes any existing embedding for this ID first.
+/// Validates embedding dimension is 768.
 pub fn store_code_embedding(conn: &Connection, id: &str, embedding: &[f32]) -> rusqlite::Result<()> {
+    if embedding.len() != 768 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            format!("code embedding must be 768-dim, got {}", embedding.len()),
+        ));
+    }
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM code_vec WHERE id = ?1", params![id])?;
     tx.execute(

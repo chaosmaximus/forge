@@ -348,5 +348,24 @@ pub enum Request {
         path: String,
     },
 
+    /// Cross-engine query: given a file, return its symbols, callers, cluster, and related memories.
+    CrossEngineQuery {
+        file: String,
+        reality_id: Option<String>,
+    },
+
+    /// File-memory map: for each file, return how many memories mention it, decisions, entities.
+    FileMemoryMap {
+        files: Vec<String>,
+        reality_id: Option<String>,
+    },
+
+    /// Code search: find symbols by name pattern with optional kind filter.
+    CodeSearch {
+        query: String,
+        kind: Option<String>,  // "function", "class", "file"
+        limit: Option<usize>,
+    },
+
     Shutdown,
 }

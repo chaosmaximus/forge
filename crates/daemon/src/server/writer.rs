@@ -56,6 +56,9 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::ListPermissions
             | Request::GetEffectiveConfig { .. }
             | Request::ListScopedConfig { .. }
+            | Request::CrossEngineQuery { .. }
+            | Request::FileMemoryMap { .. }
+            | Request::CodeSearch { .. }
             // NOTE: DetectReality is NOT read-only — it may create a reality record
     )
 }
@@ -265,6 +268,21 @@ mod tests {
         assert!(is_read_only(&Request::ListScopedConfig {
             scope_type: "organization".into(),
             scope_id: "default".into(),
+        }));
+
+        // Cross-engine queries: read-only
+        assert!(is_read_only(&Request::CrossEngineQuery {
+            file: "src/main.rs".into(),
+            reality_id: None,
+        }));
+        assert!(is_read_only(&Request::FileMemoryMap {
+            files: vec!["src/main.rs".into()],
+            reality_id: None,
+        }));
+        assert!(is_read_only(&Request::CodeSearch {
+            query: "test".into(),
+            kind: None,
+            limit: None,
         }));
 
         // Scoped config: write

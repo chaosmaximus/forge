@@ -72,30 +72,46 @@ pub fn build_call_edges(
 
 /// Extract import relationships from source file content.
 /// Returns Vec<(source_file_path, imported_module_or_path)>.
+///
+/// Note: Uses regex-based extraction (not AST-aware). Skips comment lines as best effort
+/// but may still match imports inside block comments or string literals. This is acceptable
+/// for the 80%+ coverage target — import edges are advisory, not authoritative.
 pub fn extract_imports(content: &str, language: &str, file_path: &str) -> Vec<(String, String)> {
-    let mut results = Vec::new();
+    use std::sync::LazyLock;
 
-    let patterns: Vec<Regex> = match language {
-        "rust" => vec![
-            Regex::new(r"use\s+((?:(?:crate|super|self)::)?[\w:]+)").unwrap(),
-            Regex::new(r"mod\s+(\w+);").unwrap(),
-        ],
-        "python" => vec![
-            Regex::new(r"^\s*import\s+(\S+)").unwrap(),
-            Regex::new(r"^\s*from\s+(\S+)\s+import").unwrap(),
-        ],
-        "typescript" | "javascript" => vec![
-            Regex::new(r#"import\s+.*?from\s+['"](.*?)['""]"#).unwrap(),
-            Regex::new(r#"require\(\s*['"](.*?)['"]\s*\)"#).unwrap(),
-        ],
-        "go" => vec![
-            Regex::new(r#"import\s+"([\w./]+)""#).unwrap(),
-        ],
-        _ => return results,
+    // Compile regexes once (static) to avoid recompilation on every call
+    static RUST_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
+        Regex::new(r"use\s+((?:(?:crate|super|self)::)?[\w:]+)").unwrap(),
+        Regex::new(r"mod\s+(\w+);").unwrap(),
+    ]);
+    static PYTHON_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
+        Regex::new(r"^\s*import\s+(\S+)").unwrap(),
+        Regex::new(r"^\s*from\s+(\S+)\s+import").unwrap(),
+    ]);
+    static TS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
+        Regex::new(r#"import\s+.*?from\s+['"](.*?)['"]"#).unwrap(),
+        Regex::new(r#"require\(\s*['"](.*?)['"]"#).unwrap(),
+    ]);
+    static GO_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
+        Regex::new(r#"import\s+"([\w./]+)""#).unwrap(),
+    ]);
+
+    let patterns: &[Regex] = match language {
+        "rust" => &RUST_PATTERNS,
+        "python" => &PYTHON_PATTERNS,
+        "typescript" | "javascript" => &TS_PATTERNS,
+        "go" => &GO_PATTERNS,
+        _ => return Vec::new(),
     };
 
+    let mut results = Vec::new();
     for line in content.lines() {
-        for pat in &patterns {
+        let trimmed = line.trim();
+        // Skip comment lines (best effort — doesn't handle block comments)
+        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+            continue;
+        }
+        for pat in patterns {
             if let Some(caps) = pat.captures(line) {
                 if let Some(m) = caps.get(1) {
                     results.push((file_path.to_string(), m.as_str().to_string()));

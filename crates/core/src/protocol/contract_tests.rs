@@ -420,6 +420,28 @@ mod tests {
                     path: "/tmp/my-project".into(),
                 },
             ),
+            (
+                "cross_engine_query",
+                Request::CrossEngineQuery {
+                    file: "src/main.rs".into(),
+                    reality_id: Some("r1".into()),
+                },
+            ),
+            (
+                "file_memory_map",
+                Request::FileMemoryMap {
+                    files: vec!["src/main.rs".into(), "src/lib.rs".into()],
+                    reality_id: None,
+                },
+            ),
+            (
+                "code_search",
+                Request::CodeSearch {
+                    query: "handle_request".into(),
+                    kind: Some("function".into()),
+                    limit: Some(10),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -661,6 +683,26 @@ mod tests {
                 "list_scoped_config",
                 r#"{"method":"list_scoped_config","params":{"scope_type":"organization","scope_id":"default"}}"#,
             ),
+            (
+                "cross_engine_query",
+                r#"{"method":"cross_engine_query","params":{"file":"src/main.rs"}}"#,
+            ),
+            (
+                "cross_engine_query with reality_id",
+                r#"{"method":"cross_engine_query","params":{"file":"src/main.rs","reality_id":"r1"}}"#,
+            ),
+            (
+                "file_memory_map",
+                r#"{"method":"file_memory_map","params":{"files":["src/main.rs","src/lib.rs"]}}"#,
+            ),
+            (
+                "code_search",
+                r#"{"method":"code_search","params":{"query":"handle_request"}}"#,
+            ),
+            (
+                "code_search with kind",
+                r#"{"method":"code_search","params":{"query":"handle_request","kind":"function","limit":10}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -717,10 +759,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 15 (ManasHealth moved to parameterized, +ListPermissions)
         let unit_count = 15;
-        // Parameterized variants: 52 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality)
-        let param_count = 52;
-        // Total: 67
-        let expected_total = 67;
+        // Parameterized variants: 55 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality, CrossEngineQuery, FileMemoryMap, CodeSearch)
+        let param_count = 55;
+        // Total: 70
+        let expected_total = 70;
 
         assert_eq!(
             unit_count + param_count,
@@ -963,6 +1005,19 @@ mod tests {
                 },
                 Request::DetectReality {
                     path: "/tmp/my-project".into(),
+                },
+                Request::CrossEngineQuery {
+                    file: "src/main.rs".into(),
+                    reality_id: Some("r1".into()),
+                },
+                Request::FileMemoryMap {
+                    files: vec!["src/main.rs".into()],
+                    reality_id: None,
+                },
+                Request::CodeSearch {
+                    query: "test".into(),
+                    kind: None,
+                    limit: None,
                 },
             ]
         }

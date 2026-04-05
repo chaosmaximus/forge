@@ -2071,6 +2071,154 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Cross-Engine Queries (v2.0 Wave 3) ──
+
+        Request::CrossEngineQuery { file, reality_id: _reality_id } => {
+            // 1. Look up symbols for the file from code_symbol table
+            let symbols: Vec<serde_json::Value> = state.conn.prepare(
+                "SELECT name, kind, line_start, line_end FROM code_symbol WHERE file_path = ?1"
+            ).and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![file], |row| {
+                    Ok(serde_json::json!({
+                        "name": row.get::<_, String>(0)?,
+                        "kind": row.get::<_, String>(1)?,
+                        "line_start": row.get::<_, Option<i64>>(2)?,
+                        "line_end": row.get::<_, Option<i64>>(3)?,
+                    }))
+                })?.collect()
+            }).unwrap_or_default();
+
+            // 2. Look up callers from edge table (edge_type='calls', to_id contains file path)
+            let calling_files: Vec<String> = state.conn.prepare(
+                "SELECT DISTINCT from_id FROM edge WHERE edge_type = 'calls' AND to_id = ?1"
+            ).and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![file], |row| row.get(0))?.collect()
+            }).unwrap_or_default();
+            let callers = calling_files.len();
+
+            // 3. Look up cluster from edge table (edge_type='belongs_to_cluster')
+            let cluster: Option<String> = state.conn.query_row(
+                "SELECT to_id FROM edge WHERE edge_type = 'belongs_to_cluster' AND from_id = ?1 LIMIT 1",
+                rusqlite::params![file],
+                |row| row.get(0),
+            ).ok();
+
+            // 3b. Other files in the same cluster
+            let cluster_files: Vec<String> = if let Some(ref cid) = cluster {
+                state.conn.prepare(
+                    "SELECT from_id FROM edge WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1 AND from_id != ?2"
+                ).and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![cid, file], |row| row.get(0))?.collect()
+                }).unwrap_or_default()
+            } else {
+                vec![]
+            };
+
+            // 4. Look up memories that mention this file in content or tags
+            let related_memories: Vec<serde_json::Value> = state.conn.prepare(
+                "SELECT id, title, memory_type FROM memory WHERE status = 'active' AND (content LIKE '%' || ?1 || '%' OR tags LIKE '%' || ?1 || '%') LIMIT 20"
+            ).and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![file], |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, String>(0)?,
+                        "title": row.get::<_, String>(1)?,
+                        "memory_type": row.get::<_, String>(2)?,
+                    }))
+                })?.collect()
+            }).unwrap_or_default();
+
+            Response::Ok {
+                data: ResponseData::CrossEngineResult {
+                    file,
+                    symbols,
+                    callers,
+                    calling_files,
+                    cluster,
+                    cluster_files,
+                    related_memories,
+                },
+            }
+        }
+
+        Request::FileMemoryMap { files, reality_id: _ } => {
+            let mut mappings = std::collections::HashMap::new();
+            for file in &files {
+                let memory_count: usize = state.conn.query_row(
+                    "SELECT COUNT(*) FROM memory WHERE status = 'active' AND (content LIKE '%' || ?1 || '%' OR tags LIKE '%' || ?1 || '%')",
+                    rusqlite::params![file],
+                    |row| row.get(0),
+                ).unwrap_or(0);
+
+                let decision_count: usize = state.conn.query_row(
+                    "SELECT COUNT(*) FROM memory WHERE status = 'active' AND memory_type = 'decision' AND (content LIKE '%' || ?1 || '%' OR tags LIKE '%' || ?1 || '%')",
+                    rusqlite::params![file],
+                    |row| row.get(0),
+                ).unwrap_or(0);
+
+                let entity_names: Vec<String> = state.conn.prepare(
+                    "SELECT DISTINCT name FROM entity WHERE description LIKE '%' || ?1 || '%' OR entity_type LIKE '%' || ?1 || '%' LIMIT 10"
+                ).and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![file], |row| row.get(0))?.collect()
+                }).unwrap_or_default();
+
+                let last_perception: Option<String> = state.conn.query_row(
+                    "SELECT data FROM perception WHERE project IS NOT NULL AND data LIKE '%' || ?1 || '%' ORDER BY created_at DESC LIMIT 1",
+                    rusqlite::params![file],
+                    |row| row.get(0),
+                ).ok();
+
+                mappings.insert(file.clone(), response::FileMemoryInfo {
+                    memory_count,
+                    decision_count,
+                    entity_names,
+                    last_perception,
+                });
+            }
+
+            Response::Ok {
+                data: ResponseData::FileMemoryMapResult { mappings },
+            }
+        }
+
+        Request::CodeSearch { query, kind, limit } => {
+            let effective_limit = limit.unwrap_or(20).min(100);
+            let pattern = format!("%{}%", query);
+
+            let hits: Vec<serde_json::Value> = if let Some(ref kind_filter) = kind {
+                state.conn.prepare(
+                    "SELECT id, name, kind, file_path, line_start FROM code_symbol WHERE name LIKE ?1 AND kind = ?2 LIMIT ?3"
+                ).and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![pattern, kind_filter, effective_limit], |row| {
+                        Ok(serde_json::json!({
+                            "id": row.get::<_, String>(0)?,
+                            "name": row.get::<_, String>(1)?,
+                            "kind": row.get::<_, String>(2)?,
+                            "path": row.get::<_, String>(3)?,
+                            "line_start": row.get::<_, Option<i64>>(4)?,
+                        }))
+                    })?.collect()
+                }).unwrap_or_default()
+            } else {
+                state.conn.prepare(
+                    "SELECT id, name, kind, file_path, line_start FROM code_symbol WHERE name LIKE ?1 LIMIT ?2"
+                ).and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![pattern, effective_limit], |row| {
+                        Ok(serde_json::json!({
+                            "id": row.get::<_, String>(0)?,
+                            "name": row.get::<_, String>(1)?,
+                            "kind": row.get::<_, String>(2)?,
+                            "path": row.get::<_, String>(3)?,
+                            "line_start": row.get::<_, Option<i64>>(4)?,
+                        }))
+                    })?.collect()
+                }).unwrap_or_default()
+            };
+
+            Response::Ok {
+                data: ResponseData::CodeSearchResult { hits },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
@@ -4337,5 +4485,152 @@ mod tests {
             .expect("reality should exist");
         assert_eq!(reality.reality_type, "code");
         assert_eq!(reality.domain.as_deref(), Some("rust"));
+    }
+
+    // ── Cross-Engine Query Tests ──
+
+    #[test]
+    fn test_cross_engine_query_basic() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a code file and symbols
+        let file = forge_core::types::CodeFile {
+            id: "f1".into(),
+            path: "src/handler.rs".into(),
+            language: "rust".into(),
+            project: "forge".into(),
+            hash: "abc123".into(),
+            indexed_at: "2026-04-05T00:00:00Z".into(),
+        };
+        crate::db::ops::store_file(&state.conn, &file).unwrap();
+
+        let sym = forge_core::types::CodeSymbol {
+            id: "s1".into(),
+            name: "handle_request".into(),
+            kind: "function".into(),
+            file_path: "src/handler.rs".into(),
+            line_start: 10,
+            line_end: Some(50),
+            signature: Some("fn handle_request()".into()),
+        };
+        crate::db::ops::store_symbol(&state.conn, &sym).unwrap();
+
+        // Add a call edge
+        state.conn.execute(
+            "INSERT INTO edge (id, from_id, to_id, edge_type, properties, created_at, valid_from) VALUES ('e1', 'src/main.rs', 'src/handler.rs', 'calls', '{}', '2026-04-05', '2026-04-05')",
+            [],
+        ).unwrap();
+
+        let resp = handle_request(&mut state, Request::CrossEngineQuery {
+            file: "src/handler.rs".into(),
+            reality_id: None,
+        });
+
+        match resp {
+            Response::Ok { data: ResponseData::CrossEngineResult { file, symbols, callers, calling_files, .. } } => {
+                assert_eq!(file, "src/handler.rs");
+                assert_eq!(symbols.len(), 1);
+                assert_eq!(symbols[0]["name"], "handle_request");
+                assert_eq!(callers, 1);
+                assert_eq!(calling_files, vec!["src/main.rs"]);
+            }
+            other => panic!("expected CrossEngineResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_file_memory_map_basic() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a memory mentioning a file
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Handler architecture".into(),
+            content: "Use src/handler.rs as the central dispatcher".into(),
+            confidence: Some(0.9),
+            tags: None,
+            project: None,
+        });
+
+        let resp = handle_request(&mut state, Request::FileMemoryMap {
+            files: vec!["src/handler.rs".into(), "src/nonexistent.rs".into()],
+            reality_id: None,
+        });
+
+        match resp {
+            Response::Ok { data: ResponseData::FileMemoryMapResult { mappings } } => {
+                let info = mappings.get("src/handler.rs").expect("should have handler.rs");
+                assert!(info.memory_count >= 1, "should find at least 1 memory mentioning handler.rs");
+                assert!(info.decision_count >= 1, "should find at least 1 decision");
+
+                let info2 = mappings.get("src/nonexistent.rs").expect("should have nonexistent.rs");
+                assert_eq!(info2.memory_count, 0, "nonexistent file should have 0 memories");
+            }
+            other => panic!("expected FileMemoryMapResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_code_search_by_name() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store symbols
+        let sym1 = forge_core::types::CodeSymbol {
+            id: "s1".into(),
+            name: "handle_request".into(),
+            kind: "function".into(),
+            file_path: "src/handler.rs".into(),
+            line_start: 10,
+            line_end: Some(50),
+            signature: None,
+        };
+        let sym2 = forge_core::types::CodeSymbol {
+            id: "s2".into(),
+            name: "handle_response".into(),
+            kind: "function".into(),
+            file_path: "src/response.rs".into(),
+            line_start: 5,
+            line_end: Some(20),
+            signature: None,
+        };
+        let sym3 = forge_core::types::CodeSymbol {
+            id: "s3".into(),
+            name: "DaemonState".into(),
+            kind: "class".into(),
+            file_path: "src/handler.rs".into(),
+            line_start: 1,
+            line_end: Some(8),
+            signature: None,
+        };
+        crate::db::ops::store_symbol(&state.conn, &sym1).unwrap();
+        crate::db::ops::store_symbol(&state.conn, &sym2).unwrap();
+        crate::db::ops::store_symbol(&state.conn, &sym3).unwrap();
+
+        // Search by name pattern
+        let resp = handle_request(&mut state, Request::CodeSearch {
+            query: "handle".into(),
+            kind: None,
+            limit: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::CodeSearchResult { hits } } => {
+                assert_eq!(hits.len(), 2, "should find 2 symbols matching 'handle'");
+            }
+            other => panic!("expected CodeSearchResult, got {:?}", other),
+        }
+
+        // Search with kind filter
+        let resp2 = handle_request(&mut state, Request::CodeSearch {
+            query: "Daemon".into(),
+            kind: Some("class".into()),
+            limit: Some(5),
+        });
+        match resp2 {
+            Response::Ok { data: ResponseData::CodeSearchResult { hits } } => {
+                assert_eq!(hits.len(), 1, "should find 1 class matching 'Daemon'");
+                assert_eq!(hits[0]["name"], "DaemonState");
+            }
+            other => panic!("expected CodeSearchResult, got {:?}", other),
+        }
     }
 }

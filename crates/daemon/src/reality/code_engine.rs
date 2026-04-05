@@ -1,6 +1,7 @@
 use forge_core::types::reality_engine::{
     DetectionResult, EngineCapabilities, RealityEngine,
 };
+use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Marker file with associated domain and confidence.
@@ -160,6 +161,139 @@ impl RealityEngine for CodeRealityEngine {
             ],
             supports_embeddings: true,
             supports_search: true,
+        }
+    }
+}
+
+impl CodeRealityEngine {
+    /// Build an XML context section summarizing code structure for context injection.
+    ///
+    /// Returns a `<code-structure>` XML fragment with file/symbol counts and cluster info.
+    /// When no code data exists, returns a self-closing `<code-structure/>` tag.
+    pub fn context_section(conn: &Connection) -> String {
+        let file_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0))
+            .unwrap_or(0);
+        let symbol_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        if file_count == 0 {
+            return "<code-structure/>".to_string();
+        }
+
+        let domain: String = conn
+            .query_row(
+                "SELECT language FROM code_file GROUP BY language ORDER BY COUNT(*) DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let reality_name: String = conn
+            .query_row(
+                "SELECT COALESCE(project, 'default') FROM code_file WHERE project IS NOT NULL AND project != '' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "default".to_string());
+
+        let total_clusters: usize = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT to_id) FROM edge WHERE edge_type = 'belongs_to_cluster'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        let mut xml = format!(
+            "<code-structure reality=\"{}\" domain=\"{}\" files=\"{}\" symbols=\"{}\">",
+            reality_name, domain, file_count, symbol_count
+        );
+
+        if total_clusters > 0 {
+            let cluster_ids: Vec<String> = conn
+                .prepare("SELECT DISTINCT to_id FROM edge WHERE edge_type = 'belongs_to_cluster' LIMIT 5")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get(0))?.collect())
+                .unwrap_or_default();
+
+            xml.push_str(&format!("\n  <clusters count=\"{}\">", total_clusters));
+            for (idx, cid) in cluster_ids.iter().enumerate() {
+                let files: Vec<String> = conn
+                    .prepare("SELECT from_id FROM edge WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1 LIMIT 5")
+                    .and_then(|mut stmt| stmt.query_map(params![cid], |row| row.get(0))?.collect())
+                    .unwrap_or_default();
+                let file_names: Vec<&str> = files
+                    .iter()
+                    .map(|f| f.rsplit('/').next().unwrap_or(f.as_str()))
+                    .collect();
+                let total_in_cluster: usize = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM edge WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1",
+                        params![cid],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(files.len());
+                xml.push_str(&format!(
+                    "\n    <cluster id=\"{}\" files=\"{}\">{}</cluster>",
+                    idx,
+                    total_in_cluster,
+                    file_names.join(", ")
+                ));
+            }
+            xml.push_str("\n  </clusters>");
+        }
+
+        xml.push_str("\n</code-structure>");
+        xml
+    }
+
+    /// Search code symbols by name pattern with optional kind filter.
+    ///
+    /// Returns matching symbols as JSON values with id, name, kind, path, line_start.
+    pub fn search(
+        conn: &Connection,
+        query: &str,
+        kind: Option<&str>,
+        limit: usize,
+    ) -> Vec<serde_json::Value> {
+        let pattern = format!("%{}%", query);
+        let effective_limit = limit.min(100);
+
+        if let Some(kind_filter) = kind {
+            conn.prepare(
+                "SELECT id, name, kind, file_path, line_start FROM code_symbol WHERE name LIKE ?1 AND kind = ?2 LIMIT ?3",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![pattern, kind_filter, effective_limit], |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, String>(0)?,
+                        "name": row.get::<_, String>(1)?,
+                        "kind": row.get::<_, String>(2)?,
+                        "path": row.get::<_, String>(3)?,
+                        "line_start": row.get::<_, Option<i64>>(4)?,
+                    }))
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
+        } else {
+            conn.prepare(
+                "SELECT id, name, kind, file_path, line_start FROM code_symbol WHERE name LIKE ?1 LIMIT ?2",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![pattern, effective_limit], |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, String>(0)?,
+                        "name": row.get::<_, String>(1)?,
+                        "kind": row.get::<_, String>(2)?,
+                        "path": row.get::<_, String>(3)?,
+                        "line_start": row.get::<_, Option<i64>>(4)?,
+                    }))
+                })?
+                .collect()
+            })
+            .unwrap_or_default()
         }
     }
 }

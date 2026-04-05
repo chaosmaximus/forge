@@ -396,6 +396,27 @@ pub enum ResponseData {
         metadata: serde_json::Value,
     },
 
+    /// Cross-engine query result: symbols + callers + cluster + related memories for a file.
+    CrossEngineResult {
+        file: String,
+        symbols: Vec<serde_json::Value>,
+        callers: usize,
+        calling_files: Vec<String>,
+        cluster: Option<String>,
+        cluster_files: Vec<String>,
+        related_memories: Vec<serde_json::Value>,
+    },
+
+    /// File-memory map result: for each file, its memory info.
+    FileMemoryMapResult {
+        mappings: std::collections::HashMap<String, FileMemoryInfo>,
+    },
+
+    /// Code search result: matching symbols.
+    CodeSearchResult {
+        hits: Vec<serde_json::Value>,
+    },
+
     Shutdown,
 }
 
@@ -498,6 +519,15 @@ pub struct A2aPermission {
     pub allowed: bool,
     pub created_by: String,
     pub created_at: String,
+}
+
+/// Information about memories related to a file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileMemoryInfo {
+    pub memory_count: usize,
+    pub decision_count: usize,
+    pub entity_names: Vec<String>,
+    pub last_perception: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

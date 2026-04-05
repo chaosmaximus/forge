@@ -587,7 +587,8 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
             config.reality.community_detection = value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["reality", "max_index_files"] => {
-            config.reality.max_index_files = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            let v: usize = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.reality.max_index_files = v.clamp(100, 50000);
         }
         _ => return Err(format!("unknown config key: {key}")),
     }

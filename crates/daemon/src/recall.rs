@@ -958,6 +958,89 @@ pub fn compile_dynamic_suffix(
         }
     }
 
+    // Code structure — clusters from reality engine
+    if excluded_layers.iter().any(|l| l == "code_structure") {
+        xml.push_str("<code-structure/>\n");
+    } else {
+        let file_count: usize = conn.query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0)).unwrap_or(0);
+        let symbol_count: usize = conn.query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0)).unwrap_or(0);
+
+        if file_count == 0 {
+            xml.push_str("<code-structure/>\n");
+        } else {
+            // Find the domain from code_file language (most common)
+            let domain: String = conn.query_row(
+                "SELECT language FROM code_file GROUP BY language ORDER BY COUNT(*) DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            ).unwrap_or_else(|_| "unknown".to_string());
+
+            // Find the reality name (project name from code_file)
+            let reality_name: String = conn.query_row(
+                "SELECT COALESCE(project, 'default') FROM code_file WHERE project IS NOT NULL AND project != '' LIMIT 1",
+                [],
+                |r| r.get(0),
+            ).unwrap_or_else(|_| "default".to_string());
+
+            // Gather top 5 clusters with their file names
+            let cluster_rows: Vec<(String, Vec<String>)> = {
+                let cluster_ids: Vec<String> = conn.prepare(
+                    "SELECT DISTINCT to_id FROM edge WHERE edge_type = 'belongs_to_cluster' LIMIT 5"
+                ).and_then(|mut stmt| {
+                    stmt.query_map([], |row| row.get(0))?.collect()
+                }).unwrap_or_default();
+
+                let mut clusters = Vec::new();
+                for cid in &cluster_ids {
+                    let files: Vec<String> = conn.prepare(
+                        "SELECT from_id FROM edge WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1 LIMIT 5"
+                    ).and_then(|mut stmt| {
+                        stmt.query_map(params![cid], |row| row.get(0))?.collect()
+                    }).unwrap_or_default();
+                    clusters.push((cid.clone(), files));
+                }
+                clusters
+            };
+
+            // Count total clusters (including beyond top 5)
+            let total_clusters: usize = conn.query_row(
+                "SELECT COUNT(DISTINCT to_id) FROM edge WHERE edge_type = 'belongs_to_cluster'",
+                [],
+                |r| r.get(0),
+            ).unwrap_or(0);
+
+            let mut cs_xml = format!(
+                "<code-structure reality=\"{}\" domain=\"{}\" files=\"{}\" symbols=\"{}\">",
+                xml_escape(&reality_name), xml_escape(&domain), file_count, symbol_count
+            );
+
+            if total_clusters > 0 {
+                cs_xml.push_str(&format!("\n  <clusters count=\"{}\">", total_clusters));
+                for (idx, (cid, files)) in cluster_rows.iter().enumerate() {
+                    let file_names: Vec<&str> = files.iter().map(|f| {
+                        f.rsplit('/').next().unwrap_or(f.as_str())
+                    }).collect();
+                    let total_in_cluster: usize = conn.query_row(
+                        "SELECT COUNT(*) FROM edge WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1",
+                        params![cid],
+                        |r| r.get(0),
+                    ).unwrap_or(files.len());
+                    cs_xml.push_str(&format!(
+                        "\n    <cluster id=\"{}\" files=\"{}\">{}</cluster>",
+                        idx, total_in_cluster, xml_escape(&file_names.join(", "))
+                    ));
+                }
+                cs_xml.push_str("\n  </clusters>");
+            }
+
+            cs_xml.push_str("\n</code-structure>\n");
+            if used + cs_xml.len() < budget {
+                xml.push_str(&cs_xml);
+                used += cs_xml.len();
+            }
+        }
+    }
+
     // Critical perceptions only (warnings/errors, unconsumed, project-scoped)
     if excluded_layers.iter().any(|l| l == "perceptions") {
         xml.push_str("<perceptions/>\n");
@@ -2523,5 +2606,52 @@ mod tests {
         let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &excluded);
         assert!(suffix.contains("<entities/>"), "should contain empty entities tag when excluded");
         assert!(!suffix.contains("authentication"), "should NOT contain entity data when excluded");
+    }
+
+    // ── code-structure context tests ──
+
+    #[test]
+    fn test_code_structure_section_with_data() {
+        let conn = setup();
+
+        // Store a code file
+        let file = forge_core::types::CodeFile {
+            id: "f1".into(),
+            path: "src/handler.rs".into(),
+            language: "rust".into(),
+            project: "forge".into(),
+            hash: "abc".into(),
+            indexed_at: forge_core::time::now_iso(),
+        };
+        ops::store_file(&conn, &file).unwrap();
+
+        let sym = forge_core::types::CodeSymbol {
+            id: "s1".into(),
+            name: "handle_request".into(),
+            kind: "function".into(),
+            file_path: "src/handler.rs".into(),
+            line_start: 10,
+            line_end: Some(50),
+            signature: None,
+        };
+        ops::store_symbol(&conn, &sym).unwrap();
+
+        let ctx_config = crate::config::ContextConfig::default();
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[]);
+
+        assert!(suffix.contains("<code-structure"), "should contain code-structure tag");
+        assert!(suffix.contains("files=\"1\""), "should show file count");
+        assert!(suffix.contains("symbols=\"1\""), "should show symbol count");
+        assert!(suffix.contains("domain=\"rust\""), "should show domain");
+    }
+
+    #[test]
+    fn test_code_structure_section_empty() {
+        let conn = setup();
+
+        let ctx_config = crate::config::ContextConfig::default();
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[]);
+
+        assert!(suffix.contains("<code-structure/>"), "should contain self-closing code-structure tag when no data");
     }
 }
