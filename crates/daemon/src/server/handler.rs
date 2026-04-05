@@ -3274,15 +3274,7 @@ mod tests {
                 data:
                     ResponseData::ConsolidationComplete {
                         exact_dedup,
-                        semantic_dedup: _,
-                        linked: _,
-                        faded: _,
-                        promoted: _,
-                        reconsolidated: _,
-                        embedding_merged: _,
-                        strengthened: _,
-                        contradictions: _,
-                        entities_detected: _,
+                        ..
                     },
             } => {
                 assert!(exact_dedup > 0, "should dedup at least 1 duplicate memory");
@@ -3475,7 +3467,8 @@ mod tests {
                         reconsolidated,
                         embedding_merged,
                         strengthened,
-                        contradictions, ..
+                        contradictions,
+                        ..
                     },
             } => {
                 assert_eq!(exact_dedup, 0);
