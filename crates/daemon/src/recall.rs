@@ -1204,6 +1204,89 @@ pub fn compile_dynamic_suffix(
         }
     }
 
+    // ── Guardrails (Anti-patterns) ──
+    // Inject lessons tagged as anti-patterns — WHAT NOT TO DO
+    {
+        let guard_sql = "SELECT title, content FROM memory
+            WHERE memory_type = 'lesson' AND status = 'active'
+            AND tags LIKE '%anti-pattern%'
+            ORDER BY quality_score DESC, confidence DESC LIMIT 5";
+        if let Ok(mut stmt) = conn.prepare(guard_sql) {
+            let guards: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default();
+
+            if !guards.is_empty() {
+                xml.push_str("<guardrails hint=\"known pitfalls — avoid these\">\n");
+                for (title, content) in &guards {
+                    // Truncate content to 150 chars for brevity
+                    let brief = if content.len() > 150 { &content[..150] } else { content };
+                    xml.push_str(&format!(
+                        "  <avoid name=\"{}\">{}</avoid>\n",
+                        xml_escape(title),
+                        xml_escape(brief),
+                    ));
+                }
+                xml.push_str("</guardrails>\n");
+            }
+        }
+    }
+
+    // ── Deferred Items ──
+    // Decisions that were explicitly postponed — don't re-solve them
+    {
+        let defer_sql = "SELECT title FROM memory
+            WHERE memory_type = 'decision' AND status = 'active'
+            AND (LOWER(title) LIKE '%defer%' OR LOWER(content) LIKE '%defer%'
+                 OR LOWER(content) LIKE '%next session%' OR LOWER(content) LIKE '%todo%'
+                 OR LOWER(content) LIKE '%later%phase%' OR LOWER(content) LIKE '%blocked%')
+            ORDER BY created_at DESC LIMIT 5";
+        if let Ok(mut stmt) = conn.prepare(defer_sql) {
+            let deferred: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default();
+
+            if !deferred.is_empty() {
+                xml.push_str("<deferred-items hint=\"intentionally postponed — don't re-solve\">\n");
+                for title in &deferred {
+                    xml.push_str(&format!("  <deferred>{}</deferred>\n", xml_escape(title)));
+                }
+                xml.push_str("</deferred-items>\n");
+            }
+        }
+    }
+
+    // ── Project Momentum ──
+    // One-line signal: how active is this project right now?
+    {
+        let session_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session WHERE started_at > datetime('now', '-7 days')",
+                [], |row| row.get(0),
+            ).unwrap_or(0);
+        let recent_memories: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE created_at > datetime('now', '-24 hours') AND status='active'",
+                [], |row| row.get(0),
+            ).unwrap_or(0);
+        let protocol_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE memory_type='protocol' AND status='active'",
+                [], |row| row.get(0),
+            ).unwrap_or(0);
+
+        xml.push_str(&format!(
+            "<project-momentum sessions-7d=\"{}\" memories-24h=\"{}\" protocols=\"{}\" />\n",
+            session_count, recent_memories, protocol_count,
+        ));
+    }
+
     xml.push_str("</forge-dynamic>");
     xml
 }
