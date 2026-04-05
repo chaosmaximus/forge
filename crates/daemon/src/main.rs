@@ -4,16 +4,29 @@ use fs2::FileExt;
 use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
+    // Initialize structured JSON logging to stderr BEFORE anything else.
+    // stdout is reserved for protocol output (NDJSON).
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("forge_daemon=info")),
+        )
+        .json()
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .init();
+
     let socket_path = std::env::var("FORGE_SOCKET").unwrap_or_else(|_| default_socket_path());
     let db_path = std::env::var("FORGE_DB").unwrap_or_else(|_| default_db_path());
 
     // Ensure ~/.forge/ directory exists
     let dir = forge_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("error: failed to create {dir}: {e}");
+        tracing::error!("failed to create {dir}: {e}");
         std::process::exit(1);
     }
 
@@ -22,7 +35,7 @@ async fn main() {
     {
         use std::os::unix::fs::PermissionsExt;
         if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
-            eprintln!("[daemon] WARN: failed to set permissions on {dir}: {e}");
+            tracing::warn!("failed to set permissions on {dir}: {e}");
         }
     }
 
@@ -36,20 +49,20 @@ async fn main() {
     {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("error: failed to open PID file {pid_path}: {e}");
+            tracing::error!("failed to open PID file {pid_path}: {e}");
             std::process::exit(1);
         }
     };
 
     if pid_file.try_lock_exclusive().is_err() {
-        eprintln!("error: another forge-daemon is already running (PID file locked)");
+        tracing::error!("another forge-daemon is already running (PID file locked)");
         std::process::exit(1);
     }
 
     // Write PID — file is now locked exclusively
     let pid = std::process::id();
     if let Err(e) = write!(&pid_file, "{}", pid) {
-        eprintln!("error: failed to write PID to {pid_path}: {e}");
+        tracing::error!("failed to write PID to {pid_path}: {e}");
         std::process::exit(1);
     }
 
@@ -61,10 +74,10 @@ async fn main() {
     let worker_state = match DaemonState::new(&db_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("error: failed to open database {db_path}: {e}");
+            tracing::error!("failed to open database {db_path}: {e}");
             // Best-effort cleanup of PID file
             if let Err(e2) = std::fs::remove_file(&pid_path) {
-                eprintln!("[daemon] WARN: failed to remove PID file on error: {e2}");
+                tracing::warn!("failed to remove PID file on error: {e2}");
             }
             std::process::exit(1);
         }
@@ -82,9 +95,10 @@ async fn main() {
     // C1: Create shutdown watch channel
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);
 
-    // Load config
-    let config = forge_daemon::config::load_config();
-    eprintln!("[daemon] extraction backend: {}", config.extraction.backend);
+    // Load config and apply environment variable overrides
+    let mut config = forge_daemon::config::load_config();
+    config.apply_env_overrides();
+    tracing::info!(backend = %config.extraction.backend, "extraction backend configured");
 
     // Spawn background workers (they keep Arc<Mutex<DaemonState>> — unchanged)
     let _worker_handles = forge_daemon::workers::spawn_workers(
@@ -108,7 +122,7 @@ async fn main() {
     ) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("error: failed to create writer state: {e}");
+            tracing::error!("failed to create writer state: {e}");
             std::process::exit(1);
         }
     };
@@ -119,7 +133,7 @@ async fn main() {
     let shutdown_for_signal = shutdown_tx.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        eprintln!("[daemon] shutting down (signal)");
+        tracing::info!("shutting down (signal)");
         let _ = shutdown_for_signal.send(true);
     });
 
@@ -188,7 +202,7 @@ async fn main() {
         eprintln!("[daemon] startup tasks complete");
     });
 
-    eprintln!("forge-daemon: pid={pid} socket={socket_path} db={db_path}");
+    tracing::info!(pid = pid, socket = %socket_path, db = %db_path, "forge-daemon starting");
 
     // Run the server IMMEDIATELY (no waiting for consolidation).
     // Socket handler opens per-connection read-only SQLite connections for reads
@@ -202,16 +216,16 @@ async fn main() {
         write_tx,
         shutdown_tx,
     ).await {
-        eprintln!("error: server failed: {e}");
+        tracing::error!("server failed: {e}");
     }
 
     // M6: Graceful cleanup after server stops (both success and error paths)
     if let Err(e) = std::fs::remove_file(&socket_path) {
-        eprintln!("[daemon] WARN: failed to remove socket file: {e}");
+        tracing::warn!("failed to remove socket file: {e}");
     }
     if let Err(e) = std::fs::remove_file(&pid_path) {
-        eprintln!("[daemon] WARN: failed to remove PID file: {e}");
+        tracing::warn!("failed to remove PID file: {e}");
     }
-    eprintln!("[daemon] stopped");
+    tracing::info!("daemon stopped");
     // _pid_file_guard drops here, releasing the advisory lock
 }

@@ -24,6 +24,10 @@ fn default_true() -> bool { true }
 fn default_false() -> bool { false }
 fn default_300_u64() -> u64 { 300 }
 fn default_10_u64() -> u64 { 10 }
+fn default_3600_u64() -> u64 { 3600 }
+fn default_8420_u16() -> u16 { 8420 }
+fn default_bind() -> String { "127.0.0.1".to_string() }
+fn default_cors_origins() -> Vec<String> { vec!["*".to_string()] }
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +50,87 @@ pub struct ForgeConfig {
     pub meeting: MeetingConfig,
     #[serde(default)]
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub http: HttpConfig,
+    #[serde(default)]
+    pub cors: CorsConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
+}
+
+/// HTTP transport configuration — opt-in, disabled by default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HttpConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_bind")]
+    pub bind: String,
+    #[serde(default = "default_8420_u16")]
+    pub port: u16,
+}
+
+impl Default for HttpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "127.0.0.1".to_string(),
+            port: 8420,
+        }
+    }
+}
+
+/// CORS configuration for HTTP transport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CorsConfig {
+    #[serde(default = "default_cors_origins")]
+    pub allowed_origins: Vec<String>,
+    #[serde(default = "default_3600_u64")]
+    pub max_age_secs: u64,
+}
+
+impl Default for CorsConfig {
+    fn default() -> Self {
+        Self {
+            allowed_origins: vec!["*".to_string()],
+            max_age_secs: 3600,
+        }
+    }
+}
+
+/// Auth configuration for HTTP transport — JWT/OIDC based, disabled by default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuthConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub issuer_url: String,
+    #[serde(default)]
+    pub audience: String,
+    #[serde(default)]
+    pub required_claims: Vec<String>,
+    #[serde(default)]
+    pub admin_emails: Vec<String>,
+    #[serde(default = "default_3600_u64")]
+    pub jwks_cache_secs: u64,
+    #[serde(default)]
+    pub offline_jwks_path: Option<String>,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            issuer_url: String::new(),
+            audience: String::new(),
+            required_claims: Vec::new(),
+            admin_emails: Vec::new(),
+            jwks_cache_secs: 3600,
+            offline_jwks_path: None,
+        }
+    }
 }
 
 /// Worker interval configuration — all values in seconds.
@@ -428,6 +513,61 @@ impl ConsolidationConfig {
 }
 
 impl ForgeConfig {
+    /// Apply environment variable overrides to the config.
+    /// Called AFTER loading config.toml so env vars take precedence.
+    /// Invalid values (parse failures) are silently ignored — the config value remains unchanged.
+    pub fn apply_env_overrides(&mut self) {
+        // HTTP
+        if let Ok(v) = std::env::var("FORGE_HTTP_ENABLED") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.http.enabled = b;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_HTTP_BIND") {
+            self.http.bind = v;
+        }
+        if let Ok(v) = std::env::var("FORGE_HTTP_PORT") {
+            if let Ok(p) = v.parse::<u16>() {
+                self.http.port = p;
+            }
+        }
+        // CORS
+        if let Ok(v) = std::env::var("FORGE_CORS_ALLOWED_ORIGINS") {
+            self.cors.allowed_origins = v.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(v) = std::env::var("FORGE_CORS_MAX_AGE_SECS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.cors.max_age_secs = n;
+            }
+        }
+        // Auth
+        if let Ok(v) = std::env::var("FORGE_AUTH_ENABLED") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.auth.enabled = b;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_AUTH_ISSUER_URL") {
+            self.auth.issuer_url = v;
+        }
+        if let Ok(v) = std::env::var("FORGE_AUTH_AUDIENCE") {
+            self.auth.audience = v;
+        }
+        if let Ok(v) = std::env::var("FORGE_AUTH_REQUIRED_CLAIMS") {
+            self.auth.required_claims = v.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(v) = std::env::var("FORGE_AUTH_ADMIN_EMAILS") {
+            self.auth.admin_emails = v.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(v) = std::env::var("FORGE_AUTH_JWKS_CACHE_SECS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.auth.jwks_cache_secs = n;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_AUTH_OFFLINE_JWKS_PATH") {
+            self.auth.offline_jwks_path = Some(v);
+        }
+    }
+
     /// Validate that config fields are sensible.
     pub fn validate(&self) -> Result<(), String> {
         if self.embedding.dimensions == 0 {
@@ -444,6 +584,19 @@ impl ForgeConfig {
         }
         if !["open", "controlled"].contains(&self.a2a.trust.as_str()) {
             return Err(format!("a2a.trust must be 'open' or 'controlled', got '{}'", self.a2a.trust));
+        }
+        // HTTP validation
+        if self.http.port == 0 {
+            return Err("http.port must be > 0".into());
+        }
+        // Auth validation: if enabled, issuer_url and audience are required
+        if self.auth.enabled {
+            if self.auth.issuer_url.trim().is_empty() {
+                return Err("auth.issuer_url must not be empty when auth is enabled".into());
+            }
+            if self.auth.audience.trim().is_empty() {
+                return Err("auth.audience must not be empty when auth is enabled".into());
+            }
         }
         Ok(())
     }
@@ -1000,6 +1153,254 @@ backend = "ollama"
         assert!(!cfg.reality.code_embeddings, "code_embeddings default should be false");
         assert!(cfg.reality.community_detection, "community_detection default should be true");
         assert_eq!(cfg.reality.max_index_files, 5000, "max_index_files default should be 5000");
+    }
+
+    // -----------------------------------------------------------------------
+    // Enterprise config tests (HttpConfig, CorsConfig, AuthConfig)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_http_config_defaults() {
+        let cfg = HttpConfig::default();
+        assert!(!cfg.enabled, "http.enabled default should be false");
+        assert_eq!(cfg.bind, "127.0.0.1", "http.bind default should be 127.0.0.1");
+        assert_eq!(cfg.port, 8420, "http.port default should be 8420");
+    }
+
+    #[test]
+    fn test_cors_config_defaults() {
+        let cfg = CorsConfig::default();
+        assert_eq!(cfg.allowed_origins, vec!["*".to_string()], "cors.allowed_origins default should be [\"*\"]");
+        assert_eq!(cfg.max_age_secs, 3600, "cors.max_age_secs default should be 3600");
+    }
+
+    #[test]
+    fn test_auth_config_defaults() {
+        let cfg = AuthConfig::default();
+        assert!(!cfg.enabled, "auth.enabled default should be false");
+        assert!(cfg.issuer_url.is_empty(), "auth.issuer_url default should be empty");
+        assert!(cfg.audience.is_empty(), "auth.audience default should be empty");
+        assert!(cfg.required_claims.is_empty(), "auth.required_claims default should be empty");
+        assert!(cfg.admin_emails.is_empty(), "auth.admin_emails default should be empty");
+        assert_eq!(cfg.jwks_cache_secs, 3600, "auth.jwks_cache_secs default should be 3600");
+        assert!(cfg.offline_jwks_path.is_none(), "auth.offline_jwks_path default should be None");
+    }
+
+    #[test]
+    fn test_forge_config_has_enterprise_sections() {
+        let cfg = ForgeConfig::default();
+        // Verify enterprise sections exist and have defaults
+        assert!(!cfg.http.enabled);
+        assert_eq!(cfg.http.port, 8420);
+        assert!(!cfg.auth.enabled);
+        assert_eq!(cfg.cors.allowed_origins, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn test_enterprise_config_roundtrip() {
+        let mut cfg = ForgeConfig::default();
+        cfg.http.enabled = true;
+        cfg.http.port = 9090;
+        cfg.http.bind = "0.0.0.0".to_string();
+        cfg.cors.allowed_origins = vec!["https://app.example.com".to_string()];
+        cfg.cors.max_age_secs = 7200;
+        cfg.auth.enabled = true;
+        cfg.auth.issuer_url = "https://accounts.google.com".to_string();
+        cfg.auth.audience = "my-forge-app".to_string();
+        cfg.auth.required_claims = vec!["email".to_string(), "sub".to_string()];
+        cfg.auth.admin_emails = vec!["admin@example.com".to_string()];
+        cfg.auth.jwks_cache_secs = 1800;
+        cfg.auth.offline_jwks_path = Some("/path/to/jwks.json".to_string());
+
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: ForgeConfig = toml::from_str(&toml_str).unwrap();
+
+        assert!(parsed.http.enabled);
+        assert_eq!(parsed.http.port, 9090);
+        assert_eq!(parsed.http.bind, "0.0.0.0");
+        assert_eq!(parsed.cors.allowed_origins, vec!["https://app.example.com".to_string()]);
+        assert_eq!(parsed.cors.max_age_secs, 7200);
+        assert!(parsed.auth.enabled);
+        assert_eq!(parsed.auth.issuer_url, "https://accounts.google.com");
+        assert_eq!(parsed.auth.audience, "my-forge-app");
+        assert_eq!(parsed.auth.required_claims, vec!["email", "sub"]);
+        assert_eq!(parsed.auth.admin_emails, vec!["admin@example.com"]);
+        assert_eq!(parsed.auth.jwks_cache_secs, 1800);
+        assert_eq!(parsed.auth.offline_jwks_path, Some("/path/to/jwks.json".to_string()));
+    }
+
+    #[test]
+    fn test_enterprise_config_partial_toml() {
+        // Old config.toml without enterprise sections should still work
+        let toml_str = r#"
+[extraction]
+backend = "ollama"
+"#;
+        let cfg: ForgeConfig = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.http.enabled);
+        assert_eq!(cfg.http.port, 8420);
+        assert!(!cfg.auth.enabled);
+        assert_eq!(cfg.cors.allowed_origins, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn test_enterprise_config_from_toml() {
+        let toml_str = r#"
+[http]
+enabled = true
+bind = "0.0.0.0"
+port = 9090
+
+[cors]
+allowed_origins = ["https://app.example.com", "https://admin.example.com"]
+max_age_secs = 7200
+
+[auth]
+enabled = true
+issuer_url = "https://accounts.google.com"
+audience = "forge-prod"
+required_claims = ["email"]
+admin_emails = ["admin@example.com"]
+jwks_cache_secs = 1800
+offline_jwks_path = "/etc/forge/jwks.json"
+"#;
+        let cfg: ForgeConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.http.enabled);
+        assert_eq!(cfg.http.bind, "0.0.0.0");
+        assert_eq!(cfg.http.port, 9090);
+        assert_eq!(cfg.cors.allowed_origins, vec!["https://app.example.com", "https://admin.example.com"]);
+        assert_eq!(cfg.cors.max_age_secs, 7200);
+        assert!(cfg.auth.enabled);
+        assert_eq!(cfg.auth.issuer_url, "https://accounts.google.com");
+        assert_eq!(cfg.auth.audience, "forge-prod");
+        assert_eq!(cfg.auth.required_claims, vec!["email"]);
+        assert_eq!(cfg.auth.admin_emails, vec!["admin@example.com"]);
+        assert_eq!(cfg.auth.jwks_cache_secs, 1800);
+        assert_eq!(cfg.auth.offline_jwks_path, Some("/etc/forge/jwks.json".to_string()));
+    }
+
+    #[test]
+    fn test_validate_http_port_zero() {
+        let mut cfg = ForgeConfig::default();
+        cfg.http.port = 0;
+        assert!(cfg.validate().is_err(), "port 0 should fail validation");
+    }
+
+    #[test]
+    fn test_validate_auth_enabled_without_issuer() {
+        let mut cfg = ForgeConfig::default();
+        cfg.auth.enabled = true;
+        cfg.auth.audience = "test".to_string();
+        // issuer_url is empty - should fail
+        assert!(cfg.validate().is_err(), "auth.enabled without issuer_url should fail");
+    }
+
+    #[test]
+    fn test_validate_auth_enabled_without_audience() {
+        let mut cfg = ForgeConfig::default();
+        cfg.auth.enabled = true;
+        cfg.auth.issuer_url = "https://issuer.example.com".to_string();
+        // audience is empty - should fail
+        assert!(cfg.validate().is_err(), "auth.enabled without audience should fail");
+    }
+
+    #[test]
+    fn test_validate_auth_disabled_allows_empty_fields() {
+        let cfg = ForgeConfig::default();
+        // auth.enabled=false, empty issuer/audience should be fine
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_env_override_http() {
+        let mut cfg = ForgeConfig::default();
+        std::env::set_var("FORGE_HTTP_ENABLED", "true");
+        std::env::set_var("FORGE_HTTP_BIND", "0.0.0.0");
+        std::env::set_var("FORGE_HTTP_PORT", "9090");
+
+        cfg.apply_env_overrides();
+
+        assert!(cfg.http.enabled);
+        assert_eq!(cfg.http.bind, "0.0.0.0");
+        assert_eq!(cfg.http.port, 9090);
+
+        std::env::remove_var("FORGE_HTTP_ENABLED");
+        std::env::remove_var("FORGE_HTTP_BIND");
+        std::env::remove_var("FORGE_HTTP_PORT");
+    }
+
+    #[test]
+    fn test_env_override_cors() {
+        let mut cfg = ForgeConfig::default();
+        std::env::set_var("FORGE_CORS_ALLOWED_ORIGINS", "https://a.com,https://b.com");
+        std::env::set_var("FORGE_CORS_MAX_AGE_SECS", "7200");
+
+        cfg.apply_env_overrides();
+
+        assert_eq!(cfg.cors.allowed_origins, vec!["https://a.com", "https://b.com"]);
+        assert_eq!(cfg.cors.max_age_secs, 7200);
+
+        std::env::remove_var("FORGE_CORS_ALLOWED_ORIGINS");
+        std::env::remove_var("FORGE_CORS_MAX_AGE_SECS");
+    }
+
+    #[test]
+    fn test_env_override_auth() {
+        let mut cfg = ForgeConfig::default();
+        std::env::set_var("FORGE_AUTH_ENABLED", "true");
+        std::env::set_var("FORGE_AUTH_ISSUER_URL", "https://issuer.example.com");
+        std::env::set_var("FORGE_AUTH_AUDIENCE", "my-app");
+        std::env::set_var("FORGE_AUTH_REQUIRED_CLAIMS", "email,sub");
+        std::env::set_var("FORGE_AUTH_ADMIN_EMAILS", "admin@test.com,boss@test.com");
+        std::env::set_var("FORGE_AUTH_JWKS_CACHE_SECS", "1800");
+        std::env::set_var("FORGE_AUTH_OFFLINE_JWKS_PATH", "/tmp/jwks.json");
+
+        cfg.apply_env_overrides();
+
+        assert!(cfg.auth.enabled);
+        assert_eq!(cfg.auth.issuer_url, "https://issuer.example.com");
+        assert_eq!(cfg.auth.audience, "my-app");
+        assert_eq!(cfg.auth.required_claims, vec!["email", "sub"]);
+        assert_eq!(cfg.auth.admin_emails, vec!["admin@test.com", "boss@test.com"]);
+        assert_eq!(cfg.auth.jwks_cache_secs, 1800);
+        assert_eq!(cfg.auth.offline_jwks_path, Some("/tmp/jwks.json".to_string()));
+
+        std::env::remove_var("FORGE_AUTH_ENABLED");
+        std::env::remove_var("FORGE_AUTH_ISSUER_URL");
+        std::env::remove_var("FORGE_AUTH_AUDIENCE");
+        std::env::remove_var("FORGE_AUTH_REQUIRED_CLAIMS");
+        std::env::remove_var("FORGE_AUTH_ADMIN_EMAILS");
+        std::env::remove_var("FORGE_AUTH_JWKS_CACHE_SECS");
+        std::env::remove_var("FORGE_AUTH_OFFLINE_JWKS_PATH");
+    }
+
+    #[test]
+    fn test_env_override_no_env_vars_set() {
+        let mut cfg = ForgeConfig::default();
+        // Remove any stale env vars
+        std::env::remove_var("FORGE_HTTP_ENABLED");
+        std::env::remove_var("FORGE_HTTP_PORT");
+        std::env::remove_var("FORGE_AUTH_ENABLED");
+
+        cfg.apply_env_overrides();
+
+        // Should remain defaults
+        assert!(!cfg.http.enabled);
+        assert_eq!(cfg.http.port, 8420);
+        assert!(!cfg.auth.enabled);
+    }
+
+    #[test]
+    fn test_env_override_invalid_port_ignored() {
+        let mut cfg = ForgeConfig::default();
+        std::env::set_var("FORGE_HTTP_PORT", "not_a_number");
+
+        cfg.apply_env_overrides();
+
+        // Should remain at default since parse failed
+        assert_eq!(cfg.http.port, 8420);
+
+        std::env::remove_var("FORGE_HTTP_PORT");
     }
 
     #[test]
