@@ -6,9 +6,11 @@
 use crate::db::ops;
 use crate::lsp::client::{file_uri, LspClient};
 use crate::lsp::detect::{detect_language_servers, LspServerConfig};
-use crate::lsp::symbols::convert_symbols;
+use crate::lsp::symbols::{convert_symbols, extract_imports};
 use crate::lsp::LspManager;
+use crate::reality::cluster::run_label_propagation;
 use forge_core::types::{CodeFile, CodeSymbol};
+use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -456,6 +458,12 @@ async fn run_index(
         }
     }
 
+    // Import extraction pass (regex-based, no LSP needed)
+    let import_edges_stored = extract_and_store_imports(&locked.conn, &all_files);
+
+    // Run community detection on the updated graph
+    run_clustering(&locked.conn, project_dir);
+
     // Clean up stale entries for files no longer in the index output
     let current_paths: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
     if let Ok(cleaned) = ops::cleanup_stale_files(&locked.conn, &current_paths) {
@@ -475,7 +483,49 @@ async fn run_index(
     if edges_stored > 0 {
         eprintln!("[indexer] stored {} call edges", edges_stored);
     }
+    if import_edges_stored > 0 {
+        eprintln!("[indexer] stored {} import edges", import_edges_stored);
+    }
     Ok(())
+}
+
+/// Extract import edges from already-indexed files and store them.
+/// Returns the number of import edges stored.
+pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize {
+    // Clear old import edges before re-indexing
+    if let Err(e) = conn.execute("DELETE FROM edge WHERE edge_type = 'imports'", []) {
+        eprintln!("[indexer] failed to clear old import edges: {e}");
+        return 0;
+    }
+
+    let mut import_edges_stored = 0usize;
+    for file in files {
+        let content = match std::fs::read_to_string(&file.path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let imports = extract_imports(&content, &file.language, &file.path);
+        for (from_path, imported_module) in &imports {
+            if ops::store_edge(conn, from_path, imported_module, "imports", "{}").is_ok() {
+                import_edges_stored += 1;
+            }
+        }
+    }
+    import_edges_stored
+}
+
+/// Run community detection clustering if a reality exists for this project.
+pub fn run_clustering(conn: &Connection, project_dir: &str) {
+    match ops::get_reality_by_path(conn, project_dir, "default") {
+        Ok(Some(reality)) => {
+            if let Err(e) = run_label_propagation(conn, &reality.id, 20) {
+                eprintln!("[indexer] clustering failed: {e}");
+            }
+        }
+        _ => {
+            // No reality exists for this project yet; skip clustering
+        }
+    }
 }
 
 fn now_str() -> String {
@@ -579,5 +629,51 @@ mod tests {
             Some(v) => std::env::set_var("FORGE_PROJECT", v),
             None => std::env::remove_var("FORGE_PROJECT"),
         }
+    }
+
+    #[test]
+    fn test_import_extraction_wired() {
+        use crate::db::schema::create_schema;
+        use rusqlite::Connection;
+
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // Create temp files with import statements
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let rs_path = tmp.path().join("lib.rs");
+        std::fs::write(&rs_path, "use std::collections::HashMap;\nuse crate::db::ops;\nfn main() {}").unwrap();
+
+        let py_path = tmp.path().join("app.py");
+        std::fs::write(&py_path, "import os\nfrom flask import Flask\ndef main(): pass").unwrap();
+
+        let files = vec![
+            CodeFile {
+                id: format!("file:{}", rs_path.display()),
+                path: rs_path.to_str().unwrap().to_string(),
+                language: "rust".to_string(),
+                project: tmp.path().to_str().unwrap().to_string(),
+                hash: "test:hash".to_string(),
+                indexed_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            CodeFile {
+                id: format!("file:{}", py_path.display()),
+                path: py_path.to_str().unwrap().to_string(),
+                language: "python".to_string(),
+                project: tmp.path().to_str().unwrap().to_string(),
+                hash: "test:hash2".to_string(),
+                indexed_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        ];
+
+        let stored = extract_and_store_imports(&conn, &files);
+        assert!(stored >= 4, "should store at least 4 import edges (2 rust + 2 python), got {stored}");
+
+        // Verify edges exist in DB
+        let edge_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM edge WHERE edge_type = 'imports'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(edge_count, stored, "DB edge count should match returned count");
     }
 }

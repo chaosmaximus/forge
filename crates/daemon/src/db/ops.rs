@@ -478,6 +478,30 @@ pub fn store_file(conn: &Connection, file: &CodeFile) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// List all code files currently in the index.
+pub fn list_code_files(conn: &Connection) -> Vec<CodeFile> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, path, language, project, hash, indexed_at FROM code_file",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = match stmt.query_map([], |row| {
+        Ok(CodeFile {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            language: row.get(2)?,
+            project: row.get(3)?,
+            hash: row.get(4)?,
+            indexed_at: row.get(5)?,
+        })
+    }) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    rows.filter_map(|r| r.ok()).collect()
+}
+
 /// Insert or replace a code symbol record.
 pub fn store_symbol(conn: &Connection, symbol: &CodeSymbol) -> rusqlite::Result<()> {
     conn.execute(

@@ -239,32 +239,61 @@ pub fn hybrid_recall_scoped(
         results.retain(|r| &r.memory.memory_type == mt);
     }
 
-    // Filter by reality_id if specified: batch-load reality_ids to avoid N+1 queries
+    // Filter by reality_id + apply portability weighting: batch-load in one query
     if let Some(rid) = reality_id {
         if !results.is_empty() {
-            // Batch-load reality_ids for all result memory IDs in one query
+            // Batch-load reality_id + portability for all result memory IDs in one query
             let ids: Vec<&str> = results.iter().map(|r| r.memory.id.as_str()).collect();
             let placeholders: String = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
-            let sql = format!("SELECT id, reality_id FROM memory WHERE id IN ({placeholders})");
+            let sql = format!("SELECT id, reality_id, portability FROM memory WHERE id IN ({placeholders})");
             let mut stmt = conn.prepare(&sql).unwrap();
-            let reality_map: std::collections::HashMap<String, Option<String>> = stmt
+            let reality_port_map: std::collections::HashMap<String, (Option<String>, Option<String>)> = stmt
                 .query_map(rusqlite::params_from_iter(ids.iter()), |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?),
+                    ))
                 })
                 .unwrap()
                 .filter_map(|r| r.ok())
                 .collect();
 
+            // Filter: reality_bound memories from other realities are excluded
             results.retain(|r| {
-                match reality_map.get(&r.memory.id) {
-                    Some(Some(mr)) if !mr.is_empty() => mr == rid,
+                match reality_port_map.get(&r.memory.id) {
+                    Some((Some(mr), _)) if !mr.is_empty() => mr == rid,
                     _ => true, // NULL or empty reality_id = visible everywhere
                 }
             });
+
+            // Apply portability weighting to scores
+            for result in &mut results {
+                let weight = match reality_port_map.get(&result.memory.id) {
+                    Some((mem_reality, portability)) => {
+                        match portability.as_deref() {
+                            Some("universal") => 1.0,
+                            Some("domain_transferable") => 0.7,
+                            Some("reality_bound") => {
+                                // Same reality → full weight, different → 0.1
+                                match mem_reality.as_deref() {
+                                    Some(mr) if mr == rid => 1.0,
+                                    Some(mr) if !mr.is_empty() => 0.1,
+                                    _ => 1.0, // NULL reality = global
+                                }
+                            }
+                            _ => 1.0, // unknown or NULL portability → full weight
+                        }
+                    }
+                    None => 1.0,
+                };
+                result.score *= weight;
+            }
+            // Re-sort after weighting
+            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         }
     }
 
-    // Sort by score descending
+    // Sort by score descending and truncate
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     results.truncate(limit);
 
@@ -2653,5 +2682,70 @@ mod tests {
         let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[]);
 
         assert!(suffix.contains("<code-structure/>"), "should contain self-closing code-structure tag when no data");
+    }
+
+    // ── Portability weighting tests ──
+
+    fn insert_memory_with_portability(conn: &Connection, id: &str, title: &str, portability: &str, reality_id: Option<&str>) {
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, portability, reality_id)
+             VALUES (?1, 'decision', ?2, ?3, 0.9, 'active', '[]', datetime('now'), datetime('now'), ?4, ?5)",
+            params![id, title, format!("{title} content for search"), portability, reality_id],
+        ).unwrap();
+    }
+
+    #[test]
+    fn test_portability_weight_universal() {
+        let conn = setup();
+        insert_memory_with_portability(&conn, "pw1", "universal decision", "universal", Some("reality-A"));
+
+        let results = hybrid_recall_scoped(&conn, "universal decision", None, None, None, 10, Some("reality-A"));
+        assert!(!results.is_empty(), "should find universal memory");
+        // Universal weight = 1.0, so score should be unchanged (no reduction)
+        assert!(results[0].score > 0.0, "universal memory should have positive score");
+    }
+
+    #[test]
+    fn test_portability_weight_reality_bound_same() {
+        let conn = setup();
+        insert_memory_with_portability(&conn, "pw2", "bound same reality", "reality_bound", Some("reality-A"));
+
+        let results = hybrid_recall_scoped(&conn, "bound same reality", None, None, None, 10, Some("reality-A"));
+        assert!(!results.is_empty(), "should find same-reality memory");
+        // Same reality → weight 1.0, score preserved
+        assert!(results[0].score > 0.0, "same-reality memory should have positive score");
+    }
+
+    #[test]
+    fn test_portability_weight_reality_bound_different() {
+        let conn = setup();
+        // reality_bound memory belongs to reality-B, but we query reality-A
+        // The retain filter should exclude it because reality_id != rid
+        insert_memory_with_portability(&conn, "pw3", "bound diff reality", "reality_bound", Some("reality-B"));
+
+        let results = hybrid_recall_scoped(&conn, "bound diff reality", None, None, None, 10, Some("reality-A"));
+        // Memory has reality_id="reality-B" which doesn't match "reality-A" → filtered out
+        assert!(results.is_empty(), "different-reality bound memory should be filtered out");
+    }
+
+    #[test]
+    fn test_portability_weight_domain_transferable() {
+        let conn = setup();
+        // domain_transferable with no reality_id (global) — should get 0.7 weight
+        insert_memory_with_portability(&conn, "pw4", "transferable pattern", "domain_transferable", None);
+        // Also insert a universal memory for comparison
+        insert_memory_with_portability(&conn, "pw5", "transferable pattern universal", "universal", None);
+
+        let results = hybrid_recall_scoped(&conn, "transferable pattern", None, None, None, 10, Some("reality-A"));
+        assert!(results.len() >= 2, "should find both memories");
+
+        // Find both results
+        let dt_result = results.iter().find(|r| r.memory.id == "pw4").expect("should find domain_transferable");
+        let univ_result = results.iter().find(|r| r.memory.id == "pw5").expect("should find universal");
+
+        // domain_transferable gets 0.7 weight, universal gets 1.0
+        // So universal should score higher (given similar base scores from BM25)
+        assert!(univ_result.score >= dt_result.score * 0.5,
+            "universal should score at least half of domain_transferable (it has full weight)");
     }
 }

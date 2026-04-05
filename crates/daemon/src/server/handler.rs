@@ -2235,13 +2235,25 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::ForceIndex => {
-            // Return current index counts (files and symbols in the code tables)
-            let files_indexed: usize = state.conn
-                .query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0))
-                .unwrap_or(0);
+            // Re-process already-indexed files: extract import edges + run clustering
+            // (LSP-based symbol extraction continues on the background interval)
+            let files = ops::list_code_files(&state.conn);
+            let import_edges = crate::workers::indexer::extract_and_store_imports(&state.conn, &files);
+
+            // Run clustering for any project that has a reality
+            let projects: std::collections::HashSet<String> = files.iter().map(|f| f.project.clone()).collect();
+            for project_dir in &projects {
+                crate::workers::indexer::run_clustering(&state.conn, project_dir);
+            }
+
+            let files_indexed = files.len();
             let symbols_indexed: usize = state.conn
                 .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
                 .unwrap_or(0);
+
+            eprintln!("[force-index] processed {} files, {} import edges, {} symbols",
+                files_indexed, import_edges, symbols_indexed);
+
             Response::Ok {
                 data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
             }
@@ -4663,5 +4675,41 @@ mod tests {
             }
             other => panic!("expected CodeSearchResult, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_force_index_produces_edges() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Create a temp file with imports
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let rs_path = tmp.path().join("main.rs");
+        std::fs::write(&rs_path, "use std::io;\nuse crate::db;\nfn main() {}").unwrap();
+
+        // Store the file in code_file table (as if the background indexer already ran)
+        let file = CodeFile {
+            id: format!("file:{}", rs_path.display()),
+            path: rs_path.to_str().unwrap().to_string(),
+            language: "rust".to_string(),
+            project: tmp.path().to_str().unwrap().to_string(),
+            hash: "test:hash".to_string(),
+            indexed_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        ops::store_file(&state.conn, &file).unwrap();
+
+        // ForceIndex should extract imports from the already-indexed file
+        let resp = handle_request(&mut state, Request::ForceIndex);
+        match resp {
+            Response::Ok { data: ResponseData::IndexComplete { files_indexed, .. } } => {
+                assert_eq!(files_indexed, 1, "should report 1 file indexed");
+            }
+            other => panic!("expected IndexComplete, got {:?}", other),
+        }
+
+        // Verify import edges were created
+        let edge_count: usize = state.conn
+            .query_row("SELECT COUNT(*) FROM edge WHERE edge_type = 'imports'", [], |r| r.get(0))
+            .unwrap();
+        assert!(edge_count >= 2, "should have at least 2 import edges (std::io and crate::db), got {edge_count}");
     }
 }
