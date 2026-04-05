@@ -1293,10 +1293,18 @@ pub fn compile_dynamic_suffix(
     // ── Pending Notifications ──
     // Surface notifications that need user attention (budget-exempt like protocols)
     {
-        let notif_sql = "SELECT id, category, priority, title, content, action_type FROM notification
-            WHERE status = 'pending' AND priority IN ('critical', 'high', 'medium')
-            ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-            created_at DESC LIMIT 3";
+        // Adaptive learning: exclude topics where user has set priority_override='low'
+        // and we're filtering for medium+. Also apply the override to effective priority.
+        let notif_sql = "SELECT n.id, n.category,
+            COALESCE(nt.priority_override, n.priority) as effective_priority,
+            n.title, n.content, n.action_type
+            FROM notification n
+            LEFT JOIN notification_tuning nt ON n.topic = nt.topic AND nt.user_id = 'local'
+            WHERE n.status = 'pending'
+            AND COALESCE(nt.priority_override, n.priority) IN ('critical', 'high', 'medium')
+            ORDER BY CASE COALESCE(nt.priority_override, n.priority)
+                WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+            n.created_at DESC LIMIT 3";
         if let Ok(mut stmt) = conn.prepare(notif_sql) {
             let notifications: Vec<(String, String, String, String, String, Option<String>)> = stmt
                 .query_map([], |row| {

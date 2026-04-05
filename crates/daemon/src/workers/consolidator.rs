@@ -236,7 +236,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         && !crate::notifications::check_throttle(conn, "protocol_suggestion", "local", 3600)
             .unwrap_or(true)
     {
-            let _ = crate::notifications::NotificationBuilder::new(
+            if let Err(e) = crate::notifications::NotificationBuilder::new(
                 "confirmation", "medium",
                 &format!("Forge extracted {} new protocol(s) from behavior patterns", protocols),
                 "Review the new protocols with: forge-next recall --type protocol. Approve or dismiss.",
@@ -244,7 +244,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             )
             .topic("protocol_suggestion")
             .action("review_protocols", "{}")
-            .build(conn);
+            .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
         notifs_generated += 1;
     }
 
@@ -278,14 +278,14 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             && !crate::notifications::check_throttle(conn, "quality_decline", "local", 86400)
                 .unwrap_or(true)
         {
-            let _ = crate::notifications::NotificationBuilder::new(
+            if let Err(e) = crate::notifications::NotificationBuilder::new(
                 "insight", "medium",
                 "Memory quality declining",
                 &format!("Average quality score for recent memories is {:.2}. Consider reviewing and cleaning up low-quality entries.", avg_quality),
                 "consolidator",
             )
             .topic("quality_decline")
-            .build(conn);
+            .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
             notifs_generated += 1;
         }
     }
@@ -293,16 +293,16 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
     // 19d: Meeting timeout detection
     {
         let timeout_secs = crate::config::load_config().meeting.timeout_secs;
+        let timeout_modifier = format!("-{} seconds", timeout_secs);
         let timed_out: Vec<(String, String)> = conn
-            .prepare(&format!(
+            .prepare(
                 "SELECT id, topic FROM meeting
                  WHERE status IN ('open', 'collecting')
-                 AND created_at < datetime('now', '-{} seconds')",
-                timeout_secs
-            ))
+                 AND created_at < datetime('now', ?1)",
+            )
             .ok()
             .and_then(|mut stmt| {
-                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                stmt.query_map(rusqlite::params![timeout_modifier], |row| Ok((row.get(0)?, row.get(1)?)))
                     .ok()
                     .map(|rows| rows.filter_map(|r| r.ok()).collect())
             })
@@ -313,7 +313,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
                 "UPDATE meeting SET status = 'timed_out' WHERE id = ?1",
                 rusqlite::params![meeting_id],
             );
-            let _ = crate::notifications::NotificationBuilder::new(
+            if let Err(e) = crate::notifications::NotificationBuilder::new(
                 "alert", "high",
                 &format!("Meeting '{}' timed out", topic),
                 &format!("Meeting {} exceeded timeout. Partial responses may be available.", meeting_id),
@@ -321,7 +321,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             )
             .topic("meeting_timeout")
             .source_id(meeting_id)
-            .build(conn);
+            .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
             notifs_generated += 1;
         }
     }

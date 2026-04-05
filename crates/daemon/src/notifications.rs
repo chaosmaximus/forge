@@ -235,10 +235,16 @@ pub fn act_on_notification(conn: &Connection, id: &str, approved: bool) -> rusql
     let result_str = if approved { "approved" } else { "rejected" };
     let status_str = if approved { "acted" } else { "dismissed" };
 
-    conn.execute(
-        "UPDATE notification SET status = ?1, action_result = ?2 WHERE id = ?3",
+    let updated = conn.execute(
+        "UPDATE notification SET status = ?1, action_result = ?2
+         WHERE id = ?3 AND status = 'pending'",
         rusqlite::params![status_str, result_str, id],
     )?;
+
+    if updated == 0 {
+        // Either not found or already acted upon
+        return Ok(None);
+    }
 
     if approved {
         Ok(Some(result_str.to_string()))
