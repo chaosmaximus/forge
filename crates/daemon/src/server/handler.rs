@@ -32,6 +32,11 @@ impl DaemonState {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
         schema::create_schema(&conn)?;
 
+        // v2.0: Ensure default organization and local user exist
+        if let Err(e) = crate::db::ops::ensure_defaults(&conn) {
+            eprintln!("[daemon] WARN: ensure_defaults failed: {e}");
+        }
+
         // Best-effort: detect and store platform info (OS, arch, shell, etc.)
         if let Err(e) = crate::db::manas::detect_and_store_platform(&conn) {
             eprintln!("[daemon] WARN: failed to detect/store platform info: {e}");

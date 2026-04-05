@@ -1741,6 +1741,7 @@ pub fn validate_scope_type(scope_type: &str) -> bool {
 }
 
 /// Set (upsert) a scoped configuration entry.
+#[allow(clippy::too_many_arguments)]
 pub fn set_scoped_config(
     conn: &Connection,
     scope_type: &str,
@@ -1845,6 +1846,7 @@ pub fn delete_scoped_config(
 ///    - Track tightest ceiling from any ancestor
 ///    - If NOT locked by ancestor, set result = this value (most-specific wins)
 /// 3. Apply ceiling: if final value is numeric and exceeds ceiling, clamp it
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_scoped_config(
     conn: &Connection,
     key: &str,
@@ -2010,6 +2012,95 @@ pub fn resolve_effective_config(
     }
 
     Ok(result)
+}
+
+/// Classify memory portability for memories with portability='unknown'.
+///
+/// Rules:
+/// - universal: memory_type = 'preference' OR tags contain 'principle'/'heuristic'
+/// - reality_bound: content contains file paths or port numbers
+/// - domain_transferable: everything else (conservative default)
+pub fn classify_portability(conn: &Connection, batch_limit: usize) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT id, memory_type, title, content, COALESCE(tags, '[]')
+         FROM memory WHERE portability = 'unknown' AND status = 'active'
+         LIMIT ?1",
+    )?;
+    let rows: Vec<(String, String, String, String, String)> = stmt
+        .query_map(params![batch_limit], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut classified = 0usize;
+    for (id, memory_type, _title, content, tags) in &rows {
+        let portability = if memory_type == "preference" {
+            "universal"
+        } else {
+            let tags_lower = tags.to_lowercase();
+            if tags_lower.contains("principle") || tags_lower.contains("heuristic") {
+                "universal"
+            } else if contains_file_path(content) || contains_port_number(content) {
+                "reality_bound"
+            } else {
+                "domain_transferable"
+            }
+        };
+
+        conn.execute(
+            "UPDATE memory SET portability = ?1 WHERE id = ?2",
+            params![portability, id],
+        )?;
+        classified += 1;
+    }
+
+    Ok(classified)
+}
+
+/// Check if content contains file path patterns.
+fn contains_file_path(content: &str) -> bool {
+    // Match patterns like /path/to/file.ext, ./relative, src/main.rs
+    for word in content.split_whitespace() {
+        let w = word.trim_matches(|c: char| c == '"' || c == '\'' || c == '`' || c == ',');
+        if (w.contains('/') || w.contains('\\'))
+            && w.len() > 3
+            && !w.starts_with("http")
+            && !w.starts_with("//")
+        {
+            // Check for file extension pattern
+            if let Some(last_segment) = w.rsplit('/').next() {
+                if last_segment.contains('.') && last_segment.len() > 2 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if content contains port number patterns (e.g., :3000, :8080).
+fn contains_port_number(content: &str) -> bool {
+    let bytes = content.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] == b':' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+            let len = end - start;
+            if (2..=5).contains(&len) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Ensure default organization and local user exist (idempotent, called on first run).
@@ -3488,5 +3579,89 @@ mod tests {
         assert!(!validate_scope_type(""));
         assert!(!validate_scope_type("global"));
         assert!(!validate_scope_type("ORGANIZATION"));
+    }
+
+    // ── Portability Classification Tests ──
+
+    #[test]
+    fn test_classify_portability_universal_preference() {
+        let conn = open_db();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, portability)
+             VALUES ('p1', 'preference', 'Always use UTC', 'timestamps', 0.9, 'active', '[]', datetime('now'), datetime('now'), 'unknown')",
+            [],
+        ).unwrap();
+        let count = classify_portability(&conn, 100).unwrap();
+        assert_eq!(count, 1);
+        let port: String = conn.query_row("SELECT portability FROM memory WHERE id = 'p1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(port, "universal");
+    }
+
+    #[test]
+    fn test_classify_portability_universal_principle_tag() {
+        let conn = open_db();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, portability)
+             VALUES ('p2', 'decision', 'Fail loud', 'always fail loud', 0.9, 'active', '[\"principle\",\"quality\"]', datetime('now'), datetime('now'), 'unknown')",
+            [],
+        ).unwrap();
+        let count = classify_portability(&conn, 100).unwrap();
+        assert_eq!(count, 1);
+        let port: String = conn.query_row("SELECT portability FROM memory WHERE id = 'p2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(port, "universal");
+    }
+
+    #[test]
+    fn test_classify_portability_reality_bound_file_path() {
+        let conn = open_db();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, portability)
+             VALUES ('p3', 'decision', 'JWT config', 'Use RS256 for crates/daemon/src/auth.rs', 0.9, 'active', '[]', datetime('now'), datetime('now'), 'unknown')",
+            [],
+        ).unwrap();
+        let count = classify_portability(&conn, 100).unwrap();
+        assert_eq!(count, 1);
+        let port: String = conn.query_row("SELECT portability FROM memory WHERE id = 'p3'", [], |r| r.get(0)).unwrap();
+        assert_eq!(port, "reality_bound");
+    }
+
+    #[test]
+    fn test_classify_portability_reality_bound_port() {
+        let conn = open_db();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, portability)
+             VALUES ('p4', 'decision', 'Vite config', 'Port 1420 is Vite dev server on :1420', 0.9, 'active', '[]', datetime('now'), datetime('now'), 'unknown')",
+            [],
+        ).unwrap();
+        let count = classify_portability(&conn, 100).unwrap();
+        assert_eq!(count, 1);
+        let port: String = conn.query_row("SELECT portability FROM memory WHERE id = 'p4'", [], |r| r.get(0)).unwrap();
+        assert_eq!(port, "reality_bound");
+    }
+
+    #[test]
+    fn test_classify_portability_domain_transferable_default() {
+        let conn = open_db();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, portability)
+             VALUES ('p5', 'decision', 'Use TDD', 'Always write tests first', 0.9, 'active', '[]', datetime('now'), datetime('now'), 'unknown')",
+            [],
+        ).unwrap();
+        let count = classify_portability(&conn, 100).unwrap();
+        assert_eq!(count, 1);
+        let port: String = conn.query_row("SELECT portability FROM memory WHERE id = 'p5'", [], |r| r.get(0)).unwrap();
+        assert_eq!(port, "domain_transferable");
+    }
+
+    #[test]
+    fn test_classify_portability_skips_already_classified() {
+        let conn = open_db();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, portability)
+             VALUES ('p6', 'decision', 'Already classified', 'some content', 0.9, 'active', '[]', datetime('now'), datetime('now'), 'universal')",
+            [],
+        ).unwrap();
+        let count = classify_portability(&conn, 100).unwrap();
+        assert_eq!(count, 0, "already-classified memories should be skipped");
     }
 }

@@ -148,6 +148,22 @@ pub fn hybrid_recall(
     project: Option<&str>,
     limit: usize,
 ) -> Vec<MemoryResult> {
+    hybrid_recall_scoped(conn, query, query_embedding, memory_type, project, limit, None)
+}
+
+/// Hybrid recall with reality_id scoping.
+///
+/// When `reality_id` is provided, results are filtered to memories that either
+/// belong to that reality or have no reality_id (global memories visible everywhere).
+pub fn hybrid_recall_scoped(
+    conn: &Connection,
+    query: &str,
+    query_embedding: Option<&[f32]>,
+    memory_type: Option<&MemoryType>,
+    project: Option<&str>,
+    limit: usize,
+    reality_id: Option<&str>,
+) -> Vec<MemoryResult> {
     let mut ranked_lists: Vec<Vec<(String, f64)>> = Vec::new();
 
     // 1. BM25 search (project-scoped: includes global memories)
@@ -221,6 +237,22 @@ pub fn hybrid_recall(
     // Filter by memory_type if specified
     if let Some(mt) = memory_type {
         results.retain(|r| &r.memory.memory_type == mt);
+    }
+
+    // Filter by reality_id if specified: keep memories that belong to this reality or have no reality
+    if let Some(rid) = reality_id {
+        results.retain(|r| {
+            let mem_reality: Option<String> = conn.query_row(
+                "SELECT reality_id FROM memory WHERE id = ?1",
+                params![r.memory.id],
+                |row| row.get(0),
+            ).unwrap_or(None);
+            match mem_reality {
+                None => true,  // NULL reality_id = visible everywhere
+                Some(ref mr) if mr.is_empty() => true,
+                Some(ref mr) => mr == rid,
+            }
+        });
     }
 
     // Sort by score descending

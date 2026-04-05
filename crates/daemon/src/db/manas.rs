@@ -1318,6 +1318,38 @@ pub fn list_identity(
     rows.collect()
 }
 
+/// List identity facets for a user (across all agents), falling back to agent-only if user_id is None.
+///
+/// When user_id is provided, returns facets that either belong to that user or have no user_id
+/// (shared/system facets), filtered by agent. When user_id is None, delegates to `list_identity`.
+pub fn list_identity_for_user(
+    conn: &Connection,
+    user_id: Option<&str>,
+    agent: &str,
+    only_active: bool,
+) -> rusqlite::Result<Vec<IdentityFacet>> {
+    match user_id {
+        Some(uid) => {
+            let sql = if only_active {
+                "SELECT id, agent, facet, description, strength, source, active, created_at
+                 FROM identity
+                 WHERE (user_id = ?1 OR user_id IS NULL) AND agent = ?2
+                 AND active = 1
+                 ORDER BY strength DESC"
+            } else {
+                "SELECT id, agent, facet, description, strength, source, active, created_at
+                 FROM identity
+                 WHERE (user_id = ?1 OR user_id IS NULL) AND agent = ?2
+                 ORDER BY strength DESC"
+            };
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map(params![uid, agent], row_to_identity)?;
+            rows.collect()
+        }
+        None => list_identity(conn, agent, only_active),
+    }
+}
+
 /// Deactivate an identity facet.
 pub fn deactivate_identity(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     let rows = conn.execute(
