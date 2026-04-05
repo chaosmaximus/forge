@@ -131,6 +131,7 @@ fn type_str(mt: &MemoryType) -> &'static str {
         MemoryType::Lesson => "lesson",
         MemoryType::Pattern => "pattern",
         MemoryType::Preference => "preference",
+        MemoryType::Protocol => "protocol",
     }
 }
 
@@ -140,6 +141,7 @@ fn type_from_str(s: &str) -> MemoryType {
         "lesson" => MemoryType::Lesson,
         "pattern" => MemoryType::Pattern,
         "preference" => MemoryType::Preference,
+        "protocol" => MemoryType::Protocol,
         _ => MemoryType::Decision,
     }
 }
@@ -513,6 +515,7 @@ fn import_identity_facet(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
+                user_id: None,
             };
             crate::db::manas::store_identity(conn, &facet_obj)
         }
@@ -1158,6 +1161,7 @@ mod tests {
             source: "user".into(),
             active: true,
             created_at: "2026-04-03".into(),
+            user_id: None,
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 

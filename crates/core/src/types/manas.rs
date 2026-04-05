@@ -192,6 +192,9 @@ pub struct IdentityFacet {
     pub source: String,
     pub active: bool,
     pub created_at: String,
+    /// User who owns this facet (v2.0: per-user identity isolation)
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 // ──────────────────────────────────────────────
@@ -404,6 +407,7 @@ mod tests {
             source: "declared".into(),
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
+            user_id: None,
         };
         let json = serde_json::to_string(&f).expect("serialize IdentityFacet");
         let restored: IdentityFacet = serde_json::from_str(&json).expect("deserialize IdentityFacet");

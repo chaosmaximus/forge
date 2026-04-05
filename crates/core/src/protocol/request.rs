@@ -90,6 +90,12 @@ pub enum Request {
     /// Subscribe to real-time event stream (keeps connection open, streams NDJSON)
     Subscribe {
         events: Option<Vec<String>>, // filter by event type; None = all events
+        /// Only include events referencing this session_id
+        #[serde(default)]
+        session_id: Option<String>,
+        /// Only include events referencing this team_id
+        #[serde(default)]
+        team_id: Option<String>,
     },
     /// Pre-execution guardrail check: are there decisions linked to this file?
     GuardrailsCheck {
@@ -272,6 +278,9 @@ pub enum Request {
         parts: Vec<MessagePart>,
         project: Option<String>,
         timeout_secs: Option<u64>,
+        /// If set, this message is a response to a meeting question.
+        /// The daemon auto-records it as a meeting participant response.
+        meeting_id: Option<String>,
     },
     /// Respond to a received request
     SessionRespond {
@@ -288,6 +297,9 @@ pub enum Request {
     /// Mark messages as read/consumed
     SessionAck {
         message_ids: Vec<String>,
+        /// If set, only ack messages addressed to this session (ownership check).
+        /// If None, ack messages regardless of to_session (CLI/admin usage).
+        session_id: Option<String>,
     },
 
     /// List entities (Knowledge Intelligence)
@@ -374,6 +386,111 @@ pub enum Request {
 
     /// Force-trigger the code indexer and return current index counts.
     ForceIndex,
+
+    // ── Agent Teams ──
+
+    /// Create a reusable agent template (CTO, CMO, etc.)
+    CreateAgentTemplate {
+        name: String,
+        description: String,
+        agent_type: String,
+        organization_id: Option<String>,
+        system_context: Option<String>,
+        identity_facets: Option<String>,
+        config_overrides: Option<String>,
+        knowledge_domains: Option<String>,
+        decision_style: Option<String>,
+    },
+    /// List agent templates, optionally filtered by organization
+    ListAgentTemplates {
+        organization_id: Option<String>,
+        limit: Option<usize>,
+    },
+    /// Get a single agent template by ID or name
+    GetAgentTemplate {
+        id: Option<String>,
+        name: Option<String>,
+    },
+    /// Delete an agent template
+    DeleteAgentTemplate { id: String },
+    /// Update fields on an agent template
+    UpdateAgentTemplate {
+        id: String,
+        name: Option<String>,
+        description: Option<String>,
+        system_context: Option<String>,
+        identity_facets: Option<String>,
+        config_overrides: Option<String>,
+        knowledge_domains: Option<String>,
+        decision_style: Option<String>,
+    },
+
+    /// Spawn an agent from a template — creates session, sets identity, joins team
+    SpawnAgent {
+        template_name: String,
+        session_id: String,
+        project: Option<String>,
+        team: Option<String>,
+    },
+    /// List active agents (sessions with template_id set)
+    ListAgents {
+        team: Option<String>,
+        limit: Option<usize>,
+    },
+    /// Manually update an agent's status
+    UpdateAgentStatus {
+        session_id: String,
+        status: String,
+        current_task: Option<String>,
+    },
+    /// Retire an agent (soft delete — preserves memories)
+    RetireAgent {
+        session_id: String,
+    },
+
+    /// Create a team with type (human/agent/mixed)
+    CreateTeam {
+        name: String,
+        team_type: Option<String>,
+        purpose: Option<String>,
+        organization_id: Option<String>,
+    },
+    /// List members of a team (including agent sessions)
+    ListTeamMembers {
+        team_name: String,
+    },
+    /// Set the orchestrator session for a team
+    SetTeamOrchestrator {
+        team_name: String,
+        session_id: String,
+    },
+    /// Get full team status (members, meetings, decisions)
+    TeamStatus {
+        team_name: String,
+    },
+
+    // ── Meeting Protocol ──
+
+    /// Create a meeting — sends FISP messages to all participants
+    CreateMeeting {
+        team_id: String,
+        topic: String,
+        context: Option<String>,
+        orchestrator_session_id: String,
+        participant_session_ids: Vec<String>,
+    },
+    /// Get meeting status + participant response statuses
+    MeetingStatus { meeting_id: String },
+    /// Get all participant responses for a meeting
+    MeetingResponses { meeting_id: String },
+    /// Store orchestrator synthesis
+    MeetingSynthesize { meeting_id: String, synthesis: String },
+    /// Record decision, store as memory, close meeting
+    MeetingDecide { meeting_id: String, decision: String },
+    /// List meetings for a team
+    ListMeetings { team_id: Option<String>, status: Option<String>, limit: Option<usize> },
+    /// Full meeting transcript (topic + context + responses + synthesis + decision)
+    MeetingTranscript { meeting_id: String },
 
     Shutdown,
 }

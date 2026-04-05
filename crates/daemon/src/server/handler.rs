@@ -304,6 +304,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                 source: row.get(5)?,
                                 active: row.get::<_, i32>(6)? != 0,
                                 created_at: row.get(7)?,
+                                user_id: None,
                             })
                         })?.collect()
                     }).unwrap_or_default();
@@ -1154,6 +1155,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::StoreIdentity { mut facet } => {
             facet.strength = facet.strength.clamp(0.0, 1.0);
+            // v2.0: tag identity facets with current user (forge_user.id, not raw OS username)
+            if facet.user_id.is_none() {
+                let login = std::env::var("USER").unwrap_or_else(|_| "local".into());
+                facet.user_id = ops::get_user(&state.conn, &login)
+                    .ok()
+                    .flatten()
+                    .map(|u| u.id)
+                    .or_else(|| Some("local".into()));
+            }
             let id = facet.id.clone();
             let facet_name = facet.facet.clone();
             let agent_name = facet.agent.clone();
@@ -1780,7 +1790,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         // ── A2A Inter-Session Protocol (FISP) ──
 
-        Request::SessionSend { to, kind, topic, parts, project, timeout_secs } => {
+        Request::SessionSend { to, kind, topic, parts, project, timeout_secs, meeting_id } => {
             // A2A permission enforcement
             let config = crate::config::load_config();
             if !config.a2a.enabled {
@@ -1822,11 +1832,35 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
 
             let parts_json = serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string());
-            match crate::sessions::send_message(&state.conn, from, &to, &kind, &topic, &parts_json, project.as_deref(), timeout_secs) {
+            match crate::sessions::send_message(&state.conn, from, &to, &kind, &topic, &parts_json, project.as_deref(), timeout_secs, meeting_id.as_deref()) {
                 Ok(id) => {
                     crate::events::emit(&state.events, "session_message", serde_json::json!({
                         "id": &id, "from": from, "to": &to, "kind": &kind, "topic": &topic,
                     }));
+                    // Emit message_received event for subscribe filtering
+                    let preview: String = parts_json.chars().take(100).collect();
+                    crate::events::emit(&state.events, "message_received", serde_json::json!({
+                        "to_session": &to,
+                        "from_session": from,
+                        "topic": &topic,
+                        "preview": preview,
+                    }));
+                    // If this is a meeting response, auto-record it
+                    if let Some(ref mid) = meeting_id {
+                        let confidence = None; // Could be extracted from parts in future
+                        if let Ok(all_responded) = crate::teams::record_meeting_response(
+                            &state.conn, mid, from, &parts_json, confidence,
+                        ) {
+                            crate::events::emit(&state.events, "meeting_response", serde_json::json!({
+                                "meeting_id": mid, "session_id": from, "topic": &topic,
+                            }));
+                            if all_responded {
+                                crate::events::emit(&state.events, "meeting_all_responded", serde_json::json!({
+                                    "meeting_id": mid,
+                                }));
+                            }
+                        }
+                    }
                     Response::Ok { data: ResponseData::MessageSent { id, status: "pending".into() } }
                 }
                 Err(e) => Response::Error { message: format!("send_message failed: {e}") },
@@ -1869,9 +1903,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::SessionAck { message_ids } => {
-            // "api" as caller — in future, hooks will pass the actual session ID
-            match crate::sessions::ack_messages(&state.conn, &message_ids, "api") {
+        Request::SessionAck { message_ids, session_id } => {
+            let result = if let Some(sid) = session_id {
+                // Scoped ack: only messages addressed to this session
+                crate::sessions::ack_messages(&state.conn, &message_ids, &sid)
+            } else {
+                // Admin/CLI ack: ack regardless of to_session
+                crate::sessions::ack_messages_admin(&state.conn, &message_ids)
+            };
+            match result {
                 Ok(count) => Response::Ok { data: ResponseData::MessagesAcked { count } },
                 Err(e) => Response::Error { message: format!("ack_messages failed: {e}") },
             }
@@ -2263,6 +2303,279 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             Response::Ok {
                 data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
+            }
+        }
+
+        // ── Agent Teams: Template CRUD ──
+
+        Request::CreateAgentTemplate {
+            name, description, agent_type, organization_id,
+            system_context, identity_facets, config_overrides,
+            knowledge_domains, decision_style,
+        } => {
+            let now = chrono_now();
+            let template = forge_core::types::team::AgentTemplate {
+                id: ulid::Ulid::new().to_string(),
+                name: name.clone(),
+                description,
+                agent_type,
+                organization_id: organization_id.unwrap_or_else(|| "default".into()),
+                system_context: system_context.unwrap_or_default(),
+                identity_facets: identity_facets.unwrap_or_else(|| "[]".into()),
+                config_overrides: config_overrides.unwrap_or_else(|| "{}".into()),
+                knowledge_domains: knowledge_domains.unwrap_or_else(|| "[]".into()),
+                decision_style: decision_style.unwrap_or_else(|| "analytical".into()),
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            let id = template.id.clone();
+            match crate::teams::create_agent_template(&state.conn, &template) {
+                Ok(()) => {
+                    crate::events::emit(&state.events, "agent_template_created", serde_json::json!({
+                        "id": id, "name": name,
+                    }));
+                    Response::Ok { data: ResponseData::AgentTemplateCreated { id, name } }
+                }
+                Err(e) => Response::Error { message: format!("create_agent_template failed: {e}") },
+            }
+        }
+
+        Request::ListAgentTemplates { organization_id, limit } => {
+            let lim = limit.unwrap_or(50).min(200);
+            match crate::teams::list_agent_templates(&state.conn, organization_id.as_deref(), lim) {
+                Ok(templates) => {
+                    let count = templates.len();
+                    Response::Ok { data: ResponseData::AgentTemplateList { templates, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_agent_templates failed: {e}") },
+            }
+        }
+
+        Request::GetAgentTemplate { id, name } => {
+            let result = if let Some(id) = id {
+                crate::teams::get_agent_template(&state.conn, &id)
+            } else if let Some(name) = name {
+                crate::teams::get_agent_template_by_name(&state.conn, &name, "default")
+            } else {
+                return Response::Error { message: "either id or name required".into() };
+            };
+            match result {
+                Ok(Some(template)) => Response::Ok { data: ResponseData::AgentTemplateData { template } },
+                Ok(None) => Response::Error { message: "agent template not found".into() },
+                Err(e) => Response::Error { message: format!("get_agent_template failed: {e}") },
+            }
+        }
+
+        Request::DeleteAgentTemplate { id } => {
+            match crate::teams::delete_agent_template(&state.conn, &id) {
+                Ok(found) => Response::Ok { data: ResponseData::AgentTemplateDeleted { id, found } },
+                Err(e) => Response::Error { message: format!("delete_agent_template failed: {e}") },
+            }
+        }
+
+        Request::UpdateAgentTemplate {
+            id, name, description, system_context,
+            identity_facets, config_overrides, knowledge_domains, decision_style,
+        } => {
+            match crate::teams::update_agent_template(
+                &state.conn, &id,
+                name.as_deref(), description.as_deref(), system_context.as_deref(),
+                identity_facets.as_deref(), config_overrides.as_deref(),
+                knowledge_domains.as_deref(), decision_style.as_deref(),
+            ) {
+                Ok(updated) => Response::Ok { data: ResponseData::AgentTemplateUpdated { id, updated } },
+                Err(e) => Response::Error { message: format!("update_agent_template failed: {e}") },
+            }
+        }
+
+        // ── Agent Lifecycle ──
+
+        Request::SpawnAgent { template_name, session_id, project, team } => {
+            match crate::teams::spawn_agent(
+                &state.conn, &template_name, &session_id,
+                project.as_deref(), team.as_deref(),
+            ) {
+                Ok(()) => {
+                    crate::events::emit(&state.events, "agent_spawned", serde_json::json!({
+                        "session_id": session_id, "template_name": template_name, "team": team,
+                    }));
+                    Response::Ok { data: ResponseData::AgentSpawned {
+                        session_id, template_name, team,
+                    }}
+                }
+                Err(e) => Response::Error { message: format!("spawn_agent failed: {e}") },
+            }
+        }
+
+        Request::ListAgents { team, limit } => {
+            let lim = limit.unwrap_or(50).min(200);
+            match crate::teams::list_agents(&state.conn, team.as_deref(), lim) {
+                Ok(agents) => {
+                    let count = agents.len();
+                    Response::Ok { data: ResponseData::AgentList { agents, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_agents failed: {e}") },
+            }
+        }
+
+        Request::UpdateAgentStatus { session_id, status, current_task } => {
+            // Get old status for event
+            let old_status: String = state.conn.query_row(
+                "SELECT COALESCE(agent_status, 'unknown') FROM session WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            ).unwrap_or_else(|_| "unknown".into());
+
+            match crate::teams::update_agent_status(
+                &state.conn, &session_id, &status, current_task.as_deref(),
+            ) {
+                Ok(_updated) => {
+                    crate::events::emit(&state.events, "agent_status_changed", serde_json::json!({
+                        "session_id": session_id, "old_status": old_status, "new_status": status,
+                        "current_task": current_task,
+                    }));
+                    Response::Ok { data: ResponseData::AgentStatusUpdated { session_id, status } }
+                }
+                Err(e) => Response::Error { message: format!("update_agent_status failed: {e}") },
+            }
+        }
+
+        Request::RetireAgent { session_id } => {
+            // Get template name for event
+            let template_name: String = state.conn.query_row(
+                "SELECT COALESCE(at.name, '') FROM session s
+                 LEFT JOIN agent_template at ON at.id = s.template_id
+                 WHERE s.id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            ).unwrap_or_default();
+
+            match crate::teams::retire_agent(&state.conn, &session_id) {
+                Ok(_retired) => {
+                    crate::events::emit(&state.events, "agent_retired", serde_json::json!({
+                        "session_id": session_id, "template_name": template_name,
+                    }));
+                    Response::Ok { data: ResponseData::AgentRetired { session_id } }
+                }
+                Err(e) => Response::Error { message: format!("retire_agent failed: {e}") },
+            }
+        }
+
+        // ── Team Enhancements ──
+
+        Request::CreateTeam { name, team_type, purpose, organization_id } => {
+            match crate::teams::create_team(
+                &state.conn, &name, team_type.as_deref(),
+                purpose.as_deref(), organization_id.as_deref(),
+            ) {
+                Ok(id) => Response::Ok { data: ResponseData::TeamCreated { id, name } },
+                Err(e) => Response::Error { message: format!("create_team failed: {e}") },
+            }
+        }
+
+        Request::ListTeamMembers { team_name } => {
+            match crate::teams::list_team_members(&state.conn, &team_name) {
+                Ok(members) => {
+                    let count = members.len();
+                    Response::Ok { data: ResponseData::TeamMemberList { members, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_team_members failed: {e}") },
+            }
+        }
+
+        Request::SetTeamOrchestrator { team_name, session_id } => {
+            match crate::teams::set_team_orchestrator(&state.conn, &team_name, &session_id) {
+                Ok(_set) => Response::Ok { data: ResponseData::TeamOrchestratorSet { team_name, session_id } },
+                Err(e) => Response::Error { message: format!("set_team_orchestrator failed: {e}") },
+            }
+        }
+
+        Request::TeamStatus { team_name } => {
+            match crate::teams::team_status(&state.conn, &team_name) {
+                Ok(team) => Response::Ok { data: ResponseData::TeamStatusData { team } },
+                Err(e) => Response::Error { message: format!("team_status failed: {e}") },
+            }
+        }
+
+        // ── Meeting Protocol ──
+
+        Request::CreateMeeting { team_id, topic, context, orchestrator_session_id, participant_session_ids } => {
+            match crate::teams::create_meeting(
+                &state.conn, &team_id, &topic, context.as_deref(),
+                &orchestrator_session_id, &participant_session_ids,
+            ) {
+                Ok((meeting_id, participant_count)) => {
+                    crate::events::emit(&state.events, "meeting_created", serde_json::json!({
+                        "meeting_id": meeting_id, "team_id": team_id, "topic": topic, "participant_count": participant_count,
+                    }));
+                    Response::Ok { data: ResponseData::MeetingCreated { meeting_id, participant_count } }
+                }
+                Err(e) => Response::Error { message: format!("create_meeting failed: {e}") },
+            }
+        }
+
+        Request::MeetingStatus { meeting_id } => {
+            match crate::teams::get_meeting_status(&state.conn, &meeting_id) {
+                Ok((meeting, participants)) => {
+                    Response::Ok { data: ResponseData::MeetingStatusData { meeting, participants } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_status failed: {e}") },
+            }
+        }
+
+        Request::MeetingResponses { meeting_id } => {
+            match crate::teams::get_meeting_responses(&state.conn, &meeting_id) {
+                Ok(responses) => {
+                    let count = responses.len();
+                    Response::Ok { data: ResponseData::MeetingResponseList { responses, count } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_responses failed: {e}") },
+            }
+        }
+
+        Request::MeetingSynthesize { meeting_id, synthesis } => {
+            match crate::teams::synthesize_meeting(&state.conn, &meeting_id, &synthesis) {
+                Ok(_updated) => {
+                    Response::Ok { data: ResponseData::MeetingSynthesized { meeting_id } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_synthesize failed: {e}") },
+            }
+        }
+
+        Request::MeetingDecide { meeting_id, decision } => {
+            match crate::teams::decide_meeting(&state.conn, &meeting_id, &decision) {
+                Ok((_, decision_memory_id)) => {
+                    let summary = if decision.len() > 80 {
+                        format!("{}...", &decision[..80])
+                    } else {
+                        decision
+                    };
+                    crate::events::emit(&state.events, "meeting_decided", serde_json::json!({
+                        "meeting_id": meeting_id, "decision_summary": summary,
+                    }));
+                    Response::Ok { data: ResponseData::MeetingDecided { meeting_id, decision_memory_id } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_decide failed: {e}") },
+            }
+        }
+
+        Request::ListMeetings { team_id, status, limit } => {
+            let lim = limit.unwrap_or(50).min(200);
+            match crate::teams::list_meetings(&state.conn, team_id.as_deref(), status.as_deref(), lim) {
+                Ok(meetings) => {
+                    let count = meetings.len();
+                    Response::Ok { data: ResponseData::MeetingList { meetings, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_meetings failed: {e}") },
+            }
+        }
+
+        Request::MeetingTranscript { meeting_id } => {
+            match crate::teams::get_meeting_transcript(&state.conn, &meeting_id) {
+                Ok(transcript) => {
+                    Response::Ok { data: ResponseData::MeetingTranscriptData { transcript } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_transcript failed: {e}") },
             }
         }
 
@@ -2933,6 +3246,7 @@ mod tests {
             source: "declared".into(),
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
+            user_id: None,
         };
         let resp = handle_request(&mut state, Request::StoreIdentity { facet });
         match resp {
@@ -3284,6 +3598,7 @@ mod tests {
             source: "declared".into(),
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
+            user_id: None,
         };
         handle_request(&mut state, Request::StoreIdentity { facet });
 
@@ -3384,6 +3699,7 @@ mod tests {
             source: "declared".into(),
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
+            user_id: None,
         };
         handle_request(&mut state, Request::StoreIdentity { facet });
 

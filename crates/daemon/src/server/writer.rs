@@ -60,8 +60,19 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::FileMemoryMap { .. }
             | Request::CodeSearch { .. }
             | Request::ListRealities { .. }
+            | Request::ListAgentTemplates { .. }
+            | Request::GetAgentTemplate { .. }
+            | Request::ListAgents { .. }
+            | Request::ListTeamMembers { .. }
+            | Request::TeamStatus { .. }
+            | Request::MeetingStatus { .. }
+            | Request::MeetingResponses { .. }
+            | Request::ListMeetings { .. }
+            | Request::MeetingTranscript { .. }
             // NOTE: DetectReality is NOT read-only — it may create a reality record
+            // NOTE: CreateMeeting, MeetingSynthesize, MeetingDecide are writes
             // NOTE: ForceIndex is NOT read-only — it triggers indexing
+            // NOTE: SpawnAgent, UpdateAgentStatus, RetireAgent, CreateTeam, SetTeamOrchestrator are writes
     )
 }
 

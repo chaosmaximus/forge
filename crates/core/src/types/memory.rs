@@ -9,6 +9,10 @@ pub enum MemoryType {
     Lesson,
     Pattern,
     Preference,
+    /// Process-level meta-knowledge: HOW work should be done.
+    /// Protocols evolve over time — user-declared or extracted from behavior.
+    /// Injected into agent context as `<active-protocols>`.
+    Protocol,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

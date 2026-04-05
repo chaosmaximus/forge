@@ -1276,15 +1276,16 @@ pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Res
 
     // No duplicate — insert normally
     conn.execute(
-        "INSERT INTO identity (id, agent, facet, description, strength, source, active, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO identity (id, agent, facet, description, strength, source, active, created_at, user_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET
             agent = excluded.agent,
             facet = excluded.facet,
             description = excluded.description,
             strength = excluded.strength,
             source = excluded.source,
-            active = excluded.active",
+            active = excluded.active,
+            user_id = excluded.user_id",
         params![
             facet.id,
             facet.agent,
@@ -1294,6 +1295,7 @@ pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Res
             facet.source,
             facet.active as i32,
             facet.created_at,
+            facet.user_id,
         ],
     )?;
     Ok(())
@@ -1369,6 +1371,7 @@ fn row_to_identity(row: &rusqlite::Row) -> rusqlite::Result<IdentityFacet> {
         source: row.get(5)?,
         active: row.get::<_, i32>(6)? != 0,
         created_at: row.get(7)?,
+        user_id: None,
     })
 }
 
@@ -2292,6 +2295,7 @@ mod tests {
             source: "declared".into(),
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
+            user_id: None,
         };
         store_identity(&conn, &facet).unwrap();
 
@@ -2418,6 +2422,7 @@ mod tests {
             source: "declared".into(),
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
+            user_id: None,
         }).unwrap();
 
         let h = manas_health(&conn).unwrap();
@@ -2748,6 +2753,7 @@ mod tests {
             source: "extracted".into(),
             active: true,
             created_at: "2026-04-04 12:00:00".into(),
+            user_id: None,
         };
         store_identity(&conn, &f1).unwrap();
 
@@ -2761,6 +2767,7 @@ mod tests {
             source: "extracted".into(),
             active: true,
             created_at: "2026-04-04 12:00:01".into(),
+            user_id: None,
         };
         store_identity(&conn, &f2).unwrap();
 
@@ -2786,6 +2793,7 @@ mod tests {
             source: "extracted".into(),
             active: true,
             created_at: "2026-04-04 12:00:00".into(),
+            user_id: None,
         };
         store_identity(&conn, &f1).unwrap();
 
@@ -2799,6 +2807,7 @@ mod tests {
             source: "extracted".into(),
             active: true,
             created_at: "2026-04-04 12:00:01".into(),
+            user_id: None,
         };
         store_identity(&conn, &f2).unwrap();
 
@@ -2824,6 +2833,7 @@ mod tests {
             source: "extracted".into(),
             active: true,
             created_at: "2026-04-04 12:00:00".into(),
+            user_id: None,
         };
         store_identity(&conn, &f1).unwrap();
 
@@ -2837,6 +2847,7 @@ mod tests {
             source: "extracted".into(),
             active: true,
             created_at: "2026-04-04 12:00:01".into(),
+            user_id: None,
         };
         store_identity(&conn, &f2).unwrap();
 

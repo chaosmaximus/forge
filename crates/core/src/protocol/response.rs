@@ -437,6 +437,54 @@ pub enum ResponseData {
         symbols_indexed: usize,
     },
 
+    // ── Agent Teams ──
+
+    /// Agent template was created
+    AgentTemplateCreated { id: String, name: String },
+    /// Single agent template
+    AgentTemplateData { template: crate::types::team::AgentTemplate },
+    /// List of agent templates
+    AgentTemplateList { templates: Vec<crate::types::team::AgentTemplate>, count: usize },
+    /// Agent template was deleted
+    AgentTemplateDeleted { id: String, found: bool },
+    /// Agent template was updated
+    AgentTemplateUpdated { id: String, updated: bool },
+
+    /// Agent was spawned from a template
+    AgentSpawned { session_id: String, template_name: String, team: Option<String> },
+    /// List of active agents
+    AgentList { agents: Vec<serde_json::Value>, count: usize },
+    /// Agent status was updated
+    AgentStatusUpdated { session_id: String, status: String },
+    /// Agent was retired
+    AgentRetired { session_id: String },
+
+    /// Team was created
+    TeamCreated { id: String, name: String },
+    /// List of team members
+    TeamMemberList { members: Vec<serde_json::Value>, count: usize },
+    /// Team orchestrator was set
+    TeamOrchestratorSet { team_name: String, session_id: String },
+    /// Full team status data
+    TeamStatusData { team: serde_json::Value },
+
+    // ── Meeting Protocol ──
+
+    /// A meeting was created
+    MeetingCreated { meeting_id: String, participant_count: usize },
+    /// Meeting status + participant statuses
+    MeetingStatusData { meeting: serde_json::Value, participants: Vec<serde_json::Value> },
+    /// List of participant responses for a meeting
+    MeetingResponseList { responses: Vec<serde_json::Value>, count: usize },
+    /// Synthesis was stored
+    MeetingSynthesized { meeting_id: String },
+    /// Decision was recorded and stored as memory
+    MeetingDecided { meeting_id: String, decision_memory_id: String },
+    /// List of meetings
+    MeetingList { meetings: Vec<serde_json::Value>, count: usize },
+    /// Full meeting transcript
+    MeetingTranscriptData { transcript: serde_json::Value },
+
     Shutdown,
 }
 

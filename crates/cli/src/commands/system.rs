@@ -601,7 +601,7 @@ pub async fn send_message(to: String, kind: String, topic: String, text: String,
         data: None,
         memory_id: None,
     }];
-    let req = Request::SessionSend { to, kind, topic, parts, project, timeout_secs: timeout };
+    let req = Request::SessionSend { to, kind, topic, parts, project, timeout_secs: timeout, meeting_id: None };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::MessageSent { id, status } }) => {
             println!("Message sent: {id} (status: {status})");
@@ -643,7 +643,7 @@ pub async fn ack_messages(ids: Vec<String>) {
         eprintln!("error: no message IDs provided");
         return;
     }
-    let req = Request::SessionAck { message_ids: ids };
+    let req = Request::SessionAck { message_ids: ids, session_id: None };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::MessagesAcked { count } }) => {
             println!("Acknowledged {count} message(s).");

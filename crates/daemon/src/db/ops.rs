@@ -31,6 +31,7 @@ fn type_str(mt: &MemoryType) -> &'static str {
         MemoryType::Lesson => "lesson",
         MemoryType::Pattern => "pattern",
         MemoryType::Preference => "preference",
+        MemoryType::Protocol => "protocol",
     }
 }
 

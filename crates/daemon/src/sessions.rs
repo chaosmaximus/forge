@@ -252,6 +252,7 @@ pub fn send_message(
     parts_json: &str,
     project: Option<&str>,
     timeout_secs: Option<u64>,
+    meeting_id: Option<&str>,
 ) -> rusqlite::Result<String> {
     // Validate message size: parts_json must be under 64KB
     if parts_json.len() > 65536 {
@@ -287,18 +288,18 @@ pub fn send_message(
         for session_id in &sessions {
             let msg_id = Ulid::new().to_string();
             conn.execute(
-                "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), CASE WHEN ?8 IS NOT NULL THEN datetime('now', ?8) ELSE NULL END)",
-                params![msg_id, from_session, session_id, kind, topic, parts_json, project, timeout_modifier],
+                "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at, meeting_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), CASE WHEN ?8 IS NOT NULL THEN datetime('now', ?8) ELSE NULL END, ?9)",
+                params![msg_id, from_session, session_id, kind, topic, parts_json, project, timeout_modifier, meeting_id],
             )?;
         }
         Ok(broadcast_id)
     } else {
         let msg_id = Ulid::new().to_string();
         conn.execute(
-            "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), CASE WHEN ?8 IS NOT NULL THEN datetime('now', ?8) ELSE NULL END)",
-            params![msg_id, from_session, to, kind, topic, parts_json, project, timeout_modifier],
+            "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at, expires_at, meeting_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, datetime('now'), CASE WHEN ?8 IS NOT NULL THEN datetime('now', ?8) ELSE NULL END, ?9)",
+            params![msg_id, from_session, to, kind, topic, parts_json, project, timeout_modifier, meeting_id],
         )?;
         Ok(msg_id)
     }
@@ -415,6 +416,24 @@ pub fn ack_messages(
             "UPDATE session_message SET status = 'read', delivered_at = datetime('now')
              WHERE id = ?1 AND to_session = ?2",
             params![id, caller_session],
+        )?;
+        count += updated;
+    }
+    Ok(count)
+}
+
+/// Admin/CLI ack: mark messages as read regardless of to_session.
+/// Used when the CLI doesn't have a session context.
+pub fn ack_messages_admin(
+    conn: &Connection,
+    message_ids: &[String],
+) -> rusqlite::Result<usize> {
+    let mut count = 0;
+    for id in message_ids {
+        let updated = conn.execute(
+            "UPDATE session_message SET status = 'read', delivered_at = datetime('now')
+             WHERE id = ?1",
+            params![id],
         )?;
         count += updated;
     }
@@ -819,7 +838,7 @@ mod tests {
         register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
         register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
 
-        let msg_id = send_message(&conn, "s1", "s2", "notification", "file_changed", "[]", Some("forge"), None).unwrap();
+        let msg_id = send_message(&conn, "s1", "s2", "notification", "file_changed", "[]", Some("forge"), None, None).unwrap();
         assert!(!msg_id.is_empty());
 
         let messages = list_messages(&conn, "s2", None, 10).unwrap();
@@ -838,7 +857,7 @@ mod tests {
         register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
         register_session(&conn, "s3", "codex", Some("forge"), None, None, None).unwrap();
 
-        send_message(&conn, "s1", "*", "notification", "schema_changed", "[]", Some("forge"), None).unwrap();
+        send_message(&conn, "s1", "*", "notification", "schema_changed", "[]", Some("forge"), None, None).unwrap();
 
         // s2 and s3 should each get a message, s1 (sender) should not
         let s2_msgs = list_messages(&conn, "s2", None, 10).unwrap();
@@ -855,7 +874,7 @@ mod tests {
         register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
         register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
 
-        let msg_id = send_message(&conn, "s1", "s2", "request", "review_code", "[]", None, None).unwrap();
+        let msg_id = send_message(&conn, "s1", "s2", "request", "review_code", "[]", None, None, None).unwrap();
 
         let found = respond_to_message(&conn, &msg_id, "s2", "completed", r#"[{"kind":"text","text":"LGTM"}]"#).unwrap();
         assert!(found, "should find and respond to original message");
@@ -871,8 +890,8 @@ mod tests {
         let conn = setup();
         register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
 
-        let id1 = send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None).unwrap();
-        let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None).unwrap();
+        let id1 = send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None, None).unwrap();
+        let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None, None).unwrap();
 
         let acked = ack_messages(&conn, &[id1.clone(), id2.clone()], "s1").unwrap();
         assert_eq!(acked, 2);
@@ -908,8 +927,8 @@ mod tests {
         let conn = setup();
         register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
 
-        send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None).unwrap();
-        let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None).unwrap();
+        send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None, None).unwrap();
+        let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None, None).unwrap();
         ack_messages(&conn, &[id2], "s1").unwrap();
 
         let pending = list_messages(&conn, "s1", Some("pending"), 10).unwrap();

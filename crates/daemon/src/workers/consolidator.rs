@@ -36,6 +36,8 @@ pub struct ConsolidationStats {
     pub gaps_detected: usize,
     pub reweaved: usize,
     pub scored: usize,
+    pub protocols_extracted: usize,
+    pub antipatterns_tagged: usize,
 }
 
 /// Run all consolidation phases synchronously. Used by:
@@ -210,6 +212,20 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             }
         }
         Err(e) => eprintln!("[consolidator] portability classification failed: {e}"),
+    }
+
+    // Phase 17: Protocol extraction — promote recurring process patterns to protocols
+    let protocols = extract_protocols(conn, config.batch_limit);
+    stats.protocols_extracted = protocols;
+    if protocols > 0 {
+        eprintln!("[consolidator] extracted {} protocols from behavior patterns", protocols);
+    }
+
+    // Phase 18: Anti-pattern tagging — tag lessons with negative signals
+    let antipatterns = tag_antipatterns(conn, config.batch_limit);
+    stats.antipatterns_tagged = antipatterns;
+    if antipatterns > 0 {
+        eprintln!("[consolidator] tagged {} anti-patterns from lessons", antipatterns);
     }
 
     stats
@@ -605,6 +621,145 @@ pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
     }
 
     scored
+}
+
+/// Phase 17: Protocol Extraction — promote recurring process patterns to protocols.
+///
+/// Scans preferences and patterns for process-level rules ("always do X",
+/// "never do Y", "before every Z"). If the same process pattern appears
+/// across multiple memories, promotes it to a protocol memory.
+pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
+    // Find preferences/patterns that describe process rules but aren't already protocols
+    let sql = format!(
+        "SELECT id, title, content, memory_type, tags FROM memory
+         WHERE status = 'active'
+           AND memory_type IN ('preference', 'pattern')
+           AND (
+             LOWER(content) LIKE '%always %'
+             OR LOWER(content) LIKE '%never %'
+             OR LOWER(content) LIKE '%before every%'
+             OR LOWER(content) LIKE '%after every%'
+             OR LOWER(content) LIKE '%must %'
+             OR LOWER(content) LIKE '%require%'
+             OR LOWER(title) LIKE '%always %'
+             OR LOWER(title) LIKE '%tdd%'
+             OR LOWER(title) LIKE '%dogfood%'
+             OR LOWER(title) LIKE '%review%'
+           )
+         LIMIT {batch_limit}"
+    );
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let candidates: Vec<(String, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?, // id
+                row.get::<_, String>(1)?, // title
+                row.get::<_, String>(2)?, // content
+            ))
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+
+    let mut promoted = 0;
+    for (source_id, title, content) in &candidates {
+        // Check if a protocol with similar title already exists
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE memory_type = 'protocol' AND status = 'active'
+                 AND (title = ?1 OR title LIKE '%' || ?1 || '%')",
+                rusqlite::params![title],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0) > 0;
+
+        if exists {
+            continue;
+        }
+
+        // Create protocol from the preference/pattern
+        let protocol_id = ulid::Ulid::new().to_string();
+        let now = forge_core::time::now_iso();
+        let protocol_title = format!("Protocol: {}", title);
+
+        if conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, created_at, accessed_at, quality_score)
+             VALUES (?1, 'protocol', ?2, ?3, 0.8, 'active', ?4, ?5, 0.7)",
+            rusqlite::params![protocol_id, protocol_title, content, now, now],
+        ).is_ok() {
+            // Link the protocol to its source
+            let _ = crate::db::ops::store_edge(conn, source_id, &protocol_id, "promoted_to", "{}");
+            promoted += 1;
+        }
+    }
+
+    promoted
+}
+
+/// Phase 18: Anti-pattern tagging — identify lessons that describe what NOT to do.
+///
+/// Scans lessons for negative signals ("don't", "avoid", "caused problems",
+/// "broke", "reverted", "never") and tags them with "anti-pattern" in the tags
+/// JSON array. These are then surfaced in context as guardrails.
+pub fn tag_antipatterns(conn: &Connection, batch_limit: usize) -> usize {
+    let sql = format!(
+        "SELECT id, tags FROM memory
+         WHERE status = 'active'
+           AND memory_type = 'lesson'
+           AND tags NOT LIKE '%anti-pattern%'
+           AND (
+             LOWER(content) LIKE '%don''t %'
+             OR LOWER(content) LIKE '%avoid %'
+             OR LOWER(content) LIKE '%caused problem%'
+             OR LOWER(content) LIKE '%broke %'
+             OR LOWER(content) LIKE '%revert%'
+             OR LOWER(content) LIKE '%never %'
+             OR LOWER(content) LIKE '%bug%found%'
+             OR LOWER(content) LIKE '%fail%'
+             OR LOWER(title) LIKE '%don''t %'
+             OR LOWER(title) LIKE '%avoid %'
+             OR LOWER(title) LIKE '%pitfall%'
+           )
+         LIMIT {batch_limit}"
+    );
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let candidates: Vec<(String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+
+    let mut tagged = 0;
+    for (id, tags_json) in &candidates {
+        // Parse existing tags, add "anti-pattern"
+        let mut tags: Vec<String> = serde_json::from_str(tags_json).unwrap_or_default();
+        if tags.iter().any(|t| t == "anti-pattern") {
+            continue;
+        }
+        tags.push("anti-pattern".into());
+        let new_tags = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
+
+        if conn.execute(
+            "UPDATE memory SET tags = ?1 WHERE id = ?2",
+            rusqlite::params![new_tags, id],
+        ).is_ok() {
+            tagged += 1;
+        }
+    }
+
+    tagged
 }
 
 pub async fn run_consolidator(

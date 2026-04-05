@@ -9,9 +9,9 @@ use tokio::net::UnixListener;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::{timeout, Duration};
 
-/// Maximum allowed line length (1 MB). Requests or responses exceeding this
-/// are rejected and the client is disconnected.
-const MAX_LINE_BYTES: usize = 1_048_576;
+/// Maximum allowed line length (16 MB). Export/import of large memory stores
+/// can produce multi-MB NDJSON lines.
+const MAX_LINE_BYTES: usize = 16 * 1_048_576;
 
 /// Read timeout for idle clients (30 seconds).
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -206,9 +206,11 @@ pub async fn run_server(
                         };
 
                         // If it's a Subscribe request, enter streaming mode
-                        if let Request::Subscribe { events: ref filter } = request {
+                        if let Request::Subscribe { events: ref filter, ref session_id, ref team_id } = request {
                             let mut rx = events.subscribe();
                             let filter = filter.clone();
+                            let sub_session_id = session_id.clone();
+                            let sub_team_id = team_id.clone();
                             let mut sub_shutdown_rx = shutdown_tx_clone.subscribe();
 
                             // Stream events until client disconnects or shutdown
@@ -217,9 +219,23 @@ pub async fn run_server(
                                     result = rx.recv() => {
                                         match result {
                                             Ok(event) => {
-                                                // Apply filter
+                                                // Apply event type filter
                                                 if let Some(ref types) = filter {
                                                     if !types.is_empty() && !types.contains(&event.event) {
+                                                        continue;
+                                                    }
+                                                }
+                                                // Apply session_id filter: check if event data references this session
+                                                if let Some(ref sid) = sub_session_id {
+                                                    let data_str = event.data.to_string();
+                                                    if !data_str.contains(sid.as_str()) {
+                                                        continue;
+                                                    }
+                                                }
+                                                // Apply team_id filter: check if event data references this team
+                                                if let Some(ref tid) = sub_team_id {
+                                                    let data_str = event.data.to_string();
+                                                    if !data_str.contains(tid.as_str()) {
                                                         continue;
                                                     }
                                                 }

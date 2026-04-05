@@ -4,6 +4,7 @@ pub mod manas;
 pub mod memory;
 pub mod reality_engine;
 pub mod session;
+pub mod team;
 
 pub use code::*;
 pub use entity::*;
@@ -11,3 +12,4 @@ pub use manas::*;
 pub use memory::{Memory, MemoryStatus, MemoryType};
 pub use reality_engine::*;
 pub use session::*;
+pub use team::*;
