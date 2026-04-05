@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{watch, Mutex};
 
-const CONSOLIDATION_INTERVAL: Duration = Duration::from_secs(30 * 60); // 30 minutes
+// Interval is now configurable via ForgeConfig.workers.consolidation_interval_secs
+// (default: 1800 = 30 minutes)
 
 /// Stats returned by a consolidation run.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -599,12 +600,14 @@ pub fn score_memory_quality(conn: &Connection) -> usize {
 pub async fn run_consolidator(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
     mut shutdown_rx: watch::Receiver<bool>,
+    interval_secs: u64,
 ) {
-    eprintln!("[consolidator] started, interval = {:?}", CONSOLIDATION_INTERVAL);
+    let interval = Duration::from_secs(interval_secs);
+    eprintln!("[consolidator] started, interval = {:?}", interval);
 
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(CONSOLIDATION_INTERVAL) => {
+            _ = tokio::time::sleep(interval) => {
                 // Clone event sender before any phase
                 let event_tx = {
                     let locked = state.lock().await;

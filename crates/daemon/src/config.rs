@@ -3,6 +3,24 @@
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Default value helpers (for serde(default = "fn"))
+// ---------------------------------------------------------------------------
+
+fn default_3() -> u64 { 3 }
+fn default_5_usize() -> usize { 5 }
+fn default_3_usize() -> usize { 3 }
+fn default_10_usize() -> usize { 10 }
+fn default_15() -> u64 { 15 }
+fn default_30() -> u64 { 30 }
+fn default_50_usize() -> usize { 50 }
+fn default_60() -> u64 { 60 }
+fn default_200_usize() -> usize { 200 }
+fn default_300() -> u64 { 300 }
+fn default_900() -> u64 { 900 }
+fn default_1800() -> u64 { 1800 }
+fn default_3000_usize() -> usize { 3000 }
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -12,6 +30,91 @@ pub struct ForgeConfig {
     pub extraction: ExtractionConfig,
     pub embedding: EmbeddingConfig,
     pub a2a: A2aConfig,
+    pub workers: WorkerConfig,
+    pub context: ContextConfig,
+    pub consolidation: ConsolidationConfig,
+}
+
+/// Worker interval configuration — all values in seconds.
+/// Defaults match the previously hardcoded constants for zero behavioral change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkerConfig {
+    #[serde(default = "default_15")]
+    pub extraction_debounce_secs: u64,
+    #[serde(default = "default_1800")]
+    pub consolidation_interval_secs: u64,
+    #[serde(default = "default_60")]
+    pub embedding_interval_secs: u64,
+    #[serde(default = "default_30")]
+    pub perception_interval_secs: u64,
+    #[serde(default = "default_900")]
+    pub disposition_interval_secs: u64,
+    #[serde(default = "default_300")]
+    pub indexer_interval_secs: u64,
+    #[serde(default = "default_3")]
+    pub diagnostics_debounce_secs: u64,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            extraction_debounce_secs: 15,
+            consolidation_interval_secs: 1800,
+            embedding_interval_secs: 60,
+            perception_interval_secs: 30,
+            disposition_interval_secs: 900,
+            indexer_interval_secs: 300,
+            diagnostics_debounce_secs: 3,
+        }
+    }
+}
+
+/// Context assembly configuration — limits and budget for compile_context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextConfig {
+    #[serde(default = "default_3000_usize")]
+    pub budget_chars: usize,
+    #[serde(default = "default_10_usize")]
+    pub decisions_limit: usize,
+    #[serde(default = "default_5_usize")]
+    pub lessons_limit: usize,
+    #[serde(default = "default_5_usize")]
+    pub entities_limit: usize,
+    #[serde(default = "default_3_usize")]
+    pub entities_min_mentions: usize,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            budget_chars: 3000,
+            decisions_limit: 10,
+            lessons_limit: 5,
+            entities_limit: 5,
+            entities_min_mentions: 3,
+        }
+    }
+}
+
+/// Consolidation batch configuration — limits for consolidation phases.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConsolidationConfig {
+    #[serde(default = "default_200_usize")]
+    pub batch_limit: usize,
+    #[serde(default = "default_50_usize")]
+    pub reweave_limit: usize,
+}
+
+impl Default for ConsolidationConfig {
+    fn default() -> Self {
+        Self {
+            batch_limit: 200,
+            reweave_limit: 50,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +369,51 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
             }
             config.a2a.trust = value.to_string();
         }
+        // Worker intervals
+        ["workers", "extraction_debounce_secs"] => {
+            config.workers.extraction_debounce_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "consolidation_interval_secs"] => {
+            config.workers.consolidation_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "embedding_interval_secs"] => {
+            config.workers.embedding_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "perception_interval_secs"] => {
+            config.workers.perception_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "disposition_interval_secs"] => {
+            config.workers.disposition_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "indexer_interval_secs"] => {
+            config.workers.indexer_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "diagnostics_debounce_secs"] => {
+            config.workers.diagnostics_debounce_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        // Context assembly
+        ["context", "budget_chars"] => {
+            config.context.budget_chars = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["context", "decisions_limit"] => {
+            config.context.decisions_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["context", "lessons_limit"] => {
+            config.context.lessons_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["context", "entities_limit"] => {
+            config.context.entities_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["context", "entities_min_mentions"] => {
+            config.context.entities_min_mentions = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        // Consolidation
+        ["consolidation", "batch_limit"] => {
+            config.consolidation.batch_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["consolidation", "reweave_limit"] => {
+            config.consolidation.reweave_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
         _ => return Err(format!("unknown config key: {key}")),
     }
 
@@ -494,5 +642,133 @@ model = "llama3:70b"
         let cfg2 = load_config_from(path_str);
         assert_eq!(cfg2.extraction.backend, "claude_api", "backend should reflect disk change");
         assert_eq!(cfg2.extraction.ollama.model, "llama3:70b", "model should reflect disk change");
+    }
+
+    #[test]
+    fn test_config_defaults_match_current() {
+        // Verify that all new config defaults match the previously hardcoded values.
+        // This is the critical zero-behavioral-change guarantee.
+        let cfg = ForgeConfig::default();
+
+        // Worker intervals
+        assert_eq!(cfg.workers.extraction_debounce_secs, 15, "extraction debounce was 15s");
+        assert_eq!(cfg.workers.consolidation_interval_secs, 1800, "consolidation was 30*60=1800s");
+        assert_eq!(cfg.workers.embedding_interval_secs, 60, "embedder was 60s");
+        assert_eq!(cfg.workers.perception_interval_secs, 30, "perception was 30s");
+        assert_eq!(cfg.workers.disposition_interval_secs, 900, "disposition was 15*60=900s");
+        assert_eq!(cfg.workers.indexer_interval_secs, 300, "indexer was 5*60=300s");
+        assert_eq!(cfg.workers.diagnostics_debounce_secs, 3, "diagnostics debounce was 3s");
+
+        // Context assembly
+        assert_eq!(cfg.context.budget_chars, 3000, "budget was hardcoded 3000");
+        assert_eq!(cfg.context.decisions_limit, 10, "decisions LIMIT was 10");
+        assert_eq!(cfg.context.lessons_limit, 5, "lessons LIMIT was 5");
+        assert_eq!(cfg.context.entities_limit, 5, "entities limit was 5");
+        assert_eq!(cfg.context.entities_min_mentions, 3, "entities min mentions was >= 3");
+
+        // Consolidation
+        assert_eq!(cfg.consolidation.batch_limit, 200, "consolidation LIMIT was 200");
+        assert_eq!(cfg.consolidation.reweave_limit, 50, "reweave limit was 50");
+    }
+
+    #[test]
+    fn test_config_roundtrip() {
+        // Serialize and deserialize with new sections to verify TOML roundtrip.
+        let mut cfg = ForgeConfig::default();
+        cfg.workers.consolidation_interval_secs = 600;
+        cfg.context.decisions_limit = 20;
+        cfg.consolidation.batch_limit = 100;
+
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: ForgeConfig = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(parsed.workers.consolidation_interval_secs, 600);
+        assert_eq!(parsed.context.decisions_limit, 20);
+        assert_eq!(parsed.consolidation.batch_limit, 100);
+        // Other defaults should be preserved
+        assert_eq!(parsed.workers.extraction_debounce_secs, 15);
+        assert_eq!(parsed.context.budget_chars, 3000);
+        assert_eq!(parsed.consolidation.reweave_limit, 50);
+    }
+
+    #[test]
+    fn test_config_partial_toml_with_new_sections() {
+        // Verify backward compatibility: a config.toml that doesn't mention
+        // workers/context/consolidation should use all defaults.
+        let toml_str = r#"
+[extraction]
+backend = "ollama"
+"#;
+        let cfg: ForgeConfig = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(cfg.extraction.backend, "ollama");
+        // New sections should all be defaults
+        assert_eq!(cfg.workers.extraction_debounce_secs, 15);
+        assert_eq!(cfg.workers.consolidation_interval_secs, 1800);
+        assert_eq!(cfg.context.budget_chars, 3000);
+        assert_eq!(cfg.context.decisions_limit, 10);
+        assert_eq!(cfg.consolidation.batch_limit, 200);
+    }
+
+    #[test]
+    fn test_config_set_get_new_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let path_str = path.to_str().unwrap();
+
+        // Start with default config
+        std::fs::write(&path, "").unwrap();
+
+        // Set worker interval
+        update_config_at(path_str, "workers.consolidation_interval_secs", "600").unwrap();
+        let cfg = load_config_from(path_str);
+        assert_eq!(cfg.workers.consolidation_interval_secs, 600);
+
+        // Set context limit
+        update_config_at(path_str, "context.decisions_limit", "20").unwrap();
+        let cfg = load_config_from(path_str);
+        assert_eq!(cfg.context.decisions_limit, 20);
+        // Previous update should be preserved
+        assert_eq!(cfg.workers.consolidation_interval_secs, 600);
+
+        // Set consolidation limit
+        update_config_at(path_str, "consolidation.batch_limit", "100").unwrap();
+        let cfg = load_config_from(path_str);
+        assert_eq!(cfg.consolidation.batch_limit, 100);
+
+        // Set all worker keys
+        update_config_at(path_str, "workers.extraction_debounce_secs", "30").unwrap();
+        update_config_at(path_str, "workers.embedding_interval_secs", "120").unwrap();
+        update_config_at(path_str, "workers.perception_interval_secs", "60").unwrap();
+        update_config_at(path_str, "workers.disposition_interval_secs", "1800").unwrap();
+        update_config_at(path_str, "workers.indexer_interval_secs", "600").unwrap();
+        update_config_at(path_str, "workers.diagnostics_debounce_secs", "5").unwrap();
+        let cfg = load_config_from(path_str);
+        assert_eq!(cfg.workers.extraction_debounce_secs, 30);
+        assert_eq!(cfg.workers.embedding_interval_secs, 120);
+        assert_eq!(cfg.workers.perception_interval_secs, 60);
+        assert_eq!(cfg.workers.disposition_interval_secs, 1800);
+        assert_eq!(cfg.workers.indexer_interval_secs, 600);
+        assert_eq!(cfg.workers.diagnostics_debounce_secs, 5);
+
+        // Set all context keys
+        update_config_at(path_str, "context.budget_chars", "5000").unwrap();
+        update_config_at(path_str, "context.lessons_limit", "10").unwrap();
+        update_config_at(path_str, "context.entities_limit", "8").unwrap();
+        update_config_at(path_str, "context.entities_min_mentions", "5").unwrap();
+        let cfg = load_config_from(path_str);
+        assert_eq!(cfg.context.budget_chars, 5000);
+        assert_eq!(cfg.context.lessons_limit, 10);
+        assert_eq!(cfg.context.entities_limit, 8);
+        assert_eq!(cfg.context.entities_min_mentions, 5);
+
+        // Set all consolidation keys
+        update_config_at(path_str, "consolidation.reweave_limit", "25").unwrap();
+        let cfg = load_config_from(path_str);
+        assert_eq!(cfg.consolidation.reweave_limit, 25);
+
+        // Invalid value should error
+        let err = update_config_at(path_str, "workers.consolidation_interval_secs", "not_a_number");
+        assert!(err.is_err());
     }
 }
