@@ -4,6 +4,7 @@ use forge_core::types::{
     PlatformEntry, Tool, ToolKind, ToolHealth,
     Skill, DomainDna, Perception, PerceptionKind, Severity,
     Declared, IdentityFacet, Disposition, DispositionTrait, Trend,
+    Entity,
 };
 
 // ──────────────────────────────────────────────
@@ -1455,6 +1456,262 @@ pub fn is_new_project(conn: &Connection, project: &str) -> rusqlite::Result<bool
         |row| row.get(0),
     )?;
     Ok(count == 0)
+}
+
+// ──────────────────────────────────────────────
+// Knowledge Intelligence: Entity operations
+// ──────────────────────────────────────────────
+
+/// Store or update an entity. Upserts by name+project:
+/// if an entity with the same name and project exists, updates
+/// mention_count, last_seen, and description (if non-empty).
+pub fn store_entity(conn: &Connection, entity: &Entity) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO entity (id, name, entity_type, description, mention_count, first_seen, last_seen, project)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+            mention_count = excluded.mention_count,
+            last_seen = excluded.last_seen,
+            description = CASE WHEN excluded.description != '' THEN excluded.description ELSE entity.description END",
+        params![
+            entity.id,
+            entity.name,
+            entity.entity_type,
+            entity.description,
+            entity.mention_count as i64,
+            entity.first_seen,
+            entity.last_seen,
+            entity.project,
+        ],
+    )?;
+    Ok(())
+}
+
+/// List entities, optionally filtered by project. Ordered by mention_count descending.
+pub fn list_entities(
+    conn: &Connection,
+    project: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<Entity>> {
+    if let Some(proj) = project {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, entity_type, description, mention_count, first_seen, last_seen, project
+             FROM entity WHERE project = ?1 ORDER BY mention_count DESC LIMIT ?2"
+        )?;
+        let rows = stmt.query_map(params![proj, limit as i64], row_to_entity)?;
+        rows.collect()
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, entity_type, description, mention_count, first_seen, last_seen, project
+             FROM entity ORDER BY mention_count DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], row_to_entity)?;
+        rows.collect()
+    }
+}
+
+/// Upsert an entity by name+project: if it exists, increment mention_count and
+/// update last_seen. If it doesn't exist, create it with mention_count=1.
+pub fn increment_entity_mention(
+    conn: &Connection,
+    name: &str,
+    project: Option<&str>,
+) -> rusqlite::Result<()> {
+    let now = now_iso();
+    // Try to find existing entity with same name+project
+    let existing_id: Option<String> = if let Some(proj) = project {
+        conn.query_row(
+            "SELECT id FROM entity WHERE name = ?1 AND project = ?2",
+            params![name, proj],
+            |row| row.get(0),
+        ).optional()?
+    } else {
+        conn.query_row(
+            "SELECT id FROM entity WHERE name = ?1 AND project IS NULL",
+            params![name],
+            |row| row.get(0),
+        ).optional()?
+    };
+
+    if let Some(id) = existing_id {
+        conn.execute(
+            "UPDATE entity SET mention_count = mention_count + 1, last_seen = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+    } else {
+        let id = format!("ent-{}", ulid::Ulid::new());
+        conn.execute(
+            "INSERT INTO entity (id, name, entity_type, description, mention_count, first_seen, last_seen, project)
+             VALUES (?1, ?2, 'concept', '', 1, ?3, ?3, ?4)",
+            params![id, name, now, project],
+        )?;
+    }
+    Ok(())
+}
+
+fn row_to_entity(row: &rusqlite::Row) -> rusqlite::Result<Entity> {
+    Ok(Entity {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        entity_type: row.get(2)?,
+        description: row.get(3)?,
+        mention_count: row.get::<_, i64>(4)? as u64,
+        first_seen: row.get(5)?,
+        last_seen: row.get(6)?,
+        project: row.get(7)?,
+    })
+}
+
+/// Detect entities from memory titles by word frequency analysis.
+/// Words (lowercased, stripped of punctuation) appearing in 3+ distinct
+/// active memory titles are upserted as entities.
+/// Returns the number of entities created or updated.
+pub fn detect_entities(conn: &Connection) -> rusqlite::Result<usize> {
+    // Collect all active memory titles
+    let mut stmt = conn.prepare(
+        "SELECT id, title, project FROM memory WHERE status = 'active'"
+    )?;
+
+    struct MemRow {
+        id: String,
+        title: String,
+        project: Option<String>,
+    }
+
+    let rows: Vec<MemRow> = stmt.query_map([], |row| {
+        Ok(MemRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            project: row.get(2)?,
+        })
+    })?.filter_map(|r| r.ok()).collect();
+
+    // Count word frequency across memory titles (per project)
+    // Key: (lowercase_word, project), Value: (count, Vec<memory_id>)
+    let mut word_freq: std::collections::HashMap<(String, Option<String>), (usize, Vec<String>)> =
+        std::collections::HashMap::new();
+
+    // Stop words to exclude from entity detection
+    let stop_words: std::collections::HashSet<&str> = [
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "can", "need", "must",
+        "in", "on", "at", "to", "for", "with", "by", "from", "of", "about",
+        "into", "through", "during", "before", "after", "above", "below",
+        "and", "or", "but", "not", "no", "nor", "so", "yet",
+        "it", "its", "this", "that", "these", "those", "my", "your", "his",
+        "her", "our", "their", "what", "which", "who", "whom", "how", "when",
+        "where", "why", "all", "each", "every", "both", "few", "more", "most",
+        "other", "some", "any", "such", "only", "own", "same", "than", "too",
+        "very", "just", "also", "then", "now", "here", "there", "up", "out",
+        "if", "as", "use", "used", "using", "new", "add", "set", "get",
+    ].iter().copied().collect();
+
+    for mem in &rows {
+        // Normalize: lowercase, replace non-alphanumeric with space, split
+        let normalized: String = mem.title.to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { ' ' })
+            .collect();
+
+        // Track which words we've already counted for this memory (dedup within one title)
+        let mut seen_in_this_title: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for word in normalized.split_whitespace() {
+            // Skip short words, stop words, and pure numbers
+            if word.len() < 3 || stop_words.contains(word) || word.parse::<f64>().is_ok() {
+                continue;
+            }
+
+            if seen_in_this_title.insert(word.to_string()) {
+                let key = (word.to_string(), mem.project.clone());
+                let entry = word_freq.entry(key).or_insert((0, Vec::new()));
+                entry.0 += 1;
+                entry.1.push(mem.id.clone());
+            }
+        }
+    }
+
+    // Upsert entities for words appearing in 3+ distinct memories
+    let mut count = 0;
+    let now = now_iso();
+    for ((word, project), (freq, memory_ids)) in &word_freq {
+        if *freq < 3 {
+            continue;
+        }
+
+        // Upsert the entity
+        increment_entity_mention_with_count(conn, word, project.as_deref(), *freq, &now)?;
+
+        // Create edges linking this entity to the memories (best-effort)
+        let entity_id = if let Some(proj) = project {
+            conn.query_row(
+                "SELECT id FROM entity WHERE name = ?1 AND project = ?2",
+                params![word, proj],
+                |row| row.get::<_, String>(0),
+            ).optional()?
+        } else {
+            conn.query_row(
+                "SELECT id FROM entity WHERE name = ?1 AND project IS NULL",
+                params![word],
+                |row| row.get::<_, String>(0),
+            ).optional()?
+        };
+
+        if let Some(eid) = entity_id {
+            for mid in memory_ids {
+                // Insert edge if not already exists (best-effort, ignore conflicts)
+                let edge_id = format!("edge-{}", ulid::Ulid::new());
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO edge (id, from_id, to_id, edge_type, created_at, valid_from)
+                     VALUES (?1, ?2, ?3, 'mentions', ?4, ?4)",
+                    params![edge_id, eid, mid, now],
+                );
+            }
+        }
+
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+/// Internal helper: upsert entity with a specific mention count (used by detect_entities).
+fn increment_entity_mention_with_count(
+    conn: &Connection,
+    name: &str,
+    project: Option<&str>,
+    count: usize,
+    now: &str,
+) -> rusqlite::Result<()> {
+    let existing_id: Option<String> = if let Some(proj) = project {
+        conn.query_row(
+            "SELECT id FROM entity WHERE name = ?1 AND project = ?2",
+            params![name, proj],
+            |row| row.get(0),
+        ).optional()?
+    } else {
+        conn.query_row(
+            "SELECT id FROM entity WHERE name = ?1 AND project IS NULL",
+            params![name],
+            |row| row.get(0),
+        ).optional()?
+    };
+
+    if let Some(id) = existing_id {
+        conn.execute(
+            "UPDATE entity SET mention_count = ?1, last_seen = ?2 WHERE id = ?3",
+            params![count as i64, now, id],
+        )?;
+    } else {
+        let id = format!("ent-{}", ulid::Ulid::new());
+        conn.execute(
+            "INSERT INTO entity (id, name, entity_type, description, mention_count, first_seen, last_seen, project)
+             VALUES (?1, ?2, 'concept', '', ?3, ?4, ?4, ?5)",
+            params![id, name, count as i64, now, project],
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

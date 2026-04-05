@@ -232,6 +232,21 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_diagnostic_file ON diagnostic(file_path);
         CREATE INDEX IF NOT EXISTS idx_diagnostic_expires ON diagnostic(expires_at);
+
+        -- Knowledge Intelligence: Entity tracking
+        CREATE TABLE IF NOT EXISTS entity (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            entity_type TEXT NOT NULL DEFAULT 'concept',
+            description TEXT NOT NULL DEFAULT '',
+            mention_count INTEGER NOT NULL DEFAULT 1,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            project TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_entity_name ON entity(name);
+        CREATE INDEX IF NOT EXISTS idx_entity_project ON entity(project);
+        CREATE INDEX IF NOT EXISTS idx_entity_type ON entity(entity_type);
     ")?;
 
     // Bootstrap: transcript processing log for efficient skip/resume

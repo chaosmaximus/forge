@@ -1494,6 +1494,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     embedding_merged: stats.embedding_merged,
                     strengthened: stats.strengthened,
                     contradictions: stats.contradictions,
+                    entities_detected: stats.entities_detected,
                 },
             }
         }
@@ -1712,6 +1713,21 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             match crate::sessions::ack_messages(&state.conn, &message_ids, "api") {
                 Ok(count) => Response::Ok { data: ResponseData::MessagesAcked { count } },
                 Err(e) => Response::Error { message: format!("ack_messages failed: {e}") },
+            }
+        }
+
+        Request::ListEntities { project, limit } => {
+            let lim = limit.unwrap_or(50).min(200);
+            match crate::db::manas::list_entities(&state.conn, project.as_deref(), lim) {
+                Ok(entities) => {
+                    let count = entities.len();
+                    Response::Ok {
+                        data: ResponseData::EntityList { entities, count },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("list_entities failed: {e}"),
+                },
             }
         }
 
@@ -3266,6 +3282,7 @@ mod tests {
                         embedding_merged: _,
                         strengthened: _,
                         contradictions: _,
+                        entities_detected: _,
                     },
             } => {
                 assert!(exact_dedup > 0, "should dedup at least 1 duplicate memory");
@@ -3458,7 +3475,7 @@ mod tests {
                         reconsolidated,
                         embedding_merged,
                         strengthened,
-                        contradictions,
+                        contradictions, ..
                     },
             } => {
                 assert_eq!(exact_dedup, 0);

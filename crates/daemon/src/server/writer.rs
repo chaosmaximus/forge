@@ -52,6 +52,7 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::BlastRadius { .. }
             | Request::Export { .. }
             | Request::SessionMessages { .. }
+            | Request::ListEntities { .. }
     )
 }
 
