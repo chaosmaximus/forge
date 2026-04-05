@@ -202,6 +202,16 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         eprintln!("[consolidator] scored {} memories", scored);
     }
 
+    // Phase 16: Portability classification — classify unknown memories
+    match ops::classify_portability(conn, config.batch_limit) {
+        Ok(classified) => {
+            if classified > 0 {
+                eprintln!("[consolidator] classified portability for {} memories", classified);
+            }
+        }
+        Err(e) => eprintln!("[consolidator] portability classification failed: {e}"),
+    }
+
     stats
 }
 
