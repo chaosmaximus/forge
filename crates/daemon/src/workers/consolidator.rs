@@ -790,20 +790,29 @@ pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
         }
 
         // Rust-side validation: content must describe a process (not just mention a keyword)
-        // Process signals: imperative verbs, workflow instructions
         let content_lower = content.to_lowercase();
+        let title_lower = title.to_lowercase();
+
+        // Positive: imperative verbs, workflow instructions
         let has_process_signal = content_lower.contains("always ")
             || content_lower.contains("never ")
-            || content_lower.contains("before ")
-            || content_lower.contains("after ")
             || content_lower.contains("must ")
             || content_lower.contains("require")
             || content_lower.contains("workflow")
-            || content_lower.contains("process")
-            || content_lower.contains("step ")
-            || content_lower.contains("rule:");
+            || content_lower.contains("rule:")
+            || title_lower.starts_with("behavioral:");
 
-        if !has_process_signal {
+        // Negative: observations, facts, goals — these are NOT process rules
+        let is_observation = content_lower.contains("discovered")
+            || content_lower.contains("observed that")
+            || content_lower.contains("validates")
+            || content_lower.contains("proved that")
+            || title_lower.contains("user goal")
+            || title_lower.contains("user dogfoods")
+            || title_lower.contains("pipeline")
+            || title_lower.contains("test pattern:");
+
+        if !has_process_signal || is_observation {
             continue;
         }
 
