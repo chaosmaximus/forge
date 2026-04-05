@@ -125,6 +125,8 @@ mod tests {
                 "subscribe",
                 Request::Subscribe {
                     events: Some(vec!["memory_created".into()]),
+                    session_id: None,
+                    team_id: None,
                 },
             ),
             (
@@ -1064,7 +1066,7 @@ mod tests {
                     project: None,
                 },
                 Request::Backfill { path: "p".into() },
-                Request::Subscribe { events: None },
+                Request::Subscribe { events: None, session_id: None, team_id: None },
                 Request::GuardrailsCheck {
                     file: "f".into(),
                     action: "a".into(),

@@ -22,6 +22,8 @@ fn default_3000_usize() -> usize { 3000 }
 fn default_5000_usize() -> usize { 5000 }
 fn default_true() -> bool { true }
 fn default_false() -> bool { false }
+fn default_300_u64() -> u64 { 300 }
+fn default_10_u64() -> u64 { 10 }
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,6 +42,10 @@ pub struct ForgeConfig {
     pub recall: RecallConfig,
     #[serde(default)]
     pub reality: RealityConfig,
+    #[serde(default)]
+    pub meeting: MeetingConfig,
+    #[serde(default)]
+    pub agent: AgentConfig,
 }
 
 /// Worker interval configuration — all values in seconds.

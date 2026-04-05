@@ -1837,6 +1837,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     crate::events::emit(&state.events, "session_message", serde_json::json!({
                         "id": &id, "from": from, "to": &to, "kind": &kind, "topic": &topic,
                     }));
+                    // Emit message_received event for subscribe filtering
+                    let preview: String = parts_json.chars().take(100).collect();
+                    crate::events::emit(&state.events, "message_received", serde_json::json!({
+                        "to_session": &to,
+                        "from_session": from,
+                        "topic": &topic,
+                        "preview": preview,
+                    }));
                     Response::Ok { data: ResponseData::MessageSent { id, status: "pending".into() } }
                 }
                 Err(e) => Response::Error { message: format!("send_message failed: {e}") },
