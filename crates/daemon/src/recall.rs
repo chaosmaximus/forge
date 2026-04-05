@@ -879,6 +879,38 @@ pub fn compile_dynamic_suffix(
         }
     }
 
+    // Entities — recurring concepts with high mention counts
+    if excluded_layers.iter().any(|l| l == "entities") {
+        xml.push_str("<entities/>\n");
+    } else {
+        let entities = crate::db::manas::list_entities(conn, project, 5)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.mention_count >= 3)
+            .collect::<Vec<_>>();
+        if entities.is_empty() {
+            xml.push_str("<entities/>\n");
+        } else {
+            let mut ent_xml = String::from(
+                "<entities hint=\"recurring concepts in this project\">",
+            );
+            for e in &entities {
+                let entry = format!(
+                    "\n  <entity name=\"{}\" type=\"{}\" mentions=\"{}\"/>",
+                    xml_escape(&e.name),
+                    xml_escape(&e.entity_type),
+                    e.mention_count,
+                );
+                if used + ent_xml.len() + entry.len() < budget {
+                    ent_xml.push_str(&entry);
+                }
+            }
+            ent_xml.push_str("\n</entities>\n");
+            used += ent_xml.len();
+            xml.push_str(&ent_xml);
+        }
+    }
+
     // Critical perceptions only (warnings/errors, unconsumed, project-scoped)
     if excluded_layers.iter().any(|l| l == "perceptions") {
         xml.push_str("<perceptions/>\n");
@@ -2379,5 +2411,64 @@ mod tests {
             !suffix.contains("active-sessions"),
             "should not show active-sessions when only 1 remains active"
         );
+    }
+
+    #[test]
+    fn test_entity_in_context() {
+        let conn = setup();
+
+        // Create entities with mention_count >= 3
+        let entity1 = forge_core::types::manas::Entity {
+            id: "ent-1".to_string(),
+            name: "authentication".to_string(),
+            entity_type: "concept".to_string(),
+            description: "Auth system".to_string(),
+            mention_count: 7,
+            first_seen: forge_core::time::now_iso(),
+            last_seen: forge_core::time::now_iso(),
+            project: None,
+        };
+        let entity2 = forge_core::types::manas::Entity {
+            id: "ent-2".to_string(),
+            name: "React Router".to_string(),
+            entity_type: "framework".to_string(),
+            description: "".to_string(),
+            mention_count: 4,
+            first_seen: forge_core::time::now_iso(),
+            last_seen: forge_core::time::now_iso(),
+            project: None,
+        };
+        crate::db::manas::store_entity(&conn, &entity1).unwrap();
+        crate::db::manas::store_entity(&conn, &entity2).unwrap();
+
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &[]);
+        assert!(suffix.contains("<entities"), "should contain entities section");
+        assert!(suffix.contains("authentication"), "should contain authentication entity");
+        assert!(suffix.contains("React Router"), "should contain React Router entity");
+        assert!(suffix.contains("mentions=\"7\""), "should show mention count for authentication");
+        assert!(suffix.contains("mentions=\"4\""), "should show mention count for React Router");
+    }
+
+    #[test]
+    fn test_entity_excluded() {
+        let conn = setup();
+
+        // Create an entity
+        let entity = forge_core::types::manas::Entity {
+            id: "ent-ex-1".to_string(),
+            name: "authentication".to_string(),
+            entity_type: "concept".to_string(),
+            description: "Auth system".to_string(),
+            mention_count: 7,
+            first_seen: forge_core::time::now_iso(),
+            last_seen: forge_core::time::now_iso(),
+            project: None,
+        };
+        crate::db::manas::store_entity(&conn, &entity).unwrap();
+
+        let excluded = vec!["entities".to_string()];
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, 3000, &excluded);
+        assert!(suffix.contains("<entities/>"), "should contain empty entities tag when excluded");
+        assert!(!suffix.contains("authentication"), "should NOT contain entity data when excluded");
     }
 }
