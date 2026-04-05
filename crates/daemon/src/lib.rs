@@ -9,6 +9,7 @@ pub mod extraction;
 pub mod guardrails;
 pub mod lsp;
 pub mod migrate;
+pub mod reality;
 pub mod recall;
 pub mod sessions;
 pub mod server;

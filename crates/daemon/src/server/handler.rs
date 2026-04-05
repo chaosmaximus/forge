@@ -746,6 +746,67 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let caps_json = capabilities.map(|c| serde_json::to_string(&c).unwrap_or_else(|_| "[]".to_string()));
             match crate::sessions::register_session(&state.conn, &id, &agent, project.as_deref(), cwd.as_deref(), caps_json.as_deref(), current_task.as_deref()) {
                 Ok(()) => {
+                    // Auto-detect reality from cwd and tag the session
+                    if let Some(ref cwd_path) = cwd {
+                        use crate::reality::CodeRealityEngine;
+                        use forge_core::types::reality_engine::RealityEngine;
+
+                        let engine = CodeRealityEngine;
+                        let path = std::path::Path::new(cwd_path);
+                        if let Some(detection) = engine.detect(path) {
+                            // Check if reality already exists for this path
+                            let reality_id = match ops::get_reality_by_path(&state.conn, cwd_path, "default") {
+                                Ok(Some(existing)) => Some(existing.id),
+                                Ok(None) => {
+                                    // Create a new reality
+                                    let rid = ulid::Ulid::new().to_string();
+                                    let now = chrono_now();
+                                    let name = path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| detection.domain.clone());
+                                    let metadata_str = serde_json::to_string(&detection.metadata)
+                                        .unwrap_or_else(|_| "{}".to_string());
+                                    let reality = forge_core::types::Reality {
+                                        id: rid.clone(),
+                                        name,
+                                        reality_type: detection.reality_type,
+                                        detected_from: Some(detection.detected_from),
+                                        project_path: Some(cwd_path.clone()),
+                                        domain: Some(detection.domain),
+                                        organization_id: "default".to_string(),
+                                        owner_type: "user".to_string(),
+                                        owner_id: "local".to_string(),
+                                        engine_status: "detected".to_string(),
+                                        engine_pid: None,
+                                        created_at: now.clone(),
+                                        last_active: now,
+                                        metadata: metadata_str,
+                                    };
+                                    match ops::store_reality(&state.conn, &reality) {
+                                        Ok(()) => Some(rid),
+                                        Err(e) => {
+                                            eprintln!("[handler] auto-detect: failed to store reality for {}: {e}", cwd_path);
+                                            None
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[handler] auto-detect: failed to check reality for {}: {e}", cwd_path);
+                                    None
+                                }
+                            };
+
+                            // Tag the session with the detected reality_id (best-effort)
+                            if let Some(ref rid) = reality_id {
+                                let _ = state.conn.execute(
+                                    "UPDATE session SET reality_id = ?1 WHERE id = ?2",
+                                    rusqlite::params![rid, id],
+                                );
+                            }
+                        }
+                    }
+
                     crate::events::emit(&state.events, "session_changed", serde_json::json!({
                         "id": id,
                         "agent": agent_clone,
@@ -1915,6 +1976,97 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 },
                 Err(e) => Response::Error {
                     message: format!("resolve_effective_config failed: {e}"),
+                },
+            }
+        }
+
+        Request::DetectReality { path } => {
+            use crate::reality::CodeRealityEngine;
+            use forge_core::types::reality_engine::RealityEngine;
+            use std::path::Path;
+
+            let engine = CodeRealityEngine;
+            let project_path = Path::new(&path);
+
+            match engine.detect(project_path) {
+                Some(detection) => {
+                    // Check if a reality already exists for this path
+                    match ops::get_reality_by_path(&state.conn, &path, "default") {
+                        Ok(Some(existing)) => {
+                            Response::Ok {
+                                data: ResponseData::RealityDetected {
+                                    reality_id: existing.id,
+                                    name: existing.name,
+                                    reality_type: existing.reality_type,
+                                    domain: existing.domain.unwrap_or_default(),
+                                    detected_from: existing.detected_from.unwrap_or_default(),
+                                    confidence: detection.confidence,
+                                    is_new: false,
+                                    metadata: serde_json::from_str(&existing.metadata)
+                                        .unwrap_or_else(|_| serde_json::json!({})),
+                                },
+                            }
+                        }
+                        Ok(None) => {
+                            // Create a new reality record
+                            let reality_id = ulid::Ulid::new().to_string();
+                            let now = chrono_now();
+                            let name = project_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| detection.domain.clone());
+                            let metadata_str = serde_json::to_string(&detection.metadata)
+                                .unwrap_or_else(|_| "{}".to_string());
+
+                            let reality = forge_core::types::Reality {
+                                id: reality_id.clone(),
+                                name: name.clone(),
+                                reality_type: detection.reality_type.clone(),
+                                detected_from: Some(detection.detected_from.clone()),
+                                project_path: Some(path),
+                                domain: Some(detection.domain.clone()),
+                                organization_id: "default".to_string(),
+                                owner_type: "user".to_string(),
+                                owner_id: "local".to_string(),
+                                engine_status: "detected".to_string(),
+                                engine_pid: None,
+                                created_at: now.clone(),
+                                last_active: now,
+                                metadata: metadata_str,
+                            };
+
+                            match ops::store_reality(&state.conn, &reality) {
+                                Ok(()) => {
+                                    crate::events::emit(&state.events, "reality_detected", serde_json::json!({
+                                        "reality_id": reality_id,
+                                        "domain": detection.domain,
+                                        "reality_type": detection.reality_type,
+                                    }));
+                                    Response::Ok {
+                                        data: ResponseData::RealityDetected {
+                                            reality_id,
+                                            name,
+                                            reality_type: detection.reality_type,
+                                            domain: detection.domain,
+                                            detected_from: detection.detected_from,
+                                            confidence: detection.confidence,
+                                            is_new: true,
+                                            metadata: detection.metadata,
+                                        },
+                                    }
+                                }
+                                Err(e) => Response::Error {
+                                    message: format!("failed to store reality: {e}"),
+                                },
+                            }
+                        }
+                        Err(e) => Response::Error {
+                            message: format!("failed to check existing reality: {e}"),
+                        },
+                    }
+                }
+                None => Response::Error {
+                    message: format!("no reality engine can handle path: {path}"),
                 },
             }
         }
@@ -4039,5 +4191,151 @@ mod tests {
             p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
         });
         assert!(cross.is_none(), "single session should not create cross-session perception");
+    }
+
+    // ── RealityEngine Detection Tests ──
+
+    #[test]
+    fn test_detect_reality_rust_project() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+
+        let resp = handle_request(&mut state, Request::DetectReality {
+            path: dir.path().to_string_lossy().to_string(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::RealityDetected {
+                reality_type, domain, detected_from, confidence, is_new, ..
+            } } => {
+                assert_eq!(reality_type, "code");
+                assert_eq!(domain, "rust");
+                assert_eq!(detected_from, "Cargo.toml");
+                assert!((confidence - 0.95).abs() < f64::EPSILON);
+                assert!(is_new, "first detection should create a new reality");
+            }
+            other => panic!("expected RealityDetected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_reality_creates_record() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/test").unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        // First call should create
+        let resp = handle_request(&mut state, Request::DetectReality {
+            path: path.clone(),
+        });
+        let reality_id = match resp {
+            Response::Ok { data: ResponseData::RealityDetected { reality_id, is_new, .. } } => {
+                assert!(is_new, "first detection should create new reality");
+                reality_id
+            }
+            other => panic!("expected RealityDetected, got {:?}", other),
+        };
+
+        // Verify it's in the DB
+        let reality = crate::db::ops::get_reality_by_path(&state.conn, &path, "default")
+            .unwrap()
+            .expect("reality should exist in DB");
+        assert_eq!(reality.id, reality_id);
+        assert_eq!(reality.reality_type, "code");
+        assert_eq!(reality.domain.as_deref(), Some("go"));
+    }
+
+    #[test]
+    fn test_detect_reality_reuses_existing() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        // First call creates
+        let resp1 = handle_request(&mut state, Request::DetectReality {
+            path: path.clone(),
+        });
+        let id1 = match resp1 {
+            Response::Ok { data: ResponseData::RealityDetected { reality_id, is_new, .. } } => {
+                assert!(is_new);
+                reality_id
+            }
+            other => panic!("expected RealityDetected, got {:?}", other),
+        };
+
+        // Second call reuses
+        let resp2 = handle_request(&mut state, Request::DetectReality {
+            path: path.clone(),
+        });
+        let id2 = match resp2 {
+            Response::Ok { data: ResponseData::RealityDetected { reality_id, is_new, .. } } => {
+                assert!(!is_new, "second detection should reuse existing reality");
+                reality_id
+            }
+            other => panic!("expected RealityDetected, got {:?}", other),
+        };
+
+        assert_eq!(id1, id2, "both calls should return the same reality ID");
+    }
+
+    #[test]
+    fn test_detect_reality_empty_dir_fails() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        // No marker files
+
+        let resp = handle_request(&mut state, Request::DetectReality {
+            path: dir.path().to_string_lossy().to_string(),
+        });
+        match resp {
+            Response::Error { message } => {
+                assert!(message.contains("no reality engine can handle"), "error: {message}");
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_session_auto_tags_reality() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let cwd_path = dir.path().to_string_lossy().to_string();
+
+        // Register session with cwd pointing to a Rust project
+        let resp = handle_request(&mut state, Request::RegisterSession {
+            id: "s-reality-test".into(),
+            agent: "claude-code".into(),
+            project: Some("test-project".into()),
+            cwd: Some(cwd_path.clone()),
+            capabilities: None,
+            current_task: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::SessionRegistered { .. } } => {}
+            other => panic!("expected SessionRegistered, got {:?}", other),
+        }
+
+        // Check that the session now has a reality_id
+        let reality_id: Option<String> = state.conn.query_row(
+            "SELECT reality_id FROM session WHERE id = ?1",
+            rusqlite::params!["s-reality-test"],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(reality_id.is_some(), "session should have reality_id set from auto-detection");
+
+        // Verify the reality record was also created
+        let reality = crate::db::ops::get_reality_by_path(&state.conn, &cwd_path, "default")
+            .unwrap()
+            .expect("reality should exist");
+        assert_eq!(reality.reality_type, "code");
+        assert_eq!(reality.domain.as_deref(), Some("rust"));
     }
 }

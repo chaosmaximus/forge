@@ -384,6 +384,18 @@ pub enum ResponseData {
         entries: Vec<crate::types::entity::ConfigScopeEntry>,
     },
 
+    /// A reality was detected (or already existed) for a project path.
+    RealityDetected {
+        reality_id: String,
+        name: String,
+        reality_type: String,
+        domain: String,
+        detected_from: String,
+        confidence: f64,
+        is_new: bool,
+        metadata: serde_json::Value,
+    },
+
     Shutdown,
 }
 

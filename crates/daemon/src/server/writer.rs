@@ -56,6 +56,7 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::ListPermissions
             | Request::GetEffectiveConfig { .. }
             | Request::ListScopedConfig { .. }
+            // NOTE: DetectReality is NOT read-only — it may create a reality record
     )
 }
 

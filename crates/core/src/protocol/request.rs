@@ -342,5 +342,11 @@ pub enum Request {
         scope_id: String,
     },
 
+    /// Detect what kind of reality a project path represents.
+    /// Auto-creates a reality record if one doesn't exist for the path.
+    DetectReality {
+        path: String,
+    },
+
     Shutdown,
 }

@@ -414,6 +414,12 @@ mod tests {
                     scope_id: "default".into(),
                 },
             ),
+            (
+                "detect_reality",
+                Request::DetectReality {
+                    path: "/tmp/my-project".into(),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -711,10 +717,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 15 (ManasHealth moved to parameterized, +ListPermissions)
         let unit_count = 15;
-        // Parameterized variants: 51 (including ListEntities, A2A FISP, A2A permissions, Scoped Config)
-        let param_count = 51;
-        // Total: 66
-        let expected_total = 66;
+        // Parameterized variants: 52 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality)
+        let param_count = 52;
+        // Total: 67
+        let expected_total = 67;
 
         assert_eq!(
             unit_count + param_count,
@@ -954,6 +960,9 @@ mod tests {
                 Request::ListScopedConfig {
                     scope_type: "organization".into(),
                     scope_id: "default".into(),
+                },
+                Request::DetectReality {
+                    path: "/tmp/my-project".into(),
                 },
             ]
         }
