@@ -249,6 +249,107 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_entity_type ON entity(entity_type);
     ")?;
 
+    // v2.0 Entity Model
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS organization (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS forge_user (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT,
+            organization_id TEXT NOT NULL DEFAULT 'default',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_org ON forge_user(organization_id);
+
+        CREATE TABLE IF NOT EXISTS team (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT 'default',
+            created_by TEXT NOT NULL DEFAULT 'system',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_team_org ON team(organization_id);
+
+        CREATE TABLE IF NOT EXISTS team_member (
+            team_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            joined_at TEXT NOT NULL,
+            PRIMARY KEY (team_id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS reality (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            reality_type TEXT NOT NULL DEFAULT 'code',
+            detected_from TEXT,
+            project_path TEXT,
+            domain TEXT,
+            organization_id TEXT NOT NULL DEFAULT 'default',
+            owner_type TEXT NOT NULL DEFAULT 'user',
+            owner_id TEXT NOT NULL DEFAULT 'local',
+            engine_status TEXT NOT NULL DEFAULT 'idle',
+            engine_pid INTEGER,
+            created_at TEXT NOT NULL,
+            last_active TEXT NOT NULL,
+            metadata TEXT DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_reality_org ON reality(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_reality_path ON reality(project_path);
+        CREATE INDEX IF NOT EXISTS idx_reality_owner ON reality(owner_type, owner_id);
+
+        -- Scoped configuration
+        CREATE TABLE IF NOT EXISTS config_scope (
+            id TEXT PRIMARY KEY,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            locked INTEGER NOT NULL DEFAULT 0,
+            ceiling REAL,
+            set_by TEXT NOT NULL DEFAULT 'system',
+            set_at TEXT NOT NULL,
+            UNIQUE(scope_type, scope_id, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_config_scope_lookup ON config_scope(scope_type, scope_id);
+
+        -- Permission rules (RBAC)
+        CREATE TABLE IF NOT EXISTS permission_rule (
+            id TEXT PRIMARY KEY,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            action TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            effect TEXT NOT NULL DEFAULT 'allow',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_perm_scope ON permission_rule(scope_type, scope_id, role);
+
+        -- Audit log
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id TEXT PRIMARY KEY,
+            actor_type TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            scope_path TEXT,
+            details TEXT DEFAULT '{}',
+            timestamp TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_scope ON audit_log(scope_path, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id, timestamp);
+    ")?;
+
     // A2A permission table: controlled inter-session messaging permissions
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS a2a_permission (
@@ -338,6 +439,47 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Memory Intelligence: quality score column (safe to re-run — ignores if already exists)
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN quality_score REAL DEFAULT 0.5", []);
 
+    // v2.0: Scoping columns on existing tables
+    // Session hierarchy + scoping
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN user_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN team_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN organization_id TEXT DEFAULT 'default'", []);
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN reality_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN parent_session_id TEXT", []);
+
+    // Memory scoping + portability
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN user_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN reality_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN portability TEXT DEFAULT 'unknown'", []);
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN visibility TEXT DEFAULT 'inherited'", []);
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN deleted_at TEXT", []);
+
+    // Identity scoping (per-user, not per-agent-type)
+    let _ = conn.execute("ALTER TABLE identity ADD COLUMN user_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE identity ADD COLUMN organization_id TEXT DEFAULT 'default'", []);
+
+    // Entity scoping
+    let _ = conn.execute("ALTER TABLE entity ADD COLUMN reality_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE entity ADD COLUMN user_id TEXT", []);
+
+    // Edge scoping
+    let _ = conn.execute("ALTER TABLE edge ADD COLUMN reality_id TEXT", []);
+
+    // Code file scoping
+    let _ = conn.execute("ALTER TABLE code_file ADD COLUMN reality_id TEXT", []);
+
+    // v2.0: Composite indexes for scoped queries
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_reality ON memory(reality_id, memory_type, status)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_user ON memory(user_id, memory_type, status)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_portability ON memory(portability)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_reality ON session(reality_id, status)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id, status)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_parent ON session(parent_session_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_identity_user ON identity(user_id, active)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_reality ON entity(reality_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_edge_reality ON edge(reality_id, edge_type)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_code_file_reality ON code_file(reality_id)", []);
+
     Ok(())
 }
 
@@ -426,6 +568,118 @@ mod tests {
         ).unwrap();
         let msg: String = conn.query_row("SELECT message FROM diagnostic WHERE id = 'd1'", [], |r| r.get(0)).unwrap();
         assert_eq!(msg, "undefined variable x");
+    }
+
+    #[test]
+    fn test_v2_entity_tables_exist() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let v2_tables = [
+            "organization",
+            "forge_user",
+            "team",
+            "team_member",
+            "reality",
+            "config_scope",
+            "permission_rule",
+            "audit_log",
+        ];
+
+        for table_name in &v2_tables {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table_name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "v2 table '{}' should exist", table_name);
+        }
+    }
+
+    #[test]
+    fn test_v2_scoping_columns_exist() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // Verify session scoping columns
+        conn.execute(
+            "UPDATE session SET user_id = 'u1', team_id = 't1', organization_id = 'org1', reality_id = 'r1', parent_session_id = 'ps1' WHERE 0",
+            [],
+        ).unwrap();
+
+        // Verify memory scoping columns
+        conn.execute(
+            "UPDATE memory SET user_id = 'u1', reality_id = 'r1', portability = 'universal', visibility = 'local', deleted_at = NULL WHERE 0",
+            [],
+        ).unwrap();
+
+        // Verify identity scoping columns
+        conn.execute(
+            "UPDATE identity SET user_id = 'u1', organization_id = 'org1' WHERE 0",
+            [],
+        ).unwrap();
+
+        // Verify entity scoping columns
+        conn.execute(
+            "UPDATE entity SET reality_id = 'r1', user_id = 'u1' WHERE 0",
+            [],
+        ).unwrap();
+
+        // Verify edge scoping columns
+        conn.execute(
+            "UPDATE edge SET reality_id = 'r1' WHERE 0",
+            [],
+        ).unwrap();
+
+        // Verify code_file scoping columns
+        conn.execute(
+            "UPDATE code_file SET reality_id = 'r1' WHERE 0",
+            [],
+        ).unwrap();
+    }
+
+    #[test]
+    fn test_config_scope_unique_constraint() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // Insert a config entry
+        conn.execute(
+            "INSERT INTO config_scope (id, scope_type, scope_id, key, value, set_at) VALUES ('c1', 'org', 'default', 'max_tokens', '4096', datetime('now'))",
+            [],
+        ).unwrap();
+
+        // Duplicate (scope_type, scope_id, key) should fail
+        let result = conn.execute(
+            "INSERT INTO config_scope (id, scope_type, scope_id, key, value, set_at) VALUES ('c2', 'org', 'default', 'max_tokens', '8192', datetime('now'))",
+            [],
+        );
+        assert!(result.is_err(), "duplicate config scope entry should fail");
+    }
+
+    #[test]
+    fn test_audit_log_table() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, scope_path, timestamp)
+             VALUES ('a1', 'user', 'local', 'create', 'memory', 'm1', 'default/local', datetime('now'))",
+            [],
+        ).unwrap();
+
+        let action: String = conn.query_row(
+            "SELECT action FROM audit_log WHERE id = 'a1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(action, "create");
     }
 
     #[test]

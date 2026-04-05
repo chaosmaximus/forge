@@ -1451,6 +1451,267 @@ pub fn get_graph_data(
     Ok((nodes, edges))
 }
 
+// ── v2.0 Entity CRUD operations ──
+
+use forge_core::types::{Organization, ForgeUser, Team, TeamMember, Reality};
+
+/// Create the default organization if it does not exist.
+pub fn create_default_org(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO organization (id, name, created_at, updated_at)
+         VALUES ('default', 'Default', datetime('now'), datetime('now'))",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Get an organization by ID.
+pub fn get_organization(conn: &Connection, id: &str) -> rusqlite::Result<Option<Organization>> {
+    conn.query_row(
+        "SELECT id, name, created_at, updated_at FROM organization WHERE id = ?1",
+        params![id],
+        |row| Ok(Organization {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            created_at: row.get(2)?,
+            updated_at: row.get(3)?,
+        }),
+    ).optional()
+}
+
+/// List all organizations.
+pub fn list_organizations(conn: &Connection) -> rusqlite::Result<Vec<Organization>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, created_at, updated_at FROM organization ORDER BY name"
+    )?;
+    let rows = stmt.query_map([], |row| Ok(Organization {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        created_at: row.get(2)?,
+        updated_at: row.get(3)?,
+    }))?;
+    rows.collect()
+}
+
+/// Create the default local user if it does not exist.
+pub fn create_default_user(conn: &Connection, username: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO forge_user (id, name, email, organization_id, created_at, updated_at)
+         VALUES ('local', ?1, NULL, 'default', datetime('now'), datetime('now'))",
+        params![username],
+    )?;
+    Ok(())
+}
+
+/// Get a user by ID.
+pub fn get_user(conn: &Connection, id: &str) -> rusqlite::Result<Option<ForgeUser>> {
+    conn.query_row(
+        "SELECT id, name, email, organization_id, created_at, updated_at FROM forge_user WHERE id = ?1",
+        params![id],
+        |row| Ok(ForgeUser {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            email: row.get(2)?,
+            organization_id: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        }),
+    ).optional()
+}
+
+/// List users in an organization.
+pub fn list_users(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<ForgeUser>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, email, organization_id, created_at, updated_at FROM forge_user WHERE organization_id = ?1 ORDER BY name"
+    )?;
+    let rows = stmt.query_map(params![org_id], |row| Ok(ForgeUser {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        email: row.get(2)?,
+        organization_id: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    }))?;
+    rows.collect()
+}
+
+/// Create a new team. Returns the team ID.
+pub fn create_team(conn: &Connection, name: &str, org_id: &str, created_by: &str) -> rusqlite::Result<String> {
+    let id = ulid::Ulid::new().to_string();
+    conn.execute(
+        "INSERT INTO team (id, name, organization_id, created_by, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'active', datetime('now'))",
+        params![id, name, org_id, created_by],
+    )?;
+    Ok(id)
+}
+
+/// Get a team by ID.
+pub fn get_team(conn: &Connection, id: &str) -> rusqlite::Result<Option<Team>> {
+    conn.query_row(
+        "SELECT id, name, organization_id, created_by, status, created_at FROM team WHERE id = ?1",
+        params![id],
+        |row| Ok(Team {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            organization_id: row.get(2)?,
+            created_by: row.get(3)?,
+            status: row.get(4)?,
+            created_at: row.get(5)?,
+        }),
+    ).optional()
+}
+
+/// List teams in an organization.
+pub fn list_teams(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<Team>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, organization_id, created_by, status, created_at FROM team WHERE organization_id = ?1 ORDER BY name"
+    )?;
+    let rows = stmt.query_map(params![org_id], |row| Ok(Team {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        organization_id: row.get(2)?,
+        created_by: row.get(3)?,
+        status: row.get(4)?,
+        created_at: row.get(5)?,
+    }))?;
+    rows.collect()
+}
+
+/// Add a member to a team.
+pub fn add_team_member(conn: &Connection, team_id: &str, user_id: &str, role: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO team_member (team_id, user_id, role, joined_at)
+         VALUES (?1, ?2, ?3, datetime('now'))",
+        params![team_id, user_id, role],
+    )?;
+    Ok(())
+}
+
+/// List members of a team.
+pub fn list_team_members(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<TeamMember>> {
+    let mut stmt = conn.prepare(
+        "SELECT team_id, user_id, role, joined_at FROM team_member WHERE team_id = ?1 ORDER BY joined_at"
+    )?;
+    let rows = stmt.query_map(params![team_id], |row| Ok(TeamMember {
+        team_id: row.get(0)?,
+        user_id: row.get(1)?,
+        role: row.get(2)?,
+        joined_at: row.get(3)?,
+    }))?;
+    rows.collect()
+}
+
+/// Store a reality record (upsert by ID).
+pub fn store_reality(conn: &Connection, reality: &Reality) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO reality (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            reality.id, reality.name, reality.reality_type,
+            reality.detected_from, reality.project_path, reality.domain,
+            reality.organization_id, reality.owner_type, reality.owner_id,
+            reality.engine_status, reality.engine_pid,
+            reality.created_at, reality.last_active, reality.metadata,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Get a reality by ID.
+pub fn get_reality(conn: &Connection, id: &str) -> rusqlite::Result<Option<Reality>> {
+    conn.query_row(
+        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata
+         FROM reality WHERE id = ?1",
+        params![id],
+        |row| Ok(Reality {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            reality_type: row.get(2)?,
+            detected_from: row.get(3)?,
+            project_path: row.get(4)?,
+            domain: row.get(5)?,
+            organization_id: row.get(6)?,
+            owner_type: row.get(7)?,
+            owner_id: row.get(8)?,
+            engine_status: row.get(9)?,
+            engine_pid: row.get(10)?,
+            created_at: row.get(11)?,
+            last_active: row.get(12)?,
+            metadata: row.get(13)?,
+        }),
+    ).optional()
+}
+
+/// Get a reality by its project path.
+pub fn get_reality_by_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<Reality>> {
+    conn.query_row(
+        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata
+         FROM reality WHERE project_path = ?1",
+        params![path],
+        |row| Ok(Reality {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            reality_type: row.get(2)?,
+            detected_from: row.get(3)?,
+            project_path: row.get(4)?,
+            domain: row.get(5)?,
+            organization_id: row.get(6)?,
+            owner_type: row.get(7)?,
+            owner_id: row.get(8)?,
+            engine_status: row.get(9)?,
+            engine_pid: row.get(10)?,
+            created_at: row.get(11)?,
+            last_active: row.get(12)?,
+            metadata: row.get(13)?,
+        }),
+    ).optional()
+}
+
+/// List realities in an organization.
+pub fn list_realities(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<Reality>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata
+         FROM reality WHERE organization_id = ?1 ORDER BY last_active DESC"
+    )?;
+    let rows = stmt.query_map(params![org_id], |row| Ok(Reality {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        reality_type: row.get(2)?,
+        detected_from: row.get(3)?,
+        project_path: row.get(4)?,
+        domain: row.get(5)?,
+        organization_id: row.get(6)?,
+        owner_type: row.get(7)?,
+        owner_id: row.get(8)?,
+        engine_status: row.get(9)?,
+        engine_pid: row.get(10)?,
+        created_at: row.get(11)?,
+        last_active: row.get(12)?,
+        metadata: row.get(13)?,
+    }))?;
+    rows.collect()
+}
+
+/// Update the last_active timestamp for a reality.
+pub fn update_reality_last_active(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE reality SET last_active = datetime('now') WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
+/// Ensure default organization and local user exist (idempotent, called on first run).
+pub fn ensure_defaults(conn: &Connection) -> rusqlite::Result<()> {
+    create_default_org(conn)?;
+    let username = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "local".to_string());
+    create_default_user(conn, &username)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2340,5 +2601,240 @@ mod tests {
             .filter(|d| d.source == "forge-consolidator")
             .collect();
         assert_eq!(contradiction_diags.len(), 0, "no contradiction diagnostics for weak signals");
+    }
+
+    // ── v2.0 Entity CRUD tests ──
+
+    #[test]
+    fn test_ensure_defaults_idempotent() {
+        let conn = open_db();
+        // First call creates default org + user
+        ensure_defaults(&conn).unwrap();
+        // Second call should not error (idempotent)
+        ensure_defaults(&conn).unwrap();
+
+        let org = get_organization(&conn, "default").unwrap();
+        assert!(org.is_some(), "default org should exist");
+        assert_eq!(org.unwrap().name, "Default");
+
+        let user = get_user(&conn, "local").unwrap();
+        assert!(user.is_some(), "local user should exist");
+        assert_eq!(user.as_ref().unwrap().organization_id, "default");
+    }
+
+    #[test]
+    fn test_organization_crud() {
+        let conn = open_db();
+        create_default_org(&conn).unwrap();
+
+        // Get
+        let org = get_organization(&conn, "default").unwrap().unwrap();
+        assert_eq!(org.id, "default");
+        assert_eq!(org.name, "Default");
+
+        // List
+        let orgs = list_organizations(&conn).unwrap();
+        assert_eq!(orgs.len(), 1);
+        assert_eq!(orgs[0].id, "default");
+
+        // Get non-existent
+        let none = get_organization(&conn, "nonexistent").unwrap();
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn test_user_crud() {
+        let conn = open_db();
+        create_default_org(&conn).unwrap();
+        create_default_user(&conn, "testuser").unwrap();
+
+        // Get
+        let user = get_user(&conn, "local").unwrap().unwrap();
+        assert_eq!(user.id, "local");
+        assert_eq!(user.name, "testuser");
+        assert_eq!(user.organization_id, "default");
+        assert!(user.email.is_none());
+
+        // List by org
+        let users = list_users(&conn, "default").unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].name, "testuser");
+
+        // List with wrong org
+        let empty = list_users(&conn, "nonexistent").unwrap();
+        assert!(empty.is_empty());
+
+        // Idempotent: calling again should not fail
+        create_default_user(&conn, "testuser2").unwrap();
+        // Name should still be original since INSERT OR IGNORE
+        let user2 = get_user(&conn, "local").unwrap().unwrap();
+        assert_eq!(user2.name, "testuser");
+    }
+
+    #[test]
+    fn test_team_crud() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+
+        // Create team
+        let team_id = create_team(&conn, "Backend Team", "default", "local").unwrap();
+        assert!(!team_id.is_empty());
+
+        // Get team
+        let team = get_team(&conn, &team_id).unwrap().unwrap();
+        assert_eq!(team.name, "Backend Team");
+        assert_eq!(team.organization_id, "default");
+        assert_eq!(team.created_by, "local");
+        assert_eq!(team.status, "active");
+
+        // List teams
+        let teams = list_teams(&conn, "default").unwrap();
+        assert_eq!(teams.len(), 1);
+
+        // Get non-existent team
+        let none = get_team(&conn, "nonexistent").unwrap();
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn test_team_members() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+        let team_id = create_team(&conn, "Frontend Team", "default", "local").unwrap();
+
+        // Add members
+        add_team_member(&conn, &team_id, "local", "admin").unwrap();
+        add_team_member(&conn, &team_id, "user2", "member").unwrap();
+
+        // List members
+        let members = list_team_members(&conn, &team_id).unwrap();
+        assert_eq!(members.len(), 2);
+
+        // Verify roles
+        let admin = members.iter().find(|m| m.user_id == "local").unwrap();
+        assert_eq!(admin.role, "admin");
+        let member = members.iter().find(|m| m.user_id == "user2").unwrap();
+        assert_eq!(member.role, "member");
+
+        // Re-add with different role should replace
+        add_team_member(&conn, &team_id, "local", "member").unwrap();
+        let members2 = list_team_members(&conn, &team_id).unwrap();
+        assert_eq!(members2.len(), 2);
+        let updated = members2.iter().find(|m| m.user_id == "local").unwrap();
+        assert_eq!(updated.role, "member");
+    }
+
+    #[test]
+    fn test_reality_crud() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+
+        let reality = Reality {
+            id: "r1".to_string(),
+            name: "forge".to_string(),
+            reality_type: "code".to_string(),
+            detected_from: Some("git".to_string()),
+            project_path: Some("/home/user/forge".to_string()),
+            domain: Some("rust".to_string()),
+            organization_id: "default".to_string(),
+            owner_type: "user".to_string(),
+            owner_id: "local".to_string(),
+            engine_status: "idle".to_string(),
+            engine_pid: None,
+            created_at: "2026-04-05T00:00:00Z".to_string(),
+            last_active: "2026-04-05T00:00:00Z".to_string(),
+            metadata: "{}".to_string(),
+        };
+
+        // Store
+        store_reality(&conn, &reality).unwrap();
+
+        // Get by ID
+        let got = get_reality(&conn, "r1").unwrap().unwrap();
+        assert_eq!(got.name, "forge");
+        assert_eq!(got.reality_type, "code");
+        assert_eq!(got.detected_from.as_deref(), Some("git"));
+        assert_eq!(got.project_path.as_deref(), Some("/home/user/forge"));
+        assert_eq!(got.domain.as_deref(), Some("rust"));
+        assert!(got.engine_pid.is_none());
+
+        // Get by path
+        let by_path = get_reality_by_path(&conn, "/home/user/forge").unwrap().unwrap();
+        assert_eq!(by_path.id, "r1");
+
+        // List
+        let realities = list_realities(&conn, "default").unwrap();
+        assert_eq!(realities.len(), 1);
+
+        // Get non-existent
+        let none = get_reality(&conn, "nonexistent").unwrap();
+        assert!(none.is_none());
+        let none_path = get_reality_by_path(&conn, "/nonexistent").unwrap();
+        assert!(none_path.is_none());
+    }
+
+    #[test]
+    fn test_reality_update_last_active() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+
+        let reality = Reality {
+            id: "r2".to_string(),
+            name: "test-project".to_string(),
+            reality_type: "code".to_string(),
+            detected_from: None,
+            project_path: Some("/tmp/test".to_string()),
+            domain: None,
+            organization_id: "default".to_string(),
+            owner_type: "user".to_string(),
+            owner_id: "local".to_string(),
+            engine_status: "idle".to_string(),
+            engine_pid: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            last_active: "2026-01-01T00:00:00Z".to_string(),
+            metadata: "{}".to_string(),
+        };
+        store_reality(&conn, &reality).unwrap();
+
+        // Update last_active
+        update_reality_last_active(&conn, "r2").unwrap();
+
+        // Verify it changed
+        let updated = get_reality(&conn, "r2").unwrap().unwrap();
+        assert_ne!(updated.last_active, "2026-01-01T00:00:00Z", "last_active should have been updated");
+    }
+
+    #[test]
+    fn test_reality_upsert() {
+        let conn = open_db();
+        ensure_defaults(&conn).unwrap();
+
+        let reality = Reality {
+            id: "r3".to_string(),
+            name: "original".to_string(),
+            reality_type: "code".to_string(),
+            detected_from: None,
+            project_path: None,
+            domain: None,
+            organization_id: "default".to_string(),
+            owner_type: "user".to_string(),
+            owner_id: "local".to_string(),
+            engine_status: "idle".to_string(),
+            engine_pid: None,
+            created_at: "2026-04-05T00:00:00Z".to_string(),
+            last_active: "2026-04-05T00:00:00Z".to_string(),
+            metadata: "{}".to_string(),
+        };
+        store_reality(&conn, &reality).unwrap();
+
+        // Upsert with updated name
+        let updated = Reality {
+            name: "updated".to_string(),
+            ..reality
+        };
+        store_reality(&conn, &updated).unwrap();
+
+        let got = get_reality(&conn, "r3").unwrap().unwrap();
+        assert_eq!(got.name, "updated");
     }
 }
