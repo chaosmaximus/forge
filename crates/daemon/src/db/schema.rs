@@ -9,6 +9,14 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );"
     )?;
 
+    // Create code_vec virtual table for code embeddings (sqlite-vec must be loaded before this call)
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS code_vec USING vec0(
+            id TEXT PRIMARY KEY,
+            embedding float[768] distance_metric=cosine
+        );"
+    )?;
+
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS memory (
             id TEXT PRIMARY KEY,

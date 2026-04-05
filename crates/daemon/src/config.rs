@@ -19,6 +19,9 @@ fn default_300() -> u64 { 300 }
 fn default_900() -> u64 { 900 }
 fn default_1800() -> u64 { 1800 }
 fn default_3000_usize() -> usize { 3000 }
+fn default_5000_usize() -> usize { 5000 }
+fn default_true() -> bool { true }
+fn default_false() -> bool { false }
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +38,8 @@ pub struct ForgeConfig {
     pub consolidation: ConsolidationConfig,
     #[serde(default)]
     pub recall: RecallConfig,
+    #[serde(default)]
+    pub reality: RealityConfig,
 }
 
 /// Worker interval configuration — all values in seconds.
@@ -179,6 +184,31 @@ impl RecallConfig {
             } else {
                 self.prefetch_weights.clone()
             },
+        }
+    }
+}
+
+/// Reality Engine configuration — controls code intelligence features.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RealityConfig {
+    #[serde(default = "default_true")]
+    pub auto_detect: bool,
+    #[serde(default = "default_false")]
+    pub code_embeddings: bool,
+    #[serde(default = "default_true")]
+    pub community_detection: bool,
+    #[serde(default = "default_5000_usize")]
+    pub max_index_files: usize,
+}
+
+impl Default for RealityConfig {
+    fn default() -> Self {
+        Self {
+            auto_detect: true,
+            code_embeddings: false,
+            community_detection: true,
+            max_index_files: 5000,
         }
     }
 }
@@ -546,6 +576,19 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         ["recall", "activation_on_context"] => {
             config.recall.activation_on_context = value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
+        // Reality Engine
+        ["reality", "auto_detect"] => {
+            config.reality.auto_detect = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["reality", "code_embeddings"] => {
+            config.reality.code_embeddings = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["reality", "community_detection"] => {
+            config.reality.community_detection = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["reality", "max_index_files"] => {
+            config.reality.max_index_files = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
         _ => return Err(format!("unknown config key: {key}")),
     }
 
@@ -901,6 +944,39 @@ backend = "ollama"
 
         // Invalid value should error
         let err = update_config_at(path_str, "workers.consolidation_interval_secs", "not_a_number");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_reality_config_defaults() {
+        let cfg = ForgeConfig::default();
+        assert!(cfg.reality.auto_detect, "auto_detect default should be true");
+        assert!(!cfg.reality.code_embeddings, "code_embeddings default should be false");
+        assert!(cfg.reality.community_detection, "community_detection default should be true");
+        assert_eq!(cfg.reality.max_index_files, 5000, "max_index_files default should be 5000");
+    }
+
+    #[test]
+    fn test_reality_config_update_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, "").unwrap();
+
+        // Update all reality keys
+        update_config_at(path_str, "reality.auto_detect", "false").unwrap();
+        update_config_at(path_str, "reality.code_embeddings", "true").unwrap();
+        update_config_at(path_str, "reality.community_detection", "false").unwrap();
+        update_config_at(path_str, "reality.max_index_files", "10000").unwrap();
+
+        let cfg = load_config_from(path_str);
+        assert!(!cfg.reality.auto_detect);
+        assert!(cfg.reality.code_embeddings);
+        assert!(!cfg.reality.community_detection);
+        assert_eq!(cfg.reality.max_index_files, 10000);
+
+        // Invalid value should error
+        let err = update_config_at(path_str, "reality.auto_detect", "not_a_bool");
         assert!(err.is_err());
     }
 }

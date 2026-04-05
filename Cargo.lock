@@ -1723,6 +1723,7 @@ dependencies = [
  "libc",
  "lsp-types",
  "notify",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

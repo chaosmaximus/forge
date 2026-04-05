@@ -84,6 +84,62 @@ pub fn delete_embedding(conn: &Connection, id: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Code embeddings (code_vec table)
+// ---------------------------------------------------------------------------
+
+/// Create the code_vec virtual table for code embeddings.
+/// Separate from memory_vec to keep code and memory vectors independent.
+pub fn create_code_vec_table(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS code_vec USING vec0(
+            id TEXT PRIMARY KEY,
+            embedding float[768] distance_metric=cosine
+        );"
+    )
+}
+
+/// Store a code embedding for a symbol/file ID.
+/// Idempotent: deletes any existing embedding for this ID first.
+pub fn store_code_embedding(conn: &Connection, id: &str, embedding: &[f32]) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM code_vec WHERE id = ?1", params![id])?;
+    tx.execute(
+        "INSERT INTO code_vec(id, embedding) VALUES (?1, ?2)",
+        params![id, embedding.as_bytes()],
+    )?;
+    tx.commit()
+}
+
+/// KNN search on code embeddings: find the k nearest code vectors to the query embedding.
+/// Returns (code_id, distance) pairs sorted by ascending distance.
+pub fn search_code_vectors(
+    conn: &Connection,
+    query_embedding: &[f32],
+    k: usize,
+) -> rusqlite::Result<Vec<(String, f64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, distance FROM code_vec
+         WHERE embedding MATCH ?1 AND k = ?2",
+    )?;
+    let results = stmt
+        .query_map(params![query_embedding.as_bytes(), k as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(results)
+}
+
+/// Count total code embeddings stored.
+pub fn count_code_embeddings(conn: &Connection) -> rusqlite::Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM code_vec",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +266,45 @@ mod tests {
         delete_embedding(&conn, "del_me").unwrap();
         assert!(!has_embedding(&conn, "del_me").unwrap());
         assert_eq!(count_embeddings(&conn).unwrap(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Code embedding tests (code_vec table)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_code_vec_table() {
+        init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_code_vec_table(&conn).unwrap();
+        // Calling again should be idempotent
+        create_code_vec_table(&conn).unwrap();
+    }
+
+    #[test]
+    fn test_store_search_code_embedding() {
+        let conn = setup();
+
+        let emb1 = make_embedding(768, 1.0);
+        let emb2 = make_embedding(768, 2.0);
+        store_code_embedding(&conn, "file:src/main.rs", &emb1).unwrap();
+        store_code_embedding(&conn, "file:src/lib.rs", &emb2).unwrap();
+
+        let results = search_code_vectors(&conn, &emb1, 2).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "file:src/main.rs");
+        assert!(results[0].1.abs() < 0.001, "self-distance should be ~0");
+    }
+
+    #[test]
+    fn test_count_code_embeddings() {
+        let conn = setup();
+        assert_eq!(count_code_embeddings(&conn).unwrap(), 0);
+
+        let emb = make_embedding(768, 0.0);
+        store_code_embedding(&conn, "sym:a", &emb).unwrap();
+        store_code_embedding(&conn, "sym:b", &emb).unwrap();
+        assert_eq!(count_code_embeddings(&conn).unwrap(), 2);
     }
 
     #[test]

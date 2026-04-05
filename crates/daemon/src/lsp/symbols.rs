@@ -1,5 +1,6 @@
 use forge_core::types::CodeSymbol;
 use lsp_types::{DocumentSymbol, SymbolKind};
+use regex::Regex;
 
 /// Convert LSP DocumentSymbols to Forge CodeSymbol records.
 ///
@@ -67,6 +68,43 @@ pub fn build_call_edges(
         }
     }
     edges
+}
+
+/// Extract import relationships from source file content.
+/// Returns Vec<(source_file_path, imported_module_or_path)>.
+pub fn extract_imports(content: &str, language: &str, file_path: &str) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+
+    let patterns: Vec<Regex> = match language {
+        "rust" => vec![
+            Regex::new(r"use\s+((?:(?:crate|super|self)::)?[\w:]+)").unwrap(),
+            Regex::new(r"mod\s+(\w+);").unwrap(),
+        ],
+        "python" => vec![
+            Regex::new(r"^\s*import\s+(\S+)").unwrap(),
+            Regex::new(r"^\s*from\s+(\S+)\s+import").unwrap(),
+        ],
+        "typescript" | "javascript" => vec![
+            Regex::new(r#"import\s+.*?from\s+['"](.*?)['""]"#).unwrap(),
+            Regex::new(r#"require\(\s*['"](.*?)['"]\s*\)"#).unwrap(),
+        ],
+        "go" => vec![
+            Regex::new(r#"import\s+"([\w./]+)""#).unwrap(),
+        ],
+        _ => return results,
+    };
+
+    for line in content.lines() {
+        for pat in &patterns {
+            if let Some(caps) = pat.captures(line) {
+                if let Some(m) = caps.get(1) {
+                    results.push((file_path.to_string(), m.as_str().to_string()));
+                }
+            }
+        }
+    }
+
+    results
 }
 
 #[cfg(test)]
@@ -232,5 +270,67 @@ mod tests {
         );
 
         assert!(edges.is_empty(), "self-file references should be excluded");
+    }
+
+    // -----------------------------------------------------------------------
+    // Import extraction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_imports_rust() {
+        let content = "use crate::db::ops;\nuse std::collections::HashMap;";
+        let result = extract_imports(content, "rust", "test.rs");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], ("test.rs".to_string(), "crate::db::ops".to_string()));
+        assert_eq!(result[1], ("test.rs".to_string(), "std::collections::HashMap".to_string()));
+    }
+
+    #[test]
+    fn test_extract_imports_rust_mod() {
+        let content = "mod config;\nmod handlers;";
+        let result = extract_imports(content, "rust", "lib.rs");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], ("lib.rs".to_string(), "config".to_string()));
+        assert_eq!(result[1], ("lib.rs".to_string(), "handlers".to_string()));
+    }
+
+    #[test]
+    fn test_extract_imports_python() {
+        let content = "from django.db import models\nimport os";
+        let result = extract_imports(content, "python", "app.py");
+        assert_eq!(result.len(), 2);
+        // "from X import" pattern matches first in line order
+        assert_eq!(result[0], ("app.py".to_string(), "django.db".to_string()));
+        assert_eq!(result[1], ("app.py".to_string(), "os".to_string()));
+    }
+
+    #[test]
+    fn test_extract_imports_typescript() {
+        let content = "import { useState } from 'react';\nimport axios from 'axios';";
+        let result = extract_imports(content, "typescript", "app.tsx");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], ("app.tsx".to_string(), "react".to_string()));
+        assert_eq!(result[1], ("app.tsx".to_string(), "axios".to_string()));
+    }
+
+    #[test]
+    fn test_extract_imports_go() {
+        let content = r#"import "fmt""#;
+        let result = extract_imports(content, "go", "main.go");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], ("main.go".to_string(), "fmt".to_string()));
+    }
+
+    #[test]
+    fn test_extract_imports_empty() {
+        let result = extract_imports("", "rust", "empty.rs");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_imports_unknown_lang() {
+        let content = "import something;";
+        let result = extract_imports(content, "cobol", "prog.cob");
+        assert!(result.is_empty());
     }
 }
