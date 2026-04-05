@@ -56,8 +56,8 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Err(e) => eprintln!("[consolidator] dedup error: {}", e),
     }
 
-    // Phase 2: Semantic dedup (slow O(n^2))
-    match ops::semantic_dedup(conn) {
+    // Phase 2: Semantic dedup (slow O(n^2), bounded by batch_limit)
+    match ops::semantic_dedup(conn, config.batch_limit) {
         Ok(merged) => {
             stats.semantic_dedup = merged;
             if merged > 0 {
@@ -67,8 +67,8 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Err(e) => eprintln!("[consolidator] semantic dedup error: {}", e),
     }
 
-    // Phase 3: Link related memories
-    match ops::link_related_memories(conn) {
+    // Phase 3: Link related memories (bounded by batch_limit)
+    match ops::link_related_memories(conn, config.batch_limit) {
         Ok(linked) => {
             stats.linked = linked;
             if linked > 0 {
@@ -78,8 +78,8 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Err(e) => eprintln!("[consolidator] link error: {}", e),
     }
 
-    // Phase 4: Decay (fast)
-    match ops::decay_memories(conn) {
+    // Phase 4: Decay (bounded by batch_limit)
+    match ops::decay_memories(conn, config.batch_limit) {
         Ok((_decayed, faded)) => {
             stats.faded = faded;
             if faded > 0 {
@@ -89,8 +89,8 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Err(e) => eprintln!("[consolidator] decay error: {}", e),
     }
 
-    // Phase 5: Episodic -> Semantic promotion
-    match ops::promote_recurring_lessons(conn) {
+    // Phase 5: Episodic -> Semantic promotion (bounded by batch_limit)
+    match ops::promote_recurring_lessons(conn, config.batch_limit) {
         Ok(promoted) => {
             stats.promoted = promoted;
             if promoted > 0 {

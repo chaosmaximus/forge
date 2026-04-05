@@ -382,12 +382,12 @@ pub fn health(conn: &Connection) -> rusqlite::Result<HealthCounts> {
 /// (exponential-over-exponential decay).
 ///
 /// Returns (checked_count, faded_count).
-pub fn decay_memories(conn: &Connection) -> rusqlite::Result<(usize, usize)> {
+pub fn decay_memories(conn: &Connection, limit: usize) -> rusqlite::Result<(usize, usize)> {
     let mut stmt = conn.prepare(
-        "SELECT id, confidence, accessed_at FROM memory WHERE status = 'active'"
+        "SELECT id, confidence, accessed_at FROM memory WHERE status = 'active' LIMIT ?1"
     )?;
 
-    let rows: Vec<(String, f64, String)> = stmt.query_map([], |row| {
+    let rows: Vec<(String, f64, String)> = stmt.query_map(params![limit as i64], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, f64>(1)?,
@@ -481,7 +481,7 @@ pub fn store_file(conn: &Connection, file: &CodeFile) -> rusqlite::Result<()> {
 /// List all code files currently in the index.
 pub fn list_code_files(conn: &Connection) -> Vec<CodeFile> {
     let mut stmt = match conn.prepare(
-        "SELECT id, path, language, project, hash, indexed_at FROM code_file",
+        "SELECT id, path, language, project, hash, indexed_at FROM code_file LIMIT 10000",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -780,13 +780,13 @@ fn meaningful_words(text: &str) -> HashSet<String> {
 /// Stop words are filtered before comparison so only meaningful words count.
 /// Threshold: 0.6 combined score.
 /// Returns number of duplicates merged (marked as superseded).
-pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
-    // Get all active memory IDs with titles, types, projects, AND content
+pub fn semantic_dedup(conn: &Connection, limit: usize) -> rusqlite::Result<usize> {
+    // Get active memory IDs with titles, types, projects, AND content — bounded to prevent O(N^2) blowup
     let mut stmt = conn.prepare(
-        "SELECT id, title, memory_type, COALESCE(project, ''), content FROM memory WHERE status = 'active' ORDER BY confidence DESC, created_at DESC"
+        "SELECT id, title, memory_type, COALESCE(project, ''), content FROM memory WHERE status = 'active' ORDER BY confidence DESC, created_at DESC LIMIT ?1"
     )?;
     let memories: Vec<(String, String, String, String, String)> = stmt
-        .query_map([], |row| {
+        .query_map(params![limit as i64], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
         })?
         .filter_map(|r| r.ok())
@@ -864,13 +864,13 @@ pub fn semantic_dedup(conn: &Connection) -> rusqlite::Result<usize> {
 
 /// Link memories that share 2+ tags with "related_to" edges.
 /// Returns the number of edges created.
-pub fn link_related_memories(conn: &Connection) -> rusqlite::Result<usize> {
-    // Query all active memories with their tags
+pub fn link_related_memories(conn: &Connection, limit: usize) -> rusqlite::Result<usize> {
+    // Query active memories with their tags — bounded to prevent O(N^2) blowup
     let mut stmt = conn.prepare(
-        "SELECT id, tags FROM memory WHERE status = 'active'"
+        "SELECT id, tags FROM memory WHERE status = 'active' LIMIT ?1"
     )?;
     let memories: Vec<(String, Vec<String>)> = stmt
-        .query_map([], |row| {
+        .query_map(params![limit as i64], |row| {
             let id: String = row.get(0)?;
             let tags_json: String = row.get(1)?;
             let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
@@ -968,15 +968,15 @@ pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Ve
 /// create a Pattern memory with boosted confidence and supersede the individual
 /// lessons. This is the neuroscience-inspired consolidation where specific
 /// events (episodic) become general knowledge (semantic).
-pub fn promote_recurring_lessons(conn: &Connection) -> rusqlite::Result<usize> {
+pub fn promote_recurring_lessons(conn: &Connection, limit: usize) -> rusqlite::Result<usize> {
     let mut stmt = conn.prepare(
         "SELECT id, title, content, confidence, project FROM memory
          WHERE memory_type = 'lesson' AND status = 'active'
-         ORDER BY confidence DESC"
+         ORDER BY confidence DESC LIMIT ?1"
     )?;
 
     let lessons: Vec<(String, String, String, f64, Option<String>)> = stmt
-        .query_map([], |row| {
+        .query_map(params![limit as i64], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
         })?
         .filter_map(|r| r.ok())
@@ -1058,12 +1058,16 @@ pub fn promote_recurring_lessons(conn: &Connection) -> rusqlite::Result<usize> {
 /// Uses KNN search per active memory to find near-duplicates in embedding space.
 /// cosine_distance < 0.1 means similarity > 0.9.
 pub fn embedding_merge(conn: &Connection) -> rusqlite::Result<usize> {
-    // Get all active memory IDs that have embeddings
+    // Get active memory IDs that have embeddings — capped at 200 to bound the N+1 pattern below.
+    // NOTE: Each iteration queries memory_vec per-item (N+1). Batch-loading embeddings from
+    // the sqlite-vec virtual table is not straightforward (virtual tables don't support IN clauses
+    // the same way), so we cap the outer query instead to limit blast radius.
     let mut stmt = conn.prepare(
         "SELECT m.id, m.memory_type, m.confidence FROM memory m
          JOIN memory_vec v ON v.id = m.id
          WHERE m.status = 'active'
-         ORDER BY m.confidence DESC, m.created_at DESC"
+         ORDER BY m.confidence DESC, m.created_at DESC
+         LIMIT 200"
     )?;
     let memories: Vec<(String, String, f64)> = stmt
         .query_map([], |row| {
@@ -1080,7 +1084,7 @@ pub fn embedding_merge(conn: &Connection) -> rusqlite::Result<usize> {
             continue;
         }
 
-        // Retrieve embedding for this memory
+        // Retrieve embedding for this memory (N+1 pattern — bounded by LIMIT 200 above)
         let emb_result: rusqlite::Result<Vec<u8>> = conn.query_row(
             "SELECT embedding FROM memory_vec WHERE id = ?1",
             params![id],
@@ -2244,7 +2248,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let (checked, faded) = decay_memories(&conn).unwrap();
+        let (checked, faded) = decay_memories(&conn, 1000).unwrap();
         assert_eq!(checked, 2, "should check both memories");
         assert_eq!(faded, 0, "30-day memory at 0.9 base should not be faded yet");
 
@@ -2274,7 +2278,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let (checked, faded) = decay_memories(&conn).unwrap();
+        let (checked, faded) = decay_memories(&conn, 1000).unwrap();
         assert_eq!(checked, 2);
         assert_eq!(faded, 1, "90-day-old memory should be faded");
 
@@ -2301,9 +2305,9 @@ mod tests {
         ).unwrap();
 
         // Run decay multiple times — result should be identical each time
-        let (_, faded1) = decay_memories(&conn).unwrap();
-        let (_, faded2) = decay_memories(&conn).unwrap();
-        let (_, faded3) = decay_memories(&conn).unwrap();
+        let (_, faded1) = decay_memories(&conn, 1000).unwrap();
+        let (_, faded2) = decay_memories(&conn, 1000).unwrap();
+        let (_, faded3) = decay_memories(&conn, 1000).unwrap();
 
         assert_eq!(faded1, faded2, "repeated decay runs must produce same result");
         assert_eq!(faded2, faded3, "repeated decay runs must produce same result");
@@ -2644,7 +2648,7 @@ mod tests {
             remember(&conn, &mem).unwrap();
         }
 
-        let promoted = promote_recurring_lessons(&conn).unwrap();
+        let promoted = promote_recurring_lessons(&conn, 1000).unwrap();
         assert!(promoted > 0, "should promote recurring lesson to pattern");
 
         // Verify a Pattern was created
@@ -2664,7 +2668,7 @@ mod tests {
         remember(&conn, &mem2).unwrap();
         remember(&conn, &mem3).unwrap();
 
-        let promoted = promote_recurring_lessons(&conn).unwrap();
+        let promoted = promote_recurring_lessons(&conn, 1000).unwrap();
         assert_eq!(promoted, 0, "unique lessons should not be promoted");
     }
 
@@ -2723,7 +2727,7 @@ mod tests {
         insert_memory_for_dedup(&conn, "a1", "decision", "Use SQLite for storage", "SQLite FTS5 fast recall", "", 0.9);
         insert_memory_for_dedup(&conn, "a2", "decision", "Use SQLite for storage", "SQLite FTS5 fast recall", "", 0.8);
 
-        let merged = semantic_dedup(&conn).unwrap();
+        let merged = semantic_dedup(&conn, 1000).unwrap();
         assert_eq!(merged, 1, "identical title+content should be deduped");
 
         // Higher confidence (a1=0.9) should survive
@@ -2740,7 +2744,7 @@ mod tests {
         insert_memory_for_dedup(&conn, "b1", "lesson", "Code indexer broken", "The code indexer keeps crashing when parsing large files with many symbols", "", 0.9);
         insert_memory_for_dedup(&conn, "b2", "lesson", "Indexer crash bug", "The code indexer keeps crashing when parsing large files with many symbols", "", 0.8);
 
-        let merged = semantic_dedup(&conn).unwrap();
+        let merged = semantic_dedup(&conn, 1000).unwrap();
         assert_eq!(merged, 1, "different titles but same content should be deduped via content overlap");
     }
 
@@ -2751,7 +2755,7 @@ mod tests {
         insert_memory_for_dedup(&conn, "c1", "decision", "Use JWT authentication", "Token based auth with RS256 signing", "", 0.9);
         insert_memory_for_dedup(&conn, "c2", "decision", "Deploy Kubernetes cluster", "Container orchestration with Helm charts", "", 0.8);
 
-        let merged = semantic_dedup(&conn).unwrap();
+        let merged = semantic_dedup(&conn, 1000).unwrap();
         assert_eq!(merged, 0, "memories with no meaningful word overlap should not be deduped");
     }
 
@@ -2762,7 +2766,7 @@ mod tests {
         insert_memory_for_dedup(&conn, "d1", "decision", "Use SQLite storage", "SQLite FTS5 for recall", "", 0.9);
         insert_memory_for_dedup(&conn, "d2", "lesson", "Use SQLite storage", "SQLite FTS5 for recall", "", 0.8);
 
-        let merged = semantic_dedup(&conn).unwrap();
+        let merged = semantic_dedup(&conn, 1000).unwrap();
         assert_eq!(merged, 0, "different types should never be deduped");
     }
 
@@ -2773,7 +2777,7 @@ mod tests {
         insert_memory_for_dedup(&conn, "e1", "decision", "Use SQLite storage", "SQLite FTS5 for recall", "forge", 0.9);
         insert_memory_for_dedup(&conn, "e2", "decision", "Use SQLite storage", "SQLite FTS5 for recall", "backend", 0.8);
 
-        let merged = semantic_dedup(&conn).unwrap();
+        let merged = semantic_dedup(&conn, 1000).unwrap();
         assert_eq!(merged, 0, "different projects should never be deduped");
     }
 
@@ -2797,7 +2801,7 @@ mod tests {
             "", 0.8,
         );
 
-        let merged = semantic_dedup(&conn).unwrap();
+        let merged = semantic_dedup(&conn, 1000).unwrap();
         assert_eq!(merged, 1, "known audit near-duplicates should be caught by combined title+content dedup");
 
         // Higher confidence should survive
@@ -2811,7 +2815,7 @@ mod tests {
         insert_memory_for_dedup(&conn, "g1", "decision", "Use SQLite for storage", "Fast BM25 recall engine", "", 0.9);
         insert_memory_for_dedup(&conn, "g2", "decision", "Use SQLite for storage", "Fast BM25 recall engine", "", 0.8);
 
-        semantic_dedup(&conn).unwrap();
+        semantic_dedup(&conn, 1000).unwrap();
 
         // Check that a supersedes edge was created
         let edge_count: i64 = conn.query_row(
@@ -2839,7 +2843,7 @@ mod tests {
             "", 0.8,
         );
 
-        let merged = semantic_dedup(&conn).unwrap();
+        let merged = semantic_dedup(&conn, 1000).unwrap();
         assert_eq!(merged, 1, "near-similar content should be deduped even with different titles");
     }
 
@@ -2860,7 +2864,7 @@ mod tests {
             "", 0.8,
         );
 
-        let merged = semantic_dedup(&conn).unwrap();
+        let merged = semantic_dedup(&conn, 1000).unwrap();
         assert_eq!(merged, 0, "completely unrelated memories should not be deduped");
     }
 
@@ -3696,5 +3700,62 @@ mod tests {
         ).unwrap();
         let count = classify_portability(&conn, 100).unwrap();
         assert_eq!(count, 0, "already-classified memories should be skipped");
+    }
+
+    // ── Bounded query tests ──
+
+    #[test]
+    fn test_decay_memories_respects_limit() {
+        let conn = open_db();
+        // Insert 15 old memories that would all be faded
+        for i in 0..15 {
+            conn.execute(
+                &format!(
+                    "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
+                     VALUES ('decay_limit_{i}', 'decision', 'Old decision {i}', 'content', 0.9, 'active', '[]',
+                             datetime('now', '-120 days'), datetime('now', '-120 days'))"
+                ),
+                [],
+            ).unwrap();
+        }
+
+        // With limit=10, only 10 should be checked
+        let (checked, faded) = decay_memories(&conn, 10).unwrap();
+        assert_eq!(checked, 10, "limit=10 should check exactly 10 memories");
+        assert_eq!(faded, 10, "all 10 checked should be faded (120 days old)");
+
+        // 5 remain active
+        let remaining: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory WHERE status = 'active'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(remaining, 5, "5 memories should still be active after limited decay");
+    }
+
+    #[test]
+    fn test_semantic_dedup_respects_limit() {
+        let conn = open_db();
+        // Insert 15 identical memories that would all be deduped
+        for i in 0..15 {
+            conn.execute(
+                &format!(
+                    "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
+                     VALUES ('dedup_limit_{i}', 'decision', 'Use Rust for daemon', 'Rust chosen for performance and safety', {conf}, 'active', '[]',
+                             datetime('now'), datetime('now'))",
+                    conf = 0.9 - (i as f64 * 0.01)
+                ),
+                [],
+            ).unwrap();
+        }
+
+        // With limit=10, only first 10 are loaded and compared
+        let merged = semantic_dedup(&conn, 10).unwrap();
+        // 10 loaded → 1 survivor + 9 superseded
+        assert_eq!(merged, 9, "limit=10 should merge 9 duplicates (keep 1 survivor out of 10)");
+
+        // 5 remain from the un-loaded batch + 1 survivor
+        let active: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory WHERE status = 'active'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(active, 6, "5 unloaded + 1 survivor = 6 active");
     }
 }

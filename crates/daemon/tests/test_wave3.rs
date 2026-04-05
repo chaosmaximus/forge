@@ -26,7 +26,7 @@ fn test_confidence_decay_idempotent() {
         [],
     ).unwrap();
 
-    let (checked, faded) = ops::decay_memories(&state.conn).unwrap();
+    let (checked, faded) = ops::decay_memories(&state.conn, 1000).unwrap();
     assert_eq!(checked, 2);
     assert_eq!(faded, 1, "90-day memory should be faded");
 
@@ -44,7 +44,7 @@ fn test_confidence_decay_idempotent() {
     assert_eq!(s2, "active");
 
     // Running decay again should produce the same result (idempotent)
-    let (checked2, faded2) = ops::decay_memories(&state.conn).unwrap();
+    let (checked2, faded2) = ops::decay_memories(&state.conn, 1000).unwrap();
     assert_eq!(checked2, 1, "only d2 is still active after first run");
     assert_eq!(faded2, 0, "d2 should not fade on second run");
 }

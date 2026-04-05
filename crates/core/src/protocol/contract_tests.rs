@@ -449,6 +449,12 @@ mod tests {
                     organization_id: Some("default".into()),
                 },
             ),
+            (
+                "get_stats",
+                Request::GetStats {
+                    hours: Some(24),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -718,6 +724,14 @@ mod tests {
                 "list_realities with org",
                 r#"{"method":"list_realities","params":{"organization_id":"default"}}"#,
             ),
+            (
+                "get_stats",
+                r#"{"method":"get_stats","params":{"hours":24}}"#,
+            ),
+            (
+                "get_stats no params",
+                r#"{"method":"get_stats","params":{}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -775,10 +789,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
         let unit_count = 16;
-        // Parameterized variants: 56 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality, CrossEngineQuery, FileMemoryMap, CodeSearch, ListRealities)
-        let param_count = 56;
-        // Total: 72
-        let expected_total = 72;
+        // Parameterized variants: 57 (including ListEntities, A2A FISP, A2A permissions, Scoped Config, DetectReality, CrossEngineQuery, FileMemoryMap, CodeSearch, ListRealities, GetStats)
+        let param_count = 57;
+        // Total: 73
+        let expected_total = 73;
 
         assert_eq!(
             unit_count + param_count,
@@ -1038,6 +1052,9 @@ mod tests {
                 },
                 Request::ListRealities {
                     organization_id: Some("default".into()),
+                },
+                Request::GetStats {
+                    hours: Some(24),
                 },
             ]
         }

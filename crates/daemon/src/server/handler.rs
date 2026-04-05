@@ -1175,7 +1175,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::ListIdentity { agent } => {
-            match crate::db::manas::list_identity(&state.conn, &agent, true) {
+            // Use list_identity_for_user to include user-scoped facets.
+            // Default to "local" user (single-user daemon); the fallback path in
+            // list_identity_for_user(None, ...) delegates to plain list_identity.
+            let user_id = ops::get_user(&state.conn, "local")
+                .ok()
+                .flatten()
+                .map(|u| u.id);
+            match crate::db::manas::list_identity_for_user(&state.conn, user_id.as_deref(), &agent, true) {
                 Ok(facets) => {
                     let count = facets.len();
                     Response::Ok {
