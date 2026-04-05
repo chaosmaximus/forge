@@ -393,7 +393,6 @@ pub fn run_bootstrap(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
 
     fn test_conn() -> Connection {
