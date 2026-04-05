@@ -1174,6 +1174,41 @@ pub fn compile_dynamic_suffix(
         }
     }
 
+    // ── Active Protocols ──
+    // Inject process-level meta-knowledge (HOW work should be done)
+    {
+        let protocol_sql = "SELECT title, content FROM memory
+            WHERE memory_type = 'protocol' AND status = 'active'
+            ORDER BY confidence DESC, accessed_at DESC LIMIT 5";
+        if let Ok(mut stmt) = conn.prepare(protocol_sql) {
+            let protocols: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default();
+
+            if !protocols.is_empty() {
+                let mut proto_xml = String::from(
+                    "<active-protocols hint=\"process rules for this project — follow these\">\n",
+                );
+                for (title, content) in &protocols {
+                    proto_xml.push_str(&format!(
+                        "  <protocol name=\"{}\">{}</protocol>\n",
+                        xml_escape(title),
+                        xml_escape(content),
+                    ));
+                }
+                proto_xml.push_str("</active-protocols>\n");
+                if used + proto_xml.len() < budget {
+                    xml.push_str(&proto_xml);
+                    // used += proto_xml.len();
+                }
+            }
+        }
+    }
+
     xml.push_str("</forge-dynamic>");
     xml
 }

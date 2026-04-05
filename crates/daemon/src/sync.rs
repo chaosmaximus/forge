@@ -131,6 +131,7 @@ fn type_str(mt: &MemoryType) -> &'static str {
         MemoryType::Lesson => "lesson",
         MemoryType::Pattern => "pattern",
         MemoryType::Preference => "preference",
+        MemoryType::Protocol => "protocol",
     }
 }
 
@@ -140,6 +141,7 @@ fn type_from_str(s: &str) -> MemoryType {
         "lesson" => MemoryType::Lesson,
         "pattern" => MemoryType::Pattern,
         "preference" => MemoryType::Preference,
+        "protocol" => MemoryType::Protocol,
         _ => MemoryType::Decision,
     }
 }
