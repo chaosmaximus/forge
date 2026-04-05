@@ -89,6 +89,7 @@ async fn main() {
         Arc::clone(&state),
         config,
         &shutdown_tx,
+        db_path.clone(),
     );
 
     // Spawn writer actor: serializes all write operations through a single connection.
