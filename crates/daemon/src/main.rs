@@ -56,8 +56,9 @@ async fn main() {
     // Keep pid_file alive (holds the advisory lock) for the lifetime of main()
     let _pid_file_guard = pid_file;
 
-    // Create DaemonState (opens/creates DB with write connection)
-    let state = match DaemonState::new(&db_path) {
+    // Create DaemonState for workers (opens/creates DB with write connection).
+    // Workers use this via Arc<Mutex> for their background writes.
+    let worker_state = match DaemonState::new(&db_path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: failed to open database {db_path}: {e}");
@@ -69,13 +70,14 @@ async fn main() {
         }
     };
 
-    // Extract shared resources from the write state BEFORE wrapping in Arc<Mutex>.
-    // These are shared between the socket handler (read path) and the writer actor.
-    let events = state.events.clone();
-    let hlc = Arc::clone(&state.hlc);
-    let started_at = state.started_at;
+    // Extract shared resources BEFORE wrapping in Arc<Mutex>.
+    // These are shared between the socket handler (read path), writer actor,
+    // and workers so they all see the same events and HLC.
+    let events = worker_state.events.clone();
+    let hlc = Arc::clone(&worker_state.hlc);
+    let started_at = worker_state.started_at;
 
-    let state = Arc::new(Mutex::new(state));
+    let state = Arc::new(Mutex::new(worker_state));
 
     // C1: Create shutdown watch channel
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);
@@ -92,12 +94,25 @@ async fn main() {
         db_path.clone(),
     );
 
-    // Spawn writer actor: serializes all write operations through a single connection.
-    // The writer holds a clone of the same Arc<Mutex<DaemonState>> that workers use.
-    // Socket handler sends write requests to the writer via mpsc channel,
-    // ensuring it NEVER blocks on the worker mutex.
+    // Create a SEPARATE DaemonState for the WriterActor. This is the key fix
+    // for the write timeout bug: the writer owns its own DaemonState with an
+    // independent SQLite connection, so it is NEVER blocked by workers holding
+    // the Arc<Mutex<DaemonState>> during extraction (10-30s).
+    // Both connections open the same db_path; SQLite WAL serializes writes internally.
     let (write_tx, write_rx) = mpsc::channel::<forge_daemon::server::WriteCommand>(256);
-    let writer = WriterActor { state: Arc::clone(&state) };
+    let writer_state = match DaemonState::new_writer(
+        &db_path,
+        events.clone(),
+        Arc::clone(&hlc),
+        started_at,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: failed to create writer state: {e}");
+            std::process::exit(1);
+        }
+    };
+    let writer = WriterActor { state: writer_state };
     tokio::spawn(async move { writer.run(write_rx).await });
 
     // I3: Spawn signal handler that sends on shutdown channel instead of process::exit

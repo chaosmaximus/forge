@@ -94,6 +94,43 @@ impl DaemonState {
         })
     }
 
+    /// Create a write-capable state that shares resources (event bus, HLC,
+    /// started_at) with the primary state. Opens its OWN read-write SQLite
+    /// connection to the same db_path. SQLite WAL mode serializes writes
+    /// internally, so no application-level mutex is needed between connections.
+    ///
+    /// Used by the WriterActor so it has an independent write connection that
+    /// is never blocked by workers holding the Arc<Mutex<DaemonState>>.
+    pub fn new_writer(
+        db_path: &str,
+        events: EventSender,
+        hlc: Arc<crate::sync::Hlc>,
+        started_at: Instant,
+    ) -> Result<Self, String> {
+        // Must init sqlite-vec extension before opening any connection
+        crate::db::vec::init_sqlite_vec();
+
+        let conn = if db_path == ":memory:" {
+            Connection::open_in_memory()
+                .map_err(|e| format!("open in-memory db for writer: {e}"))?
+        } else {
+            Connection::open(db_path)
+                .map_err(|e| format!("open writer db: {e}"))?
+        };
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|e| format!("set WAL mode: {e}"))?;
+        // Ensure schema exists on this connection (idempotent)
+        schema::create_schema(&conn)
+            .map_err(|e| format!("create schema for writer: {e}"))?;
+        Ok(Self {
+            conn,
+            events,
+            hlc,
+            started_at,
+            diagnostics_tx: None,
+        })
+    }
+
     /// Create a read-only state for serving read requests on a per-connection
     /// basis. No schema creation, no workers, no platform detection -- just a
     /// read-only SQLite connection for queries.
