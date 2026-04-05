@@ -93,7 +93,8 @@ pub fn spawn_workers(
     let diagnostics_state = Arc::clone(&state);
 
     let extractor_config = config.clone();
-    let embedder_config = config;
+    let embedder_config = config.clone();
+    let worker_intervals = config.workers.clone();
 
     // Clone db_path for each worker that uses read-only connections
     let extractor_db_path = db_path.clone();
@@ -105,6 +106,7 @@ pub fn spawn_workers(
         watcher::run_watcher(file_tx, watch_configs, watcher_shutdown).await;
     });
 
+    let extractor_debounce = worker_intervals.extraction_debounce_secs;
     let extractor_handle = tokio::spawn(async move {
         extractor::run_extractor(
             file_rx,
@@ -113,28 +115,34 @@ pub fn spawn_workers(
             agent_adapters,
             extractor_shutdown,
             extractor_db_path,
+            extractor_debounce,
         )
         .await;
     });
 
+    let embedder_interval = worker_intervals.embedding_interval_secs;
     let embedder_handle = tokio::spawn(async move {
-        embedder::run_embedder(embedder_state, embedder_config, embedder_shutdown, embedder_db_path).await;
+        embedder::run_embedder(embedder_state, embedder_config, embedder_shutdown, embedder_db_path, embedder_interval).await;
     });
 
+    let consolidator_interval = worker_intervals.consolidation_interval_secs;
     let consolidator_handle = tokio::spawn(async move {
-        consolidator::run_consolidator(consolidator_state, consolidator_shutdown).await;
+        consolidator::run_consolidator(consolidator_state, consolidator_shutdown, consolidator_interval).await;
     });
 
+    let indexer_interval = worker_intervals.indexer_interval_secs;
     let indexer_handle = tokio::spawn(async move {
-        indexer::run_indexer(indexer_state, indexer_shutdown).await;
+        indexer::run_indexer(indexer_state, indexer_shutdown, indexer_interval).await;
     });
 
+    let perception_interval = worker_intervals.perception_interval_secs;
     let perception_handle = tokio::spawn(async move {
-        perception::run_perception(perception_state, perception_shutdown).await;
+        perception::run_perception(perception_state, perception_shutdown, perception_interval).await;
     });
 
+    let disposition_interval = worker_intervals.disposition_interval_secs;
     let disposition_handle = tokio::spawn(async move {
-        disposition::run_disposition(disposition_state, disposition_shutdown, disposition_db_path).await;
+        disposition::run_disposition(disposition_state, disposition_shutdown, disposition_db_path, disposition_interval).await;
     });
 
     // Diagnostics worker — debounced batch analysis
@@ -148,8 +156,9 @@ pub fn spawn_workers(
             locked.diagnostics_tx = Some(diag_tx);
         });
     }
+    let diagnostics_debounce = worker_intervals.diagnostics_debounce_secs;
     let diagnostics_handle = tokio::spawn(async move {
-        diagnostics::run_diagnostics_worker(diagnostics_state, diag_rx, diagnostics_shutdown, diagnostics_db_path).await;
+        diagnostics::run_diagnostics_worker(diagnostics_state, diag_rx, diagnostics_shutdown, diagnostics_db_path, diagnostics_debounce).await;
     });
 
     eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics");

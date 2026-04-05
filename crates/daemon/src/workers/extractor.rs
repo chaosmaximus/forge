@@ -29,16 +29,17 @@ pub async fn run_extractor(
     agent_adapters: Arc<Vec<Box<dyn AgentAdapter>>>,
     mut shutdown_rx: watch::Receiver<bool>,
     db_path: String,
+    debounce_secs: u64,
 ) {
     let mut offsets: HashMap<PathBuf, usize> = HashMap::new();
     let mut pending: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
-    // Debounce: wait for 15 seconds of silence before extraction.
+    // Debounce: wait for silence before extraction.
     // gemma3:1b takes 3-10s locally, haiku takes ~11s via API.
-    // 15s gap = extract roughly every 2-3 conversation turns.
+    // Default 15s gap = extract roughly every 2-3 conversation turns.
     // At ~65 extractions/day with haiku: ~$1.50/month.
-    const DEBOUNCE_SECS: u64 = 15;
-    eprintln!("[extractor] ready, waiting for files ({}s debounce)...", DEBOUNCE_SECS);
+    // Configurable via config.workers.extraction_debounce_secs
+    eprintln!("[extractor] ready, waiting for files ({}s debounce)...", debounce_secs);
 
     loop {
         // Wait for a file event or shutdown
@@ -66,8 +67,8 @@ pub async fn run_extractor(
                     pending.insert(path);
                     // Reset the debounce timer (keep waiting for silence)
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(DEBOUNCE_SECS)) => {
-                    // 30 seconds of silence — process all pending files
+                _ = tokio::time::sleep(std::time::Duration::from_secs(debounce_secs)) => {
+                    // Debounce period of silence — process all pending files
                     break;
                 }
                 _ = shutdown_rx.changed() => {

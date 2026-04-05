@@ -16,7 +16,8 @@ use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use tokio::sync::{watch, Mutex};
 
-const INDEX_INTERVAL: Duration = Duration::from_secs(5 * 60); // 5 minutes
+// Interval is now configurable via ForgeConfig.workers.indexer_interval_secs
+// (default: 300 = 5 minutes)
 
 /// Directories to skip when walking the project tree.
 const SKIP_DIRS: &[&str] = &[
@@ -42,18 +43,20 @@ static HASH_CACHE: std::sync::LazyLock<StdMutex<HashMap<String, String>>> =
 pub async fn run_indexer(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
     mut shutdown_rx: watch::Receiver<bool>,
+    interval_secs: u64,
 ) {
-    eprintln!("[indexer] started, interval = {:?}", INDEX_INTERVAL);
+    let index_interval = Duration::from_secs(interval_secs);
+    eprintln!("[indexer] started, interval = {:?}", index_interval);
     let mut manager: Option<LspManager> = None;
     let mut first_run = true;
 
     loop {
-        // Run immediately on first cycle, then every INDEX_INTERVAL
+        // Run immediately on first cycle, then every index_interval
         let delay = if first_run {
             first_run = false;
             Duration::from_secs(10) // short delay on startup for daemon to settle
         } else {
-            INDEX_INTERVAL
+            index_interval
         };
 
         tokio::select! {

@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{watch, Mutex};
 
-const DISPOSITION_INTERVAL: Duration = Duration::from_secs(15 * 60); // 15 minutes
+// Interval is now configurable via ForgeConfig.workers.disposition_interval_secs
+// (default: 900 = 15 minutes)
 
 /// Maximum change per cycle.
 const MAX_DELTA: f64 = 0.05;
@@ -32,15 +33,17 @@ pub async fn run_disposition(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
     mut shutdown_rx: watch::Receiver<bool>,
     db_path: String,
+    interval_secs: u64,
 ) {
+    let interval = Duration::from_secs(interval_secs);
     eprintln!(
         "[disposition] started, interval = {:?}",
-        DISPOSITION_INTERVAL
+        interval
     );
 
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(DISPOSITION_INTERVAL) => {
+            _ = tokio::time::sleep(interval) => {
                 tick(&state, &db_path).await;
             }
             _ = shutdown_rx.changed() => {

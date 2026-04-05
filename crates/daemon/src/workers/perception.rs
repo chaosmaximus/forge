@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{watch, Mutex};
 
-const PERCEPTION_INTERVAL: Duration = Duration::from_secs(30);
+// Interval is now configurable via ForgeConfig.workers.perception_interval_secs
+// (default: 30 seconds)
 
 /// Perception expiry: 5 minutes from creation.
 const PERCEPTION_TTL_SECS: i64 = 5 * 60;
@@ -17,12 +18,14 @@ const PERCEPTION_TTL_SECS: i64 = 5 * 60;
 pub async fn run_perception(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
     mut shutdown_rx: watch::Receiver<bool>,
+    interval_secs: u64,
 ) {
-    eprintln!("[perception] started, interval = {:?}", PERCEPTION_INTERVAL);
+    let interval = Duration::from_secs(interval_secs);
+    eprintln!("[perception] started, interval = {:?}", interval);
 
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(PERCEPTION_INTERVAL) => {
+            _ = tokio::time::sleep(interval) => {
                 tick(&state).await;
             }
             _ = shutdown_rx.changed() => {

@@ -15,22 +15,24 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, Mutex};
 
-const DEBOUNCE_SECS: u64 = 3;
+// Debounce is now configurable via ForgeConfig.workers.diagnostics_debounce_secs
+// (default: 3 seconds)
 
 /// Run the diagnostics worker loop.
 ///
 /// Receives file paths from the PostEdit handler via `file_rx`, debounces
-/// for `DEBOUNCE_SECS` of silence, then runs batch analysis.
+/// for `debounce_secs` of silence, then runs batch analysis.
 pub async fn run_diagnostics_worker(
     state: Arc<Mutex<DaemonState>>,
     mut file_rx: mpsc::Receiver<String>,
     mut shutdown_rx: watch::Receiver<bool>,
     db_path: String,
+    debounce_secs: u64,
 ) {
     let mut pending_files: HashSet<String> = HashSet::new();
     eprintln!(
         "[diagnostics] ready, waiting for files ({}s debounce)...",
-        DEBOUNCE_SECS
+        debounce_secs
     );
 
     loop {
@@ -56,7 +58,7 @@ pub async fn run_diagnostics_worker(
         // Max wait of 30s prevents starvation under continuous activity (Codex fix).
         let max_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let debounce_timeout = tokio::time::sleep(Duration::from_secs(DEBOUNCE_SECS));
+            let debounce_timeout = tokio::time::sleep(Duration::from_secs(debounce_secs));
             let max_timeout = tokio::time::sleep_until(max_deadline);
             tokio::select! {
                 Some(file) = file_rx.recv() => {
@@ -470,7 +472,7 @@ mod tests {
         // Spawn the worker
         let worker_state = Arc::clone(&state);
         let handle = tokio::spawn(async move {
-            run_diagnostics_worker(worker_state, file_rx, shutdown_rx, ":memory:".to_string()).await;
+            run_diagnostics_worker(worker_state, file_rx, shutdown_rx, ":memory:".to_string(), 3).await;
         });
 
         // Send some file paths
@@ -553,7 +555,7 @@ mod tests {
 
         let worker_state = Arc::clone(&state);
         let handle = tokio::spawn(async move {
-            run_diagnostics_worker(worker_state, file_rx, shutdown_rx, ":memory:".to_string()).await;
+            run_diagnostics_worker(worker_state, file_rx, shutdown_rx, ":memory:".to_string(), 3).await;
         });
 
         // Send the file that has callers
