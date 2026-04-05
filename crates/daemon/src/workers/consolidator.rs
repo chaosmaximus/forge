@@ -194,7 +194,8 @@ pub fn synthesize_contradictions(conn: &Connection) -> usize {
     // Find pairs of active memories with opposite valence, shared tags, high intensity
     let mut stmt = match conn.prepare(
         "SELECT id, title, content, tags, valence, intensity, confidence, project FROM memory
-         WHERE status = 'active' AND valence IN ('positive', 'negative') AND intensity > 0.5"
+         WHERE status = 'active' AND valence IN ('positive', 'negative') AND intensity > 0.5
+         LIMIT 200"
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -257,8 +258,9 @@ pub fn synthesize_contradictions(conn: &Connection) -> usize {
                 continue;
             }
 
-            // Count shared tags
-            let shared: usize = rows[i].tags.iter().filter(|t| rows[j].tags.contains(t)).count();
+            // Count shared tags (HashSet for O(n) instead of O(n^2))
+            let tags_i: std::collections::HashSet<&str> = rows[i].tags.iter().map(|s| s.as_str()).collect();
+            let shared: usize = rows[j].tags.iter().filter(|t| tags_i.contains(t.as_str())).count();
             if shared < 2 {
                 continue;
             }
@@ -291,20 +293,24 @@ pub fn synthesize_contradictions(conn: &Connection) -> usize {
             resolution.confidence = conf;
             resolution.project = a.project.clone();
 
-            if let Err(e) = ops::remember(conn, &resolution) {
-                eprintln!("[consolidator] failed to store resolution: {e}");
+            // Transaction: resolution insert + supersede originals (atomic)
+            if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+                eprintln!("[consolidator] failed to begin transaction: {e}");
                 continue;
             }
-
-            // Mark originals as superseded
-            let _ = conn.execute(
-                "UPDATE memory SET status = 'superseded' WHERE id = ?1",
-                rusqlite::params![a.id],
-            );
-            let _ = conn.execute(
-                "UPDATE memory SET status = 'superseded' WHERE id = ?1",
-                rusqlite::params![b.id],
-            );
+            if let Err(e) = ops::remember(conn, &resolution) {
+                eprintln!("[consolidator] failed to store resolution: {e}");
+                let _ = conn.execute_batch("ROLLBACK");
+                continue;
+            }
+            if conn.execute("UPDATE memory SET status = 'superseded' WHERE id = ?1", rusqlite::params![a.id]).is_err()
+                || conn.execute("UPDATE memory SET status = 'superseded' WHERE id = ?1", rusqlite::params![b.id]).is_err()
+            {
+                eprintln!("[consolidator] failed to supersede originals — rolling back");
+                let _ = conn.execute_batch("ROLLBACK");
+                continue;
+            }
+            let _ = conn.execute_batch("COMMIT");
 
             superseded_ids.insert(a.id.clone());
             superseded_ids.insert(b.id.clone());

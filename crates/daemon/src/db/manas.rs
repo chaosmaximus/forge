@@ -1738,13 +1738,13 @@ pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqli
     // 1. Get all active memory titles for the project
     let rows: Vec<String> = if let Some(proj) = project {
         let mut stmt = conn.prepare(
-            "SELECT title FROM memory WHERE status = 'active' AND (project = ?1 OR project IS NULL OR project = '')"
+            "SELECT title FROM memory WHERE status = 'active' AND (project = ?1 OR project IS NULL OR project = '') LIMIT 1000"
         )?;
         let mapped = stmt.query_map(params![proj], |row| row.get::<_, String>(0))?;
         mapped.filter_map(|r| r.ok()).collect()
     } else {
         let mut stmt = conn.prepare(
-            "SELECT title FROM memory WHERE status = 'active'"
+            "SELECT title FROM memory WHERE status = 'active' LIMIT 1000"
         )?;
         let mapped = stmt.query_map([], |row| row.get::<_, String>(0))?;
         mapped.filter_map(|r| r.ok()).collect()
@@ -1779,17 +1779,29 @@ pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqli
 
         // Check if entity exists for this word
         let entity_exists: bool = if let Some(proj) = project {
-            conn.query_row(
+            match conn.query_row(
                 "SELECT COUNT(*) > 0 FROM entity WHERE name = ?1 AND (project = ?2 OR project IS NULL)",
                 params![word, proj],
                 |row| row.get(0),
-            ).unwrap_or(false)
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[knowledge_gaps] entity check error for '{}': {e}", word);
+                    continue; // skip this word on error, don't create false gap
+                }
+            }
         } else {
-            conn.query_row(
+            match conn.query_row(
                 "SELECT COUNT(*) > 0 FROM entity WHERE name = ?1",
                 params![word],
                 |row| row.get(0),
-            ).unwrap_or(false)
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[knowledge_gaps] entity check error for '{}': {e}", word);
+                    continue;
+                }
+            }
         };
 
         if !entity_exists {
