@@ -548,4 +548,61 @@ mod tests {
             .unwrap();
         assert!(!id.is_empty());
     }
+
+    #[test]
+    fn test_builder_with_action() {
+        let conn = setup();
+        let id = NotificationBuilder::new("confirmation", "medium", "Approve protocol?", "New pattern detected", "consolidator")
+            .action("approve_protocol", r#"{"memory_id":"mem-123"}"#)
+            .topic("protocol_suggestion")
+            .build(&conn)
+            .unwrap();
+
+        let (action_type, action_payload): (Option<String>, Option<String>) = conn.query_row(
+            "SELECT action_type, action_payload FROM notification WHERE id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+
+        assert_eq!(action_type, Some("approve_protocol".to_string()));
+        assert_eq!(action_payload, Some(r#"{"memory_id":"mem-123"}"#.to_string()));
+
+        let category: String = conn.query_row(
+            "SELECT category FROM notification WHERE id = ?1", [&id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(category, "confirmation");
+    }
+
+    #[test]
+    fn test_builder_with_target() {
+        let conn = setup();
+        let id = NotificationBuilder::new("alert", "high", "Session alert", "Your build failed", "ci")
+            .target_session("session-abc")
+            .build(&conn)
+            .unwrap();
+
+        let (target_type, target_id): (String, Option<String>) = conn.query_row(
+            "SELECT target_type, target_id FROM notification WHERE id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+
+        assert_eq!(target_type, "session");
+        assert_eq!(target_id, Some("session-abc".to_string()));
+
+        // Also test team targeting
+        let id2 = NotificationBuilder::new("alert", "high", "Team alert", "Deploy ready", "deploy")
+            .target_team("team-xyz")
+            .build(&conn)
+            .unwrap();
+
+        let (target_type2, target_id2): (String, Option<String>) = conn.query_row(
+            "SELECT target_type, target_id FROM notification WHERE id = ?1",
+            [&id2],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+
+        assert_eq!(target_type2, "team");
+        assert_eq!(target_id2, Some("team-xyz".to_string()));
+    }
 }

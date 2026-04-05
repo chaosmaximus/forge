@@ -1290,6 +1290,59 @@ pub fn compile_dynamic_suffix(
         ));
     }
 
+    // ── Pending Notifications ──
+    // Surface notifications that need user attention (budget-exempt like protocols)
+    {
+        let notif_sql = "SELECT id, category, priority, title, content, action_type FROM notification
+            WHERE status = 'pending' AND priority IN ('critical', 'high', 'medium')
+            ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+            created_at DESC LIMIT 3";
+        if let Ok(mut stmt) = conn.prepare(notif_sql) {
+            let notifications: Vec<(String, String, String, String, String, Option<String>)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default();
+
+            if notifications.is_empty() {
+                xml.push_str("<notifications count=\"0\" />\n");
+            } else {
+                xml.push_str(&format!(
+                    "<notifications count=\"{}\" hint=\"Forge wants your attention on these\">\n",
+                    notifications.len(),
+                ));
+                for (id, category, priority, title, content, action_type) in &notifications {
+                    xml.push_str(&format!(
+                        "  <notification id=\"{}\" category=\"{}\" priority=\"{}\">\n    <title>{}</title>\n    <content>{}</content>\n",
+                        xml_escape(id),
+                        xml_escape(category),
+                        xml_escape(priority),
+                        xml_escape(title),
+                        xml_escape(content),
+                    ));
+                    if let Some(at) = action_type {
+                        xml.push_str(&format!(
+                            "    <action>Respond with: forge-next act-notification --id {} --approve (action: {})</action>\n",
+                            xml_escape(id),
+                            xml_escape(at),
+                        ));
+                    }
+                    xml.push_str("  </notification>\n");
+                }
+                xml.push_str("</notifications>\n");
+            }
+        }
+    }
+
     xml.push_str("</forge-dynamic>");
     xml
 }
