@@ -421,6 +421,100 @@ pub fn ack_messages(
     Ok(count)
 }
 
+// ── A2A Permission Model ──
+
+/// Check if a message from one agent type to another is allowed.
+/// In "open" mode, always returns true.
+/// In "controlled" mode, checks the a2a_permission table.
+/// Default: deny if no matching permission found in controlled mode.
+pub fn check_a2a_permission(
+    conn: &Connection,
+    trust_mode: &str,
+    from_agent: &str,
+    to_agent: &str,
+    from_project: Option<&str>,
+    to_project: Option<&str>,
+) -> bool {
+    if trust_mode == "open" {
+        return true;
+    }
+
+    // In controlled mode, check the permission table.
+    // Match rules (priority order):
+    // 1. Exact match (from_agent, to_agent, project scope)
+    // 2. Wildcard match (from_agent="*" or to_agent="*")
+    // 3. Project-scoped (from_project matches or NULL for any)
+    // Default: deny
+    let sql = "
+        SELECT allowed FROM a2a_permission
+        WHERE (from_agent = ?1 OR from_agent = '*')
+          AND (to_agent = ?2 OR to_agent = '*')
+          AND (from_project IS NULL OR from_project = ?3 OR ?3 IS NULL)
+          AND (to_project IS NULL OR to_project = ?4 OR ?4 IS NULL)
+        ORDER BY
+            -- Prefer exact matches over wildcards
+            CASE WHEN from_agent = ?1 AND to_agent = ?2 THEN 0
+                 WHEN from_agent = ?1 OR to_agent = ?2 THEN 1
+                 ELSE 2 END
+        LIMIT 1
+    ";
+
+    conn.query_row(
+        sql,
+        params![from_agent, to_agent, from_project, to_project],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|allowed| allowed != 0)
+    .unwrap_or(false) // Default: deny if no matching permission
+}
+
+/// Grant an A2A permission. Returns the permission ID.
+pub fn grant_a2a_permission(
+    conn: &Connection,
+    from_agent: &str,
+    to_agent: &str,
+    from_project: Option<&str>,
+    to_project: Option<&str>,
+) -> rusqlite::Result<String> {
+    let id = Ulid::new().to_string();
+    conn.execute(
+        "INSERT INTO a2a_permission (id, from_agent, to_agent, from_project, to_project, allowed, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, 'user', datetime('now'))",
+        params![id, from_agent, to_agent, from_project, to_project],
+    )?;
+    Ok(id)
+}
+
+/// Revoke an A2A permission by ID. Returns true if the permission existed.
+pub fn revoke_a2a_permission(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+    let deleted = conn.execute(
+        "DELETE FROM a2a_permission WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(deleted > 0)
+}
+
+/// List all A2A permissions.
+pub fn list_a2a_permissions(conn: &Connection) -> rusqlite::Result<Vec<forge_core::protocol::response::A2aPermission>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, from_agent, to_agent, from_project, to_project, allowed, created_by, created_at
+         FROM a2a_permission ORDER BY created_at DESC"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(forge_core::protocol::response::A2aPermission {
+            id: row.get(0)?,
+            from_agent: row.get(1)?,
+            to_agent: row.get(2)?,
+            from_project: row.get(3)?,
+            to_project: row.get(4)?,
+            allowed: row.get::<_, i64>(5)? != 0,
+            created_by: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    })?;
+    rows.collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -824,5 +918,118 @@ mod tests {
         assert_eq!(read.len(), 1, "should have 1 read message");
         let all = list_messages(&conn, "s1", None, 10).unwrap();
         assert_eq!(all.len(), 2, "should have 2 total messages");
+    }
+
+    // ── A2A Permission Tests ──
+
+    #[test]
+    fn test_open_mode_allows_all() {
+        let conn = setup();
+        // In open mode, any message should be allowed regardless of agents/projects
+        assert!(check_a2a_permission(&conn, "open", "claude-code", "cline", None, None));
+        assert!(check_a2a_permission(&conn, "open", "unknown-agent", "another-agent", Some("proj"), Some("proj2")));
+    }
+
+    #[test]
+    fn test_controlled_mode_denies_without_permission() {
+        let conn = setup();
+        // In controlled mode with no permissions, all messages should be denied
+        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "cline", Some("forge"), Some("forge")));
+    }
+
+    #[test]
+    fn test_controlled_mode_allows_with_permission() {
+        let conn = setup();
+        // Grant permission from claude-code to cline
+        let id = grant_a2a_permission(&conn, "claude-code", "cline", None, None).unwrap();
+        assert!(!id.is_empty());
+
+        // Should now be allowed
+        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+
+        // Reverse direction should still be denied (permission is directional)
+        assert!(!check_a2a_permission(&conn, "controlled", "cline", "claude-code", None, None));
+    }
+
+    #[test]
+    fn test_wildcard_permission() {
+        let conn = setup();
+        // Grant wildcard: any agent can message cline
+        grant_a2a_permission(&conn, "*", "cline", None, None).unwrap();
+
+        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+        assert!(check_a2a_permission(&conn, "controlled", "codex", "cline", None, None));
+        assert!(check_a2a_permission(&conn, "controlled", "unknown", "cline", None, None));
+
+        // But messages TO other agents should still be denied
+        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "codex", None, None));
+    }
+
+    #[test]
+    fn test_wildcard_to_agent() {
+        let conn = setup();
+        // Grant: claude-code can message ANY agent
+        grant_a2a_permission(&conn, "claude-code", "*", None, None).unwrap();
+
+        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "codex", None, None));
+        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "anything", None, None));
+
+        // Other agents still denied
+        assert!(!check_a2a_permission(&conn, "controlled", "cline", "codex", None, None));
+    }
+
+    #[test]
+    fn test_grant_and_revoke() {
+        let conn = setup();
+        // Grant permission
+        let id = grant_a2a_permission(&conn, "claude-code", "cline", None, None).unwrap();
+        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+
+        // Revoke it
+        let found = revoke_a2a_permission(&conn, &id).unwrap();
+        assert!(found, "should find and revoke the permission");
+
+        // Should now be denied again
+        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+
+        // Revoking again should return false
+        let found = revoke_a2a_permission(&conn, &id).unwrap();
+        assert!(!found, "should not find already-revoked permission");
+    }
+
+    #[test]
+    fn test_list_a2a_permissions() {
+        let conn = setup();
+        assert!(list_a2a_permissions(&conn).unwrap().is_empty());
+
+        grant_a2a_permission(&conn, "claude-code", "cline", None, None).unwrap();
+        grant_a2a_permission(&conn, "*", "*", Some("forge"), Some("forge")).unwrap();
+
+        let perms = list_a2a_permissions(&conn).unwrap();
+        assert_eq!(perms.len(), 2);
+
+        // All should be allowed=true
+        assert!(perms.iter().all(|p| p.allowed));
+    }
+
+    #[test]
+    fn test_project_scoped_permission() {
+        let conn = setup();
+        // Grant permission only for forge project
+        grant_a2a_permission(&conn, "claude-code", "cline", Some("forge"), Some("forge")).unwrap();
+
+        // Should be allowed for forge project
+        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", Some("forge"), Some("forge")));
+
+        // Should be allowed when project is NULL (NULL matches anything in the query)
+        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+
+        // Exact project mismatch should be denied
+        // The permission has from_project="forge", but caller says from_project="other"
+        // Query: (from_project IS NULL OR from_project = ?3 OR ?3 IS NULL)
+        // from_project="forge", ?3="other" -> false OR false OR false -> denied
+        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "cline", Some("other"), Some("forge")));
     }
 }

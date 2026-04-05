@@ -249,6 +249,22 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_entity_type ON entity(entity_type);
     ")?;
 
+    // A2A permission table: controlled inter-session messaging permissions
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS a2a_permission (
+            id TEXT PRIMARY KEY,
+            from_agent TEXT NOT NULL,
+            to_agent TEXT NOT NULL,
+            from_project TEXT,
+            to_project TEXT,
+            allowed INTEGER NOT NULL DEFAULT 1,
+            created_by TEXT NOT NULL DEFAULT 'system',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_a2a_perm_from ON a2a_permission(from_agent);
+        CREATE INDEX IF NOT EXISTS idx_a2a_perm_to ON a2a_permission(to_agent);
+    ")?;
+
     // Bootstrap: transcript processing log for efficient skip/resume
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS transcript_log (

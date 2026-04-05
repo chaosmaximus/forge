@@ -53,6 +53,7 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::Export { .. }
             | Request::SessionMessages { .. }
             | Request::ListEntities { .. }
+            | Request::ListPermissions
     )
 }
 
@@ -188,6 +189,8 @@ mod tests {
             project: None,
         }));
 
+        assert!(is_read_only(&Request::ListPermissions));
+
         // Verify known write requests
         assert!(!is_read_only(&Request::Remember {
             memory_type: forge_core::types::MemoryType::Decision,
@@ -232,6 +235,15 @@ mod tests {
         }));
         assert!(!is_read_only(&Request::Bootstrap {
             project: None,
+        }));
+        assert!(!is_read_only(&Request::GrantPermission {
+            from_agent: "claude-code".into(),
+            to_agent: "cline".into(),
+            from_project: None,
+            to_project: None,
+        }));
+        assert!(!is_read_only(&Request::RevokePermission {
+            id: "perm-1".into(),
         }));
     }
 

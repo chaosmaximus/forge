@@ -32,6 +32,7 @@ mod tests {
             ("sync_conflicts", Request::SyncConflicts),
             ("hlc_backfill", Request::HlcBackfill),
             ("force_consolidate", Request::ForceConsolidate),
+            ("list_permissions", Request::ListPermissions),
             ("shutdown", Request::Shutdown),
         ];
 
@@ -363,6 +364,19 @@ mod tests {
                     text: "User decided to use Rust for the daemon.".into(),
                 },
             ),
+            (
+                "grant_permission",
+                Request::GrantPermission {
+                    from_agent: "claude-code".into(),
+                    to_agent: "cline".into(),
+                    from_project: Some("forge".into()),
+                    to_project: None,
+                },
+            ),
+            (
+                "revoke_permission",
+                Request::RevokePermission { id: "perm-123".into() },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -568,6 +582,18 @@ mod tests {
                 "extract_with_provider with model",
                 r#"{"method":"extract_with_provider","params":{"provider":"claude_api","model":"claude-3-haiku","text":"some conversation"}}"#,
             ),
+            (
+                "grant_permission",
+                r#"{"method":"grant_permission","params":{"from_agent":"claude-code","to_agent":"cline"}}"#,
+            ),
+            (
+                "grant_permission with projects",
+                r#"{"method":"grant_permission","params":{"from_agent":"*","to_agent":"*","from_project":"forge","to_project":"forge"}}"#,
+            ),
+            (
+                "revoke_permission",
+                r#"{"method":"revoke_permission","params":{"id":"perm-123"}}"#,
+            ),
         ];
 
         for (label, json) in &cases {
@@ -597,6 +623,7 @@ mod tests {
             ("sync_conflicts", r#"{"method":"sync_conflicts"}"#),
             ("hlc_backfill", r#"{"method":"hlc_backfill"}"#),
             ("force_consolidate", r#"{"method":"force_consolidate"}"#),
+            ("list_permissions", r#"{"method":"list_permissions"}"#),
             ("shutdown", r#"{"method":"shutdown"}"#),
         ];
 
@@ -621,12 +648,12 @@ mod tests {
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 14 (ManasHealth moved to parameterized)
-        let unit_count = 14;
-        // Parameterized variants: 44 (ManasHealth + CleanupSessions + 4 A2A: SessionSend/Respond/Messages/Ack)
-        let param_count = 44;
-        // Total: 58
-        let expected_total = 58;
+        // Unit variants: 15 (ManasHealth moved to parameterized, +ListPermissions)
+        let unit_count = 15;
+        // Parameterized variants: 47 (including ListEntities, A2A FISP, A2A permissions)
+        let param_count = 47;
+        // Total: 62
+        let expected_total = 62;
 
         assert_eq!(
             unit_count + param_count,
@@ -830,6 +857,18 @@ mod tests {
                     model: None,
                     text: "test".into(),
                 },
+                Request::ListEntities {
+                    project: None,
+                    limit: None,
+                },
+                Request::GrantPermission {
+                    from_agent: "claude-code".into(),
+                    to_agent: "cline".into(),
+                    from_project: None,
+                    to_project: None,
+                },
+                Request::RevokePermission { id: "perm-1".into() },
+                Request::ListPermissions,
             ]
         }
 

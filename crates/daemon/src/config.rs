@@ -11,6 +11,16 @@ use serde::{Deserialize, Serialize};
 pub struct ForgeConfig {
     pub extraction: ExtractionConfig,
     pub embedding: EmbeddingConfig,
+    pub a2a: A2aConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct A2aConfig {
+    /// Whether A2A inter-session messaging is enabled at all.
+    pub enabled: bool,
+    /// Trust mode: "open" (default, all sessions can message freely) or "controlled" (check permission table).
+    pub trust: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +147,15 @@ impl Default for EmbeddingConfig {
     }
 }
 
+impl Default for A2aConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            trust: "open".to_string(),
+        }
+    }
+}
+
 impl ForgeConfig {
     /// Validate that config fields are sensible.
     pub fn validate(&self) -> Result<(), String> {
@@ -151,6 +170,9 @@ impl ForgeConfig {
         }
         if self.extraction.ollama.endpoint.trim().is_empty() {
             return Err("extraction.ollama.endpoint must not be empty".into());
+        }
+        if !["open", "controlled"].contains(&self.a2a.trust.as_str()) {
+            return Err(format!("a2a.trust must be 'open' or 'controlled', got '{}'", self.a2a.trust));
         }
         Ok(())
     }
@@ -234,6 +256,15 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         ["embedding", "model"] => config.embedding.model = value.to_string(),
         ["embedding", "dimensions"] => {
             config.embedding.dimensions = value.parse().map_err(|e| format!("invalid dimensions: {e}"))?;
+        }
+        ["a2a", "enabled"] => {
+            config.a2a.enabled = value.parse().map_err(|e| format!("invalid a2a.enabled: {e}"))?;
+        }
+        ["a2a", "trust"] => {
+            if !["open", "controlled"].contains(&value) {
+                return Err(format!("a2a.trust must be 'open' or 'controlled', got '{value}'"));
+            }
+            config.a2a.trust = value.to_string();
         }
         _ => return Err(format!("unknown config key: {key}")),
     }

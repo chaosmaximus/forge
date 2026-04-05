@@ -296,5 +296,19 @@ pub enum Request {
         limit: Option<usize>,
     },
 
+    // ── A2A Permission Management ──
+
+    /// Grant A2A permission for inter-session messaging
+    GrantPermission {
+        from_agent: String,
+        to_agent: String,
+        from_project: Option<String>,
+        to_project: Option<String>,
+    },
+    /// Revoke an A2A permission by ID
+    RevokePermission { id: String },
+    /// List all A2A permissions
+    ListPermissions,
+
     Shutdown,
 }
