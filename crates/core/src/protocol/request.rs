@@ -90,6 +90,12 @@ pub enum Request {
     /// Subscribe to real-time event stream (keeps connection open, streams NDJSON)
     Subscribe {
         events: Option<Vec<String>>, // filter by event type; None = all events
+        /// Only include events referencing this session_id
+        #[serde(default)]
+        session_id: Option<String>,
+        /// Only include events referencing this team_id
+        #[serde(default)]
+        team_id: Option<String>,
     },
     /// Pre-execution guardrail check: are there decisions linked to this file?
     GuardrailsCheck {
