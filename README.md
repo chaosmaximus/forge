@@ -21,7 +21,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/tests-1%2C077%20passing-brightgreen" alt="Tests" />
-  <img src="https://img.shields.io/badge/commands-60%2B-blue" alt="Commands" />
+  <img src="https://img.shields.io/badge/commands-75%2B-blue" alt="Commands" />
   <img src="https://img.shields.io/badge/workers-9-orange" alt="Workers" />
   <img src="https://img.shields.io/badge/memory%20layers-8-purple" alt="Memory Layers" />
   <img src="https://img.shields.io/badge/rust-1.88-orange" alt="Rust" />
@@ -53,7 +53,7 @@ Forge is an always-on daemon that gives AI agents persistent memory, intelligent
 
 ```bash
 # 1. Install
-curl -fsSL https://forge.bhairavi.tech/install | sh
+curl -fsSL https://forge.bhairavi.tech/install.sh | sh
 
 # 2. Bootstrap from your existing Claude Code / Codex / Cursor transcripts
 forge-next bootstrap
@@ -90,7 +90,7 @@ graph TB
     end
 
     subgraph Daemon["Forge Daemon — Rust"]
-        Socket["Unix Socket API · 60+ commands"]
+        Socket["Unix Socket API · 75+ commands"]
         Manas["8-Layer Manas Memory"]
         Workers["9 Background Workers"]
         Guards["Guardrails Engine"]
@@ -158,7 +158,7 @@ graph TB
 
 ### Infrastructure
 - **Persistent daemon** — launchd/systemd, starts at boot
-- **9 background workers** — continuous ambient processing
+- **8 background workers** — continuous ambient processing
 - **Self-healing graph** — sleep-cycle consolidation overnight
 - **Predictive prefetch** — zero cold-start context injection
 - **Memory sync** — encrypted peer-to-peer across machines
@@ -266,7 +266,7 @@ Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to re
 ## Under the Hood
 
 ```
-60+ protocol commands · 9 background workers · 8 memory layers
+75+ protocol commands · 8 background workers · 8 memory layers
 1,077 tests · 6 adversarial security reviews · 0 warnings (clippy)
 ```
 

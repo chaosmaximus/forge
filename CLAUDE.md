@@ -167,7 +167,7 @@ forge-next remember --type decision --title "..." --content "..."
 
 ## Architecture (v0.7.0 — FISP)
 
-**Daemon-first. CLI-first. No MCP server. 8-layer memory. Actor model. Tunable. 488+ tests.**
+**Daemon-first. CLI-first. No MCP server. 8-layer memory. Actor model. Tunable. 1,077+ tests.**
 
 ```
 forge-daemon (Rust, single binary) — always-on daemon, Unix socket API
