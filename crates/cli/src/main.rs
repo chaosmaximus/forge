@@ -553,6 +553,37 @@ enum Commands {
         #[arg(long)]
         session: String,
     },
+
+    // ── Proactive Context (Prajna) ──
+
+    /// Per-turn context delta check (used by UserPromptSubmit hook)
+    #[command(name = "context-refresh")]
+    ContextRefresh {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        since: Option<String>,
+    },
+
+    /// Check for premature completion signals (used by Stop hook)
+    #[command(name = "completion-check")]
+    CompletionCheck {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        claimed_done: bool,
+    },
+
+    /// Verify task completion criteria (used by TaskCompleted hook)
+    #[command(name = "task-completion-check")]
+    TaskCompletionCheck {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        description: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1176,6 +1207,17 @@ async fn main() {
         }
         Commands::SessionHeartbeat { session } => {
             commands::system::session_heartbeat(session).await;
+        }
+
+        // ── Proactive Context (Prajna) ──
+        Commands::ContextRefresh { session_id, since } => {
+            commands::system::context_refresh(session_id, since).await;
+        }
+        Commands::CompletionCheck { session_id, claimed_done } => {
+            commands::system::completion_check(session_id, claimed_done).await;
+        }
+        Commands::TaskCompletionCheck { session_id, subject, description } => {
+            commands::system::task_completion_check(session_id, subject, description).await;
         }
     }
 }
@@ -1855,5 +1897,102 @@ mod tests {
             }
             other => panic!("expected SessionHeartbeat, got {:?}", other),
         }
+    }
+
+    // ── Proactive Context (Prajna) tests ──
+
+    #[test]
+    fn test_context_refresh_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "context-refresh",
+            "--session-id",
+            "s1",
+            "--since",
+            "2026-04-06T12:00:00Z",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "context-refresh should parse: {:?}",
+            cli.err()
+        );
+    }
+
+    #[test]
+    fn test_context_refresh_no_since_parse() {
+        let cli =
+            Cli::try_parse_from(["forge-next", "context-refresh", "--session-id", "s1"]);
+        assert!(
+            cli.is_ok(),
+            "context-refresh without --since should parse: {:?}",
+            cli.err()
+        );
+    }
+
+    #[test]
+    fn test_completion_check_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "completion-check",
+            "--session-id",
+            "s1",
+            "--claimed-done",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "completion-check should parse: {:?}",
+            cli.err()
+        );
+    }
+
+    #[test]
+    fn test_completion_check_no_flag_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "completion-check",
+            "--session-id",
+            "s1",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "completion-check without --claimed-done should parse: {:?}",
+            cli.err()
+        );
+    }
+
+    #[test]
+    fn test_task_completion_check_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "task-completion-check",
+            "--session-id",
+            "s1",
+            "--subject",
+            "deploy to prod",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "task-completion-check should parse: {:?}",
+            cli.err()
+        );
+    }
+
+    #[test]
+    fn test_task_completion_check_with_description_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "task-completion-check",
+            "--session-id",
+            "s1",
+            "--subject",
+            "deploy to prod",
+            "--description",
+            "Deploy the staging environment to production",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "task-completion-check with --description should parse: {:?}",
+            cli.err()
+        );
     }
 }

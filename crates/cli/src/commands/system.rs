@@ -1590,6 +1590,114 @@ pub async fn subscribe(
     }
 }
 
+// ── Proactive Context (Prajna) ──
+
+/// Per-turn context delta check (used by UserPromptSubmit hook).
+pub async fn context_refresh(session_id: String, since: Option<String>) {
+    let req = Request::ContextRefresh { session_id, since };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data:
+                ResponseData::ContextDelta {
+                    notifications,
+                    warnings,
+                    anti_patterns,
+                    messages_pending,
+                },
+        }) => {
+            for n in &notifications {
+                println!("notification: {}", n);
+            }
+            for w in &warnings {
+                println!("warning: {}", w);
+            }
+            for a in &anti_patterns {
+                println!("anti-pattern: {}", a);
+            }
+            if messages_pending > 0 {
+                println!("messages-pending: {}", messages_pending);
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Check for premature completion signals (used by Stop hook).
+pub async fn completion_check(session_id: String, claimed_done: bool) {
+    let req = Request::CompletionCheck {
+        session_id,
+        claimed_done,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data:
+                ResponseData::CompletionCheckResult {
+                    has_completion_signal,
+                    relevant_lessons,
+                    severity,
+                },
+        }) => {
+            if has_completion_signal && !relevant_lessons.is_empty() {
+                println!("severity: {}", severity);
+                for l in &relevant_lessons {
+                    println!("lesson: {}", l);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Verify task completion criteria (used by TaskCompleted hook).
+pub async fn task_completion_check(
+    session_id: String,
+    subject: String,
+    description: Option<String>,
+) {
+    let req = Request::TaskCompletionCheck {
+        session_id,
+        task_subject: subject,
+        task_description: description,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::TaskCompletionCheckResult { warnings, checklists },
+        }) => {
+            for w in &warnings {
+                println!("warning: {}", w);
+            }
+            for c in &checklists {
+                println!("checklist: {}", c);
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
 }
