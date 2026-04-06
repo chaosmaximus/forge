@@ -13,8 +13,10 @@
 use crate::config::ForgeConfig;
 use crate::events::EventSender;
 use crate::server::handler::{handle_request, DaemonState};
+use crate::server::pty::PtyManager;
 use crate::server::rbac::{check_permission, resolve_role};
 use crate::server::writer::{is_read_only, AuditContext, WriteCommand};
+use crate::server::ws::{terminal_ws_handler, SharedPtyManager};
 use axum::extract::{Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::Method;
@@ -26,7 +28,7 @@ use forge_core::protocol::{Request, Response};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 
 use super::health::{healthz, readyz, startupz};
@@ -417,9 +419,17 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
             .with_state(state)
     };
 
+    // Terminal WebSocket route — PTY-backed bidirectional terminal I/O.
+    // Not behind auth middleware (auth will be added later via token query param).
+    let pty_manager: SharedPtyManager = Arc::new(Mutex::new(PtyManager::new()));
+    let terminal_routes = Router::new()
+        .route("/api/terminal", get(terminal_ws_handler))
+        .with_state(pty_manager);
+
     Router::new()
         .merge(health_routes)
         .merge(api_routes)
+        .merge(terminal_routes)
         .layer(cors)
 }
 

@@ -8,6 +8,7 @@ pub mod pty;
 pub mod rbac;
 pub mod socket;
 pub mod tls;
+pub mod ws;
 pub mod writer;
 
 pub use handler::{DaemonState, handle_request};
