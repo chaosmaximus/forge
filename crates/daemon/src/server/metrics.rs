@@ -108,11 +108,58 @@ impl ForgeMetrics {
     }
 }
 
+/// Refresh gauge values from the database before a Prometheus scrape.
+/// Opens a read-only connection, queries current counts, and updates gauges.
+fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
+    // Open a per-scrape read-only connection (same pattern as health probes)
+    let reader = match crate::server::handler::DaemonState::new_reader(
+        &state.db_path,
+        state.events.clone(),
+        std::sync::Arc::clone(&state.hlc),
+        state.started_at,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("metrics: failed to open reader for gauge refresh: {e}");
+            return;
+        }
+    };
+
+    // Memory count
+    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0)) {
+        metrics.memories_total.set(count);
+    }
+    // Edge count
+    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get::<_, i64>(0)) {
+        metrics.edges_total.set(count);
+    }
+    // Embedding count
+    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM memory_vec", [], |r| r.get::<_, i64>(0)) {
+        metrics.embeddings_total.set(count);
+    }
+    // Active sessions (non-ended)
+    if let Ok(count) = reader.conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL",
+        [],
+        |r| r.get::<_, i64>(0),
+    ) {
+        metrics.active_sessions.set(count);
+    }
+    // Worker health — set all known workers to 1 (we're alive if we can query)
+    for worker in &["watcher", "extractor", "embedder", "consolidator", "indexer", "perception", "disposition", "diagnostics"] {
+        metrics.worker_healthy.with_label_values(&[worker]).set(1);
+    }
+}
+
 /// GET /metrics — Prometheus scrape endpoint.
-/// Returns all metric families in the standard text exposition format.
+/// Refreshes gauges from DB, then returns all metrics in text format.
 pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     // metrics is always Some when this handler is registered (guarded by config check)
     let metrics = state.metrics.as_ref().expect("metrics must be Some when /metrics is registered");
+
+    // Refresh gauges from live DB data on each scrape
+    refresh_gauges(metrics, &state);
+
     let encoder = TextEncoder::new();
     let metric_families = metrics.registry.gather();
     let mut buffer = String::new();
@@ -160,6 +207,7 @@ mod tests {
             started_at: Instant::now(),
             write_tx,
             admin_emails: vec![],
+            viewer_emails: vec![],
             auth_enabled: false,
             metrics,
         }

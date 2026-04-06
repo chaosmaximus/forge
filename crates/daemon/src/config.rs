@@ -115,6 +115,10 @@ pub struct AuthConfig {
     pub required_claims: Vec<String>,
     #[serde(default)]
     pub admin_emails: Vec<String>,
+    /// Emails assigned the Viewer role (read-only access).
+    /// Users not in admin_emails or viewer_emails default to Member.
+    #[serde(default)]
+    pub viewer_emails: Vec<String>,
     #[serde(default = "default_3600_u64")]
     pub jwks_cache_secs: u64,
     #[serde(default)]
@@ -129,6 +133,7 @@ impl Default for AuthConfig {
             audience: String::new(),
             required_claims: Vec::new(),
             admin_emails: Vec::new(),
+            viewer_emails: Vec::new(),
             jwks_cache_secs: 3600,
             offline_jwks_path: None,
         }
@@ -574,6 +579,9 @@ impl ForgeConfig {
         }
         if let Ok(v) = std::env::var("FORGE_AUTH_ADMIN_EMAILS") {
             self.auth.admin_emails = v.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(v) = std::env::var("FORGE_AUTH_VIEWER_EMAILS") {
+            self.auth.viewer_emails = v.split(',').map(|s| s.trim().to_string()).collect();
         }
         if let Ok(v) = std::env::var("FORGE_AUTH_JWKS_CACHE_SECS") {
             if let Ok(n) = v.parse::<u64>() {

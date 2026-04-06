@@ -40,6 +40,8 @@ pub struct AppState {
     pub write_tx: mpsc::Sender<WriteCommand>,
     /// Admin email list for RBAC role resolution (empty = no admins configured).
     pub admin_emails: Vec<String>,
+    /// Viewer email list for RBAC role resolution (read-only access).
+    pub viewer_emails: Vec<String>,
     /// Whether auth (and thus RBAC) is enabled.
     pub auth_enabled: bool,
     /// Prometheus metrics collectors (None when metrics.enabled = false).
@@ -92,7 +94,7 @@ async fn api_handler(
     // RBAC check: only when auth is enabled and claims are present
     let audit_ctx = if state.auth_enabled {
         if let Some(ref c) = claims {
-            let role = resolve_role(c, &state.admin_emails);
+            let role = resolve_role(c, &state.admin_emails, &state.viewer_emails);
             if let Err(reason) = check_permission(&role, &request) {
                 return (
                     axum::http::StatusCode::FORBIDDEN,
@@ -317,6 +319,7 @@ pub async fn run_http_server_with_listener(
         started_at,
         write_tx,
         admin_emails: config.auth.admin_emails.clone(),
+        viewer_emails: config.auth.viewer_emails.clone(),
         auth_enabled: config.auth.enabled,
         metrics,
     };
@@ -361,6 +364,7 @@ mod tests {
             started_at: Instant::now(),
             write_tx,
             admin_emails: Vec::new(),
+            viewer_emails: Vec::new(),
             auth_enabled: false,
             metrics: None,
         }
@@ -707,6 +711,7 @@ Pfkte+2kAeYPMK9Sa+apqqE=
             started_at,
             write_tx,
             admin_emails: Vec::new(),
+            viewer_emails: Vec::new(),
             auth_enabled: false,
             metrics: None,
         };

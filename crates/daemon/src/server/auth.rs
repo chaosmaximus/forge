@@ -433,6 +433,7 @@ JQIDAQAB
             audience: "forge-api".to_string(),
             required_claims: vec![],
             admin_emails: vec![],
+            viewer_emails: vec![],
             jwks_cache_secs: 3600,
             offline_jwks_path: None,
         }

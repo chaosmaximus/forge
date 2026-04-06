@@ -30,14 +30,18 @@ impl Role {
     }
 }
 
-/// Resolve the role from JWT claims and the admin email list.
+/// Resolve the role from JWT claims, admin email list, and viewer email list.
 ///
 /// - If the user's email is in `admin_emails`, they get Admin.
+/// - If the user's email is in `viewer_emails`, they get Viewer (read-only).
 /// - Otherwise, authenticated users default to Member.
-pub fn resolve_role(claims: &AuthClaims, admin_emails: &[String]) -> Role {
+pub fn resolve_role(claims: &AuthClaims, admin_emails: &[String], viewer_emails: &[String]) -> Role {
     if let Some(ref email) = claims.email {
         if admin_emails.iter().any(|e| e == email) {
             return Role::Admin;
+        }
+        if viewer_emails.iter().any(|e| e == email) {
+            return Role::Viewer;
         }
     }
     Role::Member
@@ -109,7 +113,7 @@ mod tests {
     fn test_resolve_role_admin_by_email() {
         let claims = make_claims(Some("admin@example.com"));
         let admin_emails = vec!["admin@example.com".to_string()];
-        assert_eq!(resolve_role(&claims, &admin_emails), Role::Admin);
+        assert_eq!(resolve_role(&claims, &admin_emails, &[]), Role::Admin);
     }
 
     #[test]
@@ -119,28 +123,45 @@ mod tests {
             "admin@example.com".to_string(),
             "boss@co.com".to_string(),
         ];
-        assert_eq!(resolve_role(&claims, &admin_emails), Role::Admin);
+        assert_eq!(resolve_role(&claims, &admin_emails, &[]), Role::Admin);
     }
 
     #[test]
     fn test_resolve_role_member_when_not_in_admin_list() {
         let claims = make_claims(Some("user@example.com"));
         let admin_emails = vec!["admin@example.com".to_string()];
-        assert_eq!(resolve_role(&claims, &admin_emails), Role::Member);
+        assert_eq!(resolve_role(&claims, &admin_emails, &[]), Role::Member);
     }
 
     #[test]
     fn test_resolve_role_member_when_no_email() {
         let claims = make_claims(None);
         let admin_emails = vec!["admin@example.com".to_string()];
-        assert_eq!(resolve_role(&claims, &admin_emails), Role::Member);
+        assert_eq!(resolve_role(&claims, &admin_emails, &[]), Role::Member);
     }
 
     #[test]
     fn test_resolve_role_member_when_empty_admin_list() {
         let claims = make_claims(Some("admin@example.com"));
         let admin_emails: Vec<String> = vec![];
-        assert_eq!(resolve_role(&claims, &admin_emails), Role::Member);
+        assert_eq!(resolve_role(&claims, &admin_emails, &[]), Role::Member);
+    }
+
+    #[test]
+    fn test_resolve_role_viewer_by_email() {
+        let claims = make_claims(Some("readonly@example.com"));
+        let admin_emails: Vec<String> = vec![];
+        let viewer_emails = vec!["readonly@example.com".to_string()];
+        assert_eq!(resolve_role(&claims, &admin_emails, &viewer_emails), Role::Viewer);
+    }
+
+    #[test]
+    fn test_resolve_role_admin_takes_precedence_over_viewer() {
+        let claims = make_claims(Some("admin@example.com"));
+        let admin_emails = vec!["admin@example.com".to_string()];
+        let viewer_emails = vec!["admin@example.com".to_string()];
+        // Admin wins when email is in both lists
+        assert_eq!(resolve_role(&claims, &admin_emails, &viewer_emails), Role::Admin);
     }
 
     // ── Admin permission tests ──
@@ -470,7 +491,7 @@ mod tests {
         let claims = make_claims(Some("Admin@Example.COM"));
         let admin_emails = vec!["admin@example.com".to_string()];
         // Standard email comparison — case matters in current implementation
-        let role = resolve_role(&claims, &admin_emails);
+        let role = resolve_role(&claims, &admin_emails, &[]);
         // If the implementation is case-sensitive, this will be Member
         // If case-insensitive, it will be Admin
         // Either way, we're documenting the behavior

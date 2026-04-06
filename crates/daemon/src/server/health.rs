@@ -171,6 +171,7 @@ mod tests {
             started_at: Instant::now(),
             write_tx,
             admin_emails: vec![],
+            viewer_emails: vec![],
             auth_enabled: false,
             metrics: None,
         }
