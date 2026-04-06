@@ -1,0 +1,79 @@
+# =============================================================================
+# Litestream — Continuous SQLite Replication for Forge
+# =============================================================================
+#
+# Litestream continuously replicates the SQLite WAL to a remote store,
+# providing near-realtime backup without stopping the daemon.
+#
+# Setup:
+#   1. Install Litestream: https://litestream.io/install/
+#   2. Copy this file to /etc/litestream.yml (or pass -config flag)
+#   3. Uncomment ONE replica backend below and set credentials
+#
+# Docker usage:
+#   Uncomment the Litestream COPY lines in the Dockerfile, then use:
+#
+#   # Restore on startup (no-op if DB already exists):
+#   litestream restore -if-db-not-exists -config /etc/litestream.yml /var/lib/forge/forge.db
+#
+#   # Run forge-daemon as a Litestream subprocess:
+#   litestream replicate -config /etc/litestream.yml -exec "forge-daemon"
+#
+#   This wraps the daemon so Litestream replicates every WAL frame as it
+#   is written, and cleanly shuts down replication when the daemon exits.
+#
+# Restore from backup:
+#   litestream restore -config /etc/litestream.yml -o /tmp/forge-restored.db /var/lib/forge/forge.db
+#
+# =============================================================================
+
+dbs:
+  - path: /var/lib/forge/forge.db
+
+    replicas:
+      # -----------------------------------------------------------------
+      # AWS S3
+      # -----------------------------------------------------------------
+      # - type: s3
+      #   bucket: ${LITESTREAM_S3_BUCKET}
+      #   path: forge/backup
+      #   region: ${AWS_REGION:-us-east-1}
+      #   access-key-id: ${AWS_ACCESS_KEY_ID}
+      #   secret-access-key: ${AWS_SECRET_ACCESS_KEY}
+      #   # Optional: use endpoint for S3-compatible stores (MinIO, R2, etc.)
+      #   # endpoint: https://your-minio.example.com
+
+      # -----------------------------------------------------------------
+      # Google Cloud Storage
+      # -----------------------------------------------------------------
+      # - type: gcs
+      #   bucket: ${LITESTREAM_GCS_BUCKET}
+      #   path: forge/backup
+      #   # Authentication: set GOOGLE_APPLICATION_CREDENTIALS env var
+      #   # pointing to a service account JSON key file.
+
+      # -----------------------------------------------------------------
+      # Azure Blob Storage
+      # -----------------------------------------------------------------
+      # - type: abs
+      #   account-name: ${AZURE_STORAGE_ACCOUNT}
+      #   account-key: ${AZURE_STORAGE_KEY}
+      #   bucket: ${AZURE_STORAGE_CONTAINER}
+      #   path: forge/backup
+
+      # -----------------------------------------------------------------
+      # Cloudflare R2 (S3-compatible)
+      # -----------------------------------------------------------------
+      # - type: s3
+      #   bucket: ${R2_BUCKET}
+      #   path: forge/backup
+      #   endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+      #   access-key-id: ${R2_ACCESS_KEY_ID}
+      #   secret-access-key: ${R2_SECRET_ACCESS_KEY}
+      #   skip-verify: true
+
+      # -----------------------------------------------------------------
+      # Local file backup (development / testing)
+      # -----------------------------------------------------------------
+      - type: file
+        path: /var/lib/forge/backups

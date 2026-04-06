@@ -1,0 +1,45 @@
+# Build artifacts
+target/
+
+# Git
+.git/
+.gitignore
+
+# Claude Code / Forge development
+.claude/
+*.md
+
+# Documentation
+docs/
+
+# Test fixtures and scripts
+tests/
+scripts/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python (legacy)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node (legacy)
+node_modules/
+
+# Deploy configs (not needed in build context)
+deploy/
+
+# Misc
+*.log
+*.tmp
+2026-*.txt
