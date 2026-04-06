@@ -5,19 +5,92 @@ use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+/// Initialize the OpenTelemetry OTLP tracer provider and return a tracing-opentelemetry layer.
+/// This is called only when FORGE_OTLP_ENABLED=true and FORGE_OTLP_ENDPOINT is set.
+fn init_otlp_layer<S>(
+    endpoint: &str,
+    service_name: &str,
+) -> Result<tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry_sdk::trace::Tracer>, Box<dyn std::error::Error>>
+where
+    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+{
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry::KeyValue;
+    use opentelemetry_otlp::WithExportConfig;
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()?;
+
+    let resource = opentelemetry_sdk::Resource::new(vec![
+        KeyValue::new("service.name", service_name.to_string()),
+    ]);
+
+    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        .with_resource(resource)
+        .build();
+
+    let tracer = provider.tracer(service_name.to_string());
+    let layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    // Keep the provider alive globally so spans are exported on shutdown.
+    // opentelemetry::global is the canonical way to hold the provider.
+    opentelemetry::global::set_tracer_provider(provider);
+
+    Ok(layer)
+}
 
 #[tokio::main]
 async fn main() {
     // Initialize structured JSON logging to stderr BEFORE anything else.
     // stdout is reserved for protocol output (NDJSON).
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("forge_daemon=info")),
-        )
+    //
+    // The tracing subscriber is composed as layers so we can conditionally
+    // add the OTLP export layer when FORGE_OTLP_ENABLED=true.
+    // We read env vars directly (not ForgeConfig) to avoid a chicken-and-egg
+    // problem — config loading logs, but the logger isn't initialized yet.
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("forge_daemon=info"));
+
+    let json_layer = tracing_subscriber::fmt::layer()
         .json()
         .with_target(true)
-        .with_writer(std::io::stderr)
+        .with_writer(std::io::stderr);
+
+    let otlp_enabled = std::env::var("FORGE_OTLP_ENABLED")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+    let otlp_endpoint = std::env::var("FORGE_OTLP_ENDPOINT").unwrap_or_default();
+    let otlp_service = std::env::var("FORGE_OTLP_SERVICE_NAME")
+        .unwrap_or_else(|_| "forge-daemon".to_string());
+
+    // Build registry with json + optional OTLP layer.
+    // tracing_subscriber::Option<Layer> is itself a Layer, so we can use .with(Option<L>).
+    let otlp_layer = if otlp_enabled && !otlp_endpoint.is_empty() {
+        match init_otlp_layer(&otlp_endpoint, &otlp_service) {
+            Ok(layer) => {
+                // Can't use tracing::info yet — subscriber isn't installed.
+                eprintln!("[daemon] OTLP trace export enabled (endpoint={})", otlp_endpoint);
+                Some(layer)
+            }
+            Err(e) => {
+                eprintln!("[daemon] WARN: OTLP init failed (continuing without traces): {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(json_layer)
+        .with(otlp_layer)
         .init();
 
     let socket_path = std::env::var("FORGE_SOCKET").unwrap_or_else(|_| default_socket_path());

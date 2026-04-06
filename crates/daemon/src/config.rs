@@ -28,6 +28,7 @@ fn default_3600_u64() -> u64 { 3600 }
 fn default_8420_u16() -> u16 { 8420 }
 fn default_bind() -> String { "127.0.0.1".to_string() }
 fn default_cors_origins() -> Vec<String> { vec!["*".to_string()] }
+fn default_service_name() -> String { "forge-daemon".to_string() }
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,6 +59,8 @@ pub struct ForgeConfig {
     pub auth: AuthConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub otlp: OtlpConfig,
 }
 
 /// HTTP transport configuration — opt-in, disabled by default.
@@ -152,6 +155,32 @@ pub struct MetricsConfig {
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// OTLP trace export configuration — opt-in, disabled by default.
+/// When enabled, spans are exported via gRPC to a collector (Jaeger, Datadog, LangSmith, etc.).
+/// Override with FORGE_OTLP_ENABLED, FORGE_OTLP_ENDPOINT, FORGE_OTLP_SERVICE_NAME env vars.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OtlpConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    /// gRPC endpoint for OTLP collector, e.g. "http://localhost:4317"
+    #[serde(default)]
+    pub endpoint: String,
+    /// Service name reported in traces
+    #[serde(default = "default_service_name")]
+    pub service_name: String,
+}
+
+impl Default for OtlpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            service_name: "forge-daemon".to_string(),
+        }
     }
 }
 
@@ -597,6 +626,18 @@ impl ForgeConfig {
                 self.metrics.enabled = b;
             }
         }
+        // OTLP
+        if let Ok(v) = std::env::var("FORGE_OTLP_ENABLED") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.otlp.enabled = b;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_OTLP_ENDPOINT") {
+            self.otlp.endpoint = v;
+        }
+        if let Ok(v) = std::env::var("FORGE_OTLP_SERVICE_NAME") {
+            self.otlp.service_name = v;
+        }
     }
 
     /// Validate that config fields are sensible.
@@ -818,6 +859,16 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         // Agent
         ["agent", "auto_status"] => {
             config.agent.auto_status = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        // OTLP
+        ["otlp", "enabled"] => {
+            config.otlp.enabled = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["otlp", "endpoint"] => {
+            config.otlp.endpoint = value.to_string();
+        }
+        ["otlp", "service_name"] => {
+            config.otlp.service_name = value.to_string();
         }
         _ => return Err(format!("unknown config key: {key}")),
     }
@@ -1462,5 +1513,56 @@ offline_jwks_path = "/etc/forge/jwks.json"
         // Invalid value should error
         let err = update_config_at(path_str, "reality.auto_detect", "not_a_bool");
         assert!(err.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // OTLP config tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_otlp_config_defaults() {
+        let cfg = OtlpConfig::default();
+        assert!(!cfg.enabled, "otlp.enabled default should be false");
+        assert!(cfg.endpoint.is_empty(), "otlp.endpoint default should be empty");
+        assert_eq!(cfg.service_name, "forge-daemon", "otlp.service_name default should be forge-daemon");
+
+        // Also verify it shows up in ForgeConfig
+        let forge_cfg = ForgeConfig::default();
+        assert!(!forge_cfg.otlp.enabled);
+        assert!(forge_cfg.otlp.endpoint.is_empty());
+        assert_eq!(forge_cfg.otlp.service_name, "forge-daemon");
+    }
+
+    #[test]
+    fn test_otlp_config_from_toml() {
+        let toml_str = r#"
+[otlp]
+enabled = true
+endpoint = "http://localhost:4317"
+service_name = "my-forge"
+"#;
+        let cfg: ForgeConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.otlp.enabled);
+        assert_eq!(cfg.otlp.endpoint, "http://localhost:4317");
+        assert_eq!(cfg.otlp.service_name, "my-forge");
+    }
+
+    #[test]
+    #[serial]
+    fn test_otlp_env_override() {
+        let mut cfg = ForgeConfig::default();
+        std::env::set_var("FORGE_OTLP_ENABLED", "true");
+        std::env::set_var("FORGE_OTLP_ENDPOINT", "http://jaeger:4317");
+        std::env::set_var("FORGE_OTLP_SERVICE_NAME", "forge-prod");
+
+        cfg.apply_env_overrides();
+
+        assert!(cfg.otlp.enabled);
+        assert_eq!(cfg.otlp.endpoint, "http://jaeger:4317");
+        assert_eq!(cfg.otlp.service_name, "forge-prod");
+
+        std::env::remove_var("FORGE_OTLP_ENABLED");
+        std::env::remove_var("FORGE_OTLP_ENDPOINT");
+        std::env::remove_var("FORGE_OTLP_SERVICE_NAME");
     }
 }
