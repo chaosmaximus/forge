@@ -1912,6 +1912,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "portable-pty",
  "prometheus",
  "prost",
  "regex",
