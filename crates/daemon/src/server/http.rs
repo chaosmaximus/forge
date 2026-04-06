@@ -388,4 +388,114 @@ mod tests {
             axum::http::StatusCode::METHOD_NOT_ALLOWED
         );
     }
+
+    fn test_router_with_auth(state: AppState) -> Router {
+        let mut config = ForgeConfig::default();
+        config.auth.enabled = true;
+        config.auth.issuer_url = "https://test-issuer.example.com".to_string();
+        config.auth.audience = "forge-api".to_string();
+        build_router(&config, state)
+    }
+
+    #[tokio::test]
+    async fn test_health_probes_exempt_from_auth() {
+        let state = test_app_state();
+        let app = test_router_with_auth(state);
+
+        // healthz should work without any auth token
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "healthz should be exempt from auth"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_readyz_exempt_from_auth() {
+        let state = test_app_state();
+        let app = test_router_with_auth(state);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "readyz should be exempt from auth"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_api_requires_auth_when_enabled() {
+        let state = test_app_state();
+        let app = test_router_with_auth(state);
+
+        // POST /api without Bearer token should return 401
+        let body = serde_json::json!({"method": "health"});
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "POST /api without token should be 401 when auth enabled"
+        );
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(json["error"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_api_no_auth_when_disabled() {
+        // Default config has auth.enabled = false
+        let state = test_app_state();
+        let app = test_router(state);
+
+        // POST /api without Bearer token should work when auth is disabled
+        let body = serde_json::json!({"method": "health"});
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "POST /api should work without auth when auth is disabled"
+        );
+    }
 }
