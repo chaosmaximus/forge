@@ -278,6 +278,28 @@ mod tests {
                 },
             ),
             (
+                "context_refresh",
+                Request::ContextRefresh {
+                    session_id: "s-123".into(),
+                    since: Some("2026-04-06T12:00:00Z".into()),
+                },
+            ),
+            (
+                "completion_check",
+                Request::CompletionCheck {
+                    session_id: "s-123".into(),
+                    claimed_done: true,
+                },
+            ),
+            (
+                "task_completion_check",
+                Request::TaskCompletionCheck {
+                    session_id: "s-123".into(),
+                    task_subject: "deploy to production".into(),
+                    task_description: None,
+                },
+            ),
+            (
                 "compile_context",
                 Request::CompileContext {
                     agent: Some("claude-code".into()),
@@ -1044,10 +1066,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
         let unit_count = 16;
-        // Parameterized variants: 82 (78 + 4 notification: ListNotifications, AckNotification, DismissNotification, ActOnNotification)
-        let param_count = 82;
-        // Total: 98
-        let expected_total = 98;
+        // Parameterized variants: 85 (82 + 3 Prajna: ContextRefresh, CompletionCheck, TaskCompletionCheck)
+        let param_count = 85;
+        // Total: 101
+        let expected_total = 101;
 
         assert_eq!(
             unit_count + param_count,
@@ -1213,6 +1235,9 @@ mod tests {
                 Request::ListIdentity { agent: "a".into() },
                 Request::DeactivateIdentity { id: "i".into() },
                 Request::ListDisposition { agent: "a".into() },
+                Request::ContextRefresh { session_id: "s".into(), since: None },
+                Request::CompletionCheck { session_id: "s".into(), claimed_done: false },
+                Request::TaskCompletionCheck { session_id: "s".into(), task_subject: "t".into(), task_description: None },
                 Request::CompileContext {
                     agent: None,
                     project: None,

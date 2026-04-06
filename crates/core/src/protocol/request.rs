@@ -137,6 +137,29 @@ pub enum Request {
     SessionHeartbeat {
         session_id: String,
     },
+
+    // ── Proactive Context (Prajna) ──
+
+    /// Lightweight per-turn context delta check.
+    /// Returns only NEW notifications, anti-pattern warnings, and pending messages since `since`.
+    ContextRefresh {
+        session_id: String,
+        #[serde(default)]
+        since: Option<String>,
+    },
+    /// Check if agent claimed completion — daemon recalls relevant testing/shipping lessons.
+    CompletionCheck {
+        session_id: String,
+        claimed_done: bool,
+    },
+    /// Verify task completion criteria when a task is marked done.
+    TaskCompletionCheck {
+        session_id: String,
+        task_subject: String,
+        #[serde(default)]
+        task_description: Option<String>,
+    },
+
     /// Mark a session as ended
     EndSession { id: String },
     /// List sessions

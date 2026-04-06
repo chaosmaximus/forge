@@ -169,6 +169,28 @@ pub enum ResponseData {
         session_id: String,
         status: String,
     },
+
+    // ── Proactive Context (Prajna) ──
+
+    /// Delta context since last refresh — only new/changed items.
+    ContextDelta {
+        notifications: Vec<String>,
+        warnings: Vec<String>,
+        anti_patterns: Vec<String>,
+        messages_pending: usize,
+    },
+    /// Result of completion signal check.
+    CompletionCheckResult {
+        has_completion_signal: bool,
+        relevant_lessons: Vec<String>,
+        severity: String,
+    },
+    /// Task completion verification result.
+    TaskCompletionCheckResult {
+        warnings: Vec<String>,
+        checklists: Vec<String>,
+    },
+
     SessionRegistered { id: String },
     SessionEnded { id: String, found: bool },
     Sessions { sessions: Vec<SessionInfo>, count: usize },

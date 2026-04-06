@@ -50,6 +50,9 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::Recall { .. }
             | Request::CompileContext { .. }
             | Request::CompileContextTrace { .. }
+            | Request::ContextRefresh { .. }
+            | Request::CompletionCheck { .. }
+            | Request::TaskCompletionCheck { .. }
             | Request::Sessions { .. }
             | Request::ListPlatform
             | Request::ListTools
