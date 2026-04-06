@@ -4513,6 +4513,101 @@ mod tests {
         );
     }
 
+    // ── Prajna E2E Tests ──
+
+    #[test]
+    fn test_context_refresh_empty_delta() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", None, None, None, None).unwrap();
+        let resp = handle_request(&mut state, Request::ContextRefresh {
+            session_id: "s1".into(), since: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::ContextDelta { notifications, warnings, anti_patterns, messages_pending } } => {
+                assert!(notifications.is_empty());
+                assert!(warnings.is_empty());
+                assert!(anti_patterns.is_empty());
+                assert_eq!(messages_pending, 0);
+            }
+            other => panic!("expected ContextDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_completion_check_no_signal() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::CompletionCheck {
+            session_id: "s1".into(), claimed_done: false,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::CompletionCheckResult { has_completion_signal, severity, .. } } => {
+                assert!(!has_completion_signal);
+                assert_eq!(severity, "none");
+            }
+            other => panic!("expected CompletionCheckResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_completion_check_with_lessons() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Lesson,
+            title: "Unit tests insufficient for daemon upgrades".into(),
+            content: "Before calling code production-ready: rebuild, live smoke test".into(),
+            tags: Some(vec!["testing".into(), "production-readiness".into(), "anti-pattern".into()]),
+            confidence: None, project: None,
+        });
+        let resp = handle_request(&mut state, Request::CompletionCheck {
+            session_id: "s1".into(), claimed_done: true,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::CompletionCheckResult { has_completion_signal, relevant_lessons, severity } } => {
+                assert!(has_completion_signal);
+                assert!(!relevant_lessons.is_empty(), "should surface UAT lesson");
+                assert_eq!(severity, "high");
+            }
+            other => panic!("expected CompletionCheckResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_task_completion_shipping_task() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Lesson,
+            title: "Run live UAT before deploy".into(),
+            content: "Every deploy needs verification".into(),
+            tags: Some(vec!["uat".into(), "production".into()]),
+            confidence: None, project: None,
+        });
+        let resp = handle_request(&mut state, Request::TaskCompletionCheck {
+            session_id: "s1".into(), task_subject: "deploy to production".into(), task_description: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TaskCompletionCheckResult { warnings, checklists } } => {
+                assert!(!warnings.is_empty(), "should warn about shipping");
+                assert!(!checklists.is_empty(), "should include UAT checklist");
+            }
+            other => panic!("expected TaskCompletionCheckResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_task_completion_non_shipping() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::TaskCompletionCheck {
+            session_id: "s1".into(), task_subject: "add unit test for parser".into(), task_description: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TaskCompletionCheckResult { warnings, checklists } } => {
+                assert!(warnings.is_empty());
+                assert!(checklists.is_empty());
+            }
+            other => panic!("expected TaskCompletionCheckResult, got {:?}", other),
+        }
+    }
+
     #[test]
     fn test_force_consolidate_empty_db() {
         let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
