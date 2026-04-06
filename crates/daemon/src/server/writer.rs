@@ -232,6 +232,7 @@ mod tests {
             project: None,
             static_only: None,
             excluded_layers: None,
+            session_id: None,
         }));
 
         assert!(is_read_only(&Request::Sessions {

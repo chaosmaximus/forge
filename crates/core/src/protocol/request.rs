@@ -132,6 +132,11 @@ pub enum Request {
         #[serde(default)]
         current_task: Option<String>,
     },
+    /// Lightweight keep-alive ping for session liveness tracking.
+    /// Updates last_heartbeat_at timestamp. Routed through WriterActor.
+    SessionHeartbeat {
+        session_id: String,
+    },
     /// Mark a session as ended
     EndSession { id: String },
     /// List sessions
@@ -191,6 +196,9 @@ pub enum Request {
         /// Excluded layers emit empty self-closing tags to maintain XML structure stability for KV-cache.
         #[serde(default)]
         excluded_layers: Option<Vec<String>>,
+        /// Session ID for role-context, pending-messages, meeting-context injection
+        #[serde(default)]
+        session_id: Option<String>,
     },
 
     /// Compile context with full trace of considered/included/excluded memories + reasons.

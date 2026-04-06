@@ -1265,7 +1265,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::CompileContext { agent, project, static_only, excluded_layers } => {
+        Request::SessionHeartbeat { session_id } => {
+            // Stub: heartbeat handler will be implemented in a later wave.
+            // For now, just acknowledge the heartbeat.
+            Response::Ok {
+                data: ResponseData::Heartbeat {
+                    session_id,
+                    status: "ok".to_string(),
+                },
+            }
+        }
+
+        Request::CompileContext { agent, project, static_only, excluded_layers, session_id: _ } => {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
             let excluded = excluded_layers.unwrap_or_default();
             let static_prefix = crate::recall::compile_static_prefix(&state.conn, agent_name);
@@ -3918,6 +3929,7 @@ mod tests {
                 project: None,
                 static_only: None,
                 excluded_layers: None,
+                session_id: None,
             },
         );
         match resp {
@@ -3951,6 +3963,7 @@ mod tests {
                 project: None,
                 static_only: Some(true),
                 excluded_layers: None,
+                session_id: None,
             },
         );
         match resp {

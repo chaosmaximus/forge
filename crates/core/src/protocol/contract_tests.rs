@@ -284,6 +284,7 @@ mod tests {
                     project: Some("forge".into()),
                     static_only: None,
                     excluded_layers: Some(vec!["decisions".into()]),
+                    session_id: None,
                 },
             ),
             (
@@ -1217,6 +1218,7 @@ mod tests {
                     project: None,
                     static_only: None,
                     excluded_layers: None,
+                    session_id: None,
                 },
                 Request::CompileContextTrace {
                     agent: None,

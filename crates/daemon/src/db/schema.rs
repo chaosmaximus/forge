@@ -561,6 +561,9 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE session ADD COLUMN agent_status TEXT DEFAULT 'idle'", []);
     let _ = conn.execute("ALTER TABLE session ADD COLUMN last_activity_at TEXT", []);
 
+    // Session heartbeat: lightweight keep-alive separate from semantic last_activity_at
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN last_heartbeat_at TEXT", []);
+
     // Team enhancements: type, orchestrator, purpose
     let _ = conn.execute("ALTER TABLE team ADD COLUMN team_type TEXT DEFAULT 'human'", []);
     let _ = conn.execute("ALTER TABLE team ADD COLUMN orchestrator_session_id TEXT", []);

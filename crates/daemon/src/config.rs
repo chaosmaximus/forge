@@ -232,6 +232,12 @@ pub struct WorkerConfig {
     pub indexer_interval_secs: u64,
     #[serde(default = "default_3")]
     pub diagnostics_debounce_secs: u64,
+    /// How often the session reaper runs to clean up dead sessions (seconds).
+    #[serde(default = "default_60")]
+    pub session_reaper_interval_secs: u64,
+    /// Sessions without a heartbeat for this many seconds are considered dead (seconds).
+    #[serde(default = "default_60")]
+    pub heartbeat_timeout_secs: u64,
 }
 
 impl Default for WorkerConfig {
@@ -244,6 +250,8 @@ impl Default for WorkerConfig {
             disposition_interval_secs: 900,
             indexer_interval_secs: 300,
             diagnostics_debounce_secs: 3,
+            session_reaper_interval_secs: 60,
+            heartbeat_timeout_secs: 60,
         }
     }
 }
@@ -565,6 +573,8 @@ impl WorkerConfig {
             disposition_interval_secs: self.disposition_interval_secs.clamp(60, 86400),
             indexer_interval_secs: self.indexer_interval_secs.clamp(60, 86400),
             diagnostics_debounce_secs: self.diagnostics_debounce_secs.max(1),
+            session_reaper_interval_secs: self.session_reaper_interval_secs.clamp(10, 86400),
+            heartbeat_timeout_secs: self.heartbeat_timeout_secs.clamp(10, 86400),
         }
     }
 }
@@ -680,6 +690,17 @@ impl ForgeConfig {
         }
         if let Ok(v) = std::env::var("FORGE_OTLP_SERVICE_NAME") {
             self.otlp.service_name = v;
+        }
+        // Session reaper / heartbeat
+        if let Ok(v) = std::env::var("FORGE_SESSION_REAPER_INTERVAL") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.workers.session_reaper_interval_secs = n;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_HEARTBEAT_TIMEOUT") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.workers.heartbeat_timeout_secs = n;
+            }
         }
     }
 
@@ -838,6 +859,12 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         }
         ["workers", "diagnostics_debounce_secs"] => {
             config.workers.diagnostics_debounce_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "session_reaper_interval_secs"] => {
+            config.workers.session_reaper_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "heartbeat_timeout_secs"] => {
+            config.workers.heartbeat_timeout_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         // Context assembly
         ["context", "budget_chars"] => {
@@ -1619,5 +1646,65 @@ service_name = "my-forge"
         std::env::remove_var("FORGE_OTLP_ENABLED");
         std::env::remove_var("FORGE_OTLP_ENDPOINT");
         std::env::remove_var("FORGE_OTLP_SERVICE_NAME");
+    }
+
+    // -----------------------------------------------------------------------
+    // Session reaper / heartbeat config tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_reaper_config() {
+        let config = ForgeConfig::default();
+        assert_eq!(config.workers.session_reaper_interval_secs, 60,
+            "session_reaper_interval_secs default should be 60");
+    }
+
+    #[test]
+    fn test_default_heartbeat_timeout() {
+        let config = ForgeConfig::default();
+        assert_eq!(config.workers.heartbeat_timeout_secs, 60,
+            "heartbeat_timeout_secs default should be 60");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_override_session_reaper() {
+        let mut cfg = ForgeConfig::default();
+        std::env::set_var("FORGE_SESSION_REAPER_INTERVAL", "120");
+        std::env::set_var("FORGE_HEARTBEAT_TIMEOUT", "90");
+
+        cfg.apply_env_overrides();
+
+        assert_eq!(cfg.workers.session_reaper_interval_secs, 120);
+        assert_eq!(cfg.workers.heartbeat_timeout_secs, 90);
+
+        std::env::remove_var("FORGE_SESSION_REAPER_INTERVAL");
+        std::env::remove_var("FORGE_HEARTBEAT_TIMEOUT");
+    }
+
+    #[test]
+    fn test_reaper_config_from_toml() {
+        let toml_str = r#"
+[workers]
+session_reaper_interval_secs = 30
+heartbeat_timeout_secs = 45
+"#;
+        let cfg: ForgeConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.workers.session_reaper_interval_secs, 30);
+        assert_eq!(cfg.workers.heartbeat_timeout_secs, 45);
+    }
+
+    #[test]
+    fn test_reaper_config_update_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, "").unwrap();
+
+        update_config_at(path_str, "workers.session_reaper_interval_secs", "120").unwrap();
+        update_config_at(path_str, "workers.heartbeat_timeout_secs", "90").unwrap();
+        let cfg = load_config_from(path_str);
+        assert_eq!(cfg.workers.session_reaper_interval_secs, 120);
+        assert_eq!(cfg.workers.heartbeat_timeout_secs, 90);
     }
 }

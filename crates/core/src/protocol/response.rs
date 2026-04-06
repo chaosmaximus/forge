@@ -164,6 +164,11 @@ pub enum ResponseData {
         #[serde(default)]
         calling_files: Vec<String>,
     },
+    /// Heartbeat acknowledgment for session liveness tracking.
+    Heartbeat {
+        session_id: String,
+        status: String,
+    },
     SessionRegistered { id: String },
     SessionEnded { id: String, found: bool },
     Sessions { sessions: Vec<SessionInfo>, count: usize },
