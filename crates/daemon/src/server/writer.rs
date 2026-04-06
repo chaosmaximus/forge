@@ -852,4 +852,279 @@ mod tests {
         assert_eq!(source_ip, "192.168.1.1");
         assert_eq!(status, "ok");
     }
+
+    // ── Wave 5: Additional audit verification tests ──
+
+    /// AC6: Verify audit record fields are correctly populated after a Forget write.
+    #[tokio::test]
+    async fn test_audit_record_for_forget_operation() {
+        use tempfile::TempDir;
+
+        let tmp_dir = TempDir::new().unwrap();
+        let db_path = tmp_dir.path().join("audit_forget_test.db");
+        let db_path_str = db_path.to_str().unwrap();
+
+        let state = crate::server::handler::DaemonState::new(db_path_str).unwrap();
+        let events = state.events.clone();
+        let hlc = Arc::clone(&state.hlc);
+        let started_at = state.started_at;
+        drop(state);
+
+        let writer_state = crate::server::handler::DaemonState::new_writer(
+            db_path_str,
+            events.clone(),
+            hlc.clone(),
+            started_at,
+        )
+        .unwrap();
+        let actor = WriterActor { state: writer_state };
+        let (tx, rx) = mpsc::channel(10);
+        let handle = tokio::spawn(async move { actor.run(rx).await });
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(WriteCommand::Audited {
+            request: Request::Forget { id: "mem-xyz".into() },
+            reply: reply_tx,
+            audit: AuditContext {
+                user_id: "uid-forget".to_string(),
+                email: "forgetful@test.com".to_string(),
+                role: "member".to_string(),
+                source: "http".to_string(),
+                source_ip: "10.0.0.42".to_string(),
+            },
+        })
+        .await
+        .unwrap();
+
+        let _resp = reply_rx.await.unwrap();
+
+        drop(tx);
+        handle.await.unwrap();
+
+        // Verify audit record
+        let reader = crate::server::handler::DaemonState::new_reader(
+            db_path_str, events, hlc, started_at,
+        )
+        .unwrap();
+
+        let (user_id, req_type, role, source_ip): (String, String, String, String) = reader
+            .conn
+            .query_row(
+                "SELECT user_id, request_type, role, source_ip FROM audit_log WHERE user_id = 'uid-forget'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(user_id, "uid-forget");
+        assert_eq!(req_type, "forget");
+        assert_eq!(role, "member");
+        assert_eq!(source_ip, "10.0.0.42");
+    }
+
+    /// AC6: Verify that Raw (socket) writes do NOT create audit records.
+    #[tokio::test]
+    async fn test_raw_write_does_not_create_audit_record() {
+        use tempfile::TempDir;
+
+        let tmp_dir = TempDir::new().unwrap();
+        let db_path = tmp_dir.path().join("no_audit_test.db");
+        let db_path_str = db_path.to_str().unwrap();
+
+        let state = crate::server::handler::DaemonState::new(db_path_str).unwrap();
+        let events = state.events.clone();
+        let hlc = Arc::clone(&state.hlc);
+        let started_at = state.started_at;
+        drop(state);
+
+        let writer_state = crate::server::handler::DaemonState::new_writer(
+            db_path_str,
+            events.clone(),
+            hlc.clone(),
+            started_at,
+        )
+        .unwrap();
+        let actor = WriterActor { state: writer_state };
+        let (tx, rx) = mpsc::channel(10);
+        let handle = tokio::spawn(async move { actor.run(rx).await });
+
+        // Send a Raw write (socket path — no audit)
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(WriteCommand::Raw {
+            request: Request::Remember {
+                memory_type: forge_core::types::MemoryType::Decision,
+                title: "raw write".into(),
+                content: "no audit expected".into(),
+                confidence: None,
+                tags: None,
+                project: None,
+            },
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+
+        let resp = reply_rx.await.unwrap();
+        match resp {
+            Response::Ok { .. } => {}
+            other => panic!("expected Ok, got {:?}", other),
+        }
+
+        drop(tx);
+        handle.await.unwrap();
+
+        // Verify NO audit records exist
+        let reader = crate::server::handler::DaemonState::new_reader(
+            db_path_str, events, hlc, started_at,
+        )
+        .unwrap();
+
+        let count: i64 = reader
+            .conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(count, 0, "Raw writes should not create audit records");
+    }
+
+    /// AC6: Multiple audited writes produce multiple audit records.
+    #[tokio::test]
+    async fn test_multiple_audited_writes_produce_multiple_records() {
+        use tempfile::TempDir;
+
+        let tmp_dir = TempDir::new().unwrap();
+        let db_path = tmp_dir.path().join("multi_audit.db");
+        let db_path_str = db_path.to_str().unwrap();
+
+        let state = crate::server::handler::DaemonState::new(db_path_str).unwrap();
+        let events = state.events.clone();
+        let hlc = Arc::clone(&state.hlc);
+        let started_at = state.started_at;
+        drop(state);
+
+        let writer_state = crate::server::handler::DaemonState::new_writer(
+            db_path_str,
+            events.clone(),
+            hlc.clone(),
+            started_at,
+        )
+        .unwrap();
+        let actor = WriterActor { state: writer_state };
+        let (tx, rx) = mpsc::channel(10);
+        let handle = tokio::spawn(async move { actor.run(rx).await });
+
+        // Send 3 audited writes from different users
+        for i in 0..3 {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            tx.send(WriteCommand::Audited {
+                request: Request::Remember {
+                    memory_type: forge_core::types::MemoryType::Lesson,
+                    title: format!("lesson {i}"),
+                    content: format!("content {i}"),
+                    confidence: None,
+                    tags: None,
+                    project: None,
+                },
+                reply: reply_tx,
+                audit: AuditContext {
+                    user_id: format!("user-{i}"),
+                    email: format!("user{i}@test.com"),
+                    role: "member".to_string(),
+                    source: "http".to_string(),
+                    source_ip: format!("10.0.0.{i}"),
+                },
+            })
+            .await
+            .unwrap();
+            let _ = reply_rx.await.unwrap();
+        }
+
+        drop(tx);
+        handle.await.unwrap();
+
+        // Verify 3 audit records exist
+        let reader = crate::server::handler::DaemonState::new_reader(
+            db_path_str, events, hlc, started_at,
+        )
+        .unwrap();
+
+        let count: i64 = reader
+            .conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(count, 3, "Expected 3 audit records for 3 audited writes");
+    }
+
+    /// AC6: Audit records contain request_summary (truncated).
+    #[tokio::test]
+    async fn test_audit_record_contains_request_summary() {
+        use tempfile::TempDir;
+
+        let tmp_dir = TempDir::new().unwrap();
+        let db_path = tmp_dir.path().join("audit_summary.db");
+        let db_path_str = db_path.to_str().unwrap();
+
+        let state = crate::server::handler::DaemonState::new(db_path_str).unwrap();
+        let events = state.events.clone();
+        let hlc = Arc::clone(&state.hlc);
+        let started_at = state.started_at;
+        drop(state);
+
+        let writer_state = crate::server::handler::DaemonState::new_writer(
+            db_path_str,
+            events.clone(),
+            hlc.clone(),
+            started_at,
+        )
+        .unwrap();
+        let actor = WriterActor { state: writer_state };
+        let (tx, rx) = mpsc::channel(10);
+        let handle = tokio::spawn(async move { actor.run(rx).await });
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(WriteCommand::Audited {
+            request: Request::Remember {
+                memory_type: forge_core::types::MemoryType::Decision,
+                title: "important decision".into(),
+                content: "detailed content here".into(),
+                confidence: None,
+                tags: None,
+                project: None,
+            },
+            reply: reply_tx,
+            audit: AuditContext {
+                user_id: "uid-summary".to_string(),
+                email: "summary@test.com".to_string(),
+                role: "admin".to_string(),
+                source: "http".to_string(),
+                source_ip: "127.0.0.1".to_string(),
+            },
+        })
+        .await
+        .unwrap();
+
+        let _ = reply_rx.await.unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        let reader = crate::server::handler::DaemonState::new_reader(
+            db_path_str, events, hlc, started_at,
+        )
+        .unwrap();
+
+        let (summary, status): (String, String) = reader
+            .conn
+            .query_row(
+                "SELECT request_summary, response_status FROM audit_log WHERE user_id = 'uid-summary'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+
+        // Summary should contain part of the request
+        assert!(!summary.is_empty(), "request_summary should not be empty");
+        assert!(summary.len() <= 200, "request_summary should be truncated to <= 200 chars");
+        assert_eq!(status, "ok");
+    }
 }

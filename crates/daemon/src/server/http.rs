@@ -584,4 +584,456 @@ mod tests {
             "POST /api should work without auth when auth is disabled"
         );
     }
+
+    // ── Wave 5: Full-stack HTTP+Auth+RBAC integration tests ──
+
+    // Test RSA key pair (same as auth.rs tests — deterministic, offline-only).
+    const TEST_RSA_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCgGb81p6iwoRNK
+f0dSsbm/x9pZRhT02u6vsRcuzHgZ1AuShGNpEedX0r0wkUb9hLAC+RpbkKDTjQkA
+poBRYRIIC2Y0rfDPfk7D1JX8p/XRqV40XQIAq42hrAZdpZAjPlvb2Isycm7qtTuT
+2U04p0ZuBiOm9p1CL6yz1jC9NW8kZlzN1d6oGjFwzMbLB9YWxyP+7VS/mupF0KWO
+9RCwoynX7fwSbHs0c4N1eFgievNWU5Fx86NAUTNOaO2V+VcUZWWWvkXYoKiWRDE2
+8nu+UIwS+0ir5jdTUQWLNd6TROcL+Cdsdzm3yyYBRovtgb0WjT8J14/01YjeJjFx
+OlGewM8lAgMBAAECggEAN9JSV4BiMlevNLnlIeGi3MnviVIEq40MTQjnhuM2+vZy
+pH7xdGiQK5Boc58ry+gwQJEfTg7C7JAPtADZ28YHNfPXioWdYZNuHhyowSPE83nk
+xUgqkxY9t0GWJJ+9/nPXLnO1sPyyTLatE7NgF+FHDsSoOKZjFXku87M6YjZXzq4u
+vm4yhr4Jlhcc2nzgozszsqq2LlH9hiOwD8IskSIWNi7cTtf0DcWQZ4hveW7LWaw6
+CH0+ugJ4gNujBwMz/x5iF4ZSbRhYIe9FLV6gjlObTGKi994pSVPfDt00lEY8FwAR
+F7lR8iW9p/NmTcs4vGqzAD6IBBVOrixkJ4Fb7SdPnwKBgQDW8yCsY8ShBtq+I0pk
+4hh+JuXPN3M4fMB8GqNXo5W2k9T7L4PHHnyO98Yl+r4KRqwz59YlbMB4zof3wXFV
+fFPc/S6H5NBWxHiJEdWNphGBKfRRBH9+UEIIfivmIBJtkKECPivcA+ZGZGqajIQz
+hG2xUrxhAD2hEkO3vxLURfvfKwKBgQC+rQyxu47+cfhoukXw92yzXh9GMxHsNXxi
+FPLpYk1PgI+Svq+aA2e4LVv8ncib6QkIdxVWtoenWuadFPm1PX9C80LmQF5ASIXr
+v9w0PpIedFW3e0rnPgfdTzmOlcXCeVbAiHtJOqfpxZ2wa5PBg0BswvKaMRTs3EqB
+ULa6yQdi7wKBgGIREnsUGYWN5waQe0SDksEbZgWgOsUuxXLZhGRbkdZ2o9jl2K1j
+z1g62wBA4as2iyIzR5RThYyYTZhPfTGPQ4OzTyNY1WSAxq1ioZe6iInxZjIAZ1pt
+q3LMfaLERyQNtCedzczXSpwa/Df+m+IVLSaVpLRss7Fk79hJKIIIW915AoGAPmhR
+QVLMCIew8EYXYjj5QPPLdKR+dztCTK/imXRtLVo8o6D5xITcy7E87D+QS0dIh5bC
+SzFO0P21gTA+Uo2gO393I/lpX8zc2D5hik/4bzNQYs9dwrXQySSHCB4JLg+cz0Nc
+ZqlmD+N4KyfqommdCnv7/2+VE7k+QXjzdcsaOc0CgYEAttOGVcTaLhWnIzRxBkyh
+5wYljDRR0GaWSZYp5m4ACTfl2/TyqCfY+JEs6NnYuqzWbkxf/PJpbLrPIHHkWzrg
+XLhoZtxJDPlUab39y3G0qYZu5aTFSGNbnJGHC/kczw069Wd/GZ17Gxx0G0kMNT5S
+Pfkte+2kAeYPMK9Sa+apqqE=
+-----END PRIVATE KEY-----"#;
+
+    const TEST_JWKS_JSON: &str = r#"{
+        "keys": [{
+            "kty": "RSA",
+            "use": "sig",
+            "alg": "RS256",
+            "kid": "test-key-1",
+            "n": "oBm_NaeosKETSn9HUrG5v8faWUYU9Nrur7EXLsx4GdQLkoRjaRHnV9K9MJFG_YSwAvkaW5Cg040JAKaAUWESCAtmNK3wz35Ow9SV_Kf10aleNF0CAKuNoawGXaWQIz5b29iLMnJu6rU7k9lNOKdGbgYjpvadQi-ss9YwvTVvJGZczdXeqBoxcMzGywfWFscj_u1Uv5rqRdCljvUQsKMp1-38Emx7NHODdXhYInrzVlORcfOjQFEzTmjtlflXFGVllr5F2KColkQxNvJ7vlCMEvtIq-Y3U1EFizXek0TnC_gnbHc5t8smAUaL7YG9Fo0_CdeP9NWI3iYxcTpRnsDPJQ",
+            "e": "AQAB"
+        }]
+    }"#;
+
+    /// Create a JWT with the given claims, signed with the test RSA private key.
+    fn make_jwt(claims: &serde_json::Value) -> String {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        let key = EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-key-1".to_string());
+        encode(&header, claims, &key).unwrap()
+    }
+
+    /// Create valid JWT claims for the given email.
+    fn jwt_claims_for(email: &str) -> serde_json::Value {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        serde_json::json!({
+            "sub": format!("user-{}", email.split('@').next().unwrap_or("unknown")),
+            "email": email,
+            "groups": [],
+            "iss": "https://test-issuer.example.com",
+            "aud": "forge-api",
+            "exp": now + 3600,
+            "iat": now
+        })
+    }
+
+    /// Build an app state with a running WriterActor (needed for write requests).
+    /// Returns (AppState, JoinHandle) — drop handle to stop the actor.
+    fn test_app_state_with_writer() -> (AppState, tokio::task::JoinHandle<()>) {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp.path().to_string_lossy().to_string();
+        // Create DB with full schema
+        let _init_state = DaemonState::new(&db_path).unwrap();
+        let (events, _rx) = tokio::sync::broadcast::channel(16);
+        let hlc = Arc::new(crate::sync::Hlc::new("test"));
+        let started_at = Instant::now();
+        let (write_tx, write_rx) = mpsc::channel(16);
+
+        // Create writer actor with its own connection
+        let writer_state = DaemonState::new_writer(
+            &db_path,
+            events.clone(),
+            Arc::clone(&hlc),
+            started_at,
+        )
+        .unwrap();
+        let actor = crate::server::writer::WriterActor { state: writer_state };
+        let handle = tokio::spawn(async move { actor.run(write_rx).await });
+
+        // Keep temp file alive
+        std::mem::forget(tmp);
+
+        let state = AppState {
+            db_path,
+            events,
+            hlc,
+            started_at,
+            write_tx,
+            admin_emails: Vec::new(),
+            auth_enabled: false,
+        };
+        (state, handle)
+    }
+
+    /// Build a router with auth enabled and the test JWKS loaded from a temp file.
+    /// `admin_emails`: list of email addresses that get Admin role.
+    fn test_authed_router(mut state: AppState, admin_emails: Vec<String>) -> Router {
+        // Write JWKS to a temp file for offline fallback
+        let mut jwks_file = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut jwks_file, TEST_JWKS_JSON.as_bytes()).unwrap();
+        std::io::Write::flush(&mut jwks_file).unwrap();
+        let jwks_path = jwks_file.path().to_string_lossy().to_string();
+        // Keep the file alive
+        std::mem::forget(jwks_file);
+
+        state.auth_enabled = true;
+        state.admin_emails = admin_emails;
+
+        let mut config = ForgeConfig::default();
+        config.auth.enabled = true;
+        config.auth.issuer_url = String::new(); // Skip OIDC discovery
+        config.auth.audience = "forge-api".to_string();
+        config.auth.offline_jwks_path = Some(jwks_path);
+
+        build_router(&config, state)
+    }
+
+    // ── AC1: Admin token can write ──
+
+    #[tokio::test]
+    async fn test_admin_can_write_via_http() {
+        let (state, _writer_handle) = test_app_state_with_writer();
+        let app = test_authed_router(state, vec!["admin@example.com".to_string()]);
+
+        let token = make_jwt(&jwt_claims_for("admin@example.com"));
+        let body = serde_json::json!({
+            "method": "remember",
+            "params": {
+                "memory_type": "decision",
+                "title": "admin write test",
+                "content": "admin content"
+            }
+        });
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "Admin should be able to write via HTTP"
+        );
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["status"], "ok");
+    }
+
+    // ── AC1 (continued): Admin can read ──
+
+    #[tokio::test]
+    async fn test_admin_can_read_via_http() {
+        let state = test_app_state();
+        let app = test_authed_router(state, vec!["admin@example.com".to_string()]);
+
+        let token = make_jwt(&jwt_claims_for("admin@example.com"));
+        let body = serde_json::json!({"method": "health"});
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "Admin should be able to read via HTTP"
+        );
+    }
+
+    // ── AC2: Non-admin token blocked from admin operations via HTTP ──
+
+    #[tokio::test]
+    async fn test_non_admin_blocked_from_admin_ops_via_http() {
+        let (state, _writer_handle) = test_app_state_with_writer();
+        // The "viewer" email is not in admin list → resolves to Member role.
+        // Member + admin-only op → 403.
+        let app = test_authed_router(state, vec!["boss@example.com".to_string()]);
+
+        let token = make_jwt(&jwt_claims_for("viewer@example.com"));
+        let body = serde_json::json!({"method": "shutdown"});
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::FORBIDDEN,
+            "Non-admin user should be blocked from admin operations via HTTP"
+        );
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let error_msg = json["error"]
+            .as_str()
+            .unwrap_or_else(|| panic!("expected 'error' field in JSON, got: {json}"));
+        assert!(
+            error_msg.contains("insufficient permissions"),
+            "expected 'insufficient permissions' in error, got: {error_msg}"
+        );
+    }
+
+    // ── AC3: Member token blocked from Shutdown ──
+
+    #[tokio::test]
+    async fn test_member_blocked_from_shutdown_via_http() {
+        let (state, _writer_handle) = test_app_state_with_writer();
+        let app = test_authed_router(state, vec!["other@example.com".to_string()]);
+
+        let token = make_jwt(&jwt_claims_for("member@example.com"));
+        let body = serde_json::json!({"method": "shutdown"});
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::FORBIDDEN,
+            "Member should be blocked from Shutdown via HTTP"
+        );
+    }
+
+    // ── AC3 (additional): Member CAN write regular ops ──
+
+    #[tokio::test]
+    async fn test_member_can_write_regular_ops_via_http() {
+        let (state, _writer_handle) = test_app_state_with_writer();
+        let app = test_authed_router(state, vec!["admin-only@example.com".to_string()]);
+
+        let token = make_jwt(&jwt_claims_for("member@example.com"));
+        let body = serde_json::json!({
+            "method": "remember",
+            "params": {
+                "memory_type": "decision",
+                "title": "member write",
+                "content": "member content"
+            }
+        });
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "Member should be able to write regular operations via HTTP"
+        );
+    }
+
+    // ── AC4: Health probes without auth (verify startupz too) ──
+
+    #[tokio::test]
+    async fn test_startupz_exempt_from_auth() {
+        let state = test_app_state();
+        let app = test_router_with_auth(state);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/startupz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // startupz may return 503 (no indexed memories in test DB) or 200,
+        // but it must NOT return 401 — health probes are exempt from auth.
+        assert_ne!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "startupz should be exempt from auth (must not return 401)"
+        );
+        // Verify it returns a valid JSON body (not an auth error)
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(
+            json["status"].as_str().is_some(),
+            "startupz should return a status field, not an auth error"
+        );
+    }
+
+    // ── AC5: Member blocked from all admin-only operations via HTTP ──
+
+    #[tokio::test]
+    async fn test_member_blocked_from_set_config_via_http() {
+        let (state, _writer_handle) = test_app_state_with_writer();
+        let app = test_authed_router(state, vec!["admin@example.com".to_string()]);
+
+        let token = make_jwt(&jwt_claims_for("member@example.com"));
+        let body = serde_json::json!({
+            "method": "set_config",
+            "params": { "key": "k", "value": "v" }
+        });
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::FORBIDDEN,
+            "Member blocked from SetConfig via HTTP"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_member_blocked_from_cleanup_sessions_via_http() {
+        let (state, _writer_handle) = test_app_state_with_writer();
+        let app = test_authed_router(state, vec!["admin@example.com".to_string()]);
+
+        let token = make_jwt(&jwt_claims_for("member@example.com"));
+        let body = serde_json::json!({"method": "cleanup_sessions", "params": {"prefix": null}});
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::FORBIDDEN,
+            "Member blocked from CleanupSessions via HTTP"
+        );
+    }
+
+    // ── AC7: Socket writes still work (regression) ──
+
+    #[tokio::test]
+    async fn test_socket_write_still_works_regression() {
+        // Verify that the writer actor still processes Raw (non-audited) commands,
+        // which is the path used by Unix socket connections.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp.path().to_string_lossy().to_string();
+        let _init_state = DaemonState::new(&db_path).unwrap();
+        let (events, _rx) = tokio::sync::broadcast::channel(16);
+        let hlc = Arc::new(crate::sync::Hlc::new("test"));
+        let started_at = Instant::now();
+
+        let writer_state = DaemonState::new_writer(
+            &db_path,
+            events.clone(),
+            Arc::clone(&hlc),
+            started_at,
+        )
+        .unwrap();
+        let actor = crate::server::writer::WriterActor { state: writer_state };
+        let (tx, rx) = mpsc::channel(16);
+        let handle = tokio::spawn(async move { actor.run(rx).await });
+
+        // Send a Raw write command (socket path — no audit context)
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(WriteCommand::Raw {
+            request: Request::Remember {
+                memory_type: forge_core::types::MemoryType::Decision,
+                title: "socket regression test".into(),
+                content: "must still work".into(),
+                confidence: None,
+                tags: None,
+                project: None,
+            },
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+
+        let resp = reply_rx.await.unwrap();
+        match resp {
+            Response::Ok { .. } => {}
+            other => panic!("expected Ok for socket-path write, got {:?}", other),
+        }
+
+        drop(tx);
+        handle.await.unwrap();
+    }
 }
