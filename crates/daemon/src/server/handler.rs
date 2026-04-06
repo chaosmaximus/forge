@@ -1281,6 +1281,102 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         // SessionHeartbeat handled earlier in the match (near EndSession)
 
+        // ── Proactive Context (Prajna) ──
+
+        Request::ContextRefresh { session_id, since } => {
+            let since_clause = since.as_deref().unwrap_or("2000-01-01T00:00:00Z");
+            let notifications: Vec<String> = state.conn.prepare(
+                "SELECT title FROM notification WHERE status = 'pending' AND created_at > ?1 ORDER BY created_at DESC LIMIT 3"
+            ).ok()
+                .map(|mut stmt| stmt.query_map(rusqlite::params![since_clause], |row| row.get(0))
+                    .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default())
+                .unwrap_or_default();
+
+            let anti_patterns: Vec<String> = state.conn.prepare(
+                "SELECT data FROM perception WHERE kind = 'Warning' AND consumed = 0 AND created_at > ?1 ORDER BY created_at DESC LIMIT 3"
+            ).ok()
+                .map(|mut stmt| stmt.query_map(rusqlite::params![since_clause], |row| row.get(0))
+                    .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default())
+                .unwrap_or_default();
+
+            let messages_pending: usize = state.conn.query_row(
+                "SELECT COUNT(*) FROM session_message WHERE to_session = ?1 AND status = 'pending'",
+                rusqlite::params![session_id],
+                |row| row.get::<_, i64>(0),
+            ).unwrap_or(0) as usize;
+
+            Response::Ok {
+                data: ResponseData::ContextDelta {
+                    notifications,
+                    warnings: vec![],
+                    anti_patterns,
+                    messages_pending,
+                },
+            }
+        }
+
+        Request::CompletionCheck { session_id: _, claimed_done } => {
+            if !claimed_done {
+                Response::Ok {
+                    data: ResponseData::CompletionCheckResult {
+                        has_completion_signal: false,
+                        relevant_lessons: vec![],
+                        severity: "none".into(),
+                    },
+                }
+            } else {
+                let lessons: Vec<String> = state.conn.prepare(
+                    "SELECT title || ': ' || SUBSTR(content, 1, 150) FROM memory
+                     WHERE memory_type IN ('lesson', 'decision') AND status = 'active'
+                     AND (tags LIKE '%testing%' OR tags LIKE '%production-readiness%' OR tags LIKE '%anti-pattern%' OR tags LIKE '%uat%')
+                     ORDER BY quality_score DESC, confidence DESC LIMIT 3"
+                ).ok()
+                    .map(|mut stmt| stmt.query_map([], |row| row.get(0))
+                        .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default())
+                    .unwrap_or_default();
+
+                let severity = if lessons.is_empty() { "none" } else { "high" };
+                Response::Ok {
+                    data: ResponseData::CompletionCheckResult {
+                        has_completion_signal: true,
+                        relevant_lessons: lessons,
+                        severity: severity.into(),
+                    },
+                }
+            }
+        }
+
+        Request::TaskCompletionCheck { session_id: _, task_subject, task_description: _ } => {
+            let subject_lower = task_subject.to_lowercase();
+            let is_shipping = subject_lower.contains("ship") || subject_lower.contains("deploy")
+                || subject_lower.contains("release") || subject_lower.contains("production")
+                || subject_lower.contains("merge") || subject_lower.contains("push");
+
+            let mut warnings = Vec::new();
+            let mut checklists = Vec::new();
+
+            if is_shipping {
+                let lessons: Vec<String> = state.conn.prepare(
+                    "SELECT title FROM memory
+                     WHERE memory_type = 'lesson' AND status = 'active'
+                     AND (tags LIKE '%uat%' OR tags LIKE '%production%' OR tags LIKE '%deployment%')
+                     ORDER BY quality_score DESC LIMIT 3"
+                ).ok()
+                    .map(|mut stmt| stmt.query_map([], |row| row.get(0))
+                        .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default())
+                    .unwrap_or_default();
+
+                if !lessons.is_empty() {
+                    warnings.push(format!("Shipping task detected. {} relevant lesson(s) found.", lessons.len()));
+                    checklists = lessons;
+                }
+            }
+
+            Response::Ok {
+                data: ResponseData::TaskCompletionCheckResult { warnings, checklists },
+            }
+        }
+
         Request::CompileContext { agent, project, static_only, excluded_layers, session_id } => {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
             let excluded = excluded_layers.unwrap_or_default();
