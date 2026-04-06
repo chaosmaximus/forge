@@ -2716,8 +2716,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 &orchestrator_session_id, &participant_session_ids,
             ) {
                 Ok((meeting_id, participant_count)) => {
-                    crate::events::emit(&state.events, "meeting_created", serde_json::json!({
-                        "meeting_id": meeting_id, "team_id": team_id, "topic": topic, "participant_count": participant_count,
+                    // Gap 9: meeting_started event with full details for app sidebar
+                    crate::events::emit(&state.events, "meeting_started", serde_json::json!({
+                        "meeting_id": meeting_id,
+                        "team_id": team_id,
+                        "topic": topic,
+                        "orchestrator": orchestrator_session_id,
+                        "participants": participant_session_ids,
+                        "participant_count": participant_count,
+                        "status": "collecting",
                     }));
                     Response::Ok { data: ResponseData::MeetingCreated { meeting_id, participant_count } }
                 }
@@ -2756,13 +2763,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::MeetingDecide { meeting_id, decision } => {
             match crate::teams::decide_meeting(&state.conn, &meeting_id, &decision) {
                 Ok((_, decision_memory_id)) => {
-                    let summary = if decision.len() > 80 {
-                        format!("{}...", &decision[..80])
-                    } else {
-                        decision
-                    };
-                    crate::events::emit(&state.events, "meeting_decided", serde_json::json!({
-                        "meeting_id": meeting_id, "decision_summary": summary,
+                    // Gap 9: meeting_completed event with topic + decisions for app sidebar
+                    let topic: String = state.conn.query_row(
+                        "SELECT topic FROM meeting WHERE id = ?1",
+                        rusqlite::params![meeting_id],
+                        |row| row.get(0),
+                    ).unwrap_or_else(|_| "unknown".to_string());
+                    crate::events::emit(&state.events, "meeting_completed", serde_json::json!({
+                        "meeting_id": meeting_id,
+                        "topic": topic,
+                        "decision": decision,
+                        "decision_memory_id": decision_memory_id,
+                        "status": "decided",
                     }));
                     Response::Ok { data: ResponseData::MeetingDecided { meeting_id, decision_memory_id } }
                 }
