@@ -34,9 +34,28 @@ pub fn list_organizations(conn: &Connection) -> rusqlite::Result<Vec<Value>> {
     rows.collect()
 }
 
+/// Resolve an org identifier (name or ID) to the actual org ID.
+pub fn resolve_org_id(conn: &Connection, org_ref: &str) -> rusqlite::Result<String> {
+    // Try as ID first
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM organization WHERE id = ?1)",
+        params![org_ref],
+        |row| row.get(0),
+    )?;
+    if exists { return Ok(org_ref.to_string()); }
+    // Try as name
+    conn.query_row(
+        "SELECT id FROM organization WHERE name = ?1",
+        params![org_ref],
+        |row| row.get(0),
+    )
+}
+
 /// Build a nested team tree for an organization.
 /// Root nodes have parent_team_id IS NULL. Children are nested recursively.
-pub fn team_tree(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<Value>> {
+/// `org_ref` can be an org ID or org name — resolved automatically.
+pub fn team_tree(conn: &Connection, org_ref: &str) -> rusqlite::Result<Vec<Value>> {
+    let org_id = resolve_org_id(conn, org_ref)?;
     let mut stmt = conn.prepare(
         "SELECT id, name, parent_team_id, description, team_type, purpose, status, created_at
          FROM team WHERE organization_id = ?1 ORDER BY name",
