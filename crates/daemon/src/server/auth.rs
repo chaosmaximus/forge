@@ -51,6 +51,10 @@ impl JwksCache {
     pub fn is_expired(&self) -> bool {
         self.fetched_at.elapsed() > self.ttl
     }
+
+    pub fn is_fresh(&self) -> bool {
+        !self.is_expired()
+    }
 }
 
 /// Thread-safe shared JWKS cache.
@@ -63,8 +67,14 @@ pub fn new_jwks_cache() -> SharedJwksCache {
 
 /// Fetch JWKS from OIDC discovery endpoint.
 /// 1. GET {issuer_url}/.well-known/openid-configuration -> parse -> extract jwks_uri
-/// 2. GET jwks_uri -> parse as JwkSet
+/// 2. Validate jwks_uri (HTTPS required, no redirects to prevent SSRF)
+/// 3. GET jwks_uri -> parse as JwkSet
 async fn fetch_jwks_from_oidc(issuer_url: &str) -> Result<JwkSet, String> {
+    // Security: require HTTPS for issuer URL (except localhost for dev)
+    if !issuer_url.starts_with("https://") && !issuer_url.starts_with("http://localhost") && !issuer_url.starts_with("http://127.0.0.1") {
+        return Err(format!("issuer_url must use HTTPS (got: {})", issuer_url));
+    }
+
     let discovery_url = format!(
         "{}/.well-known/openid-configuration",
         issuer_url.trim_end_matches('/')
@@ -72,6 +82,7 @@ async fn fetch_jwks_from_oidc(issuer_url: &str) -> Result<JwkSet, String> {
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none()) // No redirects — prevent SSRF
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
 
@@ -84,9 +95,26 @@ async fn fetch_jwks_from_oidc(issuer_url: &str) -> Result<JwkSet, String> {
         .await
         .map_err(|e| format!("OIDC discovery response invalid: {e}"))?;
 
+    // Security: verify discovery issuer matches configured issuer
+    if let Some(disc_issuer) = discovery["issuer"].as_str() {
+        let normalized_config = issuer_url.trim_end_matches('/');
+        let normalized_disc = disc_issuer.trim_end_matches('/');
+        if normalized_config != normalized_disc {
+            return Err(format!(
+                "OIDC discovery issuer mismatch: configured={}, discovery={}",
+                issuer_url, disc_issuer
+            ));
+        }
+    }
+
     let jwks_uri = discovery["jwks_uri"]
         .as_str()
         .ok_or_else(|| "OIDC discovery response missing jwks_uri".to_string())?;
+
+    // Security: jwks_uri must also use HTTPS (except localhost for dev)
+    if !jwks_uri.starts_with("https://") && !jwks_uri.starts_with("http://localhost") && !jwks_uri.starts_with("http://127.0.0.1") {
+        return Err(format!("jwks_uri must use HTTPS (got: {})", jwks_uri));
+    }
 
     let jwks: JwkSet = client
         .get(jwks_uri)
@@ -132,42 +160,57 @@ pub async fn fetch_jwks(
 }
 
 /// Refresh the JWKS cache if expired or empty.
+/// Performs network I/O OUTSIDE the write lock to prevent head-of-line blocking.
+/// On fetch failure, serves stale keys for up to 2x TTL (stale-on-error).
 async fn ensure_jwks_cache(
     cache: &SharedJwksCache,
     config: &AuthConfig,
 ) -> Result<(), String> {
     // Fast path: read lock to check if cache is valid
-    {
+    let needs_refresh = {
         let read_guard = cache.read().await;
-        if let Some(ref entry) = *read_guard {
-            if !entry.is_expired() {
-                return Ok(());
-            }
-        }
+        !read_guard.as_ref().is_some_and(|entry| entry.is_fresh())
+    };
+
+    if !needs_refresh {
+        return Ok(());
     }
 
-    // Slow path: write lock to refresh
-    let mut write_guard = cache.write().await;
-    // Double-check after acquiring write lock (another task may have refreshed)
-    if let Some(ref entry) = *write_guard {
-        if !entry.is_expired() {
-            return Ok(());
-        }
-    }
-
-    let jwks = fetch_jwks(
+    // Fetch OUTSIDE any lock to prevent head-of-line blocking
+    let fetch_result = fetch_jwks(
         &config.issuer_url,
         config.offline_jwks_path.as_deref(),
     )
-    .await?;
+    .await;
 
-    *write_guard = Some(JwksCache {
-        keys: jwks,
-        fetched_at: Instant::now(),
-        ttl: Duration::from_secs(config.jwks_cache_secs),
-    });
-
-    Ok(())
+    match fetch_result {
+        Ok(jwks) => {
+            let mut write_guard = cache.write().await;
+            *write_guard = Some(JwksCache {
+                keys: jwks,
+                fetched_at: Instant::now(),
+                ttl: Duration::from_secs(config.jwks_cache_secs),
+            });
+            Ok(())
+        }
+        Err(e) => {
+            // Stale-on-error: if we have expired-but-recent keys, keep using them
+            // for up to 2x TTL before hard-failing
+            let read_guard = cache.read().await;
+            if let Some(ref entry) = *read_guard {
+                let stale_limit = entry.ttl * 2;
+                if entry.fetched_at.elapsed() < stale_limit {
+                    tracing::warn!(
+                        error = %e,
+                        stale_secs = entry.fetched_at.elapsed().as_secs(),
+                        "JWKS refresh failed, serving stale keys"
+                    );
+                    return Ok(());
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Validate a JWT token against the cached JWKS.
@@ -196,22 +239,31 @@ pub async fn validate_token(
         let jwk = cache_entry
             .keys
             .find(kid)
-            .ok_or_else(|| format!("no matching key found for kid: {kid}"))?;
+            .ok_or_else(|| "invalid token".to_string())?;
         DecodingKey::from_jwk(jwk)
-            .map_err(|e| format!("failed to construct decoding key: {e}"))?
-    } else {
-        // No kid in header — use the first key in the set
+            .map_err(|_| "invalid token".to_string())?
+    } else if cache_entry.keys.keys.len() == 1 {
+        // No kid in header — only accept if JWKS has exactly one key
         let jwk = cache_entry
             .keys
             .keys
             .first()
-            .ok_or_else(|| "JWKS contains no keys".to_string())?;
+            .ok_or_else(|| "invalid token".to_string())?;
         DecodingKey::from_jwk(jwk)
-            .map_err(|e| format!("failed to construct decoding key: {e}"))?
+            .map_err(|_| "invalid token".to_string())?
+    } else {
+        // Multiple keys but no kid — reject as ambiguous
+        return Err("invalid token".to_string());
     };
 
     // Build validation parameters
     let mut validation = Validation::new(Algorithm::RS256);
+
+    // Security: explicit leeway (5 seconds, not default 60)
+    validation.leeway = 5;
+
+    // Security: validate not-before claim if present
+    validation.validate_nbf = true;
 
     // Set audience validation
     if !config.audience.is_empty() {
@@ -293,10 +345,14 @@ pub async fn auth_middleware(
             req.extensions_mut().insert(claims);
             next.run(req).await
         }
-        Err(e) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": e})),
-        )
+        Err(e) => {
+            // Log detailed error server-side, return generic message to client
+            tracing::warn!(error = %e, "JWT validation failed");
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid token"})),
+            )
+        }
             .into_response(),
     }
 }

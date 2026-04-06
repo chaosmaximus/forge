@@ -4,11 +4,17 @@
 //! Read/write routing follows the identical pattern:
 //!   - Read-only requests: per-request DaemonState::new_reader
 //!   - Write requests: sent through write_tx channel to the WriterActor
+//!
+//! When auth is enabled, RBAC is enforced before handling:
+//!   - Admin: all operations
+//!   - Member: read + write, no admin operations
+//!   - Viewer: read-only operations only
 
 use crate::config::ForgeConfig;
 use crate::events::EventSender;
 use crate::server::handler::{handle_request, DaemonState};
-use crate::server::writer::{is_read_only, WriteCommand};
+use crate::server::rbac::{check_permission, resolve_role};
+use crate::server::writer::{is_read_only, AuditContext, WriteCommand};
 use axum::extract::State;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::Method;
@@ -31,15 +37,81 @@ pub struct AppState {
     pub hlc: Arc<crate::sync::Hlc>,
     pub started_at: Instant,
     pub write_tx: mpsc::Sender<WriteCommand>,
+    /// Admin email list for RBAC role resolution (empty = no admins configured).
+    pub admin_emails: Vec<String>,
+    /// Whether auth (and thus RBAC) is enabled.
+    pub auth_enabled: bool,
 }
 
 /// POST /api — accepts JSON matching the protocol Request type.
 /// Routes reads to per-request read-only connections, writes through the writer actor.
 /// Returns proper HTTP status codes: 200 for success, 503 for infrastructure failures.
+///
+/// When auth is enabled:
+/// - RBAC is enforced before handling (returns 403 if denied)
+/// - Write operations carry AuditContext for the writer actor to log
 async fn api_handler(
     State(state): State<AppState>,
-    Json(request): Json<Request>,
+    http_req: axum::http::Request<axum::body::Body>,
 ) -> impl IntoResponse {
+    // Extract auth claims from extensions (injected by auth_middleware)
+    let claims = http_req
+        .extensions()
+        .get::<super::auth::AuthClaims>()
+        .cloned();
+
+    // Parse JSON body
+    let body_bytes = match axum::body::to_bytes(http_req.into_body(), 10 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(Response::Error {
+                    message: format!("invalid request body: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let request: Request = match serde_json::from_slice(&body_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                Json(Response::Error {
+                    message: format!("invalid JSON: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // RBAC check: only when auth is enabled and claims are present
+    let audit_ctx = if state.auth_enabled {
+        if let Some(ref c) = claims {
+            let role = resolve_role(c, &state.admin_emails);
+            if let Err(reason) = check_permission(&role, &request) {
+                return (
+                    axum::http::StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({"error": reason})),
+                )
+                    .into_response();
+            }
+            // Build audit context for writes
+            Some(AuditContext {
+                user_id: c.sub.clone(),
+                email: c.email.clone().unwrap_or_default(),
+                role: role.as_str().to_string(),
+                source: "http".to_string(),
+                source_ip: String::new(), // TODO: extract from ConnectInfo if needed
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let response = if is_read_only(&request) {
         // Open per-request read-only connection (same pattern as socket.rs)
         match DaemonState::new_reader(
@@ -61,17 +133,21 @@ async fn api_handler(
             }
         }
     } else {
-        // Send write request through the writer actor with timeout (same as socket.rs)
+        // Send write request through the writer actor with timeout
         let (reply_tx, reply_rx) = oneshot::channel();
-        match tokio::time::timeout(
-            Duration::from_secs(30),
-            state.write_tx.send(WriteCommand::Raw {
+        let cmd = if let Some(audit) = audit_ctx {
+            WriteCommand::Audited {
                 request,
                 reply: reply_tx,
-            }),
-        )
-        .await
-        {
+                audit,
+            }
+        } else {
+            WriteCommand::Raw {
+                request,
+                reply: reply_tx,
+            }
+        };
+        match tokio::time::timeout(Duration::from_secs(30), state.write_tx.send(cmd)).await {
             Ok(Ok(())) => {
                 match tokio::time::timeout(Duration::from_secs(30), reply_rx).await {
                     Ok(Ok(resp)) => resp,
@@ -216,6 +292,8 @@ pub async fn run_http_server_with_listener(
         hlc,
         started_at,
         write_tx,
+        admin_emails: config.auth.admin_emails.clone(),
+        auth_enabled: config.auth.enabled,
     };
 
     let app = build_router(config, state);
@@ -257,6 +335,8 @@ mod tests {
             hlc,
             started_at: Instant::now(),
             write_tx,
+            admin_emails: Vec::new(),
+            auth_enabled: false,
         }
     }
 

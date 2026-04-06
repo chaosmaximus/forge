@@ -1,12 +1,32 @@
 use forge_core::protocol::{Request, Response};
 use tokio::sync::{mpsc, oneshot};
 
+/// Context for audit logging of write operations.
+///
+/// Attached to HTTP write requests when auth is enabled, or with defaults
+/// for Unix socket writes. The WriterActor inserts an audit_log record
+/// after processing each Audited command.
+#[derive(Debug, Clone)]
+pub struct AuditContext {
+    pub user_id: String,
+    pub email: String,
+    pub role: String,
+    pub source: String,    // "http" or "socket"
+    pub source_ip: String, // empty for socket
+}
+
 /// A command sent to the writer actor for serialized write access.
 pub enum WriteCommand {
-    /// Execute a request through the write connection.
+    /// Execute a request through the write connection (no audit).
     Raw {
         request: Request,
         reply: oneshot::Sender<Response>,
+    },
+    /// Execute a request and log an audit record afterward.
+    Audited {
+        request: Request,
+        reply: oneshot::Sender<Response>,
+        audit: AuditContext,
     },
 }
 
@@ -78,6 +98,44 @@ pub fn is_read_only(req: &Request) -> bool {
     )
 }
 
+/// Derive a short request type name from a Request variant for audit logging.
+///
+/// Uses serde serialization to extract the "method" tag, which gives us the
+/// snake_case variant name (e.g., "remember", "set_config", "shutdown").
+fn request_type_name(request: &Request) -> String {
+    // Serialize to JSON and extract the "method" field
+    if let Ok(val) = serde_json::to_value(request) {
+        if let Some(method) = val.get("method").and_then(|m| m.as_str()) {
+            return method.to_string();
+        }
+    }
+    // Fallback: debug format
+    format!("{:?}", request).chars().take(50).collect()
+}
+
+/// Derive a short summary from a Request for audit logging (truncated to 200 chars).
+fn request_summary(request: &Request) -> String {
+    let full = match serde_json::to_string(request) {
+        Ok(s) => s,
+        Err(_) => format!("{:?}", request),
+    };
+    if full.len() <= 200 {
+        full
+    } else {
+        let mut s: String = full.chars().take(197).collect();
+        s.push_str("...");
+        s
+    }
+}
+
+/// Determine the response status string for audit logging.
+fn response_status(response: &Response) -> &'static str {
+    match response {
+        Response::Error { .. } => "error",
+        _ => "ok",
+    }
+}
+
 /// Actor that serializes all write operations through a single connection.
 ///
 /// Receives WriteCommand messages via an mpsc channel and processes them
@@ -98,6 +156,43 @@ impl WriterActor {
             match cmd {
                 WriteCommand::Raw { request, reply } => {
                     let response = super::handler::handle_request(&mut self.state, request);
+                    let _ = reply.send(response);
+                }
+                WriteCommand::Audited {
+                    request,
+                    reply,
+                    audit,
+                } => {
+                    let req_type = request_type_name(&request);
+                    let summary = request_summary(&request);
+                    let response =
+                        super::handler::handle_request(&mut self.state, request);
+                    let status = response_status(&response);
+
+                    // Insert audit log record (best-effort — don't fail the request)
+                    let audit_id = ulid::Ulid::new().to_string();
+                    if let Err(e) = self.state.conn.execute(
+                        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, timestamp,
+                         user_id, email, role, request_type, request_summary, source, source_ip, response_status)
+                         VALUES (?1, 'api', ?2, ?3, 'request', '', datetime('now'),
+                         ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        rusqlite::params![
+                            audit_id,
+                            audit.user_id,
+                            req_type,
+                            audit.user_id,
+                            audit.email,
+                            audit.role,
+                            req_type,
+                            summary,
+                            audit.source,
+                            audit.source_ip,
+                            status,
+                        ],
+                    ) {
+                        tracing::warn!("failed to insert audit log: {e}");
+                    }
+
                     let _ = reply.send(response);
                 }
             }
@@ -547,5 +642,214 @@ mod tests {
 
         drop(tx);
         handle.await.unwrap();
+    }
+
+    #[test]
+    fn test_request_type_name() {
+        assert_eq!(request_type_name(&Request::Health), "health");
+        assert_eq!(request_type_name(&Request::Shutdown), "shutdown");
+        assert_eq!(
+            request_type_name(&Request::Remember {
+                memory_type: forge_core::types::MemoryType::Decision,
+                title: "t".into(),
+                content: "c".into(),
+                confidence: None,
+                tags: None,
+                project: None,
+            }),
+            "remember"
+        );
+        assert_eq!(
+            request_type_name(&Request::SetConfig {
+                key: "k".into(),
+                value: "v".into(),
+            }),
+            "set_config"
+        );
+    }
+
+    #[test]
+    fn test_request_summary_truncation() {
+        let short = request_summary(&Request::Health);
+        assert!(short.len() <= 200);
+
+        // A request with long content should be truncated
+        let long_content = "x".repeat(500);
+        let summary = request_summary(&Request::Remember {
+            memory_type: forge_core::types::MemoryType::Decision,
+            title: "t".into(),
+            content: long_content,
+            confidence: None,
+            tags: None,
+            project: None,
+        });
+        assert!(summary.len() <= 200);
+        assert!(summary.ends_with("..."));
+    }
+
+    #[test]
+    fn test_response_status() {
+        assert_eq!(
+            response_status(&Response::Ok {
+                data: forge_core::protocol::ResponseData::Health {
+                    decisions: 0, lessons: 0, patterns: 0, preferences: 0, edges: 0,
+                }
+            }),
+            "ok"
+        );
+        assert_eq!(
+            response_status(&Response::Error {
+                message: "bad".into()
+            }),
+            "error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_audited_command_creates_audit_record() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let actor = WriterActor { state };
+        let (tx, rx) = mpsc::channel(10);
+        let handle = tokio::spawn(async move { actor.run(rx).await });
+
+        let audit = AuditContext {
+            user_id: "user-42".to_string(),
+            email: "user@test.com".to_string(),
+            role: "member".to_string(),
+            source: "http".to_string(),
+            source_ip: "10.0.0.1".to_string(),
+        };
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(WriteCommand::Audited {
+            request: Request::Remember {
+                memory_type: forge_core::types::MemoryType::Decision,
+                title: "audited decision".into(),
+                content: "audited content".into(),
+                confidence: None,
+                tags: None,
+                project: None,
+            },
+            reply: reply_tx,
+            audit,
+        })
+        .await
+        .unwrap();
+
+        let resp = reply_rx.await.unwrap();
+        match resp {
+            Response::Ok { .. } => {}
+            other => panic!("expected Ok, got {:?}", other),
+        }
+
+        // We can't directly query the in-memory DB from here because the actor
+        // owns it. But we verified the command was processed without errors.
+        // The audit insert is best-effort (logged on failure).
+
+        drop(tx);
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_audited_command_records_in_db() {
+        use tempfile::TempDir;
+
+        let tmp_dir = TempDir::new().unwrap();
+        let db_path = tmp_dir.path().join("audit_test.db");
+        let db_path_str = db_path.to_str().unwrap();
+
+        // Create initial state (sets up schema)
+        let state = crate::server::handler::DaemonState::new(db_path_str).unwrap();
+        let events = state.events.clone();
+        let hlc = Arc::clone(&state.hlc);
+        let started_at = state.started_at;
+        drop(state);
+
+        // Create the writer actor with its own connection
+        let writer_state = crate::server::handler::DaemonState::new_writer(
+            db_path_str,
+            events.clone(),
+            hlc.clone(),
+            started_at,
+        )
+        .unwrap();
+        let actor = WriterActor {
+            state: writer_state,
+        };
+        let (tx, rx) = mpsc::channel(10);
+        let handle = tokio::spawn(async move { actor.run(rx).await });
+
+        // Send an audited write
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(WriteCommand::Audited {
+            request: Request::Remember {
+                memory_type: forge_core::types::MemoryType::Decision,
+                title: "audit test".into(),
+                content: "audit content".into(),
+                confidence: None,
+                tags: None,
+                project: None,
+            },
+            reply: reply_tx,
+            audit: AuditContext {
+                user_id: "uid-99".to_string(),
+                email: "audit@test.com".to_string(),
+                role: "admin".to_string(),
+                source: "http".to_string(),
+                source_ip: "192.168.1.1".to_string(),
+            },
+        })
+        .await
+        .unwrap();
+
+        let resp = reply_rx.await.unwrap();
+        match resp {
+            Response::Ok { .. } => {}
+            other => panic!("expected Ok, got {:?}", other),
+        }
+
+        drop(tx);
+        handle.await.unwrap();
+
+        // Now open a reader connection to verify the audit record
+        let reader = crate::server::handler::DaemonState::new_reader(
+            db_path_str, events, hlc, started_at,
+        )
+        .unwrap();
+
+        let (user_id, email, role, req_type, source, source_ip, status): (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = reader
+            .conn
+            .query_row(
+                "SELECT user_id, email, role, request_type, source, source_ip, response_status FROM audit_log WHERE user_id = 'uid-99'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(user_id, "uid-99");
+        assert_eq!(email, "audit@test.com");
+        assert_eq!(role, "admin");
+        assert_eq!(req_type, "remember");
+        assert_eq!(source, "http");
+        assert_eq!(source_ip, "192.168.1.1");
+        assert_eq!(status, "ok");
     }
 }
