@@ -73,7 +73,7 @@ fn learned_effectiveness_rate(
 ) -> rusqlite::Result<Option<f64>> {
     // Check if the effectiveness table exists (it may not be created yet if Task 2 hasn't run)
     let table_exists: bool = conn
-        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='effectiveness'")?
+        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='context_effectiveness'")?
         .query_row([], |row| row.get::<_, i64>(0))
         .map(|count| count > 0)?;
 
@@ -83,24 +83,26 @@ fn learned_effectiveness_rate(
 
     // Query for acknowledged and total injections to compute effectiveness rate.
     // With project scoping: try project-specific first, fall back to global.
+    // context_effectiveness table uses column name `context_type` (not knowledge_type)
+    // Project scoping: try project-specific first via session join, fall back to global
     let (ack_count, total_count) = if let Some(proj) = project {
         let result: (i64, i64) = conn.query_row(
-            "SELECT COALESCE(SUM(CASE WHEN acknowledged = 1 THEN 1 ELSE 0 END), 0),
+            "SELECT COALESCE(SUM(CASE WHEN ce.acknowledged = 1 THEN 1 ELSE 0 END), 0),
                     COUNT(*)
-             FROM effectiveness
-             WHERE hook_event = ?1 AND knowledge_type = ?2 AND project = ?3",
+             FROM context_effectiveness ce
+             JOIN session s ON ce.session_id = s.id
+             WHERE ce.hook_event = ?1 AND ce.context_type = ?2 AND s.project = ?3",
             rusqlite::params![hook_event, knowledge_type, proj],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         if result.1 >= 5 {
             result
         } else {
-            // Fall back to global (all projects)
             conn.query_row(
                 "SELECT COALESCE(SUM(CASE WHEN acknowledged = 1 THEN 1 ELSE 0 END), 0),
                         COUNT(*)
-                 FROM effectiveness
-                 WHERE hook_event = ?1 AND knowledge_type = ?2",
+                 FROM context_effectiveness
+                 WHERE hook_event = ?1 AND context_type = ?2",
                 rusqlite::params![hook_event, knowledge_type],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?
@@ -109,8 +111,8 @@ fn learned_effectiveness_rate(
         conn.query_row(
             "SELECT COALESCE(SUM(CASE WHEN acknowledged = 1 THEN 1 ELSE 0 END), 0),
                     COUNT(*)
-             FROM effectiveness
-             WHERE hook_event = ?1 AND knowledge_type = ?2",
+             FROM context_effectiveness
+             WHERE hook_event = ?1 AND context_type = ?2",
             rusqlite::params![hook_event, knowledge_type],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?
@@ -162,23 +164,7 @@ mod tests {
         crate::db::vec::init_sqlite_vec();
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::create_schema(&conn).unwrap();
-        // Create the effectiveness table inline (Task 2 may not be merged yet)
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS effectiveness (
-                id TEXT PRIMARY KEY,
-                hook_event TEXT NOT NULL,
-                knowledge_type TEXT NOT NULL,
-                memory_id TEXT NOT NULL,
-                session_id TEXT NOT NULL DEFAULT '',
-                project TEXT,
-                acknowledged INTEGER NOT NULL DEFAULT 0,
-                injected_at TEXT NOT NULL,
-                acknowledged_at TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_eff_hook_kt ON effectiveness(hook_event, knowledge_type);
-            CREATE INDEX IF NOT EXISTS idx_eff_project ON effectiveness(project);",
-        )
-        .unwrap();
+        // context_effectiveness table is created by create_schema() (Prajna v2.4)
         conn
     }
 
@@ -262,22 +248,12 @@ mod tests {
             "before learning, PostEdit+blast_radius should NOT surface"
         );
 
-        // Insert 10 acknowledged records -> learned rate = 10/10 = 1.0
-        let now = "2026-04-06T00:00:00Z";
+        // Insert 10 acknowledged records via the real API -> learned rate = 10/10 = 1.0
         for i in 0..10 {
-            conn.execute(
-                "INSERT INTO effectiveness (id, hook_event, knowledge_type, memory_id, session_id, acknowledged, injected_at, acknowledged_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)",
-                rusqlite::params![
-                    format!("eff-{i}"),
-                    HOOK_POST_EDIT,
-                    KT_BLAST_RADIUS,
-                    format!("mem-{i}"),
-                    "test-session",
-                    now,
-                ],
-            )
-            .unwrap();
+            let id = crate::db::effectiveness::record_injection(
+                &conn, "test-session", HOOK_POST_EDIT, KT_BLAST_RADIUS, &format!("blast {i}"),
+            ).unwrap();
+            crate::db::effectiveness::mark_acknowledged(&conn, &id).unwrap();
         }
 
         // Now learned rate = 1.0, well above threshold

@@ -1285,17 +1285,41 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::ContextRefresh { session_id, since } => {
             let since_clause = since.as_deref().unwrap_or("2000-01-01T00:00:00Z");
+
+            // Session-scoped: get project from session for scoping
+            let session_project: Option<String> = state.conn.query_row(
+                "SELECT project FROM session WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            ).ok().flatten();
+
+            // Notifications scoped to session's target
             let notifications: Vec<String> = state.conn.prepare(
-                "SELECT title FROM notification WHERE status = 'pending' AND created_at > ?1 ORDER BY created_at DESC LIMIT 3"
+                "SELECT title FROM notification WHERE status = 'pending' AND created_at > ?1
+                 AND (target_id = ?2 OR target_id IS NULL)
+                 ORDER BY created_at DESC LIMIT 3"
             ).ok()
-                .map(|mut stmt| stmt.query_map(rusqlite::params![since_clause], |row| row.get(0))
+                .map(|mut stmt| stmt.query_map(rusqlite::params![since_clause, session_id], |row| row.get(0))
                     .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default())
                 .unwrap_or_default();
 
+            // Anti-pattern perceptions (project-scoped)
             let anti_patterns: Vec<String> = state.conn.prepare(
-                "SELECT data FROM perception WHERE kind = 'Warning' AND consumed = 0 AND created_at > ?1 ORDER BY created_at DESC LIMIT 3"
+                "SELECT data FROM perception WHERE kind = 'Warning' AND consumed = 0 AND created_at > ?1
+                 AND (project = ?2 OR project IS NULL)
+                 ORDER BY created_at DESC LIMIT 3"
             ).ok()
-                .map(|mut stmt| stmt.query_map(rusqlite::params![since_clause], |row| row.get(0))
+                .map(|mut stmt| stmt.query_map(rusqlite::params![since_clause, session_project], |row| row.get(0))
+                    .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default())
+                .unwrap_or_default();
+
+            // Warning perceptions (not anti-pattern — general warnings)
+            let warnings: Vec<String> = state.conn.prepare(
+                "SELECT data FROM perception WHERE kind = 'Error' AND consumed = 0 AND created_at > ?1
+                 AND (project = ?2 OR project IS NULL)
+                 ORDER BY created_at DESC LIMIT 3"
+            ).ok()
+                .map(|mut stmt| stmt.query_map(rusqlite::params![since_clause, session_project], |row| row.get(0))
                     .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default())
                 .unwrap_or_default();
 
@@ -1308,7 +1332,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             Response::Ok {
                 data: ResponseData::ContextDelta {
                     notifications,
-                    warnings: vec![],
+                    warnings,
                     anti_patterns,
                     messages_pending,
                 },
