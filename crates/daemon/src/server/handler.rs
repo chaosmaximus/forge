@@ -5523,4 +5523,204 @@ mod tests {
             other => panic!("expected TeamSent, got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_list_organizations_handler() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        // Create two additional organizations
+        handle_request(&mut state, Request::CreateOrganization {
+            name: "OrgAlpha".into(), description: Some("First".into()),
+        });
+        handle_request(&mut state, Request::CreateOrganization {
+            name: "OrgBeta".into(), description: None,
+        });
+
+        let resp = handle_request(&mut state, Request::ListOrganizations);
+        match resp {
+            Response::Ok { data: ResponseData::OrganizationList { organizations } } => {
+                // "default" + OrgAlpha + OrgBeta = at least 3
+                assert!(organizations.len() >= 3,
+                    "expected at least 3 orgs (including default), got {}", organizations.len());
+                let names: Vec<&str> = organizations.iter()
+                    .filter_map(|o| o["name"].as_str())
+                    .collect();
+                assert!(names.contains(&"Default"), "should contain default org");
+                assert!(names.contains(&"OrgAlpha"), "should contain OrgAlpha");
+                assert!(names.contains(&"OrgBeta"), "should contain OrgBeta");
+            }
+            other => panic!("expected OrganizationList, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_tree_handler() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let now = forge_core::time::now_iso();
+        let org_id = "test-org-tree";
+        state.conn.execute(
+            "INSERT INTO organization (id, name, created_at, updated_at) VALUES (?1, 'TreeTestOrg', ?2, ?3)",
+            rusqlite::params![org_id, now, now],
+        ).unwrap();
+        state.conn.execute(
+            "INSERT INTO team (id, name, organization_id, created_by, status, created_at, team_type) VALUES ('tt1', 'engineering', ?1, 'system', 'active', ?2, 'human')",
+            rusqlite::params![org_id, now],
+        ).unwrap();
+        state.conn.execute(
+            "INSERT INTO team (id, name, organization_id, parent_team_id, created_by, status, created_at, team_type) VALUES ('tt2', 'backend', ?1, 'tt1', 'system', 'active', ?2, 'human')",
+            rusqlite::params![org_id, now],
+        ).unwrap();
+
+        let resp = handle_request(&mut state, Request::TeamTree {
+            organization_id: Some(org_id.to_string()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamTreeData { tree } } => {
+                assert_eq!(tree.len(), 1, "should have 1 root node");
+                assert_eq!(tree[0]["name"], "engineering");
+                let children = tree[0]["children"].as_array().unwrap();
+                assert_eq!(children.len(), 1, "engineering should have 1 child");
+                assert_eq!(children[0]["name"], "backend");
+            }
+            other => panic!("expected TeamTreeData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_tree_by_name() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let now = forge_core::time::now_iso();
+        let org_id = "test-org-byname";
+        state.conn.execute(
+            "INSERT INTO organization (id, name, created_at, updated_at) VALUES (?1, 'ByNameOrg', ?2, ?3)",
+            rusqlite::params![org_id, now, now],
+        ).unwrap();
+        state.conn.execute(
+            "INSERT INTO team (id, name, organization_id, created_by, status, created_at, team_type) VALUES ('bn1', 'platform', ?1, 'system', 'active', ?2, 'human')",
+            rusqlite::params![org_id, now],
+        ).unwrap();
+        state.conn.execute(
+            "INSERT INTO team (id, name, organization_id, parent_team_id, created_by, status, created_at, team_type) VALUES ('bn2', 'infra', ?1, 'bn1', 'system', 'active', ?2, 'human')",
+            rusqlite::params![org_id, now],
+        ).unwrap();
+
+        // Pass org NAME instead of ID — should resolve correctly
+        let resp = handle_request(&mut state, Request::TeamTree {
+            organization_id: Some("ByNameOrg".to_string()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamTreeData { tree } } => {
+                assert_eq!(tree.len(), 1, "should have 1 root node");
+                assert_eq!(tree[0]["name"], "platform");
+                let children = tree[0]["children"].as_array().unwrap();
+                assert_eq!(children.len(), 1, "platform should have 1 child");
+                assert_eq!(children[0]["name"], "infra");
+            }
+            other => panic!("expected TeamTreeData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_org_from_template_handler() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::CreateOrgFromTemplate {
+            template_name: "startup".into(),
+            org_name: "TemplateStartup".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::OrgFromTemplateCreated { org_id, teams_created } } => {
+                assert!(!org_id.is_empty(), "org_id should not be empty");
+                assert_eq!(teams_created, 12, "startup template creates 12 teams");
+            }
+            other => panic!("expected OrgFromTemplateCreated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_org_from_template_unknown() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::CreateOrgFromTemplate {
+            template_name: "nonexistent".into(),
+            org_name: "BadOrg".into(),
+        });
+        match resp {
+            Response::Error { message } => {
+                assert!(message.contains("nonexistent"),
+                    "error should mention the unknown template, got: {}", message);
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_send_recursive_handler() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let now = forge_core::time::now_iso();
+        let org_id = "test-org-recursive";
+        state.conn.execute(
+            "INSERT INTO organization (id, name, created_at, updated_at) VALUES (?1, 'RecursiveOrg', ?2, ?3)",
+            rusqlite::params![org_id, now, now],
+        ).unwrap();
+        // Parent team
+        state.conn.execute(
+            "INSERT INTO team (id, name, organization_id, created_by, status, created_at, team_type) VALUES ('tp', 'parentteam', ?1, 'system', 'active', ?2, 'human')",
+            rusqlite::params![org_id, now],
+        ).unwrap();
+        // Child team
+        state.conn.execute(
+            "INSERT INTO team (id, name, organization_id, parent_team_id, created_by, status, created_at, team_type) VALUES ('tc', 'childteam', ?1, 'tp', 'system', 'active', ?2, 'human')",
+            rusqlite::params![org_id, now],
+        ).unwrap();
+
+        // Register sessions and assign to teams
+        crate::sessions::register_session(&state.conn, "s-parent", "claude-code", None, None, None, None).unwrap();
+        state.conn.execute("UPDATE session SET team_id = 'tp' WHERE id = 's-parent'", []).unwrap();
+        crate::sessions::register_session(&state.conn, "s-child", "claude-code", None, None, None, None).unwrap();
+        state.conn.execute("UPDATE session SET team_id = 'tc' WHERE id = 's-child'", []).unwrap();
+
+        // Non-recursive: only parent team session
+        let resp = handle_request(&mut state, Request::TeamSend {
+            team_name: "parentteam".into(), kind: "notification".into(), topic: "test".into(),
+            parts: vec![], from_session: Some("system".into()), recursive: false,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamSent { messages_sent } } => {
+                assert_eq!(messages_sent, 1, "non-recursive should send to 1 session (parent team only)");
+            }
+            other => panic!("expected TeamSent, got {:?}", other),
+        }
+
+        // Recursive: parent + child team sessions
+        let resp = handle_request(&mut state, Request::TeamSend {
+            team_name: "parentteam".into(), kind: "notification".into(), topic: "test-recursive".into(),
+            parts: vec![], from_session: Some("system".into()), recursive: true,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamSent { messages_sent } } => {
+                assert_eq!(messages_sent, 2, "recursive should send to 2 sessions (parent + child)");
+            }
+            other => panic!("expected TeamSent, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_send_empty_team() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let now = forge_core::time::now_iso();
+        // Create team with no sessions
+        state.conn.execute(
+            "INSERT INTO team (id, name, organization_id, created_by, status, created_at, team_type) VALUES ('tempty', 'emptyteam', 'default', 'system', 'active', ?1, 'human')",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let resp = handle_request(&mut state, Request::TeamSend {
+            team_name: "emptyteam".into(), kind: "notification".into(), topic: "hello".into(),
+            parts: vec![], from_session: Some("system".into()), recursive: false,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamSent { messages_sent } } => {
+                assert_eq!(messages_sent, 0, "empty team should have 0 messages sent");
+            }
+            other => panic!("expected TeamSent, got {:?}", other),
+        }
+    }
 }
