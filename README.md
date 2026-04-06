@@ -20,10 +20,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-1%2C077%20passing-brightgreen" alt="Tests" />
-  <img src="https://img.shields.io/badge/commands-75%2B-blue" alt="Commands" />
-  <img src="https://img.shields.io/badge/workers-9-orange" alt="Workers" />
+  <img src="https://img.shields.io/badge/tests-1%2C756%2B%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/endpoints-98-blue" alt="Endpoints" />
+  <img src="https://img.shields.io/badge/workers-8-orange" alt="Workers" />
   <img src="https://img.shields.io/badge/memory%20layers-8-purple" alt="Memory Layers" />
+  <img src="https://img.shields.io/badge/enterprise--ready-Docker%20%7C%20Helm%20%7C%20K8s-teal" alt="Enterprise Ready" />
   <img src="https://img.shields.io/badge/rust-1.88-orange" alt="Rust" />
 </p>
 
@@ -258,27 +259,31 @@ Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to re
 | Knowledge graph | SQLite + vectors + edges | Cloud graph ($249/mo) | None | None | None |
 | Self-healing | Sleep-cycle consolidation | None | None | None | None |
 | Multi-agent | Any agent, shared graph | API-only | Claude only | Cursor only | None |
-| Local-first | Everything local | Cloud-first | Local file | Cloud sync | Cloud |
-| Price | **Free / $12/mo** | $249/mo | $20/mo (Max) | $20/mo | $18/mo |
+| Enterprise deploy | Docker + Helm + K8s | Cloud-only | N/A | Cloud-only | Cloud |
+| Auth + RBAC + Audit | JWT/OIDC + 3-role RBAC + audit | API key | N/A | N/A | OAuth |
+| Observability | Prometheus + Grafana + OTLP | None | None | None | None |
+| Local-first | Everything local (or self-hosted cloud) | Cloud-first | Local file | Cloud sync | Cloud |
+| Price | **Free / $9/mo** | $249/mo | $20/mo (Max) | $20/mo | $18/mo |
 
 ---
 
 ## Under the Hood
 
 ```
-75+ protocol commands · 8 background workers · 8 memory layers
-1,077 tests · 6 adversarial security reviews · 0 warnings (clippy)
+98 protocol endpoints · 8 background workers · 8 memory layers
+1,756+ tests · 12 adversarial security reviews · 0 warnings (clippy)
+Enterprise: Docker · Helm · JWT/OIDC · RBAC · Audit · Prometheus
 ```
 
 | Component | Tests | Framework |
 |-----------|-------|-----------|
-| forge-core | 40 | Rust |
-| forge-daemon | 445 | Rust |
+| forge-core | 55 | Rust |
+| forge-daemon | 675 | Rust |
 | forge-cli | 20 | Rust |
-| forge app (Rust) | 53 | Rust |
-| forge app (TypeScript) | 505 | Vitest |
+| forge app — canvas engine | 1,026 | Vitest |
+| forge app — Playwright E2E | 64 | Playwright |
 | Install scripts | 14 | Bash |
-| **Total** | **1,077** | |
+| **Total** | **1,756+** | |
 
 ```bash
 cargo test --workspace              # full suite
@@ -291,7 +296,7 @@ cargo clippy --workspace -- -W clippy::all   # zero warnings
 
 | | Free | Pro | Team | Enterprise |
 |--|------|-----|------|-----------|
-| **Price** | $0 | **$12/mo** | $19/seat/mo | Custom |
+| **Price** | $0 | **$9/mo** | $19/seat/mo | Custom |
 | Memories | Unlimited | Unlimited | Unlimited | Unlimited |
 | Extraction | Ollama only | All providers | All providers | All + custom |
 | Search | Basic BM25 | Hybrid (BM25 + vector + graph) | Hybrid + team search | Full |
@@ -301,7 +306,7 @@ cargo clippy --workspace -- -W clippy::all   # zero warnings
 | Brain Map | Preview | Interactive | Full + team view | Full |
 | Identity/Disposition | View only | Full management | Full + team profiles | Full |
 
-**Zero marginal cost per user.** Everything runs on your machine. Your data never leaves your computer unless you choose to sync.
+**Zero marginal cost per user.** Everything runs on your machine — or deploy on your Kubernetes cluster with Docker, Helm, JWT/OIDC, RBAC, and Prometheus. Your data never leaves your network unless you choose to sync.
 
 ---
 

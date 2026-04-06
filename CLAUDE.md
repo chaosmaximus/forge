@@ -167,23 +167,29 @@ forge-next remember --type decision --title "..." --content "..."
 
 ## Architecture (v0.7.0 — FISP)
 
-**Daemon-first. CLI-first. No MCP server. 8-layer memory. Actor model. Tunable. 1,077+ tests.**
+**Daemon-first. CLI-first. No MCP server. 8-layer memory. Actor model. Tunable. 1,756+ tests. Enterprise-ready (HTTP, JWT, RBAC, Docker, Helm, Prometheus).**
 
 ```
-forge-daemon (Rust, single binary) — always-on daemon, Unix socket API
+forge-daemon (Rust, single binary) — always-on daemon, Unix socket + HTTP API
   ├── Actor architecture (hot/cold path separation, like Docker)
   │   ├── Socket handler: per-connection read-only SQLite (NEVER blocks)
+  │   ├── HTTP server: Axum, same protocol via POST /api (port 8420)
   │   ├── Writer actor: serializes writes via mpsc channel
   │   └── Workers: background tasks (extraction, embedding, consolidation, etc.)
   ├── SQLite FTS5 + sqlite-vec (memory + vectors + edges, single file, WAL mode)
   ├── 8-layer Manas memory (platform, tools, skills, domain DNA, experience, perception, declared, latent)
-  ├── A2A/FISP protocol (inter-session messaging, broadcast, delegation)
+  ├── Enterprise security (JWT/OIDC auth, RBAC Admin/Member/Viewer, append-only audit log)
+  ├── Observability (Prometheus /metrics, Grafana dashboard, OTLP tracing)
+  ├── A2A/FISP protocol (inter-session messaging, broadcast, delegation, meetings)
   ├── Context intelligence (excluded_layers, domain DNA boost, project-scoped prefetch)
   ├── Guardrails engine (check + blast_radius)
   ├── Multi-agent adapters (Claude Code + Cline + Codex CLI)
   ├── Auto-extraction (Gemini 2.5 Flash / Claude Haiku / Ollama)
   ├── Session tracking + session cards (capabilities, current_task)
+  ├── Notification engine (context injection, alerts, meeting timeouts)
   └── Event bus (tokio::broadcast for Mac app + A2A notifications)
+
+Deploy: Docker (<100MB) · Helm (StatefulSet + Litestream sidecar) · docker-compose
 
 forge-next (Rust CLI)  — client for daemon, auto-starts daemon
 forge-hud (Rust)       — StatusLine rendering
@@ -204,10 +210,10 @@ forge-hud (Rust)       — StatusLine rendering
 ### Running Tests
 
 ```bash
-# Full workspace (560+ tests)
+# Full workspace (730+ Rust tests)
 cargo test --workspace
 
-# Daemon only
+# Daemon only (675+ tests)
 cargo test -p forge-daemon
 
 # Socket E2E (requires release binary built)
