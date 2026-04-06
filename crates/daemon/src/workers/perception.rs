@@ -64,6 +64,131 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
             eprintln!("[perception] stored {} git perceptions", perceptions.len());
         }
     }
+
+    // Phase 3: Anti-pattern detection (v8.2)
+    // Compare recent agent actions against stored anti-patterns via keyword overlap.
+    // Uses FTS5 + keyword matching (not embedding — avoids LLM call on every tick).
+    {
+        let locked = state.lock().await;
+        let config = crate::config::load_config();
+        let threshold = config.proactive.anti_pattern_threshold;
+        let detections = detect_anti_patterns(&locked.conn, threshold);
+        for (ref ap_title, ref action_summary, confidence) in &detections {
+            let data = format!(
+                "{{\"type\":\"anti_pattern_detected\",\"anti_pattern\":\"{}\",\"matched_action\":\"{}\",\"confidence\":{}}}",
+                ap_title.replace('"', "\\\""),
+                action_summary.replace('"', "\\\""),
+                confidence,
+            );
+            let perception = forge_core::types::Perception {
+                id: ulid::Ulid::new().to_string(),
+                kind: forge_core::types::PerceptionKind::Error, // closest to "warning" — anti-pattern detection
+                data,
+                severity: forge_core::types::Severity::Warning,
+                project: None,
+                created_at: manas::now_offset(0),
+                expires_at: Some(manas::now_offset(PERCEPTION_TTL_SECS)),
+                consumed: false,
+            };
+            if let Err(e) = manas::store_perception(&locked.conn, &perception) {
+                eprintln!("[perception] anti-pattern store error: {}", e);
+            }
+            // Emit event for real-time UI notification
+            crate::events::emit(&locked.events, "anti_pattern_detected", serde_json::json!({
+                "anti_pattern": ap_title,
+                "action": action_summary,
+                "confidence": confidence,
+            }));
+            eprintln!("[perception] anti-pattern detected: {} (confidence: {:.2})", ap_title, confidence);
+        }
+    } // lock released
+}
+
+/// Detect behavioral anti-patterns by comparing recent agent actions against stored anti-patterns.
+/// Uses keyword overlap similarity (Jaccard-like). Returns (title, action_summary, confidence).
+///
+/// v8.2 spec: learns anti-pattern classes from annotated mistakes, matches current behavior,
+/// raises perceptions when confidence exceeds threshold.
+fn detect_anti_patterns(conn: &rusqlite::Connection, threshold: f64) -> Vec<(String, String, f64)> {
+    use std::collections::HashSet;
+
+    // 1. Fetch stored anti-patterns (tagged 'anti-pattern', active)
+    let anti_patterns: Vec<(String, String)> = (|| -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = conn.prepare(
+            "SELECT title, content FROM memory
+             WHERE tags LIKE '%anti-pattern%' AND status = 'active'
+             ORDER BY quality_score DESC LIMIT 10"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    })().unwrap_or_default();
+
+    if anti_patterns.is_empty() {
+        return vec![];
+    }
+
+    // 2. Fetch recent audit log entries (last 5 minutes)
+    // audit_log schema: id, actor_type, actor_id, action, resource_type, resource_id, scope_path, details, timestamp
+    let recent_actions: Vec<(String, String)> = (|| -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = conn.prepare(
+            "SELECT action, COALESCE(resource_id, '') || ' ' || COALESCE(details, '') FROM audit_log
+             WHERE timestamp > datetime('now', '-5 minutes')
+             AND action NOT IN ('health', 'manas_health', 'doctor', 'sessions', 'context_stats')
+             ORDER BY timestamp DESC LIMIT 20"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    })().unwrap_or_default();
+
+    if recent_actions.is_empty() {
+        return vec![];
+    }
+
+    // 3. Keyword overlap similarity (Jaccard index on significant words)
+    let mut detections = Vec::new();
+    let stop_words: HashSet<String> = ["the", "and", "for", "that", "this", "with", "from", "not", "are", "was", "but", "have", "has"]
+        .iter().map(|s| s.to_string()).collect();
+
+    for (ap_title, ap_content) in &anti_patterns {
+        let ap_text = format!("{} {}", ap_title, ap_content).to_lowercase();
+        let ap_words: HashSet<String> = ap_text.split_whitespace()
+            .filter(|w| w.len() > 3 && !stop_words.contains(*w))
+            .map(|s| s.to_string())
+            .collect();
+        if ap_words.len() < 3 { continue; }
+
+        for (action_type, action_summary) in &recent_actions {
+            let action_text = format!("{} {}", action_type, action_summary).to_lowercase();
+            let action_words: HashSet<String> = action_text.split_whitespace()
+                .filter(|w| w.len() > 3 && !stop_words.contains(*w))
+                .map(|s| s.to_string())
+                .collect();
+            if action_words.len() < 2 { continue; }
+
+            let intersection = ap_words.intersection(&action_words).count();
+            let union = ap_words.union(&action_words).count();
+            let similarity = if union > 0 { intersection as f64 / union as f64 } else { 0.0 };
+
+            if similarity >= threshold {
+                detections.push((
+                    ap_title.clone(),
+                    format!("{}: {}", action_type, action_summary),
+                    similarity,
+                ));
+            }
+        }
+    }
+
+    // Deduplicate: only keep the highest-confidence detection per anti-pattern
+    detections.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    let mut seen_titles = HashSet::new();
+    detections.retain(|(title, _, _)| seen_titles.insert(title.clone()));
+
+    detections
 }
 
 /// Run git commands and build Perception entries from the results.
@@ -201,5 +326,80 @@ mod tests {
             perceptions.is_empty(),
             "should return empty for nonexistent dir"
         );
+    }
+
+    // ── Anti-pattern detection tests (v8.2) ──
+
+    #[test]
+    fn test_detect_anti_patterns_no_patterns() {
+        let conn = open_db();
+        let results = detect_anti_patterns(&conn, 0.85);
+        assert!(results.is_empty(), "no anti-patterns stored → no detections");
+    }
+
+    #[test]
+    fn test_detect_anti_patterns_no_recent_actions() {
+        let conn = open_db();
+        // Store an anti-pattern but no audit log entries
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, tags, status, confidence, created_at, accessed_at)
+             VALUES ('ap1', 'lesson', 'Never test browser when asked for native',
+                     'Playwright tests browser fallback not Tauri native app desktop testing webview',
+                     'anti-pattern', 'active', 0.9, datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        let results = detect_anti_patterns(&conn, 0.85);
+        assert!(results.is_empty(), "no recent actions → no detections");
+    }
+
+    #[test]
+    fn test_detect_anti_patterns_matching_action() {
+        let conn = open_db();
+        // Store anti-pattern about browser testing
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, tags, status, confidence, created_at, accessed_at, quality_score)
+             VALUES ('ap1', 'lesson', 'Browser testing fallback',
+                     'playwright browser testing localhost fallback desktop native webview tauri',
+                     'anti-pattern', 'active', 0.9, datetime('now'), datetime('now'), 1.0)",
+            [],
+        ).unwrap();
+
+        // Store matching audit log entry with heavily overlapping words
+        conn.execute(
+            "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, details, timestamp)
+             VALUES ('a1', 'agent', 'test', 'post_edit', 'file', 'test.ts',
+                     'playwright browser testing localhost fallback desktop native webview tauri', datetime('now'))",
+            [],
+        ).unwrap();
+
+        // Low threshold so keyword overlap matches
+        let results = detect_anti_patterns(&conn, 0.3);
+        assert!(!results.is_empty(), "should detect matching anti-pattern, got empty");
+        assert!(results[0].0.contains("Browser"), "should be the browser testing anti-pattern");
+        assert!(results[0].2 >= 0.3, "confidence should be above threshold");
+    }
+
+    #[test]
+    fn test_detect_anti_patterns_no_false_positive() {
+        let conn = open_db();
+        // Store anti-pattern about browser testing
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, tags, status, confidence, created_at, accessed_at, quality_score)
+             VALUES ('ap1', 'lesson', 'Browser testing fallback',
+                     'playwright browser testing localhost fallback desktop native webview tauri',
+                     'anti-pattern', 'active', 0.9, datetime('now'), datetime('now'), 1.0)",
+            [],
+        ).unwrap();
+
+        // Store completely unrelated audit log entry
+        conn.execute(
+            "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, details, timestamp)
+             VALUES ('a1', 'agent', 'test', 'remember', 'memory', 'mem1',
+                     'Added a decision about database schema migration strategy', datetime('now'))",
+            [],
+        ).unwrap();
+
+        let results = detect_anti_patterns(&conn, 0.3);
+        assert!(results.is_empty(), "unrelated action should NOT match anti-pattern");
     }
 }
