@@ -1,12 +1,44 @@
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
+/// Max lengths for input validation (F-006)
+const MAX_NAME_LEN: usize = 256;
+const MAX_DESCRIPTION_LEN: usize = 4096;
+/// Max recursion depth for team tree CTE (F-004)
+const MAX_TREE_DEPTH: usize = 20;
+
+fn validate_name(name: &str) -> rusqlite::Result<()> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName("name cannot be empty".into()));
+    }
+    if trimmed.len() > MAX_NAME_LEN {
+        return Err(rusqlite::Error::InvalidParameterName(
+            format!("name exceeds {} chars", MAX_NAME_LEN),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_description(desc: Option<&str>) -> rusqlite::Result<()> {
+    if let Some(d) = desc {
+        if d.len() > MAX_DESCRIPTION_LEN {
+            return Err(rusqlite::Error::InvalidParameterName(
+                format!("description exceeds {} chars", MAX_DESCRIPTION_LEN),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Create a new organization. Returns the ULID.
 pub fn create_organization(
     conn: &Connection,
     name: &str,
     description: Option<&str>,
 ) -> rusqlite::Result<String> {
+    validate_name(name)?;
+    validate_description(description)?;
     let id = ulid::Ulid::new().to_string();
     let now = forge_core::time::now_iso();
     conn.execute(
@@ -173,21 +205,25 @@ pub fn create_org_from_template(
 
 /// Get active session IDs for a team.
 /// If `recursive` is true, includes sessions from all descendant teams.
+/// Org-scoped: if multiple teams share a name across orgs, only the first match is used.
+/// F-004: CTE uses UNION (not UNION ALL) + depth limit to prevent cycles.
 pub fn team_session_ids(
     conn: &Connection,
     team_name: &str,
     recursive: bool,
 ) -> rusqlite::Result<Vec<String>> {
     if recursive {
+        // F-004: depth-bounded CTE with UNION (dedup prevents infinite cycles)
         let mut stmt = conn.prepare(
-            "WITH RECURSIVE team_tree AS (
-                SELECT id FROM team WHERE name = ?1
-                UNION ALL
-                SELECT t.id FROM team t JOIN team_tree tt ON t.parent_team_id = tt.id
+            &format!("WITH RECURSIVE team_tree(id, depth) AS (
+                SELECT id, 0 FROM team WHERE name = ?1
+                UNION
+                SELECT t.id, tt.depth + 1 FROM team t JOIN team_tree tt ON t.parent_team_id = tt.id
+                WHERE tt.depth < {}
             )
             SELECT s.id FROM session s
             WHERE s.team_id IN (SELECT id FROM team_tree)
-              AND s.status = 'active'",
+              AND s.status = 'active'", MAX_TREE_DEPTH),
         )?;
         let rows = stmt.query_map(params![team_name], |row| row.get(0))?;
         rows.collect()
