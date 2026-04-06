@@ -185,6 +185,9 @@ enum Commands {
         /// Useful for caching the stable part for KV-cache optimization.
         #[arg(long)]
         static_only: bool,
+        /// Session ID for role-context, pending-messages, meeting-context injection
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Register an active agent session
     #[command(name = "register-session")]
@@ -968,8 +971,8 @@ async fn main() {
         Commands::ContextTrace { agent, project } => {
             commands::system::context_trace(agent, project).await;
         }
-        Commands::CompileContext { agent, project, static_only } => {
-            commands::manas::compile_context(agent, project, static_only).await;
+        Commands::CompileContext { agent, project, static_only, session } => {
+            commands::manas::compile_context(agent, project, static_only, session).await;
         }
         Commands::ManasHealth => {
             commands::manas::manas_health().await;

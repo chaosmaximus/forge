@@ -179,6 +179,7 @@ async fn main() {
         config.clone(),
         &shutdown_tx,
         db_path.clone(),
+        events.clone(),
     );
 
     // Create a SEPARATE DaemonState for the WriterActor. This is the key fix

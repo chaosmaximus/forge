@@ -57,6 +57,7 @@ pub fn spawn_workers(
     config: ForgeConfig,
     shutdown_tx: &watch::Sender<bool>,
     db_path: String,
+    events: crate::events::EventSender,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     // Detect installed agent adapters
     let detected = adapters::detect_adapters();
@@ -167,10 +168,7 @@ pub fn spawn_workers(
     let reaper_shutdown = shutdown_tx.subscribe();
     let reaper_db = reaper_db_path;
     let reaper_config = config.clone();
-    let reaper_events = {
-        let locked = state.blocking_lock();
-        locked.events.clone()
-    };
+    let reaper_events = events;
     let reaper_handle = tokio::spawn(async move {
         reaper::run_session_reaper(reaper_db, reaper_config, reaper_events, reaper_shutdown).await;
     });
