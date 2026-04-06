@@ -1,11 +1,22 @@
 mod client;
 mod commands;
+mod transport;
 
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "forge-next", about = "Forge — memory for AI coding agents")]
 struct Cli {
+    /// Remote daemon endpoint (e.g., https://forge.company.com).
+    /// Overrides FORGE_ENDPOINT env var. Omit for local Unix socket.
+    #[arg(long, global = true)]
+    endpoint: Option<String>,
+
+    /// JWT auth token for remote connections.
+    /// Overrides FORGE_TOKEN env var.
+    #[arg(long, global = true)]
+    token: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -820,6 +831,10 @@ enum IdentityAction {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // Initialize global transport from CLI flags / env vars
+    let t = transport::Transport::detect(cli.endpoint.as_deref(), cli.token.as_deref());
+    transport::Transport::init_global(t);
 
     match cli.command {
         Commands::Recall {
@@ -1684,6 +1699,64 @@ mod tests {
                 other => panic!("expected Transcript, got {:?}", other),
             },
             other => panic!("expected Meeting, got {:?}", other),
+        }
+    }
+
+    // ── HTTP transport flag tests ──
+
+    #[test]
+    fn test_endpoint_flag_before_subcommand() {
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "--endpoint", "https://forge.example.com",
+            "--token", "my-jwt",
+            "health",
+        ]);
+        assert!(cli.is_ok(), "endpoint+token before subcommand should parse: {:?}", cli.err());
+        let cli = cli.unwrap();
+        assert_eq!(cli.endpoint.as_deref(), Some("https://forge.example.com"));
+        assert_eq!(cli.token.as_deref(), Some("my-jwt"));
+        assert!(matches!(cli.command, Commands::Health));
+    }
+
+    #[test]
+    fn test_endpoint_flag_after_subcommand() {
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "health",
+            "--endpoint", "https://forge.example.com",
+        ]);
+        assert!(cli.is_ok(), "endpoint after subcommand should parse (global flag): {:?}", cli.err());
+        let cli = cli.unwrap();
+        assert_eq!(cli.endpoint.as_deref(), Some("https://forge.example.com"));
+        assert!(cli.token.is_none());
+    }
+
+    #[test]
+    fn test_no_endpoint_defaults_to_none() {
+        let cli = Cli::try_parse_from(["forge-next", "health"]);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        assert!(cli.endpoint.is_none());
+        assert!(cli.token.is_none());
+    }
+
+    #[test]
+    fn test_endpoint_with_recall_command() {
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "--endpoint", "http://localhost:8080",
+            "recall", "test query", "--limit", "5",
+        ]);
+        assert!(cli.is_ok(), "endpoint with recall should parse: {:?}", cli.err());
+        let cli = cli.unwrap();
+        assert_eq!(cli.endpoint.as_deref(), Some("http://localhost:8080"));
+        match cli.command {
+            Commands::Recall { query, limit, .. } => {
+                assert_eq!(query, "test query");
+                assert_eq!(limit, 5);
+            }
+            other => panic!("expected Recall, got {:?}", other),
         }
     }
 }

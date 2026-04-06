@@ -1,3 +1,4 @@
+use crate::transport::{self, Transport};
 use forge_core::protocol::{Request, Response};
 use forge_core::default_socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -176,15 +177,28 @@ pub async fn connect() -> Result<UnixStream, String> {
 
 /// Send a request to the daemon (with auto-start) and return the response.
 ///
+/// If the global transport is HTTP, sends over HTTP instead of Unix socket.
 /// Opens a connection, writes the request as JSON + newline, reads one response line, parses it.
 pub async fn send(request: &Request) -> Result<Response, String> {
-    send_on_stream(connect().await?, request).await
+    match Transport::global() {
+        Transport::Http { endpoint, token } => {
+            transport::http_send(endpoint, token.as_deref(), request).await
+        }
+        Transport::Unix => send_on_stream(connect().await?, request).await,
+    }
 }
 
 /// Send a request to the daemon without auto-starting it.
 /// Returns an error if the daemon is not running.
+///
+/// For HTTP transport, this behaves the same as `send` (no auto-start concept for HTTP).
 pub async fn send_no_autostart(request: &Request) -> Result<Response, String> {
-    send_on_stream(connect_no_autostart().await?, request).await
+    match Transport::global() {
+        Transport::Http { endpoint, token } => {
+            transport::http_send(endpoint, token.as_deref(), request).await
+        }
+        Transport::Unix => send_on_stream(connect_no_autostart().await?, request).await,
+    }
 }
 
 /// Internal: send a request on an already-connected stream and read the response.
