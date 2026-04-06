@@ -56,6 +56,8 @@ pub struct ForgeConfig {
     pub cors: CorsConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 /// HTTP transport configuration — opt-in, disabled by default.
@@ -130,6 +132,21 @@ impl Default for AuthConfig {
             jwks_cache_secs: 3600,
             offline_jwks_path: None,
         }
+    }
+}
+
+/// Prometheus metrics configuration — enabled by default.
+/// Override with FORGE_METRICS_ENABLED=false to disable the /metrics endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetricsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -565,6 +582,12 @@ impl ForgeConfig {
         }
         if let Ok(v) = std::env::var("FORGE_AUTH_OFFLINE_JWKS_PATH") {
             self.auth.offline_jwks_path = Some(v);
+        }
+        // Metrics
+        if let Ok(v) = std::env::var("FORGE_METRICS_ENABLED") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.metrics.enabled = b;
+            }
         }
     }
 

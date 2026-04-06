@@ -172,6 +172,7 @@ mod tests {
             write_tx,
             admin_emails: vec![],
             auth_enabled: false,
+            metrics: None,
         }
     }
 
