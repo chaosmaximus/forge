@@ -2882,6 +2882,24 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Organization Hierarchy (stubs — handler logic in a future wave) ──
+
+        Request::CreateOrganization { .. } => Response::Error {
+            message: "create_organization not yet implemented".into(),
+        },
+        Request::ListOrganizations => Response::Error {
+            message: "list_organizations not yet implemented".into(),
+        },
+        Request::TeamSend { .. } => Response::Error {
+            message: "team_send not yet implemented".into(),
+        },
+        Request::TeamTree { .. } => Response::Error {
+            message: "team_tree not yet implemented".into(),
+        },
+        Request::CreateOrgFromTemplate { .. } => Response::Error {
+            message: "create_org_from_template not yet implemented".into(),
+        },
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

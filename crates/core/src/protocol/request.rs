@@ -505,6 +505,38 @@ pub enum Request {
         team_name: String,
     },
 
+    // ── Organization Hierarchy ──
+
+    /// Create a new organization
+    CreateOrganization {
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+    /// List all organizations
+    ListOrganizations,
+    /// Send a message to all members of a team (optionally recursive to sub-teams)
+    TeamSend {
+        team_name: String,
+        kind: String,
+        topic: String,
+        parts: Vec<MessagePart>,
+        #[serde(default)]
+        from_session: Option<String>,
+        #[serde(default)]
+        recursive: bool,
+    },
+    /// Get team hierarchy tree
+    TeamTree {
+        #[serde(default)]
+        organization_id: Option<String>,
+    },
+    /// Create an organization from a predefined template
+    CreateOrgFromTemplate {
+        template_name: String,
+        org_name: String,
+    },
+
     // ── Meeting Protocol ──
 
     /// Create a meeting — sends FISP messages to all participants

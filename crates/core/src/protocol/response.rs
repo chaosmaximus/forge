@@ -504,6 +504,19 @@ pub enum ResponseData {
     /// Full team status data
     TeamStatusData { team: serde_json::Value },
 
+    // ── Organization Hierarchy ──
+
+    /// Organization was created
+    OrganizationCreated { id: String },
+    /// List of all organizations
+    OrganizationList { organizations: Vec<serde_json::Value> },
+    /// Messages sent to team members
+    TeamSent { messages_sent: usize },
+    /// Team hierarchy tree
+    TeamTreeData { tree: Vec<serde_json::Value> },
+    /// Organization created from template
+    OrgFromTemplateCreated { org_id: String, teams_created: usize },
+
     // ── Meeting Protocol ──
 
     /// A meeting was created

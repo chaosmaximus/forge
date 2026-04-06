@@ -34,6 +34,7 @@ mod tests {
             ("force_consolidate", Request::ForceConsolidate),
             ("force_index", Request::ForceIndex),
             ("list_permissions", Request::ListPermissions),
+            ("list_organizations", Request::ListOrganizations),
             ("shutdown", Request::Shutdown),
         ];
 
@@ -547,6 +548,38 @@ mod tests {
                     team_name: "leadership".into(),
                 },
             ),
+            // ── Organization Hierarchy ──
+            (
+                "create_organization",
+                Request::CreateOrganization {
+                    name: "acme-corp".into(),
+                    description: Some("Main organization".into()),
+                },
+            ),
+            (
+                "team_send",
+                Request::TeamSend {
+                    team_name: "leadership".into(),
+                    kind: "notification".into(),
+                    topic: "deploy".into(),
+                    parts: vec![],
+                    from_session: Some("s-orch".into()),
+                    recursive: true,
+                },
+            ),
+            (
+                "team_tree",
+                Request::TeamTree {
+                    organization_id: Some("default".into()),
+                },
+            ),
+            (
+                "create_org_from_template",
+                Request::CreateOrgFromTemplate {
+                    template_name: "startup".into(),
+                    org_name: "acme-corp".into(),
+                },
+            ),
             // ── Meeting Protocol ──
             (
                 "create_meeting",
@@ -953,6 +986,35 @@ mod tests {
                 "team_status",
                 r#"{"method":"team_status","params":{"team_name":"leadership"}}"#,
             ),
+            // ── Organization Hierarchy ──
+            (
+                "create_organization",
+                r#"{"method":"create_organization","params":{"name":"acme-corp"}}"#,
+            ),
+            (
+                "create_organization with description",
+                r#"{"method":"create_organization","params":{"name":"acme-corp","description":"Main org"}}"#,
+            ),
+            (
+                "team_send",
+                r#"{"method":"team_send","params":{"team_name":"leadership","kind":"notification","topic":"deploy","parts":[]}}"#,
+            ),
+            (
+                "team_send recursive",
+                r#"{"method":"team_send","params":{"team_name":"leadership","kind":"notification","topic":"deploy","parts":[],"from_session":"s-orch","recursive":true}}"#,
+            ),
+            (
+                "team_tree",
+                r#"{"method":"team_tree","params":{}}"#,
+            ),
+            (
+                "team_tree with org",
+                r#"{"method":"team_tree","params":{"organization_id":"default"}}"#,
+            ),
+            (
+                "create_org_from_template",
+                r#"{"method":"create_org_from_template","params":{"template_name":"startup","org_name":"acme-corp"}}"#,
+            ),
             // ── Meeting Protocol ──
             (
                 "create_meeting",
@@ -1046,6 +1108,7 @@ mod tests {
             ("force_consolidate", r#"{"method":"force_consolidate"}"#),
             ("force_index", r#"{"method":"force_index"}"#),
             ("list_permissions", r#"{"method":"list_permissions"}"#),
+            ("list_organizations", r#"{"method":"list_organizations"}"#),
             ("shutdown", r#"{"method":"shutdown"}"#),
         ];
 
@@ -1070,12 +1133,12 @@ mod tests {
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
-        let unit_count = 16;
-        // Parameterized variants: 86 (82 + 4 Prajna: ContextRefresh, CompletionCheck, TaskCompletionCheck, ContextStats)
-        let param_count = 86;
-        // Total: 102
-        let expected_total = 102;
+        // Unit variants: 17 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex, +ListOrganizations)
+        let unit_count = 17;
+        // Parameterized variants: 90 (82 + 4 Prajna + 4 Org Hierarchy: CreateOrganization, TeamSend, TeamTree, CreateOrgFromTemplate)
+        let param_count = 90;
+        // Total: 107
+        let expected_total = 107;
 
         assert_eq!(
             unit_count + param_count,
@@ -1397,6 +1460,27 @@ mod tests {
                 },
                 Request::TeamStatus {
                     team_name: "leadership".into(),
+                },
+                // Organization Hierarchy
+                Request::CreateOrganization {
+                    name: "acme-corp".into(),
+                    description: Some("Main organization".into()),
+                },
+                Request::ListOrganizations,
+                Request::TeamSend {
+                    team_name: "leadership".into(),
+                    kind: "notification".into(),
+                    topic: "deploy".into(),
+                    parts: vec![],
+                    from_session: Some("s-orch".into()),
+                    recursive: true,
+                },
+                Request::TeamTree {
+                    organization_id: Some("default".into()),
+                },
+                Request::CreateOrgFromTemplate {
+                    template_name: "startup".into(),
+                    org_name: "acme-corp".into(),
                 },
                 // Meeting Protocol
                 Request::CreateMeeting {

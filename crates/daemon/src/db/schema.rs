@@ -581,6 +581,13 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_agent_status ON session(agent_status)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_heartbeat ON session(status, last_heartbeat_at)", []);
 
+    // ── v2.5: Organization Hierarchy ──
+    let _ = conn.execute("ALTER TABLE team ADD COLUMN parent_team_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE team ADD COLUMN description TEXT", []);
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN role TEXT", []);
+    let _ = conn.execute("ALTER TABLE organization ADD COLUMN description TEXT", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_team_parent ON team(parent_team_id)", []);
+
     // ── v2.2: Notification Engine ──
 
     conn.execute_batch("

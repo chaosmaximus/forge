@@ -89,6 +89,8 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::ListAgents { .. }
             | Request::ListTeamMembers { .. }
             | Request::TeamStatus { .. }
+            | Request::ListOrganizations
+            | Request::TeamTree { .. }
             | Request::MeetingStatus { .. }
             | Request::MeetingResponses { .. }
             | Request::ListMeetings { .. }
@@ -421,6 +423,30 @@ mod tests {
             scope_type: "organization".into(),
             scope_id: "default".into(),
             key: "max_tokens".into(),
+        }));
+
+        // Organization Hierarchy: read-only
+        assert!(is_read_only(&Request::ListOrganizations));
+        assert!(is_read_only(&Request::TeamTree {
+            organization_id: Some("default".into()),
+        }));
+
+        // Organization Hierarchy: writes
+        assert!(!is_read_only(&Request::CreateOrganization {
+            name: "acme".into(),
+            description: None,
+        }));
+        assert!(!is_read_only(&Request::TeamSend {
+            team_name: "leadership".into(),
+            kind: "notification".into(),
+            topic: "deploy".into(),
+            parts: vec![],
+            from_session: None,
+            recursive: false,
+        }));
+        assert!(!is_read_only(&Request::CreateOrgFromTemplate {
+            template_name: "startup".into(),
+            org_name: "acme".into(),
         }));
     }
 
