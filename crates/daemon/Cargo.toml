@@ -64,9 +64,6 @@ tracing-opentelemetry = "0.28"
 # LSP client
 lsp-types = "0.97"
 
-# PTY management
-portable-pty = "0.8"
-
 # Import extraction
 regex = "1"
 
