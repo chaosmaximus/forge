@@ -1,0 +1,61 @@
+groups:
+  - name: forge
+    interval: 30s
+    rules:
+      - alert: ForgeWorkerDown
+        expr: forge_worker_healthy == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Forge worker {{ $labels.worker }} is down"
+          description: "Worker {{ $labels.worker }} has been unhealthy for more than 5 minutes."
+          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/worker-down"
+
+      - alert: ForgeExtractionSlow
+        expr: histogram_quantile(0.95, rate(forge_extraction_duration_seconds_bucket[5m])) > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Forge extraction p95 latency exceeds 60s"
+          description: "The 95th percentile extraction duration has exceeded 60 seconds for 5 minutes. Current value: {{ $value | humanizeDuration }}."
+          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/extraction-slow"
+
+      - alert: ForgeMemoryStale
+        expr: delta(forge_memories_total[1h]) == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Forge memory count unchanged for over 1 hour"
+          description: "The total memory count has not changed in the last hour. This may indicate the extraction pipeline is stalled or no new data is being ingested."
+          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/memory-stale"
+
+      - alert: ForgeHighRecallLatency
+        expr: histogram_quantile(0.99, rate(forge_recall_latency_seconds_bucket[5m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Forge recall p99 latency exceeds 5s"
+          description: "The 99th percentile recall latency has exceeded 5 seconds for 10 minutes. Current value: {{ $value | humanizeDuration }}."
+
+      - alert: ForgeNoActiveSessions
+        expr: forge_active_sessions == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "No active Forge sessions for 30 minutes"
+          description: "There have been zero active sessions for 30 minutes. This may be expected during off-hours."
+
+      - alert: ForgeAllWorkersDown
+        expr: count(forge_worker_healthy == 1) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "All Forge workers are down"
+          description: "No healthy workers detected. The daemon may be non-functional."
+          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/all-workers-down"
