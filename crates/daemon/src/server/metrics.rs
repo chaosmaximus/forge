@@ -126,11 +126,11 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
     };
 
     // Memory count
-    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0)) {
+    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM memory", [], |r| r.get::<_, i64>(0)) {
         metrics.memories_total.set(count);
     }
     // Edge count
-    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get::<_, i64>(0)) {
+    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM edge", [], |r| r.get::<_, i64>(0)) {
         metrics.edges_total.set(count);
     }
     // Embedding count
@@ -139,7 +139,7 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
     }
     // Active sessions (non-ended)
     if let Ok(count) = reader.conn.query_row(
-        "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL",
+        "SELECT COUNT(*) FROM session WHERE ended_at IS NULL",
         [],
         |r| r.get::<_, i64>(0),
     ) {
