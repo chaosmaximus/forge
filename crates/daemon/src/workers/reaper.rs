@@ -93,7 +93,7 @@ mod tests {
     use crate::db::schema::create_schema;
     use crate::events::create_event_bus;
 
-    fn setup_db() -> (String, Connection) {
+    fn setup_db() -> (String, Connection, tempfile::TempDir) {
         crate::db::vec::init_sqlite_vec();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test_reaper.db");
@@ -101,13 +101,12 @@ mod tests {
         let conn = Connection::open(&path_str).unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
         create_schema(&conn).unwrap();
-        std::mem::forget(dir);
-        (path_str, conn)
+        (path_str, conn, dir)
     }
 
     #[test]
     fn test_reap_skips_no_heartbeat_sessions() {
-        let (path, conn) = setup_db();
+        let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
         crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
             .unwrap();
@@ -120,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_reap_stale_heartbeated_session() {
-        let (path, conn) = setup_db();
+        let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
         let mut rx = tx.subscribe();
         crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
@@ -141,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_reap_leaves_recent_heartbeat() {
-        let (path, conn) = setup_db();
+        let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
         crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
             .unwrap();
@@ -158,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_reap_multiple_sessions_mixed() {
-        let (path, conn) = setup_db();
+        let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
 
         crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();

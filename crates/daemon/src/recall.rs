@@ -465,19 +465,23 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<
             }
             // Role context from agent template (if session has template_id)
             if let Some(sid) = session_id {
-                let template_ctx: Option<String> = conn.query_row(
+                match conn.query_row(
                     "SELECT at.system_context FROM session s \
                      JOIN agent_template at ON s.template_id = at.id \
                      WHERE s.id = ?1",
                     rusqlite::params![sid],
-                    |row| row.get(0),
-                ).ok().flatten();
-                if let Some(ref ctx) = template_ctx {
-                    if !ctx.is_empty() {
+                    |row| row.get::<_, Option<String>>(0),
+                ) {
+                    Ok(Some(ref ctx)) if !ctx.is_empty() => {
                         xml.push_str(&format!(
                             "  <role-context>{}</role-context>\n",
                             xml_escape(ctx)
                         ));
+                    }
+                    Ok(_) => {} // no template or empty system_context
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {} // session has no template
+                    Err(e) => {
+                        eprintln!("[context] role-context query failed for session {}: {}", sid, e);
                     }
                 }
             }

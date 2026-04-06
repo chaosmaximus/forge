@@ -717,7 +717,7 @@ pub fn get_active_meetings_for_session(
             "responded": row.get::<_, i64>(3)?,
             "total": row.get::<_, i64>(4)?,
         }))
-    })?.filter_map(|r| r.ok()).collect();
+    })?.collect::<rusqlite::Result<Vec<Value>>>()?;
     Ok(rows)
 }
 

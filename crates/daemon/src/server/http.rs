@@ -61,6 +61,18 @@ async fn api_handler(
     State(state): State<AppState>,
     http_req: axum::http::Request<axum::body::Body>,
 ) -> impl IntoResponse {
+    // Extract client IP from X-Forwarded-For or X-Real-IP headers
+    let source_ip = http_req.headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .or_else(|| http_req.headers()
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string()))
+        .unwrap_or_default();
+
     // Extract auth claims from extensions (injected by auth_middleware)
     let claims = http_req
         .extensions()
@@ -110,7 +122,7 @@ async fn api_handler(
                 email: c.email.clone().unwrap_or_default(),
                 role: role.as_str().to_string(),
                 source: "http".to_string(),
-                source_ip: String::new(), // TODO: extract from ConnectInfo if needed
+                source_ip: source_ip.clone(),
             })
         } else {
             None
@@ -222,57 +234,101 @@ struct SubscribeParams {
     token: Option<String>,
 }
 
+/// Maximum concurrent SSE connections to prevent resource exhaustion.
+const MAX_SSE_CONNECTIONS: usize = 64;
+
+/// Global SSE connection counter.
+static SSE_CONNECTION_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Maximum lifetime for a single SSE connection (1 hour).
+const SSE_MAX_LIFETIME: Duration = Duration::from_secs(3600);
+
 /// GET /api/subscribe — SSE endpoint for real-time event streaming.
 ///
 /// Streams events as text/event-stream with NDJSON data fields.
 /// Supports filtering by event type, session_id, and team_id via query params.
+/// Connection-limited (MAX_SSE_CONNECTIONS) with max lifetime (1 hour).
 async fn subscribe_handler(
     State(state): State<AppState>,
     Query(params): Query<SubscribeParams>,
-) -> Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>> {
+) -> axum::response::Response {
+    use std::sync::atomic::Ordering;
+
+    // Enforce connection limit
+    let current = SSE_CONNECTION_COUNT.load(Ordering::Relaxed);
+    if current >= MAX_SSE_CONNECTIONS {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "too many SSE connections",
+        ).into_response();
+    }
+    SSE_CONNECTION_COUNT.fetch_add(1, Ordering::Relaxed);
+
     let mut rx = state.events.subscribe();
     let filter_events: Option<Vec<String>> = params
         .events
         .map(|e| e.split(',').map(|s| s.trim().to_string()).collect());
     let filter_session = params.session_id;
     let filter_team = params.team_id;
+    let deadline = tokio::time::Instant::now() + SSE_MAX_LIFETIME;
 
-    let stream = async_stream::stream! {
+    let stream: async_stream::__private::AsyncStream<Result<Event, Infallible>, _> = async_stream::stream! {
         loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    // Apply event type filter
-                    if let Some(ref types) = filter_events {
-                        if !types.is_empty() && !types.contains(&event.event) {
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            // Apply event type filter
+                            if let Some(ref types) = filter_events {
+                                if !types.is_empty() && !types.contains(&event.event) {
+                                    continue;
+                                }
+                            }
+                            // Apply session_id filter — structured field match, not substring
+                            if let Some(ref sid) = filter_session {
+                                let matches = event.data.get("session_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(|v| v == sid.as_str())
+                                    .unwrap_or(false);
+                                if !matches {
+                                    continue;
+                                }
+                            }
+                            // Apply team_id filter — structured field match
+                            if let Some(ref tid) = filter_team {
+                                let matches = event.data.get("team_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(|v| v == tid.as_str())
+                                    .unwrap_or(false);
+                                if !matches {
+                                    continue;
+                                }
+                            }
+                            let data = serde_json::to_string(&event).unwrap_or_default();
+                            yield Ok(Event::default().data(data));
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(lagged = n, "SSE subscriber lagged, skipped events");
                             continue;
                         }
                     }
-                    // Apply session_id filter
-                    if let Some(ref sid) = filter_session {
-                        if !event.data.to_string().contains(sid.as_str()) {
-                            continue;
-                        }
-                    }
-                    // Apply team_id filter
-                    if let Some(ref tid) = filter_team {
-                        if !event.data.to_string().contains(tid.as_str()) {
-                            continue;
-                        }
-                    }
-                    let data = serde_json::to_string(&event).unwrap_or_default();
-                    yield Ok(Event::default().data(data));
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                _ = tokio::time::sleep_until(deadline) => {
+                    tracing::info!("SSE connection reached max lifetime, closing");
+                    break;
+                }
             }
         }
+        // Decrement connection count on stream end
+        SSE_CONNECTION_COUNT.fetch_sub(1, Ordering::Relaxed);
     };
 
     Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("ping"),
-    )
+    ).into_response()
 }
 
 /// Build the CORS layer from config.
