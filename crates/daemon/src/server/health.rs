@@ -105,7 +105,7 @@ pub async fn startupz(State(state): State<AppState>) -> impl IntoResponse {
             // Check if we have any indexed memories (indicates startup indexing is done)
             let indexed = reader
                 .conn
-                .query_row("SELECT COUNT(*) FROM memories", [], |row| {
+                .query_row("SELECT COUNT(*) FROM memory", [], |row| {
                     row.get::<_, i64>(0)
                 })
                 .unwrap_or(0)

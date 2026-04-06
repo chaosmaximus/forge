@@ -717,6 +717,14 @@ impl ForgeConfig {
                 return Err("auth.audience must not be empty when auth is enabled".into());
             }
         }
+        // Security: warn when HTTP is exposed without auth on non-loopback
+        if self.http.enabled && !self.auth.enabled && self.http.bind != "127.0.0.1" && self.http.bind != "localhost" {
+            eprintln!(
+                "[config] SECURITY WARNING: HTTP is bound to {} without auth enabled. \
+                 The API is accessible to any network client without authentication. \
+                 Set auth.enabled=true or bind to 127.0.0.1 for production."
+            , self.http.bind);
+        }
         Ok(())
     }
 }

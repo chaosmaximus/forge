@@ -75,7 +75,11 @@ RUN mkdir -p /var/lib/forge && chown forge:forge /var/lib/forge
 USER forge
 WORKDIR /home/forge
 
-# Environment defaults for container deployment
+# Environment defaults for container deployment.
+# SECURITY: 0.0.0.0 is required for K8s Service routing. Protect with:
+#   - NetworkPolicy to restrict ingress
+#   - FORGE_AUTH_ENABLED=true for production
+#   - Ingress controller for external TLS termination
 ENV FORGE_DB=/var/lib/forge/forge.db \
     FORGE_SOCKET=/var/lib/forge/forge.sock \
     FORGE_HTTP_ENABLED=true \
