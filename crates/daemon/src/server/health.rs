@@ -170,6 +170,8 @@ mod tests {
             hlc,
             started_at: Instant::now(),
             write_tx,
+            admin_emails: vec![],
+            auth_enabled: false,
         }
     }
 

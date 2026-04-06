@@ -618,6 +618,20 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
     ")?;
 
+    // ── Enterprise: RBAC audit columns on audit_log ──
+    // These extend the existing audit_log table (v2.0 entity model) with
+    // columns needed for HTTP RBAC audit logging. Existing rows are unaffected.
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local'", []);
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN email TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN role TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN request_type TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN request_summary TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN source TEXT NOT NULL DEFAULT 'socket'", []);
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN response_status TEXT NOT NULL DEFAULT 'ok'", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)", []);
+
     Ok(())
 }
 
@@ -818,6 +832,35 @@ mod tests {
             |r| r.get(0),
         ).unwrap();
         assert_eq!(action, "create");
+    }
+
+    #[test]
+    fn test_audit_log_rbac_columns() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // Insert an RBAC audit record using the new columns
+        conn.execute(
+            "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, timestamp,
+             user_id, email, role, request_type, request_summary, source, source_ip, response_status)
+             VALUES ('rbac1', 'http', 'user-123', 'remember', 'api', '/api', datetime('now'),
+             'user-123', 'user@test.com', 'member', 'Remember', 'title=test', 'http', '10.0.0.1', 'ok')",
+            [],
+        ).unwrap();
+
+        let (user_id, email, role, req_type, source, source_ip, status): (String, String, String, String, String, String, String) = conn.query_row(
+            "SELECT user_id, email, role, request_type, source, source_ip, response_status FROM audit_log WHERE id = 'rbac1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        ).unwrap();
+        assert_eq!(user_id, "user-123");
+        assert_eq!(email, "user@test.com");
+        assert_eq!(role, "member");
+        assert_eq!(req_type, "Remember");
+        assert_eq!(source, "http");
+        assert_eq!(source_ip, "10.0.0.1");
+        assert_eq!(status, "ok");
     }
 
     #[test]
