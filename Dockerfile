@@ -19,9 +19,12 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Builder — compile Rust release binaries
 # ---------------------------------------------------------------------------
-FROM rust:1.82-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 WORKDIR /build
+
+# Install protoc for gRPC/tonic proto compilation
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace manifests first for layer caching
 COPY Cargo.toml Cargo.lock ./
