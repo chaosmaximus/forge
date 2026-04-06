@@ -252,8 +252,6 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_endpoint_returns_prometheus_format() {
         let metrics = ForgeMetrics::new();
-        metrics.memories_total.set(10);
-        metrics.active_sessions.set(2);
         let state = test_app_state_with_metrics(Some(metrics));
 
         let mut config = ForgeConfig::default();
@@ -285,10 +283,11 @@ mod tests {
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let text = String::from_utf8(body.to_vec()).unwrap();
-        assert!(text.contains("forge_memories_total 10"), "body should contain memories gauge value");
+        // refresh_gauges queries the real test DB — empty DB has 0 memories
+        assert!(text.contains("forge_memories_total 0"), "body should contain memories gauge from DB query");
         assert!(
-            text.contains("forge_active_sessions 2"),
-            "body should contain active_sessions gauge value"
+            text.contains("forge_active_sessions 0"),
+            "body should contain active_sessions gauge from DB query"
         );
         assert!(
             text.contains("forge_recall_latency_seconds"),
