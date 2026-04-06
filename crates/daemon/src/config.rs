@@ -20,6 +20,16 @@ fn default_900() -> u64 { 900 }
 fn default_1800() -> u64 { 1800 }
 fn default_3000_usize() -> usize { 3000 }
 fn default_5000_usize() -> usize { 5000 }
+fn default_300_usize() -> usize { 300 }
+fn default_500_usize() -> usize { 500 }
+fn default_anti_pattern_threshold() -> f64 { 0.85 }
+fn default_completion_keywords() -> Vec<String> {
+    vec![
+        "complete".into(), "completed".into(), "done".into(), "finished".into(),
+        "shipped".into(), "all tests pass".into(), "100%".into(), "no gaps".into(),
+        "zero issues".into(), "pushed".into(),
+    ]
+}
 fn default_true() -> bool { true }
 fn default_false() -> bool { false }
 fn default_300_u64() -> u64 { 300 }
@@ -65,6 +75,8 @@ pub struct ForgeConfig {
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub otlp: OtlpConfig,
+    #[serde(default)]
+    pub proactive: ProactiveConfig,
 }
 
 /// HTTP transport configuration — opt-in, disabled by default.
@@ -417,6 +429,36 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self { auto_status: true }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProactiveConfig {
+    #[serde(default = "default_300_usize")]
+    pub refresh_budget_chars: usize,
+    #[serde(default = "default_200_usize")]
+    pub completion_check_budget_chars: usize,
+    #[serde(default = "default_500_usize")]
+    pub subagent_context_budget_chars: usize,
+    #[serde(default = "default_anti_pattern_threshold")]
+    pub anti_pattern_threshold: f64,
+    #[serde(default = "default_completion_keywords")]
+    pub completion_keywords: Vec<String>,
+    #[serde(default = "default_3_usize")]
+    pub completion_dismiss_limit: usize,
+}
+
+impl Default for ProactiveConfig {
+    fn default() -> Self {
+        Self {
+            refresh_budget_chars: 300,
+            completion_check_budget_chars: 200,
+            subagent_context_budget_chars: 500,
+            anti_pattern_threshold: 0.85,
+            completion_keywords: default_completion_keywords(),
+            completion_dismiss_limit: 3,
+        }
     }
 }
 
@@ -1706,5 +1748,16 @@ heartbeat_timeout_secs = 45
         let cfg = load_config_from(path_str);
         assert_eq!(cfg.workers.session_reaper_interval_secs, 120);
         assert_eq!(cfg.workers.heartbeat_timeout_secs, 90);
+    }
+
+    #[test]
+    fn test_proactive_config_defaults() {
+        let config = ForgeConfig::default();
+        assert_eq!(config.proactive.refresh_budget_chars, 300);
+        assert_eq!(config.proactive.completion_check_budget_chars, 200);
+        assert_eq!(config.proactive.subagent_context_budget_chars, 500);
+        assert!((config.proactive.anti_pattern_threshold - 0.85).abs() < 0.01);
+        assert!(!config.proactive.completion_keywords.is_empty());
+        assert_eq!(config.proactive.completion_dismiss_limit, 3);
     }
 }
