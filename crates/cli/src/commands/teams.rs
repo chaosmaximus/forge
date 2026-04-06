@@ -259,7 +259,9 @@ pub async fn retire_agent(session_id: String) {
 
 // ── Teams ──
 
-pub async fn create_team(name: String, team_type: Option<String>, purpose: Option<String>) {
+pub async fn create_team(name: String, team_type: Option<String>, purpose: Option<String>, parent: Option<String>) {
+    // TODO: pass `parent` as parent_team_id once Request::CreateTeam adds the field
+    let _ = &parent;
     let req = Request::CreateTeam {
         name: name.clone(),
         team_type,
@@ -725,6 +727,97 @@ pub async fn act_on_notification(id: String, approved: bool) {
                 Some(r) => println!("{action}: {short_id} (result: {r})"),
                 None => println!("{action}: {short_id}"),
             }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+// ── Organization Hierarchy ──
+
+pub async fn team_tree(org: Option<String>) {
+    let req = Request::TeamTree { organization_id: org };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::TeamTreeData { tree } }) => {
+            if tree.is_empty() {
+                println!("No teams.");
+                return;
+            }
+            fn print_tree(nodes: &[serde_json::Value], indent: usize) {
+                for n in nodes {
+                    let prefix = "  ".repeat(indent);
+                    let name = n["name"].as_str().unwrap_or("?");
+                    let purpose = n["purpose"].as_str().unwrap_or("");
+                    let marker = "\u{251c}\u{2500}";
+                    println!(
+                        "{}{} {} {}",
+                        prefix,
+                        marker,
+                        name,
+                        if purpose.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\u{2014} {}", purpose)
+                        }
+                    );
+                    if let Some(children) = n["children"].as_array() {
+                        print_tree(children, indent + 1);
+                    }
+                }
+            }
+            print_tree(&tree, 0);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn team_send(
+    team: String,
+    kind: String,
+    topic: String,
+    text: String,
+    from: Option<String>,
+    recursive: bool,
+) {
+    let parts = vec![forge_core::protocol::MessagePart {
+        kind: "text".to_string(),
+        text: Some(text),
+        path: None,
+        data: None,
+        memory_id: None,
+    }];
+    let req = Request::TeamSend {
+        team_name: team,
+        kind,
+        topic,
+        parts,
+        from_session: from,
+        recursive,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::TeamSent { messages_sent } }) => {
+            println!("Sent to {} session(s)", messages_sent);
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

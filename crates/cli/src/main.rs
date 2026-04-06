@@ -204,6 +204,9 @@ enum Commands {
         /// Working directory
         #[arg(long)]
         cwd: Option<String>,
+        /// Role within the organization (e.g., CTO, Engineer)
+        #[arg(long)]
+        role: Option<String>,
     },
     /// End an active agent session
     #[command(name = "end-session")]
@@ -602,6 +605,55 @@ enum Commands {
         #[arg(long)]
         session_id: Option<String>,
     },
+
+    // ── Organization Hierarchy ──
+
+    /// Create an organization
+    #[command(name = "org-create")]
+    OrgCreate {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+    },
+
+    /// List organizations
+    #[command(name = "org-list")]
+    OrgList,
+
+    /// Create organization from template (startup, devteam, agency)
+    #[command(name = "org-from-template")]
+    OrgFromTemplate {
+        #[arg(long)]
+        template: String,
+        #[arg(long)]
+        name: String,
+    },
+
+    /// Show team hierarchy tree for an organization
+    #[command(name = "team-tree")]
+    TeamTree {
+        #[arg(long)]
+        org: Option<String>,
+    },
+
+    /// Send FISP message to all sessions in a team
+    #[command(name = "team-send")]
+    TeamSendCmd {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        topic: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        from: Option<String>,
+        /// Also send to all sub-team sessions
+        #[arg(long)]
+        recursive: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -774,6 +826,9 @@ enum TeamAction {
         /// Purpose of the team
         #[arg(long)]
         purpose: Option<String>,
+        /// Parent team name (for hierarchy)
+        #[arg(long)]
+        parent: Option<String>,
     },
     /// List team members
     Members {
@@ -988,8 +1043,8 @@ async fn main() {
         Commands::LspStatus => {
             commands::system::lsp_status().await;
         }
-        Commands::RegisterSession { id, agent, project, cwd } => {
-            commands::system::register_session(id, agent, project, cwd).await;
+        Commands::RegisterSession { id, agent, project, cwd, role } => {
+            commands::system::register_session(id, agent, project, cwd, role).await;
         }
         Commands::EndSession { id } => {
             commands::system::end_session(id).await;
@@ -1171,8 +1226,8 @@ async fn main() {
             commands::teams::update_agent_status(session, status, task).await;
         }
         Commands::Team { action } => match action {
-            TeamAction::Create { name, team_type, purpose } => {
-                commands::teams::create_team(name, team_type, purpose).await;
+            TeamAction::Create { name, team_type, purpose, parent } => {
+                commands::teams::create_team(name, team_type, purpose, parent).await;
             }
             TeamAction::Members { name } => {
                 commands::teams::list_team_members(name).await;
@@ -1243,6 +1298,23 @@ async fn main() {
         }
         Commands::ContextStats { session_id } => {
             commands::system::context_stats(session_id).await;
+        }
+
+        // ── Organization Hierarchy ──
+        Commands::OrgCreate { name, description } => {
+            commands::system::org_create(name, description).await;
+        }
+        Commands::OrgList => {
+            commands::system::org_list().await;
+        }
+        Commands::OrgFromTemplate { template, name } => {
+            commands::system::org_from_template(template, name).await;
+        }
+        Commands::TeamTree { org } => {
+            commands::teams::team_tree(org).await;
+        }
+        Commands::TeamSendCmd { team, kind, topic, text, from, recursive } => {
+            commands::teams::team_send(team, kind, topic, text, from, recursive).await;
         }
     }
 }
@@ -1593,10 +1665,11 @@ mod tests {
         assert!(cli.is_ok(), "team create should parse: {:?}", cli.err());
         match cli.unwrap().command {
             Commands::Team { action } => match action {
-                TeamAction::Create { name, team_type, purpose } => {
+                TeamAction::Create { name, team_type, purpose, parent } => {
                     assert_eq!(name, "board");
                     assert_eq!(team_type.as_deref(), Some("agent"));
                     assert_eq!(purpose.as_deref(), Some("Strategic decisions"));
+                    assert!(parent.is_none());
                 }
                 other => panic!("expected Create, got {:?}", other),
             },
@@ -2133,5 +2206,37 @@ mod tests {
             },
             other => panic!("expected Config, got {:?}", other),
         }
+    }
+
+    // ── Organization Hierarchy tests ──
+
+    #[test]
+    fn test_org_create_parse() {
+        assert!(Cli::try_parse_from(["forge-next", "org-create", "--name", "Acme"]).is_ok());
+    }
+
+    #[test]
+    fn test_org_list_parse() {
+        assert!(Cli::try_parse_from(["forge-next", "org-list"]).is_ok());
+    }
+
+    #[test]
+    fn test_org_from_template_parse() {
+        assert!(Cli::try_parse_from(["forge-next", "org-from-template", "--template", "startup", "--name", "MyOrg"]).is_ok());
+    }
+
+    #[test]
+    fn test_team_tree_parse() {
+        assert!(Cli::try_parse_from(["forge-next", "team-tree"]).is_ok());
+    }
+
+    #[test]
+    fn test_team_send_parse() {
+        assert!(Cli::try_parse_from(["forge-next", "team-send", "--team", "eng", "--kind", "notification", "--topic", "test", "--text", "hello"]).is_ok());
+    }
+
+    #[test]
+    fn test_register_session_with_role_parse() {
+        assert!(Cli::try_parse_from(["forge-next", "register-session", "--id", "s1", "--agent", "claude-code", "--role", "CTO"]).is_ok());
     }
 }

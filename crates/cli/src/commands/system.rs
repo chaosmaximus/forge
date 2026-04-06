@@ -550,7 +550,9 @@ pub async fn lsp_status() {
 }
 
 /// Register an active agent session.
-pub async fn register_session(id: String, agent: String, project: Option<String>, cwd: Option<String>) {
+pub async fn register_session(id: String, agent: String, project: Option<String>, cwd: Option<String>, role: Option<String>) {
+    // TODO: pass `role` to Request::RegisterSession once the protocol adds the field
+    let _ = &role;
     match client::send(&Request::RegisterSession { id: id.clone(), agent, project, cwd, capabilities: None, current_task: None }).await {
         Ok(Response::Ok { data: ResponseData::SessionRegistered { .. } }) => {
             println!("Session registered: {id}");
@@ -1773,6 +1775,90 @@ pub async fn context_stats(session_id: Option<String>) {
         Ok(Response::Error { message }) => { eprintln!("error: {}", message); std::process::exit(1); }
         Ok(_) => {}
         Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+    }
+}
+
+// ── Organization Hierarchy ──
+
+pub async fn org_create(name: String, description: Option<String>) {
+    let req = Request::CreateOrganization { name, description };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::OrganizationCreated { id } }) => {
+            println!("Organization created: {}", id);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn org_list() {
+    let req = Request::ListOrganizations;
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::OrganizationList { organizations } }) => {
+            println!("{} organization(s):", organizations.len());
+            for o in &organizations {
+                println!(
+                    "  {} — {} {}",
+                    o["id"].as_str().unwrap_or("?"),
+                    o["name"].as_str().unwrap_or("?"),
+                    o["description"]
+                        .as_str()
+                        .map(|d| format!("({})", d))
+                        .unwrap_or_default()
+                );
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn org_from_template(template: String, name: String) {
+    let req = Request::CreateOrgFromTemplate {
+        template_name: template,
+        org_name: name,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::OrgFromTemplateCreated { org_id, teams_created },
+        }) => {
+            println!(
+                "Organization created: {} ({} teams from template)",
+                org_id, teams_created
+            );
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
     }
 }
 

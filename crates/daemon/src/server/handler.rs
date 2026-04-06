@@ -2677,7 +2677,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::CreateTeam { name, team_type, purpose, organization_id } => {
             match crate::teams::create_team(
                 &state.conn, &name, team_type.as_deref(),
-                purpose.as_deref(), organization_id.as_deref(),
+                purpose.as_deref(), organization_id.as_deref(), None,
             ) {
                 Ok(id) => Response::Ok { data: ResponseData::TeamCreated { id, name } },
                 Err(e) => Response::Error { message: format!("create_team failed: {e}") },
@@ -2882,23 +2882,59 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        // ── Organization Hierarchy (stubs — handler logic in a future wave) ──
+        // ── Organization Hierarchy ──
 
-        Request::CreateOrganization { .. } => Response::Error {
-            message: "create_organization not yet implemented".into(),
-        },
-        Request::ListOrganizations => Response::Error {
-            message: "list_organizations not yet implemented".into(),
-        },
-        Request::TeamSend { .. } => Response::Error {
-            message: "team_send not yet implemented".into(),
-        },
-        Request::TeamTree { .. } => Response::Error {
-            message: "team_tree not yet implemented".into(),
-        },
-        Request::CreateOrgFromTemplate { .. } => Response::Error {
-            message: "create_org_from_template not yet implemented".into(),
-        },
+        Request::CreateOrganization { name, description } => {
+            match crate::org::create_organization(&state.conn, &name, description.as_deref()) {
+                Ok(id) => Response::Ok { data: ResponseData::OrganizationCreated { id } },
+                Err(e) => Response::Error { message: format!("create_organization: {e}") },
+            }
+        }
+        Request::ListOrganizations => {
+            match crate::org::list_organizations(&state.conn) {
+                Ok(orgs) => Response::Ok { data: ResponseData::OrganizationList { organizations: orgs } },
+                Err(e) => Response::Error { message: format!("list_organizations: {e}") },
+            }
+        }
+        Request::TeamSend { team_name, kind, topic, parts, from_session, recursive } => {
+            let from = from_session.as_deref().unwrap_or("system");
+            match crate::org::team_session_ids(&state.conn, &team_name, recursive) {
+                Ok(session_ids) => {
+                    let parts_json = serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string());
+                    let mut sent = 0usize;
+                    for sid in &session_ids {
+                        if crate::sessions::send_message(
+                            &state.conn, from, sid, &kind, &topic, &parts_json, None, None, None,
+                        ).is_ok() {
+                            sent += 1;
+                        }
+                    }
+                    crate::events::emit(&state.events, "team_message_sent", serde_json::json!({
+                        "team": team_name, "recipients": sent, "recursive": recursive, "topic": topic,
+                    }));
+                    Response::Ok { data: ResponseData::TeamSent { messages_sent: sent } }
+                }
+                Err(e) => Response::Error { message: format!("team_send: {e}") },
+            }
+        }
+        Request::TeamTree { organization_id } => {
+            let org = organization_id.as_deref().unwrap_or("default");
+            match crate::org::team_tree(&state.conn, org) {
+                Ok(tree) => Response::Ok { data: ResponseData::TeamTreeData { tree } },
+                Err(e) => Response::Error { message: format!("team_tree: {e}") },
+            }
+        }
+        Request::CreateOrgFromTemplate { template_name, org_name } => {
+            match crate::org::create_org_from_template(&state.conn, &template_name, &org_name) {
+                Ok((org_id, teams_created)) => {
+                    crate::events::emit(&state.events, "org_created_from_template", serde_json::json!({
+                        "org_id": org_id, "template": template_name, "teams_created": teams_created,
+                    }));
+                    Response::Ok { data: ResponseData::OrgFromTemplateCreated { org_id, teams_created } }
+                }
+                Err(e) => Response::Error { message: format!("create_org_from_template: {e}") },
+            }
+        }
 
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
@@ -5453,5 +5489,38 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM edge WHERE edge_type = 'imports'", [], |r| r.get(0))
             .unwrap();
         assert!(edge_count >= 2, "should have at least 2 import edges (std::io and crate::db), got {edge_count}");
+    }
+
+    #[test]
+    fn test_create_organization_handler() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::CreateOrganization {
+            name: "TestOrg".into(), description: Some("A test".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::OrganizationCreated { id } } => assert!(!id.is_empty()),
+            other => panic!("expected OrganizationCreated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_send_handler() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let now = forge_core::time::now_iso();
+        state.conn.execute(
+            "INSERT INTO team (id, name, organization_id, created_by, status, created_at, team_type) VALUES ('t1', 'eng', 'default', 'system', 'active', ?1, 'human')",
+            rusqlite::params![now],
+        ).unwrap();
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", None, None, None, None).unwrap();
+        state.conn.execute("UPDATE session SET team_id = 't1' WHERE id = 's1'", []).unwrap();
+
+        let resp = handle_request(&mut state, Request::TeamSend {
+            team_name: "eng".into(), kind: "notification".into(), topic: "test".into(),
+            parts: vec![], from_session: Some("system".into()), recursive: false,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamSent { messages_sent } } => assert_eq!(messages_sent, 1),
+            other => panic!("expected TeamSent, got {:?}", other),
+        }
     }
 }

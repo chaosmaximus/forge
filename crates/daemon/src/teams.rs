@@ -343,6 +343,7 @@ pub fn create_team(
     team_type: Option<&str>,
     purpose: Option<&str>,
     org_id: Option<&str>,
+    parent_team_id: Option<&str>,
 ) -> rusqlite::Result<String> {
     let id = ulid::Ulid::new().to_string();
     let now = forge_core::time::now_iso();
@@ -350,9 +351,9 @@ pub fn create_team(
     let tt = team_type.unwrap_or("human");
 
     conn.execute(
-        "INSERT INTO team (id, name, organization_id, created_by, status, created_at, team_type, purpose)
-         VALUES (?1, ?2, ?3, 'system', 'active', ?4, ?5, ?6)",
-        params![id, name, org, now, tt, purpose],
+        "INSERT INTO team (id, name, organization_id, parent_team_id, created_by, status, created_at, team_type, purpose)
+         VALUES (?1, ?2, ?3, ?4, 'system', 'active', ?5, ?6, ?7)",
+        params![id, name, org, parent_team_id, now, tt, purpose],
     )?;
 
     Ok(id)
@@ -1076,7 +1077,7 @@ mod tests {
         create_agent_template(&conn, &t).unwrap();
 
         // Create a team
-        let team_id = create_team(&conn, "leadership", Some("agent"), None, None).unwrap();
+        let team_id = create_team(&conn, "leadership", Some("agent"), None, None, None).unwrap();
         assert!(!team_id.is_empty());
 
         // Spawn agent into team
@@ -1156,7 +1157,7 @@ mod tests {
     #[test]
     fn test_create_team_agent_type() {
         let conn = setup();
-        let id = create_team(&conn, "ai-team", Some("agent"), Some("AI research"), None).unwrap();
+        let id = create_team(&conn, "ai-team", Some("agent"), Some("AI research"), None, None).unwrap();
         assert!(!id.is_empty());
 
         let tt: String = conn.query_row(
@@ -1177,7 +1178,7 @@ mod tests {
     #[test]
     fn test_set_orchestrator() {
         let conn = setup();
-        create_team(&conn, "orch-team", Some("agent"), None, None).unwrap();
+        create_team(&conn, "orch-team", Some("agent"), None, None, None).unwrap();
 
         // Create a session to be orchestrator
         let t = make_template("CTO");
@@ -1198,7 +1199,7 @@ mod tests {
     #[test]
     fn test_team_status() {
         let conn = setup();
-        create_team(&conn, "status-team", Some("mixed"), Some("testing"), None).unwrap();
+        create_team(&conn, "status-team", Some("mixed"), Some("testing"), None, None).unwrap();
 
         let t = make_template("CTO");
         create_agent_template(&conn, &t).unwrap();
@@ -1222,7 +1223,7 @@ mod tests {
         create_agent_template(conn, &t2).unwrap();
 
         // Create team
-        let team_id = create_team(conn, "leadership", Some("agent"), None, None).unwrap();
+        let team_id = create_team(conn, "leadership", Some("agent"), None, None, None).unwrap();
 
         // Spawn agents (creates sessions)
         spawn_agent(conn, "CTO", "s-cto-m", Some("forge"), Some("leadership")).unwrap();
@@ -1505,8 +1506,8 @@ mod tests {
     fn test_cross_team_meeting() {
         let conn = setup();
         // Create two teams
-        let team1_id = create_team(&conn, "team-alpha", Some("agent"), None, None).unwrap();
-        let _team2_id = create_team(&conn, "team-beta", Some("agent"), None, None).unwrap();
+        let team1_id = create_team(&conn, "team-alpha", Some("agent"), None, None, None).unwrap();
+        let _team2_id = create_team(&conn, "team-beta", Some("agent"), None, None, None).unwrap();
 
         // Create templates and spawn agents into different teams
         let t1 = make_template("CTO");
