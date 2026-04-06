@@ -7,6 +7,7 @@ pub mod metrics;
 pub mod pty;
 pub mod rbac;
 pub mod socket;
+pub mod static_files;
 pub mod tls;
 pub mod ws;
 pub mod writer;

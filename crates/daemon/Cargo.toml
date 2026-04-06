@@ -31,7 +31,7 @@ ulid = "1"
 
 # HTTP transport (opt-in)
 axum = { version = "0.7", features = ["ws"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 jsonwebtoken = "9"
 base64 = "0.22"
 
