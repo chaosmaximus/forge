@@ -834,6 +834,7 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_default_config() {
@@ -1343,6 +1344,7 @@ offline_jwks_path = "/etc/forge/jwks.json"
     }
 
     #[test]
+    #[serial]
     fn test_env_override_http() {
         let mut cfg = ForgeConfig::default();
         std::env::set_var("FORGE_HTTP_ENABLED", "true");
@@ -1361,6 +1363,7 @@ offline_jwks_path = "/etc/forge/jwks.json"
     }
 
     #[test]
+    #[serial]
     fn test_env_override_cors() {
         let mut cfg = ForgeConfig::default();
         std::env::set_var("FORGE_CORS_ALLOWED_ORIGINS", "https://a.com,https://b.com");
@@ -1376,6 +1379,7 @@ offline_jwks_path = "/etc/forge/jwks.json"
     }
 
     #[test]
+    #[serial]
     fn test_env_override_auth() {
         let mut cfg = ForgeConfig::default();
         std::env::set_var("FORGE_AUTH_ENABLED", "true");
@@ -1406,6 +1410,7 @@ offline_jwks_path = "/etc/forge/jwks.json"
     }
 
     #[test]
+    #[serial]
     fn test_env_override_no_env_vars_set() {
         let mut cfg = ForgeConfig::default();
         // Remove any stale env vars
@@ -1422,6 +1427,7 @@ offline_jwks_path = "/etc/forge/jwks.json"
     }
 
     #[test]
+    #[serial]
     fn test_env_override_invalid_port_ignored() {
         let mut cfg = ForgeConfig::default();
         std::env::set_var("FORGE_HTTP_PORT", "not_a_number");

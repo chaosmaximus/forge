@@ -39,6 +39,12 @@ prometheus = "0.13"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
+# OpenTelemetry (OTLP trace export — opt-in)
+opentelemetry = { version = "0.27", features = ["trace"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+tracing-opentelemetry = "0.28"
+
 # LSP client
 lsp-types = "0.97"
 
@@ -49,3 +55,4 @@ regex = "1"
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+serial_test = "3"
