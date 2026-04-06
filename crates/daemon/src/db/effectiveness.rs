@@ -9,13 +9,130 @@ pub fn record_injection(
     context_type: &str,
     content_summary: &str,
 ) -> rusqlite::Result<String> {
+    record_injection_with_size(conn, session_id, hook_event, context_type, content_summary, 0)
+}
+
+/// Record a context injection with its character count for observability.
+pub fn record_injection_with_size(
+    conn: &Connection,
+    session_id: &str,
+    hook_event: &str,
+    context_type: &str,
+    content_summary: &str,
+    chars_injected: usize,
+) -> rusqlite::Result<String> {
     let id = ulid::Ulid::new().to_string();
     conn.execute(
-        "INSERT INTO context_effectiveness (id, session_id, hook_event, context_type, content_summary)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, session_id, hook_event, context_type, content_summary],
+        "INSERT INTO context_effectiveness (id, session_id, hook_event, context_type, content_summary, chars_injected)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, session_id, hook_event, context_type, content_summary, chars_injected as i64],
     )?;
     Ok(id)
+}
+
+/// Get injection stats for a session: total injections, total chars, per-hook breakdown.
+pub fn session_injection_stats(conn: &Connection, session_id: &str) -> rusqlite::Result<InjectionStats> {
+    let total_chars: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(chars_injected), 0) FROM context_effectiveness WHERE session_id = ?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    let total_injections: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM context_effectiveness WHERE session_id = ?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    let acknowledged: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM context_effectiveness WHERE session_id = ?1 AND acknowledged = 1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT hook_event, COUNT(*), COALESCE(SUM(chars_injected), 0)
+         FROM context_effectiveness WHERE session_id = ?1
+         GROUP BY hook_event ORDER BY SUM(chars_injected) DESC"
+    )?;
+    let per_hook: Vec<HookStats> = stmt.query_map(params![session_id], |row| {
+        Ok(HookStats {
+            hook_event: row.get(0)?,
+            injections: row.get::<_, i64>(1)? as usize,
+            chars: row.get::<_, i64>(2)? as usize,
+        })
+    })?.filter_map(|r| r.ok()).collect();
+
+    Ok(InjectionStats {
+        session_id: session_id.to_string(),
+        total_injections: total_injections as usize,
+        total_chars: total_chars as usize,
+        estimated_tokens: total_chars as usize / 4,
+        acknowledged: acknowledged as usize,
+        effectiveness_rate: if total_injections > 0 { acknowledged as f64 / total_injections as f64 } else { 0.0 },
+        per_hook,
+    })
+}
+
+/// Get global injection stats across all sessions.
+pub fn global_injection_stats(conn: &Connection) -> rusqlite::Result<GlobalStats> {
+    let total_chars: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(chars_injected), 0) FROM context_effectiveness",
+        [],
+        |row| row.get(0),
+    )?;
+    let total_injections: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM context_effectiveness",
+        [],
+        |row| row.get(0),
+    )?;
+    let total_sessions: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT session_id) FROM context_effectiveness",
+        [],
+        |row| row.get(0),
+    )?;
+    let acknowledged: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM context_effectiveness WHERE acknowledged = 1",
+        [],
+        |row| row.get(0),
+    )?;
+
+    Ok(GlobalStats {
+        total_sessions: total_sessions as usize,
+        total_injections: total_injections as usize,
+        total_chars: total_chars as usize,
+        estimated_tokens: total_chars as usize / 4,
+        acknowledged: acknowledged as usize,
+        effectiveness_rate: if total_injections > 0 { acknowledged as f64 / total_injections as f64 } else { 0.0 },
+        avg_chars_per_session: if total_sessions > 0 { total_chars as usize / total_sessions as usize } else { 0 },
+    })
+}
+
+#[derive(Debug)]
+pub struct HookStats {
+    pub hook_event: String,
+    pub injections: usize,
+    pub chars: usize,
+}
+
+#[derive(Debug)]
+pub struct InjectionStats {
+    pub session_id: String,
+    pub total_injections: usize,
+    pub total_chars: usize,
+    pub estimated_tokens: usize,
+    pub acknowledged: usize,
+    pub effectiveness_rate: f64,
+    pub per_hook: Vec<HookStats>,
+}
+
+#[derive(Debug)]
+pub struct GlobalStats {
+    pub total_sessions: usize,
+    pub total_injections: usize,
+    pub total_chars: usize,
+    pub estimated_tokens: usize,
+    pub acknowledged: usize,
+    pub effectiveness_rate: f64,
+    pub avg_chars_per_session: usize,
 }
 
 /// Mark a previously-recorded injection as acknowledged by the agent.

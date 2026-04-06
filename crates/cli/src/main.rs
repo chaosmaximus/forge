@@ -584,6 +584,14 @@ enum Commands {
         #[arg(long)]
         description: Option<String>,
     },
+
+    /// Context injection observability — token cost, effectiveness, per-hook breakdown
+    #[command(name = "context-stats")]
+    ContextStats {
+        /// Session ID (omit for global stats across all sessions)
+        #[arg(long)]
+        session_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1218,6 +1226,9 @@ async fn main() {
         }
         Commands::TaskCompletionCheck { session_id, subject, description } => {
             commands::system::task_completion_check(session_id, subject, description).await;
+        }
+        Commands::ContextStats { session_id } => {
+            commands::system::context_stats(session_id).await;
         }
     }
 }

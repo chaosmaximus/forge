@@ -300,6 +300,12 @@ mod tests {
                 },
             ),
             (
+                "context_stats",
+                Request::ContextStats {
+                    session_id: Some("s-123".into()),
+                },
+            ),
+            (
                 "compile_context",
                 Request::CompileContext {
                     agent: Some("claude-code".into()),
@@ -1066,10 +1072,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 16 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex)
         let unit_count = 16;
-        // Parameterized variants: 85 (82 + 3 Prajna: ContextRefresh, CompletionCheck, TaskCompletionCheck)
-        let param_count = 85;
-        // Total: 101
-        let expected_total = 101;
+        // Parameterized variants: 86 (82 + 4 Prajna: ContextRefresh, CompletionCheck, TaskCompletionCheck, ContextStats)
+        let param_count = 86;
+        // Total: 102
+        let expected_total = 102;
 
         assert_eq!(
             unit_count + param_count,
@@ -1238,6 +1244,7 @@ mod tests {
                 Request::ContextRefresh { session_id: "s".into(), since: None },
                 Request::CompletionCheck { session_id: "s".into(), claimed_done: false },
                 Request::TaskCompletionCheck { session_id: "s".into(), task_subject: "t".into(), task_description: None },
+                Request::ContextStats { session_id: None },
                 Request::CompileContext {
                     agent: None,
                     project: None,

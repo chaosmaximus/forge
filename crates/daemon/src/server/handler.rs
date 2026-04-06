@@ -1329,6 +1329,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 |row| row.get::<_, i64>(0),
             ).unwrap_or(0) as usize;
 
+            // Record injection for observability
+            let delta_items = notifications.len() + warnings.len() + anti_patterns.len();
+            if delta_items > 0 || messages_pending > 0 {
+                let summary = format!("notif={} warn={} ap={} msg={}", notifications.len(), warnings.len(), anti_patterns.len(), messages_pending);
+                let chars_est = notifications.iter().chain(warnings.iter()).chain(anti_patterns.iter())
+                    .map(|s| s.len()).sum::<usize>();
+                let _ = crate::db::effectiveness::record_injection_with_size(
+                    &state.conn, &session_id, "UserPromptSubmit", "delta",
+                    &summary, chars_est,
+                );
+            }
+
             Response::Ok {
                 data: ResponseData::ContextDelta {
                     notifications,
@@ -1339,7 +1351,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::CompletionCheck { session_id: _, claimed_done } => {
+        Request::CompletionCheck { session_id, claimed_done } => {
             if !claimed_done {
                 Response::Ok {
                     data: ResponseData::CompletionCheckResult {
@@ -1360,6 +1372,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     .unwrap_or_default();
 
                 let severity = if lessons.is_empty() { "none" } else { "high" };
+                // Record injection for observability
+                if !lessons.is_empty() {
+                    let chars_est: usize = lessons.iter().map(|s| s.len()).sum();
+                    let _ = crate::db::effectiveness::record_injection_with_size(
+                        &state.conn, &session_id, "Stop", "completion_lesson",
+                        &format!("{} lessons, severity={}", lessons.len(), severity),
+                        chars_est,
+                    );
+                }
                 Response::Ok {
                     data: ResponseData::CompletionCheckResult {
                         has_completion_signal: true,
@@ -1398,6 +1419,38 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             Response::Ok {
                 data: ResponseData::TaskCompletionCheckResult { warnings, checklists },
+            }
+        }
+
+        Request::ContextStats { session_id } => {
+            if let Some(sid) = session_id {
+                match crate::db::effectiveness::session_injection_stats(&state.conn, &sid) {
+                    Ok(stats) => Response::Ok {
+                        data: ResponseData::ContextStatsResult {
+                            total_injections: stats.total_injections,
+                            total_chars: stats.total_chars,
+                            estimated_tokens: stats.estimated_tokens,
+                            acknowledged: stats.acknowledged,
+                            effectiveness_rate: stats.effectiveness_rate,
+                            per_hook: stats.per_hook.iter().map(|h| (h.hook_event.clone(), h.injections, h.chars)).collect(),
+                        },
+                    },
+                    Err(e) => Response::Error { message: format!("stats error: {}", e) },
+                }
+            } else {
+                match crate::db::effectiveness::global_injection_stats(&state.conn) {
+                    Ok(stats) => Response::Ok {
+                        data: ResponseData::ContextStatsResult {
+                            total_injections: stats.total_injections,
+                            total_chars: stats.total_chars,
+                            estimated_tokens: stats.estimated_tokens,
+                            acknowledged: stats.acknowledged,
+                            effectiveness_rate: stats.effectiveness_rate,
+                            per_hook: vec![],
+                        },
+                    },
+                    Err(e) => Response::Error { message: format!("stats error: {}", e) },
+                }
             }
         }
 
@@ -1446,6 +1499,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     static_prefix, dynamic_suffix
                 );
                 let chars = full.len();
+                // Record injection for observability
+                if let Some(sid) = session_id.as_deref() {
+                    let _ = crate::db::effectiveness::record_injection_with_size(
+                        &state.conn, sid, "SessionStart", "full_context",
+                        &format!("static={} dynamic={}", static_prefix.len(), dynamic_suffix.len()),
+                        chars,
+                    );
+                }
                 // Emit context_compiled event
                 crate::events::emit(&state.events, "context_compiled", serde_json::json!({
                     "static_chars": static_prefix.len(),

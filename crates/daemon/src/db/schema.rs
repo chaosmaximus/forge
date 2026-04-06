@@ -647,11 +647,15 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             content_summary TEXT NOT NULL,
             injected_at TEXT NOT NULL DEFAULT (datetime('now')),
             acknowledged INTEGER NOT NULL DEFAULT 0,
-            outcome TEXT
+            outcome TEXT,
+            chars_injected INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_ce_session ON context_effectiveness(session_id);
         CREATE INDEX IF NOT EXISTS idx_ce_hook_type ON context_effectiveness(hook_event, context_type);
     ")?;
+
+    // Migration: add chars_injected to existing context_effectiveness tables
+    let _ = conn.execute("ALTER TABLE context_effectiveness ADD COLUMN chars_injected INTEGER NOT NULL DEFAULT 0", []);
 
     // Append-only enforcement: block UPDATE and DELETE on audit_log
     let _ = conn.execute_batch(

@@ -190,6 +190,15 @@ pub enum ResponseData {
         warnings: Vec<String>,
         checklists: Vec<String>,
     },
+    /// Context injection observability.
+    ContextStatsResult {
+        total_injections: usize,
+        total_chars: usize,
+        estimated_tokens: usize,
+        acknowledged: usize,
+        effectiveness_rate: f64,
+        per_hook: Vec<(String, usize, usize)>, // (hook_event, count, chars)
+    },
 
     SessionRegistered { id: String },
     SessionEnded { id: String, found: bool },

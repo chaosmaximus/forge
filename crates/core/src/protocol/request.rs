@@ -159,6 +159,11 @@ pub enum Request {
         #[serde(default)]
         task_description: Option<String>,
     },
+    /// Context injection observability stats.
+    ContextStats {
+        #[serde(default)]
+        session_id: Option<String>,
+    },
 
     /// Mark a session as ended
     EndSession { id: String },

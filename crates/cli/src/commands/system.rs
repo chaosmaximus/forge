@@ -1698,6 +1698,33 @@ pub async fn task_completion_check(
     }
 }
 
+pub async fn context_stats(session_id: Option<String>) {
+    let req = Request::ContextStats { session_id: session_id.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::ContextStatsResult {
+            total_injections, total_chars, estimated_tokens, acknowledged, effectiveness_rate, per_hook,
+        } }) => {
+            println!("Context Injection Stats{}", session_id.as_deref().map(|s| format!(" (session: {})", s)).unwrap_or_default());
+            println!("─────────────────────────");
+            println!("  Injections:      {}", total_injections);
+            println!("  Total chars:     {}", total_chars);
+            println!("  Est. tokens:     {}", estimated_tokens);
+            println!("  Acknowledged:    {}", acknowledged);
+            println!("  Effectiveness:   {:.1}%", effectiveness_rate * 100.0);
+            if !per_hook.is_empty() {
+                println!("  ─────────────────────────");
+                println!("  Per-hook breakdown:");
+                for (hook, count, chars) in &per_hook {
+                    println!("    {:<20} {:>3} inj, {:>6} chars (~{} tokens)", hook, count, chars, chars / 4);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => { eprintln!("error: {}", message); std::process::exit(1); }
+        Ok(_) => {}
+        Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+    }
+}
+
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
 }
