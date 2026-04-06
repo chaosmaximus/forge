@@ -246,7 +246,10 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .route("/startupz", get(startupz));
 
-    // Conditionally add /metrics (exempt from auth, like health probes)
+    // Conditionally add /metrics (exempt from auth, like health probes).
+    // SECURITY NOTE: /metrics is unauthenticated by design — Prometheus scrapers
+    // don't carry JWT tokens. In production K8s, restrict access via NetworkPolicy
+    // or bind HTTP to a private interface. No sensitive data is exposed in metrics.
     if config.metrics.enabled && state.metrics.is_some() {
         health_routes = health_routes.route("/metrics", get(metrics_handler));
     }
