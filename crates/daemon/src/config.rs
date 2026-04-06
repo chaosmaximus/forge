@@ -77,6 +77,8 @@ pub struct ForgeConfig {
     pub otlp: OtlpConfig,
     #[serde(default)]
     pub proactive: ProactiveConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 /// HTTP transport configuration — opt-in, disabled by default.
@@ -458,6 +460,22 @@ impl Default for ProactiveConfig {
             anti_pattern_threshold: 0.85,
             completion_keywords: default_completion_keywords(),
             completion_dismiss_limit: 3,
+        }
+    }
+}
+
+/// Web UI static file serving — opt-in, disabled by default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiConfig {
+    pub enabled: bool,
+    pub dir: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: "ui".to_string(),
         }
     }
 }

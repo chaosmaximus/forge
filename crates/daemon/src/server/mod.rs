@@ -6,6 +6,7 @@ pub mod http;
 pub mod metrics;
 pub mod rbac;
 pub mod socket;
+pub mod static_files;
 pub mod writer;
 
 pub use handler::{DaemonState, handle_request};
