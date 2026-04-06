@@ -1,0 +1,35 @@
+syntax = "proto3";
+package forge.v1;
+
+// Minimal JSON-over-gRPC service.
+// Request/Response are JSON strings matching the existing NDJSON protocol.
+// This gives gRPC transport benefits (HTTP/2, mTLS, streaming) without
+// mirroring 98 endpoints in Protobuf.
+
+service ForgeService {
+  // Execute any forge protocol request (same JSON as POST /api)
+  rpc Execute(ForgeRequest) returns (ForgeResponse);
+
+  // Subscribe to daemon events (server-side streaming)
+  rpc Subscribe(SubscribeRequest) returns (stream ForgeEvent);
+}
+
+message ForgeRequest {
+  string json = 1;  // JSON-serialized forge_core::protocol::Request
+}
+
+message ForgeResponse {
+  string json = 1;  // JSON-serialized forge_core::protocol::Response
+}
+
+message SubscribeRequest {
+  repeated string event_types = 1;  // Optional filter
+  string session_id = 2;            // Optional session filter
+  string team_id = 3;               // Optional team filter
+}
+
+message ForgeEvent {
+  string event = 1;     // Event type
+  string data = 2;      // JSON payload
+  string timestamp = 3;
+}

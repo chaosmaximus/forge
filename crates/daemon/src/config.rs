@@ -26,7 +26,9 @@ fn default_300_u64() -> u64 { 300 }
 fn default_10_u64() -> u64 { 10 }
 fn default_3600_u64() -> u64 { 3600 }
 fn default_8420_u16() -> u16 { 8420 }
+fn default_8421_u16() -> u16 { 8421 }
 fn default_bind() -> String { "127.0.0.1".to_string() }
+fn default_grpc_bind() -> String { "0.0.0.0".to_string() }
 fn default_cors_origins() -> Vec<String> { vec!["*".to_string()] }
 fn default_service_name() -> String { "forge-daemon".to_string() }
 
@@ -53,6 +55,8 @@ pub struct ForgeConfig {
     pub agent: AgentConfig,
     #[serde(default)]
     pub http: HttpConfig,
+    #[serde(default)]
+    pub grpc: GrpcConfig,
     #[serde(default)]
     pub cors: CorsConfig,
     #[serde(default)]
@@ -81,6 +85,31 @@ impl Default for HttpConfig {
             enabled: false,
             bind: "127.0.0.1".to_string(),
             port: 8420,
+        }
+    }
+}
+
+/// gRPC transport configuration — opt-in, disabled by default.
+/// Uses JSON-over-gRPC: a single Execute RPC carrying JSON-serialized
+/// Request/Response, giving HTTP/2 + mTLS + streaming without mirroring
+/// all protocol variants in Protobuf.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GrpcConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_grpc_bind")]
+    pub bind: String,
+    #[serde(default = "default_8421_u16")]
+    pub port: u16,
+}
+
+impl Default for GrpcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "0.0.0.0".to_string(),
+            port: 8421,
         }
     }
 }
@@ -582,6 +611,20 @@ impl ForgeConfig {
                 self.http.port = p;
             }
         }
+        // gRPC
+        if let Ok(v) = std::env::var("FORGE_GRPC_ENABLED") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.grpc.enabled = b;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_GRPC_BIND") {
+            self.grpc.bind = v;
+        }
+        if let Ok(v) = std::env::var("FORGE_GRPC_PORT") {
+            if let Ok(p) = v.parse::<u16>() {
+                self.grpc.port = p;
+            }
+        }
         // CORS
         if let Ok(v) = std::env::var("FORGE_CORS_ALLOWED_ORIGINS") {
             self.cors.allowed_origins = v.split(',').map(|s| s.trim().to_string()).collect();
@@ -660,6 +703,10 @@ impl ForgeConfig {
         // HTTP validation
         if self.http.port == 0 {
             return Err("http.port must be > 0".into());
+        }
+        // gRPC validation
+        if self.grpc.port == 0 {
+            return Err("grpc.port must be > 0".into());
         }
         // Auth validation: if enabled, issuer_url and audience are required
         if self.auth.enabled {

@@ -1,4 +1,4 @@
-use forge_daemon::server::{DaemonState, WriterActor, run_http_server_with_listener, run_server};
+use forge_daemon::server::{DaemonState, WriterActor, run_grpc_server, run_http_server_with_listener, run_server};
 use forge_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
 use fs2::FileExt;
 use std::io::Write;
@@ -308,6 +308,41 @@ async fn main() {
             .await
             {
                 tracing::error!("HTTP server failed: {e}");
+            }
+        });
+    }
+
+    // Conditionally spawn gRPC server alongside Unix socket when enabled.
+    // gRPC bind failure is fatal — if the operator explicitly enabled gRPC, we must serve it.
+    if config.grpc.enabled {
+        let grpc_db = db_path.clone();
+        let grpc_events = events.clone();
+        let grpc_hlc = Arc::clone(&hlc);
+        let grpc_write_tx = write_tx.clone();
+        let grpc_shutdown_rx = shutdown_tx.subscribe();
+        // Pre-bind the listener synchronously so bind failures are caught before we proceed
+        let grpc_addr = format!("{}:{}", config.grpc.bind, config.grpc.port);
+        let grpc_listener = match tokio::net::TcpListener::bind(&grpc_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(addr = %grpc_addr, "failed to bind gRPC server: {e}");
+                std::process::exit(1);
+            }
+        };
+        tracing::info!(addr = %grpc_addr, "gRPC server listening");
+        tokio::spawn(async move {
+            if let Err(e) = run_grpc_server(
+                grpc_db,
+                grpc_events,
+                grpc_hlc,
+                started_at,
+                grpc_write_tx,
+                grpc_shutdown_rx,
+                grpc_listener,
+            )
+            .await
+            {
+                tracing::error!("gRPC server failed: {e}");
             }
         });
     }
