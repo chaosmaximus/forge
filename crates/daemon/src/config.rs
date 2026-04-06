@@ -77,6 +77,8 @@ pub struct ForgeConfig {
     pub otlp: OtlpConfig,
     #[serde(default)]
     pub proactive: ProactiveConfig,
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 /// HTTP transport configuration — opt-in, disabled by default.
@@ -98,6 +100,22 @@ impl Default for HttpConfig {
             bind: "127.0.0.1".to_string(),
             port: 8420,
         }
+    }
+}
+
+/// TLS configuration — opt-in, disabled by default.
+/// When enabled, the daemon generates a self-signed certificate for localhost
+/// and serves HTTPS. Users can install the CA cert to trust Forge in their browser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TlsConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self { enabled: false }
     }
 }
 

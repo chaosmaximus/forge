@@ -7,6 +7,7 @@ pub mod metrics;
 pub mod pty;
 pub mod rbac;
 pub mod socket;
+pub mod tls;
 pub mod writer;
 
 pub use handler::{DaemonState, handle_request};
