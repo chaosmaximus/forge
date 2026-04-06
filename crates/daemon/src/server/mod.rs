@@ -2,6 +2,7 @@ pub mod auth;
 pub mod handler;
 pub mod health;
 pub mod http;
+pub mod metrics;
 pub mod rbac;
 pub mod socket;
 pub mod writer;

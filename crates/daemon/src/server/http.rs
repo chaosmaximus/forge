@@ -28,6 +28,7 @@ use tokio::sync::{mpsc, oneshot};
 use tower_http::cors::{Any, CorsLayer};
 
 use super::health::{healthz, readyz, startupz};
+use super::metrics::{metrics_handler, ForgeMetrics};
 
 /// Shared application state for all HTTP handlers.
 #[derive(Clone)]
@@ -41,6 +42,8 @@ pub struct AppState {
     pub admin_emails: Vec<String>,
     /// Whether auth (and thus RBAC) is enabled.
     pub auth_enabled: bool,
+    /// Prometheus metrics collectors (None when metrics.enabled = false).
+    pub metrics: Option<ForgeMetrics>,
 }
 
 /// POST /api — accepts JSON matching the protocol Request type.
@@ -238,11 +241,17 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
     let cors = build_cors_layer(config);
 
     // Health probes — always unauthenticated
-    let health_routes = Router::new()
+    let mut health_routes = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/startupz", get(startupz))
-        .with_state(state.clone());
+        .route("/startupz", get(startupz));
+
+    // Conditionally add /metrics (exempt from auth, like health probes)
+    if config.metrics.enabled && state.metrics.is_some() {
+        health_routes = health_routes.route("/metrics", get(metrics_handler));
+    }
+
+    let health_routes = health_routes.with_state(state.clone());
 
     // API routes — optionally protected by JWT auth
     let api_routes = if config.auth.enabled {
@@ -292,6 +301,12 @@ pub async fn run_http_server_with_listener(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     listener: tokio::net::TcpListener,
 ) -> std::io::Result<()> {
+    let metrics = if config.metrics.enabled {
+        Some(ForgeMetrics::new())
+    } else {
+        None
+    };
+
     let state = AppState {
         db_path,
         events,
@@ -300,6 +315,7 @@ pub async fn run_http_server_with_listener(
         write_tx,
         admin_emails: config.auth.admin_emails.clone(),
         auth_enabled: config.auth.enabled,
+        metrics,
     };
 
     let app = build_router(config, state);
@@ -343,6 +359,7 @@ mod tests {
             write_tx,
             admin_emails: Vec::new(),
             auth_enabled: false,
+            metrics: None,
         }
     }
 
@@ -688,6 +705,7 @@ Pfkte+2kAeYPMK9Sa+apqqE=
             write_tx,
             admin_emails: Vec::new(),
             auth_enabled: false,
+            metrics: None,
         };
         (state, handle)
     }
