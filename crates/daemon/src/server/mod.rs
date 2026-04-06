@@ -4,8 +4,10 @@ pub mod handler;
 pub mod health;
 pub mod http;
 pub mod metrics;
+pub mod pty;
 pub mod rbac;
 pub mod socket;
+pub mod ws;
 pub mod writer;
 
 pub use handler::{DaemonState, handle_request};
