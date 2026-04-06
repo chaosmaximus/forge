@@ -1,4 +1,5 @@
 pub mod diagnostics;
+pub mod effectiveness;
 pub mod manas;
 pub mod schema;
 pub mod ops;

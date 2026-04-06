@@ -636,6 +636,23 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)", []);
 
+    // ── Proactive Context (Prajna) ──
+
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS context_effectiveness (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            hook_event TEXT NOT NULL,
+            context_type TEXT NOT NULL,
+            content_summary TEXT NOT NULL,
+            injected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            acknowledged INTEGER NOT NULL DEFAULT 0,
+            outcome TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ce_session ON context_effectiveness(session_id);
+        CREATE INDEX IF NOT EXISTS idx_ce_hook_type ON context_effectiveness(hook_event, context_type);
+    ")?;
+
     // Append-only enforcement: block UPDATE and DELETE on audit_log
     let _ = conn.execute_batch(
         "CREATE TRIGGER IF NOT EXISTS audit_log_no_update
