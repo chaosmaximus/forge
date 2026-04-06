@@ -1386,7 +1386,12 @@ pub fn compile_dynamic_suffix(
                     let text_preview: String = serde_json::from_str::<serde_json::Value>(&msg.parts)
                         .ok()
                         .and_then(|v| v.as_str().map(|s| {
-                            if s.len() > 200 { format!("{}...", &s[..200]) } else { s.to_string() }
+                            if s.chars().count() > 200 {
+                                let truncated: String = s.chars().take(200).collect();
+                                format!("{}...", truncated)
+                            } else {
+                                s.to_string()
+                            }
                         }))
                         .unwrap_or_default();
                     xml.push_str(&format!(
@@ -1415,9 +1420,9 @@ pub fn compile_dynamic_suffix(
                 for m in &meetings {
                     meeting_xml.push_str(&format!(
                         "  <active-meeting id=\"{}\" topic=\"{}\" status=\"{}\" responded=\"{}/{}\"/>\n",
-                        m["id"].as_str().unwrap_or(""),
+                        xml_escape(m["id"].as_str().unwrap_or("")),
                         xml_escape(m["topic"].as_str().unwrap_or("")),
-                        m["status"].as_str().unwrap_or(""),
+                        xml_escape(m["status"].as_str().unwrap_or("")),
                         m["responded"].as_i64().unwrap_or(0),
                         m["total"].as_i64().unwrap_or(0),
                     ));

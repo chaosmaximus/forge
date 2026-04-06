@@ -49,15 +49,17 @@ fn reap_stale_sessions(
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
         .map_err(|e| format!("pragma: {}", e))?;
 
-    // Find sessions that have heartbeated but are now stale.
-    // timeout_secs is a u64 from config, never user input — safe to format.
-    let sql = format!(
-        "SELECT id FROM session WHERE status = 'active' \
+    // Atomic reap: UPDATE with full WHERE clause to avoid TOCTOU race.
+    // A session that heartbeats between SELECT and UPDATE won't be reaped.
+    let reap_sql = format!(
+        "UPDATE session SET status = 'ended', ended_at = datetime('now') \
+         WHERE status = 'active' \
          AND last_heartbeat_at IS NOT NULL \
-         AND last_heartbeat_at < datetime('now', '-{} seconds')",
+         AND last_heartbeat_at < datetime('now', '-{} seconds') \
+         RETURNING id",
         timeout_secs
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {}", e))?;
+    let mut stmt = conn.prepare(&reap_sql).map_err(|e| format!("prepare: {}", e))?;
     let stale_ids: Vec<String> = stmt
         .query_map([], |row| row.get(0))
         .map_err(|e| format!("query: {}", e))?
@@ -65,11 +67,6 @@ fn reap_stale_sessions(
         .collect();
 
     for session_id in &stale_ids {
-        conn.execute(
-            "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![session_id],
-        )
-        .map_err(|e| format!("update: {}", e))?;
 
         events::emit(
             events,

@@ -579,6 +579,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Agent team indexes
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_template ON session(template_id)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_agent_status ON session(agent_status)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_heartbeat ON session(status, last_heartbeat_at)", []);
 
     // ── v2.2: Notification Engine ──
 

@@ -853,7 +853,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     data: ResponseData::Heartbeat { session_id, status: "ok".into() },
                 },
                 Ok(false) => Response::Error {
-                    message: format!("session not found or not active: {}", session_id),
+                    message: "heartbeat rejected".into(),
                 },
                 Err(e) => Response::Error {
                     message: format!("heartbeat failed: {e}"),

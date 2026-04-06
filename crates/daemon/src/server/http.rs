@@ -325,19 +325,19 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
         health_routes = health_routes.route("/metrics", get(metrics_handler));
     }
 
-    // SSE subscribe endpoint — alongside health probes (EventSource can't set auth headers)
-    health_routes = health_routes.route("/api/subscribe", get(subscribe_handler));
-
     let health_routes = health_routes.with_state(state.clone());
 
-    // API routes — optionally protected by JWT auth
+    // API routes — optionally protected by JWT auth.
+    // SSE subscribe endpoint is placed alongside /api so it inherits auth middleware.
+    // When auth is disabled, SSE is open (same as /api). When auth is enabled, SSE
+    // requires a valid JWT via Authorization header or ?token= query param.
     let api_routes = if config.auth.enabled {
         let jwks_cache = super::auth::new_jwks_cache();
         let auth_config = config.auth.clone();
         tracing::info!(
             issuer = %config.auth.issuer_url,
             audience = %config.auth.audience,
-            "JWT auth enabled for POST /api"
+            "JWT auth enabled for POST /api and GET /api/subscribe"
         );
         if config.auth.admin_emails.is_empty() {
             tracing::warn!(
@@ -347,6 +347,7 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
         }
         Router::new()
             .route("/api", post(api_handler))
+            .route("/api/subscribe", get(subscribe_handler))
             .layer(axum::middleware::from_fn(move |req, next| {
                 let cache = jwks_cache.clone();
                 let cfg = auth_config.clone();
@@ -356,6 +357,7 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
     } else {
         Router::new()
             .route("/api", post(api_handler))
+            .route("/api/subscribe", get(subscribe_handler))
             .with_state(state)
     };
 
