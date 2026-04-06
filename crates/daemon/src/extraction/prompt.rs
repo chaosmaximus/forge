@@ -25,10 +25,12 @@ Type guidance:
 - "lesson": something learned from experience (e.g., "Always run tests before push")
 - "pattern": a recurring approach (e.g., "Error handling uses Result<T, AppError>")
 - "preference": a user preference or working style (e.g., "Prefers TDD")
-- "identity": a signal about the user's role, expertise, or working context.
-  Extract when the user reveals WHO THEY ARE or WHAT THEY DO.
+- "identity": a signal about the HUMAN USER's role, expertise, or working context.
+  Extract ONLY when the human user reveals WHO THEY ARE or WHAT THEY DO.
+  NEVER extract identity about the AI assistant/agent — only the human.
+  Look for: "I'm a...", "I work on...", "my company...", "I want to...", "we're building..."
   IMPORTANT: always include a tag indicating the facet type: "role", "expertise", "domain", "values", "goals", or "constraints".
-  The title should be the identity signal, content should be the evidence.
+  The title should be the identity signal, content should be the evidence from the user's own words.
   Examples:
     {"type": "identity", "title": "Senior Rust developer", "content": "User demonstrated deep Rust knowledge and mentioned years of experience", "confidence": 0.9, "tags": ["expertise"], "affects": []}
     {"type": "identity", "title": "Building a fintech platform", "content": "User is working on a financial technology product with payment processing", "confidence": 0.85, "tags": ["domain"], "affects": []}

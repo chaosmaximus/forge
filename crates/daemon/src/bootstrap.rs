@@ -173,15 +173,18 @@ pub fn update_log(
 }
 
 /// Extract project name from a transcript file path.
-/// Reuses the same logic as extractor.rs:327-347.
+/// Claude Code paths: ~/.claude/projects/-mnt-colab-disk-DurgaSaiK-forge/...
+/// The hash replaces '/' with '-' and prepends '-'. We take the last segment
+/// as the project name (the actual directory name the project lives in).
 pub fn extract_project_from_path(path: &std::path::Path) -> Option<String> {
     let path_str = path.to_string_lossy();
     if let Some(projects_idx) = path_str.find("/projects/") {
         let after = &path_str[projects_idx + 10..];
         if let Some(slash) = after.find('/') {
             let project_hash = &after[..slash];
-            // The hash is like "-Users-name-workspace-projectname"
-            // Take the last segment after the last dash-separated word
+            // The hash is like "-mnt-colab-disk-DurgaSaiK-forge"
+            // which represents /mnt/colab-disk/DurgaSaiK/forge
+            // The project name is the LAST path component = last dash-segment
             let project_name = project_hash.rsplit('-').next().unwrap_or(project_hash);
             if !project_name.is_empty() {
                 return Some(project_name.to_string());
