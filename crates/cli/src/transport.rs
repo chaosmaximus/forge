@@ -44,8 +44,11 @@ impl Transport {
     }
 
     /// Initialize the global transport. Must be called once at startup.
+    /// Panics if called more than once (programming error).
     pub fn init_global(transport: Transport) {
-        let _ = GLOBAL_TRANSPORT.set(transport);
+        if GLOBAL_TRANSPORT.set(transport).is_err() {
+            eprintln!("[cli] WARN: transport already initialized, ignoring re-init");
+        }
     }
 
     /// Get the global transport. Returns `Unix` if not initialized.
@@ -60,13 +63,35 @@ impl Transport {
     }
 }
 
+/// Returns true if the endpoint is a localhost address (exempt from HTTPS requirement).
+fn is_localhost(endpoint: &str) -> bool {
+    endpoint.starts_with("http://localhost")
+        || endpoint.starts_with("http://127.0.0.1")
+        || endpoint.starts_with("http://[::1]")
+}
+
+/// Validate endpoint URL and enforce HTTPS for non-localhost.
+fn validate_endpoint(endpoint: &str) -> Result<String, String> {
+    let trimmed = endpoint.trim_end_matches('/');
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err(format!("endpoint must start with https:// or http:// (got: {trimmed})"));
+    }
+    if trimmed.starts_with("http://") && !is_localhost(trimmed) {
+        return Err(format!(
+            "endpoint must use HTTPS for non-localhost targets (got: {trimmed}). \
+             Use https:// or connect to localhost for development."
+        ));
+    }
+    Ok(format!("{trimmed}/api"))
+}
+
 /// Send a request over HTTP to the remote daemon.
 pub async fn http_send(
     endpoint: &str,
     token: Option<&str>,
     request: &Request,
 ) -> Result<Response, String> {
-    let url = format!("{}/api", endpoint.trim_end_matches('/'));
+    let url = validate_endpoint(endpoint)?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -90,8 +115,8 @@ pub async fn http_send(
     if status == reqwest::StatusCode::FORBIDDEN {
         return Err("permission denied: insufficient role".to_string());
     }
-    if status.is_server_error() {
-        return Err(format!("server error: HTTP {}", status.as_u16()));
+    if !status.is_success() {
+        return Err(format!("HTTP error: {}", status.as_u16()));
     }
 
     resp.json::<Response>()
@@ -159,6 +184,15 @@ mod tests {
             _ => panic!("expected Http"),
         }
         std::env::remove_var("FORGE_ENDPOINT");
+    }
+
+    #[test]
+    fn test_validate_endpoint_https_required() {
+        assert!(validate_endpoint("https://forge.company.com").is_ok());
+        assert!(validate_endpoint("http://localhost:8420").is_ok());
+        assert!(validate_endpoint("http://127.0.0.1:8420").is_ok());
+        assert!(validate_endpoint("http://remote.server.com").is_err());
+        assert!(validate_endpoint("ftp://bad.com").is_err());
     }
 
     #[test]
