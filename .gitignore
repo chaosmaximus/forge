@@ -51,3 +51,8 @@ product/taste-skill/
 archive/swift-app-v01/.build/
 archive/
 .serena/
+.playwright-mcp/
+app/forge/test-results/
+product/site/.astro/
+product/site/.firebase/
+product/site/public/models/
