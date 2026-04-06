@@ -1556,6 +1556,40 @@ pub async fn code_search(query: String, kind: Option<String>, limit: usize) {
     }
 }
 
+/// Send a heartbeat to keep a session alive.
+pub async fn session_heartbeat(session_id: String) {
+    let req = Request::SessionHeartbeat { session_id: session_id.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::Heartbeat { status, .. } }) => {
+            println!("{}", status);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(other) => {
+            eprintln!("unexpected response: {:?}", other);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Subscribe to real-time daemon events (streams NDJSON to stdout).
+pub async fn subscribe(
+    events: Option<Vec<String>>,
+    session_id: Option<String>,
+    team_id: Option<String>,
+) {
+    if let Err(e) = crate::transport::subscribe_stream(events, session_id, team_id).await {
+        eprintln!("subscribe error: {}", e);
+        std::process::exit(1);
+    }
+}
+
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
 }

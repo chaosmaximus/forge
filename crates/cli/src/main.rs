@@ -527,6 +527,29 @@ enum Commands {
         #[arg(long, conflicts_with = "approve")]
         reject: bool,
     },
+
+    // ── Streaming & Heartbeat ──
+
+    /// Subscribe to real-time daemon events (streams NDJSON to stdout)
+    Subscribe {
+        /// Filter event types (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        events: Option<Vec<String>>,
+        /// Filter by session ID
+        #[arg(long)]
+        session: Option<String>,
+        /// Filter by team ID
+        #[arg(long)]
+        team: Option<String>,
+    },
+
+    /// Send a heartbeat to keep a session alive
+    #[command(name = "session-heartbeat")]
+    SessionHeartbeat {
+        /// Session ID to heartbeat
+        #[arg(long)]
+        session: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1143,6 +1166,14 @@ async fn main() {
             let approved = if reject { false } else { approve };
             commands::teams::act_on_notification(id, approved).await;
         }
+
+        // ── Streaming & Heartbeat ──
+        Commands::Subscribe { events, session, team } => {
+            commands::system::subscribe(events, session, team).await;
+        }
+        Commands::SessionHeartbeat { session } => {
+            commands::system::session_heartbeat(session).await;
+        }
     }
 }
 
@@ -1757,6 +1788,69 @@ mod tests {
                 assert_eq!(limit, 5);
             }
             other => panic!("expected Recall, got {:?}", other),
+        }
+    }
+
+    // ── Subscribe & SessionHeartbeat tests ──
+
+    #[test]
+    fn test_subscribe_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "subscribe",
+            "--events", "memory_created,session_changed",
+            "--session", "s1",
+        ]);
+        assert!(cli.is_ok(), "subscribe should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Subscribe { events, session, team } => {
+                assert_eq!(events, Some(vec!["memory_created".into(), "session_changed".into()]));
+                assert_eq!(session, Some("s1".into()));
+                assert!(team.is_none());
+            }
+            other => panic!("expected Subscribe, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_subscribe_no_args_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "subscribe"]);
+        assert!(cli.is_ok(), "subscribe with no args should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Subscribe { events, session, team } => {
+                assert!(events.is_none());
+                assert!(session.is_none());
+                assert!(team.is_none());
+            }
+            other => panic!("expected Subscribe, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_subscribe_with_team_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "subscribe",
+            "--team", "team-alpha",
+        ]);
+        assert!(cli.is_ok(), "subscribe with team should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Subscribe { events, session, team } => {
+                assert!(events.is_none());
+                assert!(session.is_none());
+                assert_eq!(team, Some("team-alpha".into()));
+            }
+            other => panic!("expected Subscribe, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_session_heartbeat_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "session-heartbeat", "--session", "s1"]);
+        assert!(cli.is_ok(), "session-heartbeat should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::SessionHeartbeat { session } => {
+                assert_eq!(session, "s1");
+            }
+            other => panic!("expected SessionHeartbeat, got {:?}", other),
         }
     }
 }
