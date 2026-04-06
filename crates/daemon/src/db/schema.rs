@@ -632,6 +632,20 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)", []);
 
+    // Append-only enforcement: block UPDATE and DELETE on audit_log
+    let _ = conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+         BEFORE UPDATE ON audit_log
+         BEGIN
+             SELECT RAISE(ABORT, 'audit_log is append-only: UPDATE not allowed');
+         END;
+         CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+         BEFORE DELETE ON audit_log
+         BEGIN
+             SELECT RAISE(ABORT, 'audit_log is append-only: DELETE not allowed');
+         END;"
+    );
+
     Ok(())
 }
 

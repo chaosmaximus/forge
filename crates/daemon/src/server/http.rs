@@ -253,6 +253,12 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
             audience = %config.auth.audience,
             "JWT auth enabled for POST /api"
         );
+        if config.auth.admin_emails.is_empty() {
+            tracing::warn!(
+                "auth is enabled but admin_emails is empty — no user can be assigned Admin role. \
+                 All authenticated users will be Members."
+            );
+        }
         Router::new()
             .route("/api", post(api_handler))
             .layer(axum::middleware::from_fn(move |req, next| {

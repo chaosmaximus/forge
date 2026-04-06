@@ -43,6 +43,25 @@ pub fn resolve_role(claims: &AuthClaims, admin_emails: &[String]) -> Role {
     Role::Member
 }
 
+/// Returns true if the request is an admin-only operation.
+/// Uses an explicit list — new Request variants default to DENIED for Members
+/// until explicitly classified (fail-closed).
+fn is_admin_only(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::Shutdown
+            | Request::SetConfig { .. }
+            | Request::SetScopedConfig { .. }
+            | Request::DeleteScopedConfig { .. }
+            | Request::CleanupSessions { .. }
+            | Request::GrantPermission { .. }
+            | Request::RevokePermission { .. }
+            | Request::Import { .. }
+            | Request::SyncImport { .. }
+            | Request::ForceIndex
+    )
+}
+
 /// Check if the given role is allowed to perform the request.
 ///
 /// Returns `Ok(())` if allowed, `Err(reason)` if denied.
@@ -54,20 +73,15 @@ pub fn check_permission(role: &Role, request: &Request) -> Result<(), String> {
             if crate::server::writer::is_read_only(request) {
                 Ok(())
             } else {
-                Err("viewer role cannot perform write operation".to_string())
+                Err("insufficient permissions".to_string())
             }
         }
         Role::Member => {
             // Members can read and write, but not admin operations
-            match request {
-                Request::Shutdown
-                | Request::SetConfig { .. }
-                | Request::SetScopedConfig { .. }
-                | Request::DeleteScopedConfig { .. }
-                | Request::CleanupSessions { .. } => {
-                    Err("member role cannot perform admin operation".to_string())
-                }
-                _ => Ok(()),
+            if is_admin_only(request) {
+                Err("insufficient permissions".to_string())
+            } else {
+                Ok(())
             }
         }
     }
@@ -200,7 +214,7 @@ mod tests {
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
-            .contains("viewer role cannot perform write operation"));
+            .contains("insufficient permissions"));
     }
 
     #[test]
@@ -279,7 +293,7 @@ mod tests {
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
-            .contains("member role cannot perform admin operation"));
+            .contains("insufficient permissions"));
     }
 
     #[test]

@@ -258,13 +258,20 @@ pub async fn run_server(
 
                         // Route: read-only requests use the per-connection read-only SQLite
                         // connection (no mutex, no contention). Write requests are sent to
-                        // the writer actor via mpsc channel.
+                        // the writer actor via mpsc channel with audit context.
                         let response = if is_read_only(&request) {
                             handle_request(&mut reader_state, request)
                         } else {
-                            // Send write request to writer actor
+                            // Send write request to writer actor with local audit context
                             let (reply_tx, reply_rx) = oneshot::channel();
-                            match write_tx.send(WriteCommand::Raw { request, reply: reply_tx }).await {
+                            let audit = crate::server::writer::AuditContext {
+                                user_id: "local".to_string(),
+                                email: String::new(),
+                                role: "local".to_string(),
+                                source: "socket".to_string(),
+                                source_ip: String::new(),
+                            };
+                            match write_tx.send(WriteCommand::Audited { request, reply: reply_tx, audit }).await {
                                 Ok(()) => {
                                     match reply_rx.await {
                                         Ok(resp) => resp,
