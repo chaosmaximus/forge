@@ -124,6 +124,140 @@ pub async fn http_send(
         .map_err(|e| format!("failed to parse response: {e}"))
 }
 
+/// Subscribe to daemon events via streaming transport.
+/// For Unix socket: sends Subscribe request, reads NDJSON lines from stream.
+/// For HTTP: connects to GET /api/subscribe SSE endpoint.
+pub async fn subscribe_stream(
+    events: Option<Vec<String>>,
+    session_id: Option<String>,
+    team_id: Option<String>,
+) -> Result<(), String> {
+    let transport = Transport::global();
+
+    match transport {
+        Transport::Unix => {
+            unix_subscribe(events, session_id, team_id).await
+        }
+        Transport::Http { endpoint, token } => {
+            http_subscribe(endpoint, token.as_deref(), events, session_id, team_id).await
+        }
+    }
+}
+
+async fn unix_subscribe(
+    events: Option<Vec<String>>,
+    session_id: Option<String>,
+    team_id: Option<String>,
+) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let stream = crate::client::connect().await
+        .map_err(|e| format!("connect failed: {e}"))?;
+
+    let req = Request::Subscribe { events, session_id, team_id };
+    let json = serde_json::to_string(&req).map_err(|e| format!("serialize: {e}"))?;
+
+    let (read_half, mut write_half) = tokio::io::split(stream);
+
+    write_half.write_all(json.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
+    write_half.write_all(b"\n").await.map_err(|e| format!("write newline: {e}"))?;
+
+    let reader = BufReader::new(read_half);
+    let mut lines = reader.lines();
+
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                match line {
+                    Ok(Some(line)) => {
+                        println!("{}", line);
+                    }
+                    Ok(None) => break, // EOF
+                    Err(e) => {
+                        eprintln!("read error: {}", e);
+                        break;
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nDisconnecting...");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn http_subscribe(
+    endpoint: &str,
+    token: Option<&str>,
+    events: Option<Vec<String>>,
+    session_id: Option<String>,
+    team_id: Option<String>,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+
+    let mut url = format!("{}/api/subscribe", endpoint.trim_end_matches('/'));
+    let mut params = Vec::new();
+    if let Some(ref evts) = events {
+        params.push(format!("events={}", evts.join(",")));
+    }
+    if let Some(ref sid) = session_id {
+        params.push(format!("session_id={}", sid));
+    }
+    if let Some(ref tid) = team_id {
+        params.push(format!("team_id={}", tid));
+    }
+    if let Some(t) = token {
+        params.push(format!("token={}", t));
+    }
+    if !params.is_empty() {
+        url = format!("{}?{}", url, params.join("&"));
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client.get(&url)
+        .header("Accept", "text/event-stream")
+        .send().await
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default()));
+    }
+
+    let mut stream = resp.bytes_stream();
+
+    loop {
+        tokio::select! {
+            chunk = stream.next() => {
+                match chunk {
+                    Some(Ok(bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        // SSE format: "data: {...}\n\n"
+                        for line in text.lines() {
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                println!("{}", data);
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        eprintln!("stream error: {}", e);
+                        break;
+                    }
+                    None => break, // Stream ended
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nDisconnecting...");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
