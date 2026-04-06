@@ -847,6 +847,20 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::SessionHeartbeat { session_id } => {
+            match crate::sessions::update_heartbeat(&state.conn, &session_id) {
+                Ok(true) => Response::Ok {
+                    data: ResponseData::Heartbeat { session_id, status: "ok".into() },
+                },
+                Ok(false) => Response::Error {
+                    message: format!("session not found or not active: {}", session_id),
+                },
+                Err(e) => Response::Error {
+                    message: format!("heartbeat failed: {e}"),
+                },
+            }
+        }
+
         Request::Sessions { active_only } => {
             match crate::sessions::list_sessions(&state.conn, active_only.unwrap_or(true)) {
                 Ok(sessions) => {
@@ -1265,21 +1279,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::SessionHeartbeat { session_id } => {
-            // Stub: heartbeat handler will be implemented in a later wave.
-            // For now, just acknowledge the heartbeat.
-            Response::Ok {
-                data: ResponseData::Heartbeat {
-                    session_id,
-                    status: "ok".to_string(),
-                },
-            }
-        }
+        // SessionHeartbeat handled earlier in the match (near EndSession)
 
-        Request::CompileContext { agent, project, static_only, excluded_layers, session_id: _ } => {
+        Request::CompileContext { agent, project, static_only, excluded_layers, session_id } => {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
             let excluded = excluded_layers.unwrap_or_default();
-            let static_prefix = crate::recall::compile_static_prefix(&state.conn, agent_name);
+            let sid = session_id.as_deref();
+            let static_prefix = crate::recall::compile_static_prefix(&state.conn, agent_name, sid);
 
             if static_only.unwrap_or(false) {
                 let chars = static_prefix.len();
@@ -1303,7 +1309,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 let config = crate::config::load_config();
                 let ctx_config = config.context.validated();
                 let dynamic_suffix = crate::recall::compile_dynamic_suffix(
-                    &state.conn, agent_name, project.as_deref(), &ctx_config, &excluded,
+                    &state.conn, agent_name, project.as_deref(), &ctx_config, &excluded, sid,
                 );
                 let full = format!(
                     "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",

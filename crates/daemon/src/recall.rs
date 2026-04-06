@@ -421,7 +421,7 @@ fn xml_escape(s: &str) -> String {
 /// Generated once at session-start, cached by the hook.
 /// DETERMINISTIC: same input = same output, every time.
 /// All XML sections always present (masking, not removal) for KV-cache stability.
-pub fn compile_static_prefix(conn: &Connection, agent: &str) -> String {
+pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<&str>) -> String {
     let mut xml = String::from("<forge-static>\n");
 
     // Platform (never changes within a session)
@@ -462,6 +462,24 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str) -> String {
                     f.strength,
                     xml_escape(&f.description)
                 ));
+            }
+            // Role context from agent template (if session has template_id)
+            if let Some(sid) = session_id {
+                let template_ctx: Option<String> = conn.query_row(
+                    "SELECT at.system_context FROM session s \
+                     JOIN agent_template at ON s.template_id = at.id \
+                     WHERE s.id = ?1",
+                    rusqlite::params![sid],
+                    |row| row.get(0),
+                ).ok().flatten();
+                if let Some(ref ctx) = template_ctx {
+                    if !ctx.is_empty() {
+                        xml.push_str(&format!(
+                            "  <role-context>{}</role-context>\n",
+                            xml_escape(ctx)
+                        ));
+                    }
+                }
             }
             xml.push_str("</identity>\n");
         }
@@ -668,6 +686,7 @@ pub fn compile_dynamic_suffix(
     project: Option<&str>,
     ctx_config: &crate::config::ContextConfig,
     excluded_layers: &[String],
+    session_id: Option<&str>,
 ) -> String {
     let budget = ctx_config.budget_chars;
     let decisions_limit = ctx_config.decisions_limit;
@@ -1351,6 +1370,75 @@ pub fn compile_dynamic_suffix(
         }
     }
 
+    // Pending messages — budget-exempt (agent MUST see inbox)
+    if !excluded_layers.iter().any(|l| l == "pending_messages") {
+        if let Some(sid) = session_id {
+            let messages = crate::sessions::list_messages(conn, sid, Some("pending"), 10)
+                .unwrap_or_default();
+            if messages.is_empty() {
+                xml.push_str("<pending-messages/>\n");
+            } else {
+                xml.push_str(&format!("<pending-messages count=\"{}\">\n", messages.len()));
+                for msg in &messages {
+                    let topic = if msg.topic.is_empty() { "general" } else { &msg.topic };
+                    let kind = &msg.kind;
+                    let from = &msg.from_session;
+                    let text_preview: String = serde_json::from_str::<serde_json::Value>(&msg.parts)
+                        .ok()
+                        .and_then(|v| v.as_str().map(|s| {
+                            if s.len() > 200 { format!("{}...", &s[..200]) } else { s.to_string() }
+                        }))
+                        .unwrap_or_default();
+                    xml.push_str(&format!(
+                        "  <message from=\"{}\" topic=\"{}\" kind=\"{}\">{}</message>\n",
+                        xml_escape(from), xml_escape(topic), xml_escape(kind), xml_escape(&text_preview)
+                    ));
+                }
+                xml.push_str("</pending-messages>\n");
+            }
+        } else {
+            xml.push_str("<pending-messages/>\n");
+        }
+    } else {
+        xml.push_str("<pending-messages/>\n");
+    }
+
+    // Meeting context — budget-aware
+    if !excluded_layers.iter().any(|l| l == "meeting_context") {
+        if let Some(sid) = session_id {
+            let meetings = crate::teams::get_active_meetings_for_session(conn, sid)
+                .unwrap_or_default();
+            if meetings.is_empty() {
+                xml.push_str("<meeting-context/>\n");
+            } else {
+                let mut meeting_xml = String::from("<meeting-context>\n");
+                for m in &meetings {
+                    meeting_xml.push_str(&format!(
+                        "  <active-meeting id=\"{}\" topic=\"{}\" status=\"{}\" responded=\"{}/{}\"/>\n",
+                        m["id"].as_str().unwrap_or(""),
+                        xml_escape(m["topic"].as_str().unwrap_or("")),
+                        m["status"].as_str().unwrap_or(""),
+                        m["responded"].as_i64().unwrap_or(0),
+                        m["total"].as_i64().unwrap_or(0),
+                    ));
+                }
+                meeting_xml.push_str("</meeting-context>\n");
+                if used + meeting_xml.len() < budget {
+                    xml.push_str(&meeting_xml);
+                    used += meeting_xml.len();
+                } else {
+                    xml.push_str("<meeting-context/>\n");
+                }
+            }
+        } else {
+            xml.push_str("<meeting-context/>\n");
+        }
+    } else {
+        xml.push_str("<meeting-context/>\n");
+    }
+
+    let _ = used; // suppress unused warning when meeting_context is last section
+
     xml.push_str("</forge-dynamic>");
     xml
 }
@@ -1371,8 +1459,8 @@ pub fn compile_context(
 ) -> String {
     let config = crate::config::load_config();
     let ctx_config = config.context.validated();
-    let prefix = compile_static_prefix(conn, agent);
-    let suffix = compile_dynamic_suffix(conn, agent, project, &ctx_config, &[]);
+    let prefix = compile_static_prefix(conn, agent, None);
+    let suffix = compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None);
     format!(
         "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
         prefix, suffix
@@ -1850,8 +1938,8 @@ mod tests {
         crate::db::manas::store_platform(&conn, &pe1).unwrap();
         crate::db::manas::store_platform(&conn, &pe2).unwrap();
 
-        let prefix1 = compile_static_prefix(&conn, "claude-code");
-        let prefix2 = compile_static_prefix(&conn, "claude-code");
+        let prefix1 = compile_static_prefix(&conn, "claude-code", None);
+        let prefix2 = compile_static_prefix(&conn, "claude-code", None);
         assert_eq!(
             prefix1, prefix2,
             "static prefix should be identical across calls"
@@ -1862,7 +1950,7 @@ mod tests {
     fn test_compile_static_prefix_all_sections_present_empty_db() {
         let conn = setup();
 
-        let prefix = compile_static_prefix(&conn, "claude-code");
+        let prefix = compile_static_prefix(&conn, "claude-code", None);
         assert!(prefix.contains("<forge-static>"), "should contain opening tag");
         assert!(prefix.contains("</forge-static>"), "should contain closing tag");
         assert!(prefix.contains("<platform"), "platform always present");
@@ -1888,7 +1976,7 @@ mod tests {
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
-        let prefix = compile_static_prefix(&conn, "claude-code");
+        let prefix = compile_static_prefix(&conn, "claude-code", None);
         assert!(
             prefix.contains("Senior Rust engineer"),
             "should contain identity facet"
@@ -1901,7 +1989,7 @@ mod tests {
     fn test_compile_dynamic_suffix_all_sections_present_empty_db() {
         let conn = setup();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
         assert!(suffix.contains("<forge-dynamic>"), "should contain opening tag");
         assert!(suffix.contains("</forge-dynamic>"), "should contain closing tag");
         assert!(suffix.contains("<decisions"), "decisions always present");
@@ -1915,7 +2003,7 @@ mod tests {
     fn test_compile_dynamic_suffix_changes_with_new_data() {
         let conn = setup();
 
-        let suffix1 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix1 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
         assert!(suffix1.contains("<decisions/>"), "no decisions yet");
 
         // Store a decision
@@ -1923,7 +2011,7 @@ mod tests {
             .with_confidence(0.9);
         ops::remember(&conn, &mem).unwrap();
 
-        let suffix2 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix2 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
         assert_ne!(suffix1, suffix2, "suffix should change when data is added");
         assert!(suffix2.contains("JWT"), "should contain the new decision");
     }
@@ -2512,7 +2600,7 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
 
         // Recent decision (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
         let micro_pos = suffix.find("Switch to microservices").expect("recent decision should be present");
@@ -2547,7 +2635,7 @@ mod tests {
             &forge_core::time::now_offset(-3 * 86400), // 3 days ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
 
         // 3-day-old (0.9*1.2=1.08) should outrank 30-day-old (1.0*1.0=1.0)
         let mid_pos = suffix.find("Recent week pattern").expect("mid-age decision should be present");
@@ -2581,7 +2669,7 @@ mod tests {
             &forge_core::time::now_offset(-30 * 86400),
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
 
         let high_pos = suffix.find("High confidence old").expect("high confidence should be present");
         let low_pos = suffix.find("Low confidence old").expect("low confidence should be present");
@@ -2615,7 +2703,7 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
 
         // Recent lesson (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
         let fresh_pos = suffix.find("Fresh testing lesson").expect("recent lesson should be present");
@@ -2701,7 +2789,7 @@ mod tests {
         // Only one session — active-sessions should NOT appear
         crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions with only 1 session"
@@ -2716,7 +2804,7 @@ mod tests {
         crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
         crate::sessions::register_session(&conn, "s2", "cline", Some("dashboard"), None, None, None).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
         assert!(
             suffix.contains("active-sessions"),
             "should show active-sessions with 2 sessions"
@@ -2749,7 +2837,7 @@ mod tests {
         // End one session — should hide active-sessions again
         crate::sessions::end_session(&conn, "s2").unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions when only 1 remains active"
@@ -2784,7 +2872,7 @@ mod tests {
         crate::db::manas::store_entity(&conn, &entity1).unwrap();
         crate::db::manas::store_entity(&conn, &entity2).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
         assert!(suffix.contains("<entities"), "should contain entities section");
         assert!(suffix.contains("authentication"), "should contain authentication entity");
         assert!(suffix.contains("React Router"), "should contain React Router entity");
@@ -2811,7 +2899,7 @@ mod tests {
 
         let excluded = vec!["entities".to_string()];
         let ctx_config = crate::config::ContextConfig::default();
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &excluded);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &excluded, None);
         assert!(suffix.contains("<entities/>"), "should contain empty entities tag when excluded");
         assert!(!suffix.contains("authentication"), "should NOT contain entity data when excluded");
     }
@@ -2845,7 +2933,7 @@ mod tests {
         ops::store_symbol(&conn, &sym).unwrap();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None);
 
         assert!(suffix.contains("<code-structure"), "should contain code-structure tag");
         assert!(suffix.contains("files=\"1\""), "should show file count");
@@ -2858,7 +2946,7 @@ mod tests {
         let conn = setup();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[]);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None);
 
         assert!(suffix.contains("<code-structure/>"), "should contain self-closing code-structure tag when no data");
     }

@@ -12,6 +12,7 @@
 pub mod consolidator;
 pub mod diagnostics;
 pub mod disposition;
+pub mod reaper;
 pub mod embedder;
 pub mod extractor;
 pub mod indexer;
@@ -100,6 +101,7 @@ pub fn spawn_workers(
     let extractor_db_path = db_path.clone();
     let embedder_db_path = db_path.clone();
     let disposition_db_path = db_path.clone();
+    let reaper_db_path = db_path.clone();
     let diagnostics_db_path = db_path;
 
     let watcher_handle = tokio::spawn(async move {
@@ -161,7 +163,19 @@ pub fn spawn_workers(
         diagnostics::run_diagnostics_worker(diagnostics_state, diag_rx, diagnostics_shutdown, diagnostics_db_path, diagnostics_debounce).await;
     });
 
-    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics");
+    // Session heartbeat reaper
+    let reaper_shutdown = shutdown_tx.subscribe();
+    let reaper_db = reaper_db_path;
+    let reaper_config = config.clone();
+    let reaper_events = {
+        let locked = state.blocking_lock();
+        locked.events.clone()
+    };
+    let reaper_handle = tokio::spawn(async move {
+        reaper::run_session_reaper(reaper_db, reaper_config, reaper_events, reaper_shutdown).await;
+    });
+
+    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics, reaper");
 
     vec![
         watcher_handle,
@@ -172,5 +186,6 @@ pub fn spawn_workers(
         perception_handle,
         disposition_handle,
         diagnostics_handle,
+        reaper_handle,
     ]
 }

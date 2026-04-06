@@ -695,6 +695,32 @@ pub fn decide_meeting(
 }
 
 /// List meetings, optionally filtered by team_id and status.
+/// Get active meetings where this session is a participant.
+/// Returns meetings with status open, collecting, or synthesizing.
+pub fn get_active_meetings_for_session(
+    conn: &Connection,
+    session_id: &str,
+) -> rusqlite::Result<Vec<Value>> {
+    let sql = "SELECT m.id, m.topic, m.status,
+        (SELECT COUNT(*) FROM meeting_participant WHERE meeting_id = m.id AND response IS NOT NULL) as responded,
+        (SELECT COUNT(*) FROM meeting_participant WHERE meeting_id = m.id) as total
+        FROM meeting m
+        JOIN meeting_participant mp ON mp.meeting_id = m.id
+        WHERE mp.session_id = ?1 AND m.status IN ('open', 'collecting', 'synthesizing')
+        ORDER BY m.created_at DESC LIMIT 5";
+    let mut stmt = conn.prepare(sql)?;
+    let rows: Vec<Value> = stmt.query_map(params![session_id], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "topic": row.get::<_, String>(1)?,
+            "status": row.get::<_, String>(2)?,
+            "responded": row.get::<_, i64>(3)?,
+            "total": row.get::<_, i64>(4)?,
+        }))
+    })?.filter_map(|r| r.ok()).collect();
+    Ok(rows)
+}
+
 pub fn list_meetings(
     conn: &Connection,
     team_id: Option<&str>,

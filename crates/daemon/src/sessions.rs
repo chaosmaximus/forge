@@ -227,6 +227,16 @@ pub fn cleanup_stale_sessions(conn: &Connection) -> rusqlite::Result<usize> {
     )
 }
 
+/// Update the heartbeat timestamp for an active session.
+/// Returns true if updated (session exists and is active), false otherwise.
+pub fn update_heartbeat(conn: &Connection, session_id: &str) -> rusqlite::Result<bool> {
+    let rows = conn.execute(
+        "UPDATE session SET last_heartbeat_at = datetime('now') WHERE id = ?1 AND status = 'active'",
+        params![session_id],
+    )?;
+    Ok(rows > 0)
+}
+
 /// Backfill project on memories that have session_id but no project.
 /// Derives project from the linked session's project field.
 pub fn backfill_project(conn: &Connection) -> rusqlite::Result<usize> {

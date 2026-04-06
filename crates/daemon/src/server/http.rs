@@ -15,13 +15,15 @@ use crate::events::EventSender;
 use crate::server::handler::{handle_request, DaemonState};
 use crate::server::rbac::{check_permission, resolve_role};
 use crate::server::writer::{is_read_only, AuditContext, WriteCommand};
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::Method;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use forge_core::protocol::{Request, Response};
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -206,6 +208,73 @@ async fn api_handler(
     Json(response).into_response()
 }
 
+/// Query parameters for the SSE subscribe endpoint.
+#[derive(serde::Deserialize)]
+struct SubscribeParams {
+    /// Comma-separated event types to filter
+    events: Option<String>,
+    /// Only include events referencing this session_id
+    session_id: Option<String>,
+    /// Only include events referencing this team_id
+    team_id: Option<String>,
+    /// JWT token for EventSource compatibility (browsers can't set headers)
+    #[allow(dead_code)]
+    token: Option<String>,
+}
+
+/// GET /api/subscribe — SSE endpoint for real-time event streaming.
+///
+/// Streams events as text/event-stream with NDJSON data fields.
+/// Supports filtering by event type, session_id, and team_id via query params.
+async fn subscribe_handler(
+    State(state): State<AppState>,
+    Query(params): Query<SubscribeParams>,
+) -> Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.events.subscribe();
+    let filter_events: Option<Vec<String>> = params
+        .events
+        .map(|e| e.split(',').map(|s| s.trim().to_string()).collect());
+    let filter_session = params.session_id;
+    let filter_team = params.team_id;
+
+    let stream = async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    // Apply event type filter
+                    if let Some(ref types) = filter_events {
+                        if !types.is_empty() && !types.contains(&event.event) {
+                            continue;
+                        }
+                    }
+                    // Apply session_id filter
+                    if let Some(ref sid) = filter_session {
+                        if !event.data.to_string().contains(sid.as_str()) {
+                            continue;
+                        }
+                    }
+                    // Apply team_id filter
+                    if let Some(ref tid) = filter_team {
+                        if !event.data.to_string().contains(tid.as_str()) {
+                            continue;
+                        }
+                    }
+                    let data = serde_json::to_string(&event).unwrap_or_default();
+                    yield Ok(Event::default().data(data));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("ping"),
+    )
+}
+
 /// Build the CORS layer from config.
 /// When auth is disabled and origins contain "*", log a security warning.
 fn build_cors_layer(config: &ForgeConfig) -> CorsLayer {
@@ -255,6 +324,9 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
     if config.metrics.enabled && state.metrics.is_some() {
         health_routes = health_routes.route("/metrics", get(metrics_handler));
     }
+
+    // SSE subscribe endpoint — alongside health probes (EventSource can't set auth headers)
+    health_routes = health_routes.route("/api/subscribe", get(subscribe_handler));
 
     let health_routes = health_routes.with_state(state.clone());
 
