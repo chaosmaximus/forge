@@ -385,11 +385,20 @@ async fn process_file(
                             continue; // Don't also store as memory
                         }
                     } else {
-                        // Procedural skills: existing quality gate (numbered steps required)
+                        // Procedural skills: quality gate (numbered steps OR paragraph-style procedures)
                         let has_steps = em.content.contains("1)")
                             || em.content.contains("1.")
                             || em.content.contains("- ")
-                            || em.content.lines().count() >= 3;
+                            || em.content.lines().count() >= 3
+                            // Paragraph-style procedures: multi-sentence with procedural verbs
+                            || (em.content.matches('.').count() >= 2 && {
+                                let lower = em.content.to_lowercase();
+                                lower.contains("first") || lower.contains("then")
+                                    || lower.contains("next") || lower.contains("after")
+                                    || lower.contains("finally") || lower.contains("before")
+                                    || lower.contains("ensure") || lower.contains("verify")
+                                    || lower.contains("run ") || lower.contains("execute")
+                            });
                         let long_enough = em.content.len() >= 50;
                         let title_lower = em.title.to_lowercase();
                         let not_status = !title_lower.contains("complete")
@@ -747,5 +756,22 @@ mod tests {
         assert!(!long_enough, "short content should fail length check");
         // Even though has_steps might be false, the OR logic means any failure gates it
         assert!(!has_steps || !long_enough, "should be gated as junk");
+    }
+
+    #[test]
+    fn test_skill_quality_gate_accepts_paragraph_style() {
+        // Paragraph-style procedure should pass the quality gate
+        let content = "First configure the environment variables. Then run cargo build --release to compile. After that verify with cargo test. Finally deploy using the install script.";
+        let has_steps = content.contains("1)")
+            || content.contains("1.")
+            || content.contains("- ")
+            || content.lines().count() >= 3
+            || (content.matches('.').count() >= 2 && {
+                let lower = content.to_lowercase();
+                lower.contains("first") || lower.contains("then")
+                    || lower.contains("next") || lower.contains("after")
+                    || lower.contains("finally")
+            });
+        assert!(has_steps, "paragraph-style procedure should pass quality gate");
     }
 }
