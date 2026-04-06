@@ -61,6 +61,8 @@ spec:
               containerPort: {{ .Values.http.port }}
               protocol: TCP
           env:
+            - name: HOME
+              value: /var/lib/forge
             - name: FORGE_DB
               value: /var/lib/forge/forge.db
             - name: FORGE_SOCKET
@@ -110,9 +112,9 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /startupz
+              path: /healthz
               port: http
-            periodSeconds: 10
+            periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 30
           resources:
