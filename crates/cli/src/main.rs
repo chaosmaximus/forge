@@ -256,6 +256,16 @@ enum Commands {
         /// Max messages to return
         #[arg(long)]
         limit: Option<usize>,
+        /// Show full message text instead of truncated preview
+        #[arg(long)]
+        full: bool,
+    },
+    /// Read a single FISP message by ID
+    #[command(name = "message-read")]
+    MessageRead {
+        /// Message ID to read
+        #[arg(long)]
+        id: String,
     },
     /// Acknowledge (mark as read) messages by ID
     #[command(name = "ack")]
@@ -627,6 +637,7 @@ enum ConfigAction {
         ceiling: Option<f64>,
     },
     /// Get the effective (resolved) config for a session context
+    #[command(name = "get-effective", alias = "get")]
     GetEffective {
         #[arg(long)]
         session: Option<String>,
@@ -989,8 +1000,11 @@ async fn main() {
         Commands::Send { to, kind, topic, text, project, timeout } => {
             commands::system::send_message(to, kind, topic, text, project, timeout).await;
         }
-        Commands::Messages { session, status, limit } => {
-            commands::system::list_messages(session, status, limit).await;
+        Commands::Messages { session, status, limit, full } => {
+            commands::system::list_messages(session, status, limit, full).await;
+        }
+        Commands::MessageRead { id } => {
+            commands::system::message_read(id).await;
         }
         Commands::Ack { ids } => {
             commands::system::ack_messages(ids).await;
@@ -2005,5 +2019,119 @@ mod tests {
             "task-completion-check with --description should parse: {:?}",
             cli.err()
         );
+    }
+
+    // ── Messages --full flag tests ──
+
+    #[test]
+    fn test_messages_with_full_flag_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "messages",
+            "--session", "s1",
+            "--full",
+        ]);
+        assert!(cli.is_ok(), "messages --full should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Messages { session, status, limit, full } => {
+                assert_eq!(session, "s1");
+                assert!(status.is_none());
+                assert!(limit.is_none());
+                assert!(full);
+            }
+            other => panic!("expected Messages, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_messages_without_full_flag_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "messages",
+            "--session", "s1",
+        ]);
+        assert!(cli.is_ok(), "messages without --full should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Messages { session, full, .. } => {
+                assert_eq!(session, "s1");
+                assert!(!full);
+            }
+            other => panic!("expected Messages, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_messages_full_with_status_and_limit_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "messages",
+            "--session", "s1",
+            "--status", "pending",
+            "--limit", "5",
+            "--full",
+        ]);
+        assert!(cli.is_ok(), "messages --full with status/limit should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Messages { session, status, limit, full } => {
+                assert_eq!(session, "s1");
+                assert_eq!(status.as_deref(), Some("pending"));
+                assert_eq!(limit, Some(5));
+                assert!(full);
+            }
+            other => panic!("expected Messages, got {:?}", other),
+        }
+    }
+
+    // ── message-read tests ──
+
+    #[test]
+    fn test_message_read_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "message-read",
+            "--id", "msg-01ABCDEF",
+        ]);
+        assert!(cli.is_ok(), "message-read should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::MessageRead { id } => {
+                assert_eq!(id, "msg-01ABCDEF");
+            }
+            other => panic!("expected MessageRead, got {:?}", other),
+        }
+    }
+
+    // ── Config alias test ──
+
+    #[test]
+    fn test_config_get_alias_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "config", "get",
+            "--agent", "claude-code",
+        ]);
+        assert!(cli.is_ok(), "config get (alias for get-effective) should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Config { action } => match action {
+                ConfigAction::GetEffective { agent, .. } => {
+                    assert_eq!(agent.as_deref(), Some("claude-code"));
+                }
+                other => panic!("expected GetEffective, got {:?}", other),
+            },
+            other => panic!("expected Config, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_config_get_effective_still_works_parse() {
+        // Ensure the original name still works alongside the alias
+        let cli = Cli::try_parse_from([
+            "forge-next", "config", "get-effective",
+            "--agent", "claude-code",
+        ]);
+        assert!(cli.is_ok(), "config get-effective should still parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Config { action } => match action {
+                ConfigAction::GetEffective { agent, .. } => {
+                    assert_eq!(agent.as_deref(), Some("claude-code"));
+                }
+                other => panic!("expected GetEffective, got {:?}", other),
+            },
+            other => panic!("expected Config, got {:?}", other),
+        }
     }
 }

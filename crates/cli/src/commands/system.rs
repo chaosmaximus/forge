@@ -612,7 +612,7 @@ pub async fn send_message(to: String, kind: String, topic: String, text: String,
     }
 }
 
-pub async fn list_messages(session: String, status: Option<String>, limit: Option<usize>) {
+pub async fn list_messages(session: String, status: Option<String>, limit: Option<usize>, full: bool) {
     let req = Request::SessionMessages { session_id: session, status, limit };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::SessionMessageList { messages, count } }) => {
@@ -622,14 +622,65 @@ pub async fn list_messages(session: String, status: Option<String>, limit: Optio
             }
             println!("{count} message(s):\n");
             for m in &messages {
-                let parts_preview: String = m.parts.iter()
+                let parts_text: String = m.parts.iter()
                     .filter_map(|p| p.text.as_deref())
                     .collect::<Vec<_>>()
                     .join(" ");
-                let preview = if parts_preview.len() > 80 { &parts_preview[..80] } else { &parts_preview };
-                println!("  [{status}] {id} from {from} — {topic}: {preview}",
-                    status = m.status, id = &m.id[..8.min(m.id.len())],
-                    from = m.from_session, topic = m.topic, preview = preview);
+                if full {
+                    println!("--- [{status}] {id} from {from} --- topic: {topic} ---",
+                        status = m.status, id = &m.id,
+                        from = m.from_session, topic = m.topic);
+                    println!("{parts_text}");
+                    println!();
+                } else {
+                    let preview = if parts_text.len() > 80 { &parts_text[..80] } else { &parts_text };
+                    println!("  [{status}] {id} from {from} — {topic}: {preview}",
+                        status = m.status, id = &m.id[..8.min(m.id.len())],
+                        from = m.from_session, topic = m.topic, preview = preview);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+/// Read a single FISP message by ID.
+pub async fn message_read(id: String) {
+    // No single-message-by-ID endpoint exists, so fetch a batch and filter client-side.
+    let req = Request::SessionMessages { session_id: String::new(), status: None, limit: Some(100) };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::SessionMessageList { messages, .. } }) => {
+            match messages.iter().find(|m| m.id == id) {
+                Some(m) => {
+                    println!("Message: {}", m.id);
+                    println!("From:    {}", m.from_session);
+                    println!("To:      {}", m.to_session);
+                    println!("Kind:    {}", m.kind);
+                    println!("Topic:   {}", m.topic);
+                    println!("Status:  {}", m.status);
+                    if let Some(ref reply) = m.in_reply_to {
+                        println!("Reply-to:{}", reply);
+                    }
+                    if let Some(ref proj) = m.project {
+                        println!("Project: {}", proj);
+                    }
+                    println!("Created: {}", m.created_at);
+                    if let Some(ref delivered) = m.delivered_at {
+                        println!("Delivered:{}", delivered);
+                    }
+                    println!("---");
+                    let full_text: String = m.parts.iter()
+                        .filter_map(|p| p.text.as_deref())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    println!("{full_text}");
+                }
+                None => {
+                    eprintln!("message not found: {id}");
+                    std::process::exit(1);
+                }
             }
         }
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
