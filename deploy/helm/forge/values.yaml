@@ -1,0 +1,128 @@
+# =============================================================================
+# Forge Helm Chart — Default Values
+# =============================================================================
+
+# -- Container image configuration
+image:
+  repository: ghcr.io/chaosmaximus/forge-daemon
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+
+# -- Override the chart name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+# -- Number of replicas (StatefulSet). Only 1 is supported for SQLite.
+replicaCount: 1
+
+# -- Pod-level service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# -- Pod annotations (e.g. for Prometheus scraping)
+podAnnotations: {}
+
+# -- Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# -- Container security context
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# ---------------------------------------------------------------------------
+# Persistence — SQLite data volume
+# ---------------------------------------------------------------------------
+persistence:
+  enabled: true
+  size: 10Gi
+  # -- Storage class name. Empty string uses the cluster default.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+
+# ---------------------------------------------------------------------------
+# HTTP transport
+# ---------------------------------------------------------------------------
+http:
+  port: 8420
+  bind: "0.0.0.0"
+
+# ---------------------------------------------------------------------------
+# Service configuration
+# ---------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8420
+
+# ---------------------------------------------------------------------------
+# Authentication (OIDC / JWT)
+# ---------------------------------------------------------------------------
+auth:
+  enabled: false
+  issuerUrl: ""
+  audience: ""
+  adminEmails: []
+
+# ---------------------------------------------------------------------------
+# Metrics (Prometheus)
+# ---------------------------------------------------------------------------
+metrics:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry
+# ---------------------------------------------------------------------------
+otlp:
+  enabled: false
+  endpoint: ""
+
+# ---------------------------------------------------------------------------
+# Backup — Litestream continuous SQLite replication
+# ---------------------------------------------------------------------------
+backup:
+  enabled: false
+  litestream:
+    image: litestream/litestream:0.3
+  s3:
+    bucket: ""
+    region: "us-east-1"
+    path: "forge/backup"
+    # -- Existing secret containing AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+    existingSecret: ""
+
+# ---------------------------------------------------------------------------
+# Resource requests and limits
+# ---------------------------------------------------------------------------
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "1000m"
+
+# ---------------------------------------------------------------------------
+# Node scheduling
+# ---------------------------------------------------------------------------
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ---------------------------------------------------------------------------
+# Extra environment variables (list of {name, value} or {name, valueFrom})
+# ---------------------------------------------------------------------------
+extraEnv: []

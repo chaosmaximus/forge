@@ -1,0 +1,16 @@
+apiVersion: v2
+name: forge
+description: Forge — Cognitive Infrastructure for AI Agents
+version: 0.1.0
+appVersion: "0.4.0"
+type: application
+keywords:
+  - ai
+  - agents
+  - memory
+  - cognitive
+  - infrastructure
+home: https://github.com/chaosmaximus/forge
+maintainers:
+  - name: Forge Team
+    url: https://github.com/chaosmaximus/forge
