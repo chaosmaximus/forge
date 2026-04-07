@@ -717,14 +717,39 @@ pub async fn ack_messages(ids: Vec<String>) {
         eprintln!("error: no message IDs provided");
         return;
     }
-    let req = Request::SessionAck { message_ids: ids, session_id: None };
+    // Try FISP messages first
+    let req = Request::SessionAck { message_ids: ids.clone(), session_id: None };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MessagesAcked { count } }) => {
+        Ok(Response::Ok { data: ResponseData::MessagesAcked { count } }) if count > 0 => {
             println!("Acknowledged {count} message(s).");
+            return;
         }
-        Ok(Response::Error { message }) => eprintln!("error: {message}"),
-        Ok(_) => eprintln!("unexpected response"),
-        Err(e) => eprintln!("error: {e}"),
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            return;
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return;
+        }
+        _ => {} // count == 0 or unexpected — fall through to try notifications
+    }
+
+    // Fallback: try as notification IDs (context injection shows notification IDs)
+    let mut notif_count = 0;
+    for id in &ids {
+        let req = Request::AckNotification { id: id.clone() };
+        match client::send(&req).await {
+            Ok(Response::Ok { data: ResponseData::NotificationAcked { .. } }) => {
+                notif_count += 1;
+            }
+            _ => {}
+        }
+    }
+    if notif_count > 0 {
+        println!("Acknowledged {notif_count} notification(s).");
+    } else {
+        println!("Acknowledged 0 message(s).");
     }
 }
 

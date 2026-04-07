@@ -578,7 +578,8 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
         let imports = extract_imports(&content, &file.language, &file.path);
         total_imports_found += imports.len();
         for (from_path, imported_module) in &imports {
-            match ops::store_edge(conn, from_path, imported_module, "imports", "{}") {
+            let from_id = format!("file:{from_path}");
+            match ops::store_edge(conn, &from_id, imported_module, "imports", "{}") {
                 Ok(_) => import_edges_stored += 1,
                 Err(e) => eprintln!("[indexer] store_edge failed: {e}"),
             }

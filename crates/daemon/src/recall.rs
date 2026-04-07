@@ -10,14 +10,32 @@ use std::collections::{HashMap, HashSet};
 /// k=60 is the standard constant. Higher k gives more weight to lower-ranked items.
 fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String, f64)> {
     let mut scores: HashMap<String, f64> = HashMap::new();
+    let mut max_original: HashMap<String, f64> = HashMap::new();
 
     for list in lists {
-        for (rank, (id, _original_score)) in list.iter().enumerate() {
+        for (rank, (id, original_score)) in list.iter().enumerate() {
             *scores.entry(id.clone()).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+            let entry = max_original.entry(id.clone()).or_insert(0.0);
+            if *original_score > *entry {
+                *entry = *original_score;
+            }
         }
     }
 
-    let mut merged: Vec<(String, f64)> = scores.into_iter().collect();
+    // Blend RRF rank score with original relevance score for better discrimination.
+    // RRF alone flattens differences when k is high or there's only one signal.
+    // Formula: 0.4 * rrf_score + 0.6 * normalized_original
+    let max_rrf = scores.values().copied().fold(0.0f64, f64::max).max(1e-10);
+    let max_orig = max_original.values().copied().fold(0.0f64, f64::max).max(1e-10);
+
+    let mut merged: Vec<(String, f64)> = scores
+        .into_iter()
+        .map(|(id, rrf)| {
+            let orig = max_original.get(&id).copied().unwrap_or(0.0);
+            let blended = 0.4 * (rrf / max_rrf) + 0.6 * (orig / max_orig);
+            (id, blended)
+        })
+        .collect();
     merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     merged.truncate(limit);
     merged

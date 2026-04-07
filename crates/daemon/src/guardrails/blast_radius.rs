@@ -20,17 +20,54 @@ pub struct BlastRadius {
     pub calling_files: Vec<String>,
 }
 
+/// Generate all plausible edge-table ID formats for a given file path.
+/// The edge table may contain:
+///   - `file:relative/path` (canonical format used by decisions, clusters, calls)
+///   - bare absolute paths (legacy import edges stored by the indexer)
+///   - `file:absolute/path` (new import edge format after the indexer fix)
+///   - bare relative paths
+fn resolve_file_targets(file: &str) -> Vec<String> {
+    let mut targets = Vec::with_capacity(4);
+
+    // 1. Canonical: file:{relative_path}
+    targets.push(format!("file:{file}"));
+
+    // 2. Bare relative path
+    targets.push(file.to_string());
+
+    // 3. Try to compute the absolute path via project dir for matching legacy edges
+    if let Some(project_dir) = crate::workers::indexer::find_project_dir() {
+        let abs = if file.starts_with('/') {
+            file.to_string()
+        } else {
+            format!("{project_dir}/{file}")
+        };
+        // 4. file:{absolute_path}
+        targets.push(format!("file:{abs}"));
+        // 5. bare absolute path (legacy indexer format)
+        targets.push(abs);
+    } else if file.starts_with('/') {
+        // File is already absolute
+        targets.push(format!("file:{file}"));
+        // bare absolute already covered by #2
+    }
+
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
 /// Main entry point: analyse the blast radius of changing `file`.
 pub fn analyze_blast_radius(conn: &Connection, file: &str) -> BlastRadius {
-    let file_target = format!("file:{file}");
+    let targets = resolve_file_targets(file);
 
-    let decisions = find_decisions(conn, &file_target);
-    let importers = find_importers(conn, &file_target);
+    let decisions = find_decisions(conn, &targets);
+    let importers = find_importers(conn, &targets);
     let (callers, calling_files) = find_callers(conn, file);
-    let (cluster_name, cluster_files) = find_cluster(conn, file);
+    let (cluster_name, cluster_files) = find_cluster(conn, &targets);
 
     let decision_ids: Vec<String> = decisions.iter().map(|(id, _, _)| id.clone()).collect();
-    let files_affected = find_co_affected_files(conn, &decision_ids, &file_target);
+    let files_affected = find_co_affected_files(conn, &decision_ids, &targets);
 
     BlastRadius {
         decisions,
@@ -43,25 +80,32 @@ pub fn analyze_blast_radius(conn: &Connection, file: &str) -> BlastRadius {
     }
 }
 
-/// Find all decisions that affect the given file target.
+/// Find all decisions that affect the given file target (trying all path formats).
 /// Returns (id, title, confidence) triples.
-fn find_decisions(conn: &Connection, file_target: &str) -> Vec<(String, String, f64)> {
-    let sql = "
-        SELECT m.id, m.title, m.confidence
-        FROM edge e
-        JOIN memory m ON e.from_id = m.id
-        WHERE e.to_id = ?1
-          AND e.edge_type = 'affects'
-          AND m.memory_type = 'decision'
-          AND m.status = 'active'
-        ORDER BY m.confidence DESC
-        LIMIT 50
-    ";
-    let mut stmt = match conn.prepare(sql) {
+fn find_decisions(conn: &Connection, targets: &[String]) -> Vec<(String, String, f64)> {
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let placeholders: Vec<String> = (1..=targets.len()).map(|i| format!("?{i}")).collect();
+    let in_clause = placeholders.join(", ");
+    let sql = format!(
+        "SELECT DISTINCT m.id, m.title, m.confidence
+         FROM edge e
+         JOIN memory m ON e.from_id = m.id
+         WHERE e.to_id IN ({in_clause})
+           AND e.edge_type = 'affects'
+           AND m.memory_type = 'decision'
+           AND m.status = 'active'
+         ORDER BY m.confidence DESC
+         LIMIT 50"
+    );
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let result = match stmt.query_map([file_target], |row| {
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        targets.iter().map(|t| t as &dyn rusqlite::types::ToSql).collect();
+    let result = match stmt.query_map(params.as_slice(), |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -74,21 +118,28 @@ fn find_decisions(conn: &Connection, file_target: &str) -> Vec<(String, String, 
     result
 }
 
-/// Find files that import the given file target.
+/// Find files that import the given file target (trying all path formats).
 /// Returns from_id values stripped of the "file:" prefix.
-fn find_importers(conn: &Connection, file_target: &str) -> Vec<String> {
-    let sql = "
-        SELECT DISTINCT e.from_id
-        FROM edge e
-        WHERE e.to_id = ?1
-          AND e.edge_type = 'imports'
-        LIMIT 50
-    ";
-    let mut stmt = match conn.prepare(sql) {
+fn find_importers(conn: &Connection, targets: &[String]) -> Vec<String> {
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let placeholders: Vec<String> = (1..=targets.len()).map(|i| format!("?{i}")).collect();
+    let in_clause = placeholders.join(", ");
+    let sql = format!(
+        "SELECT DISTINCT e.from_id
+         FROM edge e
+         WHERE e.to_id IN ({in_clause})
+           AND e.edge_type = 'imports'
+         LIMIT 50"
+    );
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let result = match stmt.query_map([file_target], |row| row.get::<_, String>(0)) {
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        targets.iter().map(|t| t as &dyn rusqlite::types::ToSql).collect();
+    let result = match stmt.query_map(params.as_slice(), |row| row.get::<_, String>(0)) {
         Ok(rows) => rows
             .filter_map(|r| r.ok())
             .map(|s| s.strip_prefix("file:").unwrap_or(&s).to_string())
@@ -155,21 +206,27 @@ fn find_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
 
 /// Find the cluster this file belongs to, and all other files in that cluster.
 /// Returns (cluster_name, cluster_files) — cluster_files excludes the target file.
-fn find_cluster(conn: &Connection, file: &str) -> (Option<String>, Vec<String>) {
-    // Step 1: Find which cluster this file belongs to
-    let cluster_sql = "
-        SELECT to_id
-        FROM edge
-        WHERE edge_type = 'belongs_to_cluster'
-          AND from_id = ?1
-        LIMIT 1
-    ";
-    let file_id = format!("file:{file}");
+fn find_cluster(conn: &Connection, targets: &[String]) -> (Option<String>, Vec<String>) {
+    if targets.is_empty() {
+        return (None, Vec::new());
+    }
+    // Step 1: Find which cluster this file belongs to (trying all path formats)
+    let placeholders: Vec<String> = (1..=targets.len()).map(|i| format!("?{i}")).collect();
+    let in_clause = placeholders.join(", ");
+    let cluster_sql = format!(
+        "SELECT to_id
+         FROM edge
+         WHERE edge_type = 'belongs_to_cluster'
+           AND from_id IN ({in_clause})
+         LIMIT 1"
+    );
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        targets.iter().map(|t| t as &dyn rusqlite::types::ToSql).collect();
     let cluster_id: Option<String> = conn
-        .prepare(cluster_sql)
+        .prepare(&cluster_sql)
         .ok()
         .and_then(|mut stmt| {
-            stmt.query_map(rusqlite::params![file_id], |row| row.get::<_, String>(0))
+            stmt.query_map(params.as_slice(), |row| row.get::<_, String>(0))
                 .ok()
                 .and_then(|mut rows| rows.next().and_then(|r| r.ok()))
         });
@@ -179,23 +236,33 @@ fn find_cluster(conn: &Connection, file: &str) -> (Option<String>, Vec<String>) 
         None => return (None, Vec::new()),
     };
 
-    // Step 2: Find all other files in the same cluster
-    let members_sql = "
-        SELECT from_id
-        FROM edge
-        WHERE edge_type = 'belongs_to_cluster'
-          AND to_id = ?1
-    ";
-    let mut stmt = match conn.prepare(members_sql) {
+    // Step 2: Find all other files in the same cluster, excluding any of our target formats
+    let exclude_placeholders: Vec<String> =
+        (1..=targets.len()).map(|i| format!("?{}", i + 1)).collect();
+    let exclude_clause = exclude_placeholders.join(", ");
+    let members_sql = format!(
+        "SELECT from_id
+         FROM edge
+         WHERE edge_type = 'belongs_to_cluster'
+           AND to_id = ?1
+           AND from_id NOT IN ({exclude_clause})"
+    );
+    let mut stmt = match conn.prepare(&members_sql) {
         Ok(s) => s,
         Err(_) => return (Some(cluster_id.clone()), Vec::new()),
     };
-    let files: Vec<String> = match stmt.query_map(rusqlite::params![cluster_id], |row| {
+    let mut member_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    member_params.push(Box::new(cluster_id.clone()));
+    for t in targets {
+        member_params.push(Box::new(t.clone()));
+    }
+    let member_params_ref: Vec<&dyn rusqlite::types::ToSql> =
+        member_params.iter().map(|p| p.as_ref()).collect();
+    let files: Vec<String> = match stmt.query_map(member_params_ref.as_slice(), |row| {
         row.get::<_, String>(0)
     }) {
         Ok(rows) => rows
             .filter_map(|r| r.ok())
-            .filter(|s| s != &file_id)
             .map(|s| s.strip_prefix("file:").unwrap_or(&s).to_string())
             .collect(),
         Err(_) => Vec::new(),
@@ -209,20 +276,25 @@ fn find_cluster(conn: &Connection, file: &str) -> (Option<String>, Vec<String>) 
 fn find_co_affected_files(
     conn: &Connection,
     decision_ids: &[String],
-    exclude_target: &str,
+    exclude_targets: &[String],
 ) -> Vec<String> {
     if decision_ids.is_empty() {
         return Vec::new();
     }
 
-    let placeholders: Vec<String> = (1..=decision_ids.len()).map(|i| format!("?{i}")).collect();
-    let in_clause = placeholders.join(", ");
-    let exclude_idx = decision_ids.len() + 1;
+    let id_placeholders: Vec<String> = (1..=decision_ids.len()).map(|i| format!("?{i}")).collect();
+    let in_clause = id_placeholders.join(", ");
+    // Exclude all path variants of the target file
+    let exclude_start = decision_ids.len() + 1;
+    let exclude_placeholders: Vec<String> = (0..exclude_targets.len())
+        .map(|i| format!("?{}", exclude_start + i))
+        .collect();
+    let exclude_clause = exclude_placeholders.join(", ");
     let sql = format!(
         "SELECT DISTINCT e.to_id FROM edge e
          WHERE e.from_id IN ({in_clause})
          AND e.edge_type = 'affects'
-         AND e.to_id != ?{exclude_idx}
+         AND e.to_id NOT IN ({exclude_clause})
          AND e.to_id LIKE 'file:%'
          LIMIT 50"
     );
@@ -236,7 +308,9 @@ fn find_co_affected_files(
         .iter()
         .map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>)
         .collect();
-    param_values.push(Box::new(exclude_target.to_string()));
+    for t in exclude_targets {
+        param_values.push(Box::new(t.clone()));
+    }
     let params_ref: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(|p| p.as_ref()).collect();
 
@@ -390,5 +464,88 @@ mod tests {
         assert!(br.calling_files.contains(&"src/service.rs".to_string()));
         assert!(br.calling_files.contains(&"src/worker.rs".to_string()));
         assert!(br.calling_files.contains(&"src/db.rs".to_string()));
+    }
+
+    #[test]
+    fn test_blast_radius_bare_absolute_path_importers() {
+        // Simulates the real DB format where the indexer stores bare absolute paths
+        // as from_id (no "file:" prefix), matching the legacy edge format.
+        // The to_id is a Rust module path like "crate::server::handler".
+        let conn = setup_db();
+
+        // Legacy indexer format: bare absolute paths as from_id, module as to_id
+        // For file "crates/daemon/src/server/handler.rs", the module pattern is
+        // "%server::handler%" which matches "crate::server::handler".
+        store_edge(
+            &conn,
+            "/mnt/project/crates/daemon/src/main.rs",
+            "crate::server::handler",
+            "imports",
+            "{}",
+        )
+        .unwrap();
+        store_edge(
+            &conn,
+            "/mnt/project/crates/daemon/src/routes.rs",
+            "crate::server::handler",
+            "imports",
+            "{}",
+        )
+        .unwrap();
+
+        // find_callers uses LIKE "%server::handler%" on to_id
+        let br = analyze_blast_radius(&conn, "crates/daemon/src/server/handler.rs");
+        assert!(
+            br.callers >= 2,
+            "expected at least 2 callers from bare-path import edges, got {}",
+            br.callers,
+        );
+        // The from_id values (bare abs paths) should appear in calling_files
+        assert!(
+            br.calling_files.contains(&"/mnt/project/crates/daemon/src/main.rs".to_string()),
+            "calling_files should contain main.rs, got: {:?}",
+            br.calling_files,
+        );
+    }
+
+    #[test]
+    fn test_blast_radius_mixed_edge_formats() {
+        // Tests that blast-radius works with edges in mixed formats:
+        // some with "file:" prefix and some with bare absolute paths.
+        let conn = setup_db();
+
+        // New format: file:-prefixed import edges (to_id also prefixed)
+        store_edge(
+            &conn,
+            "file:/mnt/project/src/main.rs",
+            "file:src/server/handler.rs",
+            "imports",
+            "{}",
+        )
+        .unwrap();
+
+        // Legacy format: bare absolute path import edges (module as to_id)
+        store_edge(
+            &conn,
+            "/mnt/project/src/routes.rs",
+            "crate::server::handler",
+            "imports",
+            "{}",
+        )
+        .unwrap();
+
+        let br = analyze_blast_radius(&conn, "src/server/handler.rs");
+        // The file:-prefixed edge should match via find_importers
+        assert!(
+            br.importers.contains(&"/mnt/project/src/main.rs".to_string()),
+            "importers should contain main.rs from file:-prefixed edge, got: {:?}",
+            br.importers,
+        );
+        // The bare-path edge should match via find_callers (LIKE on module pattern)
+        assert!(
+            br.callers >= 1,
+            "expected at least 1 caller from legacy bare-path import edge, got {}",
+            br.callers,
+        );
     }
 }
