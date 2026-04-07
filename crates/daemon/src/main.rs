@@ -386,7 +386,7 @@ async fn main() {
                 let addr: std::net::SocketAddr = http_addr.parse().unwrap();
                 tracing::info!(%addr, "HTTPS server starting (TLS enabled)");
                 if let Err(e) = axum_server::bind_rustls(addr, rustls_config)
-                    .serve(app.into_make_service())
+                    .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
                     .await
                 {
                     tracing::error!("HTTPS server failed: {e}");

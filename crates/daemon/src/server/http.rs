@@ -65,8 +65,14 @@ async fn api_handler(
     State(state): State<AppState>,
     http_req: axum::http::Request<axum::body::Body>,
 ) -> impl IntoResponse {
-    // Extract client IP from X-Forwarded-For or X-Real-IP headers
-    let source_ip = http_req.headers()
+    // Extract client IP: prefer ConnectInfo (actual TCP peer), fall back to headers.
+    // Headers (X-Forwarded-For, X-Real-IP) are only used as supplementary info for
+    // audit logging, NOT for rate limiting — they're trivially spoofable.
+    let connect_ip = http_req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
+    let header_ip = http_req.headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(',').next())
@@ -74,12 +80,15 @@ async fn api_handler(
         .or_else(|| http_req.headers()
             .get("x-real-ip")
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string()))
-        .unwrap_or_default();
+            .map(|s| s.to_string()));
+    // Rate limiting uses the real TCP peer address (unspoofable).
+    // Audit logging uses header IP when available (more useful behind reverse proxy).
+    let rate_limit_ip = connect_ip.clone().unwrap_or_else(|| "unknown".to_string());
+    let source_ip = header_ip.unwrap_or_else(|| rate_limit_ip.clone());
 
-    // Rate limit check
+    // Rate limit check — uses real TCP peer IP, not spoofable headers
     if let Some(ref limiter) = state.rate_limiter {
-        if let Err(retry_after) = limiter.check(&source_ip).await {
+        if let Err(retry_after) = limiter.check(&rate_limit_ip).await {
             return (
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
                 [("retry-after", retry_after.to_string())],
@@ -453,13 +462,15 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
                  All authenticated users will be Members."
             );
         }
+        let auth_rate_limiter = api_state.rate_limiter.clone();
         Router::new()
             .route("/api", post(api_handler))
             .route("/api/subscribe", get(subscribe_handler))
             .layer(axum::middleware::from_fn(move |req, next| {
                 let cache = jwks_cache.clone();
                 let cfg = auth_config.clone();
-                super::auth::auth_middleware(req, next, cache, cfg)
+                let limiter = auth_rate_limiter.clone();
+                super::auth::auth_middleware(req, next, cache, cfg, limiter)
             }))
             .with_state(api_state)
     } else {
@@ -576,8 +587,12 @@ pub async fn run_http_server_with_listener(
         }
     }
 
-    // HTTP server (TLS wrapping will use tokio-rustls when dependency is added)
-    axum::serve(listener, app)
+    // HTTP server — use into_make_service_with_connect_info to provide real TCP peer
+    // IP addresses for rate limiting (unspoofable, unlike X-Forwarded-For headers).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
         .with_graceful_shutdown(async move {
             let _ = shutdown_rx.changed().await;
             tracing::info!("HTTP server shutting down gracefully");

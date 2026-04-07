@@ -321,7 +321,15 @@ pub async fn auth_middleware(
     next: axum::middleware::Next,
     jwks_cache: SharedJwksCache,
     auth_config: AuthConfig,
+    rate_limiter: Option<crate::server::rate_limit::RateLimiter>,
 ) -> axum::response::Response {
+    // Extract real client IP for auth failure recording
+    let client_ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
     // Extract Bearer token from Authorization header
     let token = req
         .headers()
@@ -332,6 +340,9 @@ pub async fn auth_middleware(
     let token = match token {
         Some(t) => t.to_string(),
         None => {
+            if let Some(ref limiter) = rate_limiter {
+                limiter.record_auth_failure(&client_ip).await;
+            }
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "missing or invalid Authorization header"})),
@@ -346,14 +357,18 @@ pub async fn auth_middleware(
             next.run(req).await
         }
         Err(e) => {
+            // Record auth failure for rate-limit lockout
+            if let Some(ref limiter) = rate_limiter {
+                limiter.record_auth_failure(&client_ip).await;
+            }
             // Log detailed error server-side, return generic message to client
             tracing::warn!(error = %e, "JWT validation failed");
             (
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "invalid token"})),
             )
+                .into_response()
         }
-            .into_response(),
     }
 }
 
@@ -729,7 +744,7 @@ JQIDAQAB
             .layer(axum::middleware::from_fn(move |req, next| {
                 let c = cache.clone();
                 let cfg = config.clone();
-                auth_middleware(req, next, c, cfg)
+                auth_middleware(req, next, c, cfg, None)
             }))
     }
 

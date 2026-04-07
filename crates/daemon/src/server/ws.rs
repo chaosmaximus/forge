@@ -89,18 +89,28 @@ pub async fn terminal_ws_handler(
                 ).into_response();
             }
         };
-        if let (Some(ref cache), Some(ref cfg)) = (&term_state.jwks_cache, &term_state.auth_config) {
-            match super::auth::validate_token(&token, cache, cfg).await {
-                Ok(claims) => {
-                    tracing::info!(user = %claims.sub, "terminal WebSocket authenticated");
+        match (&term_state.jwks_cache, &term_state.auth_config) {
+            (Some(ref cache), Some(ref cfg)) => {
+                match super::auth::validate_token(&token, cache, cfg).await {
+                    Ok(claims) => {
+                        tracing::info!(user = %claims.sub, "terminal WebSocket authenticated");
+                    }
+                    Err(e) => {
+                        tracing::warn!("terminal WebSocket auth failed: {e}");
+                        return (
+                            axum::http::StatusCode::UNAUTHORIZED,
+                            axum::Json(serde_json::json!({"error": "invalid or expired token"})),
+                        ).into_response();
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("terminal WebSocket auth failed: {e}");
-                    return (
-                        axum::http::StatusCode::UNAUTHORIZED,
-                        axum::Json(serde_json::json!({"error": "invalid or expired token"})),
-                    ).into_response();
-                }
+            }
+            _ => {
+                // Fail-closed: auth enabled but infrastructure misconfigured
+                tracing::error!("auth enabled but JWKS cache or auth config is None — rejecting terminal access");
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": "server auth misconfiguration"})),
+                ).into_response();
             }
         }
     }
@@ -131,7 +141,7 @@ pub async fn terminal_ws_handler(
 fn audit_terminal_spawn(db_path: &str, pty_id: u32, cwd: Option<&str>) {
     let conn = match rusqlite::Connection::open_with_flags(
         db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
     ) {
         Ok(c) => c,
         Err(e) => {
