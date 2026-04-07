@@ -928,6 +928,36 @@ pub async fn bootstrap(project: Option<String>) {
     }
 }
 
+/// Backfill project field on memories with NULL/empty project.
+pub async fn backfill_project() {
+    let req = Request::BackfillProject;
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::BackfillProjectResult { updated, skipped },
+        }) => {
+            if updated == 0 && skipped == 0 {
+                println!("All memories already have a project set.");
+            } else if updated == 0 {
+                println!("No memories could be backfilled. {} still have no project.", skipped);
+            } else {
+                println!("Backfilled project on {} memories.", updated);
+                if skipped > 0 {
+                    println!("  {} memories still have no project (no session/transcript match).", skipped);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Force-run all consolidation phases (dedup, decay, promotion, etc.)
 pub async fn consolidate() {
     match client::send(&Request::ForceConsolidate).await {

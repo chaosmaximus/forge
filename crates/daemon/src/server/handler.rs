@@ -1896,6 +1896,22 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::BackfillProject => {
+            match crate::db::ops::backfill_project_from_sessions(&state.conn) {
+                Ok((updated, skipped)) => {
+                    if updated > 0 {
+                        eprintln!("[daemon] backfilled project on {} memories ({} still orphaned)", updated, skipped);
+                    }
+                    Response::Ok {
+                        data: ResponseData::BackfillProjectResult { updated, skipped },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("backfill_project failed: {e}"),
+                },
+            }
+        }
+
         Request::StoreEvaluation { findings, project, session_id } => {
             let mut lessons_created = 0usize;
             let mut diagnostics_created = 0usize;
@@ -4144,6 +4160,75 @@ mod tests {
                 assert_eq!(count, 0, "no more memories to backfill");
             }
             other => panic!("expected HlcBackfilled, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_backfill_project_handler() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Insert a session with a known project
+        state.conn.execute(
+            "INSERT INTO session (id, agent, project, started_at, status)
+             VALUES ('sess-1', 'claude-code', 'forge', '2026-01-01', 'active')",
+            [],
+        ).unwrap();
+
+        // Insert a memory with session_id but no project
+        state.conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id)
+             VALUES ('m-orphan1', 'decision', 'Use Rust', 'Rust is fast', 0.9, 'active', '', '[]', '2026-01-01', '2026-01-01', 'neutral', 0.0, '', '', 'sess-1')",
+            [],
+        ).unwrap();
+
+        // Insert a memory with no session_id and no project (truly orphaned)
+        state.conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id)
+             VALUES ('m-orphan2', 'lesson', 'Test often', 'Testing saves time', 0.8, 'active', '', '[]', '2026-01-01', '2026-01-01', 'neutral', 0.0, '', '', '')",
+            [],
+        ).unwrap();
+
+        // Insert a memory that already has a project (should not be touched)
+        state.conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id)
+             VALUES ('m-has-proj', 'decision', 'Use SQLite', 'SQLite is great', 0.9, 'active', 'forge', '[]', '2026-01-01', '2026-01-01', 'neutral', 0.0, '', '', '')",
+            [],
+        ).unwrap();
+
+        let resp = handle_request(&mut state, Request::BackfillProject);
+        match resp {
+            Response::Ok { data: ResponseData::BackfillProjectResult { updated, skipped } } => {
+                // m-orphan1 should be updated from session, m-orphan2 stays orphaned
+                assert_eq!(updated, 1, "should backfill 1 memory from session");
+                assert_eq!(skipped, 1, "1 memory should remain orphaned (no session match)");
+            }
+            other => panic!("expected BackfillProjectResult, got {:?}", other),
+        }
+
+        // Verify m-orphan1 now has the project
+        let project: String = state.conn.query_row(
+            "SELECT COALESCE(project, '') FROM memory WHERE id = 'm-orphan1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(project, "forge", "orphan1 should now have project=forge");
+
+        // Verify m-has-proj is unchanged
+        let project2: String = state.conn.query_row(
+            "SELECT COALESCE(project, '') FROM memory WHERE id = 'm-has-proj'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(project2, "forge", "existing project should be untouched");
+
+        // Running again should find 0 updated (orphan1 already backfilled, orphan2 still unresolvable)
+        let resp = handle_request(&mut state, Request::BackfillProject);
+        match resp {
+            Response::Ok { data: ResponseData::BackfillProjectResult { updated, skipped } } => {
+                assert_eq!(updated, 0, "no more memories to backfill");
+                assert_eq!(skipped, 1, "1 still orphaned");
+            }
+            other => panic!("expected BackfillProjectResult, got {:?}", other),
         }
     }
 

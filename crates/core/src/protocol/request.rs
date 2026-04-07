@@ -633,5 +633,10 @@ pub enum Request {
     /// Get current workspace status (mode, paths, org info)
     WorkspaceStatus,
 
+    /// Backfill project field on memories that have project = NULL or empty.
+    /// Derives project from the session registry (sessions have a project field)
+    /// and from the transcript_log table.
+    BackfillProject,
+
     Shutdown,
 }

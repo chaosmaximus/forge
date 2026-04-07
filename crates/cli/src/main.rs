@@ -438,6 +438,10 @@ enum Commands {
     #[command(name = "hlc-backfill")]
     HlcBackfill,
 
+    /// Backfill project field on memories with NULL/empty project (derives from session registry)
+    #[command(name = "backfill-project")]
+    BackfillProject,
+
     /// Bootstrap: scan and process all existing transcript files
     #[command(name = "bootstrap")]
     Bootstrap {
@@ -1271,6 +1275,9 @@ async fn main() {
         }
         Commands::HlcBackfill => {
             commands::sync::hlc_backfill().await;
+        }
+        Commands::BackfillProject => {
+            commands::system::backfill_project().await;
         }
         Commands::Bootstrap { project } => {
             commands::system::bootstrap(project).await;

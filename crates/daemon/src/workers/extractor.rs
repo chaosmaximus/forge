@@ -554,6 +554,38 @@ async fn process_file(
                     }
                 }
 
+                // Pre-store near-duplicate check: query FTS5 for similar titles
+                // of the same type, then compute word overlap to skip near-dupes.
+                {
+                    let mt_str = em.memory_type.as_str();
+                    if let Ok(candidates) = ops::find_similar_by_title(&locked.conn, &em.title, mt_str, 10) {
+                        let new_words = ops::meaningful_words_pub(&em.title);
+                        if !new_words.is_empty() {
+                            let mut skip = false;
+                            for (_, existing_title) in &candidates {
+                                let existing_words = ops::meaningful_words_pub(existing_title);
+                                if existing_words.is_empty() {
+                                    continue;
+                                }
+                                let intersection = new_words.intersection(&existing_words).count();
+                                let union = new_words.union(&existing_words).count();
+                                let overlap = intersection as f64 / union as f64;
+                                if overlap > 0.7 {
+                                    eprintln!(
+                                        "[extractor] skipped near-duplicate '{}' (overlap={:.2} with existing '{}')",
+                                        em.title, overlap, existing_title
+                                    );
+                                    skip = true;
+                                    break;
+                                }
+                            }
+                            if skip {
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 if let Err(e) = ops::remember(&locked.conn, &memory) {
                     eprintln!("[extractor] failed to store memory '{}': {e}", em.title);
                 } else {

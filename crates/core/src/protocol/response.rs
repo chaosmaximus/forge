@@ -320,6 +320,11 @@ pub enum ResponseData {
         count: usize,
     },
 
+    BackfillProjectResult {
+        updated: usize,
+        skipped: usize,
+    },
+
     EvaluationStored {
         lessons_created: usize,
         diagnostics_created: usize,
