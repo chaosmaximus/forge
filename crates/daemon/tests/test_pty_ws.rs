@@ -31,6 +31,7 @@ fn build_test_router() -> (Router, SharedPtyManager) {
         auth_config: None,
         jwks_cache: None,
         db_path: None,
+        rate_limiter: None,
     };
     let app = Router::new()
         .route("/api/terminal", get(terminal_ws_handler))

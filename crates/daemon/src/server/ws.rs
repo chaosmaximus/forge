@@ -14,7 +14,7 @@
 
 use crate::server::pty::PtyManager;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -67,17 +67,39 @@ pub struct TerminalState {
     pub jwks_cache: Option<super::auth::SharedJwksCache>,
     /// DB path for audit logging terminal sessions.
     pub db_path: Option<String>,
+    /// Rate limiter (shared with HTTP API). None disables rate limiting (e.g. in tests).
+    pub rate_limiter: Option<crate::server::rate_limit::RateLimiter>,
 }
 
 /// WebSocket upgrade handler for terminal sessions.
 ///
 /// When auth is enabled, validates JWT from ?token= query param before upgrading.
-/// Enforces PTY session limit (max 8 concurrent).
+/// Enforces rate limiting (I1) and PTY session limit (max 8 concurrent).
+/// Session limit is enforced atomically inside handle_terminal_socket (I2 — TOCTOU fix).
 pub async fn terminal_ws_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<TerminalQuery>,
     State(term_state): State<TerminalState>,
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
 ) -> axum::response::Response {
+    // I1: Rate limit check — uses real TCP peer IP (unspoofable).
+    let rate_limit_ip = connect_info
+        .as_ref()
+        .map(|ci| ci.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if let Some(ref limiter) = term_state.rate_limiter {
+        if let Err(retry_after) = limiter.check(&rate_limit_ip).await {
+            tracing::warn!(ip = %rate_limit_ip, retry_after, "terminal WebSocket rate limited");
+            return (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(serde_json::json!({
+                    "error": "rate limited",
+                    "retry_after_secs": retry_after
+                })),
+            ).into_response();
+        }
+    }
+
     // Auth check: validate token if auth is enabled
     if term_state.auth_enabled {
         let token = match &query.token {
@@ -115,7 +137,8 @@ pub async fn terminal_ws_handler(
         }
     }
 
-    // Enforce PTY session limit
+    // I2: Fast-path rejection for PTY session limit (non-authoritative — the real
+    // check happens atomically inside handle_terminal_socket while the lock is held).
     {
         let mgr = term_state.pty_mgr.lock().await;
         if mgr.session_count() >= mgr.max_sessions() {
@@ -172,9 +195,25 @@ async fn handle_terminal_socket(
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Spawn PTY session.
+    // I2: Spawn PTY session with authoritative session limit check.
+    // The limit is checked while the lock is held, eliminating the TOCTOU race
+    // between the fast-path check in terminal_ws_handler and actual creation.
     let (pty_id, mut output_rx) = {
         let mut mgr = pty_mgr.lock().await;
+        if mgr.session_count() >= mgr.max_sessions() {
+            tracing::warn!(
+                count = mgr.session_count(),
+                max = mgr.max_sessions(),
+                "PTY session limit reached (authoritative check) — rejecting"
+            );
+            let _ = ws_tx
+                .send(Message::Text(
+                    serde_json::json!({"error": "maximum terminal sessions reached"}).to_string(),
+                ))
+                .await;
+            let _ = ws_tx.close().await;
+            return;
+        }
         match mgr.create(query.cols, query.rows, query.cwd.clone()) {
             Ok(result) => result,
             Err(e) => {

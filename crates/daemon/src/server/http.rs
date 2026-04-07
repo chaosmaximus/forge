@@ -385,8 +385,17 @@ fn build_cors_layer(config: &ForgeConfig) -> CorsLayer {
                     patterns_clone.iter().any(|pattern| {
                         if let Some(prefix) = pattern.strip_suffix(":*") {
                             // Match "http://localhost:*" against "http://localhost:3000"
-                            origin_str.starts_with(prefix)
-                                && origin_str[prefix.len()..].starts_with(':')
+                            // I3: After prefix+colon check, verify remaining chars are all ASCII digits
+                            // to prevent matching non-numeric ports like "http://localhost:abc".
+                            if let Some(rest) = origin_str.strip_prefix(prefix) {
+                                if let Some(port_str) = rest.strip_prefix(':') {
+                                    !port_str.is_empty() && port_str.chars().all(|c| c.is_ascii_digit())
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
                         } else {
                             origin_str == pattern
                         }
@@ -506,6 +515,7 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
         auth_config: if config.auth.enabled { Some(config.auth.clone()) } else { None },
         jwks_cache: if config.auth.enabled { Some(super::auth::new_jwks_cache()) } else { None },
         db_path: Some(state.db_path.clone()),
+        rate_limiter: state.rate_limiter.clone(),
     };
     let terminal_routes = Router::new()
         .route("/api/terminal", get(terminal_ws_handler))

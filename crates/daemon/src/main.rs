@@ -14,17 +14,26 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// the stale lock and retry. Returns the locked file handle (must be kept alive).
 fn acquire_pid_lock(pid_path: &str) -> std::fs::File {
     use fs2::FileExt;
+    use std::io::Seek;
 
+    // I6: Open WITHOUT truncation first, attempt lock, THEN truncate+write
+    // only after successful lock. This prevents destroying PID content before
+    // the lock is acquired (which would make stale-PID detection fail).
     let try_open_and_lock = || -> Result<std::fs::File, String> {
         let f = std::fs::OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
-            .truncate(true)
+            .truncate(false) // I6: intentionally no truncation — preserve PID for stale detection
             .open(pid_path)
             .map_err(|e| format!("failed to open PID file {pid_path}: {e}"))?;
         f.try_lock_exclusive()
             .map_err(|_| "lock held".to_string())?;
+        // Lock acquired — now truncate the file before writing new PID.
+        f.set_len(0).map_err(|e| format!("failed to truncate PID file: {e}"))?;
+        let mut f = f;
+        f.seek(std::io::SeekFrom::Start(0))
+            .map_err(|e| format!("failed to seek PID file: {e}"))?;
         Ok(f)
     };
 
