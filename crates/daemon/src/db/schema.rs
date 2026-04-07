@@ -3,47 +3,57 @@ use rusqlite::Connection;
 /// Seed default agent templates if none exist.
 /// Called during create_schema — idempotent (skips if templates already present).
 fn seed_default_templates(conn: &Connection) -> rusqlite::Result<()> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM agent_template",
-        [],
-        |row| row.get(0),
-    )?;
-    if count > 0 {
-        return Ok(());
-    }
-
     let now = forge_core::time::now_iso();
-    let templates = [
-        (
-            "claude-code",
-            "Claude Code Agent",
-            "General-purpose coding agent using Claude Code CLI",
-            "claude-code",
-            r#"["software-engineering","debugging","code-review","testing"]"#,
-            "analytical",
-        ),
-        (
-            "codex-cli",
-            "Codex CLI Agent",
-            "OpenAI Codex agent for adversarial review and second opinions",
-            "codex",
-            r#"["code-review","security-analysis","adversarial-testing"]"#,
-            "critical",
-        ),
-        (
-            "gemini-cli",
-            "Gemini CLI Agent",
-            "Google Gemini agent for research and alternative perspectives",
-            "gemini",
-            r#"["research","exploration","documentation"]"#,
-            "exploratory",
-        ),
+
+    // Base agent templates (3 adapters)
+    let base_templates = [
+        ("claude-code", "Claude Code Agent", "General-purpose coding agent using Claude Code CLI", "claude-code",
+         r#"["software-engineering","debugging","code-review","testing"]"#, "analytical"),
+        ("codex-cli", "Codex CLI Agent", "OpenAI Codex agent for adversarial review and second opinions", "codex",
+         r#"["code-review","security-analysis","adversarial-testing"]"#, "critical"),
+        ("gemini-cli", "Gemini CLI Agent", "Google Gemini agent for research and alternative perspectives", "gemini",
+         r#"["research","exploration","documentation"]"#, "exploratory"),
     ];
 
-    for (name, desc, system_ctx, agent_type, domains, style) in &templates {
+    // Role-specific templates for team orchestration (referenced by team templates)
+    let role_templates = [
+        ("tech-lead", "Tech Lead", "Technical leadership: architecture decisions, code review, mentoring", "claude-code",
+         r#"["architecture","code-review","mentoring","technical-design"]"#, "analytical"),
+        ("frontend-dev", "Frontend Developer", "Frontend implementation: UI components, state management, UX", "claude-code",
+         r#"["frontend","ui","ux","react","css"]"#, "creative"),
+        ("backend-dev", "Backend Developer", "Backend implementation: APIs, databases, services, infrastructure", "claude-code",
+         r#"["backend","api","database","infrastructure"]"#, "analytical"),
+        ("qa", "QA Engineer", "Quality assurance: test planning, automation, regression, edge cases", "claude-code",
+         r#"["testing","qa","automation","edge-cases"]"#, "critical"),
+        ("devops", "DevOps Engineer", "Infrastructure: CI/CD, deployment, monitoring, scaling", "claude-code",
+         r#"["devops","ci-cd","docker","kubernetes","monitoring"]"#, "analytical"),
+        ("security-lead", "Security Lead", "Security: threat modeling, vulnerability assessment, hardening", "claude-code",
+         r#"["security","threat-modeling","penetration-testing"]"#, "critical"),
+        ("product-manager", "Product Manager", "Product strategy: requirements, prioritization, user stories", "claude-code",
+         r#"["product","requirements","user-stories","prioritization"]"#, "strategic"),
+        ("content-writer", "Content Writer", "Content creation: blog posts, documentation, marketing copy", "claude-code",
+         r#"["content","writing","marketing","seo"]"#, "creative"),
+        ("data-scientist", "Data Scientist", "Data analysis: statistics, ML, visualization, insights", "claude-code",
+         r#"["data-science","statistics","ml","visualization"]"#, "analytical"),
+        ("ux-researcher", "UX Researcher", "User research: interviews, usability testing, personas", "claude-code",
+         r#"["ux-research","usability","personas","user-interviews"]"#, "empathetic"),
+        ("ceo", "CEO", "Executive leadership: vision, strategy, fundraising, culture", "claude-code",
+         r#"["strategy","leadership","fundraising","culture"]"#, "strategic"),
+        ("cto", "CTO", "Technical leadership: architecture, tech stack, engineering culture", "claude-code",
+         r#"["architecture","tech-strategy","engineering-culture"]"#, "analytical"),
+        ("cfo", "CFO", "Financial leadership: budgets, forecasting, unit economics", "claude-code",
+         r#"["finance","budgeting","forecasting","unit-economics"]"#, "analytical"),
+        ("cmo", "CMO", "Marketing leadership: brand, growth, channels, positioning", "claude-code",
+         r#"["marketing","brand","growth","positioning"]"#, "creative"),
+        ("cpo", "CPO", "Product leadership: roadmap, user research, feature prioritization", "claude-code",
+         r#"["product-strategy","roadmap","user-research"]"#, "strategic"),
+    ];
+
+    // Idempotent: INSERT OR IGNORE so existing templates are not duplicated
+    for (name, desc, system_ctx, agent_type, domains, style) in base_templates.iter().chain(role_templates.iter()) {
         let id = ulid::Ulid::new().to_string();
         conn.execute(
-            "INSERT INTO agent_template (id, name, description, agent_type, system_context, knowledge_domains, decision_style, created_at, updated_at)
+            "INSERT OR IGNORE INTO agent_template (id, name, description, agent_type, system_context, knowledge_domains, decision_style, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
             rusqlite::params![id, name, desc, agent_type, system_ctx, domains, style, now],
         )?;
@@ -1118,7 +1128,7 @@ mod tests {
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM agent_template", [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(count, 3, "should seed 3 default agent templates");
+        assert_eq!(count, 18, "should seed 18 agent templates (3 base + 15 role)");
 
         // Verify specific templates exist by name
         let claude: String = conn.query_row(
@@ -1144,6 +1154,6 @@ mod tests {
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM agent_template", [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(count, 3, "should still be 3 after double-seed");
+        assert_eq!(count, 18, "should still be 18 after double-seed (INSERT OR IGNORE)");
     }
 }

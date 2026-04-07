@@ -1339,8 +1339,8 @@ mod tests {
         create_agent_template(&conn, &make_template("CFO")).unwrap();
 
         let all = list_agent_templates(&conn, None, 100).unwrap();
-        // 3 seeded defaults (claude-code, codex-cli, gemini-cli) + 3 manual (CTO, CMO, CFO) = 6
-        assert_eq!(all.len(), 6);
+        // 18 seeded defaults (3 base + 15 role) + 3 manual (CTO, CMO, CFO) = 21
+        assert_eq!(all.len(), 21);
         // Verify our 3 manual templates are present
         let names: Vec<&str> = all.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"CFO"));

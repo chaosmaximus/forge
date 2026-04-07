@@ -747,6 +747,48 @@ enum Commands {
         #[arg(long, default_value = "")]
         key: String,
     },
+
+    /// List skills from the registry
+    #[command(name = "skills-list")]
+    SkillsList {
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        search: Option<String>,
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Install a skill for a project
+    #[command(name = "skills-install")]
+    SkillsInstall {
+        /// Skill name
+        name: String,
+        /// Project to install for
+        #[arg(long, default_value = "")]
+        project: String,
+    },
+
+    /// Uninstall a skill
+    #[command(name = "skills-uninstall")]
+    SkillsUninstall {
+        /// Skill name
+        name: String,
+        /// Project
+        #[arg(long, default_value = "")]
+        project: String,
+    },
+
+    /// Get skill details
+    #[command(name = "skills-info")]
+    SkillsInfo {
+        /// Skill name
+        name: String,
+    },
+
+    /// Re-index skills directory
+    #[command(name = "skills-refresh")]
+    SkillsRefresh,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1545,6 +1587,53 @@ async fn main() {
                 Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::LicenseSet { tier } }) => {
                     println!("License tier set to: {}", tier);
                 }
+                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(other) => eprintln!("Unexpected: {other:?}"),
+                Err(e) => eprintln!("Connection error: {e}"),
+            }
+        }
+
+        // ── Skills Registry ──
+        Commands::SkillsList { category, search, limit } => {
+            let req = forge_core::protocol::Request::SkillsList { category, search, limit: Some(limit) };
+            match client::send(&req).await {
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(other) => eprintln!("Unexpected: {other:?}"),
+                Err(e) => eprintln!("Connection error: {e}"),
+            }
+        }
+        Commands::SkillsInstall { name, project } => {
+            let req = forge_core::protocol::Request::SkillsInstall { name, project };
+            match client::send(&req).await {
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(other) => eprintln!("Unexpected: {other:?}"),
+                Err(e) => eprintln!("Connection error: {e}"),
+            }
+        }
+        Commands::SkillsUninstall { name, project } => {
+            let req = forge_core::protocol::Request::SkillsUninstall { name, project };
+            match client::send(&req).await {
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(other) => eprintln!("Unexpected: {other:?}"),
+                Err(e) => eprintln!("Connection error: {e}"),
+            }
+        }
+        Commands::SkillsInfo { name } => {
+            let req = forge_core::protocol::Request::SkillsInfo { name };
+            match client::send(&req).await {
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(other) => eprintln!("Unexpected: {other:?}"),
+                Err(e) => eprintln!("Connection error: {e}"),
+            }
+        }
+        Commands::SkillsRefresh => {
+            let req = forge_core::protocol::Request::SkillsRefresh;
+            match client::send(&req).await {
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
                 Ok(other) => eprintln!("Unexpected: {other:?}"),
                 Err(e) => eprintln!("Connection error: {e}"),
