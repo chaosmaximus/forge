@@ -1471,6 +1471,38 @@ pub fn compile_dynamic_suffix(
 
     let _ = used; // suppress unused warning when meeting_context is last section
 
+    // ── Team Backlog ──
+    // When workspace auto_write.backlog_read is enabled and workspace mode is not "project",
+    // read the team's backlog.md file and inject it into the context.
+    {
+        let ws_config = crate::config::load_config();
+        if ws_config.workspace.auto_write.backlog_read
+            && ws_config.workspace.mode != "project"
+        {
+            let org = &ws_config.workspace.org;
+            let team_name = if org.is_empty() { "default" } else { org.as_str() };
+            if let Some(ws_root) = crate::workspace::team_workspace_path(
+                &ws_config.workspace,
+                team_name,
+                org,
+                project,
+            ) {
+                if let Some(backlog) = crate::workspace::read_team_backlog(&ws_root, team_name) {
+                    let escaped = xml_escape(&backlog);
+                    xml.push_str(&format!(
+                        "<team-backlog team=\"{}\">\n{}\n</team-backlog>\n",
+                        xml_escape(team_name),
+                        escaped,
+                    ));
+                } else {
+                    xml.push_str("<team-backlog/>\n");
+                }
+            } else {
+                xml.push_str("<team-backlog/>\n");
+            }
+        }
+    }
+
     xml.push_str("</forge-dynamic>");
     xml
 }
@@ -3070,5 +3102,45 @@ mod tests {
         // So universal should score higher (given similar base scores from BM25)
         assert!(univ_result.score >= dt_result.score * 0.5,
             "universal should score at least half of domain_transferable (it has full weight)");
+    }
+
+    #[test]
+    fn test_compile_dynamic_suffix_no_backlog_in_project_mode() {
+        // Default config has workspace.mode = "project", so no team-backlog section should appear.
+        let conn = setup();
+        let suffix = compile_dynamic_suffix(
+            &conn, "claude-code", None,
+            &crate::config::ContextConfig::default(), &[], None, None,
+        );
+        // In project mode, the team-backlog section should not be rendered at all
+        assert!(!suffix.contains("team-backlog"),
+            "team-backlog should NOT appear in project mode");
+    }
+
+    #[test]
+    fn test_backlog_read_integration_with_workspace() {
+        // Test backlog reading functionality directly, simulating what compile_dynamic_suffix
+        // would do when workspace mode is "team".
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path();
+
+        // Create team directory and write a backlog
+        let backlog_dir = ws_root.join("teams").join("backend");
+        std::fs::create_dir_all(&backlog_dir).unwrap();
+        std::fs::write(
+            backlog_dir.join("backlog.md"),
+            "# Backend Backlog\n\n- [ ] Implement caching layer\n- [ ] Add rate limiting\n",
+        ).unwrap();
+
+        // Verify read_team_backlog can read it
+        let backlog = crate::workspace::read_team_backlog(ws_root, "backend");
+        assert!(backlog.is_some(), "backlog should be readable");
+        let content = backlog.unwrap();
+        assert!(content.contains("Implement caching layer"), "backlog should contain tasks");
+        assert!(content.contains("rate limiting"), "backlog should contain all items");
+
+        // Verify read_team_backlog returns None for non-existent team
+        let no_backlog = crate::workspace::read_team_backlog(ws_root, "nonexistent");
+        assert!(no_backlog.is_none(), "non-existent team should return None");
     }
 }

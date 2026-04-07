@@ -268,6 +268,43 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         }
                     }
 
+                    // Workspace auto-write: persist decision to team workspace directory
+                    if is_decision {
+                        let ws_config = crate::config::load_config();
+                        if ws_config.workspace.auto_write.decisions
+                            && ws_config.workspace.mode != "project"
+                        {
+                            let org = &ws_config.workspace.org;
+                            let team_name = if org.is_empty() { "default" } else { org.as_str() };
+                            if let Some(ws_root) = crate::workspace::team_workspace_path(
+                                &ws_config.workspace,
+                                team_name,
+                                org,
+                                project.as_deref(),
+                            ) {
+                                match crate::workspace::write_decision(
+                                    &ws_root,
+                                    team_name,
+                                    &memory.title,
+                                    &memory.content,
+                                    memory.confidence,
+                                    &memory.tags,
+                                    &id,
+                                ) {
+                                    Ok(path) => {
+                                        crate::events::emit(&state.events, "workspace_decision_written", serde_json::json!({
+                                            "memory_id": id,
+                                            "path": path.display().to_string(),
+                                        }));
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[workspace] auto-write decision failed: {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Response::Ok {
                         data: ResponseData::Stored { id },
                     }
@@ -2928,6 +2965,71 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         "decision_memory_id": decision_memory_id,
                         "status": "decided",
                     }));
+
+                    // Workspace auto-write: persist meeting minutes to team workspace
+                    {
+                        let ws_config = crate::config::load_config();
+                        if ws_config.workspace.auto_write.meetings
+                            && ws_config.workspace.mode != "project"
+                        {
+                            // Fetch team_id from the meeting
+                            let team_id_str: String = state.conn.query_row(
+                                "SELECT team_id FROM meeting WHERE id = ?1",
+                                rusqlite::params![meeting_id],
+                                |row| row.get(0),
+                            ).unwrap_or_else(|_| "default".to_string());
+
+                            let org = &ws_config.workspace.org;
+                            let team_name = if team_id_str.is_empty() {
+                                if org.is_empty() { "default" } else { org.as_str() }
+                            } else {
+                                &team_id_str
+                            };
+
+                            // Fetch participants and their contributions
+                            let participants: Vec<String> = state.conn.prepare(
+                                "SELECT COALESCE(template_name, session_id) FROM meeting_participant WHERE meeting_id = ?1"
+                            ).and_then(|mut stmt| {
+                                stmt.query_map(rusqlite::params![meeting_id], |row| row.get(0))?.collect()
+                            }).unwrap_or_default();
+
+                            let contributions: Vec<(String, String)> = state.conn.prepare(
+                                "SELECT COALESCE(template_name, session_id), COALESCE(response, '') FROM meeting_participant WHERE meeting_id = ?1"
+                            ).and_then(|mut stmt| {
+                                stmt.query_map(rusqlite::params![meeting_id], |row| {
+                                    Ok((row.get(0)?, row.get(1)?))
+                                })?.collect()
+                            }).unwrap_or_default();
+
+                            if let Some(ws_root) = crate::workspace::team_workspace_path(
+                                &ws_config.workspace,
+                                team_name,
+                                org,
+                                None, // meetings are org-level, no project_dir needed for centralized
+                            ) {
+                                match crate::workspace::write_meeting_minutes(
+                                    &ws_root,
+                                    team_name,
+                                    &topic,
+                                    &participants,
+                                    &contributions,
+                                    &decision,
+                                    &meeting_id,
+                                ) {
+                                    Ok(path) => {
+                                        crate::events::emit(&state.events, "workspace_meeting_written", serde_json::json!({
+                                            "meeting_id": meeting_id,
+                                            "path": path.display().to_string(),
+                                        }));
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[workspace] auto-write meeting minutes failed: {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Response::Ok { data: ResponseData::MeetingDecided { meeting_id, decision_memory_id } }
                 }
                 Err(e) => Response::Error { message: format!("meeting_decide failed: {e}") },
@@ -6427,5 +6529,86 @@ mod tests {
             }
             other => panic!("expected TeamStatusData, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_remember_decision_auto_write_skipped_in_project_mode() {
+        // Default config has workspace.mode = "project", so auto-write should NOT happen.
+        // This test verifies the remember handler works correctly without workspace side effects.
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: forge_core::types::MemoryType::Decision,
+            title: "Use PostgreSQL for storage".into(),
+            content: "PostgreSQL chosen for ACID compliance".into(),
+            confidence: Some(0.9),
+            tags: Some(vec!["database".into()]),
+            project: Some("forge".into()),
+            metadata: None,
+        });
+
+        // Memory should be stored successfully
+        match &resp {
+            Response::Ok { data: ResponseData::Stored { id } } => {
+                assert!(!id.is_empty(), "stored decision should have a non-empty id");
+            }
+            other => panic!("expected Stored, got {:?}", other),
+        }
+
+        // Verify no workspace_decision_written event was emitted
+        // (because default mode is "project")
+        let mut found_workspace_event = false;
+        while let Ok(evt) = rx.try_recv() {
+            if evt.event == "workspace_decision_written" {
+                found_workspace_event = true;
+            }
+        }
+        assert!(!found_workspace_event,
+            "workspace_decision_written event should NOT be emitted in project mode");
+    }
+
+    #[test]
+    fn test_remember_decision_auto_write_with_team_mode() {
+        // Test that when workspace mode is "team", write_decision is called.
+        // We simulate this by directly calling write_decision after a remember,
+        // since we can't easily override load_config() in a unit test.
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a decision
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: forge_core::types::MemoryType::Decision,
+            title: "Use gRPC for internal APIs".into(),
+            content: "gRPC chosen for type safety and performance".into(),
+            confidence: Some(0.85),
+            tags: Some(vec!["api".into(), "protocol".into()]),
+            project: Some("forge".into()),
+            metadata: None,
+        });
+
+        let id = match &resp {
+            Response::Ok { data: ResponseData::Stored { id } } => id.clone(),
+            other => panic!("expected Stored, got {:?}", other),
+        };
+
+        // Simulate what the auto-write code path does in team mode
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().to_path_buf();
+        let result = crate::workspace::write_decision(
+            &ws_root,
+            "backend",
+            "Use gRPC for internal APIs",
+            "gRPC chosen for type safety and performance",
+            0.85,
+            &["api".to_string(), "protocol".to_string()],
+            &id,
+        );
+
+        assert!(result.is_ok(), "write_decision should succeed");
+        let path = result.unwrap();
+        assert!(path.exists(), "decision file should exist on disk");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("Use gRPC for internal APIs"), "decision file should contain title");
+        assert!(content.contains(&id), "decision file should contain memory id");
     }
 }
