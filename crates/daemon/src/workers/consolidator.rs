@@ -1777,4 +1777,98 @@ mod tests {
         // Healing phases should have run
         assert!(stats.healed_faded > 0, "Phase 21 should have faded the stale memory");
     }
+
+    #[test]
+    fn test_no_cascade_supersede() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+
+        // A: Old storage decision
+        let a = Memory::new(MemoryType::Decision, "Old storage approach using Redis cluster", "Redis for distributed caching")
+            .with_confidence(0.8);
+        ops::remember(&conn, &a).unwrap();
+        conn.execute("UPDATE memory SET created_at = datetime('now', '-30 days') WHERE id = ?1",
+            rusqlite::params![a.id]).unwrap();
+
+        // C: Completely unrelated auth decision (should NOT be affected)
+        let c = Memory::new(MemoryType::Decision, "Use OAuth2 for third-party authentication", "OAuth2 with PKCE flow for security")
+            .with_confidence(0.9);
+        ops::remember(&conn, &c).unwrap();
+
+        // D: New storage decision that supersedes A
+        let d = Memory::new(MemoryType::Decision, "New storage approach using SQLite cache", "SQLite for local caching instead of Redis")
+            .with_confidence(0.9);
+        ops::remember(&conn, &d).unwrap();
+
+        // Store embeddings for all three
+        let emb_a = simple_text_embedding(&format!("{} {}", a.title, a.content));
+        let emb_c = simple_text_embedding(&format!("{} {}", c.title, c.content));
+        let emb_d = simple_text_embedding(&format!("{} {}", d.title, d.content));
+        crate::db::vec::store_embedding(&conn, &a.id, &emb_a).unwrap();
+        crate::db::vec::store_embedding(&conn, &c.id, &emb_c).unwrap();
+        crate::db::vec::store_embedding(&conn, &d.id, &emb_d).unwrap();
+
+        heal_topic_supersedes(&conn, &config);
+
+        // C (unrelated auth) MUST remain active
+        let c_status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![c.id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(c_status, "active", "unrelated memory MUST NOT be cascade-superseded");
+    }
+
+    #[test]
+    fn test_healing_idempotent() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+
+        let old = Memory::new(MemoryType::Decision, "Old approach to distributed caching", "Use Redis cluster with sentinel")
+            .with_confidence(0.8);
+        ops::remember(&conn, &old).unwrap();
+        conn.execute("UPDATE memory SET created_at = datetime('now', '-30 days') WHERE id = ?1",
+            rusqlite::params![old.id]).unwrap();
+
+        let new_mem = Memory::new(MemoryType::Decision, "New approach to distributed caching strategy", "Use local SQLite cache instead")
+            .with_confidence(0.9);
+        ops::remember(&conn, &new_mem).unwrap();
+
+        let emb_old = simple_text_embedding(&format!("{} {}", old.title, old.content));
+        let emb_new = simple_text_embedding(&format!("{} {}", new_mem.title, new_mem.content));
+        crate::db::vec::store_embedding(&conn, &old.id, &emb_old).unwrap();
+        crate::db::vec::store_embedding(&conn, &new_mem.id, &emb_new).unwrap();
+
+        let stats1 = heal_topic_supersedes(&conn, &config);
+        let stats2 = heal_topic_supersedes(&conn, &config);
+
+        // Second run should find nothing new (already superseded)
+        assert_eq!(stats2.topic_superseded, 0, "second healing run must be idempotent — nothing new to supersede");
+        // First run may or may not have superseded depending on similarity
+        // but second run must always be zero regardless
+        let _ = stats1;
+    }
+
+    #[test]
+    fn test_healing_with_no_embeddings() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+
+        // Memory without embedding — healing should skip gracefully
+        let m = Memory::new(MemoryType::Decision, "Decision without any embedding vector", "No embedding stored for this")
+            .with_confidence(0.9);
+        ops::remember(&conn, &m).unwrap();
+        // Don't store embedding
+
+        let stats = heal_topic_supersedes(&conn, &config);
+        assert_eq!(stats.topic_superseded, 0, "no embeddings = no healing");
+        assert_eq!(stats.candidates_found, 0, "no candidates without embeddings");
+    }
 }
