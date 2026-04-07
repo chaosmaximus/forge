@@ -778,6 +778,87 @@ pub fn meaningful_words_pub(text: &str) -> HashSet<String> {
     meaningful_words(text)
 }
 
+/// Find active memories with similar titles using FTS5 full-text search.
+///
+/// Returns `(id, title)` pairs for active memories of the given `memory_type`
+/// whose FTS5 content matches the meaningful words from `title`. This is a
+/// fast pre-filter for the extractor's near-duplicate check.
+pub fn find_similar_by_title(
+    conn: &Connection,
+    title: &str,
+    memory_type: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<(String, String)>> {
+    let words = meaningful_words(title);
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fts_terms: Vec<String> = words.iter().map(|w| format!("\"{}\"", w)).collect();
+    let fts_query = fts_terms.join(" OR ");
+    let sql = "
+        SELECT m.id, m.title
+        FROM memory_fts
+        JOIN memory m ON memory_fts.rowid = m.rowid
+        WHERE memory_fts MATCH ?1
+          AND m.status = 'active'
+          AND m.memory_type = ?2
+        ORDER BY bm25(memory_fts)
+        LIMIT ?3
+    ";
+    let mut stmt = conn.prepare(sql)?;
+    let results = stmt.query_map(params![fts_query, memory_type, limit as i64], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    results.collect()
+}
+
+/// Backfill project on memories that have project = NULL.
+///
+/// Phase 1: Join memory → session on session_id to inherit the session's project.
+/// Phase 2: If only one distinct project exists in the DB, assign it to remaining orphans.
+/// Returns (updated_count, remaining_orphan_count).
+pub fn backfill_project_from_sessions(conn: &Connection) -> rusqlite::Result<(usize, usize)> {
+    // Phase 1: Update orphans whose session has a known project
+    let phase1 = conn.execute(
+        "UPDATE memory SET project = (
+            SELECT s.project FROM session s
+            WHERE s.id = memory.session_id AND s.project IS NOT NULL AND s.project != ''
+            LIMIT 1
+        )
+        WHERE (project IS NULL OR project = '')
+          AND session_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM session s
+            WHERE s.id = memory.session_id AND s.project IS NOT NULL AND s.project != ''
+          )",
+        [],
+    )?;
+
+    // Phase 2: If only one distinct project, assign to remaining orphans
+    let distinct_projects: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT project FROM memory WHERE project IS NOT NULL AND project != '' LIMIT 2"
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let mut phase2 = 0usize;
+    if distinct_projects.len() == 1 {
+        let project = &distinct_projects[0];
+        phase2 = conn.execute(
+            "UPDATE memory SET project = ?1 WHERE (project IS NULL OR project = '')",
+            params![project],
+        )?;
+    }
+
+    let remaining: usize = conn.query_row(
+        "SELECT COUNT(*) FROM memory WHERE project IS NULL OR project = ''",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok((phase1 + phase2, remaining))
+}
+
 /// Find and merge near-duplicate memories using word overlap on title AND content.
 /// Only deduplicates memories of the same type and project.
 /// Computes title overlap and content overlap separately, then takes the max of

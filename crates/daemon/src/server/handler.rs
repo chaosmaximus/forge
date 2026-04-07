@@ -4198,9 +4198,10 @@ mod tests {
         let resp = handle_request(&mut state, Request::BackfillProject);
         match resp {
             Response::Ok { data: ResponseData::BackfillProjectResult { updated, skipped } } => {
-                // m-orphan1 should be updated from session, m-orphan2 stays orphaned
-                assert_eq!(updated, 1, "should backfill 1 memory from session");
-                assert_eq!(skipped, 1, "1 memory should remain orphaned (no session match)");
+                // Phase 1: m-orphan1 updated from session (has session_id='sess-1' -> project='forge')
+                // Phase 2: m-orphan2 also updated because only one project ('forge') in DB
+                assert_eq!(updated, 2, "should backfill 2 memories (1 from session, 1 from single-project fallback)");
+                assert_eq!(skipped, 0, "no memories should remain orphaned");
             }
             other => panic!("expected BackfillProjectResult, got {:?}", other),
         }
@@ -4226,7 +4227,7 @@ mod tests {
         match resp {
             Response::Ok { data: ResponseData::BackfillProjectResult { updated, skipped } } => {
                 assert_eq!(updated, 0, "no more memories to backfill");
-                assert_eq!(skipped, 1, "1 still orphaned");
+                assert_eq!(skipped, 0, "all memories should have project now");
             }
             other => panic!("expected BackfillProjectResult, got {:?}", other),
         }
