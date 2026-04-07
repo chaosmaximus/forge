@@ -183,6 +183,45 @@ mod tests {
         assert_eq!(key_path, key2);
     }
 
+    /// Verify that the generated certs can be loaded by `axum_server::tls_rustls::RustlsConfig`,
+    /// which is the exact code path used in main.rs for the HTTPS listener.
+    #[tokio::test]
+    async fn test_axum_server_rustls_config_from_generated_certs() {
+        let tmp = TempDir::new().expect("failed to create temp dir");
+        let base = tmp.path().to_path_buf();
+
+        // Generate self-signed certs.
+        let (cert_path, key_path) =
+            ensure_certs_in(base).expect("ensure_certs_in failed");
+
+        // Build the low-level rustls ServerConfig.
+        let server_config = build_rustls_config(cert_path.clone(), key_path.clone())
+            .expect("build_rustls_config failed");
+
+        // Build axum-server's RustlsConfig from the ServerConfig — this is the
+        // exact call used in the TLS code path of main.rs.
+        let axum_rustls_config =
+            axum_server::tls_rustls::RustlsConfig::from_config(server_config);
+
+        // Verify we can also build it from the PEM files directly (alternate path).
+        let axum_rustls_from_pem = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            &cert_path,
+            &key_path,
+        )
+        .await;
+        assert!(
+            axum_rustls_from_pem.is_ok(),
+            "axum-server should load certs from PEM files: {:?}",
+            axum_rustls_from_pem.err()
+        );
+
+        // Smoke-check: bind_rustls should accept the config without panicking.
+        // We don't actually start the server, just verify the config is accepted.
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let _server = axum_server::bind_rustls(addr, axum_rustls_config);
+        // If we got here without a panic, axum-server accepted our TLS config.
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_key_file_permissions() {
