@@ -666,6 +666,9 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE organization ADD COLUMN description TEXT", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_team_parent ON team(parent_team_id)", []);
 
+    // Team topology: star, mesh, chain (default: mesh)
+    let _ = conn.execute("ALTER TABLE team ADD COLUMN topology TEXT DEFAULT 'mesh'", []);
+
     // ── v2.2: Notification Engine ──
 
     conn.execute_batch("
@@ -830,11 +833,15 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             provider TEXT NOT NULL,
             success INTEGER NOT NULL DEFAULT 1,
             tokens_saved INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            quality_score REAL
         );
         CREATE INDEX IF NOT EXISTS idx_routing_stats_tier ON routing_stats(tier);
         CREATE INDEX IF NOT EXISTS idx_routing_stats_created ON routing_stats(created_at);
     ")?;
+
+    // Quality tracking for smart router quality guard
+    let _ = conn.execute("ALTER TABLE routing_stats ADD COLUMN quality_score REAL", []);
 
     // Seed default agent templates (idempotent)
     if let Err(e) = seed_default_templates(conn) {

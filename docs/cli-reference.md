@@ -98,6 +98,23 @@ forge-next forget <ID>
 forge-next forget 01JQXYZ1234ABCD5678EFGH
 ```
 
+### supersede
+
+Mark an old memory as superseded by a newer one. The old memory is kept in history but stops surfacing in recall results.
+
+```
+forge-next supersede --old-id <OLD_ID> --new-id <NEW_ID>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--old-id OLD_ID` | *(required)* | ID of the old memory to supersede |
+| `--new-id NEW_ID` | *(required)* | ID of the new memory that replaces it |
+
+```bash
+forge-next supersede --old-id 01JQXYZ1234ABCD5678EFGH --new-id 01JQXYZ9999ABCD0000EFGH
+```
+
 ---
 
 ## Session Management
@@ -177,6 +194,64 @@ forge-next cleanup-sessions
 forge-next cleanup-sessions --prefix hook-test
 ```
 
+### set-task
+
+Set the current task on a session. Populates the session card for observability and context injection.
+
+```
+forge-next set-task --session <SESSION> --task <TASK>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session SESSION` | *(required)* | Session ID |
+| `--task TASK` | *(required)* | Task description |
+
+```bash
+forge-next set-task --session sess-abc123 --task "Implementing authentication module"
+```
+
+### session-heartbeat
+
+Send a heartbeat to keep a session alive. Prevents the session from being reaped by the daemon's session cleanup logic.
+
+```
+forge-next session-heartbeat --session <SESSION>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session SESSION` | *(required)* | Session ID to heartbeat |
+
+```bash
+forge-next session-heartbeat --session sess-abc123
+```
+
+### subscribe
+
+Subscribe to real-time daemon events. Streams NDJSON event objects to stdout until interrupted.
+
+```
+forge-next subscribe [--events EVENTS] [--session SESSION] [--team TEAM]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--events EVENTS` | *(all)* | Comma-separated event type filter |
+| `--session SESSION` | *(none)* | Filter events by session ID |
+| `--team TEAM` | *(none)* | Filter events by team ID |
+
+```bash
+# Subscribe to all events
+forge-next subscribe
+
+# Subscribe to specific event types for a session
+forge-next subscribe --events "memory_created,session_ended" --session sess-abc123
+
+# Subscribe to team events
+forge-next subscribe --team backend
+```
+
 ---
 
 ## A2A Messaging
@@ -249,15 +324,64 @@ forge-next ack msg-001 msg-002 msg-003
 
 Control which agents can message each other when `a2a.trust` is set to `controlled`.
 
+#### grant-permission
+
+Grant an A2A messaging permission from one agent to another.
+
+```
+forge-next grant-permission --from <FROM> --to <TO> [--from-project PROJECT] [--to-project PROJECT]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from FROM` | *(required)* | Source agent name |
+| `--to TO` | *(required)* | Target agent name |
+| `--from-project PROJECT` | *(none)* | Restrict source to a specific project |
+| `--to-project PROJECT` | *(none)* | Restrict target to a specific project |
+
 ```bash
-# Grant permission
-forge-next grant-permission --from claude-code --to cline [--from-project P] [--to-project P]
+forge-next grant-permission --from claude-code --to cline
+forge-next grant-permission --from claude-code --to cline --from-project forge --to-project forge
+```
 
-# Revoke a permission by ID
+#### revoke-permission
+
+Revoke an A2A permission by its ID.
+
+```
+forge-next revoke-permission --id <ID>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--id ID` | *(required)* | Permission ID to revoke |
+
+```bash
 forge-next revoke-permission --id perm-abc123
+```
 
-# List all permissions
+#### list-permissions
+
+List all A2A permissions.
+
+```
 forge-next list-permissions
+```
+
+### message-read
+
+Read a single FISP message by its ID.
+
+```
+forge-next message-read --id <ID>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--id ID` | *(required)* | Message ID to read |
+
+```bash
+forge-next message-read --id msg-abc123
 ```
 
 ---
@@ -1109,6 +1233,40 @@ Show full meeting transcript.
 forge-next meeting transcript --id ID
 ```
 
+### meeting vote
+
+Cast a vote in a meeting. The choice must be one of the meeting's predefined voting options.
+
+```
+forge-next meeting vote --id <ID> --session <SESSION> --choice <CHOICE>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--id ID` | *(required)* | Meeting ID |
+| `--session SESSION` | *(required)* | Session ID casting the vote |
+| `--choice CHOICE` | *(required)* | Your choice (must be one of the meeting's voting options) |
+
+```bash
+forge-next meeting vote --id meeting-001 --session sess-abc123 --choice "yes"
+```
+
+### meeting result
+
+Show vote results for a meeting.
+
+```
+forge-next meeting result --id <ID>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--id ID` | *(required)* | Meeting ID |
+
+```bash
+forge-next meeting result --id meeting-001
+```
+
 ---
 
 ## Notifications
@@ -1241,4 +1399,398 @@ Backfill HLC (Hybrid Logical Clock) timestamps on existing memories that have em
 
 ```
 forge-next hlc-backfill
+```
+
+---
+
+## Hooks (Prajna)
+
+Proactive context hooks called automatically by Claude Code at various lifecycle points. These commands are typically invoked by hook scripts, not directly by users.
+
+### context-refresh
+
+Per-turn context delta check. Called by the `UserPromptSubmit` hook to inject fresh context (new memories, pending messages, diagnostics) since the last turn.
+
+```
+forge-next context-refresh --session-id <SESSION_ID> [--since TIMESTAMP]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session-id SESSION_ID` | *(required)* | Session ID to refresh context for |
+| `--since TIMESTAMP` | *(none)* | Only return context changes since this timestamp |
+
+```bash
+forge-next context-refresh --session-id sess-abc123
+forge-next context-refresh --session-id sess-abc123 --since "2026-04-07T10:00:00Z"
+```
+
+### completion-check
+
+Check for premature completion signals. Called by the `Stop` hook to detect when an agent claims to be done but may have missed requirements.
+
+```
+forge-next completion-check --session-id <SESSION_ID> [--claimed-done]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session-id SESSION_ID` | *(required)* | Session ID to check |
+| `--claimed-done` | `false` | Whether the agent explicitly claimed completion |
+
+```bash
+forge-next completion-check --session-id sess-abc123
+forge-next completion-check --session-id sess-abc123 --claimed-done
+```
+
+### task-completion-check
+
+Verify task completion criteria. Called by the `TaskCompleted` hook to ensure all acceptance criteria are met before a task is marked complete.
+
+```
+forge-next task-completion-check --session-id <SESSION_ID> --subject <SUBJECT> [--description DESCRIPTION]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session-id SESSION_ID` | *(required)* | Session ID to check |
+| `--subject SUBJECT` | *(required)* | Subject/title of the completed task |
+| `--description DESCRIPTION` | *(none)* | Additional task description for verification |
+
+```bash
+forge-next task-completion-check --session-id sess-abc123 --subject "Implement auth module"
+forge-next task-completion-check --session-id sess-abc123 --subject "Fix login bug" --description "Users could not log in with SSO"
+```
+
+### context-stats
+
+Context injection observability. Shows token cost, effectiveness metrics, and per-hook breakdown of context injections.
+
+```
+forge-next context-stats [--session-id SESSION_ID]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session-id SESSION_ID` | *(none)* | Session ID (omit for global stats across all sessions) |
+
+```bash
+# Global stats
+forge-next context-stats
+
+# Per-session stats
+forge-next context-stats --session-id sess-abc123
+```
+
+---
+
+## Organization & Workspace
+
+### org-create
+
+Create a new organization.
+
+```
+forge-next org-create --name <NAME> [--description DESCRIPTION]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name NAME` | *(required)* | Organization name |
+| `--description DESCRIPTION` | *(none)* | Organization description |
+
+```bash
+forge-next org-create --name "Acme Corp" --description "Main development organization"
+```
+
+### org-list
+
+List all organizations.
+
+```
+forge-next org-list
+```
+
+```bash
+forge-next org-list
+```
+
+### org-from-template
+
+Create an organization from a predefined template. Templates provide pre-configured teams, roles, and workspace structure.
+
+```
+forge-next org-from-template --template <TEMPLATE> --name <NAME>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--template TEMPLATE` | *(required)* | Template name: `startup`, `devteam`, `agency` |
+| `--name NAME` | *(required)* | Organization name |
+
+```bash
+forge-next org-from-template --template startup --name "MyStartup"
+forge-next org-from-template --template devteam --name "Backend Team"
+```
+
+### org-init
+
+Initialize workspace directories for an organization. Creates the standard directory structure under `~/.forge/workspace/`.
+
+```
+forge-next org-init --name <NAME> [--template TEMPLATE]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name NAME` | *(required)* | Organization name |
+| `--template TEMPLATE` | *(none)* | Template name (e.g., `startup`, `devteam`) |
+
+```bash
+forge-next org-init --name "MyOrg"
+forge-next org-init --name "MyOrg" --template startup
+```
+
+### workspace-status
+
+Show workspace status including mode, paths, and organization info.
+
+```
+forge-next workspace-status
+```
+
+```bash
+forge-next workspace-status
+```
+
+### team-tree
+
+Show the team hierarchy tree for an organization. Displays teams, sub-teams, and their relationships.
+
+```
+forge-next team-tree [--org ORG]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--org ORG` | *(none)* | Organization ID to show tree for |
+
+```bash
+forge-next team-tree
+forge-next team-tree --org acme
+```
+
+### team-send
+
+Send a FISP message to all sessions in a team. Optionally recurse into sub-teams.
+
+```
+forge-next team-send --team <TEAM> --kind <KIND> --topic <TOPIC> --text <TEXT> [--from FROM] [--recursive]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--team TEAM` | *(required)* | Team ID to send to |
+| `--kind KIND` | *(required)* | Message kind: `notification` or `request` |
+| `--topic TOPIC` | *(required)* | Message topic |
+| `--text TEXT` | *(required)* | Message body |
+| `--from FROM` | *(none)* | Sender session ID |
+| `--recursive` | `false` | Also send to all sub-team sessions |
+
+```bash
+forge-next team-send --team backend --kind notification --topic deployment --text "v2.1.0 deployed to staging"
+forge-next team-send --team engineering --kind notification --topic standup --text "Standup in 5 minutes" --recursive
+```
+
+---
+
+## Skills Registry
+
+### skills-list
+
+List skills from the registry. Filter by category or search by keyword.
+
+```
+forge-next skills-list [--category CATEGORY] [--search SEARCH] [--limit N]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--category CATEGORY` | *(all)* | Filter by skill category |
+| `--search SEARCH` | *(none)* | Search by keyword |
+| `--limit N` | `20` | Maximum results |
+
+```bash
+forge-next skills-list
+forge-next skills-list --category development --limit 10
+forge-next skills-list --search "testing"
+```
+
+### skills-install
+
+Install a skill for a project.
+
+```
+forge-next skills-install <NAME> [--project PROJECT]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NAME>` | *(required)* | Skill name to install |
+| `--project PROJECT` | `""` | Project to install for |
+
+```bash
+forge-next skills-install tdd-workflow
+forge-next skills-install code-review --project my-app
+```
+
+### skills-uninstall
+
+Uninstall a skill from a project.
+
+```
+forge-next skills-uninstall <NAME> [--project PROJECT]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NAME>` | *(required)* | Skill name to uninstall |
+| `--project PROJECT` | `""` | Project to uninstall from |
+
+```bash
+forge-next skills-uninstall tdd-workflow
+forge-next skills-uninstall code-review --project my-app
+```
+
+### skills-info
+
+Get detailed information about a skill.
+
+```
+forge-next skills-info <NAME>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NAME>` | *(required)* | Skill name |
+
+```bash
+forge-next skills-info tdd-workflow
+```
+
+### skills-refresh
+
+Re-index the skills directory. Forces a rescan of all installed skills.
+
+```
+forge-next skills-refresh
+```
+
+```bash
+forge-next skills-refresh
+```
+
+---
+
+## License
+
+### license-status
+
+Show the current license tier and key status.
+
+```
+forge-next license-status
+```
+
+```bash
+forge-next license-status
+```
+
+### license-set
+
+Set the license tier and key.
+
+```
+forge-next license-set --tier <TIER> [--key KEY]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tier TIER` | *(required)* | License tier: `free`, `pro`, `team`, `enterprise` |
+| `--key KEY` | `""` | License key |
+
+```bash
+forge-next license-set --tier pro --key "FORGE-PRO-XXXX-XXXX-XXXX"
+forge-next license-set --tier free
+```
+
+---
+
+## Memory Quality
+
+### backfill-project
+
+Backfill the project field on memories that have NULL or empty project values. Derives the correct project from the session registry.
+
+```
+forge-next backfill-project
+```
+
+```bash
+forge-next backfill-project
+```
+
+### cleanup-memory
+
+Cleanup garbage memories, normalize project names, and purge duplicate perceptions and declared entries.
+
+```
+forge-next cleanup-memory
+```
+
+```bash
+forge-next cleanup-memory
+```
+
+### healing-status
+
+Show the current memory healing status: pending repairs, last run timestamp, and health metrics.
+
+```
+forge-next healing-status
+```
+
+```bash
+forge-next healing-status
+```
+
+### healing-run
+
+Trigger a manual healing cycle. Runs deduplication, auto-supersession, and decay on stale memories.
+
+```
+forge-next healing-run
+```
+
+```bash
+forge-next healing-run
+```
+
+### healing-log
+
+Show the healing history log: past healing actions with timestamps and details.
+
+```
+forge-next healing-log [--limit N] [--action ACTION]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--limit N` | `20` | Maximum entries to show |
+| `--action ACTION` | *(all)* | Filter by action type: `auto_superseded`, `auto_faded` |
+
+```bash
+forge-next healing-log
+forge-next healing-log --limit 50
+forge-next healing-log --action auto_superseded
 ```

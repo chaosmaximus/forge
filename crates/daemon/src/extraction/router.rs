@@ -214,24 +214,69 @@ impl<T> OrAsync<T> for Option<T> {
 }
 
 /// Record a routing decision in the routing_stats table.
+/// quality_score: optional quality metric (0.0-1.0) for the extraction result.
 pub fn record_routing_stat(
     conn: &rusqlite::Connection,
     tier: &ComplexityTier,
     provider: &str,
     success: bool,
     tokens_saved: i64,
+    quality_score: Option<f64>,
 ) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO routing_stats (tier, provider, success, tokens_saved, created_at)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+        "INSERT INTO routing_stats (tier, provider, success, tokens_saved, quality_score, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
         rusqlite::params![
             tier.to_string(),
             provider,
             if success { 1 } else { 0 },
             tokens_saved,
+            quality_score,
         ],
     ).map_err(|e| format!("failed to record routing stat: {e}"))?;
     Ok(())
+}
+
+/// Check if recent extraction quality has dropped below the threshold (0.3).
+/// If so, returns the recommended escalation tier.
+/// Free -> Cheap, Cheap -> Full, Full -> None (already at max).
+pub fn check_quality_guard(conn: &rusqlite::Connection) -> Option<ComplexityTier> {
+    // Get average quality_score of extractions in the last 24 hours that have a quality_score
+    let result: Result<(f64, i64), _> = conn.query_row(
+        "SELECT COALESCE(AVG(quality_score), 1.0), COUNT(quality_score)
+         FROM routing_stats
+         WHERE created_at > datetime('now', '-24 hours') AND quality_score IS NOT NULL",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    );
+
+    match result {
+        Ok((avg_quality, count)) => {
+            // Need at least 3 data points to trigger escalation (avoid single bad result)
+            if count < 3 {
+                return None;
+            }
+            if avg_quality < 0.3 {
+                // Determine current dominant tier and escalate
+                let current_tier: Option<String> = conn.query_row(
+                    "SELECT tier FROM routing_stats
+                     WHERE created_at > datetime('now', '-24 hours') AND quality_score IS NOT NULL
+                     GROUP BY tier ORDER BY COUNT(*) DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                ).ok();
+
+                match current_tier.as_deref() {
+                    Some("free") => Some(ComplexityTier::Cheap),
+                    Some("cheap") => Some(ComplexityTier::Full),
+                    _ => None, // Already at Full or unknown
+                }
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
 }
 
 /// Query aggregated routing stats.
@@ -418,14 +463,15 @@ mod tests {
                 provider TEXT NOT NULL,
                 success INTEGER NOT NULL DEFAULT 1,
                 tokens_saved INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                quality_score REAL
             )",
         ).unwrap();
 
-        record_routing_stat(&conn, &ComplexityTier::Free, "ollama", true, 500).unwrap();
-        record_routing_stat(&conn, &ComplexityTier::Free, "ollama", true, 300).unwrap();
-        record_routing_stat(&conn, &ComplexityTier::Cheap, "gemini", true, 100).unwrap();
-        record_routing_stat(&conn, &ComplexityTier::Full, "claude_api", false, 0).unwrap();
+        record_routing_stat(&conn, &ComplexityTier::Free, "ollama", true, 500, None).unwrap();
+        record_routing_stat(&conn, &ComplexityTier::Free, "ollama", true, 300, None).unwrap();
+        record_routing_stat(&conn, &ComplexityTier::Cheap, "gemini", true, 100, None).unwrap();
+        record_routing_stat(&conn, &ComplexityTier::Full, "claude_api", false, 0, None).unwrap();
 
         let stats = query_routing_stats(&conn).unwrap();
         assert_eq!(stats.total_routed, 4);

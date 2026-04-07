@@ -405,6 +405,19 @@ pub fn set_team_orchestrator(
     Ok(count > 0)
 }
 
+/// Get the topology and orchestrator session ID for a team by name.
+/// Returns (topology, orchestrator_session_id).
+pub fn get_team_topology(
+    conn: &Connection,
+    team_name: &str,
+) -> rusqlite::Result<(String, Option<String>)> {
+    conn.query_row(
+        "SELECT COALESCE(topology, 'mesh'), orchestrator_session_id FROM team WHERE name = ?1",
+        params![team_name],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+}
+
 /// Get full team status (members, active agents, meeting count).
 pub fn team_status(
     conn: &Connection,

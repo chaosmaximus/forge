@@ -172,8 +172,9 @@ pub fn write_decision(
 ) -> io::Result<PathBuf> {
     let date = today_ymd();
     let slug = slugify(title);
+    let team_slug = slugify(team);
     let filename = format!("{}-{}.md", date, slug);
-    let dir = workspace_root.join("teams").join(team).join("decisions");
+    let dir = workspace_root.join("teams").join(&team_slug).join("decisions");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(&filename);
 
@@ -482,6 +483,33 @@ mod tests {
         assert!(ws_root.join("teams/_shared").is_dir());
         assert!(ws_root.join("org.json").exists());
         assert!(ws_root.join("workspace.json").exists());
+    }
+
+    #[test]
+    fn test_write_decision_slugifies_team_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Path traversal attempt: team name like "../../etc/passwd"
+        let result = write_decision(
+            root,
+            "../../etc/passwd",
+            "Malicious Decision",
+            "Content here",
+            0.9,
+            &["test".to_string()],
+            "mem-123",
+        );
+
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        // The path should NOT contain ".." — it should be slugified
+        let path_str = path.to_string_lossy();
+        assert!(!path_str.contains(".."), "slugified team path must not contain '..': {path_str}");
+        // The slugified team name should be something like "etc-passwd"
+        assert!(path_str.contains("etc-passwd"), "team name should be slugified to 'etc-passwd': {path_str}");
+        // File should actually exist
+        assert!(path.exists(), "decision file should have been written");
     }
 
     #[test]

@@ -3460,6 +3460,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
         Request::TeamSend { team_name, kind, topic, parts, from_session, recursive } => {
             let from = from_session.as_deref().unwrap_or("system");
+
+            // Enforce team topology before routing messages
+            if let Ok((topology, orchestrator)) = crate::teams::get_team_topology(&state.conn, &team_name) {
+                if topology == "star" {
+                    // In star topology, only the orchestrator (or "system") can send to team members.
+                    // Non-orchestrator members must route through the orchestrator.
+                    if from != "system" {
+                        if let Some(ref orch_id) = orchestrator {
+                            if from != orch_id.as_str() {
+                                return Response::Error {
+                                    message: format!(
+                                        "star topology: only the orchestrator ({}) can send to team members, not {}",
+                                        orch_id, from
+                                    ),
+                                };
+                            }
+                        }
+                        // If no orchestrator is set, allow messages (degrade gracefully)
+                    }
+                }
+                // mesh: any-to-any (default, no restriction)
+                // chain: not yet enforced (follow-up)
+            }
+
             match crate::org::team_session_ids(&state.conn, &team_name, recursive) {
                 Ok(session_ids) => {
                     let parts_json = serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string());
@@ -7320,5 +7344,83 @@ mod tests {
             }
         }
         assert!(found_injection, "CompileContext with session_id should send RecordInjection via writer channel");
+    }
+
+    #[test]
+    fn test_star_topology_blocks_non_orchestrator() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Create a team
+        let resp = handle_request(&mut state, Request::CreateTeam {
+            name: "star-team".into(),
+            team_type: Some("agent".into()),
+            purpose: Some("test star topology".into()),
+            organization_id: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamCreated { .. } } => {}
+            other => panic!("expected TeamCreated, got {:?}", other),
+        }
+
+        // Set topology to star
+        state.conn.execute("UPDATE team SET topology = 'star' WHERE name = 'star-team'", []).unwrap();
+
+        // Register orchestrator and member sessions
+        crate::sessions::register_session(&state.conn, "orch-1", "claude-code", None, None, None, None).unwrap();
+        crate::sessions::register_session(&state.conn, "member-1", "claude-code", None, None, None, None).unwrap();
+        crate::sessions::register_session(&state.conn, "member-2", "claude-code", None, None, None, None).unwrap();
+
+        // Assign sessions to team
+        let team_id: String = state.conn.query_row(
+            "SELECT id FROM team WHERE name = 'star-team'", [], |r| r.get(0),
+        ).unwrap();
+        state.conn.execute("UPDATE session SET team_id = ?1 WHERE id = 'orch-1'", rusqlite::params![team_id]).unwrap();
+        state.conn.execute("UPDATE session SET team_id = ?1 WHERE id = 'member-1'", rusqlite::params![team_id]).unwrap();
+        state.conn.execute("UPDATE session SET team_id = ?1 WHERE id = 'member-2'", rusqlite::params![team_id]).unwrap();
+
+        // Set orchestrator
+        let resp = handle_request(&mut state, Request::SetTeamOrchestrator {
+            team_name: "star-team".into(),
+            session_id: "orch-1".into(),
+        });
+        match resp {
+            Response::Ok { .. } => {}
+            other => panic!("expected Ok, got {:?}", other),
+        }
+
+        // Non-orchestrator member should be BLOCKED from sending
+        let resp = handle_request(&mut state, Request::TeamSend {
+            team_name: "star-team".into(), kind: "notification".into(), topic: "test".into(),
+            parts: vec![], from_session: Some("member-1".into()), recursive: false,
+        });
+        match resp {
+            Response::Error { message } => {
+                assert!(message.contains("star topology"), "error should mention star topology: {message}");
+                assert!(message.contains("orch-1"), "error should mention orchestrator: {message}");
+            }
+            other => panic!("expected Error for non-orchestrator in star topology, got {:?}", other),
+        }
+
+        // Orchestrator SHOULD be able to send
+        let resp = handle_request(&mut state, Request::TeamSend {
+            team_name: "star-team".into(), kind: "notification".into(), topic: "test".into(),
+            parts: vec![], from_session: Some("orch-1".into()), recursive: false,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamSent { messages_sent } } => {
+                assert!(messages_sent > 0, "orchestrator should be able to send in star topology");
+            }
+            other => panic!("expected TeamSent for orchestrator, got {:?}", other),
+        }
+
+        // "system" should also be allowed (graceful degradation)
+        let resp = handle_request(&mut state, Request::TeamSend {
+            team_name: "star-team".into(), kind: "notification".into(), topic: "sys-test".into(),
+            parts: vec![], from_session: Some("system".into()), recursive: false,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamSent { .. } } => {}
+            other => panic!("expected TeamSent for system sender, got {:?}", other),
+        }
     }
 }

@@ -921,7 +921,7 @@ pub fn normalize_project_names(conn: &Connection) -> rusqlite::Result<usize> {
 /// (weighted average, title score, content score) — so a strong match in either
 /// title or content alone is sufficient to flag a duplicate.
 /// Stop words are filtered before comparison so only meaningful words count.
-/// Threshold: 0.6 combined score.
+/// Threshold: 0.65 combined score.
 /// Returns number of duplicates merged (marked as superseded).
 pub fn semantic_dedup(conn: &Connection, limit: usize) -> rusqlite::Result<usize> {
     // Get active memory IDs with titles, types, projects, AND content — bounded to prevent O(N^2) blowup
@@ -973,12 +973,13 @@ pub fn semantic_dedup(conn: &Connection, limit: usize) -> rusqlite::Result<usize
             let content_max = content_words_a.len().max(content_words_b.len()) as f64;
             let content_score = if content_max > 0.0 { content_intersection / content_max } else { 0.0 };
 
-            // Combined: weighted average (title 0.4, content 0.6) OR max of either score.
+            // Combined: weighted average (title 0.5, content 0.5) OR max of either score.
             // Using max ensures a strong match in either title or content is sufficient.
-            let weighted = title_score * 0.4 + content_score * 0.6;
+            // Threshold raised to 0.65 to avoid suppressing memories with similar titles but different content.
+            let weighted = title_score * 0.5 + content_score * 0.5;
             let combined = weighted.max(title_score).max(content_score);
 
-            if combined > 0.6 {
+            if combined > 0.65 {
                 // Mark the later one (id_b) for deletion
                 // ORDER BY confidence DESC ensures we keep the higher-confidence memory (Codex fix: deterministic survivor)
                 to_delete.insert(id_b.clone());
@@ -1419,6 +1420,18 @@ pub fn detect_contradictions(conn: &Connection) -> rusqlite::Result<usize> {
                 expires_at: forge_core::time::now_offset(86400), // 24 hours
             };
             store_diagnostic(conn, &diag)?;
+
+            // Create a 'contradicts' edge between the two memories
+            let edge_id = format!("edge-contradiction-{}-{}", id_a, id_b);
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO edge (id, from_id, to_id, edge_type, properties, created_at, valid_from)
+                 VALUES (?1, ?2, ?3, 'contradicts', ?4, ?5, ?5)",
+                params![
+                    edge_id, id_a, id_b,
+                    format!("{{\"shared_tags\":{}}}", shared),
+                    forge_core::time::now_iso(),
+                ],
+            );
             found += 1;
         }
     }
@@ -2927,25 +2940,23 @@ mod tests {
     #[test]
     fn test_semantic_dedup_known_audit_duplicates() {
         let conn = open_db();
-        // The known near-duplicate pair from audit:
-        // "Graph edges auto-generated: AFFECTS (extraction) and related_to (consolidation)"
-        // vs "Graph edges auto-generated from memory extraction"
-        // These share significant meaningful words: graph, edges, auto, generated, extraction
+        // Near-duplicate pair with very similar titles AND content (should exceed 0.65 threshold).
+        // Both title and content share many meaningful words.
         insert_memory_for_dedup(
             &conn, "f1", "decision",
-            "Graph edges auto-generated: AFFECTS (extraction) and related_to (consolidation)",
-            "The system automatically generates graph edges during memory extraction and consolidation phases",
+            "Graph edges auto-generated from extraction and consolidation",
+            "Graph edges are automatically generated during memory extraction and consolidation phases for knowledge linking",
             "", 0.9,
         );
         insert_memory_for_dedup(
             &conn, "f2", "decision",
-            "Graph edges auto-generated from memory extraction",
-            "Graph edges are automatically generated from the memory extraction process",
+            "Graph edges auto-generated from extraction and consolidation process",
+            "Graph edges are automatically generated during memory extraction and consolidation for linking knowledge",
             "", 0.8,
         );
 
         let merged = semantic_dedup(&conn, 1000).unwrap();
-        assert_eq!(merged, 1, "known audit near-duplicates should be caught by combined title+content dedup");
+        assert_eq!(merged, 1, "near-duplicates with similar title+content should be caught at 0.65 threshold");
 
         // Higher confidence should survive
         let status_f1: String = conn.query_row("SELECT status FROM memory WHERE id = 'f1'", [], |r| r.get(0)).unwrap();
@@ -3900,5 +3911,31 @@ mod tests {
             "SELECT COUNT(*) FROM memory WHERE status = 'active'", [], |r| r.get(0)
         ).unwrap();
         assert_eq!(active, 6, "5 unloaded + 1 survivor = 6 active");
+    }
+
+    #[test]
+    fn test_semantic_dedup_same_title_different_content_not_deduped() {
+        let conn = open_db();
+
+        // Two memories with similar (not identical) titles and completely different content.
+        // These should NOT be deduped because neither title nor content overlap enough.
+        insert_memory_for_dedup(&conn, "st-3", "decision",
+            "Configure database connection pooling",
+            "Use PgBouncer with transaction-level pooling. Set pool size to 2x CPU cores. \
+             Monitor connection wait times and scale pool when p99 exceeds 50ms.",
+            "myproject", 0.85);
+        insert_memory_for_dedup(&conn, "st-4", "decision",
+            "Configure deployment pipeline stages",
+            "Use GitHub Actions with three stages: lint, test, deploy. Each stage runs in parallel \
+             where possible. Deployment uses blue-green strategy with automatic rollback.",
+            "myproject", 0.80);
+
+        let merged = semantic_dedup(&conn, 1000).unwrap();
+        assert_eq!(merged, 0, "memories with different titles AND different content must not be deduped");
+
+        let active: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory WHERE status = 'active'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(active, 2, "both memories should remain active");
     }
 }
