@@ -88,14 +88,14 @@ For multi-file tasks, Forge dispatches an agent team:
 
 **USE THESE AGENTS** for implementation work. Don't use raw subagents when Forge agents are available.
 
-### CLI-First Commands (v0.6.0 — Manas)
+### CLI-First Commands (v0.7.0 — Session 10)
 
 `forge-next` is the Rust CLI client for the forge-daemon. **This is the only interface** — no MCP server.
 
 ```bash
 # Memory
 forge-next remember --type decision --title "..." --content "..." [--metadata '{"key":"val"}']
-forge-next recall "query" [--project P] [--type T] [--limit N] [--layer L]
+forge-next recall "query" [--project P] [--type T] [--limit N] [--layer L] [--since 1h|7d]
 forge-next forget <id>
 forge-next supersede --old-id <old> --new-id <new>
 
@@ -103,12 +103,13 @@ forge-next supersede --old-id <old> --new-id <new>
 forge-next register-session --id <id> --agent <agent> [--project P] [--cwd D]
 forge-next end-session --id <id>
 forge-next sessions [--all]
+forge-next set-task --session <id> --task "description"  # Session card auto-populate
 
 # Context & health
 forge-next compile-context --agent claude-code [--project P] [--focus <topic>]
 forge-next health
 forge-next health-by-project
-forge-next doctor
+forge-next doctor                         # Comprehensive system diagnostics
 forge-next manas-health
 
 # Identity (Ahankara)
@@ -126,6 +127,30 @@ forge-next send --to "*" --kind notification --topic schema_changed --text "..."
 forge-next messages --session <session-id> [--status pending] [--limit N]
 forge-next ack <message-id-1> <message-id-2> ...
 forge-next cleanup-sessions [--prefix hook-test] [--older-than 24h] [--prune]
+
+# Teams & Orchestration
+forge-next team run --name "Sprint" --templates tech-lead,frontend-dev,backend-dev
+forge-next team stop --name "Sprint"
+forge-next meeting vote --id <meeting-id> --session <session-id> --choice "yes"
+forge-next meeting result --id <meeting-id>
+
+# Workspace
+forge-next org-init --name "MyOrg" [--template startup]
+forge-next workspace-status
+
+# License
+forge-next license-status
+forge-next license-set --tier pro --key <license-key>
+
+# Memory healing
+forge-next healing-status
+forge-next healing-run
+forge-next healing-log [--limit N]
+
+# Extraction & quality
+forge-next backfill-project               # Fix NULL project on memories
+forge-next consolidate                    # Force consolidation phases
+forge-next extract                        # Trigger extraction on pending transcripts
 
 # Import/export
 forge-next export [--format json]
@@ -147,8 +172,9 @@ forge scan . --watch --interval 30        # Always-on security monitor
 # Other
 forge-next platform
 forge-next tools
-forge-next perceptions [--project P] [--limit N]
+forge-next perceptions [--project P] [--limit N] [--offset N]
 forge-next lsp-status
+forge-next config get-effective           # aliased as 'config get'
 
 # Hooks (<5ms, called by Claude Code automatically)
 forge hook session-start                  # Context injection
@@ -163,6 +189,19 @@ forge agent                               # Agent lifecycle tracking
 ```bash
 forge-next remember --type decision --title "..." --content "..."
 ```
+
+### Dogfooding Protocol
+
+**Forge builds itself.** Every session should follow this circular loop:
+1. **Pull & check** — `git pull`, read team requests, check Forge health
+2. **Recall** — `forge-next recall` relevant decisions before planning
+3. **Build** — use Forge agents (planner/generator/evaluator), store decisions
+4. **Test** — TDD, adversarial review, UAT with live daemon
+5. **Track** — store issues in Forge memory, write artifacts to workspace
+6. **Evaluate** — run `forge-next doctor`, check healing, review perceptions
+7. **Push & handoff** — update HANDOFF.md, push, start fresh session if needed
+
+Track all gaps in `product/engineering/daemon-team/SESSION-GAPS.md`.
 
 ---
 
@@ -254,14 +293,35 @@ cargo clippy -p forge-daemon -p forge-core -p forge-cli -- -W clippy::all
 
 ## Remaining Work
 
-- Use Forge agents (planner/generator/evaluator) for building features — dogfood
-- Live Telegram channel test with real bot
-- AutoResearch: flesh out the explore/measure/keep/discard loop with Claude driving
-- Council review: wire multi-model dispatch in the skill
-- HUD: update on ALL tool calls (currently only remember/forget)
-- Full Rust MCP server when kuzu crate reaches v0.15+ compatibility
-- `forge doctor` — system health checks wired to HUD
-- Shannon integration — `forge:forge-pentest` security pentesting skill
-- CLI-Anything patterns — agent-native CLI wrapper generation
-- XML context injection — structured context for agent spawn (decisions, architecture, task)
-- Agent team overhaul — wave-to-wave handoff, context passing, AgentRun population
+Track all items in `product/engineering/daemon-team/SESSION-GAPS.md`.
+
+### Code gaps (daemon team)
+- Skills CLI commands — handler wired but `forge-next skills list/install/info` NOT in CLI
+- Skills HTTP API — `/api/skills` endpoint for canvas
+- Team topology enforcement — star/mesh/chain not enforced in FISP routing
+- Team create --from-file — loading team templates from JSON files
+- Tests for run_team/stop_team (adversarial S4)
+- WASM Task Runner (wasmtime dep — dedicated session)
+- Code graph TypeScript/frontend indexing
+- Smart router quality guard — auto-escalate tier on quality drop
+- Raft leader election for leaderless teams
+- Context stats don't track hook-based injections
+- Perception accumulation (763+ unconsumed) — worker tuning needed
+- Adversarial suggestions: file path leaks in skill_info, team size cap, status validation, team param slugification, dedup threshold tuning
+- Docker image < 80MB (currently ~95MB)
+
+### Infrastructure (founder + daemon)
+- Dodo Payments KYC + products
+- Terms of Service / Privacy Policy
+- Apple Developer ID (binary signing)
+- Starlight docs site deployment
+- Git secret scan on repo
+- CLI reference update with Session 10 commands
+
+### Architecture (multi-day, future sessions)
+- Multi-tenant isolation (per-team DB)
+- OIDC provider support (Okta, Azure AD)
+- Auto-update mechanism
+- Memory sync between devices
+- Full Rust MCP server
+- Agent team overhaul — wave-to-wave handoff, context passing
