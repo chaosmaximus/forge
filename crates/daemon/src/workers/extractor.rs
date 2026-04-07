@@ -414,22 +414,31 @@ async fn process_file(
                             );
                             // Don't continue — let it fall through to memory storage as a lesson
                         } else {
+                            // Extract steps: try numbered/bulleted lines first, fall back to
+                            // sentence splitting for prose-style procedures
+                            let mut steps: Vec<String> = em.content.lines()
+                                .filter(|l| {
+                                    let trimmed = l.trim();
+                                    trimmed.starts_with(|c: char| c.is_ascii_digit())
+                                        || trimmed.starts_with('-')
+                                        || trimmed.starts_with('*')
+                                        || trimmed.starts_with("Step")
+                                })
+                                .map(|l| l.trim().to_string())
+                                .collect();
+                            // Fallback: if no structured steps found, split on sentences
+                            if steps.is_empty() && em.content.len() >= 50 {
+                                steps = em.content.split('.')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| s.len() >= 10)
+                                    .collect();
+                            }
                             let skill = forge_core::types::Skill {
                                 id: format!("skill-{}", ulid::Ulid::new()),
                                 name: em.title.clone(),
                                 domain: em.tags.first().cloned().unwrap_or_else(|| "general".to_string()),
                                 description: em.content.clone(),
-                                steps: em.content.lines()
-                                    .filter(|l| {
-                                        let trimmed = l.trim();
-                                        // Match numbered steps or bullet points
-                                        trimmed.starts_with(|c: char| c.is_ascii_digit())
-                                            || trimmed.starts_with('-')
-                                            || trimmed.starts_with('*')
-                                            || trimmed.starts_with("Step")
-                                    })
-                                    .map(|l| l.trim().to_string())
-                                    .collect(),
+                                steps,
                                 success_count: 1, // Extracted from a successful execution
                                 fail_count: 0,
                                 last_used: None,
@@ -459,7 +468,21 @@ async fn process_file(
                 }
 
                 // Route identity signals to the identity table (Ahankara)
+                // Filter out AI agent roles that the LLM may confuse with user identity
                 if em.memory_type == "identity" {
+                    let title_lower = em.title.to_lowercase();
+                    let agent_role_keywords = [
+                        "advisor", "assistant", "agent", "claude", "gpt", "copilot",
+                        "cto advisor", "cfo advisor", "cmo advisor", "cpo advisor",
+                        "board member", "ai ", "llm ", "model ",
+                    ];
+                    if agent_role_keywords.iter().any(|kw| title_lower.contains(kw)) {
+                        eprintln!(
+                            "[extractor] filtered AI agent identity '{}' — only human user identity accepted",
+                            em.title
+                        );
+                        continue;
+                    }
                     let facet_type = em.tags.first().cloned().unwrap_or_else(|| "expertise".to_string());
                     let facet = forge_core::types::manas::IdentityFacet {
                         id: format!("identity-{}", ulid::Ulid::new()),
