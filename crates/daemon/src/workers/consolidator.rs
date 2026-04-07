@@ -38,6 +38,9 @@ pub struct ConsolidationStats {
     pub scored: usize,
     pub protocols_extracted: usize,
     pub antipatterns_tagged: usize,
+    pub healed_superseded: usize,
+    pub healed_faded: usize,
+    pub healed_quality_adjusted: usize,
 }
 
 /// Stats from a healing cycle.
@@ -338,6 +341,48 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
 
     if notifs_generated > 0 {
         eprintln!("[consolidator] generated {} notifications", notifs_generated);
+    }
+
+    // ── Memory Self-Healing (Phases 20-22) ──
+
+    // Phase 20: Topic-aware auto-supersede
+    let healing_config = crate::config::load_config().healing;
+    let healing_stats = heal_topic_supersedes(conn, &healing_config);
+    stats.healed_superseded = healing_stats.topic_superseded;
+    if healing_stats.topic_superseded > 0 {
+        eprintln!("[consolidator] healing: auto-superseded {} topic-evolved memories ({} candidates, {} skipped)",
+            healing_stats.topic_superseded, healing_stats.candidates_found, healing_stats.false_positives_skipped);
+    }
+
+    // Phase 21: Session staleness fade
+    let healed_faded = heal_session_staleness(conn, &healing_config);
+    stats.healed_faded = healed_faded;
+    if healed_faded > 0 {
+        eprintln!("[consolidator] healing: auto-faded {} stale memories", healed_faded);
+    }
+
+    // Phase 22: Quality pressure (natural selection)
+    let quality_adjusted = apply_quality_pressure(conn, &healing_config);
+    stats.healed_quality_adjusted = quality_adjusted;
+    if quality_adjusted > 0 {
+        eprintln!("[consolidator] healing: adjusted quality for {} memories", quality_adjusted);
+    }
+
+    // Healing notification (throttled: max once per hour)
+    if (healing_stats.topic_superseded > 0 || healed_faded > 0)
+        && !crate::notifications::check_throttle(conn, "healing", "local", 3600).unwrap_or(true)
+    {
+        if let Err(e) = crate::notifications::NotificationBuilder::new(
+            "insight", "medium",
+            &format!("Memory healing: {} superseded, {} faded", healing_stats.topic_superseded, healed_faded),
+            &format!("Auto-superseded {} same-topic decisions, faded {} stale memories. Review: forge-next healing-log",
+                healing_stats.topic_superseded, healed_faded),
+            "consolidator",
+        )
+        .topic("healing")
+        .build(conn) {
+            eprintln!("[consolidator] healing notification failed: {e}");
+        }
     }
 
     stats
@@ -1705,5 +1750,31 @@ mod tests {
         ).unwrap();
         assert!(quality < 0.5, "quality should have decayed from 0.5");
         assert!(quality >= 0.35, "quality should decay by ~0.1, not more");
+    }
+
+    #[test]
+    fn test_run_all_phases_includes_healing_stats() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create a stale memory that should be faded by Phase 21.
+        // Must survive Phase 4 decay (confidence * exp(-0.03 * days) >= 0.1)
+        // but get low quality from Phase 15 scoring (< staleness_min_quality = 0.2).
+        // At 30 days: Phase 4 effective = 0.5 * exp(-0.9) ≈ 0.20 (survives),
+        // Phase 15 quality ≈ 0.57 * 0.3 + 0 + 0.015 + 0 ≈ 0.19 (below 0.2 threshold).
+        let m = Memory::new(MemoryType::Decision, "Very stale memory for consolidation test", "Ancient content")
+            .with_confidence(0.5);
+        ops::remember(&conn, &m).unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-30 days'), quality_score = 0.1, access_count = 0 WHERE id = ?1",
+            rusqlite::params![m.id],
+        ).unwrap();
+
+        let config = crate::config::ConsolidationConfig::default();
+        let stats = run_all_phases(&conn, &config);
+
+        // Healing phases should have run
+        assert!(stats.healed_faded > 0, "Phase 21 should have faded the stale memory");
     }
 }
