@@ -509,11 +509,12 @@ pub fn run_team(
                 session_ids.push(session_id);
             }
             Err(e) => {
-                // Rollback: retire all already-spawned agents
+                // Rollback: retire all already-spawned agents and clean up team record
                 for sid in &session_ids {
                     let _ = retire_agent(conn, sid);
                     let _ = crate::sessions::end_session(conn, sid);
                 }
+                let _ = conn.execute("DELETE FROM team WHERE name = ?1", params![team_name]);
                 return Err(e);
             }
         }

@@ -85,6 +85,11 @@ fn index_recursive(conn: &Connection, dir: &Path, count: &mut usize) -> Result<(
         };
         let path = entry.path();
 
+        // Symlink defense: skip symlinks to prevent directory traversal attacks
+        if path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+            continue;
+        }
+
         if path.is_dir() {
             index_recursive(conn, &path, count)?;
         } else if path.file_name().is_some_and(|n| n == "SKILL.md") {
