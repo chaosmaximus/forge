@@ -678,6 +678,26 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
          END;"
     );
 
+    // ── v2.6: Memory Supersede + Structured Metadata ──
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN superseded_by TEXT", []);
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN metadata TEXT", []);
+
+    // ── v2.7: Memory Self-Healing ──
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS healing_log (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            old_memory_id TEXT NOT NULL,
+            new_memory_id TEXT,
+            similarity_score REAL,
+            overlap_score REAL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_healing_log_action ON healing_log(action);
+        CREATE INDEX IF NOT EXISTS idx_healing_log_created ON healing_log(created_at);
+    ")?;
+
     Ok(())
 }
 
@@ -936,5 +956,18 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "manas table '{}' should exist", table_name);
         }
+    }
+
+    #[test]
+    fn test_healing_log_table_exists() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='healing_log'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "healing_log table should exist");
     }
 }

@@ -41,6 +41,13 @@ fn default_bind() -> String { "127.0.0.1".to_string() }
 fn default_grpc_bind() -> String { "0.0.0.0".to_string() }
 fn default_cors_origins() -> Vec<String> { vec!["*".to_string()] }
 fn default_service_name() -> String { "forge-daemon".to_string() }
+fn default_healing_cosine() -> f64 { 0.8 }
+fn default_healing_overlap_low() -> f64 { 0.3 }
+fn default_healing_overlap_high() -> f64 { 0.7 }
+fn default_healing_staleness_days() -> u64 { 7 }
+fn default_healing_staleness_min_quality() -> f64 { 0.2 }
+fn default_healing_quality_decay() -> f64 { 0.1 }
+fn default_healing_quality_boost() -> f64 { 0.05 }
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,6 +85,8 @@ pub struct ForgeConfig {
     #[serde(default)]
     pub proactive: ProactiveConfig,
     #[serde(default)]
+    pub healing: HealingConfig,
+    #[serde(default)]
     pub tls: TlsConfig,
     #[serde(default)]
     pub ui: UiConfig,
@@ -108,17 +117,11 @@ impl Default for HttpConfig {
 /// TLS configuration — opt-in, disabled by default.
 /// When enabled, the daemon generates a self-signed certificate for localhost
 /// and serves HTTPS. Users can install the CA cert to trust Forge in their browser.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TlsConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 /// gRPC transport configuration — opt-in, disabled by default.
@@ -478,6 +481,46 @@ impl Default for ProactiveConfig {
             anti_pattern_threshold: 0.85,
             completion_keywords: default_completion_keywords(),
             completion_dismiss_limit: 3,
+        }
+    }
+}
+
+/// Memory Self-Healing configuration — thresholds for auto-supersede and staleness.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HealingConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_healing_cosine")]
+    pub cosine_threshold: f64,
+    #[serde(default = "default_healing_overlap_low")]
+    pub overlap_low: f64,
+    #[serde(default = "default_healing_overlap_high")]
+    pub overlap_high: f64,
+    #[serde(default = "default_healing_staleness_days")]
+    pub staleness_days: u64,
+    #[serde(default = "default_healing_staleness_min_quality")]
+    pub staleness_min_quality: f64,
+    #[serde(default = "default_healing_quality_decay")]
+    pub quality_decay_per_cycle: f64,
+    #[serde(default = "default_healing_quality_boost")]
+    pub quality_boost_per_access: f64,
+    #[serde(default = "default_200_usize")]
+    pub batch_limit: usize,
+}
+
+impl Default for HealingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cosine_threshold: 0.8,
+            overlap_low: 0.3,
+            overlap_high: 0.7,
+            staleness_days: 7,
+            staleness_min_quality: 0.2,
+            quality_decay_per_cycle: 0.1,
+            quality_boost_per_access: 0.05,
+            batch_limit: 200,
         }
     }
 }
