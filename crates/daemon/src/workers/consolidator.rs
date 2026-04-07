@@ -1085,13 +1085,15 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
             }
 
             // Insert edge
-            let _ = ops::store_edge(conn, new_id, old_id, "supersedes", "{}");
+            if let Err(e) = ops::store_edge(conn, new_id, old_id, "supersedes", "{}") {
+                eprintln!("[healing] edge insert failed for {new_id} -> {old_id}: {e}");
+            }
 
             // Insert healing_log
             let log_id = ulid::Ulid::new().to_string();
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "INSERT INTO healing_log (id, action, old_memory_id, new_memory_id, similarity_score, overlap_score, reason, created_at)
-                 VALUES (?1, 'topic_supersede', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                 VALUES (?1, 'auto_superseded', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
                 rusqlite::params![
                     log_id,
                     old_id,
@@ -1100,7 +1102,9 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
                     overlap,
                     format!("Same topic (overlap={:.2}), newer memory supersedes older", overlap),
                 ],
-            );
+            ) {
+                eprintln!("[healing] healing_log insert failed: {e}");
+            }
 
             already_superseded.insert(old_id.clone());
             stats.topic_superseded += 1;
@@ -1115,6 +1119,78 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
     }
 
     stats
+}
+
+/// Phase 21: Fade old unaccessed low-quality memories.
+/// Memories with quality_score < threshold AND zero accesses AND older than N days -> faded.
+pub fn heal_session_staleness(conn: &Connection, config: &crate::config::HealingConfig) -> usize {
+    if !config.enabled { return 0; }
+
+    let days = config.staleness_days;
+    let min_quality = config.staleness_min_quality;
+
+    // Fade stale memories
+    let faded: usize = conn.execute(
+        "UPDATE memory SET status = 'faded'
+         WHERE status = 'active'
+         AND COALESCE(quality_score, 0.5) < ?1
+         AND access_count = 0
+         AND created_at < datetime('now', ?2)",
+        rusqlite::params![min_quality, format!("-{days} days")],
+    ).unwrap_or(0);
+
+    // Log each faded memory
+    if faded > 0 {
+        let now = forge_core::time::now_iso();
+        // Query the just-faded memories to log them
+        let ids: Vec<String> = conn.prepare(
+            "SELECT id FROM memory WHERE status = 'faded'
+             AND COALESCE(quality_score, 0.5) < ?1
+             AND access_count = 0"
+        ).and_then(|mut stmt| {
+            stmt.query_map(rusqlite::params![min_quality], |row| row.get(0))?.collect()
+        }).unwrap_or_default();
+
+        for id in ids.iter().take(config.batch_limit) {
+            let log_id = ulid::Ulid::new().to_string();
+            if let Err(e) = conn.execute(
+                "INSERT INTO healing_log (id, action, old_memory_id, reason, created_at)
+                 VALUES (?1, 'auto_faded', ?2, ?3, ?4)",
+                rusqlite::params![log_id, id,
+                    format!("Stale: quality < {min_quality}, 0 accesses, > {days} days old"),
+                    now],
+            ) {
+                eprintln!("[healing] healing_log insert failed: {e}");
+            }
+        }
+    }
+
+    faded
+}
+
+/// Phase 22: Natural selection — decay unused memories' quality, boost accessed ones.
+pub fn apply_quality_pressure(conn: &Connection, config: &crate::config::HealingConfig) -> usize {
+    if !config.enabled { return 0; }
+
+    let decay = config.quality_decay_per_cycle;
+    let boost = config.quality_boost_per_access;
+
+    // Decay: reduce quality for unaccessed active memories (floor at 0.0)
+    let decayed: usize = conn.execute(
+        "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
+         WHERE status = 'active' AND access_count = 0 AND COALESCE(quality_score, 0.5) > 0.0",
+        rusqlite::params![decay],
+    ).unwrap_or(0);
+
+    // Boost: increase quality for recently accessed active memories (cap at 1.0)
+    let boosted: usize = conn.execute(
+        "UPDATE memory SET quality_score = MIN(1.0, COALESCE(quality_score, 0.5) + ?1)
+         WHERE status = 'active' AND access_count > 0
+         AND accessed_at > datetime('now', '-1 day')",
+        rusqlite::params![boost],
+    ).unwrap_or(0);
+
+    decayed + boosted
 }
 
 pub async fn run_consolidator(
@@ -1405,7 +1481,7 @@ mod tests {
 
         // Verify healing_log entry
         let log_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM healing_log WHERE action = 'topic_supersede'",
+            "SELECT COUNT(*) FROM healing_log WHERE action = 'auto_superseded'",
             [],
             |row| row.get(0),
         ).unwrap();
@@ -1548,5 +1624,86 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(superseded_by, Some(new_mem.id.clone()), "superseded_by should point to new memory");
+    }
+
+    #[test]
+    fn test_heal_session_staleness_fades_old_unaccessed() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let m = Memory::new(MemoryType::Decision, "Ancient unused decision", "Very old")
+            .with_confidence(0.5);
+        ops::remember(&conn, &m).unwrap();
+        // Backdate + set low quality + zero access
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-14 days'), quality_score = 0.1, access_count = 0 WHERE id = ?1",
+            rusqlite::params![m.id],
+        ).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+        let faded = heal_session_staleness(&conn, &config);
+        assert!(faded > 0, "old unaccessed low-quality memory should be faded");
+
+        let status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "faded");
+
+        // Verify healing_log entry
+        let log_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM healing_log WHERE action = 'auto_faded'", [], |row| row.get(0),
+        ).unwrap();
+        assert!(log_count > 0, "should have healing_log entry for faded memory");
+    }
+
+    #[test]
+    fn test_heal_session_staleness_preserves_accessed() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let m = Memory::new(MemoryType::Decision, "Old but accessed decision", "Still useful")
+            .with_confidence(0.9);
+        ops::remember(&conn, &m).unwrap();
+        // Backdate but give it access count
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-14 days'), quality_score = 0.1, access_count = 5 WHERE id = ?1",
+            rusqlite::params![m.id],
+        ).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+        let faded = heal_session_staleness(&conn, &config);
+        assert_eq!(faded, 0, "accessed memory should not be faded regardless of age/quality");
+
+        let status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "active");
+    }
+
+    #[test]
+    fn test_quality_pressure_decays_unused() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let m = Memory::new(MemoryType::Decision, "Unused decision for decay test", "Never accessed")
+            .with_confidence(0.9);
+        ops::remember(&conn, &m).unwrap();
+        conn.execute(
+            "UPDATE memory SET quality_score = 0.5, access_count = 0 WHERE id = ?1",
+            rusqlite::params![m.id],
+        ).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+        let adjusted = apply_quality_pressure(&conn, &config);
+        assert!(adjusted > 0, "should adjust at least one memory");
+
+        let quality: f64 = conn.query_row(
+            "SELECT quality_score FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
+        ).unwrap();
+        assert!(quality < 0.5, "quality should have decayed from 0.5");
+        assert!(quality >= 0.35, "quality should decay by ~0.1, not more");
     }
 }
