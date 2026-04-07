@@ -206,6 +206,7 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::HealingRun
         | Request::HealingLog { .. }
         | Request::BackfillProject
+        | Request::CleanupMemory
         | Request::SetCurrentTask { .. }
         | Request::Shutdown
         | Request::LicenseStatus

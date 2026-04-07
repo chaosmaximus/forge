@@ -164,6 +164,7 @@ async fn api_handler(
             state.events.clone(),
             Arc::clone(&state.hlc),
             state.started_at,
+            Some(state.write_tx.clone()),
         ) {
             Ok(mut reader) => handle_request(&mut reader, request),
             Err(e) => {

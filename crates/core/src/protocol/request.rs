@@ -665,6 +665,10 @@ pub enum Request {
     /// and from the transcript_log table.
     BackfillProject,
 
+    /// Cleanup garbage memories, normalize project names, and purge duplicate perceptions.
+    /// One-time data quality fix that should be run after upgrading to v0.7.1+.
+    CleanupMemory,
+
     /// Update the current_task on a session (session card auto-populate).
     /// This is a lightweight update — no re-registration needed.
     SetCurrentTask {

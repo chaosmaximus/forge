@@ -442,6 +442,10 @@ enum Commands {
     #[command(name = "backfill-project")]
     BackfillProject,
 
+    /// Cleanup garbage memories, normalize project names, purge duplicate perceptions/declared entries
+    #[command(name = "cleanup-memory")]
+    CleanupMemory,
+
     /// Bootstrap: scan and process all existing transcript files
     #[command(name = "bootstrap")]
     Bootstrap {
@@ -1364,6 +1368,28 @@ async fn main() {
         }
         Commands::BackfillProject => {
             commands::system::backfill_project().await;
+        }
+        Commands::CleanupMemory => {
+            match client::send(&forge_core::protocol::Request::CleanupMemory).await {
+                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::CleanupMemoryResult {
+                    garbage_deleted, projects_normalized, perceptions_purged, declared_cleaned,
+                } }) => {
+                    println!("Memory Cleanup Complete");
+                    println!("  Garbage memories deleted: {garbage_deleted}");
+                    println!("  Project names normalized: {projects_normalized}");
+                    println!("  Duplicate perceptions purged: {perceptions_purged}");
+                    println!("  Stale declared entries cleaned: {declared_cleaned}");
+                }
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("cleanup-memory failed: {message}");
+                }
+                Ok(other) => {
+                    eprintln!("unexpected response: {:?}", other);
+                }
+                Err(e) => {
+                    eprintln!("cleanup-memory error: {e}");
+                }
+            }
         }
         Commands::Bootstrap { project } => {
             commands::system::bootstrap(project).await;

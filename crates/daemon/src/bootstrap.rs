@@ -184,10 +184,30 @@ pub fn extract_project_from_path(path: &std::path::Path) -> Option<String> {
             let project_hash = &after[..slash];
             // The hash is like "-mnt-colab-disk-DurgaSaiK-forge"
             // which represents /mnt/colab-disk/DurgaSaiK/forge
-            // The project name is the LAST path component = last dash-segment
-            let project_name = project_hash.rsplit('-').next().unwrap_or(project_hash);
-            if !project_name.is_empty() {
-                return Some(project_name.to_string());
+            // Strategy: strip the known workspace prefix to get the meaningful project name.
+            // E.g. "-mnt-colab-disk-DurgaSaiK-forge" with HOME="/mnt/colab-disk/DurgaSaiK"
+            // → strip "-mnt-colab-disk-DurgaSaiK-" → "forge"
+            // E.g. "-mnt-colab-disk-DurgaSaiK-hive-finance-hive-production"
+            // → strip "-mnt-colab-disk-DurgaSaiK-" → "hive-finance-hive-production"
+            if let Ok(home) = std::env::var("HOME") {
+                // Encode the home path the same way Claude Code does: / → -
+                let home_prefix = format!("-{}-", home.trim_start_matches('/').replace('/', "-"));
+                if let Some(rest) = project_hash.strip_prefix(&home_prefix) {
+                    if !rest.is_empty() {
+                        return Some(rest.to_string());
+                    }
+                }
+                // Try without trailing dash (home IS the project dir)
+                let home_exact = format!("-{}", home.trim_start_matches('/').replace('/', "-"));
+                if project_hash == home_exact {
+                    return home.rsplit('/').next().map(|s| s.to_string());
+                }
+            }
+            // Fallback: use the full hash as project identifier (unambiguous).
+            // This is better than guessing the last dash-segment which frequently
+            // produces wrong names like "production" from "hive-finance-hive-production".
+            if !project_hash.is_empty() {
+                return Some(project_hash.trim_start_matches('-').to_string());
             }
         }
     }
@@ -468,9 +488,24 @@ mod tests {
 
     #[test]
     fn test_extract_project_from_path() {
-        let path = PathBuf::from("/home/user/.claude/projects/-Users-name-workspace-myproject/abc123.jsonl");
-        let project = extract_project_from_path(&path);
-        assert_eq!(project.as_deref(), Some("myproject"));
+        // When HOME matches the encoded prefix, strip it to get the project name
+        let home = std::env::var("HOME").unwrap_or_default();
+        let home_encoded = home.trim_start_matches('/').replace('/', "-");
+        let hash = format!("-{}-forge", home_encoded);
+        let path_str = format!("/home/user/.claude/projects/{}/abc123.jsonl", hash);
+        let project = extract_project_from_path(&std::path::PathBuf::from(&path_str));
+        assert_eq!(project.as_deref(), Some("forge"));
+    }
+
+    #[test]
+    fn test_extract_project_multi_segment() {
+        // Multi-segment project name should be preserved (not just last segment)
+        let home = std::env::var("HOME").unwrap_or_default();
+        let home_encoded = home.trim_start_matches('/').replace('/', "-");
+        let hash = format!("-{}-hive-finance-hive-production", home_encoded);
+        let path_str = format!("/home/user/.claude/projects/{}/session.jsonl", hash);
+        let project = extract_project_from_path(&std::path::PathBuf::from(&path_str));
+        assert_eq!(project.as_deref(), Some("hive-finance-hive-production"));
     }
 
     #[test]
@@ -478,6 +513,14 @@ mod tests {
         let path = PathBuf::from("/tmp/random/file.jsonl");
         let project = extract_project_from_path(&path);
         assert!(project.is_none());
+    }
+
+    #[test]
+    fn test_extract_project_fallback_full_hash() {
+        // When HOME doesn't match, use full hash as project name (not just last segment)
+        let path = PathBuf::from("/home/user/.claude/projects/-unknown-prefix-myproject/abc.jsonl");
+        let project = extract_project_from_path(&path);
+        assert_eq!(project.as_deref(), Some("unknown-prefix-myproject"));
     }
 
     #[test]

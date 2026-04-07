@@ -300,6 +300,13 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             .topic("quality_decline")
             .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
             notifs_generated += 1;
+        } else if avg_quality >= 0.3 {
+            // Auto-dismiss existing quality decline notifications — condition resolved
+            let _ = conn.execute(
+                "UPDATE notification SET status = 'dismissed'
+                 WHERE category = 'insight' AND title LIKE '%quality%' AND status = 'pending'",
+                [],
+            );
         }
     }
 
@@ -570,6 +577,19 @@ pub fn detect_and_surface_gaps(conn: &Connection) -> usize {
 
     let mut count = 0;
     for word in &gaps {
+        // Check if an unconsumed perception for this gap already exists
+        let already_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM perception WHERE consumed = 0 AND kind = 'knowledge_gap' AND data LIKE 'Knowledge gap: no entity for ''' || ?1 || '''%'",
+                rusqlite::params![word],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if already_exists {
+            continue;
+        }
+
         // Count how many titles reference this word
         let freq: usize = conn
             .query_row(
@@ -1202,14 +1222,27 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
 
 /// Phase 21: Fade old unaccessed low-quality memories.
 /// Memories with quality_score < threshold AND zero accesses AND older than N days -> faded.
+/// Two tiers: aggressive (quality < 0.1, 3 days) and normal (quality < threshold, N days).
 pub fn heal_session_staleness(conn: &Connection, config: &crate::config::HealingConfig) -> usize {
     if !config.enabled { return 0; }
 
     let days = config.staleness_days;
     let min_quality = config.staleness_min_quality;
 
-    // Fade stale memories
-    let faded: usize = conn.execute(
+    // Aggressive tier: near-garbage memories (quality < 0.1) fade after 3 days
+    let aggressive_days = 3u64;
+    let aggressive_quality = 0.1;
+    let aggressive_faded: usize = conn.execute(
+        "UPDATE memory SET status = 'faded'
+         WHERE status = 'active'
+         AND COALESCE(quality_score, 0.5) < ?1
+         AND access_count = 0
+         AND created_at < datetime('now', ?2)",
+        rusqlite::params![aggressive_quality, format!("-{aggressive_days} days")],
+    ).unwrap_or(0);
+
+    // Normal tier: low-quality memories fade after configured days
+    let normal_faded: usize = conn.execute(
         "UPDATE memory SET status = 'faded'
          WHERE status = 'active'
          AND COALESCE(quality_score, 0.5) < ?1
@@ -1217,6 +1250,8 @@ pub fn heal_session_staleness(conn: &Connection, config: &crate::config::Healing
          AND created_at < datetime('now', ?2)",
         rusqlite::params![min_quality, format!("-{days} days")],
     ).unwrap_or(0);
+
+    let faded = aggressive_faded + normal_faded;
 
     // Log each faded memory
     if faded > 0 {
@@ -1248,16 +1283,28 @@ pub fn heal_session_staleness(conn: &Connection, config: &crate::config::Healing
 }
 
 /// Phase 22: Natural selection — decay unused memories' quality, boost accessed ones.
+/// Two-tier decay: accelerated decay (0.15) for quality < 0.3, normal decay for the rest.
 pub fn apply_quality_pressure(conn: &Connection, config: &crate::config::HealingConfig) -> usize {
     if !config.enabled { return 0; }
 
     let decay = config.quality_decay_per_cycle;
     let boost = config.quality_boost_per_access;
+    let accelerated_decay = 0.15_f64.max(decay); // at least 0.15 for low-quality
 
-    // Decay: reduce quality for unaccessed active memories (floor at 0.0)
-    let decayed: usize = conn.execute(
+    // Accelerated decay: faster decay for low-quality memories (quality < 0.3)
+    let accel_decayed: usize = conn.execute(
         "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
-         WHERE status = 'active' AND access_count = 0 AND COALESCE(quality_score, 0.5) > 0.0",
+         WHERE status = 'active' AND access_count = 0
+         AND COALESCE(quality_score, 0.5) > 0.0
+         AND COALESCE(quality_score, 0.5) < 0.3",
+        rusqlite::params![accelerated_decay],
+    ).unwrap_or(0);
+
+    // Normal decay: reduce quality for unaccessed active memories with quality >= 0.3 (floor at 0.0)
+    let normal_decayed: usize = conn.execute(
+        "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
+         WHERE status = 'active' AND access_count = 0
+         AND COALESCE(quality_score, 0.5) >= 0.3",
         rusqlite::params![decay],
     ).unwrap_or(0);
 
@@ -1269,7 +1316,7 @@ pub fn apply_quality_pressure(conn: &Connection, config: &crate::config::Healing
         rusqlite::params![boost],
     ).unwrap_or(0);
 
-    decayed + boosted
+    accel_decayed + normal_decayed + boosted
 }
 
 pub async fn run_consolidator(
@@ -1958,5 +2005,199 @@ mod tests {
             [], |row: &rusqlite::Row| row.get(0),
         ).unwrap();
         assert!(decision_count > 0, "auto-synthesis should create a decision memory");
+    }
+
+    #[test]
+    fn test_detect_and_surface_gaps_no_duplicates() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create 3 memories that reference "consolidator" so it becomes a gap word
+        for i in 0..3 {
+            let m = Memory::new(
+                MemoryType::Lesson,
+                &format!("consolidator tuning attempt {}", i),
+                "some content",
+            );
+            ops::remember(&conn, &m).unwrap();
+        }
+
+        // First call should create perception(s)
+        let first_count = detect_and_surface_gaps(&conn);
+        assert!(first_count > 0, "first call should create gap perceptions");
+
+        // Count perceptions
+        let perception_count_after_first: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM perception WHERE kind = 'knowledge_gap'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        // Second call should NOT create duplicates
+        let second_count = detect_and_surface_gaps(&conn);
+        assert_eq!(second_count, 0, "second call should skip existing gap perceptions");
+
+        let perception_count_after_second: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM perception WHERE kind = 'knowledge_gap'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            perception_count_after_first, perception_count_after_second,
+            "perception count should not increase on second call"
+        );
+    }
+
+    // ── Fix 1: Notification auto-dismiss ──
+
+    #[test]
+    fn test_quality_notification_auto_dismissed_when_quality_improves() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create a quality decline notification manually (simulating a prior consolidation run)
+        let notif_id = ulid::Ulid::new().to_string();
+        let now = forge_core::time::now_iso();
+        conn.execute(
+            "INSERT INTO notification (id, category, priority, title, content, source, status, created_at, topic)
+             VALUES (?1, 'insight', 'medium', 'Memory quality declining', 'Average quality score is 0.20', 'consolidator', 'pending', ?2, 'quality_decline')",
+            rusqlite::params![notif_id, now],
+        ).unwrap();
+
+        // Verify notification exists as pending
+        let pending_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM notification WHERE status = 'pending' AND title LIKE '%quality%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(pending_count, 1, "should have 1 pending quality notification");
+
+        // Create memories with GOOD quality scores (avg >= 0.3)
+        for i in 0..5 {
+            let m = Memory::new(MemoryType::Decision, &format!("Good decision {i}"), "High quality");
+            ops::remember(&conn, &m).unwrap();
+            conn.execute(
+                "UPDATE memory SET quality_score = 0.8 WHERE id = ?1",
+                rusqlite::params![m.id],
+            ).unwrap();
+        }
+
+        // Run all phases — should auto-dismiss the notification since quality is good
+        let config = crate::config::ConsolidationConfig::default();
+        run_all_phases(&conn, &config);
+
+        // Verify the notification is dismissed
+        let dismissed_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM notification WHERE status = 'dismissed' AND title LIKE '%quality%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(dismissed_count, 1, "quality notification should be auto-dismissed when quality improves");
+
+        let remaining_pending: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM notification WHERE status = 'pending' AND title LIKE '%quality%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(remaining_pending, 0, "no pending quality notifications should remain");
+    }
+
+    // ── Fix 4: Healing tuning ──
+
+    #[test]
+    fn test_heal_session_staleness_aggressive_tier() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create a near-garbage memory (quality 0.05) that is only 4 days old
+        let m = Memory::new(MemoryType::Decision, "Near garbage decision", "Very low quality")
+            .with_confidence(0.5);
+        ops::remember(&conn, &m).unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-4 days'), quality_score = 0.05, access_count = 0 WHERE id = ?1",
+            rusqlite::params![m.id],
+        ).unwrap();
+
+        // This memory should NOT be faded by the old logic (requires 7 days for quality < 0.2)
+        // but SHOULD be faded by the aggressive tier (3 days for quality < 0.1)
+        let config = crate::config::HealingConfig::default();
+        let faded = heal_session_staleness(&conn, &config);
+        assert!(faded > 0, "near-garbage memory (quality 0.05, 4 days old) should be faded by aggressive tier");
+
+        let status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "faded");
+    }
+
+    #[test]
+    fn test_heal_session_staleness_normal_tier_still_works() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create a low-quality memory (quality 0.15) that is 10 days old
+        // This should be caught by the normal tier (quality < 0.2, > 7 days)
+        let m = Memory::new(MemoryType::Decision, "Old low quality decision", "Stale")
+            .with_confidence(0.5);
+        ops::remember(&conn, &m).unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-10 days'), quality_score = 0.15, access_count = 0 WHERE id = ?1",
+            rusqlite::params![m.id],
+        ).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+        let faded = heal_session_staleness(&conn, &config);
+        assert!(faded > 0, "low-quality memory (0.15, 10 days old) should be faded by normal tier");
+
+        let status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "faded");
+    }
+
+    #[test]
+    fn test_quality_pressure_accelerated_decay_for_low_quality() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create a low-quality memory (quality 0.25, below 0.3 threshold)
+        let m_low = Memory::new(MemoryType::Decision, "Low quality accelerated decay", "Should decay faster");
+        ops::remember(&conn, &m_low).unwrap();
+        conn.execute(
+            "UPDATE memory SET quality_score = 0.25, access_count = 0 WHERE id = ?1",
+            rusqlite::params![m_low.id],
+        ).unwrap();
+
+        // Create a normal-quality memory (quality 0.5, above 0.3 threshold)
+        let m_normal = Memory::new(MemoryType::Decision, "Normal quality standard decay", "Should decay normally");
+        ops::remember(&conn, &m_normal).unwrap();
+        conn.execute(
+            "UPDATE memory SET quality_score = 0.5, access_count = 0 WHERE id = ?1",
+            rusqlite::params![m_normal.id],
+        ).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+        apply_quality_pressure(&conn, &config);
+
+        let low_quality: f64 = conn.query_row(
+            "SELECT quality_score FROM memory WHERE id = ?1", rusqlite::params![m_low.id], |row| row.get(0),
+        ).unwrap();
+        let normal_quality: f64 = conn.query_row(
+            "SELECT quality_score FROM memory WHERE id = ?1", rusqlite::params![m_normal.id], |row| row.get(0),
+        ).unwrap();
+
+        // Low-quality should decay by 0.15 (accelerated): 0.25 - 0.15 = 0.10
+        assert!((low_quality - 0.10).abs() < 0.01,
+            "low-quality memory should decay by 0.15 (accelerated), got {low_quality}");
+
+        // Normal-quality should decay by 0.1 (standard): 0.5 - 0.1 = 0.4
+        assert!((normal_quality - 0.4).abs() < 0.01,
+            "normal-quality memory should decay by 0.1 (standard), got {normal_quality}");
     }
 }

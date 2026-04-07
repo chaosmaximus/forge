@@ -147,6 +147,7 @@ pub async fn run_server(
                     // This allows read requests to be served without ANY mutex.
                     let mut reader_state = match DaemonState::new_reader(
                         &db_path, events.clone(), hlc, started_at,
+                        Some(write_tx.clone()),
                     ) {
                         Ok(s) => s,
                         Err(e) => {

@@ -46,6 +46,7 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
         state.events.clone(),
         std::sync::Arc::clone(&state.hlc),
         state.started_at,
+        None,
     ) {
         Ok(reader) => {
             // Verify DB is actually responsive with a simple query
@@ -100,6 +101,7 @@ pub async fn startupz(State(state): State<AppState>) -> impl IntoResponse {
         state.events.clone(),
         std::sync::Arc::clone(&state.hlc),
         state.started_at,
+        None,
     ) {
         Ok(reader) => {
             // Check if we have any indexed memories (indicates startup indexing is done)

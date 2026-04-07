@@ -28,6 +28,22 @@ pub enum WriteCommand {
         reply: oneshot::Sender<Response>,
         audit: AuditContext,
     },
+    /// Fire-and-forget: update access_count/accessed_at/activation_level for recalled memories.
+    /// Sent from the read-only path (Recall, CompileContext) so that memory usage tracking
+    /// doesn't fail silently on read-only connections.
+    TouchMemories {
+        ids: Vec<String>,
+        boost_amount: f64,
+    },
+    /// Fire-and-forget: record a context injection in context_effectiveness.
+    /// Sent from the read-only CompileContext handler since it can't write directly.
+    RecordInjection {
+        session_id: String,
+        hook_event: String,
+        context_type: String,
+        content_summary: String,
+        chars_injected: usize,
+    },
 }
 
 /// Returns true if the request is read-only (no DB mutations).
@@ -168,6 +184,24 @@ impl WriterActor {
     pub async fn run(mut self, mut rx: mpsc::Receiver<WriteCommand>) {
         while let Some(cmd) = rx.recv().await {
             match cmd {
+                WriteCommand::TouchMemories { ids, boost_amount } => {
+                    // Fire-and-forget: touch accessed_at + boost activation on the write connection.
+                    // This is the fix for the read-only path: Recall/CompileContext collect IDs
+                    // and send them here instead of attempting writes on their read-only conn.
+                    let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+                    crate::db::ops::touch(&self.state.conn, &id_refs);
+                    for id in &ids {
+                        let _ = crate::db::ops::boost_activation(&self.state.conn, id, boost_amount);
+                    }
+                }
+                WriteCommand::RecordInjection { session_id, hook_event, context_type, content_summary, chars_injected } => {
+                    // Fire-and-forget: record context injection on the write connection.
+                    // CompileContext is read-only but needs to track effectiveness metrics.
+                    let _ = crate::db::effectiveness::record_injection_with_size(
+                        &self.state.conn, &session_id, &hook_event, &context_type,
+                        &content_summary, chars_injected,
+                    );
+                }
                 WriteCommand::Raw { request, reply } => {
                     let response = super::handler::handle_request(&mut self.state, request);
                     let _ = reply.send(response);
@@ -876,7 +910,7 @@ mod tests {
 
         // Now open a reader connection to verify the audit record
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at,
+            db_path_str, events, hlc, started_at, None,
         )
         .unwrap();
 
@@ -966,7 +1000,7 @@ mod tests {
 
         // Verify audit record
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at,
+            db_path_str, events, hlc, started_at, None,
         )
         .unwrap();
 
@@ -1039,7 +1073,7 @@ mod tests {
 
         // Verify NO audit records exist
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at,
+            db_path_str, events, hlc, started_at, None,
         )
         .unwrap();
 
@@ -1109,7 +1143,7 @@ mod tests {
 
         // Verify 3 audit records exist
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at,
+            db_path_str, events, hlc, started_at, None,
         )
         .unwrap();
 
@@ -1175,7 +1209,7 @@ mod tests {
         handle.await.unwrap();
 
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at,
+            db_path_str, events, hlc, started_at, None,
         )
         .unwrap();
 

@@ -8,6 +8,50 @@ use forge_core::types::{
 };
 
 // ──────────────────────────────────────────────
+// Shared stop-word list for entity detection and knowledge gap analysis.
+// Includes common English words + generic development/programming terms
+// that are too broad to be meaningful entities.
+// ──────────────────────────────────────────────
+const ENTITY_STOP_WORDS: &[&str] = &[
+    // English grammar
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "must",
+    "in", "on", "at", "to", "for", "with", "by", "from", "of", "about",
+    "into", "through", "during", "before", "after", "above", "below",
+    "and", "or", "but", "not", "no", "nor", "so", "yet",
+    "it", "its", "this", "that", "these", "those", "my", "your", "his",
+    "her", "our", "their", "what", "which", "who", "whom", "how", "when",
+    "where", "why", "all", "each", "every", "both", "few", "more", "most",
+    "other", "some", "any", "such", "only", "own", "same", "than", "too",
+    "very", "just", "also", "then", "now", "here", "there", "up", "out",
+    "if", "as", "like", "even", "still", "well", "back", "way", "down",
+    // Generic verbs/actions
+    "use", "used", "using", "new", "add", "added", "set", "get", "make",
+    "run", "start", "stop", "end", "show", "find", "check", "take", "give",
+    "try", "work", "call", "move", "keep", "let", "put", "say", "said",
+    "write", "read", "update", "create", "delete", "remove", "change",
+    "build", "fix", "test", "done", "made", "left", "right",
+    // Generic development terms (too broad for entities)
+    "code", "file", "files", "data", "type", "types", "error", "errors",
+    "function", "method", "class", "module", "system", "service",
+    "config", "configuration", "settings", "option", "options", "value",
+    "values", "list", "item", "items", "name", "path", "string",
+    "number", "count", "size", "time", "log", "output", "input",
+    "result", "results", "status", "state", "mode", "level", "version",
+    // Common words that appeared as noisy knowledge gaps
+    "root", "commits", "comprehensive", "conversation", "deployment",
+    "design", "feedback", "findings", "master", "proactive", "prototype",
+    "roadmap", "tdd", "tools", "verification", "cloud", "latency",
+    "models", "ndjson", "observability", "transport", "turns", "hybrid",
+    "mcp", "summary", "spec", "plugin", "plan", "complete",
+    // Session/progress markers
+    "session", "phase", "wave", "sprint", "step", "task", "todo",
+    "open", "closed", "pending", "progress", "total", "first", "last",
+    "next", "previous", "current", "recent", "old", "existing",
+];
+
+// ──────────────────────────────────────────────
 // Helper: string conversions for enums
 // ──────────────────────────────────────────────
 
@@ -948,6 +992,73 @@ pub fn consume_perception(conn: &Connection, id: &str) -> rusqlite::Result<bool>
     Ok(rows > 0)
 }
 
+/// Purge duplicate perceptions, keeping only the newest per (kind, data) combination.
+/// Returns the number of duplicates deleted.
+pub fn purge_duplicate_perceptions(conn: &Connection) -> rusqlite::Result<usize> {
+    let deleted = conn.execute(
+        "DELETE FROM perception WHERE id NOT IN (
+            SELECT MAX(id) FROM perception GROUP BY COALESCE(project, ''), kind, data
+        )",
+        [],
+    )?;
+    Ok(deleted)
+}
+
+/// Remove duplicate entities, keeping the one with the highest mention_count per (name, project).
+pub fn cleanup_duplicate_entities(conn: &Connection) -> rusqlite::Result<usize> {
+    // Keep the entity with the highest mention_count per (name, COALESCE(project, ''))
+    let deleted = conn.execute(
+        "DELETE FROM entity WHERE id NOT IN (
+            SELECT id FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY name, COALESCE(project, '')
+                    ORDER BY mention_count DESC, last_seen DESC
+                ) as rn
+                FROM entity
+            ) WHERE rn = 1
+        )",
+        [],
+    )?;
+    // Also clean up edges pointing to deleted entities
+    let _ = conn.execute(
+        "DELETE FROM edge WHERE from_id NOT IN (SELECT id FROM entity)
+         AND from_id LIKE 'ent-%'",
+        [],
+    );
+    Ok(deleted)
+}
+
+/// Remove duplicate domain_dna entries, keeping the latest per (aspect, pattern, project).
+pub fn cleanup_duplicate_domain_dna(conn: &Connection) -> rusqlite::Result<usize> {
+    let deleted = conn.execute(
+        "DELETE FROM domain_dna WHERE id NOT IN (
+            SELECT id FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY aspect, pattern, COALESCE(project, '')
+                    ORDER BY detected_at DESC
+                ) as rn
+                FROM domain_dna
+            ) WHERE rn = 1
+        )",
+        [],
+    )?;
+    Ok(deleted)
+}
+
+/// Remove stale declared entries, keeping only the latest version per source+path.
+/// When CLAUDE.md or README.md is re-ingested, old versions accumulate because the
+/// ON CONFLICT key is on `id` (a ULID) not on `(source, path)`.
+/// Returns the number of stale entries removed.
+pub fn cleanup_stale_declared(conn: &Connection) -> rusqlite::Result<usize> {
+    let deleted = conn.execute(
+        "DELETE FROM declared WHERE id NOT IN (
+            SELECT MAX(id) FROM declared GROUP BY source, COALESCE(path, '')
+        )",
+        [],
+    )?;
+    Ok(deleted)
+}
+
 fn row_to_perception(row: &rusqlite::Row) -> rusqlite::Result<Perception> {
     Ok(Perception {
         id: row.get(0)?,
@@ -1068,6 +1179,15 @@ pub fn ingest_declared_file(conn: &Connection, path: &str, source: &str, project
         ingested_at: now_iso(),
     };
     store_declared(conn, &declared)?;
+
+    // Clean up older entries with the same source+path, keeping only the latest
+    if let Some(ref p) = declared.path {
+        conn.execute(
+            "DELETE FROM declared WHERE source = ?1 AND path = ?2 AND id != ?3",
+            params![declared.source, p, declared.id],
+        )?;
+    }
+
     Ok(true)
 }
 
@@ -1628,21 +1748,8 @@ pub fn detect_entities(conn: &Connection) -> rusqlite::Result<usize> {
     let mut word_freq: std::collections::HashMap<(String, Option<String>), (usize, Vec<String>)> =
         std::collections::HashMap::new();
 
-    // Stop words to exclude from entity detection
-    let stop_words: std::collections::HashSet<&str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "need", "must",
-        "in", "on", "at", "to", "for", "with", "by", "from", "of", "about",
-        "into", "through", "during", "before", "after", "above", "below",
-        "and", "or", "but", "not", "no", "nor", "so", "yet",
-        "it", "its", "this", "that", "these", "those", "my", "your", "his",
-        "her", "our", "their", "what", "which", "who", "whom", "how", "when",
-        "where", "why", "all", "each", "every", "both", "few", "more", "most",
-        "other", "some", "any", "such", "only", "own", "same", "than", "too",
-        "very", "just", "also", "then", "now", "here", "there", "up", "out",
-        "if", "as", "use", "used", "using", "new", "add", "set", "get",
-    ].iter().copied().collect();
+    // Stop words to exclude from entity detection — includes common English + generic dev terms
+    let stop_words: std::collections::HashSet<&str> = ENTITY_STOP_WORDS.iter().copied().collect();
 
     for mem in &rows {
         // Normalize: lowercase, replace non-alphanumeric with space, split
@@ -1681,19 +1788,11 @@ pub fn detect_entities(conn: &Connection) -> rusqlite::Result<usize> {
         increment_entity_mention_with_count(conn, word, project.as_deref(), *freq, &now)?;
 
         // Create edges linking this entity to the memories (best-effort)
-        let entity_id = if let Some(proj) = project {
-            conn.query_row(
-                "SELECT id FROM entity WHERE name = ?1 AND project = ?2",
-                params![word, proj],
-                |row| row.get::<_, String>(0),
-            ).optional()?
-        } else {
-            conn.query_row(
-                "SELECT id FROM entity WHERE name = ?1 AND project IS NULL",
-                params![word],
-                |row| row.get::<_, String>(0),
-            ).optional()?
-        };
+        let entity_id: Option<String> = conn.query_row(
+            "SELECT id FROM entity WHERE name = ?1 AND COALESCE(project, '') = COALESCE(?2, '')",
+            params![word, project.as_deref()],
+            |row| row.get(0),
+        ).optional()?;
 
         if let Some(eid) = entity_id {
             for mid in memory_ids {
@@ -1721,26 +1820,14 @@ fn increment_entity_mention_with_count(
     count: usize,
     now: &str,
 ) -> rusqlite::Result<()> {
-    let existing_id: Option<String> = if let Some(proj) = project {
-        conn.query_row(
-            "SELECT id FROM entity WHERE name = ?1 AND project = ?2",
-            params![name, proj],
-            |row| row.get(0),
-        ).optional()?
-    } else {
-        conn.query_row(
-            "SELECT id FROM entity WHERE name = ?1 AND project IS NULL",
-            params![name],
-            |row| row.get(0),
-        ).optional()?
-    };
+    // Use COALESCE for NULL-safe project comparison, then upsert in one statement
+    let upserted = conn.execute(
+        "UPDATE entity SET mention_count = ?1, last_seen = ?2
+         WHERE name = ?3 AND COALESCE(project, '') = COALESCE(?4, '')",
+        params![count as i64, now, name, project],
+    )?;
 
-    if let Some(id) = existing_id {
-        conn.execute(
-            "UPDATE entity SET mention_count = ?1, last_seen = ?2 WHERE id = ?3",
-            params![count as i64, now, id],
-        )?;
-    } else {
+    if upserted == 0 {
         let id = format!("ent-{}", ulid::Ulid::new());
         conn.execute(
             "INSERT INTO entity (id, name, entity_type, description, mention_count, first_seen, last_seen, project)
@@ -1754,21 +1841,7 @@ fn increment_entity_mention_with_count(
 /// Find knowledge gaps: words that appear in 3+ memory titles but have no entity.
 /// Returns the list of gap words (lowercase).
 pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqlite::Result<Vec<String>> {
-    // Stop words to exclude
-    let stop_words: std::collections::HashSet<&str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "need", "must",
-        "in", "on", "at", "to", "for", "with", "by", "from", "of", "about",
-        "into", "through", "during", "before", "after", "above", "below",
-        "and", "or", "but", "not", "no", "nor", "so", "yet",
-        "it", "its", "this", "that", "these", "those", "my", "your", "his",
-        "her", "our", "their", "what", "which", "who", "whom", "how", "when",
-        "where", "why", "all", "each", "every", "both", "few", "more", "most",
-        "other", "some", "any", "such", "only", "own", "same", "than", "too",
-        "very", "just", "also", "then", "now", "here", "there", "up", "out",
-        "if", "as", "use", "used", "using", "new", "add", "set", "get",
-    ].iter().copied().collect();
+    let stop_words: std::collections::HashSet<&str> = ENTITY_STOP_WORDS.iter().copied().collect();
 
     // 1. Get all active memory titles for the project
     let rows: Vec<String> = if let Some(proj) = project {
@@ -2855,5 +2928,133 @@ mod tests {
         let codex = list_identity(&conn, "codex", true).unwrap();
         assert_eq!(claude.len(), 1, "claude-code should have 1 facet");
         assert_eq!(codex.len(), 1, "codex should have 1 facet");
+    }
+
+    #[test]
+    fn test_ingest_declared_cleans_old_versions() {
+        let conn = open_db();
+
+        let dir = std::env::temp_dir().join("forge_test_declared_dedup");
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join("dedup_test.md");
+
+        // Write version 1
+        std::fs::write(&file_path, "Version 1 content").unwrap();
+        let path_str = file_path.to_str().unwrap();
+        let first = ingest_declared_file(&conn, path_str, "CLAUDE.md", Some("forge")).unwrap();
+        assert!(first, "first ingest should succeed");
+
+        // Write version 2 (different content -> different hash)
+        std::fs::write(&file_path, "Version 2 content — updated").unwrap();
+        let second = ingest_declared_file(&conn, path_str, "CLAUDE.md", Some("forge")).unwrap();
+        assert!(second, "second ingest with new content should succeed");
+
+        // Write version 3
+        std::fs::write(&file_path, "Version 3 content — latest").unwrap();
+        let third = ingest_declared_file(&conn, path_str, "CLAUDE.md", Some("forge")).unwrap();
+        assert!(third, "third ingest with new content should succeed");
+
+        // Should only have 1 entry (the latest), not 3
+        let all = list_declared(&conn, None).unwrap();
+        assert_eq!(all.len(), 1, "old versions should be cleaned up, only latest remains");
+        assert!(all[0].content.contains("Version 3"), "remaining entry should be the latest version");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&file_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_ingest_declared_different_paths_not_cleaned() {
+        let conn = open_db();
+
+        let dir = std::env::temp_dir().join("forge_test_declared_paths");
+        let _ = std::fs::create_dir_all(&dir);
+        let file_a = dir.join("file_a.md");
+        let file_b = dir.join("file_b.md");
+
+        std::fs::write(&file_a, "Content A").unwrap();
+        std::fs::write(&file_b, "Content B").unwrap();
+
+        ingest_declared_file(&conn, file_a.to_str().unwrap(), "CLAUDE.md", None).unwrap();
+        ingest_declared_file(&conn, file_b.to_str().unwrap(), "README.md", None).unwrap();
+
+        // Both should exist since they have different source+path
+        let all = list_declared(&conn, None).unwrap();
+        assert_eq!(all.len(), 2, "different source+path entries should both remain");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&file_a);
+        let _ = std::fs::remove_file(&file_b);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_purge_duplicate_perceptions() {
+        let conn = open_db();
+
+        // Create 3 perceptions with the same kind+data (simulating the bug)
+        for i in 0..3 {
+            let p = Perception {
+                id: format!("dup-{}", i),
+                kind: PerceptionKind::KnowledgeGap,
+                data: "Knowledge gap: no entity for 'consolidator' despite 5 references".into(),
+                severity: Severity::Info,
+                project: None,
+                created_at: format!("2026-04-03 12:0{}:00", i),
+                expires_at: None,
+                consumed: false,
+            };
+            store_perception(&conn, &p).unwrap();
+        }
+
+        // Create 1 unique perception (should be preserved)
+        let unique = Perception {
+            id: "unique-1".into(),
+            kind: PerceptionKind::Error,
+            data: "compilation failed".into(),
+            severity: Severity::Error,
+            project: None,
+            created_at: "2026-04-03 12:05:00".into(),
+            expires_at: None,
+            consumed: false,
+        };
+        store_perception(&conn, &unique).unwrap();
+
+        // Total should be 4
+        let all: i64 = conn
+            .query_row("SELECT COUNT(*) FROM perception", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(all, 4);
+
+        // Purge duplicates
+        let deleted = purge_duplicate_perceptions(&conn).unwrap();
+        assert_eq!(deleted, 2, "should delete 2 duplicates, keeping 1 of the 3");
+
+        // Should have 2 remaining (1 knowledge_gap + 1 error)
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM perception", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 2, "should keep one per (kind, data) group");
+
+        // The unique perception must still exist
+        let unique_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM perception WHERE id = 'unique-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(unique_exists, "unique perception should be preserved");
+
+        // The kept duplicate should be the one with the MAX id
+        let kept_id: String = conn
+            .query_row(
+                "SELECT id FROM perception WHERE kind = 'knowledge_gap'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_id, "dup-2", "should keep the newest (MAX id) duplicate");
     }
 }

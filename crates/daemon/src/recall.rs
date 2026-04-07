@@ -45,6 +45,7 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             "lesson" => MemoryType::Lesson,
             "pattern" => MemoryType::Pattern,
             "preference" => MemoryType::Preference,
+            "protocol" => MemoryType::Protocol,
             _ => MemoryType::Decision,
         };
 
@@ -318,16 +319,8 @@ pub fn hybrid_recall_scoped(
     }
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-    // 6. Touch accessed_at for returned IDs
-    let returned_ids: Vec<&str> = results.iter().map(|r| r.memory.id.as_str()).collect();
-    ops::touch(conn, &returned_ids);
-
-    // 7. Boost activation for recalled memories (+0.3)
-    for result in &results {
-        if let Err(e) = ops::boost_activation(conn, &result.memory.id, 0.3) {
-            eprintln!("[recall] activation boost error for {}: {e}", result.memory.id);
-        }
-    }
+    // 6. Touch/boost is handled by the caller (handler.rs send_touch) via the writer actor
+    // channel. We don't attempt writes here because this may run on a read-only connection.
 
     results
 }
@@ -695,7 +688,7 @@ pub fn compile_dynamic_suffix(
     excluded_layers: &[String],
     session_id: Option<&str>,
     focus: Option<&str>,
-) -> String {
+) -> (String, Vec<String>) {
     let budget = ctx_config.budget_chars;
     let decisions_limit = ctx_config.decisions_limit;
     let lessons_limit = ctx_config.lessons_limit;
@@ -704,6 +697,7 @@ pub fn compile_dynamic_suffix(
 
     let mut xml = String::from("<forge-dynamic>\n");
     let mut used = 0usize;
+    let mut touched_ids: Vec<String> = Vec::new();
 
     // Focus filter: when set, restricts memories to those matching the focus topic via FTS5.
     // Uses SQLite rowid join since memory_fts content_rowid maps to the internal rowid, not the text id column.
@@ -817,10 +811,7 @@ pub fn compile_dynamic_suffix(
                 );
                 if used + dec_xml.len() + entry.len() < budget {
                     dec_xml.push_str(&entry);
-                    // Boost activation for included decisions (+0.1)
-                    if let Err(e) = ops::boost_activation(conn, id, 0.1) {
-                        eprintln!("[compile_context] activation boost error for decision {id}: {e}");
-                    }
+                    touched_ids.push(id.clone());
                 }
             }
             dec_xml.push_str("\n</decisions>\n");
@@ -890,10 +881,7 @@ pub fn compile_dynamic_suffix(
                 let entry = format!("\n  <lesson>{}</lesson>", xml_escape(title));
                 if used + les_xml.len() + entry.len() < budget {
                     les_xml.push_str(&entry);
-                    // Boost activation for included lessons (+0.1)
-                    if let Err(e) = ops::boost_activation(conn, id, 0.1) {
-                        eprintln!("[compile_context] activation boost error for lesson {id}: {e}");
-                    }
+                    touched_ids.push(id.clone());
                 }
             }
             les_xml.push_str("\n</lessons>\n");
@@ -1504,7 +1492,7 @@ pub fn compile_dynamic_suffix(
     }
 
     xml.push_str("</forge-dynamic>");
-    xml
+    (xml, touched_ids)
 }
 
 /// Compile optimized context from all Manas layers for session-start injection.
@@ -1524,7 +1512,7 @@ pub fn compile_context(
     let config = crate::config::load_config();
     let ctx_config = config.context.validated();
     let prefix = compile_static_prefix(conn, agent, None);
-    let suffix = compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None, None);
+    let (suffix, _touched) = compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None, None);
     format!(
         "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
         prefix, suffix
@@ -2053,7 +2041,7 @@ mod tests {
     fn test_compile_dynamic_suffix_all_sections_present_empty_db() {
         let conn = setup();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(suffix.contains("<forge-dynamic>"), "should contain opening tag");
         assert!(suffix.contains("</forge-dynamic>"), "should contain closing tag");
         assert!(suffix.contains("<decisions"), "decisions always present");
@@ -2067,7 +2055,7 @@ mod tests {
     fn test_compile_dynamic_suffix_changes_with_new_data() {
         let conn = setup();
 
-        let suffix1 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix1, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(suffix1.contains("<decisions/>"), "no decisions yet");
 
         // Store a decision
@@ -2075,7 +2063,7 @@ mod tests {
             .with_confidence(0.9);
         ops::remember(&conn, &mem).unwrap();
 
-        let suffix2 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix2, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert_ne!(suffix1, suffix2, "suffix should change when data is added");
         assert!(suffix2.contains("JWT"), "should contain the new decision");
     }
@@ -2094,12 +2082,12 @@ mod tests {
         ops::remember(&conn, &pricing_dec).unwrap();
 
         // Without focus: both decisions appear
-        let no_focus = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (no_focus, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(no_focus.contains("Playwright"), "no focus: should contain testing decision");
         assert!(no_focus.contains("pricing"), "no focus: should contain pricing decision");
 
         // With focus on "testing": only testing decision should appear
-        let focused = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, Some("testing"));
+        let (focused, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, Some("testing"));
         assert!(focused.contains("Playwright"), "focus=testing: should contain testing decision");
         assert!(!focused.contains("pricing"), "focus=testing: should NOT contain pricing decision");
     }
@@ -2688,7 +2676,7 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
 
         // Recent decision (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
         let micro_pos = suffix.find("Switch to microservices").expect("recent decision should be present");
@@ -2723,7 +2711,7 @@ mod tests {
             &forge_core::time::now_offset(-3 * 86400), // 3 days ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
 
         // 3-day-old (0.9*1.2=1.08) should outrank 30-day-old (1.0*1.0=1.0)
         let mid_pos = suffix.find("Recent week pattern").expect("mid-age decision should be present");
@@ -2757,7 +2745,7 @@ mod tests {
             &forge_core::time::now_offset(-30 * 86400),
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
 
         let high_pos = suffix.find("High confidence old").expect("high confidence should be present");
         let low_pos = suffix.find("Low confidence old").expect("low confidence should be present");
@@ -2791,7 +2779,7 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
 
         // Recent lesson (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
         let fresh_pos = suffix.find("Fresh testing lesson").expect("recent lesson should be present");
@@ -2877,7 +2865,7 @@ mod tests {
         // Only one session — active-sessions should NOT appear
         crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions with only 1 session"
@@ -2892,7 +2880,7 @@ mod tests {
         crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
         crate::sessions::register_session(&conn, "s2", "cline", Some("dashboard"), None, None, None).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(
             suffix.contains("active-sessions"),
             "should show active-sessions with 2 sessions"
@@ -2925,7 +2913,7 @@ mod tests {
         // End one session — should hide active-sessions again
         crate::sessions::end_session(&conn, "s2").unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions when only 1 remains active"
@@ -2960,7 +2948,7 @@ mod tests {
         crate::db::manas::store_entity(&conn, &entity1).unwrap();
         crate::db::manas::store_entity(&conn, &entity2).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(suffix.contains("<entities"), "should contain entities section");
         assert!(suffix.contains("authentication"), "should contain authentication entity");
         assert!(suffix.contains("React Router"), "should contain React Router entity");
@@ -2987,7 +2975,7 @@ mod tests {
 
         let excluded = vec!["entities".to_string()];
         let ctx_config = crate::config::ContextConfig::default();
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &excluded, None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &excluded, None, None);
         assert!(suffix.contains("<entities/>"), "should contain empty entities tag when excluded");
         assert!(!suffix.contains("authentication"), "should NOT contain entity data when excluded");
     }
@@ -3021,7 +3009,7 @@ mod tests {
         ops::store_symbol(&conn, &sym).unwrap();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
 
         assert!(suffix.contains("<code-structure"), "should contain code-structure tag");
         assert!(suffix.contains("files=\"1\""), "should show file count");
@@ -3034,7 +3022,7 @@ mod tests {
         let conn = setup();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
 
         assert!(suffix.contains("<code-structure/>"), "should contain self-closing code-structure tag when no data");
     }
@@ -3108,7 +3096,7 @@ mod tests {
     fn test_compile_dynamic_suffix_no_backlog_in_project_mode() {
         // Default config has workspace.mode = "project", so no team-backlog section should appear.
         let conn = setup();
-        let suffix = compile_dynamic_suffix(
+        let (suffix, _) = compile_dynamic_suffix(
             &conn, "claude-code", None,
             &crate::config::ContextConfig::default(), &[], None, None,
         );
@@ -3142,5 +3130,66 @@ mod tests {
         // Verify read_team_backlog returns None for non-existent team
         let no_backlog = crate::workspace::read_team_backlog(ws_root, "nonexistent");
         assert!(no_backlog.is_none(), "non-existent team should return None");
+    }
+
+    // ── Fix 2: Protocol recall ──
+
+    #[test]
+    fn test_recall_protocol_type_memory() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = setup();
+
+        // Insert a protocol-type memory directly (simulating what extract_protocols does)
+        let protocol_id = ulid::Ulid::new().to_string();
+        let now = forge_core::time::now_iso();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, created_at, accessed_at, quality_score)
+             VALUES (?1, 'protocol', ?2, ?3, 0.8, 'active', ?4, ?5, 0.7)",
+            rusqlite::params![protocol_id, "Protocol: Always run tests before commit", "Must run test suite before any commit", now, now],
+        ).unwrap();
+
+        // Recall with memory_type = Protocol — this should find the protocol
+        let results = hybrid_recall(
+            &conn,
+            "run tests before commit",
+            None,
+            Some(&MemoryType::Protocol),
+            None,
+            10,
+        );
+        assert!(!results.is_empty(), "recall --type protocol should find protocol memories");
+        assert_eq!(results[0].memory.memory_type, MemoryType::Protocol,
+            "recalled memory should have Protocol type, got {:?}", results[0].memory.memory_type);
+        assert!(results[0].memory.title.contains("Protocol:"),
+            "recalled memory title should contain 'Protocol:', got {}", results[0].memory.title);
+    }
+
+    #[test]
+    fn test_recall_protocol_not_returned_as_decision() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = setup();
+
+        // Insert a protocol-type memory
+        let protocol_id = ulid::Ulid::new().to_string();
+        let now = forge_core::time::now_iso();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, created_at, accessed_at, quality_score)
+             VALUES (?1, 'protocol', ?2, ?3, 0.8, 'active', ?4, ?5, 0.7)",
+            rusqlite::params![protocol_id, "Protocol: Code review required", "Always require code review", now, now],
+        ).unwrap();
+
+        // Recall with memory_type = Decision — should NOT find the protocol
+        let results = hybrid_recall(
+            &conn,
+            "code review required",
+            None,
+            Some(&MemoryType::Decision),
+            None,
+            10,
+        );
+        for r in &results {
+            assert_ne!(r.memory.memory_type, MemoryType::Protocol,
+                "protocol memories should not appear when filtering for decisions");
+        }
     }
 }

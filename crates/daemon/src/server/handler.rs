@@ -16,6 +16,9 @@ pub struct DaemonState {
     /// Channel to send edited file paths to the diagnostics worker.
     /// Set after worker spawn; None before that.
     pub diagnostics_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    /// Writer actor channel for fire-and-forget writes from the read-only path.
+    /// Set on reader states created by the socket handler; None on writer/test states.
+    pub writer_tx: Option<tokio::sync::mpsc::Sender<super::writer::WriteCommand>>,
 }
 
 impl DaemonState {
@@ -96,6 +99,7 @@ impl DaemonState {
             started_at: Instant::now(),
             hlc: Arc::new(hlc),
             diagnostics_tx: None,
+            writer_tx: None,
         })
     }
 
@@ -133,6 +137,7 @@ impl DaemonState {
             hlc,
             started_at,
             diagnostics_tx: None,
+            writer_tx: None,
         })
     }
 
@@ -148,6 +153,7 @@ impl DaemonState {
         events: EventSender,
         hlc: Arc<crate::sync::Hlc>,
         started_at: Instant,
+        writer_tx: Option<tokio::sync::mpsc::Sender<super::writer::WriteCommand>>,
     ) -> Result<Self, String> {
         // Must init sqlite-vec extension before opening any connection
         crate::db::vec::init_sqlite_vec();
@@ -164,7 +170,29 @@ impl DaemonState {
             hlc,
             started_at,
             diagnostics_tx: None,
+            writer_tx,
         })
+    }
+}
+
+/// Send a fire-and-forget TouchMemories command through the writer actor channel.
+/// Called after Recall/CompileContext to update access_count and activation_level
+/// on the write connection, since the read-only handler connection can't write.
+fn send_touch(writer_tx: &Option<tokio::sync::mpsc::Sender<super::writer::WriteCommand>>, ids: Vec<String>, boost: f64) {
+    if ids.is_empty() { return; }
+    if let Some(tx) = writer_tx {
+        // Deduplicate IDs to prevent double-boost (M6 fix)
+        let mut unique_ids = ids;
+        unique_ids.sort_unstable();
+        unique_ids.dedup();
+
+        // try_send is non-blocking — touch is best-effort optimization
+        if let Err(e) = tx.try_send(super::writer::WriteCommand::TouchMemories {
+            ids: unique_ids,
+            boost_amount: boost,
+        }) {
+            eprintln!("[send_touch] failed to send touch: {e}");
+        }
     }
 }
 
@@ -473,6 +501,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             if let Some(ref since_ts) = since {
                 results.retain(|r| r.memory.created_at.as_str() >= since_ts.as_str());
             }
+
+            // Fire-and-forget: send touch/boost through writer channel for read-only path.
+            // On the writer path this is redundant (recall already wrote directly), but harmless.
+            let touch_ids: Vec<String> = results.iter()
+                .filter(|r| r.source != "declared" && r.source != "domain_dna" && r.source != "perception")
+                .map(|r| r.memory.id.clone())
+                .collect();
+            send_touch(&state.writer_tx, touch_ids, 0.3);
 
             let count = results.len();
             Response::Ok {
@@ -1772,7 +1808,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             } else {
                 let config = crate::config::load_config();
                 let ctx_config = config.context.validated();
-                let dynamic_suffix = crate::recall::compile_dynamic_suffix(
+                let (dynamic_suffix, ctx_touched_ids) = crate::recall::compile_dynamic_suffix(
                     &state.conn, agent_name, project.as_deref(), &ctx_config, &excluded, sid, focus.as_deref(),
                 );
                 let full = format!(
@@ -1780,13 +1816,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     static_prefix, dynamic_suffix
                 );
                 let chars = full.len();
-                // Record injection for observability
+                // Record injection for observability — route through writer channel
+                // since CompileContext runs on a read-only connection
                 if let Some(sid) = session_id.as_deref() {
-                    let _ = crate::db::effectiveness::record_injection_with_size(
-                        &state.conn, sid, "SessionStart", "full_context",
-                        &format!("static={} dynamic={}", static_prefix.len(), dynamic_suffix.len()),
-                        chars,
-                    );
+                    if let Some(tx) = &state.writer_tx {
+                        let _ = tx.try_send(super::writer::WriteCommand::RecordInjection {
+                            session_id: sid.to_string(),
+                            hook_event: "SessionStart".to_string(),
+                            context_type: "full_context".to_string(),
+                            content_summary: format!("static={} dynamic={}", static_prefix.len(), dynamic_suffix.len()),
+                            chars_injected: chars,
+                        });
+                    }
                 }
                 // Emit context_compiled event
                 crate::events::emit(&state.events, "context_compiled", serde_json::json!({
@@ -1795,6 +1836,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     "total_chars": chars,
                     "layers_used": 9,
                 }));
+                // Touch the exact decisions+lessons that were included in context compilation.
+                // These IDs are returned by compile_dynamic_suffix — no approximate query needed.
+                send_touch(&state.writer_tx, ctx_touched_ids, 0.1);
+
                 // Emit prefetch_loaded event if prefetch hints were generated
                 let prefetch_hints = crate::recall::compile_prefetch_hints(
                     &state.conn, agent_name, project.as_deref(), 5,
@@ -2009,6 +2054,36 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
                 Err(e) => Response::Error {
                     message: format!("backfill_project failed: {e}"),
+                },
+            }
+        }
+
+        Request::CleanupMemory => {
+            let garbage = ops::cleanup_garbage_memories(&state.conn).unwrap_or_else(|e| {
+                eprintln!("[cleanup] garbage cleanup failed: {e}"); 0
+            });
+            let projects = ops::normalize_project_names(&state.conn).unwrap_or_else(|e| {
+                eprintln!("[cleanup] project normalization failed: {e}"); 0
+            });
+            let perceptions = crate::db::manas::purge_duplicate_perceptions(&state.conn).unwrap_or_else(|e| {
+                eprintln!("[cleanup] perception purge failed: {e}"); 0
+            });
+            let declared = crate::db::manas::cleanup_stale_declared(&state.conn).unwrap_or_else(|e| {
+                eprintln!("[cleanup] declared cleanup failed: {e}"); 0
+            });
+            let entities = crate::db::manas::cleanup_duplicate_entities(&state.conn).unwrap_or_else(|e| {
+                eprintln!("[cleanup] entity dedup failed: {e}"); 0
+            });
+            let dna = crate::db::manas::cleanup_duplicate_domain_dna(&state.conn).unwrap_or_else(|e| {
+                eprintln!("[cleanup] domain DNA dedup failed: {e}"); 0
+            });
+            eprintln!("[cleanup] garbage={garbage} projects={projects} perceptions={perceptions} declared={declared} entities={entities} dna={dna}");
+            Response::Ok {
+                data: ResponseData::CleanupMemoryResult {
+                    garbage_deleted: garbage,
+                    projects_normalized: projects,
+                    perceptions_purged: perceptions,
+                    declared_cleaned: declared,
                 },
             }
         }
@@ -2281,13 +2356,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::BatchRecall { queries } => {
             let mut all_results = Vec::new();
+            let mut all_touch_ids = Vec::new();
             for q in &queries {
                 let lim = q.limit.unwrap_or(5);
                 let results = hybrid_recall(
                     &state.conn, &q.text, None, q.memory_type.as_ref(), None, lim,
                 );
+                for r in &results {
+                    all_touch_ids.push(r.memory.id.clone());
+                }
                 all_results.push(results);
             }
+            send_touch(&state.writer_tx, all_touch_ids, 0.3);
             Response::Ok {
                 data: ResponseData::BatchRecallResults { results: all_results },
             }
@@ -7069,5 +7149,162 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("Use gRPC for internal APIs"), "decision file should contain title");
         assert!(content.contains(&id), "decision file should contain memory id");
+    }
+
+    #[test]
+    fn test_recall_sends_touch_via_writer_tx() {
+        // Wave 1: Verify that Recall handler sends touch IDs through the writer channel.
+        // We set up a real mpsc channel and verify the TouchMemories command is received.
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<super::super::writer::WriteCommand>(10);
+        state.writer_tx = Some(tx);
+
+        // Store a memory
+        handle_request(&mut state, Request::Remember {
+            memory_type: forge_core::types::MemoryType::Decision,
+            title: "test touch decision".into(),
+            content: "testing that recall updates access_count".into(),
+            confidence: None,
+            tags: None,
+            project: Some("test".into()),
+            metadata: None,
+        });
+
+        // Recall it — this should send a TouchMemories command through the channel
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "test touch decision".into(),
+            memory_type: None,
+            project: Some("test".into()),
+            limit: Some(5),
+            layer: None,
+            since: None,
+        });
+
+        // Verify recall returned results
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, .. } } => {
+                assert!(count > 0, "should find the decision");
+            }
+            other => panic!("expected Memories, got {:?}", other),
+        }
+
+        // Verify a TouchMemories command was sent through the channel
+        match rx.try_recv() {
+            Ok(super::super::writer::WriteCommand::TouchMemories { ids, boost_amount }) => {
+                assert!(!ids.is_empty(), "touch IDs should not be empty");
+                assert!((boost_amount - 0.3).abs() < f64::EPSILON, "boost should be 0.3");
+            }
+            Ok(other) => panic!("expected TouchMemories, got {:?}", std::mem::discriminant(&other)),
+            Err(e) => panic!("expected TouchMemories command in channel, got error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_cleanup_memory_handler() {
+        // Wave 3: Verify CleanupMemory handler deletes garbage and normalizes projects.
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Insert a garbage memory (quality 0.0, access 0, older than 7 days)
+        state.conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, quality_score, access_count)
+             VALUES ('garbage-1', 'decision', 'garbage', 'bad content', 0.5, 'active', 'test', '[]', datetime('now', '-30 days'), datetime('now', '-30 days'), 0.0, 0)",
+            [],
+        ).unwrap();
+
+        // Insert a good memory
+        state.conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, quality_score, access_count)
+             VALUES ('good-1', 'decision', 'good decision', 'quality content', 0.9, 'active', 'test', '[]', datetime('now'), datetime('now'), 0.8, 5)",
+            [],
+        ).unwrap();
+
+        let resp = handle_request(&mut state, Request::CleanupMemory);
+        match resp {
+            Response::Ok { data: ResponseData::CleanupMemoryResult { garbage_deleted, .. } } => {
+                assert_eq!(garbage_deleted, 1, "should delete 1 garbage memory");
+            }
+            other => panic!("expected CleanupMemoryResult, got {:?}", other),
+        }
+
+        // Verify garbage is soft-deleted, good one is untouched
+        let deleted: i64 = state.conn.query_row(
+            "SELECT COUNT(*) FROM memory WHERE id = 'garbage-1' AND deleted_at IS NOT NULL", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(deleted, 1, "garbage memory should be soft-deleted");
+
+        let active: i64 = state.conn.query_row(
+            "SELECT COUNT(*) FROM memory WHERE id = 'good-1' AND deleted_at IS NULL", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(active, 1, "good memory should remain active");
+    }
+
+    #[test]
+    fn test_send_touch_with_none_writer_tx() {
+        // Wave 1: send_touch with None writer_tx should be a no-op (no panic)
+        send_touch(&None, vec!["id1".to_string(), "id2".to_string()], 0.3);
+        // Should not panic — that's the test
+    }
+
+    #[test]
+    fn test_send_touch_with_empty_ids() {
+        // Wave 1: send_touch with empty IDs should be a no-op
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        send_touch(&Some(tx), vec![], 0.3);
+        // Should not send anything — channel should be empty
+    }
+
+    // ── Fix 3: Context effectiveness via writer channel ──
+
+    #[test]
+    fn test_compile_context_sends_record_injection_via_writer() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<super::super::writer::WriteCommand>(10);
+        state.writer_tx = Some(tx);
+
+        // Register a session so session_id validation passes
+        handle_request(&mut state, Request::RegisterSession {
+            id: "test-session-1".into(),
+            agent: "claude-code".into(),
+            project: Some("forge".into()),
+            cwd: None,
+            capabilities: None,
+            current_task: None,
+        });
+
+        // CompileContext with session_id should send RecordInjection through the writer
+        let resp = handle_request(&mut state, Request::CompileContext {
+            agent: Some("claude-code".into()),
+            project: Some("forge".into()),
+            static_only: None,
+            excluded_layers: None,
+            session_id: Some("test-session-1".into()),
+            focus: None,
+        });
+
+        // Verify the response is successful
+        match &resp {
+            Response::Ok { data: ResponseData::CompiledContext { chars, .. } } => {
+                assert!(*chars > 0, "compiled context should have content");
+            }
+            other => panic!("expected CompiledContext, got {:?}", other),
+        }
+
+        // Drain TouchMemories first (CompileContext sends touch before injection)
+        let mut found_injection = false;
+        while let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                super::super::writer::WriteCommand::RecordInjection {
+                    session_id, hook_event, context_type, chars_injected, ..
+                } => {
+                    assert_eq!(session_id, "test-session-1");
+                    assert_eq!(hook_event, "SessionStart");
+                    assert_eq!(context_type, "full_context");
+                    assert!(chars_injected > 0, "chars_injected should be > 0");
+                    found_injection = true;
+                }
+                _ => {} // skip TouchMemories and other commands
+            }
+        }
+        assert!(found_injection, "CompileContext with session_id should send RecordInjection via writer channel");
     }
 }

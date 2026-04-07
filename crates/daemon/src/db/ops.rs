@@ -859,6 +859,62 @@ pub fn backfill_project_from_sessions(conn: &Connection) -> rusqlite::Result<(us
     Ok((phase1 + phase2, remaining))
 }
 
+/// Soft-delete memories with quality_score = 0.0 and zero access_count.
+/// These are extracted garbage that was never accessed — safe to remove.
+/// Returns the number of memories soft-deleted.
+pub fn cleanup_garbage_memories(conn: &Connection) -> rusqlite::Result<usize> {
+    let deleted = conn.execute(
+        "UPDATE memory SET deleted_at = datetime('now')
+         WHERE status = 'active'
+         AND quality_score < 0.01
+         AND access_count = 0
+         AND deleted_at IS NULL
+         AND created_at < datetime('now', '-7 days')",
+        [],
+    )?;
+    Ok(deleted)
+}
+
+/// Normalize fragmented project names using HOME-based prefix stripping.
+/// Applies the same logic as extract_project_from_path but to existing memories.
+/// Returns the number of memories updated.
+pub fn normalize_project_names(conn: &Connection) -> rusqlite::Result<usize> {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return Ok(0),
+    };
+    let home_prefix = format!("-{}-", home.trim_start_matches('/').replace('/', "-"));
+
+    // Find all unique project names that look like they were extracted incorrectly
+    // (single-word names that are path segments, not real project names)
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT project FROM memory
+         WHERE project IS NOT NULL AND project != '' AND deleted_at IS NULL"
+    )?;
+    let projects: Vec<String> = stmt.query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut total_updated = 0;
+    for proj in &projects {
+        // Only normalize values that match the Claude-encoded path pattern for current HOME.
+        // Must start with the home prefix (e.g. "-mnt-colab-disk-DurgaSaiK-").
+        // Don't touch values that merely start with '-' — they could be valid project names.
+        if let Some(rest) = proj.strip_prefix(&home_prefix) {
+            if rest.is_empty() { continue; } // home dir itself
+            let normalized = rest.to_string();
+            if normalized != *proj {
+                let updated = conn.execute(
+                    "UPDATE memory SET project = ?1 WHERE project = ?2 AND deleted_at IS NULL",
+                    rusqlite::params![normalized, proj],
+                )?;
+                total_updated += updated;
+            }
+        }
+    }
+    Ok(total_updated)
+}
+
 /// Find and merge near-duplicate memories using word overlap on title AND content.
 /// Only deduplicates memories of the same type and project.
 /// Computes title overlap and content overlap separately, then takes the max of

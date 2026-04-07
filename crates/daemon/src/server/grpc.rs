@@ -89,6 +89,7 @@ impl ForgeService for ForgeServiceImpl {
                 self.state.events.clone(),
                 Arc::clone(&self.state.hlc),
                 self.state.started_at,
+                Some(self.state.write_tx.clone()),
             ) {
                 Ok(mut reader) => handle_request(&mut reader, req),
                 Err(e) => {

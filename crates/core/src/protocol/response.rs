@@ -339,6 +339,13 @@ pub enum ResponseData {
         skipped: usize,
     },
 
+    CleanupMemoryResult {
+        garbage_deleted: usize,
+        projects_normalized: usize,
+        perceptions_purged: usize,
+        declared_cleaned: usize,
+    },
+
     EvaluationStored {
         lessons_created: usize,
         diagnostics_created: usize,
