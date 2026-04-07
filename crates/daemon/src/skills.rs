@@ -240,7 +240,12 @@ pub fn uninstall_skill(conn: &Connection, skill_name: &str, project: &str) -> Re
 }
 
 /// Get full skill details by name.
-pub fn skill_info(conn: &Connection, name: &str) -> Result<Option<SkillEntry>, String> {
+/// If `workspace_root` is provided, absolute file_path values are made relative to it.
+pub fn skill_info(
+    conn: &Connection,
+    name: &str,
+    workspace_root: Option<&str>,
+) -> Result<Option<SkillEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, name, description, category, file_path, installed_for_project, indexed_at
@@ -253,7 +258,20 @@ pub fn skill_info(conn: &Connection, name: &str) -> Result<Option<SkillEntry>, S
         .map_err(|e| format!("query skill_info: {e}"))?;
 
     match rows.next() {
-        Some(Ok(entry)) => Ok(Some(entry)),
+        Some(Ok(mut entry)) => {
+            // Strip workspace root from absolute file_path to prevent leaking server paths
+            if let Some(root) = workspace_root {
+                let root_prefix = if root.ends_with('/') {
+                    root.to_string()
+                } else {
+                    format!("{}/", root)
+                };
+                if entry.file_path.starts_with(&root_prefix) {
+                    entry.file_path = entry.file_path[root_prefix.len()..].to_string();
+                }
+            }
+            Ok(Some(entry))
+        }
         Some(Err(e)) => Err(format!("skill_info row: {e}")),
         None => Ok(None),
     }
@@ -448,12 +466,12 @@ mod tests {
 
         // Install
         install_skill(&conn, "test-skill", "my-project").unwrap();
-        let info = skill_info(&conn, "test-skill").unwrap().unwrap();
+        let info = skill_info(&conn, "test-skill", None).unwrap().unwrap();
         assert_eq!(info.installed_for_project.as_deref(), Some("my-project"));
 
         // Uninstall
         uninstall_skill(&conn, "test-skill", "my-project").unwrap();
-        let info = skill_info(&conn, "test-skill").unwrap().unwrap();
+        let info = skill_info(&conn, "test-skill", None).unwrap().unwrap();
         assert!(info.installed_for_project.is_none());
     }
 
@@ -473,7 +491,7 @@ mod tests {
         create_skill_md(tmp.path(), "info-skill", "Detailed skill", Some("engineering"));
         index_skills_directory(&conn, tmp.path()).unwrap();
 
-        let info = skill_info(&conn, "info-skill").unwrap();
+        let info = skill_info(&conn, "info-skill", None).unwrap();
         assert!(info.is_some());
         let info = info.unwrap();
         assert_eq!(info.name, "info-skill");
@@ -481,8 +499,39 @@ mod tests {
         assert_eq!(info.category, "engineering");
 
         // Non-existent skill
-        let none = skill_info(&conn, "nonexistent").unwrap();
+        let none = skill_info(&conn, "nonexistent", None).unwrap();
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn test_skill_info_strips_workspace_root() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+
+        create_skill_md(tmp.path(), "path-skill", "Path test", Some("engineering"));
+        index_skills_directory(&conn, tmp.path()).unwrap();
+
+        // Without workspace_root, file_path is absolute
+        let info = skill_info(&conn, "path-skill", None).unwrap().unwrap();
+        assert!(
+            info.file_path.starts_with('/'),
+            "file_path should be absolute without workspace_root: {}",
+            info.file_path
+        );
+
+        // With workspace_root, file_path is stripped to relative
+        let ws_root = tmp.path().to_string_lossy().to_string();
+        let info = skill_info(&conn, "path-skill", Some(&ws_root)).unwrap().unwrap();
+        assert!(
+            !info.file_path.starts_with('/'),
+            "file_path should be relative with workspace_root: {}",
+            info.file_path
+        );
+        assert!(
+            info.file_path.starts_with("path-skill/"),
+            "file_path should start with skill dir name: {}",
+            info.file_path
+        );
     }
 
     #[test]

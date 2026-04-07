@@ -477,6 +477,9 @@ pub fn team_status(
 
 // ── Team Orchestration ──
 
+/// Maximum number of agents in a single team.
+pub const MAX_TEAM_SIZE: usize = 20;
+
 /// Run a full team: create team + spawn all agents from templates.
 /// On any spawn failure, rolls back all already-spawned agents (retire + end session).
 /// Returns (team_name, agents_spawned, session_ids).
@@ -487,6 +490,13 @@ pub fn run_team(
     topology: Option<&str>,
 ) -> rusqlite::Result<(String, usize, Vec<String>)> {
     let _topology = topology.unwrap_or("mesh");
+
+    // Enforce team size cap
+    if template_names.len() > MAX_TEAM_SIZE {
+        return Err(rusqlite::Error::InvalidParameterName(
+            format!("team size {} exceeds maximum of {MAX_TEAM_SIZE}", template_names.len()),
+        ));
+    }
 
     // Validate all templates exist before creating anything
     for tpl_name in template_names {
@@ -1929,6 +1939,138 @@ mod tests {
         // Cannot synthesize a decided meeting (status must be 'collecting' or 'timed_out')
         let updated = synthesize_meeting(&conn, &meeting_id, "Late synthesis").unwrap();
         assert!(!updated, "should not be able to synthesize a decided meeting");
+    }
+
+    // ── run_team / stop_team Tests ──
+
+    #[test]
+    fn test_run_team_creates_agents() {
+        let conn = setup();
+        let t1 = make_template("CTO");
+        let t2 = make_template("CMO");
+        create_agent_template(&conn, &t1).unwrap();
+        create_agent_template(&conn, &t2).unwrap();
+
+        let (name, count, session_ids) = run_team(
+            &conn, "sprint-1", &["CTO".into(), "CMO".into()], None,
+        ).unwrap();
+
+        assert_eq!(name, "sprint-1");
+        assert_eq!(count, 2);
+        assert_eq!(session_ids.len(), 2);
+
+        // Verify team was created
+        let team_status_val: String = conn.query_row(
+            "SELECT status FROM team WHERE name = 'sprint-1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(team_status_val, "active");
+
+        // Verify agents are in the DB with correct status
+        let agents = list_agents(&conn, Some("sprint-1"), 50).unwrap();
+        assert_eq!(agents.len(), 2, "expected 2 agents in sprint-1 team");
+
+        // Verify each session exists and has template_id set
+        for sid in &session_ids {
+            let template_id: Option<String> = conn.query_row(
+                "SELECT template_id FROM session WHERE id = ?1",
+                params![sid],
+                |row| row.get(0),
+            ).unwrap();
+            assert!(template_id.is_some(), "session {sid} should have template_id");
+        }
+    }
+
+    #[test]
+    fn test_stop_team_retires_agents() {
+        let conn = setup();
+        let t1 = make_template("CTO");
+        let t2 = make_template("CMO");
+        create_agent_template(&conn, &t1).unwrap();
+        create_agent_template(&conn, &t2).unwrap();
+
+        let (_name, _count, session_ids) = run_team(
+            &conn, "stop-team-1", &["CTO".into(), "CMO".into()], None,
+        ).unwrap();
+
+        // Verify agents are active before stopping
+        let agents_before = list_agents(&conn, Some("stop-team-1"), 50).unwrap();
+        assert_eq!(agents_before.len(), 2);
+
+        // Stop the team
+        let retired = stop_team(&conn, "stop-team-1").unwrap();
+        assert_eq!(retired, 2);
+
+        // Verify agents are retired (list_agents only returns active sessions)
+        let agents_after = list_agents(&conn, Some("stop-team-1"), 50).unwrap();
+        assert_eq!(agents_after.len(), 0, "retired agents should not appear in list_agents");
+
+        // Verify team status is stopped
+        let team_status_val: String = conn.query_row(
+            "SELECT status FROM team WHERE name = 'stop-team-1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(team_status_val, "stopped");
+
+        // Verify each session is ended and agent_status is retired
+        for sid in &session_ids {
+            let status: String = conn.query_row(
+                "SELECT status FROM session WHERE id = ?1",
+                params![sid],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(status, "ended", "session {sid} should be ended");
+
+            let agent_status: String = conn.query_row(
+                "SELECT agent_status FROM session WHERE id = ?1",
+                params![sid],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(agent_status, "retired", "agent {sid} should be retired");
+        }
+    }
+
+    #[test]
+    fn test_run_team_rollback_on_failure() {
+        let conn = setup();
+        // Only create CTO template, not CMO — CMO spawn should fail
+        let t1 = make_template("CTO");
+        create_agent_template(&conn, &t1).unwrap();
+
+        let result = run_team(
+            &conn, "bad-team", &["CTO".into(), "NonExistent".into()], None,
+        );
+
+        // run_team validates all templates before creating anything, so it should fail
+        assert!(result.is_err(), "run_team should fail when a template doesn't exist");
+
+        // Verify no team was created (validation happens before team creation)
+        let team_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM team WHERE name = 'bad-team'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(team_count, 0, "team should not exist after failed run_team");
+    }
+
+    #[test]
+    fn test_run_team_exceeds_max_size() {
+        let conn = setup();
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+
+        // Create a template list that exceeds MAX_TEAM_SIZE
+        let oversized: Vec<String> = (0..=MAX_TEAM_SIZE).map(|_| "CTO".into()).collect();
+        let result = run_team(&conn, "huge-team", &oversized, None);
+
+        assert!(result.is_err(), "run_team should reject team size > MAX_TEAM_SIZE");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("exceeds maximum"),
+            "error should mention exceeds maximum, got: {err_msg}"
+        );
     }
 
     #[test]

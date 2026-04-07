@@ -143,6 +143,7 @@ pub fn team_tree(conn: &Connection, org_ref: &str) -> rusqlite::Result<Vec<Value
 }
 
 /// Create an organization from a named template.
+/// Idempotent: if the org already exists, reuses it and skips duplicate teams.
 /// Returns (org_id, team_count).
 pub fn create_org_from_template(
     conn: &Connection,
@@ -176,27 +177,59 @@ pub fn create_org_from_template(
         }
     };
 
-    let org_id = create_organization(conn, org_name, None)?;
+    // Idempotent: reuse existing org or create a new one
+    let org_id: String = match conn.query_row(
+        "SELECT id FROM organization WHERE name = ?1",
+        params![org_name],
+        |row| row.get(0),
+    ) {
+        Ok(existing_id) => existing_id,
+        Err(rusqlite::Error::QueryReturnedNoRows) => create_organization(conn, org_name, None)?,
+        Err(e) => return Err(e),
+    };
+
     let now = forge_core::time::now_iso();
     let mut count = 0usize;
 
     for def in templates {
-        let parent_id = ulid::Ulid::new().to_string();
-        conn.execute(
-            "INSERT INTO team (id, name, organization_id, created_by, status, created_at)
-             VALUES (?1, ?2, ?3, 'system', 'active', ?4)",
-            params![parent_id, def.name, org_id, now],
-        )?;
-        count += 1;
+        // Check if this parent team already exists for this org
+        let existing_parent: Option<String> = conn.query_row(
+            "SELECT id FROM team WHERE name = ?1 AND organization_id = ?2",
+            params![def.name, org_id],
+            |row| row.get(0),
+        ).ok();
+
+        let parent_id = match existing_parent {
+            Some(id) => id, // reuse existing team
+            None => {
+                let pid = ulid::Ulid::new().to_string();
+                conn.execute(
+                    "INSERT INTO team (id, name, organization_id, created_by, status, created_at)
+                     VALUES (?1, ?2, ?3, 'system', 'active', ?4)",
+                    params![pid, def.name, org_id, now],
+                )?;
+                count += 1;
+                pid
+            }
+        };
 
         for child_name in def.children {
-            let child_id = ulid::Ulid::new().to_string();
-            conn.execute(
-                "INSERT INTO team (id, name, organization_id, parent_team_id, created_by, status, created_at)
-                 VALUES (?1, ?2, ?3, ?4, 'system', 'active', ?5)",
-                params![child_id, *child_name, org_id, parent_id, now],
-            )?;
-            count += 1;
+            // Check if this child team already exists for this org
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM team WHERE name = ?1 AND organization_id = ?2 AND parent_team_id = ?3",
+                params![*child_name, org_id, parent_id],
+                |row| row.get(0),
+            ).unwrap_or(false);
+
+            if !exists {
+                let child_id = ulid::Ulid::new().to_string();
+                conn.execute(
+                    "INSERT INTO team (id, name, organization_id, parent_team_id, created_by, status, created_at)
+                     VALUES (?1, ?2, ?3, ?4, 'system', 'active', ?5)",
+                    params![child_id, *child_name, org_id, parent_id, now],
+                )?;
+                count += 1;
+            }
         }
     }
 

@@ -247,6 +247,55 @@ async fn api_handler(
     Json(response).into_response()
 }
 
+/// Query parameters for GET /api/skills.
+#[derive(serde::Deserialize)]
+struct SkillsQuery {
+    search: Option<String>,
+    category: Option<String>,
+}
+
+/// GET /api/skills — list skills with optional search and category filter.
+/// Opens a read-only connection and delegates to `crate::skills::list_skills`.
+async fn skills_handler(
+    State(state): State<AppState>,
+    Query(params): Query<SkillsQuery>,
+) -> impl IntoResponse {
+    match DaemonState::new_reader(
+        &state.db_path,
+        state.events.clone(),
+        Arc::clone(&state.hlc),
+        state.started_at,
+        None,
+    ) {
+        Ok(reader) => {
+            match crate::skills::list_skills(
+                &reader.conn,
+                params.category.as_deref(),
+                params.search.as_deref(),
+                100,
+            ) {
+                Ok(skills) => Json(serde_json::json!(skills)).into_response(),
+                Err(e) => {
+                    tracing::error!("skills query failed: {e}");
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": format!("skills query failed: {e}")})),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("failed to open read-only connection for skills: {e}");
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "database unavailable"})),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Query parameters for the SSE subscribe endpoint.
 #[derive(serde::Deserialize)]
 struct SubscribeParams {
@@ -476,6 +525,7 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
         Router::new()
             .route("/api", post(api_handler))
             .route("/api/subscribe", get(subscribe_handler))
+            .route("/api/skills", get(skills_handler))
             .layer(axum::middleware::from_fn(move |req, next| {
                 let cache = jwks_cache.clone();
                 let cfg = auth_config.clone();
@@ -487,6 +537,7 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
         Router::new()
             .route("/api", post(api_handler))
             .route("/api/subscribe", get(subscribe_handler))
+            .route("/api/skills", get(skills_handler))
             .with_state(api_state)
     };
 
@@ -1340,5 +1391,143 @@ Pfkte+2kAeYPMK9Sa+apqqE=
 
         drop(tx);
         handle.await.unwrap();
+    }
+
+    /// Helper: insert a skill directly into the DB for testing.
+    fn insert_test_skill(db_path: &str, name: &str, category: &str, description: &str) {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.execute(
+            "INSERT INTO skill_registry (id, name, description, category, file_path, indexed_at)
+             VALUES (?1, ?2, ?3, ?4, '/test/path', datetime('now'))",
+            rusqlite::params![format!("test-{name}"), name, description, category],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_api_skills_returns_all() {
+        let state = test_app_state();
+        insert_test_skill(&state.db_path, "forge-build", "procedural", "Build projects");
+        insert_test_skill(&state.db_path, "forge-review", "procedural", "Review code");
+        let app = test_router(state);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri("/api/skills")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let arr = json.as_array().expect("response should be a JSON array");
+        assert_eq!(arr.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_api_skills_with_search() {
+        let state = test_app_state();
+        insert_test_skill(&state.db_path, "forge-build", "procedural", "Build projects");
+        insert_test_skill(&state.db_path, "forge-review", "procedural", "Review code changes");
+        let app = test_router(state);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri("/api/skills?search=review")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let arr = json.as_array().expect("response should be a JSON array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "forge-review");
+    }
+
+    #[tokio::test]
+    async fn test_get_api_skills_with_category() {
+        let state = test_app_state();
+        insert_test_skill(&state.db_path, "forge-build", "procedural", "Build projects");
+        insert_test_skill(&state.db_path, "debug-tool", "diagnostic", "Debug things");
+        let app = test_router(state);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri("/api/skills?category=diagnostic")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let arr = json.as_array().expect("response should be a JSON array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["category"], "diagnostic");
+    }
+
+    #[tokio::test]
+    async fn test_get_api_skills_empty_result() {
+        let state = test_app_state();
+        let app = test_router(state);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri("/api/skills")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let arr = json.as_array().expect("response should be a JSON array");
+        assert!(arr.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_api_skills_search_and_category_combined() {
+        let state = test_app_state();
+        insert_test_skill(&state.db_path, "build-fast", "procedural", "Build fast");
+        insert_test_skill(&state.db_path, "build-slow", "diagnostic", "Build slow");
+        insert_test_skill(&state.db_path, "review-code", "procedural", "Review code");
+        let app = test_router(state);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri("/api/skills?search=build&category=procedural")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let arr = json.as_array().expect("response should be a JSON array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "build-fast");
     }
 }

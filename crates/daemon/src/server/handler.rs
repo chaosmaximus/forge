@@ -3007,6 +3007,17 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::UpdateAgentStatus { session_id, status, current_task } => {
+            // Validate status against allowed values
+            const VALID_AGENT_STATUSES: &[&str] = &["active", "idle", "busy", "error", "retired"];
+            if !VALID_AGENT_STATUSES.contains(&status.as_str()) {
+                return Response::Error {
+                    message: format!(
+                        "invalid agent status '{}': must be one of {:?}",
+                        status, VALID_AGENT_STATUSES
+                    ),
+                };
+            }
+
             // Get old status for event
             let old_status: String = state.conn.query_row(
                 "SELECT COALESCE(agent_status, 'unknown') FROM session WHERE id = ?1",
@@ -3762,7 +3773,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::SkillsInfo { name } => {
-            match crate::skills::skill_info(&state.conn, &name) {
+            let ws_root = std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string());
+            match crate::skills::skill_info(&state.conn, &name, ws_root.as_deref()) {
                 Ok(entry) => {
                     let skill = entry.map(|e| serde_json::to_value(e).unwrap_or_default());
                     Response::Ok {
