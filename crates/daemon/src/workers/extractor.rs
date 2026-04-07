@@ -531,7 +531,19 @@ async fn process_file(
                     locked_for_hlc.hlc.now(),
                     locked_for_hlc.hlc.node_id().to_string(),
                 );
-                // Set project from transcript path if not already set
+                // Set project: first try session's project, then transcript path
+                if memory.project.is_none() || memory.project.as_deref() == Some("") {
+                    if !session_id.is_empty() {
+                        // Derive project from the session's registered project
+                        if let Ok(proj) = locked_for_hlc.conn.query_row(
+                            "SELECT project FROM session WHERE id = ?1 AND project IS NOT NULL AND project != ''",
+                            rusqlite::params![&session_id],
+                            |row| row.get::<_, String>(0),
+                        ) {
+                            memory.project = Some(proj);
+                        }
+                    }
+                }
                 if memory.project.is_none() || memory.project.as_deref() == Some("") {
                     memory.project = crate::bootstrap::extract_project_from_path(path);
                 }
