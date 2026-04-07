@@ -24,6 +24,7 @@ fn remember(
         confidence,
         tags,
         project,
+        metadata: None,
     };
     let resp = handle_request(state, req);
     match resp {

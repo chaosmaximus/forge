@@ -9,6 +9,12 @@ use std::io::{Read as IoRead, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::broadcast;
 
+/// Maximum concurrent PTY sessions (prevents resource exhaustion / DoS).
+const MAX_PTY_SESSIONS: usize = 8;
+
+/// Idle timeout for PTY sessions without activity (15 minutes).
+const IDLE_TIMEOUT_SECS: u64 = 900;
+
 /// A single PTY session with its master FD, writer, reader thread, and child process.
 pub struct PtySession {
     #[allow(dead_code)]
@@ -17,6 +23,8 @@ pub struct PtySession {
     reader_handle: Option<std::thread::JoinHandle<()>>,
     output_tx: broadcast::Sender<Vec<u8>>,
     child: Box<dyn Child + Send + Sync>,
+    /// Timestamp of last activity (write or read) for idle timeout.
+    pub last_activity: std::time::Instant,
 }
 
 /// Counter for generating unique PTY session IDs.
@@ -33,6 +41,42 @@ impl PtyManager {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
+        }
+    }
+
+    /// Current number of active PTY sessions.
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Maximum allowed concurrent PTY sessions.
+    pub fn max_sessions(&self) -> usize {
+        MAX_PTY_SESSIONS
+    }
+
+    /// Reap idle PTY sessions that have exceeded the idle timeout.
+    /// Returns the number of sessions reaped.
+    pub fn reap_idle(&mut self) -> usize {
+        let timeout = std::time::Duration::from_secs(IDLE_TIMEOUT_SECS);
+        let now = std::time::Instant::now();
+        let idle_ids: Vec<u32> = self.sessions
+            .iter()
+            .filter(|(_, s)| now.duration_since(s.last_activity) > timeout)
+            .map(|(id, _)| *id)
+            .collect();
+        let count = idle_ids.len();
+        for id in idle_ids {
+            tracing::info!(pty_id = id, "reaping idle PTY session (exceeded {}s timeout)", IDLE_TIMEOUT_SECS);
+            self.close(id);
+        }
+        count
+    }
+
+    /// Close all PTY sessions (for graceful shutdown).
+    pub fn close_all(&mut self) {
+        let ids: Vec<u32> = self.sessions.keys().copied().collect();
+        for id in ids {
+            self.close(id);
         }
     }
 
@@ -109,6 +153,7 @@ impl PtyManager {
             reader_handle: Some(reader_handle),
             output_tx,
             child,
+            last_activity: std::time::Instant::now(),
         };
 
         self.sessions.insert(id, session);
@@ -116,12 +161,14 @@ impl PtyManager {
         Ok((id, output_rx))
     }
 
-    /// Write data to an existing PTY session.
+    /// Write data to an existing PTY session. Refreshes idle timeout.
     pub fn write(&mut self, id: u32, data: &str) -> Result<(), String> {
         let session = self
             .sessions
             .get_mut(&id)
             .ok_or_else(|| format!("pty session {id} not found"))?;
+
+        session.last_activity = std::time::Instant::now();
 
         session
             .writer

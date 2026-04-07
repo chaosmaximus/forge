@@ -3,13 +3,69 @@ use forge_daemon::server::http::{AppState, build_router};
 use forge_daemon::server::tls;
 use forge_daemon::server::metrics::ForgeMetrics;
 use forge_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
-use fs2::FileExt;
 use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+
+/// Acquire an exclusive PID lock file. If the lock is held by a dead process, clean up
+/// the stale lock and retry. Returns the locked file handle (must be kept alive).
+fn acquire_pid_lock(pid_path: &str) -> std::fs::File {
+    use fs2::FileExt;
+
+    let try_open_and_lock = || -> Result<std::fs::File, String> {
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .open(pid_path)
+            .map_err(|e| format!("failed to open PID file {pid_path}: {e}"))?;
+        f.try_lock_exclusive()
+            .map_err(|_| "lock held".to_string())?;
+        Ok(f)
+    };
+
+    match try_open_and_lock() {
+        Ok(f) => f,
+        Err(e) if e == "lock held" => {
+            // Lock held — check if the PID in the file is actually alive
+            if let Ok(contents) = std::fs::read_to_string(pid_path) {
+                let pid_str = contents.trim();
+                if let Ok(pid_num) = pid_str.parse::<i32>() {
+                    #[cfg(unix)]
+                    {
+                        // Check if process exists by reading /proc/<pid>/status
+                        let alive = std::path::Path::new(&format!("/proc/{}", pid_num)).exists();
+                        if !alive {
+                            tracing::warn!(
+                                pid = pid_num,
+                                "stale PID lock file found (process {} not alive) — cleaning up",
+                                pid_num
+                            );
+                            let _ = std::fs::remove_file(pid_path);
+                            match try_open_and_lock() {
+                                Ok(f) => return f,
+                                Err(e2) => {
+                                    tracing::error!("failed to acquire PID lock after stale cleanup: {e2}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            tracing::error!("another forge-daemon is already running (PID file locked at {pid_path})");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            tracing::error!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
 
 /// Initialize the OpenTelemetry OTLP tracer provider and return a tracing-opentelemetry layer.
 /// This is called only when FORGE_OTLP_ENABLED=true and FORGE_OTLP_ENDPOINT is set.
@@ -115,25 +171,11 @@ async fn main() {
         }
     }
 
-    // C2: Write PID file with advisory lock to prevent multiple daemon instances
+    // C2: Write PID file with advisory lock to prevent multiple daemon instances.
+    // If the lock fails, check if the PID in the file is actually alive.
+    // Stale PID files from crashed daemons are auto-cleaned.
     let pid_path = default_pid_path();
-    let pid_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&pid_path)
-    {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::error!("failed to open PID file {pid_path}: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if pid_file.try_lock_exclusive().is_err() {
-        tracing::error!("another forge-daemon is already running (PID file locked)");
-        std::process::exit(1);
-    }
+    let pid_file = acquire_pid_lock(&pid_path);
 
     // Write PID — file is now locked exclusively
     let pid = std::process::id();
@@ -336,6 +378,7 @@ async fn main() {
                     viewer_emails: tls_config_clone.auth.viewer_emails.clone(),
                     auth_enabled: tls_config_clone.auth.enabled,
                     metrics,
+                    rate_limiter: Some(forge_daemon::server::rate_limit::RateLimiter::new(forge_daemon::server::rate_limit::RateLimitConfig::default())),
                 };
                 let app = build_router(&tls_config_clone, state);
 

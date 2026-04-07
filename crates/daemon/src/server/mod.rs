@@ -5,6 +5,7 @@ pub mod health;
 pub mod http;
 pub mod metrics;
 pub mod pty;
+pub mod rate_limit;
 pub mod rbac;
 pub mod socket;
 pub mod static_files;

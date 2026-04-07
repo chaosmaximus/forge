@@ -210,6 +210,7 @@ mod tests {
             viewer_emails: vec![],
             auth_enabled: false,
             metrics,
+            rate_limiter: None,
         }
     }
 

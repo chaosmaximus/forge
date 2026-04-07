@@ -38,6 +38,7 @@ fn do_remember(
             confidence,
             tags,
             project,
+            metadata: None,
         },
     );
     match resp {

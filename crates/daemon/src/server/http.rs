@@ -50,6 +50,8 @@ pub struct AppState {
     pub auth_enabled: bool,
     /// Prometheus metrics collectors (None when metrics.enabled = false).
     pub metrics: Option<ForgeMetrics>,
+    /// Rate limiter for API endpoints (None = disabled).
+    pub rate_limiter: Option<super::rate_limit::RateLimiter>,
 }
 
 /// POST /api — accepts JSON matching the protocol Request type.
@@ -74,6 +76,19 @@ async fn api_handler(
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string()))
         .unwrap_or_default();
+
+    // Rate limit check
+    if let Some(ref limiter) = state.rate_limiter {
+        if let Err(retry_after) = limiter.check(&source_ip).await {
+            return (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", retry_after.to_string())],
+                Json(Response::Error {
+                    message: format!("rate limited — retry after {retry_after}s"),
+                }),
+            ).into_response();
+        }
+    }
 
     // Extract auth claims from extensions (injected by auth_middleware)
     let claims = http_req
@@ -334,7 +349,7 @@ async fn subscribe_handler(
 }
 
 /// Build the CORS layer from config.
-/// When auth is disabled and origins contain "*", log a security warning.
+/// Default origins restrict to localhost only. Wildcard "*" requires explicit config.
 fn build_cors_layer(config: &ForgeConfig) -> CorsLayer {
     let is_wildcard = config.cors.allowed_origins.contains(&"*".to_string());
     let layer = if is_wildcard {
@@ -347,13 +362,35 @@ fn build_cors_layer(config: &ForgeConfig) -> CorsLayer {
         }
         CorsLayer::new().allow_origin(Any)
     } else {
-        let origins: Vec<axum::http::HeaderValue> = config
-            .cors
-            .allowed_origins
-            .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
-        CorsLayer::new().allow_origin(origins)
+        // Support patterns like "http://localhost:*" by matching origin prefix
+        let patterns: Vec<String> = config.cors.allowed_origins.clone();
+        let has_wildcard_port = patterns.iter().any(|p| p.ends_with(":*"));
+        if has_wildcard_port {
+            let patterns_clone = patterns.clone();
+            CorsLayer::new().allow_origin(tower_http::cors::AllowOrigin::predicate(
+                move |origin: &axum::http::HeaderValue, _req: &axum::http::request::Parts| {
+                    let origin_str = match origin.to_str() {
+                        Ok(s) => s,
+                        Err(_) => return false,
+                    };
+                    patterns_clone.iter().any(|pattern| {
+                        if let Some(prefix) = pattern.strip_suffix(":*") {
+                            // Match "http://localhost:*" against "http://localhost:3000"
+                            origin_str.starts_with(prefix)
+                                && origin_str[prefix.len()..].starts_with(':')
+                        } else {
+                            origin_str == pattern
+                        }
+                    })
+                },
+            ))
+        } else {
+            let origins: Vec<axum::http::HeaderValue> = patterns
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            CorsLayer::new().allow_origin(origins)
+        }
     };
 
     layer
@@ -368,6 +405,18 @@ fn build_cors_layer(config: &ForgeConfig) -> CorsLayer {
 /// When `config.auth.enabled` is true, POST /api requires a valid JWT.
 pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
     let cors = build_cors_layer(config);
+
+    // Spawn rate limiter cleanup task (evict stale entries every 5 minutes).
+    if let Some(ref limiter) = state.rate_limiter {
+        let cleanup_limiter = limiter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                cleanup_limiter.cleanup().await;
+            }
+        });
+    }
 
     // Health probes — always unauthenticated
     let mut health_routes = Router::new()
@@ -389,6 +438,7 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
     // SSE subscribe endpoint is placed alongside /api so it inherits auth middleware.
     // When auth is disabled, SSE is open (same as /api). When auth is enabled, SSE
     // requires a valid JWT via Authorization header or ?token= query param.
+    let api_state = state.clone();
     let api_routes = if config.auth.enabled {
         let jwks_cache = super::auth::new_jwks_cache();
         let auth_config = config.auth.clone();
@@ -411,20 +461,44 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
                 let cfg = auth_config.clone();
                 super::auth::auth_middleware(req, next, cache, cfg)
             }))
-            .with_state(state)
+            .with_state(api_state)
     } else {
         Router::new()
             .route("/api", post(api_handler))
             .route("/api/subscribe", get(subscribe_handler))
-            .with_state(state)
+            .with_state(api_state)
     };
 
     // Terminal WebSocket route — PTY-backed bidirectional terminal I/O.
-    // Not behind auth middleware (auth will be added later via token query param).
+    // Auth enforced via ?token= query param (browsers can't set WS headers).
+    // PTY session limit enforced in handler (max 8 concurrent).
     let pty_manager: SharedPtyManager = Arc::new(Mutex::new(PtyManager::new()));
+
+    // Spawn background task to reap idle PTY sessions every 60 seconds.
+    {
+        let reaper_mgr = Arc::clone(&pty_manager);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let reaped = reaper_mgr.lock().await.reap_idle();
+                if reaped > 0 {
+                    tracing::info!(reaped, "PTY idle reaper cleaned up sessions");
+                }
+            }
+        });
+    }
+
+    let terminal_state = super::ws::TerminalState {
+        pty_mgr: pty_manager,
+        auth_enabled: config.auth.enabled,
+        auth_config: if config.auth.enabled { Some(config.auth.clone()) } else { None },
+        jwks_cache: if config.auth.enabled { Some(super::auth::new_jwks_cache()) } else { None },
+        db_path: Some(state.db_path.clone()),
+    };
     let terminal_routes = Router::new()
         .route("/api/terminal", get(terminal_ws_handler))
-        .with_state(pty_manager);
+        .with_state(terminal_state);
 
     let mut router = Router::new()
         .merge(health_routes)
@@ -485,6 +559,7 @@ pub async fn run_http_server_with_listener(
         viewer_emails: config.auth.viewer_emails.clone(),
         auth_enabled: config.auth.enabled,
         metrics,
+        rate_limiter: Some(super::rate_limit::RateLimiter::new(super::rate_limit::RateLimitConfig::default())),
     };
 
     let app = build_router(config, state);
@@ -542,6 +617,7 @@ mod tests {
             viewer_emails: Vec::new(),
             auth_enabled: false,
             metrics: None,
+            rate_limiter: None,
         }
     }
 
@@ -889,6 +965,7 @@ Pfkte+2kAeYPMK9Sa+apqqE=
             viewer_emails: Vec::new(),
             auth_enabled: false,
             metrics: None,
+            rate_limiter: None,
         };
         (state, handle)
     }

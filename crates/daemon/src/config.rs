@@ -38,8 +38,15 @@ fn default_3600_u64() -> u64 { 3600 }
 fn default_8420_u16() -> u16 { 8420 }
 fn default_8421_u16() -> u16 { 8421 }
 fn default_bind() -> String { "127.0.0.1".to_string() }
-fn default_grpc_bind() -> String { "0.0.0.0".to_string() }
-fn default_cors_origins() -> Vec<String> { vec!["*".to_string()] }
+fn default_grpc_bind() -> String { "127.0.0.1".to_string() }
+fn default_cors_origins() -> Vec<String> {
+    vec![
+        "http://localhost:*".to_string(),
+        "https://localhost:*".to_string(),
+        "http://127.0.0.1:*".to_string(),
+        "https://127.0.0.1:*".to_string(),
+    ]
+}
 fn default_service_name() -> String { "forge-daemon".to_string() }
 fn default_healing_cosine() -> f64 { 0.65 }
 fn default_healing_overlap_low() -> f64 { 0.3 }
@@ -143,7 +150,7 @@ impl Default for GrpcConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            bind: "0.0.0.0".to_string(),
+            bind: "127.0.0.1".to_string(),
             port: 8421,
         }
     }
@@ -162,7 +169,12 @@ pub struct CorsConfig {
 impl Default for CorsConfig {
     fn default() -> Self {
         Self {
-            allowed_origins: vec!["*".to_string()],
+            allowed_origins: vec![
+                "http://localhost:*".to_string(),
+                "https://localhost:*".to_string(),
+                "http://127.0.0.1:*".to_string(),
+                "https://127.0.0.1:*".to_string(),
+            ],
             max_age_secs: 3600,
         }
     }
@@ -1457,7 +1469,13 @@ backend = "ollama"
     #[test]
     fn test_cors_config_defaults() {
         let cfg = CorsConfig::default();
-        assert_eq!(cfg.allowed_origins, vec!["*".to_string()], "cors.allowed_origins default should be [\"*\"]");
+        let expected_origins = vec![
+            "http://localhost:*".to_string(),
+            "https://localhost:*".to_string(),
+            "http://127.0.0.1:*".to_string(),
+            "https://127.0.0.1:*".to_string(),
+        ];
+        assert_eq!(cfg.allowed_origins, expected_origins, "cors.allowed_origins default should be localhost-only");
         assert_eq!(cfg.max_age_secs, 3600, "cors.max_age_secs default should be 3600");
     }
 
@@ -1480,7 +1498,8 @@ backend = "ollama"
         assert!(!cfg.http.enabled);
         assert_eq!(cfg.http.port, 8420);
         assert!(!cfg.auth.enabled);
-        assert_eq!(cfg.cors.allowed_origins, vec!["*".to_string()]);
+        assert_eq!(cfg.cors.allowed_origins.len(), 4, "CORS should have 4 localhost origins");
+        assert!(cfg.cors.allowed_origins[0].starts_with("http://localhost"), "first origin should be http://localhost");
     }
 
     #[test]
@@ -1527,7 +1546,7 @@ backend = "ollama"
         assert!(!cfg.http.enabled);
         assert_eq!(cfg.http.port, 8420);
         assert!(!cfg.auth.enabled);
-        assert_eq!(cfg.cors.allowed_origins, vec!["*".to_string()]);
+        assert_eq!(cfg.cors.allowed_origins.len(), 4, "CORS should default to localhost-only origins");
     }
 
     #[test]

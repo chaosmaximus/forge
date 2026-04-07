@@ -1,15 +1,16 @@
 //! WebSocket handler for browser-based terminal access.
 //!
-//! Endpoint: `GET /api/terminal?cols=80&rows=24&cwd=/some/path`
+//! Endpoint: `GET /api/terminal?cols=80&rows=24&cwd=/some/path&token=<JWT>`
 //!
 //! Protocol:
-//!   1. Client opens WS with query params (cols, rows, optional cwd).
-//!   2. Server spawns PTY via PtyManager, sends `{"id": N}` as first message.
-//!   3. Server relays PTY output as Binary WS frames.
-//!   4. Client sends Text frames as PTY input.
-//!   5. Client sends JSON `{"resize": {"cols": N, "rows": N}}` for resize.
-//!   6. Connection close triggers PTY cleanup.
-//!   7. When PTY exits, server sends `{"exit": true}`.
+//!   1. Client opens WS with query params (cols, rows, optional cwd, token for auth).
+//!   2. Server validates JWT token (if auth enabled) before upgrading.
+//!   3. Server spawns PTY via PtyManager, sends `{"id": N}` as first message.
+//!   4. Server relays PTY output as Binary WS frames.
+//!   5. Client sends Text frames as PTY input.
+//!   6. Client sends JSON `{"resize": {"cols": N, "rows": N}}` for resize.
+//!   7. Connection close triggers PTY cleanup.
+//!   8. When PTY exits, server sends `{"exit": true}`.
 
 use crate::server::pty::PtyManager;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -33,6 +34,8 @@ pub struct TerminalQuery {
     pub rows: u16,
     /// Working directory for the shell.
     pub cwd: Option<String>,
+    /// JWT token for authentication (WebSocket can't use Authorization header).
+    pub token: Option<String>,
 }
 
 fn default_cols() -> u16 {
@@ -55,15 +58,99 @@ struct ResizeDimensions {
     rows: u16,
 }
 
+/// State passed to the terminal WebSocket handler.
+#[derive(Clone)]
+pub struct TerminalState {
+    pub pty_mgr: SharedPtyManager,
+    pub auth_enabled: bool,
+    pub auth_config: Option<crate::config::AuthConfig>,
+    pub jwks_cache: Option<super::auth::SharedJwksCache>,
+    /// DB path for audit logging terminal sessions.
+    pub db_path: Option<String>,
+}
+
 /// WebSocket upgrade handler for terminal sessions.
 ///
-/// Creates a PTY, sends the session ID, then enters a bidirectional relay loop.
+/// When auth is enabled, validates JWT from ?token= query param before upgrading.
+/// Enforces PTY session limit (max 8 concurrent).
 pub async fn terminal_ws_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<TerminalQuery>,
-    State(pty_mgr): State<SharedPtyManager>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_terminal_socket(socket, query, pty_mgr))
+    State(term_state): State<TerminalState>,
+) -> axum::response::Response {
+    // Auth check: validate token if auth is enabled
+    if term_state.auth_enabled {
+        let token = match &query.token {
+            Some(t) if !t.is_empty() => t.clone(),
+            _ => {
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    axum::Json(serde_json::json!({"error": "missing ?token= parameter — JWT required for terminal access"})),
+                ).into_response();
+            }
+        };
+        if let (Some(ref cache), Some(ref cfg)) = (&term_state.jwks_cache, &term_state.auth_config) {
+            match super::auth::validate_token(&token, cache, cfg).await {
+                Ok(claims) => {
+                    tracing::info!(user = %claims.sub, "terminal WebSocket authenticated");
+                }
+                Err(e) => {
+                    tracing::warn!("terminal WebSocket auth failed: {e}");
+                    return (
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        axum::Json(serde_json::json!({"error": "invalid or expired token"})),
+                    ).into_response();
+                }
+            }
+        }
+    }
+
+    // Enforce PTY session limit
+    {
+        let mgr = term_state.pty_mgr.lock().await;
+        if mgr.session_count() >= mgr.max_sessions() {
+            tracing::warn!(
+                count = mgr.session_count(),
+                max = mgr.max_sessions(),
+                "PTY session limit reached — rejecting new terminal"
+            );
+            return (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(serde_json::json!({"error": "maximum terminal sessions reached"})),
+            ).into_response();
+        }
+    }
+
+    let pty_mgr = term_state.pty_mgr.clone();
+    let db_path = term_state.db_path.clone();
+    ws.on_upgrade(move |socket| handle_terminal_socket(socket, query, pty_mgr, db_path))
+        .into_response()
+}
+
+/// Log a terminal session spawn to the audit_log table.
+fn audit_terminal_spawn(db_path: &str, pty_id: u32, cwd: Option<&str>) {
+    let conn = match rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("failed to open DB for terminal audit: {e}");
+            return;
+        }
+    };
+    let audit_id = ulid::Ulid::new().to_string();
+    let details = serde_json::json!({
+        "pty_id": pty_id,
+        "cwd": cwd.unwrap_or("default"),
+    });
+    if let Err(e) = conn.execute(
+        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, timestamp, details)
+         VALUES (?1, 'terminal', 'websocket', 'pty_spawn', 'terminal', ?2, datetime('now'), ?3)",
+        rusqlite::params![audit_id, pty_id.to_string(), details.to_string()],
+    ) {
+        tracing::warn!("failed to insert terminal audit log: {e}");
+    }
 }
 
 /// Main WebSocket session loop.
@@ -71,13 +158,14 @@ async fn handle_terminal_socket(
     socket: WebSocket,
     query: TerminalQuery,
     pty_mgr: SharedPtyManager,
+    db_path: Option<String>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Spawn PTY session.
     let (pty_id, mut output_rx) = {
         let mut mgr = pty_mgr.lock().await;
-        match mgr.create(query.cols, query.rows, query.cwd) {
+        match mgr.create(query.cols, query.rows, query.cwd.clone()) {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("failed to create PTY: {e}");
@@ -91,6 +179,11 @@ async fn handle_terminal_socket(
             }
         }
     };
+
+    // Audit log: record terminal session spawn
+    if let Some(ref db) = db_path {
+        audit_terminal_spawn(db, pty_id, query.cwd.as_deref());
+    }
 
     tracing::info!(pty_id, "terminal WebSocket connected");
 

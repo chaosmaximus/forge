@@ -13,7 +13,7 @@
 use axum::routing::get;
 use axum::Router;
 use forge_daemon::server::pty::PtyManager;
-use forge_daemon::server::ws::{terminal_ws_handler, SharedPtyManager};
+use forge_daemon::server::ws::{terminal_ws_handler, SharedPtyManager, TerminalState};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -22,11 +22,19 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 /// Build a minimal Axum router with just the terminal WebSocket endpoint.
+/// Auth is disabled for tests — the auth validation is tested separately.
 fn build_test_router() -> (Router, SharedPtyManager) {
     let pty_mgr: SharedPtyManager = Arc::new(Mutex::new(PtyManager::new()));
+    let terminal_state = TerminalState {
+        pty_mgr: pty_mgr.clone(),
+        auth_enabled: false,
+        auth_config: None,
+        jwks_cache: None,
+        db_path: None,
+    };
     let app = Router::new()
         .route("/api/terminal", get(terminal_ws_handler))
-        .with_state(pty_mgr.clone());
+        .with_state(terminal_state);
     (app, pty_mgr)
 }
 
@@ -276,4 +284,54 @@ async fn test_terminal_ws_resize_command() {
 
     let _ = ws_tx.send(Message::Close(None)).await;
     server_handle.abort();
+}
+
+#[tokio::test]
+async fn test_pty_session_count_and_limit() {
+    // Verify session_count, max_sessions, and that create respects the limit.
+    let mut mgr = PtyManager::new();
+    assert_eq!(mgr.session_count(), 0);
+    assert_eq!(mgr.max_sessions(), 8);
+
+    // Create sessions up to the limit
+    let mut ids = Vec::new();
+    for _ in 0..8 {
+        let (id, _rx) = mgr.create(80, 24, None).expect("create should succeed within limit");
+        ids.push(id);
+    }
+    assert_eq!(mgr.session_count(), 8);
+
+    // Clean up
+    for id in ids {
+        mgr.close(id);
+    }
+    assert_eq!(mgr.session_count(), 0);
+}
+
+#[tokio::test]
+async fn test_pty_idle_reap() {
+    // Verify reap_idle removes stale sessions.
+    let mut mgr = PtyManager::new();
+    let (id, _rx) = mgr.create(80, 24, None).expect("create should succeed");
+    assert_eq!(mgr.session_count(), 1);
+
+    // Manually backdate the last_activity to trigger idle reap.
+    if let Some(session) = mgr.sessions.get_mut(&id) {
+        session.last_activity = std::time::Instant::now() - std::time::Duration::from_secs(1000);
+    }
+
+    let reaped = mgr.reap_idle();
+    assert_eq!(reaped, 1, "should have reaped 1 idle session");
+    assert_eq!(mgr.session_count(), 0, "no sessions should remain");
+}
+
+#[tokio::test]
+async fn test_pty_close_all() {
+    let mut mgr = PtyManager::new();
+    for _ in 0..3 {
+        let _ = mgr.create(80, 24, None).expect("create should succeed");
+    }
+    assert_eq!(mgr.session_count(), 3);
+    mgr.close_all();
+    assert_eq!(mgr.session_count(), 0);
 }

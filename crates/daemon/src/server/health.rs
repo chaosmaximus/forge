@@ -174,6 +174,7 @@ mod tests {
             viewer_emails: vec![],
             auth_enabled: false,
             metrics: None,
+            rate_limiter: None,
         }
     }
 

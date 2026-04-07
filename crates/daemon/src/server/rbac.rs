@@ -37,10 +37,11 @@ impl Role {
 /// - Otherwise, authenticated users default to Member.
 pub fn resolve_role(claims: &AuthClaims, admin_emails: &[String], viewer_emails: &[String]) -> Role {
     if let Some(ref email) = claims.email {
-        if admin_emails.iter().any(|e| e == email) {
+        let email_lower = email.to_lowercase();
+        if admin_emails.iter().any(|e| e.to_lowercase() == email_lower) {
             return Role::Admin;
         }
-        if viewer_emails.iter().any(|e| e == email) {
+        if viewer_emails.iter().any(|e| e.to_lowercase() == email_lower) {
             return Role::Viewer;
         }
     }
@@ -492,17 +493,21 @@ mod tests {
         }
     }
 
-    /// Edge case: case-sensitive email matching for admin resolution.
+    /// Email comparison is case-insensitive per RFC 5321.
     #[test]
-    fn test_resolve_role_email_case_sensitive() {
+    fn test_resolve_role_email_case_insensitive() {
         let claims = make_claims(Some("Admin@Example.COM"));
         let admin_emails = vec!["admin@example.com".to_string()];
-        // Standard email comparison — case matters in current implementation
         let role = resolve_role(&claims, &admin_emails, &[]);
-        // If the implementation is case-sensitive, this will be Member
-        // If case-insensitive, it will be Admin
-        // Either way, we're documenting the behavior
-        assert!(role == Role::Admin || role == Role::Member);
+        assert_eq!(role, Role::Admin, "Email comparison must be case-insensitive");
+    }
+
+    #[test]
+    fn test_resolve_role_viewer_email_case_insensitive() {
+        let claims = make_claims(Some("Viewer@EXAMPLE.com"));
+        let viewer_emails = vec!["viewer@example.com".to_string()];
+        let role = resolve_role(&claims, &[], &viewer_emails);
+        assert_eq!(role, Role::Viewer, "Viewer email comparison must be case-insensitive");
     }
 
     /// Edge case: Viewer blocked from Forget (a write operation).
