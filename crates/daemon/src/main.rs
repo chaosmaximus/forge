@@ -217,6 +217,10 @@ async fn main() {
     let hlc = Arc::clone(&worker_state.hlc);
     let started_at = worker_state.started_at;
 
+    // Spawn HUD state writer — updates hud-state.json on every daemon event
+    // so forge-hud can render current activity in the status line.
+    forge_daemon::events::spawn_hud_writer(&events);
+
     let state = Arc::new(Mutex::new(worker_state));
 
     // C1: Create shutdown watch channel

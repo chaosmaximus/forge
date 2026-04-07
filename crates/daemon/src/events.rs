@@ -33,6 +33,37 @@ fn timestamp_now() -> String {
     forge_core::time::timestamp_now()
 }
 
+/// Spawn a background task that writes HUD state on every event.
+/// The HUD binary (forge-hud) reads this file to render the status line.
+pub fn spawn_hud_writer(tx: &EventSender) {
+    let mut rx = tx.subscribe();
+    tokio::spawn(async move {
+        let forge_dir = forge_core::forge_dir();
+        let hud_dir = std::path::PathBuf::from(&forge_dir).join("hud");
+        let _ = std::fs::create_dir_all(&hud_dir);
+        let hud_path = hud_dir.join("hud-state.json");
+
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let state = serde_json::json!({
+                        "last_event": event.event,
+                        "last_data": event.data,
+                        "last_timestamp": event.timestamp,
+                        "daemon_up": true,
+                    });
+                    let _ = std::fs::write(&hud_path, state.to_string());
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::debug!(skipped = n, "HUD writer lagged, catching up");
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
