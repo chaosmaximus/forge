@@ -3014,6 +3014,60 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Team Orchestration ──
+
+        Request::RunTeam { team_name, template_names, topology } => {
+            match crate::teams::run_team(
+                &state.conn, &team_name, &template_names, topology.as_deref(),
+            ) {
+                Ok((name, agents_spawned, session_ids)) => {
+                    // Emit individual agent_spawned events for each agent
+                    for (i, sid) in session_ids.iter().enumerate() {
+                        let tpl = template_names.get(i).map(|s| s.as_str()).unwrap_or("unknown");
+                        crate::events::emit(&state.events, "agent_spawned", serde_json::json!({
+                            "session_id": sid, "template_name": tpl, "team": team_name,
+                        }));
+                    }
+                    // Emit team_started event
+                    crate::events::emit(&state.events, "team_started", serde_json::json!({
+                        "team_name": name,
+                        "members": session_ids,
+                        "template_names": template_names,
+                        "topology": topology.as_deref().unwrap_or("mesh"),
+                    }));
+                    Response::Ok { data: ResponseData::RunTeamResult {
+                        team_name: name, agents_spawned, session_ids,
+                    }}
+                }
+                Err(e) => Response::Error { message: format!("run_team failed: {e}") },
+            }
+        }
+
+        Request::StopTeam { team_name } => {
+            match crate::teams::stop_team(&state.conn, &team_name) {
+                Ok(agents_retired) => {
+                    crate::events::emit(&state.events, "team_stopped", serde_json::json!({
+                        "team_name": team_name,
+                        "agents_retired": agents_retired,
+                    }));
+                    Response::Ok { data: ResponseData::TeamStopped {
+                        team_name, agents_retired,
+                    }}
+                }
+                Err(e) => Response::Error { message: format!("stop_team failed: {e}") },
+            }
+        }
+
+        Request::ListTeamTemplates => {
+            match crate::teams::list_team_templates(&state.conn) {
+                Ok(templates) => {
+                    let count = templates.len();
+                    Response::Ok { data: ResponseData::TeamTemplateList { templates, count } }
+                }
+                Err(e) => Response::Error { message: format!("list_team_templates failed: {e}") },
+            }
+        }
+
         // ── Meeting Protocol ──
 
         Request::CreateMeeting { team_id, topic, context, orchestrator_session_id, participant_session_ids } => {
@@ -3524,6 +3578,99 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
             Response::Ok {
                 data: ResponseData::LicenseSet { tier, },
+            }
+        }
+
+        // ── Skills Registry ──
+
+        Request::SkillsList { category, search, limit } => {
+            let lim = limit.unwrap_or(100);
+            match crate::skills::list_skills(
+                &state.conn,
+                category.as_deref(),
+                search.as_deref(),
+                lim,
+            ) {
+                Ok(entries) => {
+                    let count = entries.len();
+                    let skills: Vec<serde_json::Value> = entries
+                        .into_iter()
+                        .map(|e| serde_json::to_value(e).unwrap_or_default())
+                        .collect();
+                    Response::Ok {
+                        data: ResponseData::SkillsList { skills, count },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("skills_list: {e}"),
+                },
+            }
+        }
+
+        Request::SkillsInstall { name, project } => {
+            match crate::skills::install_skill(&state.conn, &name, &project) {
+                Ok(()) => Response::Ok {
+                    data: ResponseData::SkillInstalled {
+                        name,
+                        project,
+                    },
+                },
+                Err(e) => Response::Error {
+                    message: format!("skills_install: {e}"),
+                },
+            }
+        }
+
+        Request::SkillsUninstall { name, project } => {
+            match crate::skills::uninstall_skill(&state.conn, &name, &project) {
+                Ok(()) => Response::Ok {
+                    data: ResponseData::SkillUninstalled {
+                        name,
+                        project,
+                    },
+                },
+                Err(e) => Response::Error {
+                    message: format!("skills_uninstall: {e}"),
+                },
+            }
+        }
+
+        Request::SkillsInfo { name } => {
+            match crate::skills::skill_info(&state.conn, &name) {
+                Ok(entry) => {
+                    let skill = entry.map(|e| serde_json::to_value(e).unwrap_or_default());
+                    Response::Ok {
+                        data: ResponseData::SkillInfo { skill },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("skills_info: {e}"),
+                },
+            }
+        }
+
+        Request::SkillsRefresh => {
+            let config = crate::config::load_config();
+            let skills_dir = if config.skills_directory.is_empty() {
+                // Default: <cwd>/skills or try the executable's parent
+                let cwd = std::env::current_dir().unwrap_or_default();
+                cwd.join("skills")
+            } else {
+                std::path::PathBuf::from(&config.skills_directory)
+            };
+            match crate::skills::refresh_skills(&state.conn, &skills_dir) {
+                Ok(count) => {
+                    crate::events::emit(&state.events, "skills_indexed", serde_json::json!({
+                        "count": count,
+                        "source": "refresh",
+                    }));
+                    Response::Ok {
+                        data: ResponseData::SkillsRefreshed { count },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("skills_refresh: {e}"),
+                },
             }
         }
 

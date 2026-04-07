@@ -527,6 +527,24 @@ mod tests {
                     session_id: "s-cto-1".into(),
                 },
             ),
+            (
+                "run_team",
+                Request::RunTeam {
+                    team_name: "sprint-1".into(),
+                    template_names: vec!["tech-lead".into(), "frontend-dev".into()],
+                    topology: Some("mesh".into()),
+                },
+            ),
+            (
+                "stop_team",
+                Request::StopTeam {
+                    team_name: "sprint-1".into(),
+                },
+            ),
+            (
+                "list_team_templates",
+                Request::ListTeamTemplates,
+            ),
             // ── Team Enhancements ──
             (
                 "create_team",
@@ -1161,12 +1179,12 @@ mod tests {
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 19 (17 + HealingStatus + HealingRun)
-        let unit_count = 19;
-        // Parameterized variants: 92 (91 + HealingLog)
-        let param_count = 92;
-        // Total: 111
-        let expected_total = 111;
+        // Unit variants: 20 (17 + HealingStatus + HealingRun + ListTeamTemplates)
+        let unit_count = 20;
+        // Parameterized variants: 94 (91 + HealingLog + RunTeam + StopTeam)
+        let param_count = 94;
+        // Total: 114
+        let expected_total = 114;
 
         assert_eq!(
             unit_count + param_count,
@@ -1477,6 +1495,15 @@ mod tests {
                 Request::RetireAgent {
                     session_id: "s-cto".into(),
                 },
+                Request::RunTeam {
+                    team_name: "sprint-1".into(),
+                    template_names: vec!["tech-lead".into(), "frontend-dev".into()],
+                    topology: Some("mesh".into()),
+                },
+                Request::StopTeam {
+                    team_name: "sprint-1".into(),
+                },
+                Request::ListTeamTemplates,
                 // Team Enhancements
                 Request::CreateTeam {
                     name: "leadership".into(),

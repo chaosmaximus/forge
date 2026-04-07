@@ -16,6 +16,7 @@ pub mod reality;
 pub mod recall;
 pub mod sessions;
 pub mod server;
+pub mod skills;
 pub mod sync;
 pub mod teams;
 pub mod workers;

@@ -545,6 +545,12 @@ pub enum ResponseData {
     TeamOrchestratorSet { team_name: String, session_id: String },
     /// Full team status data
     TeamStatusData { team: serde_json::Value },
+    /// A full team was started (run_team)
+    RunTeamResult { team_name: String, agents_spawned: usize, session_ids: Vec<String> },
+    /// A team was stopped (stop_team)
+    TeamStopped { team_name: String, agents_retired: usize },
+    /// List of pre-built team templates
+    TeamTemplateList { templates: Vec<serde_json::Value>, count: usize },
 
     // ── Organization Hierarchy ──
 
@@ -607,6 +613,32 @@ pub enum ResponseData {
     },
     LicenseSet {
         tier: String,
+    },
+
+    // ── Skills Registry ──
+
+    /// List of skills from the registry
+    SkillsList {
+        skills: Vec<serde_json::Value>,
+        count: usize,
+    },
+    /// Skill was installed for a project
+    SkillInstalled {
+        name: String,
+        project: String,
+    },
+    /// Skill was uninstalled from a project
+    SkillUninstalled {
+        name: String,
+        project: String,
+    },
+    /// Full skill details
+    SkillInfo {
+        skill: Option<serde_json::Value>,
+    },
+    /// Skills directory was re-indexed
+    SkillsRefreshed {
+        count: usize,
     },
 
     Shutdown,

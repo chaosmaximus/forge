@@ -475,6 +475,202 @@ pub fn team_status(
     }))
 }
 
+// ── Team Orchestration ──
+
+/// Run a full team: create team + spawn all agents from templates.
+/// On any spawn failure, rolls back all already-spawned agents (retire + end session).
+/// Returns (team_name, agents_spawned, session_ids).
+pub fn run_team(
+    conn: &Connection,
+    team_name: &str,
+    template_names: &[String],
+    topology: Option<&str>,
+) -> rusqlite::Result<(String, usize, Vec<String>)> {
+    let _topology = topology.unwrap_or("mesh");
+
+    // Validate all templates exist before creating anything
+    for tpl_name in template_names {
+        let exists = get_agent_template_by_name(conn, tpl_name, "default")?;
+        if exists.is_none() {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+    }
+
+    // Create the team
+    let purpose = format!("Team with {} agents", template_names.len());
+    let _team_id = create_team(conn, team_name, Some("agent"), Some(&purpose), None, None)?;
+
+    // Spawn agents, tracking session IDs for rollback
+    let mut session_ids = Vec::new();
+    for tpl_name in template_names {
+        let session_id = ulid::Ulid::new().to_string();
+        match spawn_agent(conn, tpl_name, &session_id, None, Some(team_name)) {
+            Ok(()) => {
+                session_ids.push(session_id);
+            }
+            Err(e) => {
+                // Rollback: retire all already-spawned agents
+                for sid in &session_ids {
+                    let _ = retire_agent(conn, sid);
+                    let _ = crate::sessions::end_session(conn, sid);
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    Ok((team_name.to_string(), session_ids.len(), session_ids))
+}
+
+/// Stop a running team: retire all agents and end all sessions.
+/// Returns the number of agents retired.
+pub fn stop_team(conn: &Connection, team_name: &str) -> rusqlite::Result<usize> {
+    // Get team ID
+    let team_id: String = conn.query_row(
+        "SELECT id FROM team WHERE name = ?1",
+        params![team_name],
+        |row| row.get(0),
+    )?;
+
+    // Get all active session IDs in this team
+    let mut stmt = conn.prepare(
+        "SELECT tm.session_id FROM team_member tm
+         JOIN session s ON s.id = tm.session_id
+         WHERE tm.team_id = ?1 AND s.status = 'active'"
+    )?;
+    let session_ids: Vec<String> = stmt.query_map(params![team_id], |row| {
+        row.get(0)
+    })?.filter_map(|r| r.ok()).collect();
+
+    let mut retired_count = 0;
+    for sid in &session_ids {
+        let _ = retire_agent(conn, sid);
+        let _ = crate::sessions::end_session(conn, sid);
+        retired_count += 1;
+    }
+
+    // Mark team as stopped
+    conn.execute(
+        "UPDATE team SET status = 'stopped' WHERE id = ?1",
+        params![team_id],
+    )?;
+
+    Ok(retired_count)
+}
+
+// ── Team Templates ──
+
+/// Seed pre-built team templates into the team_template table.
+/// Idempotent — skips if templates already present.
+pub fn seed_team_templates(conn: &Connection) -> rusqlite::Result<()> {
+    // Create table if not exists
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS team_template (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            roles TEXT NOT NULL DEFAULT '[]',
+            topology TEXT NOT NULL DEFAULT 'mesh',
+            created_at TEXT NOT NULL DEFAULT ''
+         );"
+    )?;
+
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM team_template",
+        [],
+        |row| row.get(0),
+    )?;
+    if count > 0 {
+        return Ok(());
+    }
+
+    let now = forge_core::time::now_iso();
+    let templates: &[(&str, &str, &str, &str)] = &[
+        (
+            "Engineering Sprint",
+            "Full-stack engineering team for sprint execution",
+            r#"["tech-lead","frontend-dev","backend-dev","qa","devops"]"#,
+            "star",
+        ),
+        (
+            "C-Suite Board",
+            "Executive leadership team for strategic decisions",
+            r#"["ceo","cto","cfo","cmo","cpo"]"#,
+            "mesh",
+        ),
+        (
+            "Marketing Campaign",
+            "Marketing team for campaign planning and execution",
+            r#"["content-writer","seo-specialist","social-media","analytics"]"#,
+            "star",
+        ),
+        (
+            "Research Lab",
+            "Research team for exploration and analysis",
+            r#"["principal-researcher","data-scientist","literature-reviewer"]"#,
+            "mesh",
+        ),
+        (
+            "Security Review",
+            "Security review team for audits and compliance",
+            r#"["security-lead","penetration-tester","compliance-officer"]"#,
+            "chain",
+        ),
+        (
+            "Product Discovery",
+            "Product discovery team for user research and validation",
+            r#"["product-manager","ux-researcher","data-analyst"]"#,
+            "mesh",
+        ),
+    ];
+
+    for (name, description, roles, topology) in templates {
+        let id = ulid::Ulid::new().to_string();
+        conn.execute(
+            "INSERT INTO team_template (id, name, description, roles, topology, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, name, description, roles, topology, now],
+        )?;
+    }
+
+    Ok(())
+}
+
+/// List all pre-built team templates.
+pub fn list_team_templates(conn: &Connection) -> rusqlite::Result<Vec<serde_json::Value>> {
+    // If table doesn't exist yet, return empty
+    let table_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='team_template'",
+        [],
+        |row| row.get::<_, i64>(0).map(|c| c > 0),
+    )?;
+    if !table_exists {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT id, name, description, roles, topology, created_at FROM team_template ORDER BY name"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let roles_str: String = row.get(3)?;
+        let roles: serde_json::Value = serde_json::from_str(&roles_str)
+            .unwrap_or(serde_json::Value::Array(vec![]));
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "name": row.get::<_, String>(1)?,
+            "description": row.get::<_, String>(2)?,
+            "roles": roles,
+            "topology": row.get::<_, String>(4)?,
+            "created_at": row.get::<_, String>(5)?,
+        }))
+    })?;
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
 // ── Meeting Protocol ──
 
 /// Create a meeting — sends FISP messages to all participants.

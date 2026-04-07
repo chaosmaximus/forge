@@ -89,6 +89,7 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::ListAgents { .. }
             | Request::ListTeamMembers { .. }
             | Request::TeamStatus { .. }
+            | Request::ListTeamTemplates
             | Request::ListOrganizations
             | Request::TeamTree { .. }
             | Request::MeetingStatus { .. }
@@ -98,12 +99,15 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::ListNotifications { .. }
             | Request::HealingStatus
             | Request::HealingLog { .. }
+            | Request::SkillsList { .. }
+            | Request::SkillsInfo { .. }
             // NOTE: HealingRun is a write — triggers healing cycle
             // NOTE: AckNotification, DismissNotification, ActOnNotification are writes
             // NOTE: DetectReality is NOT read-only — it may create a reality record
             // NOTE: CreateMeeting, MeetingSynthesize, MeetingDecide are writes
             // NOTE: ForceIndex is NOT read-only — it triggers indexing
             // NOTE: SpawnAgent, UpdateAgentStatus, RetireAgent, CreateTeam, SetTeamOrchestrator are writes
+            // NOTE: SkillsInstall, SkillsUninstall, SkillsRefresh are writes
     )
 }
 

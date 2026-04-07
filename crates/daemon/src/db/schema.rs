@@ -750,9 +750,61 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_healing_log_created ON healing_log(created_at);
     ")?;
 
+    // ── Skills Registry ──
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS skill_registry (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT 'general',
+            file_path TEXT NOT NULL,
+            installed_for_project TEXT,
+            indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(name, category)
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_registry_category ON skill_registry(category);
+    ")?;
+
+    // FTS5 virtual table for skill search
+    // Use IF NOT EXISTS to be idempotent; FTS5 tables cannot use CREATE TABLE IF NOT EXISTS
+    // directly with content= sync, so we check existence first.
+    let fts_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='skill_registry_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if !fts_exists {
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE skill_registry_fts USING fts5(name, description, content=skill_registry, content_rowid=rowid);"
+        )?;
+
+        // Triggers to keep FTS in sync with the skill_registry table
+        conn.execute_batch("
+            CREATE TRIGGER IF NOT EXISTS skill_registry_fts_insert AFTER INSERT ON skill_registry BEGIN
+                INSERT INTO skill_registry_fts(rowid, name, description) VALUES (new.rowid, new.name, new.description);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS skill_registry_fts_delete AFTER DELETE ON skill_registry BEGIN
+                INSERT INTO skill_registry_fts(skill_registry_fts, rowid, name, description) VALUES ('delete', old.rowid, old.name, old.description);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS skill_registry_fts_update AFTER UPDATE ON skill_registry BEGIN
+                INSERT INTO skill_registry_fts(skill_registry_fts, rowid, name, description) VALUES ('delete', old.rowid, old.name, old.description);
+                INSERT INTO skill_registry_fts(rowid, name, description) VALUES (new.rowid, new.name, new.description);
+            END;
+        ")?;
+    }
+
     // Seed default agent templates (idempotent)
     if let Err(e) = seed_default_templates(conn) {
         eprintln!("[schema] warning: failed to seed default agent templates: {e}");
+    }
+
+    // Seed pre-built team templates (idempotent)
+    if let Err(e) = crate::teams::seed_team_templates(conn) {
+        eprintln!("[schema] warning: failed to seed team templates: {e}");
     }
 
     Ok(())

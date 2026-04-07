@@ -492,6 +492,22 @@ pub enum Request {
         project: Option<String>,
         team: Option<String>,
     },
+
+    /// Run a full team: create team + spawn all agents from templates as a unit.
+    /// On any spawn failure, rolls back all already-spawned agents.
+    RunTeam {
+        team_name: String,
+        template_names: Vec<String>,
+        /// Optional topology: "star", "mesh", "chain" (default: "mesh")
+        #[serde(default)]
+        topology: Option<String>,
+    },
+    /// Stop a running team: retire all agents, end all sessions.
+    StopTeam {
+        team_name: String,
+    },
+    /// List pre-built team templates (seeded on boot).
+    ListTeamTemplates,
     /// List active agents (sessions with template_id set)
     ListAgents {
         team: Option<String>,
@@ -653,6 +669,31 @@ pub enum Request {
         tier: String,
         key: String,
     },
+
+    // ── Skills Registry ──
+
+    /// List skills from the registry with optional category filter and FTS5 search
+    SkillsList {
+        category: Option<String>,
+        search: Option<String>,
+        limit: Option<usize>,
+    },
+    /// Install a skill for a project
+    SkillsInstall {
+        name: String,
+        project: String,
+    },
+    /// Uninstall a skill from a project
+    SkillsUninstall {
+        name: String,
+        project: String,
+    },
+    /// Get full details of a skill by name
+    SkillsInfo {
+        name: String,
+    },
+    /// Re-index the skills directory (pick up new/changed/deleted skills)
+    SkillsRefresh,
 
     Shutdown,
 }

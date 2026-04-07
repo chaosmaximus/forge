@@ -103,6 +103,10 @@ pub struct ForgeConfig {
     pub workspace: WorkspaceConfig,
     #[serde(default)]
     pub license: LicenseConfig,
+    /// Path to the skills directory for the skills registry.
+    /// Defaults to "product/claude-skills" relative to the project root.
+    #[serde(default)]
+    pub skills_directory: String,
 }
 
 /// HTTP transport configuration — opt-in, disabled by default.

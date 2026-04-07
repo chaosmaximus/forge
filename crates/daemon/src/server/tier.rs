@@ -265,6 +265,18 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
 
         // === Team tier: workspace init ===
         Request::WorkspaceInit { .. } => Some(Feature::TeamWorkspace),
+
+        // === Team tier: team orchestration ===
+        Request::RunTeam { .. }
+        | Request::StopTeam { .. }
+        | Request::ListTeamTemplates => Some(Feature::TeamWorkspace),
+
+        // === Free tier: skills registry (browsing is free, install is free) ===
+        Request::SkillsList { .. }
+        | Request::SkillsInstall { .. }
+        | Request::SkillsUninstall { .. }
+        | Request::SkillsInfo { .. }
+        | Request::SkillsRefresh => None,
     }
 }
 
