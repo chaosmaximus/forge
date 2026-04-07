@@ -732,6 +732,21 @@ enum Commands {
         #[arg(long)]
         task: String,
     },
+
+    /// Show current license tier
+    #[command(name = "license-status")]
+    LicenseStatus,
+
+    /// Set license tier and key
+    #[command(name = "license-set")]
+    LicenseSet {
+        /// Tier: free, pro, team, enterprise
+        #[arg(long)]
+        tier: String,
+        /// License key
+        #[arg(long, default_value = "")]
+        key: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1473,6 +1488,31 @@ async fn main() {
         }
         Commands::SetTask { session, task } => {
             commands::system::set_current_task(session, task).await;
+        }
+
+        // ── License ──
+        Commands::LicenseStatus => {
+            let req = forge_core::protocol::Request::LicenseStatus;
+            match client::send(&req).await {
+                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::LicenseStatusResult { tier, has_key } }) => {
+                    println!("License Tier: {}", tier);
+                    println!("License Key:  {}", if has_key { "configured" } else { "none" });
+                }
+                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(other) => eprintln!("Unexpected: {other:?}"),
+                Err(e) => eprintln!("Connection error: {e}"),
+            }
+        }
+        Commands::LicenseSet { tier, key } => {
+            let req = forge_core::protocol::Request::SetLicense { tier: tier.clone(), key };
+            match client::send(&req).await {
+                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::LicenseSet { tier } }) => {
+                    println!("License tier set to: {}", tier);
+                }
+                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(other) => eprintln!("Unexpected: {other:?}"),
+                Err(e) => eprintln!("Connection error: {e}"),
+            }
         }
     }
 }
