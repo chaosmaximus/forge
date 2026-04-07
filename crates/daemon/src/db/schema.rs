@@ -1,5 +1,57 @@
 use rusqlite::Connection;
 
+/// Seed default agent templates if none exist.
+/// Called during create_schema — idempotent (skips if templates already present).
+fn seed_default_templates(conn: &Connection) -> rusqlite::Result<()> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM agent_template",
+        [],
+        |row| row.get(0),
+    )?;
+    if count > 0 {
+        return Ok(());
+    }
+
+    let now = forge_core::time::now_iso();
+    let templates = [
+        (
+            "claude-code",
+            "Claude Code Agent",
+            "General-purpose coding agent using Claude Code CLI",
+            "claude-code",
+            r#"["software-engineering","debugging","code-review","testing"]"#,
+            "analytical",
+        ),
+        (
+            "codex-cli",
+            "Codex CLI Agent",
+            "OpenAI Codex agent for adversarial review and second opinions",
+            "codex",
+            r#"["code-review","security-analysis","adversarial-testing"]"#,
+            "critical",
+        ),
+        (
+            "gemini-cli",
+            "Gemini CLI Agent",
+            "Google Gemini agent for research and alternative perspectives",
+            "gemini",
+            r#"["research","exploration","documentation"]"#,
+            "exploratory",
+        ),
+    ];
+
+    for (name, desc, system_ctx, agent_type, domains, style) in &templates {
+        let id = ulid::Ulid::new().to_string();
+        conn.execute(
+            "INSERT INTO agent_template (id, name, description, agent_type, system_context, knowledge_domains, decision_style, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            rusqlite::params![id, name, desc, agent_type, system_ctx, domains, style, now],
+        )?;
+    }
+
+    Ok(())
+}
+
 pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Create memory_vec virtual table (sqlite-vec must be loaded before this call)
     conn.execute_batch(
@@ -698,6 +750,11 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_healing_log_created ON healing_log(created_at);
     ")?;
 
+    // Seed default agent templates (idempotent)
+    if let Err(e) = seed_default_templates(conn) {
+        eprintln!("[schema] warning: failed to seed default agent templates: {e}");
+    }
+
     Ok(())
 }
 
@@ -969,5 +1026,43 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(count, 1, "healing_log table should exist");
+    }
+
+    #[test]
+    fn test_default_agent_templates_seeded() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_template", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 3, "should seed 3 default agent templates");
+
+        // Verify specific templates exist by name
+        let claude: String = conn.query_row(
+            "SELECT name FROM agent_template WHERE name = 'claude-code'", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(claude, "claude-code");
+
+        let codex: String = conn.query_row(
+            "SELECT name FROM agent_template WHERE name = 'codex-cli'", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(codex, "codex-cli");
+    }
+
+    #[test]
+    fn test_agent_template_seed_idempotent() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // Call seed again — should not duplicate
+        seed_default_templates(&conn).unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_template", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 3, "should still be 3 after double-seed");
     }
 }
