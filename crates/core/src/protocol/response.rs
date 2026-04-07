@@ -584,6 +584,18 @@ pub enum ResponseData {
     /// Meeting response recorded
     MeetingResponseRecorded { meeting_id: String, all_responded: bool },
 
+    /// A vote was recorded in a meeting
+    MeetingVoteRecorded { meeting_id: String, choice: String },
+    /// Vote results for a meeting (counts per option, quorum status, outcome)
+    MeetingResultData {
+        meeting_id: String,
+        outcome: Option<String>,
+        votes: HashMap<String, usize>,
+        quorum_met: bool,
+        total_votes: usize,
+        required_votes: usize,
+    },
+
     // ── Notification Engine ──
 
     /// List of notifications
@@ -639,6 +651,13 @@ pub enum ResponseData {
     /// Skills directory was re-indexed
     SkillsRefreshed {
         count: usize,
+    },
+
+    /// Smart Model Router: routing statistics
+    RoutingStats {
+        total_routed: usize,
+        tiers: Vec<RoutingTierStats>,
+        total_tokens_saved: i64,
     },
 
     Shutdown,
@@ -743,6 +762,15 @@ pub struct A2aPermission {
     pub allowed: bool,
     pub created_by: String,
     pub created_at: String,
+}
+
+/// Per-tier routing statistics for the Smart Model Router.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutingTierStats {
+    pub tier: String,
+    pub count: usize,
+    pub successes: usize,
+    pub tokens_saved: i64,
 }
 
 /// Information about memories related to a file.

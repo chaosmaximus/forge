@@ -7,6 +7,7 @@ pub mod gemini;
 pub mod ollama;
 pub mod openai;
 pub mod prompt;
+pub mod router;
 
 pub use backend::{BackendChoice, ExtractionResult, detect_backend};
 pub use prompt::{ExtractedMemory, parse_extraction_output};

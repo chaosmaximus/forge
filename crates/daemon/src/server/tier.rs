@@ -250,7 +250,9 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::MeetingDecide { .. }
         | Request::ListMeetings { .. }
         | Request::MeetingTranscript { .. }
-        | Request::RecordMeetingResponse { .. } => Some(Feature::MeetingMinutes),
+        | Request::RecordMeetingResponse { .. }
+        | Request::MeetingVote { .. }
+        | Request::MeetingResult { .. } => Some(Feature::MeetingMinutes),
 
         // === Team tier: agent teams ===
         Request::CreateAgentTemplate { .. }
@@ -276,7 +278,8 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::SkillsInstall { .. }
         | Request::SkillsUninstall { .. }
         | Request::SkillsInfo { .. }
-        | Request::SkillsRefresh => None,
+        | Request::SkillsRefresh
+        | Request::RoutingStats => None,
     }
 }
 

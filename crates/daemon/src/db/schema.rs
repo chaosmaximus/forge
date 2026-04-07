@@ -608,6 +608,22 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_mp_session ON meeting_participant(session_id);
     ")?;
 
+    // FISP Consensus: voting columns on meeting table (idempotent ALTERs)
+    let _ = conn.execute("ALTER TABLE meeting ADD COLUMN voting_options TEXT", []);
+    let _ = conn.execute("ALTER TABLE meeting ADD COLUMN threshold TEXT DEFAULT 'majority'", []);
+    let _ = conn.execute("ALTER TABLE meeting ADD COLUMN outcome TEXT", []);
+
+    // FISP Consensus: meeting_vote table for structured voting
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS meeting_vote (
+            meeting_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            choice TEXT NOT NULL,
+            voted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (meeting_id, session_id)
+        );
+    ")?;
+
     // Agent lifecycle: session gains template tracking, agent status, last activity
     let _ = conn.execute("ALTER TABLE session ADD COLUMN template_id TEXT", []);
     let _ = conn.execute("ALTER TABLE session ADD COLUMN agent_status TEXT DEFAULT 'idle'", []);
@@ -796,6 +812,19 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             END;
         ")?;
     }
+
+    // ── Smart Model Router: routing stats ──
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS routing_stats (
+            tier TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            success INTEGER NOT NULL DEFAULT 1,
+            tokens_saved INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_routing_stats_tier ON routing_stats(tier);
+        CREATE INDEX IF NOT EXISTS idx_routing_stats_created ON routing_stats(created_at);
+    ")?;
 
     // Seed default agent templates (idempotent)
     if let Err(e) = seed_default_templates(conn) {

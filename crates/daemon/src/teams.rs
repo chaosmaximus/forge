@@ -892,6 +892,236 @@ pub fn decide_meeting(
     Ok((count > 0, memory_id))
 }
 
+// ── FISP Consensus / Voting ──
+
+/// Create a meeting with structured voting options and a threshold rule.
+/// Returns (meeting_id, participant_count).
+pub fn create_meeting_with_voting(
+    conn: &Connection,
+    team_id: &str,
+    topic: &str,
+    participants: &[String],
+    voting_options: &[String],
+    threshold: &str,
+) -> rusqlite::Result<(String, usize)> {
+    let meeting_id = ulid::Ulid::new().to_string();
+    let now = forge_core::time::now_iso();
+    let options_json = serde_json::to_string(voting_options).unwrap_or_else(|_| "[]".to_string());
+
+    conn.execute(
+        "INSERT INTO meeting (id, team_id, topic, status, orchestrator_session_id, created_at, voting_options, threshold)
+         VALUES (?1, ?2, ?3, 'collecting', '', ?4, ?5, ?6)",
+        params![meeting_id, team_id, topic, now, options_json, threshold],
+    )?;
+
+    for session_id in participants {
+        let template_name: String = conn.query_row(
+            "SELECT COALESCE(at.name, s.id)
+             FROM session s
+             LEFT JOIN agent_template at ON at.id = s.template_id
+             WHERE s.id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        ).unwrap_or_else(|_| session_id.clone());
+
+        let participant_id = ulid::Ulid::new().to_string();
+        conn.execute(
+            "INSERT INTO meeting_participant (id, meeting_id, session_id, template_name, status)
+             VALUES (?1, ?2, ?3, ?4, 'pending')",
+            params![participant_id, meeting_id, session_id, template_name],
+        )?;
+    }
+
+    Ok((meeting_id, participants.len()))
+}
+
+/// Record a vote in a meeting (last write wins for re-votes).
+/// Validates that the choice is in the meeting's voting_options.
+/// Returns the choice that was recorded.
+pub fn record_vote(
+    conn: &Connection,
+    meeting_id: &str,
+    session_id: &str,
+    choice: &str,
+) -> rusqlite::Result<String> {
+    // Validate meeting exists and has voting options
+    let options_json: String = conn.query_row(
+        "SELECT COALESCE(voting_options, '[]') FROM meeting WHERE id = ?1",
+        params![meeting_id],
+        |row| row.get(0),
+    )?;
+
+    let options: Vec<String> = serde_json::from_str(&options_json).unwrap_or_default();
+    if !options.is_empty() && !options.contains(&choice.to_string()) {
+        return Err(rusqlite::Error::InvalidParameterName(
+            format!("invalid choice '{}'; valid options: {:?}", choice, options),
+        ));
+    }
+
+    // Validate session is a participant
+    let is_participant: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM meeting_participant WHERE meeting_id = ?1 AND session_id = ?2",
+        params![meeting_id, session_id],
+        |row| row.get(0),
+    )?;
+    if !is_participant {
+        return Err(rusqlite::Error::InvalidParameterName(
+            format!("session '{}' is not a participant of meeting '{}'", session_id, meeting_id),
+        ));
+    }
+
+    let now = forge_core::time::now_iso();
+
+    // INSERT OR REPLACE: last write wins for re-votes
+    conn.execute(
+        "INSERT OR REPLACE INTO meeting_vote (meeting_id, session_id, choice, voted_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![meeting_id, session_id, choice, now],
+    )?;
+
+    Ok(choice.to_string())
+}
+
+/// Vote result data returned by get_vote_results.
+#[derive(Debug, Clone)]
+pub struct VoteResults {
+    pub votes: std::collections::HashMap<String, usize>,
+    pub total_votes: usize,
+    pub total_participants: usize,
+    pub required_votes: usize,
+    pub quorum_met: bool,
+    pub threshold: String,
+    pub outcome: Option<String>,
+}
+
+/// Get vote results for a meeting: counts per option, quorum status.
+pub fn get_vote_results(
+    conn: &Connection,
+    meeting_id: &str,
+) -> rusqlite::Result<VoteResults> {
+    // Get threshold and current outcome
+    let (threshold, existing_outcome): (String, Option<String>) = conn.query_row(
+        "SELECT COALESCE(threshold, 'majority'), outcome FROM meeting WHERE id = ?1",
+        params![meeting_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    // Count total participants
+    let total_participants: usize = conn.query_row(
+        "SELECT COUNT(*) FROM meeting_participant WHERE meeting_id = ?1",
+        params![meeting_id],
+        |row| row.get(0),
+    )?;
+
+    // Compute required votes based on threshold
+    let required_votes = compute_required_votes(total_participants, &threshold);
+
+    // Get vote counts per choice
+    let mut votes = std::collections::HashMap::new();
+    let mut total_votes: usize = 0;
+    {
+        let mut stmt = conn.prepare(
+            "SELECT choice, COUNT(*) FROM meeting_vote WHERE meeting_id = ?1 GROUP BY choice",
+        )?;
+        let rows = stmt.query_map(params![meeting_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })?;
+        for row in rows {
+            let (choice, count) = row?;
+            total_votes += count;
+            votes.insert(choice, count);
+        }
+    }
+
+    // Check if quorum is met: at least one option has >= required_votes
+    let quorum_met = votes.values().any(|&count| count >= required_votes);
+
+    Ok(VoteResults {
+        votes,
+        total_votes,
+        total_participants,
+        required_votes,
+        quorum_met,
+        threshold,
+        outcome: existing_outcome,
+    })
+}
+
+/// Compute the number of votes required for a threshold rule.
+fn compute_required_votes(total_participants: usize, threshold: &str) -> usize {
+    match threshold {
+        "unanimous" => total_participants,
+        "two_thirds" => {
+            // Ceiling of 2/3
+            (total_participants * 2 + 2) / 3
+        }
+        _ => {
+            // "majority": strict majority = floor(n/2) + 1
+            total_participants / 2 + 1
+        }
+    }
+}
+
+/// Check if a meeting vote can be resolved, and if so, update the meeting.
+/// Returns the outcome if the vote was resolved, None otherwise.
+pub fn check_and_resolve_vote(
+    conn: &Connection,
+    meeting_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    let results = get_vote_results(conn, meeting_id)?;
+
+    // Already resolved
+    if results.outcome.is_some() {
+        return Ok(results.outcome);
+    }
+
+    // Check if quorum is met
+    if !results.quorum_met {
+        return Ok(None);
+    }
+
+    // Find the winning option (highest vote count that meets threshold)
+    let winner = results.votes.iter()
+        .filter(|(_, &count)| count >= results.required_votes)
+        .max_by_key(|(_, &count)| count)
+        .map(|(choice, _)| choice.clone());
+
+    if let Some(ref outcome) = winner {
+        let now = forge_core::time::now_iso();
+        conn.execute(
+            "UPDATE meeting SET outcome = ?1, decided_at = ?2, status = 'decided'
+             WHERE id = ?3",
+            params![outcome, now, meeting_id],
+        )?;
+
+        // Store decision as memory (following decide_meeting pattern)
+        let topic: String = conn.query_row(
+            "SELECT topic FROM meeting WHERE id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        )?;
+
+        let memory_id = ulid::Ulid::new().to_string();
+        let decision_content = format!(
+            "Vote outcome for \"{}\": {} (votes: {:?}, threshold: {}, quorum met: true)",
+            topic, outcome, results.votes, results.threshold,
+        );
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, created_at, accessed_at)
+             VALUES (?1, 'decision', ?2, ?3, 0.9, 'active', ?4, ?5)",
+            params![memory_id, topic, decision_content, now, now],
+        )?;
+
+        // Update meeting with decision memory reference
+        conn.execute(
+            "UPDATE meeting SET decision = ?1, decision_memory_id = ?2 WHERE id = ?3",
+            params![decision_content, memory_id, meeting_id],
+        )?;
+    }
+
+    Ok(winner)
+}
+
 /// List meetings, optionally filtered by team_id and status.
 /// Get active meetings where this session is a participant.
 /// Returns meetings with status open, collecting, or synthesizing.

@@ -1015,6 +1015,24 @@ enum MeetingAction {
         #[arg(long)]
         id: String,
     },
+    /// Cast a vote in a meeting
+    Vote {
+        /// Meeting ID
+        #[arg(long)]
+        id: String,
+        /// Your choice (must be one of the meeting's voting options)
+        #[arg(long)]
+        choice: String,
+        /// Session ID casting the vote
+        #[arg(long)]
+        session: String,
+    },
+    /// Show vote results for a meeting
+    Result {
+        /// Meeting ID
+        #[arg(long)]
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1411,6 +1429,24 @@ async fn main() {
             }
             MeetingAction::Transcript { id } => {
                 commands::teams::meeting_transcript(id).await;
+            }
+            MeetingAction::Vote { id, choice, session } => {
+                let req = forge_core::protocol::Request::MeetingVote { meeting_id: id, session_id: session, choice };
+                match client::send(&req).await {
+                    Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                    Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                    Ok(other) => eprintln!("Unexpected: {other:?}"),
+                    Err(e) => eprintln!("Connection error: {e}"),
+                }
+            }
+            MeetingAction::Result { id } => {
+                let req = forge_core::protocol::Request::MeetingResult { meeting_id: id };
+                match client::send(&req).await {
+                    Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                    Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                    Ok(other) => eprintln!("Unexpected: {other:?}"),
+                    Err(e) => eprintln!("Connection error: {e}"),
+                }
             }
         },
 

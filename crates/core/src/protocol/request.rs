@@ -609,6 +609,17 @@ pub enum Request {
         confidence: Option<f64>,
     },
 
+    /// Cast a vote in a meeting with structured voting options
+    MeetingVote {
+        meeting_id: String,
+        session_id: String,
+        choice: String,
+    },
+    /// Get vote results for a meeting (vote counts, quorum status, outcome)
+    MeetingResult {
+        meeting_id: String,
+    },
+
     // ── Notification Engine ──
 
     /// List notifications with optional filters
@@ -694,6 +705,9 @@ pub enum Request {
     },
     /// Re-index the skills directory (pick up new/changed/deleted skills)
     SkillsRefresh,
+
+    /// Smart Model Router: query routing decisions and token savings
+    RoutingStats,
 
     Shutdown,
 }

@@ -3246,6 +3246,52 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── FISP Consensus / Voting ──
+
+        Request::MeetingVote { meeting_id, session_id, choice } => {
+            match crate::teams::record_vote(&state.conn, &meeting_id, &session_id, &choice) {
+                Ok(recorded_choice) => {
+                    crate::events::emit(&state.events, "meeting_vote", serde_json::json!({
+                        "meeting_id": &meeting_id, "session_id": &session_id, "choice": &recorded_choice,
+                    }));
+
+                    // Auto-resolve if quorum is met
+                    if let Ok(Some(outcome)) = crate::teams::check_and_resolve_vote(&state.conn, &meeting_id) {
+                        let topic: String = state.conn.query_row(
+                            "SELECT topic FROM meeting WHERE id = ?1",
+                            rusqlite::params![meeting_id],
+                            |row| row.get(0),
+                        ).unwrap_or_else(|_| "unknown".to_string());
+                        crate::events::emit(&state.events, "meeting_decided", serde_json::json!({
+                            "meeting_id": &meeting_id,
+                            "topic": topic,
+                            "outcome": outcome,
+                            "status": "decided",
+                        }));
+                    }
+
+                    Response::Ok { data: ResponseData::MeetingVoteRecorded { meeting_id, choice: recorded_choice } }
+                }
+                Err(e) => Response::Error { message: format!("meeting_vote failed: {e}") },
+            }
+        }
+
+        Request::MeetingResult { meeting_id } => {
+            match crate::teams::get_vote_results(&state.conn, &meeting_id) {
+                Ok(results) => {
+                    Response::Ok { data: ResponseData::MeetingResultData {
+                        meeting_id,
+                        outcome: results.outcome,
+                        votes: results.votes,
+                        quorum_met: results.quorum_met,
+                        total_votes: results.total_votes,
+                        required_votes: results.required_votes,
+                    }}
+                }
+                Err(e) => Response::Error { message: format!("meeting_result failed: {e}") },
+            }
+        }
+
         // ── Notification Engine ──
 
         Request::ListNotifications { status, category, limit } => {
@@ -3670,6 +3716,28 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
                 Err(e) => Response::Error {
                     message: format!("skills_refresh: {e}"),
+                },
+            }
+        }
+
+        Request::RoutingStats => {
+            match crate::extraction::router::query_routing_stats(&state.conn) {
+                Ok(stats) => Response::Ok {
+                    data: ResponseData::RoutingStats {
+                        total_routed: stats.total_routed,
+                        tiers: stats.tiers.iter().map(|t| {
+                            forge_core::protocol::response::RoutingTierStats {
+                                tier: t.tier.clone(),
+                                count: t.count,
+                                successes: t.successes,
+                                tokens_saved: t.tokens_saved,
+                            }
+                        }).collect(),
+                        total_tokens_saved: stats.total_tokens_saved,
+                    },
+                },
+                Err(e) => Response::Error {
+                    message: format!("routing stats query failed: {e}"),
                 },
             }
         }

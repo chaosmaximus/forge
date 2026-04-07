@@ -116,7 +116,7 @@ async fn is_claude_cli_available() -> bool {
 }
 
 /// Check if Ollama is reachable at the given endpoint.
-async fn is_ollama_available(endpoint: &str) -> bool {
+pub async fn is_ollama_available(endpoint: &str) -> bool {
     let url = format!("{endpoint}/api/tags");
     reqwest::Client::new()
         .get(&url)

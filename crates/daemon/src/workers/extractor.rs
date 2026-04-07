@@ -239,8 +239,14 @@ async fn process_file(
     // File read is ~1ms, negligible compared to the LLM extraction call.
     let config = crate::config::load_config();
 
-    // Detect backend
-    let backend = extraction::detect_backend(&config).await;
+    // Detect backend — use smart router if configured, otherwise static detection
+    let (backend, _routing_tier) = if config.extraction.routing == "smart" {
+        let (b, tier) = extraction::router::route_extraction(&config, &combined_text).await;
+        tracing::info!(tier = %tier, provider = ?b, "smart router selected");
+        (b, Some(tier))
+    } else {
+        (extraction::detect_backend(&config).await, None)
+    };
 
     // Extract memories (this is the slow part — LLM call)
     let extract_start = std::time::Instant::now();

@@ -658,6 +658,7 @@ pub struct A2aConfig {
 #[serde(default)]
 pub struct ExtractionConfig {
     pub backend: String, // "auto", "ollama", "claude", "claude_api", "openai", "gemini"
+    pub routing: String, // "static" (default) or "smart"
     pub claude: ClaudeCliConfig,
     pub claude_api: ClaudeApiConfig,
     pub openai: OpenAiConfig,
@@ -715,6 +716,7 @@ impl Default for ExtractionConfig {
     fn default() -> Self {
         Self {
             backend: "auto".to_string(),
+            routing: "static".to_string(),
             claude: ClaudeCliConfig::default(),
             claude_api: ClaudeApiConfig::default(),
             openai: OpenAiConfig::default(),
