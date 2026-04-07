@@ -56,3 +56,4 @@ app/forge/test-results/
 product/site/.astro/
 product/site/.firebase/
 product/site/public/models/
+product/marketing/site/.astro/
