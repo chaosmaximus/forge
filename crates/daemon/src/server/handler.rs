@@ -3797,9 +3797,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::SkillsInfo { name } => {
-            let ws_root = std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string());
+            let ws_root = crate::workers::indexer::find_project_dir()
+                .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
             match crate::skills::skill_info(&state.conn, &name, ws_root.as_deref()) {
                 Ok(entry) => {
                     let skill = entry.map(|e| serde_json::to_value(e).unwrap_or_default());
@@ -3816,9 +3815,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::SkillsRefresh => {
             let config = crate::config::load_config();
             let skills_dir = if config.skills_directory.is_empty() {
-                // Default: <cwd>/skills or try the executable's parent
-                let cwd = std::env::current_dir().unwrap_or_default();
-                cwd.join("skills")
+                // Use project directory from indexer detection, fallback to cwd/skills
+                let project_dir = crate::workers::indexer::find_project_dir()
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
+                std::path::PathBuf::from(&project_dir).join("skills")
             } else {
                 std::path::PathBuf::from(&config.skills_directory)
             };
