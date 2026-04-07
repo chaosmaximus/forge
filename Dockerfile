@@ -30,14 +30,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compil
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-# The workspace includes app/forge/src-tauri, but we only need daemon + CLI.
-# Create a stub so Cargo resolves the workspace without the Tauri dependency.
-RUN mkdir -p app/forge/src-tauri/src && \
-    echo '[package]\nname = "forge-app"\nversion = "0.1.0"\nedition = "2021"' > app/forge/src-tauri/Cargo.toml && \
-    echo 'fn main() {}' > app/forge/src-tauri/src/main.rs
-
 # Build only the packages we ship
 RUN cargo build --release -p forge-daemon -p forge-cli
+
+# Strip binaries for smaller image (release profile has strip=true but be explicit)
+RUN strip --strip-all target/release/forge-daemon target/release/forge-next 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Stage 2: Litestream (optional — uncomment COPY below to enable)
@@ -45,20 +42,27 @@ RUN cargo build --release -p forge-daemon -p forge-cli
 FROM litestream/litestream:0.3 AS litestream
 
 # ---------------------------------------------------------------------------
-# Stage 3: Runtime — minimal Debian slim
+# Stage 3: Scratch-based runtime with only glibc runtime deps
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim
+# Use debian-slim to extract only the required shared libraries,
+# then build a minimal filesystem from scratch.
+FROM debian:bookworm-slim AS runtime-deps
 
-# Install minimal runtime dependencies
-# SQLite is bundled in the Rust binary (rusqlite bundled feature), so we only
-# need libc, TLS certs, and curl for the healthcheck.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Copy only the shared libraries our binaries need + CA certs
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /forge-data && chown 65532:65532 /forge-data
 
-# Create non-root user
-RUN groupadd -r forge && useradd -r -g forge -m -d /home/forge forge
+# ---------------------------------------------------------------------------
+# Stage 4: Final minimal image
+# ---------------------------------------------------------------------------
+FROM gcr.io/distroless/cc-debian12:nonroot
+
+# Copy CA certificates for TLS
+COPY --from=runtime-deps /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Create data directory (distroless has no shell, copy from builder)
+COPY --from=runtime-deps --chown=nonroot:nonroot /forge-data /var/lib/forge
 
 # Copy binaries from builder
 COPY --from=builder /build/target/release/forge-daemon /usr/local/bin/
@@ -67,13 +71,6 @@ COPY --from=builder /build/target/release/forge-next /usr/local/bin/
 # Uncomment to include Litestream for continuous SQLite replication:
 # COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/
 # COPY deploy/litestream.yml /etc/litestream.yml
-
-# Create data directory with correct ownership
-RUN mkdir -p /var/lib/forge && chown forge:forge /var/lib/forge
-
-# Switch to non-root user
-USER forge
-WORKDIR /home/forge
 
 # Environment defaults for container deployment.
 # SECURITY: 0.0.0.0 is required for K8s Service routing. Protect with:
@@ -92,8 +89,7 @@ EXPOSE 8420
 # Persistent data volume
 VOLUME ["/var/lib/forge"]
 
-# Healthcheck via HTTP /healthz endpoint
-HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
-    CMD curl -sf http://localhost:8420/healthz || exit 1
+# NOTE: HEALTHCHECK not supported in distroless (no shell).
+# Use K8s livenessProbe with httpGet to /healthz instead.
 
 ENTRYPOINT ["forge-daemon"]
