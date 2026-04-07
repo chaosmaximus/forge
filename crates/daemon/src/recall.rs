@@ -234,6 +234,9 @@ pub fn hybrid_recall_scoped(
         }
     }
 
+    // Filter out non-active memories (superseded, deleted, etc.)
+    results.retain(|r| r.memory.status == forge_core::types::memory::MemoryStatus::Active);
+
     // Filter by memory_type if specified
     if let Some(mt) = memory_type {
         results.retain(|r| &r.memory.memory_type == mt);
@@ -691,6 +694,7 @@ pub fn compile_dynamic_suffix(
     ctx_config: &crate::config::ContextConfig,
     excluded_layers: &[String],
     session_id: Option<&str>,
+    focus: Option<&str>,
 ) -> String {
     let budget = ctx_config.budget_chars;
     let decisions_limit = ctx_config.decisions_limit;
@@ -700,6 +704,25 @@ pub fn compile_dynamic_suffix(
 
     let mut xml = String::from("<forge-dynamic>\n");
     let mut used = 0usize;
+
+    // Focus filter: when set, restricts memories to those matching the focus topic via FTS5.
+    // Uses SQLite rowid join since memory_fts content_rowid maps to the internal rowid, not the text id column.
+    let focus_clause = if let Some(focus_topic) = focus {
+        // Sanitize: remove quotes and special FTS5 operators to prevent injection
+        let sanitized: String = focus_topic.chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+            .collect();
+        if sanitized.trim().is_empty() {
+            String::new()
+        } else {
+            // Use OR between words so "e2e testing" matches either "e2e" or "testing"
+            let terms: Vec<&str> = sanitized.split_whitespace().collect();
+            let fts_query = terms.join(" OR ");
+            format!(" AND memory.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH '{}')", fts_query)
+        }
+    } else {
+        String::new()
+    };
 
     // Domain DNA keywords for boosting (Feature 2: Domain DNA Boosting)
     let domain_keywords: Vec<String> = if let Some(proj) = project {
@@ -735,7 +758,7 @@ pub fn compile_dynamic_suffix(
             conn.prepare(&format!(
                 "SELECT id, title, confidence, valence, intensity, COALESCE(tags, '[]'), content, ({sql_rank}) as sql_rank FROM memory
                  WHERE memory_type = 'decision' AND status = 'active'
-                 AND (project = ?1 OR project IS NULL OR project = '')
+                 AND (project = ?1 OR project IS NULL OR project = ''){focus_clause}
                  ORDER BY sql_rank DESC, accessed_at DESC LIMIT {decisions_limit}",
             ))
             .and_then(|mut stmt| {
@@ -748,7 +771,7 @@ pub fn compile_dynamic_suffix(
         } else {
             conn.prepare(&format!(
                 "SELECT id, title, confidence, valence, intensity, COALESCE(tags, '[]'), content, ({sql_rank}) as sql_rank FROM memory
-                 WHERE memory_type = 'decision' AND status = 'active'
+                 WHERE memory_type = 'decision' AND status = 'active'{focus_clause}
                  ORDER BY sql_rank DESC, accessed_at DESC LIMIT {decisions_limit}",
             ))
             .and_then(|mut stmt| {
@@ -817,7 +840,7 @@ pub fn compile_dynamic_suffix(
             conn.prepare(&format!(
                 "SELECT id, title, confidence, valence, intensity, COALESCE(tags, '[]'), content, ({sql_rank}) as sql_rank FROM memory
                  WHERE memory_type = 'lesson' AND status = 'active'
-                 AND (project = ?1 OR project IS NULL OR project = '')
+                 AND (project = ?1 OR project IS NULL OR project = ''){focus_clause}
                  ORDER BY sql_rank DESC, accessed_at DESC LIMIT {lessons_limit}",
             ))
             .and_then(|mut stmt| {
@@ -830,7 +853,7 @@ pub fn compile_dynamic_suffix(
         } else {
             conn.prepare(&format!(
                 "SELECT id, title, confidence, valence, intensity, COALESCE(tags, '[]'), content, ({sql_rank}) as sql_rank FROM memory
-                 WHERE memory_type = 'lesson' AND status = 'active'
+                 WHERE memory_type = 'lesson' AND status = 'active'{focus_clause}
                  ORDER BY sql_rank DESC, accessed_at DESC LIMIT {lessons_limit}",
             ))
             .and_then(|mut stmt| {
@@ -1469,7 +1492,7 @@ pub fn compile_context(
     let config = crate::config::load_config();
     let ctx_config = config.context.validated();
     let prefix = compile_static_prefix(conn, agent, None);
-    let suffix = compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None);
+    let suffix = compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None, None);
     format!(
         "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
         prefix, suffix
@@ -1998,7 +2021,7 @@ mod tests {
     fn test_compile_dynamic_suffix_all_sections_present_empty_db() {
         let conn = setup();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(suffix.contains("<forge-dynamic>"), "should contain opening tag");
         assert!(suffix.contains("</forge-dynamic>"), "should contain closing tag");
         assert!(suffix.contains("<decisions"), "decisions always present");
@@ -2012,7 +2035,7 @@ mod tests {
     fn test_compile_dynamic_suffix_changes_with_new_data() {
         let conn = setup();
 
-        let suffix1 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix1 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(suffix1.contains("<decisions/>"), "no decisions yet");
 
         // Store a decision
@@ -2020,9 +2043,33 @@ mod tests {
             .with_confidence(0.9);
         ops::remember(&conn, &mem).unwrap();
 
-        let suffix2 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix2 = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert_ne!(suffix1, suffix2, "suffix should change when data is added");
         assert!(suffix2.contains("JWT"), "should contain the new decision");
+    }
+
+    #[test]
+    fn test_compile_dynamic_suffix_focus_filters_decisions() {
+        let conn = setup();
+
+        // Store two decisions: one about testing, one about pricing
+        let testing_dec = Memory::new(MemoryType::Decision, "Use Playwright for E2E testing", "We chose Playwright over Cypress for E2E tests")
+            .with_confidence(0.9);
+        ops::remember(&conn, &testing_dec).unwrap();
+
+        let pricing_dec = Memory::new(MemoryType::Decision, "Per-seat pricing model for launch", "Three tiers: Free, Pro $12/mo, Team $19/seat/mo")
+            .with_confidence(0.9);
+        ops::remember(&conn, &pricing_dec).unwrap();
+
+        // Without focus: both decisions appear
+        let no_focus = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        assert!(no_focus.contains("Playwright"), "no focus: should contain testing decision");
+        assert!(no_focus.contains("pricing"), "no focus: should contain pricing decision");
+
+        // With focus on "testing": only testing decision should appear
+        let focused = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, Some("testing"));
+        assert!(focused.contains("Playwright"), "focus=testing: should contain testing decision");
+        assert!(!focused.contains("pricing"), "focus=testing: should NOT contain pricing decision");
     }
 
     // ── compile_context tests (backward compat) ──
@@ -2609,7 +2656,7 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
 
         // Recent decision (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
         let micro_pos = suffix.find("Switch to microservices").expect("recent decision should be present");
@@ -2644,7 +2691,7 @@ mod tests {
             &forge_core::time::now_offset(-3 * 86400), // 3 days ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
 
         // 3-day-old (0.9*1.2=1.08) should outrank 30-day-old (1.0*1.0=1.0)
         let mid_pos = suffix.find("Recent week pattern").expect("mid-age decision should be present");
@@ -2678,7 +2725,7 @@ mod tests {
             &forge_core::time::now_offset(-30 * 86400),
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
 
         let high_pos = suffix.find("High confidence old").expect("high confidence should be present");
         let low_pos = suffix.find("Low confidence old").expect("low confidence should be present");
@@ -2712,7 +2759,7 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
 
         // Recent lesson (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
         let fresh_pos = suffix.find("Fresh testing lesson").expect("recent lesson should be present");
@@ -2798,7 +2845,7 @@ mod tests {
         // Only one session — active-sessions should NOT appear
         crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions with only 1 session"
@@ -2813,7 +2860,7 @@ mod tests {
         crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
         crate::sessions::register_session(&conn, "s2", "cline", Some("dashboard"), None, None, None).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(
             suffix.contains("active-sessions"),
             "should show active-sessions with 2 sessions"
@@ -2846,7 +2893,7 @@ mod tests {
         // End one session — should hide active-sessions again
         crate::sessions::end_session(&conn, "s2").unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions when only 1 remains active"
@@ -2881,7 +2928,7 @@ mod tests {
         crate::db::manas::store_entity(&conn, &entity1).unwrap();
         crate::db::manas::store_entity(&conn, &entity2).unwrap();
 
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
         assert!(suffix.contains("<entities"), "should contain entities section");
         assert!(suffix.contains("authentication"), "should contain authentication entity");
         assert!(suffix.contains("React Router"), "should contain React Router entity");
@@ -2908,7 +2955,7 @@ mod tests {
 
         let excluded = vec!["entities".to_string()];
         let ctx_config = crate::config::ContextConfig::default();
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &excluded, None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &excluded, None, None);
         assert!(suffix.contains("<entities/>"), "should contain empty entities tag when excluded");
         assert!(!suffix.contains("authentication"), "should NOT contain entity data when excluded");
     }
@@ -2942,7 +2989,7 @@ mod tests {
         ops::store_symbol(&conn, &sym).unwrap();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
 
         assert!(suffix.contains("<code-structure"), "should contain code-structure tag");
         assert!(suffix.contains("files=\"1\""), "should show file count");
@@ -2955,7 +3002,7 @@ mod tests {
         let conn = setup();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None);
+        let suffix = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
 
         assert!(suffix.contains("<code-structure/>"), "should contain self-closing code-structure tag when no data");
     }

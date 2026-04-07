@@ -107,6 +107,7 @@ fn test_doctor_via_handler() {
         confidence: None,
         tags: None,
         project: None,
+            metadata: None,
     });
     assert!(matches!(resp, Response::Ok { .. }));
 

@@ -290,13 +290,14 @@ pub async fn perceptions(project: Option<String>, limit: usize) {
 }
 
 /// Compile optimized context from all Manas layers (for session-start injection).
-pub async fn compile_context(agent: String, project: Option<String>, static_only: bool, session_id: Option<String>) {
+pub async fn compile_context(agent: String, project: Option<String>, static_only: bool, session_id: Option<String>, focus: Option<String>) {
     let request = Request::CompileContext {
         agent: Some(agent),
         project,
         static_only: if static_only { Some(true) } else { None },
         excluded_layers: None,
         session_id,
+        focus,
     };
 
     match client::send(&request).await {

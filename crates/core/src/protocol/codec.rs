@@ -57,6 +57,7 @@ mod tests {
             confidence: Some(0.95),
             tags: Some(vec!["protocol".to_string()]),
             project: Some("forge".to_string()),
+            metadata: None,
         };
 
         let json = serde_json::to_string(&req).expect("serialize");

@@ -29,6 +29,7 @@ fn remember(
         confidence: Some(0.9),
         tags,
         project: None,
+            metadata: None,
     };
     let resp = handle_request(state, req);
     match resp {
@@ -419,6 +420,7 @@ fn test_empty_and_null_inputs() {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         },
     );
     match &resp {
@@ -438,6 +440,7 @@ fn test_empty_and_null_inputs() {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         },
     );
     match &resp {

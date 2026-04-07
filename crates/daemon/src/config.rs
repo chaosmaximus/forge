@@ -41,7 +41,7 @@ fn default_bind() -> String { "127.0.0.1".to_string() }
 fn default_grpc_bind() -> String { "0.0.0.0".to_string() }
 fn default_cors_origins() -> Vec<String> { vec!["*".to_string()] }
 fn default_service_name() -> String { "forge-daemon".to_string() }
-fn default_healing_cosine() -> f64 { 0.8 }
+fn default_healing_cosine() -> f64 { 0.65 }
 fn default_healing_overlap_low() -> f64 { 0.3 }
 fn default_healing_overlap_high() -> f64 { 0.7 }
 fn default_healing_staleness_days() -> u64 { 7 }
@@ -513,7 +513,7 @@ impl Default for HealingConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            cosine_threshold: 0.8,
+            cosine_threshold: 0.65,
             overlap_low: 0.3,
             overlap_high: 0.7,
             staleness_days: 7,

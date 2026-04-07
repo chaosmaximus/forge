@@ -94,9 +94,10 @@ For multi-file tasks, Forge dispatches an agent team:
 
 ```bash
 # Memory
-forge-next remember --type decision --title "..." --content "..."
+forge-next remember --type decision --title "..." --content "..." [--metadata '{"key":"val"}']
 forge-next recall "query" [--project P] [--type T] [--limit N] [--layer L]
 forge-next forget <id>
+forge-next supersede --old-id <old> --new-id <new>
 
 # Session lifecycle
 forge-next register-session --id <id> --agent <agent> [--project P] [--cwd D]
@@ -104,7 +105,7 @@ forge-next end-session --id <id>
 forge-next sessions [--all]
 
 # Context & health
-forge-next compile-context --agent claude-code [--project P]
+forge-next compile-context --agent claude-code [--project P] [--focus <topic>]
 forge-next health
 forge-next health-by-project
 forge-next doctor
@@ -124,7 +125,7 @@ forge-next send --to <session-id> --kind notification --topic <topic> --text "..
 forge-next send --to "*" --kind notification --topic schema_changed --text "..." --project P
 forge-next messages --session <session-id> [--status pending] [--limit N]
 forge-next ack <message-id-1> <message-id-2> ...
-forge-next cleanup-sessions [--prefix hook-test]
+forge-next cleanup-sessions [--prefix hook-test] [--older-than 24h] [--prune]
 
 # Import/export
 forge-next export [--format json]

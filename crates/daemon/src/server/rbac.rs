@@ -179,6 +179,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             }
         )
         .is_ok());
@@ -192,7 +193,7 @@ mod tests {
         .is_ok());
         assert!(check_permission(
             &Role::Admin,
-            &Request::CleanupSessions { prefix: None }
+            &Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false }
         )
         .is_ok());
     }
@@ -230,6 +231,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             },
         );
         assert!(result.is_err());
@@ -251,7 +253,7 @@ mod tests {
         .is_err());
         assert!(check_permission(
             &Role::Viewer,
-            &Request::CleanupSessions { prefix: None }
+            &Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false }
         )
         .is_err());
     }
@@ -286,6 +288,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             }
         )
         .is_ok());
@@ -361,7 +364,7 @@ mod tests {
     #[test]
     fn test_member_blocked_from_cleanup_sessions() {
         let result =
-            check_permission(&Role::Member, &Request::CleanupSessions { prefix: None });
+            check_permission(&Role::Member, &Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false });
         assert!(result.is_err());
     }
 
@@ -398,7 +401,7 @@ mod tests {
                 scope_id: "default".into(),
                 key: "k".into(),
             },
-            Request::CleanupSessions { prefix: None },
+            Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false },
         ];
 
         for op in &admin_ops {
@@ -434,6 +437,8 @@ mod tests {
             },
             Request::CleanupSessions {
                 prefix: Some("test-".into()),
+                older_than_secs: None,
+                prune_ended: false,
             },
         ];
 
@@ -473,7 +478,7 @@ mod tests {
                 scope_id: "default".into(),
                 key: "k".into(),
             },
-            Request::CleanupSessions { prefix: None },
+            Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false },
         ];
 
         for op in &admin_ops {

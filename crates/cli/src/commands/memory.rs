@@ -84,6 +84,7 @@ pub async fn remember(
     confidence: Option<f64>,
     tags: Option<Vec<String>>,
     project: Option<String>,
+    metadata: Option<serde_json::Value>,
 ) {
     let mt = match parse_memory_type(&memory_type) {
         Ok(mt) => mt,
@@ -100,6 +101,7 @@ pub async fn remember(
         confidence,
         tags,
         project,
+        metadata,
     };
 
     match client::send(&request).await {
@@ -132,6 +134,31 @@ pub async fn forget(id: String) {
             data: ResponseData::Forgotten { id },
         }) => {
             println!("Forgotten: {id}");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(other) => {
+            eprintln!("unexpected response: {other:?}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Mark an old memory as superseded by a newer one.
+pub async fn supersede(old_id: String, new_id: String) {
+    let request = Request::Supersede { old_id, new_id };
+
+    match client::send(&request).await {
+        Ok(Response::Ok {
+            data: ResponseData::Superseded { old_id, new_id },
+        }) => {
+            println!("Superseded: {old_id} → {new_id}");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

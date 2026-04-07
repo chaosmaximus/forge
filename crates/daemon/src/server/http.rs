@@ -426,11 +426,20 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
         .route("/api/terminal", get(terminal_ws_handler))
         .with_state(pty_manager);
 
-    Router::new()
+    let mut router = Router::new()
         .merge(health_routes)
         .merge(api_routes)
-        .merge(terminal_routes)
-        .layer(cors)
+        .merge(terminal_routes);
+
+    // Static file serving — when UI dir is configured and contains index.html
+    if config.ui.enabled {
+        if let Some(static_router) = super::static_files::static_file_router(&config.ui.dir) {
+            tracing::info!(ui_dir = %config.ui.dir, "Web UI serving enabled");
+            router = router.merge(static_router);
+        }
+    }
+
+    router.layer(cors)
 }
 
 /// Start the HTTP server with a pre-bound listener and graceful shutdown.
@@ -466,7 +475,19 @@ pub async fn run_http_server_with_listener(
 
     let app = build_router(config, state);
 
-    // Graceful shutdown: drain in-flight requests when shutdown signal received
+    if config.tls.enabled {
+        // Pre-generate TLS certs so they're ready when tokio-rustls is wired
+        match super::tls::ensure_certs() {
+            Ok((cert_path, key_path)) => {
+                tracing::info!(?cert_path, ?key_path, "TLS certs generated — HTTPS requires tokio-rustls dep (coming soon)");
+            }
+            Err(e) => {
+                tracing::warn!("TLS cert generation failed: {e}");
+            }
+        }
+    }
+
+    // HTTP server (TLS wrapping will use tokio-rustls when dependency is added)
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             let _ = shutdown_rx.changed().await;
@@ -1187,6 +1208,7 @@ Pfkte+2kAeYPMK9Sa+apqqE=
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             },
             reply: reply_tx,
         })
