@@ -1,6 +1,7 @@
 // config.rs — ~/.forge/config.toml parser
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Default value helpers (for serde(default = "fn"))
@@ -55,6 +56,7 @@ fn default_healing_staleness_days() -> u64 { 7 }
 fn default_healing_staleness_min_quality() -> f64 { 0.2 }
 fn default_healing_quality_decay() -> f64 { 0.1 }
 fn default_healing_quality_boost() -> f64 { 0.05 }
+fn default_workspace_mode() -> String { "project".to_string() }
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,6 +99,8 @@ pub struct ForgeConfig {
     pub tls: TlsConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub workspace: WorkspaceConfig,
 }
 
 /// HTTP transport configuration — opt-in, disabled by default.
@@ -550,6 +554,66 @@ impl Default for UiConfig {
         Self {
             enabled: false,
             dir: "ui".to_string(),
+        }
+    }
+}
+
+/// Workspace configuration — controls how org/team directories are laid out.
+/// Modes: "project" (default, no team dirs), "team" (inside .forge/teams/),
+/// "distributed" (per-team roots), "centralized" (single PVC mount).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceConfig {
+    /// Workspace mode: "project" | "team" | "distributed" | "centralized"
+    #[serde(default = "default_workspace_mode")]
+    pub mode: String,
+    /// Root directory for centralized mode (e.g., "/data/forge")
+    #[serde(default)]
+    pub root: String,
+    /// Organization name for team/distributed modes
+    #[serde(default)]
+    pub org: String,
+    /// Auto-write settings for workspace artifacts
+    #[serde(default)]
+    pub auto_write: AutoWriteConfig,
+    /// Per-team workspace roots for distributed mode
+    #[serde(default)]
+    pub roots: HashMap<String, String>,
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        Self {
+            mode: "project".to_string(),
+            root: String::new(),
+            org: String::new(),
+            auto_write: AutoWriteConfig::default(),
+            roots: HashMap::new(),
+        }
+    }
+}
+
+/// Controls which artifacts are automatically written to team workspaces.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoWriteConfig {
+    /// Write decisions to team workspace
+    pub decisions: bool,
+    /// Write meeting minutes to team workspace
+    pub meetings: bool,
+    /// Write agent.json snapshots on spawn
+    pub agent_snapshots: bool,
+    /// Read team backlogs for context injection
+    pub backlog_read: bool,
+}
+
+impl Default for AutoWriteConfig {
+    fn default() -> Self {
+        Self {
+            decisions: true,
+            meetings: true,
+            agent_snapshots: true,
+            backlog_read: true,
         }
     }
 }

@@ -3174,6 +3174,83 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Workspace ──
+
+        Request::WorkspaceInit { org_name, template: _ } => {
+            let config = crate::config::load_config().workspace;
+            // Get team names from the organization's teams in the DB
+            let team_names: Vec<String> = {
+                // Find the org ID
+                let org_id: Option<String> = state.conn.query_row(
+                    "SELECT id FROM organization WHERE name = ?1 LIMIT 1",
+                    rusqlite::params![&org_name],
+                    |row| row.get(0),
+                ).ok();
+                if let Some(oid) = &org_id {
+                    let mut stmt = state.conn.prepare(
+                        "SELECT name FROM team WHERE organization_id = ?1 AND status = 'active'"
+                    ).unwrap();
+                    stmt.query_map(rusqlite::params![oid], |row| row.get::<_, String>(0))
+                        .unwrap()
+                        .filter_map(|r| r.ok())
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            };
+
+            // Determine project_dir from current working directory env or a sensible default
+            let project_dir = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.to_str().map(String::from));
+
+            match crate::workspace::init_org_workspace(
+                &config,
+                &org_name,
+                &team_names,
+                project_dir.as_deref(),
+            ) {
+                Ok(path) => {
+                    let teams_created = team_names.len();
+                    crate::events::emit(&state.events, "workspace_initialized", serde_json::json!({
+                        "org": org_name, "path": path.display().to_string(), "teams": teams_created,
+                    }));
+                    Response::Ok {
+                        data: ResponseData::WorkspaceInitialized {
+                            path: path.display().to_string(),
+                            teams_created,
+                        },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("workspace_init: {e}"),
+                },
+            }
+        }
+
+        Request::WorkspaceStatus => {
+            let config = crate::config::load_config().workspace;
+            // List team names from DB
+            let team_names: Vec<String> = {
+                let mut stmt = state.conn.prepare(
+                    "SELECT name FROM team WHERE status = 'active' ORDER BY name"
+                ).unwrap();
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .unwrap()
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
+
+            Response::Ok {
+                data: ResponseData::WorkspaceStatusData {
+                    mode: config.mode.clone(),
+                    org: config.org.clone(),
+                    root: config.root.clone(),
+                    teams: team_names,
+                },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

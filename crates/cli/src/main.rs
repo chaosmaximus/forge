@@ -700,6 +700,23 @@ enum Commands {
         #[arg(long)]
         action: Option<String>,
     },
+
+    // ── Workspace ──
+
+    /// Initialize workspace directories for an organization
+    #[command(name = "org-init")]
+    OrgInit {
+        /// Organization name
+        #[arg(long)]
+        name: String,
+        /// Template name (e.g., "startup", "devteam")
+        #[arg(long)]
+        template: Option<String>,
+    },
+
+    /// Show workspace status (mode, paths, org info)
+    #[command(name = "workspace-status")]
+    WorkspaceStatus,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1427,6 +1444,14 @@ async fn main() {
         }
         Commands::HealingLog { limit, action } => {
             commands::system::healing_log(limit, action).await;
+        }
+
+        // ── Workspace ──
+        Commands::OrgInit { name, template } => {
+            commands::system::org_init(name, template).await;
+        }
+        Commands::WorkspaceStatus => {
+            commands::system::workspace_status().await;
         }
     }
 }

@@ -1971,6 +1971,63 @@ pub async fn healing_log(limit: usize, action: Option<String>) {
     }
 }
 
+pub async fn org_init(name: String, template: Option<String>) {
+    let req = Request::WorkspaceInit { org_name: name, template };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::WorkspaceInitialized { path, teams_created } }) => {
+            println!("Workspace initialized at: {}", path);
+            println!("Teams created: {}", teams_created);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn workspace_status() {
+    let req = Request::WorkspaceStatus;
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::WorkspaceStatusData { mode, org, root, teams } }) => {
+            println!("Workspace Mode: {}", mode);
+            if !org.is_empty() {
+                println!("Organization:   {}", org);
+            }
+            if !root.is_empty() {
+                println!("Root:           {}", root);
+            }
+            if teams.is_empty() {
+                println!("Teams:          (none)");
+            } else {
+                println!("Teams ({}):", teams.len());
+                for t in &teams {
+                    println!("  - {}", t);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
 }

@@ -19,3 +19,4 @@ pub mod server;
 pub mod sync;
 pub mod teams;
 pub mod workers;
+pub mod workspace;

@@ -570,6 +570,18 @@ pub enum ResponseData {
     /// A notification action was taken
     NotificationActed { id: String, result: Option<String> },
 
+    // ── Workspace ──
+
+    /// Workspace was initialized (directories created)
+    WorkspaceInitialized { path: String, teams_created: usize },
+    /// Current workspace status
+    WorkspaceStatusData {
+        mode: String,
+        org: String,
+        root: String,
+        teams: Vec<String>,
+    },
+
     Shutdown,
 }
 

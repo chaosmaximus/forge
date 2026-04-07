@@ -622,5 +622,16 @@ pub enum Request {
         action: Option<String>,
     },
 
+    // ── Workspace ──
+
+    /// Initialize workspace directories for an organization
+    WorkspaceInit {
+        org_name: String,
+        #[serde(default)]
+        template: Option<String>,
+    },
+    /// Get current workspace status (mode, paths, org info)
+    WorkspaceStatus,
+
     Shutdown,
 }
