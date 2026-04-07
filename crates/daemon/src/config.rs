@@ -1210,15 +1210,26 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
     let parts: Vec<&str> = key.split('.').collect();
     let toml_table = table.as_table_mut().ok_or("config is not a TOML table")?;
 
-    // Infer the TOML value type: try integer, then boolean, then string
-    let toml_val: toml::Value = if let Ok(n) = value.parse::<i64>() {
-        toml::Value::Integer(n)
-    } else if let Ok(b) = value.parse::<bool>() {
-        toml::Value::Boolean(b)
-    } else if let Ok(f) = value.parse::<f64>() {
-        toml::Value::Float(f)
-    } else {
-        toml::Value::String(value.to_string())
+    // Derive TOML value type from the typed config field (not string guessing).
+    // The match arms above already validated and set the correct Rust type on `config`.
+    // Serialize the typed config, extract just the changed field's TOML value.
+    let typed_toml: toml::Value = toml::to_string_pretty(&config)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
+    let toml_val: toml::Value = match parts.as_slice() {
+        [section, field] => typed_toml
+            .get(*section)
+            .and_then(|s| s.get(*field))
+            .cloned()
+            .unwrap_or_else(|| toml::Value::String(value.to_string())),
+        [section, subsection, field] => typed_toml
+            .get(*section)
+            .and_then(|s| s.get(*subsection))
+            .and_then(|s| s.get(*field))
+            .cloned()
+            .unwrap_or_else(|| toml::Value::String(value.to_string())),
+        _ => toml::Value::String(value.to_string()),
     };
 
     match parts.as_slice() {

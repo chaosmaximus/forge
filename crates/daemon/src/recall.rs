@@ -728,7 +728,10 @@ pub fn compile_dynamic_suffix(
             String::new()
         } else {
             // Use OR between words so "e2e testing" matches either "e2e" or "testing"
-            let terms: Vec<&str> = sanitized.split_whitespace().collect();
+            // Each term is double-quoted to prevent FTS5 special syntax interpretation
+            let terms: Vec<String> = sanitized.split_whitespace()
+                .map(|t| format!("\"{}\"", t))
+                .collect();
             let fts_query = terms.join(" OR ");
             format!(" AND memory.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH '{}')", fts_query)
         }

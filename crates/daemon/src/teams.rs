@@ -619,6 +619,12 @@ pub fn record_agent_cost(
     amount: f64,
     _description: &str,
 ) -> rusqlite::Result<(f64, Option<f64>, bool)> {
+    // Reject negative amounts — prevents budget bypass
+    if amount < 0.0 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "amount must be non-negative".to_string(),
+        ));
+    }
     // Increment budget_spent on the session
     conn.execute(
         "UPDATE session SET budget_spent = COALESCE(budget_spent, 0) + ?1 WHERE id = ?2",
