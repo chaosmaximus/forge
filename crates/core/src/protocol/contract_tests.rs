@@ -95,6 +95,7 @@ mod tests {
                     project: Some("forge".into()),
                     limit: Some(10),
                     layer: Some("experience".into()),
+                    since: None,
                 },
             ),
             ("forget", Request::Forget { id: "abc".into() }),
@@ -237,6 +238,7 @@ mod tests {
                 Request::ListPerceptions {
                     project: Some("forge".into()),
                     limit: Some(10),
+                    offset: None,
                 },
             ),
             (
@@ -552,6 +554,7 @@ mod tests {
                 "team_status",
                 Request::TeamStatus {
                     team_name: "leadership".into(),
+                    team_id: None,
                 },
             ),
             // ── Organization Hierarchy ──
@@ -1224,6 +1227,7 @@ mod tests {
                     project: None,
                     limit: None,
                     layer: None,
+                    since: None,
                 },
                 Request::Forget { id: "x".into() },
                 Request::Export {
@@ -1312,6 +1316,7 @@ mod tests {
                 Request::ListPerceptions {
                     project: None,
                     limit: None,
+                    offset: None,
                 },
                 Request::ConsumePerceptions { ids: vec![] },
                 Request::StoreIdentity {
@@ -1488,6 +1493,7 @@ mod tests {
                 },
                 Request::TeamStatus {
                     team_name: "leadership".into(),
+                    team_id: None,
                 },
                 // Organization Hierarchy
                 Request::CreateOrganization {

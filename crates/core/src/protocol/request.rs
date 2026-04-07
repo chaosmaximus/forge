@@ -60,6 +60,10 @@ pub enum Request {
         /// None = search all layers (current behavior)
         #[serde(default)]
         layer: Option<String>,
+        /// Temporal filter: only return memories created after this ISO timestamp.
+        /// Example: "2026-04-01 00:00:00". Parsed from relative durations by CLI.
+        #[serde(default)]
+        since: Option<String>,
     },
     Forget {
         id: String,
@@ -209,7 +213,7 @@ pub enum Request {
     /// Store a perception (Layer 4)
     StorePerception { perception: crate::types::manas::Perception },
     /// List unconsumed perceptions (Layer 4)
-    ListPerceptions { project: Option<String>, limit: Option<usize> },
+    ListPerceptions { project: Option<String>, limit: Option<usize>, #[serde(default)] offset: Option<usize> },
     /// Consume (mark as read) perceptions by ID (Layer 4)
     ConsumePerceptions { ids: Vec<String> },
     /// Store an identity facet (Layer 6 — Ahankara)
@@ -523,6 +527,8 @@ pub enum Request {
     /// Get full team status (members, meetings, decisions)
     TeamStatus {
         team_name: String,
+        #[serde(default)]
+        team_id: Option<String>,
     },
 
     // ── Organization Hierarchy ──

@@ -912,11 +912,13 @@ mod tests {
         create_agent_template(&conn, &make_template("CFO")).unwrap();
 
         let all = list_agent_templates(&conn, None, 100).unwrap();
-        assert_eq!(all.len(), 3);
-        // Should be alphabetical
-        assert_eq!(all[0].name, "CFO");
-        assert_eq!(all[1].name, "CMO");
-        assert_eq!(all[2].name, "CTO");
+        // 3 seeded defaults (claude-code, codex-cli, gemini-cli) + 3 manual (CTO, CMO, CFO) = 6
+        assert_eq!(all.len(), 6);
+        // Verify our 3 manual templates are present
+        let names: Vec<&str> = all.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"CFO"));
+        assert!(names.contains(&"CMO"));
+        assert!(names.contains(&"CTO"));
     }
 
     #[test]

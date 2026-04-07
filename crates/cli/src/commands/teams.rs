@@ -342,8 +342,8 @@ pub async fn set_team_orchestrator(team_name: String, session_id: String) {
     }
 }
 
-pub async fn team_status(team_name: String) {
-    let req = Request::TeamStatus { team_name: team_name.clone() };
+pub async fn team_status(team_name: String, team_id: Option<String>) {
+    let req = Request::TeamStatus { team_name: team_name.clone(), team_id };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::TeamStatusData { team } }) => {
             // team is a JSON value — print human-readable summary

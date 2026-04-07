@@ -322,14 +322,48 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             .unwrap_or_default();
 
         for (meeting_id, topic) in &timed_out {
-            let _ = conn.execute(
-                "UPDATE meeting SET status = 'timed_out' WHERE id = ?1",
-                rusqlite::params![meeting_id],
-            );
+            // Collect partial responses for auto-synthesis
+            let responses: Vec<(String, String)> = conn.prepare(
+                "SELECT session_id, COALESCE(response, '') FROM meeting_participant WHERE meeting_id = ?1 AND response IS NOT NULL ORDER BY responded_at"
+            ).and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![meeting_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?.collect()
+            }).unwrap_or_default();
+
+            // Auto-synthesize from partial responses
+            let synthesis = if responses.is_empty() {
+                format!("Meeting '{}' timed out with no responses.", topic)
+            } else {
+                let parts: Vec<String> = responses.iter()
+                    .map(|(sid, resp)| format!("- {}: {}", sid, resp.chars().take(200).collect::<String>()))
+                    .collect();
+                format!("Meeting '{}' timed out with {} partial response(s):\n{}", topic, responses.len(), parts.join("\n"))
+            };
+
+            // Store synthesis as a decision memory
+            let decision_mem = Memory::new(
+                MemoryType::Decision,
+                format!("Meeting timed out: {}", topic),
+                synthesis.clone(),
+            ).with_confidence(0.6);
+            if let Err(e) = ops::remember(conn, &decision_mem) {
+                eprintln!("[consolidator] auto-synthesis store failed for meeting {meeting_id}: {e}");
+            }
+
+            // Update meeting status + store synthesis
+            if let Err(e) = conn.execute(
+                "UPDATE meeting SET status = 'timed_out', synthesis = ?2 WHERE id = ?1",
+                rusqlite::params![meeting_id, synthesis],
+            ) {
+                eprintln!("[consolidator] meeting timeout update failed: {e}");
+            }
+
             if let Err(e) = crate::notifications::NotificationBuilder::new(
                 "alert", "high",
-                &format!("Meeting '{}' timed out", topic),
-                &format!("Meeting {} exceeded timeout. Partial responses may be available.", meeting_id),
+                &format!("Meeting '{}' timed out — auto-synthesized", topic),
+                &format!("Meeting {} timed out with {} response(s). Auto-synthesis stored as decision. Review: forge-next meeting transcript {}",
+                    meeting_id, responses.len(), meeting_id),
                 "meeting_engine",
             )
             .topic("meeting_timeout")
@@ -1870,5 +1904,59 @@ mod tests {
         let stats = heal_topic_supersedes(&conn, &config);
         assert_eq!(stats.topic_superseded, 0, "no embeddings = no healing");
         assert_eq!(stats.candidates_found, 0, "no candidates without embeddings");
+    }
+
+    #[test]
+    fn test_meeting_timeout_auto_synthesis() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create a team
+        conn.execute(
+            "INSERT INTO team (id, name, organization_id, created_by, status, created_at)
+             VALUES ('t1', 'eng', 'default', 'system', 'active', datetime('now'))",
+            [],
+        ).unwrap();
+
+        // Create a meeting that's already past timeout (backdate it)
+        conn.execute(
+            "INSERT INTO meeting (id, team_id, topic, status, orchestrator_session_id, created_at)
+             VALUES ('m1', 't1', 'Architecture review', 'collecting', 'orch-1', datetime('now', '-600 seconds'))",
+            [],
+        ).unwrap();
+
+        // Add a partial response
+        conn.execute(
+            "INSERT INTO meeting_participant (id, meeting_id, session_id, status, response, responded_at)
+             VALUES ('mp1', 'm1', 'cto-1', 'responded', 'Use microservices for scalability', datetime('now', '-300 seconds'))",
+            [],
+        ).unwrap();
+
+        // Run full consolidation (which includes meeting timeout in phase 19d)
+        let config = crate::config::ConsolidationConfig::default();
+        let _stats = run_all_phases(&conn, &config);
+
+        // Verify meeting is timed_out
+        let status: String = conn.query_row(
+            "SELECT status FROM meeting WHERE id = 'm1'", [], |row: &rusqlite::Row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "timed_out");
+
+        // Verify synthesis was stored
+        let synthesis: Option<String> = conn.query_row(
+            "SELECT synthesis FROM meeting WHERE id = 'm1'", [], |row: &rusqlite::Row| row.get(0),
+        ).unwrap();
+        assert!(synthesis.is_some(), "synthesis should be stored on timeout");
+        let syn = synthesis.unwrap();
+        assert!(syn.contains("Architecture review"), "synthesis should mention the topic");
+        assert!(syn.contains("microservices"), "synthesis should include partial response");
+
+        // Verify a decision memory was created
+        let decision_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory WHERE title LIKE '%Architecture review%' AND memory_type = 'decision'",
+            [], |row: &rusqlite::Row| row.get(0),
+        ).unwrap();
+        assert!(decision_count > 0, "auto-synthesis should create a decision memory");
     }
 }

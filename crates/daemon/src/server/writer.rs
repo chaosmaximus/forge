@@ -234,6 +234,7 @@ mod tests {
             project: None,
             limit: None,
             layer: None,
+            since: None,
         }));
 
         assert!(is_read_only(&Request::CompileContext {
@@ -305,6 +306,7 @@ mod tests {
         assert!(is_read_only(&Request::ListPerceptions {
             project: None,
             limit: None,
+            offset: None,
         }));
 
         assert!(is_read_only(&Request::ListIdentity {

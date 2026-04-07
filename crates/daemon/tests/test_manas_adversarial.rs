@@ -335,7 +335,7 @@ fn test_perception_huge_data_payload() {
     // Verify it retrieves correctly
     let resp = handle_request(
         &mut state,
-        Request::ListPerceptions { project: Some("test".into()), limit: Some(10) },
+        Request::ListPerceptions { project: Some("test".into()), limit: Some(10), offset: None },
     );
     match resp {
         Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {
@@ -663,7 +663,7 @@ fn test_perception_expire_during_list() {
     // List unconsumed — should only have the 5 live ones
     let resp = handle_request(
         &mut state,
-        Request::ListPerceptions { project: None, limit: Some(20) },
+        Request::ListPerceptions { project: None, limit: Some(20), offset: None },
     );
     match resp {
         Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {

@@ -39,6 +39,9 @@ enum Commands {
         /// Filter by Manas layer (experience, declared, domain_dna, skill, perception, identity)
         #[arg(long)]
         layer: Option<String>,
+        /// Only return memories created after this time (e.g., "1h", "7d", "30m", "2026-04-07")
+        #[arg(long)]
+        since: Option<String>,
     },
     /// Store a memory
     Remember {
@@ -183,6 +186,9 @@ enum Commands {
         /// Maximum results
         #[arg(long, default_value = "20")]
         limit: usize,
+        /// Skip this many results before returning
+        #[arg(long, default_value = "0")]
+        offset: usize,
     },
     /// Compile optimized context from all Manas layers (for session-start)
     #[command(name = "compile-context")]
@@ -891,6 +897,9 @@ enum TeamAction {
         /// Team name
         #[arg(long)]
         name: String,
+        /// Team ID (alternative to name for lookup)
+        #[arg(long)]
+        team_id: Option<String>,
     },
 }
 
@@ -1014,8 +1023,42 @@ async fn main() {
             project,
             limit,
             layer,
+            since,
         } => {
-            commands::memory::recall(query, r#type, project, limit, layer).await;
+            // Parse --since: relative durations (1h, 7d, 30m) -> ISO timestamp string
+            let since_ts = since.map(|s| {
+                let s = s.trim();
+                // If it already looks like an ISO date/datetime, pass through
+                if s.contains('-') && s.len() >= 10 {
+                    return s.to_string();
+                }
+                // Parse relative duration -> seconds offset from now
+                let secs = if let Some(h) = s.strip_suffix('h') {
+                    h.parse::<u64>().unwrap_or(0) * 3600
+                } else if let Some(d) = s.strip_suffix('d') {
+                    d.parse::<u64>().unwrap_or(0) * 86400
+                } else if let Some(m) = s.strip_suffix('m') {
+                    m.parse::<u64>().unwrap_or(0) * 60
+                } else {
+                    s.parse::<u64>().unwrap_or(0) // raw seconds
+                };
+                // Convert to ISO timestamp via UNIX epoch arithmetic
+                let epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .saturating_sub(secs);
+                // Manual ISO formatting (avoids adding time/chrono crate dependency)
+                let days_since_epoch = epoch / 86400;
+                let time_of_day = epoch % 86400;
+                let hours = time_of_day / 3600;
+                let minutes = (time_of_day % 3600) / 60;
+                let seconds = time_of_day % 60;
+                // Convert days since 1970-01-01 to YYYY-MM-DD
+                let (year, month, day) = days_to_ymd(days_since_epoch);
+                format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}")
+            });
+            commands::memory::recall(query, r#type, project, limit, layer, since_ts).await;
         }
         Commands::Remember {
             r#type,
@@ -1165,8 +1208,8 @@ async fn main() {
         Commands::Tools => {
             commands::manas::tools().await;
         }
-        Commands::Perceptions { project, limit } => {
-            commands::manas::perceptions(project, limit).await;
+        Commands::Perceptions { project, limit, offset } => {
+            commands::manas::perceptions(project, limit, offset).await;
         }
 
         Commands::DetectReality { path } => {
@@ -1293,8 +1336,8 @@ async fn main() {
             TeamAction::SetOrchestrator { name, session } => {
                 commands::teams::set_team_orchestrator(name, session).await;
             }
-            TeamAction::Status { name } => {
-                commands::teams::team_status(name).await;
+            TeamAction::Status { name, team_id } => {
+                commands::teams::team_status(name, team_id).await;
             }
         },
         Commands::Meeting { action } => match action {
@@ -1386,6 +1429,22 @@ async fn main() {
             commands::system::healing_log(limit, action).await;
         }
     }
+}
+
+/// Convert days since Unix epoch (1970-01-01) to (year, month, day).
+/// Uses the civil calendar algorithm from Howard Hinnant.
+fn days_to_ymd(days: u64) -> (i64, u64, u64) {
+    let z = days as i64 + 719468; // shift to 0000-03-01 epoch
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // day of era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // year of era
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year [0, 365]
+    let mp = (5 * doy + 2) / 153; // month index [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 #[cfg(test)]
@@ -1787,8 +1846,9 @@ mod tests {
         assert!(cli.is_ok(), "team status should parse: {:?}", cli.err());
         match cli.unwrap().command {
             Commands::Team { action } => match action {
-                TeamAction::Status { name } => {
+                TeamAction::Status { name, team_id } => {
                     assert_eq!(name, "board");
+                    assert!(team_id.is_none());
                 }
                 other => panic!("expected Status, got {:?}", other),
             },
@@ -2313,5 +2373,100 @@ mod tests {
     fn test_compile_context_with_focus_parse() {
         assert!(Cli::try_parse_from(["forge-next", "compile-context", "--focus", "e2e-testing"]).is_ok());
         assert!(Cli::try_parse_from(["forge-next", "compile-context", "--focus", "auth security", "--agent", "claude-code"]).is_ok());
+    }
+
+    // ── Recall --since tests ──
+
+    #[test]
+    fn test_recall_with_since_parse() {
+        assert!(Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "24h"]).is_ok());
+        assert!(Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "7d"]).is_ok());
+        assert!(Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "30m"]).is_ok());
+        assert!(Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "2026-04-07"]).is_ok());
+    }
+
+    #[test]
+    fn test_recall_since_is_optional() {
+        let cli = Cli::try_parse_from(["forge-next", "recall", "test query"]).unwrap();
+        match cli.command {
+            Commands::Recall { since, .. } => assert!(since.is_none(), "since should default to None"),
+            other => panic!("expected Recall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_days_to_ymd_epoch() {
+        let (y, m, d) = days_to_ymd(0);
+        assert_eq!((y, m, d), (1970, 1, 1), "epoch should be 1970-01-01");
+    }
+
+    #[test]
+    fn test_days_to_ymd_known_date() {
+        // 2026-04-06 is day 20,549 since epoch (1970-01-01)
+        // Let's verify a known date: 2000-01-01 = day 10957
+        let (y, m, d) = days_to_ymd(10957);
+        assert_eq!((y, m, d), (2000, 1, 1), "day 10957 should be 2000-01-01");
+    }
+
+    #[test]
+    fn test_perceptions_with_offset_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "perceptions", "--offset", "10", "--limit", "5"]);
+        assert!(cli.is_ok(), "perceptions --offset should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Perceptions { project, limit, offset } => {
+                assert!(project.is_none());
+                assert_eq!(limit, 5);
+                assert_eq!(offset, 10);
+            }
+            other => panic!("expected Perceptions, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_perceptions_offset_default_zero() {
+        let cli = Cli::try_parse_from(["forge-next", "perceptions"]);
+        assert!(cli.is_ok(), "perceptions without --offset should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Perceptions { offset, .. } => {
+                assert_eq!(offset, 0, "offset should default to 0");
+            }
+            other => panic!("expected Perceptions, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_status_with_team_id_parse() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "team", "status",
+            "--name", "board",
+            "--team-id", "tid-123",
+        ]);
+        assert!(cli.is_ok(), "team status --team-id should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::Status { name, team_id } => {
+                    assert_eq!(name, "board");
+                    assert_eq!(team_id.as_deref(), Some("tid-123"));
+                }
+                other => panic!("expected Status, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_status_without_team_id_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "team", "status", "--name", "board"]);
+        assert!(cli.is_ok(), "team status without --team-id should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::Status { name, team_id } => {
+                    assert_eq!(name, "board");
+                    assert!(team_id.is_none(), "team_id should be None when not provided");
+                }
+                other => panic!("expected Status, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
     }
 }

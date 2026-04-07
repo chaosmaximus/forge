@@ -245,10 +245,11 @@ pub async fn tools() {
 }
 
 /// List unconsumed perceptions (Layer 6).
-pub async fn perceptions(project: Option<String>, limit: usize) {
+pub async fn perceptions(project: Option<String>, limit: usize, offset: usize) {
     let request = Request::ListPerceptions {
         project: project.clone(),
         limit: Some(limit),
+        offset: if offset > 0 { Some(offset) } else { None },
     };
 
     match client::send(&request).await {

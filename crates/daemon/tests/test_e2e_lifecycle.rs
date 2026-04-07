@@ -65,6 +65,7 @@ fn do_recall(
             project,
             limit,
             layer: None,
+            since: None,
         },
     );
     match resp {
@@ -743,6 +744,7 @@ fn test_edge_cases() {
             project: None,
             limit: None,
             layer: None,
+            since: None,
         },
     );
     match resp {

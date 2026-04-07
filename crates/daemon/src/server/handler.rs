@@ -278,7 +278,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::Recall { query, memory_type, project, limit, layer } => {
+        Request::Recall { query, memory_type, project, limit, layer, since } => {
             let lim = limit.unwrap_or(10);
 
             let results = match layer.as_deref() {
@@ -429,6 +429,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     results
                 }
             };
+
+            // Temporal filter: only keep memories created at or after the `since` timestamp.
+            // ISO timestamps are lexicographically ordered, so string comparison works.
+            let mut results = results;
+            if let Some(ref since_ts) = since {
+                results.retain(|r| r.memory.created_at.as_str() >= since_ts.as_str());
+            }
 
             let count = results.len();
             Response::Ok {
@@ -1259,17 +1266,19 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::ListPerceptions { project, limit } => {
+        Request::ListPerceptions { project, limit, offset } => {
+            let off = offset.unwrap_or(0);
             let lim = limit.unwrap_or(20).min(100); // Cap at 100
             match crate::db::manas::list_unconsumed_perceptions(&state.conn, None) {
                 Ok(perceptions) => {
-                    // Apply project filter and limit in-memory
+                    // Apply project filter, offset, and limit in-memory
                     let filtered: Vec<_> = perceptions.into_iter()
                         .filter(|p| match (&project, &p.project) {
                             (Some(proj), Some(pp)) => pp == proj,
                             (Some(_), None) => false,
                             (None, _) => true,
                         })
+                        .skip(off)
                         .take(lim)
                         .collect();
                     let count = filtered.len();
@@ -2835,8 +2844,17 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::TeamStatus { team_name } => {
-            match crate::teams::team_status(&state.conn, &team_name) {
+        Request::TeamStatus { team_name, team_id } => {
+            let resolved_name = if let Some(ref tid) = team_id {
+                state.conn.query_row(
+                    "SELECT name FROM team WHERE id = ?1",
+                    rusqlite::params![tid],
+                    |row| row.get::<_, String>(0),
+                ).unwrap_or(team_name)
+            } else {
+                team_name
+            };
+            match crate::teams::team_status(&state.conn, &resolved_name) {
                 Ok(team) => Response::Ok { data: ResponseData::TeamStatusData { team } },
                 Err(e) => Response::Error { message: format!("team_status failed: {e}") },
             }
@@ -3205,6 +3223,7 @@ mod tests {
             project: None,
             limit: None,
             layer: None,
+            since: None,
         };
         let response = handle_request(&mut state, recall_req);
 
@@ -3976,6 +3995,7 @@ mod tests {
         let resp = handle_request(&mut state, Request::ListPerceptions {
             project: None,
             limit: None,
+            offset: None,
         });
         match resp {
             Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {
@@ -4002,6 +4022,7 @@ mod tests {
         let resp = handle_request(&mut state, Request::ListPerceptions {
             project: None,
             limit: None,
+            offset: None,
         });
         match resp {
             Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {
@@ -4302,6 +4323,7 @@ mod tests {
             project: None,
             limit: None,
             layer: Some("experience".into()),
+            since: None,
         });
         match resp {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
@@ -4317,6 +4339,7 @@ mod tests {
             project: None,
             limit: None,
             layer: Some("declared".into()),
+            since: None,
         });
         match resp {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
@@ -4347,6 +4370,7 @@ mod tests {
             project: None,
             limit: None,
             layer: None,
+            since: None,
         });
         match resp {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
@@ -4381,6 +4405,7 @@ mod tests {
             project: None,
             limit: None,
             layer: Some("identity".into()),
+            since: None,
         });
         match resp {
             Response::Ok { data: ResponseData::Memories { count, results, .. } } => {
@@ -4397,6 +4422,7 @@ mod tests {
             project: None,
             limit: None,
             layer: Some("identity".into()),
+            since: None,
         });
         match resp {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
@@ -4430,6 +4456,7 @@ mod tests {
             project: None,
             limit: None,
             layer: Some("perception".into()),
+            since: None,
         });
         match resp {
             Response::Ok { data: ResponseData::Memories { count, results, .. } } => {
@@ -4471,6 +4498,7 @@ mod tests {
             project: None,
             limit: None,
             layer: Some("skill".into()),
+            since: None,
         });
         match resp {
             Response::Ok { data: ResponseData::Memories { count, results, .. } } => {
@@ -4487,6 +4515,7 @@ mod tests {
             project: None,
             limit: None,
             layer: Some("skill".into()),
+            since: None,
         });
         match resp {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
@@ -4774,6 +4803,7 @@ mod tests {
             project: None,
             limit: Some(5),
             layer: None,
+            since: None,
         });
         match recall_resp {
             Response::Ok { data: ResponseData::Memories { results, count } } => {
@@ -4954,6 +4984,7 @@ mod tests {
             project: None,
             limit: Some(5),
             layer: None,
+            since: None,
         });
         match recall_resp {
             Response::Ok { data: ResponseData::Memories { results, count } } => {
@@ -6083,5 +6114,241 @@ mod tests {
             }
         }
         assert!(found, "should emit healing_candidate event when similar memory exists");
+    }
+
+    // ── Temporal Filter (--since) Tests ──
+
+    #[test]
+    fn test_recall_with_since_filters_old_memories() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store a memory (will get current timestamp)
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Old decision from last month".into(),
+            content: "Ancient stuff about architecture".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+            metadata: None,
+        });
+
+        // Backdate it to March 2026
+        state.conn.execute(
+            "UPDATE memory SET created_at = '2026-03-01 12:00:00' WHERE title LIKE '%Old decision%'",
+            [],
+        ).unwrap();
+
+        // Store a recent memory (gets current timestamp)
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Recent decision from today".into(),
+            content: "Fresh stuff about architecture".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+            metadata: None,
+        });
+
+        // Recall WITH since filter — should only get the recent memory
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "architecture".into(),
+            memory_type: Some(MemoryType::Decision),
+            project: None,
+            limit: Some(10),
+            layer: None,
+            since: Some("2026-04-01 00:00:00".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { results, count } } => {
+                assert!(count > 0, "should find at least the recent memory");
+                for r in &results {
+                    assert!(
+                        r.memory.created_at.as_str() >= "2026-04-01",
+                        "all results should be after since date, got: {}",
+                        r.memory.created_at
+                    );
+                }
+                assert!(
+                    !results.iter().any(|r| r.memory.title.contains("Old decision")),
+                    "old memory should be filtered out by since"
+                );
+            }
+            other => panic!("expected Memories response, got {:?}", other),
+        }
+
+        // Recall WITHOUT since filter — should get both
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "architecture".into(),
+            memory_type: Some(MemoryType::Decision),
+            project: None,
+            limit: Some(10),
+            layer: None,
+            since: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, .. } } => {
+                assert!(count >= 2, "without since filter, should find both memories, got {count}");
+            }
+            other => panic!("expected Memories response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_recall_since_none_returns_all() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Lesson,
+            title: "Lesson about testing".into(),
+            content: "Always test temporal filters".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+            metadata: None,
+        });
+
+        // since: None should not filter anything
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "testing".into(),
+            memory_type: None,
+            project: None,
+            limit: Some(10),
+            layer: None,
+            since: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Memories { count, .. } } => {
+                assert!(count > 0, "since=None should not filter anything");
+            }
+            other => panic!("expected Memories response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_list_perceptions_with_offset() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store 5 perceptions
+        for i in 0..5 {
+            let perception = forge_core::types::manas::Perception {
+                id: format!("p-off-{i}"),
+                kind: forge_core::types::manas::PerceptionKind::Error,
+                data: format!("error {i}"),
+                severity: forge_core::types::manas::Severity::Warning,
+                project: Some("forge".into()),
+                created_at: "2026-04-06 12:00:00".into(),
+                expires_at: None,
+                consumed: false,
+            };
+            handle_request(&mut state, Request::StorePerception { perception });
+        }
+
+        // List with offset=2, limit=2 — should skip first 2, return next 2
+        let resp = handle_request(&mut state, Request::ListPerceptions {
+            project: None,
+            limit: Some(2),
+            offset: Some(2),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {
+                assert_eq!(count, 2, "should return exactly 2 perceptions after offset");
+                assert_eq!(perceptions.len(), 2);
+            }
+            other => panic!("expected PerceptionList, got {:?}", other),
+        }
+
+        // List with offset=4, limit=10 — should return only 1 (5 total, skip 4)
+        let resp = handle_request(&mut state, Request::ListPerceptions {
+            project: None,
+            limit: Some(10),
+            offset: Some(4),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {
+                assert_eq!(count, 1, "should return 1 perception (offset 4 of 5)");
+                assert_eq!(perceptions.len(), 1);
+            }
+            other => panic!("expected PerceptionList, got {:?}", other),
+        }
+
+        // List with offset=0, no change from default behavior
+        let resp = handle_request(&mut state, Request::ListPerceptions {
+            project: None,
+            limit: Some(10),
+            offset: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::PerceptionList { perceptions: _, count } } => {
+                assert_eq!(count, 5, "offset=None should return all 5");
+            }
+            other => panic!("expected PerceptionList, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_status_by_id() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Create organization first (teams require org)
+        let resp = handle_request(&mut state, Request::CreateOrganization {
+            name: "test-org".into(),
+            description: None,
+        });
+        let org_id = match resp {
+            Response::Ok { data: ResponseData::OrganizationCreated { id } } => id,
+            other => panic!("expected OrganizationCreated, got {:?}", other),
+        };
+
+        // Create a team via handler
+        let resp = handle_request(&mut state, Request::CreateTeam {
+            name: "engineering".into(),
+            team_type: Some("agent".into()),
+            purpose: Some("Build stuff".into()),
+            organization_id: Some(org_id.clone()),
+        });
+        let team_id = match resp {
+            Response::Ok { data: ResponseData::TeamCreated { id, .. } } => id,
+            other => panic!("expected TeamCreated, got {:?}", other),
+        };
+
+        // Look up by team_id with a wrong team_name — should resolve from ID
+        let resp = handle_request(&mut state, Request::TeamStatus {
+            team_name: "nonexistent".into(),
+            team_id: Some(team_id.clone()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamStatusData { team } } => {
+                let name = team.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                assert_eq!(name, "engineering", "should resolve name from team_id");
+            }
+            other => panic!("expected TeamStatusData, got {:?}", other),
+        }
+
+        // Look up by name only (team_id=None) — normal behavior
+        let resp = handle_request(&mut state, Request::TeamStatus {
+            team_name: "engineering".into(),
+            team_id: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamStatusData { team } } => {
+                let name = team.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                assert_eq!(name, "engineering", "should find by name directly");
+            }
+            other => panic!("expected TeamStatusData, got {:?}", other),
+        }
+
+        // Look up with invalid team_id — should fall back to team_name
+        let resp = handle_request(&mut state, Request::TeamStatus {
+            team_name: "engineering".into(),
+            team_id: Some("nonexistent-id".into()),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::TeamStatusData { team } } => {
+                let name = team.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                assert_eq!(name, "engineering", "invalid team_id should fall back to team_name");
+            }
+            other => panic!("expected TeamStatusData, got {:?}", other),
+        }
     }
 }
