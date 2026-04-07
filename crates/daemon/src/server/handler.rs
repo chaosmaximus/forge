@@ -3514,11 +3514,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     message: format!("invalid tier '{}' — must be one of: {}", tier, valid_tiers.join(", ")),
                 };
             }
-            if let Err(e) = crate::config::update_config_at("license", "tier", &tier) {
+            if let Err(e) = crate::config::update_config("license.tier", &tier) {
                 return Response::Error { message: format!("failed to set tier: {e}") };
             }
             if !key.is_empty() {
-                if let Err(e) = crate::config::update_config_at("license", "key", &key) {
+                if let Err(e) = crate::config::update_config("license.key", &key) {
                     return Response::Error { message: format!("failed to set key: {e}") };
                 }
             }
