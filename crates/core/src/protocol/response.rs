@@ -62,6 +62,7 @@ pub enum ResponseData {
     Stored { id: String },
     Memories { results: Vec<MemoryResult>, count: usize },
     Forgotten { id: String },
+    Superseded { old_id: String, new_id: String },
     Health {
         decisions: usize,
         lessons: usize,
@@ -160,6 +161,9 @@ pub enum ResponseData {
         /// Other files in the same cluster.
         #[serde(default)]
         cluster_files: Vec<String>,
+        /// Warnings (e.g., "Language not indexed — blast-radius unavailable for .py files")
+        #[serde(default)]
+        warnings: Vec<String>,
         /// Files that call symbols in this file (from edge table).
         #[serde(default)]
         calling_files: Vec<String>,
@@ -198,6 +202,25 @@ pub enum ResponseData {
         acknowledged: usize,
         effectiveness_rate: f64,
         per_hook: Vec<(String, usize, usize)>, // (hook_event, count, chars)
+    },
+
+    // ── Memory Self-Healing ──
+
+    HealingStatusResult {
+        total_healed: usize,
+        auto_superseded: usize,
+        auto_faded: usize,
+        last_cycle_at: Option<String>,
+        stale_candidates: usize,
+    },
+    HealingRunResult {
+        topic_superseded: usize,
+        session_faded: usize,
+        quality_adjusted: usize,
+    },
+    HealingLogResult {
+        entries: Vec<serde_json::Value>,
+        count: usize,
     },
 
     SessionRegistered { id: String },

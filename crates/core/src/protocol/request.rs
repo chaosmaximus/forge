@@ -47,6 +47,9 @@ pub enum Request {
         confidence: Option<f64>,
         tags: Option<Vec<String>>,
         project: Option<String>,
+        /// Arbitrary structured metadata (e.g., test results: {"passed": 17, "failed": 3, "failures": ["test1", "test2"]})
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
     },
     Recall {
         query: String,
@@ -60,6 +63,11 @@ pub enum Request {
     },
     Forget {
         id: String,
+    },
+    /// Mark old memory as superseded by a newer one. Keeps old in history, stops surfacing in context.
+    Supersede {
+        old_id: String,
+        new_id: String,
     },
     Health,
     /// Health counts grouped by project
@@ -169,9 +177,17 @@ pub enum Request {
     EndSession { id: String },
     /// List sessions
     Sessions { active_only: Option<bool> },
-    /// Cleanup sessions: end all active sessions matching optional prefix filter.
-    /// If prefix is None, ends ALL active sessions (nuclear option).
-    CleanupSessions { prefix: Option<String> },
+    /// Cleanup sessions: end sessions matching optional prefix and/or age filter.
+    /// If prefix is None AND older_than_secs is None, ends ALL active sessions (nuclear option).
+    CleanupSessions {
+        prefix: Option<String>,
+        /// End sessions older than this many seconds. Also prunes ended sessions past this age.
+        #[serde(default)]
+        older_than_secs: Option<u64>,
+        /// If true, also delete (not just end) sessions that are already ended and past the age threshold.
+        #[serde(default)]
+        prune_ended: bool,
+    },
     /// Query which language servers are available for the current project
     LspStatus,
 
@@ -227,6 +243,10 @@ pub enum Request {
         /// Session ID for role-context, pending-messages, meeting-context injection
         #[serde(default)]
         session_id: Option<String>,
+        /// Focus topic: when set, filters context to memories semantically related to this topic.
+        /// Uses FTS5 MATCH to restrict decisions, lessons, skills, etc. to relevant results only.
+        #[serde(default)]
+        focus: Option<String>,
     },
 
     /// Compile context with full trace of considered/included/excluded memories + reasons.
@@ -581,6 +601,20 @@ pub enum Request {
     DismissNotification { id: String },
     /// Act on a confirmation notification (approve or reject)
     ActOnNotification { id: String, approved: bool },
+
+    // ── Memory Self-Healing ──
+
+    /// Get healing status (metrics, last cycle, stale candidates)
+    HealingStatus,
+    /// Trigger a manual healing cycle
+    HealingRun,
+    /// Get healing log entries
+    HealingLog {
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        action: Option<String>,
+    },
 
     Shutdown,
 }

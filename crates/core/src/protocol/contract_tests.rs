@@ -35,6 +35,8 @@ mod tests {
             ("force_index", Request::ForceIndex),
             ("list_permissions", Request::ListPermissions),
             ("list_organizations", Request::ListOrganizations),
+            ("healing_status", Request::HealingStatus),
+            ("healing_run", Request::HealingRun),
             ("shutdown", Request::Shutdown),
         ];
 
@@ -82,6 +84,7 @@ mod tests {
                     confidence: Some(0.9),
                     tags: Some(vec!["t".into()]),
                     project: Some("forge".into()),
+            metadata: None,
                 },
             ),
             (
@@ -187,6 +190,8 @@ mod tests {
                 "cleanup_sessions",
                 Request::CleanupSessions {
                     prefix: Some("hook-test".into()),
+                    older_than_secs: None,
+                    prune_ended: false,
                 },
             ),
             (
@@ -314,6 +319,7 @@ mod tests {
                     static_only: None,
                     excluded_layers: Some(vec!["decisions".into()]),
                     session_id: None,
+                    focus: None,
                 },
             ),
             (
@@ -629,6 +635,14 @@ mod tests {
                 "meeting_transcript",
                 Request::MeetingTranscript {
                     meeting_id: "m1".into(),
+                },
+            ),
+            // ── Memory Self-Healing ──
+            (
+                "healing_log",
+                Request::HealingLog {
+                    limit: Some(10),
+                    action: Some("auto_superseded".into()),
                 },
             ),
             // ── Notification Engine ──
@@ -1052,6 +1066,15 @@ mod tests {
                 "meeting_transcript",
                 r#"{"method":"meeting_transcript","params":{"meeting_id":"m1"}}"#,
             ),
+            // ── Memory Self-Healing ──
+            (
+                "healing_log",
+                r#"{"method":"healing_log","params":{"limit":10,"action":"auto_superseded"}}"#,
+            ),
+            (
+                "healing_log no params",
+                r#"{"method":"healing_log","params":{}}"#,
+            ),
             // ── Notification Engine ──
             (
                 "list_notifications",
@@ -1109,6 +1132,8 @@ mod tests {
             ("force_index", r#"{"method":"force_index"}"#),
             ("list_permissions", r#"{"method":"list_permissions"}"#),
             ("list_organizations", r#"{"method":"list_organizations"}"#),
+            ("healing_status", r#"{"method":"healing_status"}"#),
+            ("healing_run", r#"{"method":"healing_run"}"#),
             ("shutdown", r#"{"method":"shutdown"}"#),
         ];
 
@@ -1133,12 +1158,12 @@ mod tests {
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 17 (ManasHealth moved to parameterized, +ListPermissions, +ForceIndex, +ListOrganizations)
-        let unit_count = 17;
-        // Parameterized variants: 90 (82 + 4 Prajna + 4 Org Hierarchy: CreateOrganization, TeamSend, TeamTree, CreateOrgFromTemplate)
-        let param_count = 90;
-        // Total: 107
-        let expected_total = 107;
+        // Unit variants: 19 (17 + HealingStatus + HealingRun)
+        let unit_count = 19;
+        // Parameterized variants: 92 (91 + HealingLog)
+        let param_count = 92;
+        // Total: 111
+        let expected_total = 111;
 
         assert_eq!(
             unit_count + param_count,
@@ -1191,6 +1216,7 @@ mod tests {
                     confidence: None,
                     tags: None,
                     project: None,
+            metadata: None,
                 },
                 Request::Recall {
                     query: "q".into(),
@@ -1230,7 +1256,7 @@ mod tests {
                 },
                 Request::EndSession { id: "s".into() },
                 Request::Sessions { active_only: None },
-                Request::CleanupSessions { prefix: Some("hook-test".into()) },
+                Request::CleanupSessions { prefix: Some("hook-test".into()), older_than_secs: None, prune_ended: false },
                 Request::SessionSend {
                     to: "s2".into(),
                     kind: "notification".into(),
@@ -1301,6 +1327,7 @@ mod tests {
                         user_id: None,
                     },
                 },
+                Request::Supersede { old_id: "old".into(), new_id: "new".into() },
                 Request::ListIdentity { agent: "a".into() },
                 Request::DeactivateIdentity { id: "i".into() },
                 Request::ListDisposition { agent: "a".into() },
@@ -1314,6 +1341,7 @@ mod tests {
                     static_only: None,
                     excluded_layers: None,
                     session_id: None,
+                    focus: None,
                 },
                 Request::CompileContextTrace {
                     agent: None,
@@ -1518,6 +1546,10 @@ mod tests {
                     response: "I agree".into(),
                     confidence: Some(0.9),
                 },
+                // Memory Self-Healing
+                Request::HealingStatus,
+                Request::HealingRun,
+                Request::HealingLog { limit: None, action: None },
                 // Notification Engine
                 Request::ListNotifications {
                     status: Some("pending".into()),

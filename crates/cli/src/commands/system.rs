@@ -184,6 +184,7 @@ pub async fn migrate(state_dir: String) {
             confidence: entry.confidence,
             tags: None,
             project: None,
+            metadata: None,
         };
 
         match client::send(&req).await {
@@ -403,9 +404,12 @@ pub async fn blast_radius(file: String) {
         Ok(Response::Ok {
             data: ResponseData::BlastRadius {
                 decisions, callers, importers, files_affected,
-                cluster_name, cluster_files, calling_files,
+                cluster_name, cluster_files, calling_files, warnings,
             },
         }) => {
+            for w in &warnings {
+                println!("  ⚠ {w}");
+            }
             println!("Blast radius for {file}:");
             println!("  Decisions:         {}", decisions.len());
             for d in &decisions {
@@ -579,8 +583,8 @@ pub async fn end_session(id: String) {
     }
 }
 
-pub async fn cleanup_sessions(prefix: Option<String>) {
-    match client::send(&Request::CleanupSessions { prefix: prefix.clone() }).await {
+pub async fn cleanup_sessions(prefix: Option<String>, older_than_secs: Option<u64>, prune_ended: bool) {
+    match client::send(&Request::CleanupSessions { prefix: prefix.clone(), older_than_secs, prune_ended }).await {
         Ok(Response::Ok { data: ResponseData::SessionsCleaned { ended } }) => {
             println!("Cleaned up {ended} session(s){}", match &prefix {
                 Some(p) => format!(" (prefix: {p})"),
@@ -1857,6 +1861,111 @@ pub async fn org_from_template(template: String, name: String) {
         }
         Err(e) => {
             eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn healing_status() {
+    match client::send(&Request::HealingStatus).await {
+        Ok(Response::Ok {
+            data:
+                ResponseData::HealingStatusResult {
+                    total_healed,
+                    auto_superseded,
+                    auto_faded,
+                    last_cycle_at,
+                    stale_candidates,
+                },
+        }) => {
+            println!("Memory Healing Status");
+            println!("─────────────────────");
+            println!("  Total healed:      {total_healed}");
+            println!("  Auto-superseded:   {auto_superseded}");
+            println!("  Auto-faded:        {auto_faded}");
+            println!(
+                "  Last cycle:        {}",
+                last_cycle_at.unwrap_or_else(|| "never".into())
+            );
+            println!("  Stale candidates:  {stale_candidates}");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn healing_run() {
+    match client::send(&Request::HealingRun).await {
+        Ok(Response::Ok {
+            data:
+                ResponseData::HealingRunResult {
+                    topic_superseded,
+                    session_faded,
+                    quality_adjusted,
+                },
+        }) => {
+            println!("Healing cycle complete:");
+            println!("  Topic superseded:  {topic_superseded}");
+            println!("  Session faded:     {session_faded}");
+            println!("  Quality adjusted:  {quality_adjusted}");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn healing_log(limit: usize, action: Option<String>) {
+    match client::send(&Request::HealingLog {
+        limit: Some(limit),
+        action,
+    })
+    .await
+    {
+        Ok(Response::Ok {
+            data: ResponseData::HealingLogResult { entries, count },
+        }) => {
+            if count == 0 {
+                println!("No healing log entries.");
+                return;
+            }
+            println!("{count} healing log entries:\n");
+            for e in &entries {
+                println!(
+                    "  [{}] {} — {}",
+                    e["action"].as_str().unwrap_or("?"),
+                    e["reason"].as_str().unwrap_or("?"),
+                    e["created_at"].as_str().unwrap_or("?")
+                );
+                if let Some(old) = e["old_memory_id"].as_str() {
+                    print!("    old: {old}");
+                    if let Some(new) = e["new_memory_id"].as_str() {
+                        print!(" → new: {new}");
+                    }
+                    println!();
+                }
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }

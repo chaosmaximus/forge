@@ -60,11 +60,23 @@ enum Commands {
         /// Project name
         #[arg(long)]
         project: Option<String>,
+        /// Structured metadata as JSON string (e.g., '{"passed":17,"failed":3}')
+        #[arg(long)]
+        metadata: Option<String>,
     },
     /// Soft-delete a memory
     Forget {
         /// Memory ID to forget
         id: String,
+    },
+    /// Mark a memory as superseded by a newer one (keeps old in history, stops surfacing)
+    Supersede {
+        /// ID of the old memory to supersede
+        #[arg(long)]
+        old_id: String,
+        /// ID of the new memory that replaces it
+        #[arg(long)]
+        new_id: String,
     },
     /// Daemon management
     Daemon {
@@ -188,6 +200,9 @@ enum Commands {
         /// Session ID for role-context, pending-messages, meeting-context injection
         #[arg(long)]
         session: Option<String>,
+        /// Focus topic: filter context to memories relevant to this topic
+        #[arg(long)]
+        focus: Option<String>,
     },
     /// Register an active agent session
     #[command(name = "register-session")]
@@ -215,12 +230,18 @@ enum Commands {
         #[arg(long)]
         id: String,
     },
-    /// Cleanup sessions: end all active sessions matching an optional prefix
+    /// Cleanup sessions: end sessions matching prefix/age filters
     #[command(name = "cleanup-sessions")]
     CleanupSessions {
         /// Only end sessions whose ID starts with this prefix (e.g., "hook-test")
         #[arg(long)]
         prefix: Option<String>,
+        /// End sessions older than this duration (e.g., "24h", "7d", "3600" for seconds)
+        #[arg(long, value_name = "DURATION")]
+        older_than: Option<String>,
+        /// Also delete (not just end) sessions that are already ended and past the age threshold
+        #[arg(long)]
+        prune: bool,
     },
 
     // ── A2A Inter-Session Messaging ──
@@ -654,6 +675,25 @@ enum Commands {
         #[arg(long)]
         recursive: bool,
     },
+
+    // ── Memory Self-Healing ──
+
+    /// Show memory healing status
+    #[command(name = "healing-status")]
+    HealingStatus,
+    /// Trigger a manual healing cycle
+    #[command(name = "healing-run")]
+    HealingRun,
+    /// Show healing log
+    #[command(name = "healing-log")]
+    HealingLog {
+        /// Max entries to show
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        /// Filter by action type (auto_superseded, auto_faded)
+        #[arg(long)]
+        action: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -984,11 +1024,16 @@ async fn main() {
             confidence,
             tags,
             project,
+            metadata,
         } => {
-            commands::memory::remember(r#type, title, content, confidence, tags, project).await;
+            let meta_value = metadata.and_then(|s| serde_json::from_str(&s).ok());
+            commands::memory::remember(r#type, title, content, confidence, tags, project, meta_value).await;
         }
         Commands::Forget { id } => {
             commands::memory::forget(id).await;
+        }
+        Commands::Supersede { old_id, new_id } => {
+            commands::memory::supersede(old_id, new_id).await;
         }
         Commands::Daemon { action } => match action {
             DaemonAction::Status => {
@@ -1049,8 +1094,21 @@ async fn main() {
         Commands::EndSession { id } => {
             commands::system::end_session(id).await;
         }
-        Commands::CleanupSessions { prefix } => {
-            commands::system::cleanup_sessions(prefix).await;
+        Commands::CleanupSessions { prefix, older_than, prune } => {
+            // Parse duration string like "24h", "7d", "3600" into seconds
+            let older_than_secs = older_than.map(|s| {
+                let s = s.trim();
+                if let Some(hours) = s.strip_suffix('h') {
+                    hours.parse::<u64>().unwrap_or(0) * 3600
+                } else if let Some(days) = s.strip_suffix('d') {
+                    days.parse::<u64>().unwrap_or(0) * 86400
+                } else if let Some(mins) = s.strip_suffix('m') {
+                    mins.parse::<u64>().unwrap_or(0) * 60
+                } else {
+                    s.parse::<u64>().unwrap_or(0)
+                }
+            });
+            commands::system::cleanup_sessions(prefix, older_than_secs, prune).await;
         }
         Commands::Send { to, kind, topic, text, project, timeout } => {
             commands::system::send_message(to, kind, topic, text, project, timeout).await;
@@ -1079,8 +1137,8 @@ async fn main() {
         Commands::ContextTrace { agent, project } => {
             commands::system::context_trace(agent, project).await;
         }
-        Commands::CompileContext { agent, project, static_only, session } => {
-            commands::manas::compile_context(agent, project, static_only, session).await;
+        Commands::CompileContext { agent, project, static_only, session, focus } => {
+            commands::manas::compile_context(agent, project, static_only, session, focus).await;
         }
         Commands::ManasHealth => {
             commands::manas::manas_health().await;
@@ -1315,6 +1373,17 @@ async fn main() {
         }
         Commands::TeamSendCmd { team, kind, topic, text, from, recursive } => {
             commands::teams::team_send(team, kind, topic, text, from, recursive).await;
+        }
+
+        // ── Memory Self-Healing ──
+        Commands::HealingStatus => {
+            commands::system::healing_status().await;
+        }
+        Commands::HealingRun => {
+            commands::system::healing_run().await;
+        }
+        Commands::HealingLog { limit, action } => {
+            commands::system::healing_log(limit, action).await;
         }
     }
 }
@@ -2238,5 +2307,11 @@ mod tests {
     #[test]
     fn test_register_session_with_role_parse() {
         assert!(Cli::try_parse_from(["forge-next", "register-session", "--id", "s1", "--agent", "claude-code", "--role", "CTO"]).is_ok());
+    }
+
+    #[test]
+    fn test_compile_context_with_focus_parse() {
+        assert!(Cli::try_parse_from(["forge-next", "compile-context", "--focus", "e2e-testing"]).is_ok());
+        assert!(Cli::try_parse_from(["forge-next", "compile-context", "--focus", "auth security", "--agent", "claude-code"]).is_ok());
     }
 }

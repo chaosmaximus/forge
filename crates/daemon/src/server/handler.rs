@@ -3070,6 +3070,92 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Memory Self-Healing ──
+
+        Request::HealingStatus => {
+            let total_superseded: i64 = state.conn.query_row(
+                "SELECT COUNT(*) FROM healing_log WHERE action = 'auto_superseded'", [], |r| r.get(0),
+            ).unwrap_or(0);
+            let total_faded: i64 = state.conn.query_row(
+                "SELECT COUNT(*) FROM healing_log WHERE action = 'auto_faded'", [], |r| r.get(0),
+            ).unwrap_or(0);
+            let last_cycle: Option<String> = state.conn.query_row(
+                "SELECT MAX(created_at) FROM healing_log", [], |r| r.get(0),
+            ).ok().flatten();
+            let stale: i64 = state.conn.query_row(
+                "SELECT COUNT(*) FROM memory WHERE status = 'active' AND COALESCE(quality_score, 0.5) < 0.2 AND access_count = 0
+                 AND created_at < datetime('now', '-7 days')", [], |r| r.get(0),
+            ).unwrap_or(0);
+            Response::Ok {
+                data: ResponseData::HealingStatusResult {
+                    total_healed: (total_superseded + total_faded) as usize,
+                    auto_superseded: total_superseded as usize,
+                    auto_faded: total_faded as usize,
+                    last_cycle_at: last_cycle,
+                    stale_candidates: stale as usize,
+                },
+            }
+        }
+
+        Request::HealingRun => {
+            let config = crate::config::load_config().healing;
+            let topic_stats = crate::workers::consolidator::heal_topic_supersedes(&state.conn, &config);
+            let faded = crate::workers::consolidator::heal_session_staleness(&state.conn, &config);
+            let quality = crate::workers::consolidator::apply_quality_pressure(&state.conn, &config);
+            Response::Ok {
+                data: ResponseData::HealingRunResult {
+                    topic_superseded: topic_stats.topic_superseded,
+                    session_faded: faded,
+                    quality_adjusted: quality,
+                },
+            }
+        }
+
+        Request::HealingLog { limit, action } => {
+            let lim = limit.unwrap_or(20);
+            let entries: Vec<serde_json::Value> = if let Some(ref act) = action {
+                state.conn.prepare(
+                    "SELECT id, action, old_memory_id, new_memory_id, similarity_score, overlap_score, reason, created_at
+                     FROM healing_log WHERE action = ?1 ORDER BY created_at DESC LIMIT ?2"
+                ).and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![act, lim as i64], |row| {
+                        Ok(serde_json::json!({
+                            "id": row.get::<_, String>(0)?,
+                            "action": row.get::<_, String>(1)?,
+                            "old_memory_id": row.get::<_, String>(2)?,
+                            "new_memory_id": row.get::<_, Option<String>>(3)?,
+                            "similarity": row.get::<_, Option<f64>>(4)?,
+                            "overlap": row.get::<_, Option<f64>>(5)?,
+                            "reason": row.get::<_, String>(6)?,
+                            "created_at": row.get::<_, String>(7)?,
+                        }))
+                    })?.collect()
+                }).unwrap_or_default()
+            } else {
+                state.conn.prepare(
+                    "SELECT id, action, old_memory_id, new_memory_id, similarity_score, overlap_score, reason, created_at
+                     FROM healing_log ORDER BY created_at DESC LIMIT ?1"
+                ).and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![lim as i64], |row| {
+                        Ok(serde_json::json!({
+                            "id": row.get::<_, String>(0)?,
+                            "action": row.get::<_, String>(1)?,
+                            "old_memory_id": row.get::<_, String>(2)?,
+                            "new_memory_id": row.get::<_, Option<String>>(3)?,
+                            "similarity": row.get::<_, Option<f64>>(4)?,
+                            "overlap": row.get::<_, Option<f64>>(5)?,
+                            "reason": row.get::<_, String>(6)?,
+                            "created_at": row.get::<_, String>(7)?,
+                        }))
+                    })?.collect()
+                }).unwrap_or_default()
+            };
+            let count = entries.len();
+            Response::Ok {
+                data: ResponseData::HealingLogResult { entries, count },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
@@ -3565,7 +3651,7 @@ mod tests {
             file: "src/lib.rs".into(),
         });
         match resp {
-            Response::Ok { data: ResponseData::BlastRadius { decisions, callers, importers, files_affected, cluster_name, cluster_files, calling_files, warnings } } => {
+            Response::Ok { data: ResponseData::BlastRadius { decisions, callers, importers, files_affected, cluster_name, cluster_files, calling_files, warnings: _ } } => {
                 assert!(decisions.is_empty());
                 assert_eq!(callers, 0);
                 assert!(importers.is_empty());

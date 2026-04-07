@@ -96,6 +96,9 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::ListMeetings { .. }
             | Request::MeetingTranscript { .. }
             | Request::ListNotifications { .. }
+            | Request::HealingStatus
+            | Request::HealingLog { .. }
+            // NOTE: HealingRun is a write — triggers healing cycle
             // NOTE: AckNotification, DismissNotification, ActOnNotification are writes
             // NOTE: DetectReality is NOT read-only — it may create a reality record
             // NOTE: CreateMeeting, MeetingSynthesize, MeetingDecide are writes
@@ -239,6 +242,7 @@ mod tests {
             static_only: None,
             excluded_layers: None,
             session_id: None,
+            focus: None,
         }));
 
         assert!(is_read_only(&Request::Sessions {
@@ -326,6 +330,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         }));
         assert!(!is_read_only(&Request::Forget { id: "x".into() }));
         assert!(!is_read_only(&Request::ForceConsolidate));
@@ -359,6 +364,8 @@ mod tests {
         }));
         assert!(!is_read_only(&Request::CleanupSessions {
             prefix: None,
+            older_than_secs: None,
+            prune_ended: false,
         }));
         assert!(!is_read_only(&Request::Bootstrap {
             project: None,
@@ -448,6 +455,16 @@ mod tests {
             template_name: "startup".into(),
             org_name: "acme".into(),
         }));
+
+        // Memory Self-Healing: read-only
+        assert!(is_read_only(&Request::HealingStatus));
+        assert!(is_read_only(&Request::HealingLog {
+            limit: None,
+            action: None,
+        }));
+
+        // Memory Self-Healing: write
+        assert!(!is_read_only(&Request::HealingRun));
     }
 
     #[tokio::test]
@@ -491,6 +508,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             },
             reply: reply_tx,
         })
@@ -552,6 +570,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             },
             reply: reply_tx,
         })
@@ -627,6 +646,7 @@ mod tests {
                     confidence: None,
                     tags: None,
                     project: None,
+            metadata: None,
                 },
             );
             match resp {
@@ -645,6 +665,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             },
             reply: reply_tx,
         })
@@ -687,6 +708,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             }),
             "remember"
         );
@@ -713,6 +735,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
         assert!(summary.len() <= 200);
         assert!(summary.ends_with("..."));
@@ -760,6 +783,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             },
             reply: reply_tx,
             audit,
@@ -820,6 +844,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             },
             reply: reply_tx,
             audit: AuditContext {
@@ -989,6 +1014,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             },
             reply: reply_tx,
         })
@@ -1055,6 +1081,7 @@ mod tests {
                     confidence: None,
                     tags: None,
                     project: None,
+                    metadata: None,
                 },
                 reply: reply_tx,
                 audit: AuditContext {
@@ -1122,6 +1149,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
+            metadata: None,
             },
             reply: reply_tx,
             audit: AuditContext {
