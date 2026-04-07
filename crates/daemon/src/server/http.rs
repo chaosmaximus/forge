@@ -426,11 +426,21 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
         .route("/api/terminal", get(terminal_ws_handler))
         .with_state(pty_manager);
 
-    Router::new()
+    let mut router = Router::new()
         .merge(health_routes)
         .merge(api_routes)
         .merge(terminal_routes)
-        .layer(cors)
+        .layer(cors);
+
+    // Serve web UI if configured and directory contains index.html.
+    // Static files are mounted as a fallback — API routes take priority.
+    if config.ui.enabled {
+        if let Some(ui_router) = super::static_files::static_file_router(&config.ui.dir) {
+            router = router.merge(ui_router);
+        }
+    }
+
+    router
 }
 
 /// Start the HTTP server with a pre-bound listener and graceful shutdown.

@@ -1,4 +1,7 @@
 use forge_daemon::server::{DaemonState, WriterActor, run_grpc_server, run_http_server_with_listener, run_server};
+use forge_daemon::server::http::{AppState, build_router};
+use forge_daemon::server::tls;
+use forge_daemon::server::metrics::ForgeMetrics;
 use forge_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
 use fs2::FileExt;
 use std::io::Write;
@@ -295,22 +298,75 @@ async fn main() {
             }
         };
         tracing::info!(addr = %http_addr, "HTTP server listening");
-        tokio::spawn(async move {
-            if let Err(e) = run_http_server_with_listener(
-                &http_config,
-                http_db,
-                http_events,
-                http_hlc,
-                started_at,
-                http_write_tx,
-                http_shutdown_rx,
-                http_listener,
-            )
-            .await
-            {
-                tracing::error!("HTTP server failed: {e}");
-            }
-        });
+
+        // If TLS is enabled and UI is being served, use HTTPS via axum-server.
+        // This enables browsers to connect to https://localhost:<port> without
+        // mixed-content or CORS issues (same-origin).
+        if http_config.tls.enabled && http_config.ui.enabled {
+            let tls_config_clone = http_config.clone();
+            tokio::spawn(async move {
+                let (cert_path, key_path) = match tls::ensure_certs() {
+                    Ok(paths) => paths,
+                    Err(e) => {
+                        tracing::error!("TLS cert generation failed: {e}");
+                        return;
+                    }
+                };
+                let rustls_cfg = match tls::build_rustls_config(cert_path, key_path) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        tracing::error!("TLS config failed: {e}");
+                        return;
+                    }
+                };
+
+                // Build the same router but via a fresh state (can't move listener across TLS boundary)
+                let metrics = if tls_config_clone.metrics.enabled {
+                    Some(ForgeMetrics::new())
+                } else {
+                    None
+                };
+                let state = AppState {
+                    db_path: http_db,
+                    events: http_events,
+                    hlc: http_hlc,
+                    started_at,
+                    write_tx: http_write_tx,
+                    admin_emails: tls_config_clone.auth.admin_emails.clone(),
+                    viewer_emails: tls_config_clone.auth.viewer_emails.clone(),
+                    auth_enabled: tls_config_clone.auth.enabled,
+                    metrics,
+                };
+                let app = build_router(&tls_config_clone, state);
+
+                let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(rustls_cfg);
+                let addr: std::net::SocketAddr = http_addr.parse().unwrap();
+                tracing::info!(%addr, "HTTPS server starting (TLS enabled)");
+                if let Err(e) = axum_server::bind_rustls(addr, rustls_config)
+                    .serve(app.into_make_service())
+                    .await
+                {
+                    tracing::error!("HTTPS server failed: {e}");
+                }
+            });
+        } else {
+            tokio::spawn(async move {
+                if let Err(e) = run_http_server_with_listener(
+                    &http_config,
+                    http_db,
+                    http_events,
+                    http_hlc,
+                    started_at,
+                    http_write_tx,
+                    http_shutdown_rx,
+                    http_listener,
+                )
+                .await
+                {
+                    tracing::error!("HTTP server failed: {e}");
+                }
+            });
+        }
     }
 
     // Conditionally spawn gRPC server alongside Unix socket when enabled.

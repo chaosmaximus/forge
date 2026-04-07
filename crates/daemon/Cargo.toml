@@ -39,6 +39,7 @@ base64 = "0.22"
 rcgen = "0.13"
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 
 # gRPC transport (opt-in)
 tonic = "0.12"
