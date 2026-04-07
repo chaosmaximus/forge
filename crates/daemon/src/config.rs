@@ -1046,6 +1046,9 @@ pub fn update_config(key: &str, value: &str) -> Result<(), String> {
 /// Update a config value at an arbitrary path (for testing).
 pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String> {
     let content = std::fs::read_to_string(path).unwrap_or_default();
+    // Parse into toml::Value to preserve existing keys without injecting defaults.
+    // Then validate by applying the change to a typed ForgeConfig.
+    let mut table: toml::Value = toml::from_str(&content).unwrap_or(toml::Value::Table(toml::map::Map::new()));
     let mut config: ForgeConfig = toml::from_str(&content).unwrap_or_default();
 
     match key.split('.').collect::<Vec<_>>().as_slice() {
@@ -1201,7 +1204,49 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         _ => return Err(format!("unknown config key: {key}")),
     }
 
-    let toml_str = toml::to_string_pretty(&config).map_err(|e| format!("serialize error: {e}"))?;
+    // Surgically update only the changed key in the TOML table,
+    // preserving all other user settings (ISS-9 fix).
+    // Determine the correct typed TOML value by comparing old vs new config.
+    let parts: Vec<&str> = key.split('.').collect();
+    let toml_table = table.as_table_mut().ok_or("config is not a TOML table")?;
+
+    // Infer the TOML value type: try integer, then boolean, then string
+    let toml_val: toml::Value = if let Ok(n) = value.parse::<i64>() {
+        toml::Value::Integer(n)
+    } else if let Ok(b) = value.parse::<bool>() {
+        toml::Value::Boolean(b)
+    } else if let Ok(f) = value.parse::<f64>() {
+        toml::Value::Float(f)
+    } else {
+        toml::Value::String(value.to_string())
+    };
+
+    match parts.as_slice() {
+        [section, field] => {
+            let section_table = toml_table
+                .entry(*section)
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if let Some(t) = section_table.as_table_mut() {
+                t.insert(field.to_string(), toml_val);
+            }
+        }
+        [section, subsection, field] => {
+            let section_table = toml_table
+                .entry(*section)
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if let Some(st) = section_table.as_table_mut() {
+                let sub_table = st
+                    .entry(*subsection)
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                if let Some(subt) = sub_table.as_table_mut() {
+                    subt.insert(field.to_string(), toml_val);
+                }
+            }
+        }
+        _ => return Err(format!("unsupported key depth: {key}")),
+    }
+
+    let toml_str = toml::to_string_pretty(&table).map_err(|e| format!("serialize error: {e}"))?;
     std::fs::write(path, toml_str).map_err(|e| format!("write error: {e}"))?;
     Ok(())
 }
@@ -1555,6 +1600,42 @@ backend = "ollama"
         // Invalid value should error
         let err = update_config_at(path_str, "workers.consolidation_interval_secs", "not_a_number");
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_update_config_preserves_unrelated_keys() {
+        // ISS-9 regression test: setting license should NOT clear skills_directory
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let path_str = path.to_str().unwrap();
+
+        // Write a config with skills_directory set (top-level field)
+        std::fs::write(&path, r#"
+skills_directory = "product/claude-skills"
+
+[extraction]
+backend = "gemini"
+"#).unwrap();
+
+        // Now update license — this MUST NOT clear skills_directory
+        update_config_at(path_str, "license.tier", "pro").unwrap();
+
+        // Verify skills_directory is preserved
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("product/claude-skills"),
+            "skills_directory should be preserved after license update, got:\n{content}"
+        );
+        assert!(
+            content.contains("gemini"),
+            "extraction backend should be preserved after license update, got:\n{content}"
+        );
+
+        // Also verify the license was actually set
+        let cfg = load_config_from(path_str);
+        assert_eq!(cfg.license.tier, "pro");
+        assert_eq!(cfg.skills_directory, "product/claude-skills");
+        assert_eq!(cfg.extraction.backend, "gemini");
     }
 
     #[test]

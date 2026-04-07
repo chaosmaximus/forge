@@ -86,16 +86,24 @@ async fn api_handler(
     let rate_limit_ip = connect_ip.clone().unwrap_or_else(|| "unknown".to_string());
     let source_ip = header_ip.unwrap_or_else(|| rate_limit_ip.clone());
 
-    // Rate limit check — uses real TCP peer IP, not spoofable headers
-    if let Some(ref limiter) = state.rate_limiter {
-        if let Err(retry_after) = limiter.check(&rate_limit_ip).await {
-            return (
-                axum::http::StatusCode::TOO_MANY_REQUESTS,
-                [("retry-after", retry_after.to_string())],
-                Json(Response::Error {
-                    message: format!("rate limited — retry after {retry_after}s"),
-                }),
-            ).into_response();
+    // Rate limit check — uses real TCP peer IP, not spoofable headers.
+    // Exempt localhost/loopback connections — the daemon's own web UI and CLI
+    // are local clients that should never be rate-limited (ISS-1 fix).
+    let is_localhost = rate_limit_ip == "127.0.0.1"
+        || rate_limit_ip == "::1"
+        || rate_limit_ip.starts_with("127.")
+        || rate_limit_ip == "localhost";
+    if !is_localhost {
+        if let Some(ref limiter) = state.rate_limiter {
+            if let Err(retry_after) = limiter.check(&rate_limit_ip).await {
+                return (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", retry_after.to_string())],
+                    Json(Response::Error {
+                        message: format!("rate limited — retry after {retry_after}s"),
+                    }),
+                ).into_response();
+            }
         }
     }
 

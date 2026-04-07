@@ -739,11 +739,8 @@ pub async fn ack_messages(ids: Vec<String>) {
     let mut notif_count = 0;
     for id in &ids {
         let req = Request::AckNotification { id: id.clone() };
-        match client::send(&req).await {
-            Ok(Response::Ok { data: ResponseData::NotificationAcked { .. } }) => {
-                notif_count += 1;
-            }
-            _ => {}
+        if let Ok(Response::Ok { data: ResponseData::NotificationAcked { .. } }) = client::send(&req).await {
+            notif_count += 1;
         }
     }
     if notif_count > 0 {
