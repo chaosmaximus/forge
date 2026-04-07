@@ -710,7 +710,7 @@ pub fn compile_dynamic_suffix(
     let focus_clause = if let Some(focus_topic) = focus {
         // Sanitize: remove quotes and special FTS5 operators to prevent injection
         let sanitized: String = focus_topic.chars()
-            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '_')
             .collect();
         if sanitized.trim().is_empty() {
             String::new()

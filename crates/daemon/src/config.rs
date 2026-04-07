@@ -527,6 +527,7 @@ impl Default for HealingConfig {
 
 /// Web UI static file serving — opt-in, disabled by default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UiConfig {
     pub enabled: bool,
     pub dir: String,
