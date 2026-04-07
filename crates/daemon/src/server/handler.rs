@@ -177,6 +177,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             confidence,
             tags,
             project,
+            metadata,
         } => {
             let type_str = format!("{:?}", memory_type);
             let is_decision = matches!(memory_type, forge_core::types::MemoryType::Decision);
@@ -199,6 +200,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let id = memory.id.clone();
             match ops::remember(&state.conn, &memory) {
                 Ok(()) => {
+                    // Store structured metadata if provided
+                    if let Some(ref meta) = metadata {
+                        let meta_str = serde_json::to_string(meta).unwrap_or_default();
+                        let _ = state.conn.execute(
+                            "UPDATE memory SET metadata = ?2 WHERE id = ?1",
+                            rusqlite::params![id, meta_str],
+                        );
+                    }
                     crate::events::emit(&state.events, "memory_created", serde_json::json!({
                         "id": id,
                         "memory_type": type_str,
@@ -225,6 +234,36 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             };
                             if let Err(e) = crate::db::manas::store_perception(&state.conn, &perception) {
                                 eprintln!("[cross-session] failed to store perception: {e}");
+                            }
+                        }
+                    }
+
+                    // Store-time healing hint: check if similar active memory exists
+                    {
+                        let safe_title: String = title_clone.chars()
+                            .filter(|c| c.is_alphanumeric() || *c == ' ')
+                            .collect();
+                        if safe_title.split_whitespace().count() >= 2 {
+                            let terms: Vec<&str> = safe_title.split_whitespace().take(5).collect();
+                            let fts_query = terms.join(" OR ");
+                            let similar: Vec<(String, String)> = state.conn.prepare(
+                                "SELECT m.id, m.title FROM memory m
+                                 JOIN memory_fts ON memory_fts.rowid = m.rowid
+                                 WHERE memory_fts MATCH ?1
+                                   AND m.memory_type = ?2 AND m.status = 'active' AND m.id != ?3
+                                 LIMIT 3"
+                            ).and_then(|mut stmt| {
+                                stmt.query_map(rusqlite::params![fts_query, type_str.to_lowercase(), id], |row| {
+                                    Ok((row.get(0)?, row.get(1)?))
+                                })?.collect()
+                            }).unwrap_or_default();
+
+                            if !similar.is_empty() {
+                                crate::events::emit(&state.events, "healing_candidate", serde_json::json!({
+                                    "new_memory_id": id,
+                                    "similar_count": similar.len(),
+                                    "similar_titles": similar.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(),
+                                }));
                             }
                         }
                     }
@@ -413,6 +452,60 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 message: format!("forget failed: {e}"),
             },
         },
+
+        Request::Supersede { old_id, new_id } => {
+            // Verify both memories exist
+            let old_exists: bool = state.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active')",
+                rusqlite::params![old_id],
+                |row| row.get(0),
+            ).unwrap_or(false);
+            if !old_exists {
+                return Response::Error {
+                    message: format!("old memory not found or already superseded: {old_id}"),
+                };
+            }
+            let new_exists: bool = state.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active')",
+                rusqlite::params![new_id],
+                |row| row.get(0),
+            ).unwrap_or(false);
+            if !new_exists {
+                return Response::Error {
+                    message: format!("new memory not found: {new_id}"),
+                };
+            }
+            // Mark old as superseded and record which memory replaced it
+            let result = state.conn.execute(
+                "UPDATE memory SET status = 'superseded', superseded_by = ?2 WHERE id = ?1 AND status = 'active'",
+                rusqlite::params![old_id, new_id],
+            );
+            match result {
+                Ok(rows) if rows > 0 => {
+                    // Create a 'supersedes' edge for graph traversal
+                    let edge_id = ulid::Ulid::new().to_string();
+                    let now = forge_core::time::now_iso();
+                    let _ = state.conn.execute(
+                        "INSERT OR IGNORE INTO edge (id, from_id, to_id, edge_type, created_at, valid_from)
+                         VALUES (?1, ?2, ?3, 'supersedes', ?4, ?4)",
+                        rusqlite::params![edge_id, new_id, old_id, now],
+                    );
+                    crate::events::emit(&state.events, "memory_superseded", serde_json::json!({
+                        "old_id": old_id,
+                        "new_id": new_id,
+                    }));
+                    Response::Ok {
+                        data: ResponseData::Superseded { old_id, new_id },
+                    }
+                }
+                Ok(_) => Response::Error {
+                    message: format!("memory not found or already superseded: {old_id}"),
+                },
+                Err(e) => Response::Error {
+                    message: format!("supersede failed: {e}"),
+                },
+            }
+        }
 
         Request::HealthByProject => {
             match ops::health_by_project(&state.conn) {
@@ -885,22 +978,52 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::CleanupSessions { prefix } => {
-            match crate::sessions::cleanup_sessions(&state.conn, prefix.as_deref()) {
-                Ok(ended) => {
-                    eprintln!("[sessions] cleanup: ended {} sessions (prefix: {:?})", ended, prefix);
-                    crate::events::emit(&state.events, "session_changed", serde_json::json!({
-                        "action": "cleanup",
-                        "ended": ended,
-                        "prefix": prefix,
-                    }));
-                    Response::Ok {
-                        data: ResponseData::SessionsCleaned { ended },
+        Request::CleanupSessions { prefix, older_than_secs, prune_ended } => {
+            let mut total_ended = 0usize;
+            let mut total_pruned = 0usize;
+
+            // Phase 1: Prefix-based cleanup — only run when prefix is set OR no age filter
+            // Without this guard, cleanup_sessions(None) ends ALL active sessions (nuclear)
+            if prefix.is_some() || older_than_secs.is_none() {
+                match crate::sessions::cleanup_sessions(&state.conn, prefix.as_deref()) {
+                    Ok(ended) => { total_ended += ended; }
+                    Err(e) => {
+                        return Response::Error {
+                            message: format!("cleanup_sessions failed: {e}"),
+                        };
                     }
                 }
-                Err(e) => Response::Error {
-                    message: format!("cleanup_sessions failed: {e}"),
-                },
+            }
+
+            // Phase 2: Age-based cleanup (end active sessions older than threshold)
+            // Uses SQLite datetime() for cutoff calculation — no chrono dependency needed
+            if let Some(secs) = older_than_secs {
+                let age_ended: usize = state.conn.execute(
+                    &format!("UPDATE session SET status = 'ended' WHERE status = 'active' AND created_at < datetime('now', '-{secs} seconds')"),
+                    [],
+                ).unwrap_or(0);
+                total_ended += age_ended;
+
+                // Phase 3: Prune (delete) already-ended sessions past age threshold
+                if prune_ended {
+                    let pruned: usize = state.conn.execute(
+                        &format!("DELETE FROM session WHERE status = 'ended' AND created_at < datetime('now', '-{secs} seconds')"),
+                        [],
+                    ).unwrap_or(0);
+                    total_pruned = pruned;
+                }
+            }
+
+            eprintln!("[sessions] cleanup: ended {} sessions, pruned {} (prefix: {:?}, older_than: {:?}s)",
+                total_ended, total_pruned, prefix, older_than_secs);
+            crate::events::emit(&state.events, "session_changed", serde_json::json!({
+                "action": "cleanup",
+                "ended": total_ended,
+                "pruned": total_pruned,
+                "prefix": prefix,
+            }));
+            Response::Ok {
+                data: ResponseData::SessionsCleaned { ended: total_ended + total_pruned },
             }
         }
 
@@ -1011,6 +1134,16 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     id, title, confidence,
                 })
                 .collect();
+            // Warn if file extension is not indexed by the code graph
+            let mut warnings = Vec::new();
+            let indexed_exts = ["rs", "ts", "tsx", "js", "jsx", "py", "go"];
+            if let Some(ext) = std::path::Path::new(&file).extension().and_then(|e| e.to_str()) {
+                if !indexed_exts.contains(&ext) {
+                    warnings.push(format!(
+                        "Language not indexed — blast-radius unavailable for .{ext} files. Indexed: .rs, .ts, .tsx, .js, .jsx, .py, .go"
+                    ));
+                }
+            }
             Response::Ok {
                 data: ResponseData::BlastRadius {
                     decisions,
@@ -1020,6 +1153,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     cluster_name: br.cluster_name,
                     cluster_files: br.cluster_files,
                     calling_files: br.calling_files,
+                    warnings,
                 },
             }
         }
@@ -1454,7 +1588,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::CompileContext { agent, project, static_only, excluded_layers, session_id } => {
+        Request::CompileContext { agent, project, static_only, excluded_layers, session_id, focus } => {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
             let excluded = excluded_layers.unwrap_or_default();
             // Verify session ownership: if session_id provided, it must be active and match the agent
@@ -1492,7 +1626,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 let config = crate::config::load_config();
                 let ctx_config = config.context.validated();
                 let dynamic_suffix = crate::recall::compile_dynamic_suffix(
-                    &state.conn, agent_name, project.as_deref(), &ctx_config, &excluded, sid,
+                    &state.conn, agent_name, project.as_deref(), &ctx_config, &excluded, sid, focus.as_deref(),
                 );
                 let full = format!(
                     "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
@@ -2964,6 +3098,7 @@ mod tests {
             confidence: Some(0.95),
             tags: Some(vec!["auth".to_string()]),
             project: None,
+            metadata: None,
         };
         let response = handle_request(&mut state, remember_req);
 
@@ -3032,6 +3167,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: Some("forge".into()),
+            metadata: None,
         });
         handle_request(&mut state, Request::Remember {
             memory_type: MemoryType::Lesson,
@@ -3040,6 +3176,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: Some("backend".into()),
+            metadata: None,
         });
         handle_request(&mut state, Request::Remember {
             memory_type: MemoryType::Pattern,
@@ -3048,6 +3185,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
 
         let resp = handle_request(&mut state, Request::HealthByProject);
@@ -3134,6 +3272,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
 
         let resp = handle_request(&mut state, Request::Export { format: None, since: None });
@@ -3259,6 +3398,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
         let id = match resp {
             Response::Ok { data: ResponseData::Stored { id } } => id,
@@ -3294,6 +3434,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
         let id = match resp {
             Response::Ok { data: ResponseData::Stored { id } } => id,
@@ -3387,6 +3528,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
         let _id = match resp {
             Response::Ok { data: ResponseData::Stored { id } } => id,
@@ -3423,7 +3565,7 @@ mod tests {
             file: "src/lib.rs".into(),
         });
         match resp {
-            Response::Ok { data: ResponseData::BlastRadius { decisions, callers, importers, files_affected, cluster_name, cluster_files, calling_files } } => {
+            Response::Ok { data: ResponseData::BlastRadius { decisions, callers, importers, files_affected, cluster_name, cluster_files, calling_files, warnings } } => {
                 assert!(decisions.is_empty());
                 assert_eq!(callers, 0);
                 assert!(importers.is_empty());
@@ -3532,6 +3674,8 @@ mod tests {
         // Cleanup hook-test sessions only
         let resp = handle_request(&mut state, Request::CleanupSessions {
             prefix: Some("hook-test".into()),
+            older_than_secs: None,
+            prune_ended: false,
         });
         match resp {
             Response::Ok { data: ResponseData::SessionsCleaned { ended } } => {
@@ -3838,6 +3982,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
 
         let event = rx.try_recv().unwrap();
@@ -3892,6 +4037,86 @@ mod tests {
     }
 
     #[test]
+    fn test_supersede_marks_old_and_creates_edge() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store two decisions
+        let resp1 = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Old auth approach".into(),
+            content: "Use session cookies".into(),
+            confidence: None, tags: None, project: None,
+            metadata: None,
+        });
+        let old_id = match resp1 {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            _ => panic!("expected Stored"),
+        };
+
+        let resp2 = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "New auth approach".into(),
+            content: "Use JWT tokens".into(),
+            confidence: None, tags: None, project: None,
+            metadata: None,
+        });
+        let new_id = match resp2 {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            _ => panic!("expected Stored"),
+        };
+
+        // Supersede
+        let resp = handle_request(&mut state, Request::Supersede {
+            old_id: old_id.clone(),
+            new_id: new_id.clone(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Superseded { old_id: oid, new_id: nid } } => {
+                assert_eq!(oid, old_id);
+                assert_eq!(nid, new_id);
+            }
+            other => panic!("expected Superseded, got: {other:?}"),
+        }
+
+        // Verify old memory is superseded
+        let status: String = state.conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1",
+            rusqlite::params![old_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "superseded");
+
+        // Verify superseded_by column
+        let by: String = state.conn.query_row(
+            "SELECT COALESCE(superseded_by, '') FROM memory WHERE id = ?1",
+            rusqlite::params![old_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(by, new_id);
+
+        // Verify edge was created
+        let edge_count: i64 = state.conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE from_id = ?1 AND to_id = ?2 AND edge_type = 'supersedes'",
+            rusqlite::params![new_id, old_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(edge_count, 1);
+
+        // Old memory should NOT appear in compile-context
+        let ctx_resp = handle_request(&mut state, Request::CompileContext {
+            agent: None, project: None, static_only: None,
+            excluded_layers: None, session_id: None, focus: None,
+        });
+        match ctx_resp {
+            Response::Ok { data: ResponseData::CompiledContext { context, .. } } => {
+                assert!(!context.contains("Old auth approach"), "superseded memory should not appear in context");
+                assert!(context.contains("New auth approach"), "new memory should appear in context");
+            }
+            _ => panic!("expected CompiledContext"),
+        }
+    }
+
+    #[test]
     fn test_forget_emits_memory_forgotten_event() {
         let mut state = DaemonState::new(":memory:").unwrap();
 
@@ -3903,6 +4128,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
         let id = match resp {
             Response::Ok { data: ResponseData::Stored { id } } => id,
@@ -3980,6 +4206,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
 
         // Recall with layer=experience should find it
@@ -4024,6 +4251,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: None,
+            metadata: None,
         });
 
         // layer=None should behave like current (search everything)
@@ -4193,6 +4421,7 @@ mod tests {
                 static_only: None,
                 excluded_layers: None,
                 session_id: None,
+                focus: None,
             },
         );
         match resp {
@@ -4227,6 +4456,7 @@ mod tests {
                 static_only: Some(true),
                 excluded_layers: None,
                 session_id: None,
+                focus: None,
             },
         );
         match resp {
@@ -4708,6 +4938,7 @@ mod tests {
             content: "Before calling code production-ready: rebuild, live smoke test".into(),
             tags: Some(vec!["testing".into(), "production-readiness".into(), "anti-pattern".into()]),
             confidence: None, project: None,
+            metadata: None,
         });
         let resp = handle_request(&mut state, Request::CompletionCheck {
             session_id: "s1".into(), claimed_done: true,
@@ -4731,6 +4962,7 @@ mod tests {
             content: "Every deploy needs verification".into(),
             tags: Some(vec!["uat".into(), "production".into()]),
             confidence: None, project: None,
+            metadata: None,
         });
         let resp = handle_request(&mut state, Request::TaskCompletionCheck {
             session_id: "s1".into(), task_subject: "deploy to production".into(), task_description: None,
@@ -4808,6 +5040,7 @@ mod tests {
             confidence: Some(0.9),
             tags: None,
             project: None,
+            metadata: None,
         });
         handle_request(&mut state, Request::Remember {
             memory_type: MemoryType::Lesson,
@@ -4816,6 +5049,7 @@ mod tests {
             confidence: Some(0.8),
             tags: None,
             project: None,
+            metadata: None,
         });
 
         let resp = handle_request(&mut state, Request::GetGraphData {
@@ -4889,6 +5123,7 @@ mod tests {
             confidence: Some(0.9),
             tags: None,
             project: None,
+            metadata: None,
         });
 
         // Filter by experience layer — should get memory nodes
@@ -4959,6 +5194,7 @@ mod tests {
             confidence: Some(0.9),
             tags: None,
             project: None,
+            metadata: None,
         });
 
         let resp = handle_request(&mut state, Request::GetGraphData {
@@ -4992,6 +5228,7 @@ mod tests {
             confidence: Some(0.9),
             tags: None,
             project: None,
+            metadata: None,
         });
         handle_request(&mut state, Request::Remember {
             memory_type: MemoryType::Lesson,
@@ -5000,6 +5237,7 @@ mod tests {
             confidence: Some(0.8),
             tags: None,
             project: None,
+            metadata: None,
         });
 
         let resp = handle_request(&mut state, Request::BatchRecall {
@@ -5098,6 +5336,7 @@ mod tests {
             confidence: Some(0.9),
             tags: None,
             project: Some("forge".into()),
+            metadata: None,
         });
         assert!(matches!(resp, Response::Ok { data: ResponseData::Stored { .. } }));
 
@@ -5129,6 +5368,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: Some("forge".into()),
+            metadata: None,
         });
 
         // Verify NO cross-session perception was created
@@ -5153,6 +5393,7 @@ mod tests {
             confidence: None,
             tags: None,
             project: Some("forge".into()),
+            metadata: None,
         });
 
         let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None).unwrap();
@@ -5371,6 +5612,7 @@ mod tests {
             confidence: Some(0.9),
             tags: None,
             project: None,
+            metadata: None,
         });
 
         let resp = handle_request(&mut state, Request::FileMemoryMap {
@@ -5722,5 +5964,38 @@ mod tests {
             }
             other => panic!("expected TeamSent, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_remember_emits_healing_candidate_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Store first decision
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use PostgreSQL for database storage".into(),
+            content: "Relational DB for main data".into(),
+            confidence: None, tags: None, project: None, metadata: None,
+        });
+
+        let mut rx = state.events.subscribe();
+
+        // Store similar decision — should trigger healing_candidate event
+        handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Use MySQL for database storage".into(),
+            content: "Relational DB for main data".into(),
+            confidence: None, tags: None, project: None, metadata: None,
+        });
+
+        // Check for healing_candidate event
+        let mut found = false;
+        while let Ok(event) = rx.try_recv() {
+            if event.event == "healing_candidate" {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "should emit healing_candidate event when similar memory exists");
     }
 }
