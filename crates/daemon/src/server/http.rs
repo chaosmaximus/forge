@@ -429,17 +429,31 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
     let mut router = Router::new()
         .merge(health_routes)
         .merge(api_routes)
-        .merge(terminal_routes);
+        .merge(terminal_routes)
+        .layer(cors);
 
-    // Static file serving — when UI dir is configured and contains index.html
+    // Serve web UI if configured and directory contains index.html.
+    // Static files are mounted as a fallback — API routes take priority.
     if config.ui.enabled {
-        if let Some(static_router) = super::static_files::static_file_router(&config.ui.dir) {
+        if let Some(ui_router) = super::static_files::static_file_router(&config.ui.dir) {
             tracing::info!(ui_dir = %config.ui.dir, "Web UI serving enabled");
-            router = router.merge(static_router);
+            router = router.merge(ui_router);
         }
     }
 
-    router.layer(cors)
+    // TLS cert pre-generation (actual HTTPS serving needs tokio-rustls dep)
+    if config.tls.enabled {
+        match super::tls::ensure_certs() {
+            Ok((cert_path, key_path)) => {
+                tracing::info!(?cert_path, ?key_path, "TLS certs ready");
+            }
+            Err(e) => {
+                tracing::warn!("TLS cert generation failed: {e}");
+            }
+        }
+    }
+
+    router
 }
 
 /// Start the HTTP server with a pre-bound listener and graceful shutdown.
