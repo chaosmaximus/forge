@@ -64,10 +64,18 @@ pub async fn run_indexer(
 
         tokio::select! {
             _ = tokio::time::sleep(delay) => {
-                let project_dir = match find_project_dir() {
+                // Primary: derive project dir from most recent active session's CWD
+                let project_dir: Option<String> = {
+                    let db_dir = {
+                        let locked = state.lock().await;
+                        find_project_dir_from_db(&locked.conn)
+                    };
+                    db_dir.or_else(find_project_dir)
+                };
+                let project_dir = match project_dir {
                     Some(dir) => dir,
                     None => {
-                        eprintln!("[indexer] no project directory found (FORGE_PROJECT not set, no Claude transcript dirs)");
+                        eprintln!("[indexer] no project directory found (no active sessions, FORGE_PROJECT not set)");
                         continue;
                     }
                 };
@@ -101,6 +109,16 @@ pub async fn run_indexer(
             }
         }
     }
+}
+
+/// Derive the project directory from the most recent active session's CWD.
+/// This is the most reliable source — sessions register with their actual working directory.
+pub fn find_project_dir_from_db(conn: &Connection) -> Option<String> {
+    let sql = "SELECT cwd FROM session WHERE status = 'active' AND cwd IS NOT NULL AND cwd != '' AND cwd != '/tmp' ORDER BY started_at DESC LIMIT 1";
+    conn.query_row(sql, [], |row| row.get::<_, String>(0)).ok().filter(|cwd| {
+        // Validate the directory actually exists
+        std::path::Path::new(cwd).is_dir()
+    })
 }
 
 /// Discover the project directory from env or Claude transcript paths.
