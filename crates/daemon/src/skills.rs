@@ -152,8 +152,14 @@ pub fn list_skills(
             collect_rows(rows)
         }
         (cat_opt, Some(query)) => {
-            // FTS5 search; optionally filter by category
-            let fts_query = format!("{}*", query.replace('"', ""));
+            // FTS5 search; sanitize to prevent FTS5 operator injection
+            let sanitized: String = query.chars()
+                .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '_')
+                .collect();
+            if sanitized.trim().is_empty() {
+                return Ok(Vec::new());
+            }
+            let fts_query = format!("{}*", sanitized);
             if let Some(cat) = cat_opt {
                 let mut stmt = conn
                     .prepare(
