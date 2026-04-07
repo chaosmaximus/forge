@@ -56,6 +56,15 @@ pub struct MemoryResult {
     pub edges: Vec<MemoryEdge>,
 }
 
+/// A single structured health check result for `forge doctor`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HealthCheck {
+    pub name: String,
+    /// "ok", "warn", or "error"
+    pub status: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResponseData {
@@ -97,6 +106,9 @@ pub enum ResponseData {
         declared_count: usize,
         identity_count: usize,
         disposition_count: usize,
+        /// Structured health checks with ok/warn/error status.
+        #[serde(default)]
+        checks: Vec<HealthCheck>,
     },
     Export {
         memories: Vec<MemoryResult>,
@@ -227,6 +239,8 @@ pub enum ResponseData {
     SessionEnded { id: String, found: bool },
     Sessions { sessions: Vec<SessionInfo>, count: usize },
     SessionsCleaned { ended: usize },
+    /// Acknowledgment that current_task was updated on a session.
+    CurrentTaskSet { session_id: String, task: String },
     LspStatus { servers: Vec<LspServerInfo> },
 
     VerifyResult {
@@ -585,6 +599,14 @@ pub enum ResponseData {
         org: String,
         root: String,
         teams: Vec<String>,
+    },
+
+    LicenseStatusResult {
+        tier: String,
+        has_key: bool,
+    },
+    LicenseSet {
+        tier: String,
     },
 
     Shutdown,

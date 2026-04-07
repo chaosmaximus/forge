@@ -628,11 +628,111 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             };
             let embeddings = crate::db::vec::count_embeddings(&state.conn).unwrap_or(0);
             let mh = crate::db::manas::manas_health(&state.conn).unwrap_or_default();
+            let memory_count = h.decisions + h.lessons + h.patterns + h.preferences;
+            let uptime_secs = state.started_at.elapsed().as_secs();
+
+            // Compute db_size_bytes from PRAGMA page_count * page_size
+            let db_size_bytes: u64 = state.conn.query_row(
+                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+                [],
+                |row| row.get(0),
+            ).unwrap_or(0);
+
+            // Build structured health checks
+            let mut checks: Vec<forge_core::protocol::HealthCheck> = Vec::new();
+
+            // 1. Daemon running
+            checks.push(forge_core::protocol::HealthCheck {
+                name: "daemon".into(),
+                status: "ok".into(),
+                message: format!("running (uptime: {}s)", uptime_secs),
+            });
+
+            // 2. Memory count
+            checks.push(if memory_count > 0 {
+                forge_core::protocol::HealthCheck {
+                    name: "memories".into(),
+                    status: "ok".into(),
+                    message: format!("{} memories stored", memory_count),
+                }
+            } else {
+                forge_core::protocol::HealthCheck {
+                    name: "memories".into(),
+                    status: "warn".into(),
+                    message: "no memories stored — run `forge-next remember` or ingest transcripts".into(),
+                }
+            });
+
+            // 3. Embedding count
+            checks.push(if embeddings > 0 {
+                forge_core::protocol::HealthCheck {
+                    name: "embeddings".into(),
+                    status: "ok".into(),
+                    message: format!("{} embeddings indexed", embeddings),
+                }
+            } else {
+                forge_core::protocol::HealthCheck {
+                    name: "embeddings".into(),
+                    status: "warn".into(),
+                    message: "no embeddings — vector recall will not work".into(),
+                }
+            });
+
+            // 4. Database size
+            checks.push(if db_size_bytes < 500 * 1024 * 1024 {
+                forge_core::protocol::HealthCheck {
+                    name: "db_size".into(),
+                    status: "ok".into(),
+                    message: format!("{:.1} MB", db_size_bytes as f64 / (1024.0 * 1024.0)),
+                }
+            } else {
+                forge_core::protocol::HealthCheck {
+                    name: "db_size".into(),
+                    status: "warn".into(),
+                    message: format!("{:.1} MB — consider running consolidation", db_size_bytes as f64 / (1024.0 * 1024.0)),
+                }
+            });
+
+            // 5. Extraction backend configured
+            let config = crate::config::load_config();
+            let backend = &config.extraction.backend;
+            checks.push(if backend != "auto" {
+                forge_core::protocol::HealthCheck {
+                    name: "extraction_backend".into(),
+                    status: "ok".into(),
+                    message: format!("configured: {}", backend),
+                }
+            } else {
+                // auto means it tries multiple — check if any API key is available
+                let has_claude_key = crate::config::resolve_api_key(
+                    &config.extraction.claude_api.api_key, "ANTHROPIC_API_KEY"
+                ).is_some();
+                let has_openai_key = crate::config::resolve_api_key(
+                    &config.extraction.openai.api_key, "OPENAI_API_KEY"
+                ).is_some();
+                let has_gemini_key = crate::config::resolve_api_key(
+                    &config.extraction.gemini.api_key, "GEMINI_API_KEY"
+                ).is_some();
+                if has_claude_key || has_openai_key || has_gemini_key {
+                    forge_core::protocol::HealthCheck {
+                        name: "extraction_backend".into(),
+                        status: "ok".into(),
+                        message: "auto (API keys available)".into(),
+                    }
+                } else {
+                    forge_core::protocol::HealthCheck {
+                        name: "extraction_backend".into(),
+                        status: "warn".into(),
+                        message: "auto with no API keys — extraction may fall back to ollama or fail".into(),
+                    }
+                }
+            });
+
             Response::Ok {
                 data: ResponseData::Doctor {
                     daemon_up: true,
-                    db_size_bytes: 0,
-                    memory_count: h.decisions + h.lessons + h.patterns + h.preferences,
+                    db_size_bytes,
+                    memory_count,
                     embedding_count: embeddings,
                     file_count: files,
                     symbol_count: symbols,
@@ -647,7 +747,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         "disposition".into(),
                         "diagnostics".into(),
                     ],
-                    uptime_secs: state.started_at.elapsed().as_secs(),
+                    uptime_secs,
                     platform_count: mh.platform_entries,
                     tool_count: mh.tools,
                     skill_count: mh.skills,
@@ -656,6 +756,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     declared_count: mh.declared_entries,
                     identity_count: mh.identity_facets_active,
                     disposition_count: mh.dispositions,
+                    checks,
                 },
             }
         }
@@ -3366,6 +3467,63 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     root: config.root.clone(),
                     teams: team_names,
                 },
+            }
+        }
+
+        Request::SetCurrentTask { session_id, task } => {
+            match state.conn.execute(
+                "UPDATE session SET current_task = ?1 WHERE id = ?2 AND status = 'active'",
+                rusqlite::params![task, session_id],
+            ) {
+                Ok(n) if n > 0 => {
+                    crate::events::emit(&state.events, "session_changed", serde_json::json!({
+                        "action": "task_updated",
+                        "id": session_id,
+                        "current_task": task,
+                    }));
+                    Response::Ok {
+                        data: ResponseData::CurrentTaskSet {
+                            session_id,
+                            task,
+                        },
+                    }
+                }
+                Ok(_) => Response::Error {
+                    message: format!("session '{}' not found or not active", session_id),
+                },
+                Err(e) => Response::Error {
+                    message: format!("set_current_task failed: {e}"),
+                },
+            }
+        }
+
+        Request::LicenseStatus => {
+            let config = crate::config::load_config();
+            Response::Ok {
+                data: ResponseData::LicenseStatusResult {
+                    tier: config.license.tier.clone(),
+                    has_key: !config.license.key.is_empty(),
+                },
+            }
+        }
+
+        Request::SetLicense { tier, key } => {
+            let valid_tiers = ["free", "pro", "team", "enterprise"];
+            if !valid_tiers.contains(&tier.as_str()) {
+                return Response::Error {
+                    message: format!("invalid tier '{}' — must be one of: {}", tier, valid_tiers.join(", ")),
+                };
+            }
+            if let Err(e) = crate::config::update_config_at("license", "tier", &tier) {
+                return Response::Error { message: format!("failed to set tier: {e}") };
+            }
+            if !key.is_empty() {
+                if let Err(e) = crate::config::update_config_at("license", "key", &key) {
+                    return Response::Error { message: format!("failed to set key: {e}") };
+                }
+            }
+            Response::Ok {
+                data: ResponseData::LicenseSet { tier, },
             }
         }
 

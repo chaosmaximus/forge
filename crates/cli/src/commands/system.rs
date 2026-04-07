@@ -10,6 +10,7 @@ pub async fn doctor() {
             data:
                 ResponseData::Doctor {
                     daemon_up,
+                    db_size_bytes,
                     memory_count,
                     embedding_count,
                     file_count,
@@ -17,21 +18,37 @@ pub async fn doctor() {
                     edge_count,
                     workers,
                     uptime_secs,
+                    checks,
                     ..
                 },
         }) => {
             println!("Forge Doctor");
             println!(
-                "  Daemon:    {} (uptime: {}s)",
+                "  Daemon:      {} (uptime: {}s)",
                 if daemon_up { "UP" } else { "DOWN" },
                 uptime_secs
             );
-            println!("  Memories:  {}", memory_count);
-            println!("  Embeddings:{}", embedding_count);
-            println!("  Files:     {}", file_count);
-            println!("  Symbols:   {}", symbol_count);
-            println!("  Edges:     {}", edge_count);
-            println!("  Workers:   {}", workers.join(", "));
+            println!("  DB size:     {:.1} MB", db_size_bytes as f64 / (1024.0 * 1024.0));
+            println!("  Memories:    {}", memory_count);
+            println!("  Embeddings:  {}", embedding_count);
+            println!("  Files:       {}", file_count);
+            println!("  Symbols:     {}", symbol_count);
+            println!("  Edges:       {}", edge_count);
+            println!("  Workers:     {}", workers.join(", "));
+
+            if !checks.is_empty() {
+                println!();
+                println!("Health Checks:");
+                for check in &checks {
+                    let indicator = match check.status.as_str() {
+                        "ok" => "[OK]",
+                        "warn" => "[WARN]",
+                        "error" => "[ERROR]",
+                        _ => "[?]",
+                    };
+                    println!("  {} {}: {}", indicator, check.name, check.message);
+                }
+            }
         }
         Ok(Response::Error { message }) => eprintln!("error: {}", message),
         Ok(_) => eprintln!("unexpected response"),
@@ -2042,6 +2059,30 @@ pub async fn workspace_status() {
                     println!("  - {}", t);
                 }
             }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {}", message);
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Set the current task on a session (session card auto-populate).
+pub async fn set_current_task(session_id: String, task: String) {
+    match client::send(&Request::SetCurrentTask {
+        session_id: session_id.clone(),
+        task: task.clone(),
+    }).await {
+        Ok(Response::Ok { data: ResponseData::CurrentTaskSet { .. } }) => {
+            println!("Task set on session {}: {}", session_id, task);
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {}", message);

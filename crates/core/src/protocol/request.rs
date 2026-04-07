@@ -638,5 +638,21 @@ pub enum Request {
     /// and from the transcript_log table.
     BackfillProject,
 
+    /// Update the current_task on a session (session card auto-populate).
+    /// This is a lightweight update — no re-registration needed.
+    SetCurrentTask {
+        session_id: String,
+        task: String,
+    },
+
+    /// Get current license tier and key status.
+    LicenseStatus,
+
+    /// Set or update the license tier and key.
+    SetLicense {
+        tier: String,
+        key: String,
+    },
+
     Shutdown,
 }

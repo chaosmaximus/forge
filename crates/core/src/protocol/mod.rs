@@ -6,4 +6,4 @@ pub mod response;
 
 pub use codec::{decode_request, encode_response, read_request, write_response};
 pub use request::{EvaluationFinding, MessagePart, RecallQuery, Request};
-pub use response::{BlastRadiusDecision, ConflictPair, ConflictVersion, DiagnosticEntry, ExportEdge, FileMemoryInfo, GraphEdge, GraphNode, HealthProjectData, LspServerInfo, MemoryEdge, MemoryResult, Response, ResponseData, SessionInfo, SessionMessage, TraceEntry};
+pub use response::{BlastRadiusDecision, ConflictPair, ConflictVersion, DiagnosticEntry, ExportEdge, FileMemoryInfo, GraphEdge, GraphNode, HealthCheck, HealthProjectData, LspServerInfo, MemoryEdge, MemoryResult, Response, ResponseData, SessionInfo, SessionMessage, TraceEntry};

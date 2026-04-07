@@ -353,8 +353,23 @@ pub async fn auth_middleware(
 
     match validate_token(&token, &jwks_cache, &auth_config).await {
         Ok(claims) => {
+            // Check if token is expiring soon (within 5 minutes)
+            let expiring_soon = claims.exp.is_some_and(|exp| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                exp > now && (exp - now) < 300
+            });
             req.extensions_mut().insert(claims);
-            next.run(req).await
+            let mut response = next.run(req).await;
+            if expiring_soon {
+                response.headers_mut().insert(
+                    "X-Token-Expiring-Soon",
+                    axum::http::HeaderValue::from_static("true"),
+                );
+            }
+            response
         }
         Err(e) => {
             // Record auth failure for rate-limit lockout

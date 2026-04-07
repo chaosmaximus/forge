@@ -721,6 +721,17 @@ enum Commands {
     /// Show workspace status (mode, paths, org info)
     #[command(name = "workspace-status")]
     WorkspaceStatus,
+
+    /// Set the current task on a session (session card auto-populate)
+    #[command(name = "set-task")]
+    SetTask {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Task description
+        #[arg(long)]
+        task: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1459,6 +1470,9 @@ async fn main() {
         }
         Commands::WorkspaceStatus => {
             commands::system::workspace_status().await;
+        }
+        Commands::SetTask { session, task } => {
+            commands::system::set_current_task(session, task).await;
         }
     }
 }

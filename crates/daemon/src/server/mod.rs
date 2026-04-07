@@ -9,6 +9,7 @@ pub mod rate_limit;
 pub mod rbac;
 pub mod socket;
 pub mod static_files;
+pub mod tier;
 pub mod tls;
 pub mod ws;
 pub mod writer;

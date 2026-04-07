@@ -101,6 +101,8 @@ pub struct ForgeConfig {
     pub ui: UiConfig,
     #[serde(default)]
     pub workspace: WorkspaceConfig,
+    #[serde(default)]
+    pub license: LicenseConfig,
 }
 
 /// HTTP transport configuration — opt-in, disabled by default.
@@ -133,6 +135,27 @@ impl Default for HttpConfig {
 pub struct TlsConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
+}
+
+/// License tier configuration.
+/// Controls which features are available based on the subscription plan.
+/// Default: tier="free", key="" (no license key required for free tier).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LicenseConfig {
+    /// Current tier: "free", "pro", "team", "enterprise"
+    pub tier: String,
+    /// License key (validated on startup, empty = free tier)
+    pub key: String,
+}
+
+impl Default for LicenseConfig {
+    fn default() -> Self {
+        Self {
+            tier: "free".to_string(),
+            key: String::new(),
+        }
+    }
 }
 
 /// gRPC transport configuration — opt-in, disabled by default.
@@ -936,6 +959,14 @@ impl ForgeConfig {
                 return Err("auth.audience must not be empty when auth is enabled".into());
             }
         }
+        // License tier validation
+        let valid_tiers = ["free", "pro", "team", "enterprise"];
+        if !valid_tiers.contains(&self.license.tier.as_str()) {
+            return Err(format!(
+                "license.tier must be one of {:?}, got '{}'",
+                valid_tiers, self.license.tier
+            ));
+        }
         // Security: warn when HTTP is exposed without auth on non-loopback
         if self.http.enabled && !self.auth.enabled && self.http.bind != "127.0.0.1" && self.http.bind != "localhost" {
             eprintln!(
@@ -1149,6 +1180,17 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         }
         ["otlp", "service_name"] => {
             config.otlp.service_name = value.to_string();
+        }
+        // License
+        ["license", "tier"] => {
+            let valid = ["free", "pro", "team", "enterprise"];
+            if !valid.contains(&value) {
+                return Err(format!("license.tier must be one of {:?}, got '{value}'", valid));
+            }
+            config.license.tier = value.to_string();
+        }
+        ["license", "key"] => {
+            config.license.key = value.to_string();
         }
         _ => return Err(format!("unknown config key: {key}")),
     }
