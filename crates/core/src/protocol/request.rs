@@ -501,6 +501,9 @@ pub enum Request {
         /// Optional topology: "star", "mesh", "chain" (default: "mesh")
         #[serde(default)]
         topology: Option<String>,
+        /// Goal ancestry: traces this team's work to a project mission
+        #[serde(default)]
+        goal: Option<String>,
     },
     /// Stop a running team: retire all agents, end all sessions.
     StopTeam {
@@ -588,6 +591,9 @@ pub enum Request {
         context: Option<String>,
         orchestrator_session_id: String,
         participant_session_ids: Vec<String>,
+        /// Goal ancestry: traces this meeting to a project mission
+        #[serde(default)]
+        goal: Option<String>,
     },
     /// Get meeting status + participant response statuses
     MeetingStatus { meeting_id: String },
@@ -712,6 +718,20 @@ pub enum Request {
 
     /// Smart Model Router: query routing decisions and token savings
     RoutingStats,
+
+    // ── Per-Agent Budget Enforcement ──
+
+    /// Record a cost against an agent session's budget
+    RecordAgentCost {
+        session_id: String,
+        amount: f64,
+        description: String,
+    },
+    /// Query budget status for agent sessions
+    BudgetStatus {
+        #[serde(default)]
+        session_id: Option<String>,
+    },
 
     Shutdown,
 }

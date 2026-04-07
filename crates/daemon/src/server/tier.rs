@@ -280,7 +280,9 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::SkillsUninstall { .. }
         | Request::SkillsInfo { .. }
         | Request::SkillsRefresh
-        | Request::RoutingStats => None,
+        | Request::RoutingStats
+        | Request::RecordAgentCost { .. }
+        | Request::BudgetStatus { .. } => None,
     }
 }
 

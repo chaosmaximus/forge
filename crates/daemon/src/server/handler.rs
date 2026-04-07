@@ -3107,9 +3107,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         // ── Team Orchestration ──
 
-        Request::RunTeam { team_name, template_names, topology } => {
+        Request::RunTeam { team_name, template_names, topology, goal } => {
             match crate::teams::run_team(
-                &state.conn, &team_name, &template_names, topology.as_deref(),
+                &state.conn, &team_name, &template_names, topology.as_deref(), goal.as_deref(),
             ) {
                 Ok((name, agents_spawned, session_ids)) => {
                     // Emit individual agent_spawned events for each agent
@@ -3161,10 +3161,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         // ── Meeting Protocol ──
 
-        Request::CreateMeeting { team_id, topic, context, orchestrator_session_id, participant_session_ids } => {
+        Request::CreateMeeting { team_id, topic, context, orchestrator_session_id, participant_session_ids, goal } => {
             match crate::teams::create_meeting(
                 &state.conn, &team_id, &topic, context.as_deref(),
-                &orchestrator_session_id, &participant_session_ids,
+                &orchestrator_session_id, &participant_session_ids, goal.as_deref(),
             ) {
                 Ok((meeting_id, participant_count)) => {
                     // Gap 9: meeting_started event with full details for app sidebar
@@ -3863,6 +3863,28 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },
+
+        // ── Budget Tracking ──
+
+        Request::RecordAgentCost { session_id, amount, description } => {
+            match crate::teams::record_agent_cost(&state.conn, &session_id, amount, &description) {
+                Ok((total_spent, budget_limit, exceeded)) => {
+                    Response::Ok { data: ResponseData::CostRecorded {
+                        session_id, total_spent, budget_limit, exceeded,
+                    }}
+                }
+                Err(e) => Response::Error { message: format!("record_agent_cost: {e}") },
+            }
+        }
+
+        Request::BudgetStatus { session_id } => {
+            match crate::teams::budget_status(&state.conn, session_id.as_deref()) {
+                Ok(entries) => {
+                    Response::Ok { data: ResponseData::BudgetStatusResult { entries } }
+                }
+                Err(e) => Response::Error { message: format!("budget_status: {e}") },
+            }
+        }
     }
 }
 

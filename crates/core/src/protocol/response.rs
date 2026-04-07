@@ -667,6 +667,20 @@ pub enum ResponseData {
         total_tokens_saved: i64,
     },
 
+    // ── Per-Agent Budget Enforcement ──
+
+    /// Cost was recorded against an agent session
+    CostRecorded {
+        session_id: String,
+        total_spent: f64,
+        budget_limit: Option<f64>,
+        exceeded: bool,
+    },
+    /// Budget status for agent session(s)
+    BudgetStatusResult {
+        entries: Vec<serde_json::Value>,
+    },
+
     Shutdown,
 }
 

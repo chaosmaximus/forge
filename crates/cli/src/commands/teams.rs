@@ -464,6 +464,7 @@ pub async fn run_team(
         team_name: team_name.clone(),
         template_names,
         topology: topo,
+        goal: None,
     };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::RunTeamResult { team_name, agents_spawned, session_ids } }) => {
@@ -529,6 +530,7 @@ pub async fn create_meeting(
         context,
         orchestrator_session_id: orchestrator,
         participant_session_ids: participants,
+        goal: None,
     };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::MeetingCreated { meeting_id, participant_count: count } }) => {

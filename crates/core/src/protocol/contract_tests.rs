@@ -533,6 +533,7 @@ mod tests {
                     team_name: "sprint-1".into(),
                     template_names: vec!["tech-lead".into(), "frontend-dev".into()],
                     topology: Some("mesh".into()),
+                    goal: None,
                 },
             ),
             (
@@ -616,6 +617,7 @@ mod tests {
                     context: Some("Q2 planning".into()),
                     orchestrator_session_id: "s-orch".into(),
                     participant_session_ids: vec!["s-cto".into(), "s-cmo".into()],
+                    goal: None,
                 },
             ),
             (
@@ -1499,6 +1501,7 @@ mod tests {
                     team_name: "sprint-1".into(),
                     template_names: vec!["tech-lead".into(), "frontend-dev".into()],
                     topology: Some("mesh".into()),
+                    goal: None,
                 },
                 Request::StopTeam {
                     team_name: "sprint-1".into(),
@@ -1550,6 +1553,7 @@ mod tests {
                     context: Some("Q2 planning".into()),
                     orchestrator_session_id: "s-orch".into(),
                     participant_session_ids: vec!["s-cto".into(), "s-cmo".into()],
+                    goal: None,
                 },
                 Request::MeetingStatus {
                     meeting_id: "m1".into(),

@@ -843,6 +843,16 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Quality tracking for smart router quality guard
     let _ = conn.execute("ALTER TABLE routing_stats ADD COLUMN quality_score REAL", []);
 
+    // ── v2.8: Paperclip-inspired features ──
+
+    // Goal ancestry: traces team/meeting work to a project mission
+    let _ = conn.execute("ALTER TABLE team ADD COLUMN goal TEXT", []);
+    let _ = conn.execute("ALTER TABLE meeting ADD COLUMN goal TEXT", []);
+
+    // Per-agent budget enforcement
+    let _ = conn.execute("ALTER TABLE agent_template ADD COLUMN budget_limit REAL", []);
+    let _ = conn.execute("ALTER TABLE session ADD COLUMN budget_spent REAL DEFAULT 0", []);
+
     // Seed default agent templates (idempotent)
     if let Err(e) = seed_default_templates(conn) {
         eprintln!("[schema] warning: failed to seed default agent templates: {e}");
