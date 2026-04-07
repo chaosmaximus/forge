@@ -40,6 +40,16 @@ pub struct ConsolidationStats {
     pub antipatterns_tagged: usize,
 }
 
+/// Stats from a healing cycle.
+#[derive(Debug, Default, Clone)]
+pub struct HealingStats {
+    pub topic_superseded: usize,
+    pub session_faded: usize,
+    pub quality_adjusted: usize,
+    pub candidates_found: usize,
+    pub false_positives_skipped: usize,
+}
+
 /// Run all consolidation phases synchronously. Used by:
 /// - The periodic consolidator worker (every 30 min)
 /// - The ForceConsolidate handler (on demand)
@@ -893,6 +903,220 @@ pub fn tag_antipatterns(conn: &Connection, batch_limit: usize) -> usize {
     tagged
 }
 
+/// Phase 20: Topic supersede — detect memories on the same topic that have been
+/// superseded by newer, more complete memories.
+///
+/// Algorithm:
+/// 1. Get active decision/lesson/pattern memories that have embeddings
+/// 2. For each, KNN search for 5 nearest same-type neighbors
+/// 3. Check cosine similarity > threshold (distance < 1 - threshold)
+/// 4. Compute word overlap on combined title+content
+/// 5. If overlap is in [overlap_low, overlap_high) — same topic, different content — SUPERSEDE older
+/// 6. Skip if overlap >= overlap_high (dedup territory) or < overlap_low (false positive)
+/// 7. Skip if old memory confidence >= 0.95 (user explicitly set high)
+/// 8. On supersede: UPDATE status, INSERT edge, INSERT healing_log
+pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingConfig) -> HealingStats {
+    let mut stats = HealingStats::default();
+
+    if !config.enabled {
+        return stats;
+    }
+
+    // Get active decision/lesson/pattern memories that have embeddings
+    let sql = format!(
+        "SELECT m.id, m.memory_type, m.title, m.content, m.confidence, m.created_at
+         FROM memory m
+         INNER JOIN memory_vec mv ON m.id = mv.id
+         WHERE m.status = 'active'
+           AND m.memory_type IN ('decision', 'lesson', 'pattern')
+         LIMIT {}",
+        config.batch_limit
+    );
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[healing] failed to prepare candidate query: {e}");
+            return stats;
+        }
+    };
+
+    struct Candidate {
+        id: String,
+        memory_type: String,
+        title: String,
+        content: String,
+        confidence: f64,
+        created_at: String,
+    }
+
+    let candidates: Vec<Candidate> = stmt
+        .query_map([], |row| {
+            Ok(Candidate {
+                id: row.get(0)?,
+                memory_type: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                confidence: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+
+    stats.candidates_found = candidates.len();
+
+    // Track which memories we've already superseded this cycle to avoid double-processing
+    let mut already_superseded = std::collections::HashSet::new();
+
+    for candidate in &candidates {
+        if already_superseded.contains(&candidate.id) {
+            continue;
+        }
+
+        // Get the embedding for this candidate from memory_vec (raw bytes -> f32)
+        let embedding: Vec<f32> = match conn.query_row(
+            "SELECT embedding FROM memory_vec WHERE id = ?1",
+            rusqlite::params![&candidate.id],
+            |row| {
+                let bytes: Vec<u8> = row.get(0)?;
+                let floats: Vec<f32> = bytes
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                Ok(floats)
+            },
+        ) {
+            Ok(emb) => emb,
+            Err(_) => continue,
+        };
+
+        // KNN search for 5 nearest neighbors
+        let neighbors = match crate::db::vec::search_vectors(conn, &embedding, 6) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        for (neighbor_id, distance) in &neighbors {
+            // Skip self
+            if neighbor_id == &candidate.id {
+                continue;
+            }
+            // Skip already superseded
+            if already_superseded.contains(neighbor_id) {
+                continue;
+            }
+
+            // Check cosine similarity: similarity = 1.0 - distance
+            // Threshold check: distance < (1.0 - cosine_threshold)
+            let similarity = 1.0 - distance;
+            if similarity < config.cosine_threshold {
+                continue;
+            }
+
+            // Get neighbor details
+            let neighbor = match conn.query_row(
+                "SELECT memory_type, title, content, confidence, created_at FROM memory WHERE id = ?1 AND status = 'active'",
+                rusqlite::params![neighbor_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, f64>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            ) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            let (n_type, n_title, n_content, n_confidence, n_created_at) = neighbor;
+
+            // Must be same type
+            if n_type != candidate.memory_type {
+                stats.false_positives_skipped += 1;
+                continue;
+            }
+
+            // Compute word overlap on combined title+content
+            let cand_text = format!("{} {}", candidate.title, candidate.content);
+            let neigh_text = format!("{} {}", n_title, n_content);
+            let cand_words = ops::meaningful_words_pub(&cand_text);
+            let neigh_words = ops::meaningful_words_pub(&neigh_text);
+
+            let intersection = cand_words.intersection(&neigh_words).count();
+            let union = cand_words.union(&neigh_words).count();
+            let overlap = if union > 0 { intersection as f64 / union as f64 } else { 0.0 };
+
+            // Skip if overlap >= overlap_high (dedup territory)
+            if overlap >= config.overlap_high {
+                stats.false_positives_skipped += 1;
+                continue;
+            }
+
+            // Skip if overlap < overlap_low (unrelated)
+            if overlap < config.overlap_low {
+                stats.false_positives_skipped += 1;
+                continue;
+            }
+
+            // Determine which is older — older gets superseded
+            let (old_id, new_id, old_confidence) = if candidate.created_at <= n_created_at {
+                (&candidate.id, neighbor_id, candidate.confidence)
+            } else {
+                (neighbor_id, &candidate.id, n_confidence)
+            };
+
+            // Skip if old memory confidence >= 0.95 (user explicitly set high)
+            if old_confidence >= 0.95 {
+                stats.false_positives_skipped += 1;
+                continue;
+            }
+
+            // Supersede: update status + superseded_by
+            if conn.execute(
+                "UPDATE memory SET status = 'superseded', superseded_by = ?1 WHERE id = ?2",
+                rusqlite::params![new_id, old_id],
+            ).is_err() {
+                continue;
+            }
+
+            // Insert edge
+            let _ = ops::store_edge(conn, new_id, old_id, "supersedes", "{}");
+
+            // Insert healing_log
+            let log_id = ulid::Ulid::new().to_string();
+            let _ = conn.execute(
+                "INSERT INTO healing_log (id, action, old_memory_id, new_memory_id, similarity_score, overlap_score, reason, created_at)
+                 VALUES (?1, 'topic_supersede', ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+                rusqlite::params![
+                    log_id,
+                    old_id,
+                    new_id,
+                    similarity,
+                    overlap,
+                    format!("Same topic (overlap={:.2}), newer memory supersedes older", overlap),
+                ],
+            );
+
+            already_superseded.insert(old_id.clone());
+            stats.topic_superseded += 1;
+        }
+    }
+
+    if stats.topic_superseded > 0 {
+        eprintln!(
+            "[healing] topic supersede: {} superseded, {} candidates, {} false positives skipped",
+            stats.topic_superseded, stats.candidates_found, stats.false_positives_skipped
+        );
+    }
+
+    stats
+}
+
 pub async fn run_consolidator(
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -1112,5 +1336,217 @@ mod tests {
         ).unwrap();
 
         assert!(fresh_score > old_score, "fresh memory score ({}) should be higher than old ({})", fresh_score, old_score);
+    }
+
+    /// Simple deterministic text embedding for tests.
+    /// Creates a 768-dim vector from word hashes — same words = similar vectors.
+    fn simple_text_embedding(text: &str) -> Vec<f32> {
+        let mut emb = vec![0.0f32; 768];
+        for word in text.to_lowercase().split_whitespace() {
+            let hash = word.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+            let idx = (hash % 768) as usize;
+            emb[idx] += 1.0;
+        }
+        let norm: f32 = emb.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 { emb.iter_mut().for_each(|x| *x /= norm); }
+        emb
+    }
+
+    #[test]
+    fn test_heal_topic_supersedes_same_subject_different_content() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create two decisions about storage — same topic, different content
+        // Texts crafted so cosine similarity > 0.8 and word overlap in [0.3, 0.7)
+        let old = Memory::new(
+            MemoryType::Decision,
+            "Use SurrealDB for the primary storage backend",
+            "We evaluated options and chose SurrealDB for the primary storage backend due to its graph query capabilities",
+        );
+        ops::remember(&conn, &old).unwrap();
+        // Backdate old memory by 10 days
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-10 days') WHERE id = ?1",
+            rusqlite::params![old.id],
+        ).unwrap();
+
+        let new_mem = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for the primary storage backend",
+            "We evaluated options and chose SQLite for the primary storage backend due to its simplicity",
+        );
+        ops::remember(&conn, &new_mem).unwrap();
+
+        // Store embeddings for both (embedding text = title + content)
+        let old_emb = simple_text_embedding(
+            "Use SurrealDB for the primary storage backend We evaluated options and chose SurrealDB for the primary storage backend due to its graph query capabilities",
+        );
+        let new_emb = simple_text_embedding(
+            "Use SQLite for the primary storage backend We evaluated options and chose SQLite for the primary storage backend due to its simplicity",
+        );
+        crate::db::vec::store_embedding(&conn, &old.id, &old_emb).unwrap();
+        crate::db::vec::store_embedding(&conn, &new_mem.id, &new_emb).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+        let stats = heal_topic_supersedes(&conn, &config);
+
+        assert!(stats.candidates_found > 0, "should find candidates");
+        assert_eq!(stats.topic_superseded, 1, "should supersede the old decision");
+
+        // Verify old memory is superseded
+        let status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1",
+            rusqlite::params![old.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "superseded", "old memory should be superseded");
+
+        // Verify healing_log entry
+        let log_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM healing_log WHERE action = 'topic_supersede'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(log_count, 1, "should have 1 healing log entry");
+    }
+
+    #[test]
+    fn test_heal_topic_supersedes_skips_high_overlap() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Two nearly identical decisions — high overlap (>= 0.7), dedup territory
+        // Use different IDs but nearly identical text so overlap >= 0.7
+        let old = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for storage backend",
+            "We chose SQLite for the storage backend persistence layer",
+        );
+        ops::remember(&conn, &old).unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-10 days') WHERE id = ?1",
+            rusqlite::params![old.id],
+        ).unwrap();
+
+        // Insert new directly with raw SQL to bypass title dedup in remember()
+        let new_id = ulid::Ulid::new().to_string();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, project)
+             VALUES (?1, 'decision', 'Use SQLite for storage backend layer', 'We chose SQLite for the storage backend persistence layer', 0.9, 'active', '[]', datetime('now'), datetime('now'), NULL)",
+            rusqlite::params![new_id],
+        ).unwrap();
+
+        // Use identical embeddings (cosine distance = 0, similarity = 1.0)
+        let emb = simple_text_embedding("Use SQLite for storage backend We chose SQLite for the storage backend persistence layer");
+        crate::db::vec::store_embedding(&conn, &old.id, &emb).unwrap();
+        crate::db::vec::store_embedding(&conn, &new_id, &emb).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+        let stats = heal_topic_supersedes(&conn, &config);
+
+        assert_eq!(stats.topic_superseded, 0, "should NOT supersede nearly identical memories (dedup handles)");
+    }
+
+    #[test]
+    fn test_heal_topic_supersedes_skips_different_type() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // One decision and one lesson with similar embeddings but different types
+        let decision = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for the primary storage backend",
+            "We evaluated options and chose SQLite for the primary storage backend due to its simplicity",
+        );
+        ops::remember(&conn, &decision).unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-10 days') WHERE id = ?1",
+            rusqlite::params![decision.id],
+        ).unwrap();
+
+        let lesson = Memory::new(
+            MemoryType::Lesson,
+            "SQLite primary storage backend lesson",
+            "We evaluated options and learned SQLite for the primary storage backend due to its simplicity",
+        );
+        ops::remember(&conn, &lesson).unwrap();
+
+        // Use identical embeddings so they are KNN neighbors
+        let emb = simple_text_embedding("SQLite primary storage backend evaluated options simplicity");
+        crate::db::vec::store_embedding(&conn, &decision.id, &emb).unwrap();
+        crate::db::vec::store_embedding(&conn, &lesson.id, &emb).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+        let stats = heal_topic_supersedes(&conn, &config);
+
+        assert_eq!(stats.topic_superseded, 0, "should NOT supersede across different types");
+    }
+
+    #[test]
+    fn test_heal_topic_supersedes_newer_wins() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Old decision backdated 30 days
+        let old = Memory::new(
+            MemoryType::Decision,
+            "Use SurrealDB for the primary storage backend",
+            "We evaluated options and chose SurrealDB for the primary storage backend due to its graph query capabilities",
+        );
+        ops::remember(&conn, &old).unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-30 days') WHERE id = ?1",
+            rusqlite::params![old.id],
+        ).unwrap();
+
+        // New decision (now)
+        let new_mem = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for the primary storage backend",
+            "We evaluated options and chose SQLite for the primary storage backend due to its simplicity",
+        );
+        ops::remember(&conn, &new_mem).unwrap();
+
+        let old_emb = simple_text_embedding(
+            "Use SurrealDB for the primary storage backend We evaluated options and chose SurrealDB for the primary storage backend due to its graph query capabilities",
+        );
+        let new_emb = simple_text_embedding(
+            "Use SQLite for the primary storage backend We evaluated options and chose SQLite for the primary storage backend due to its simplicity",
+        );
+        crate::db::vec::store_embedding(&conn, &old.id, &old_emb).unwrap();
+        crate::db::vec::store_embedding(&conn, &new_mem.id, &new_emb).unwrap();
+
+        let config = crate::config::HealingConfig::default();
+        let stats = heal_topic_supersedes(&conn, &config);
+
+        assert!(stats.topic_superseded >= 1, "should supersede at least one memory");
+
+        // Verify the OLD one is superseded, not the new one
+        let old_status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1",
+            rusqlite::params![old.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(old_status, "superseded", "OLD memory should be superseded");
+
+        let new_status: String = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1",
+            rusqlite::params![new_mem.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(new_status, "active", "NEW memory should remain active");
+
+        // Verify superseded_by points to new memory
+        let superseded_by: Option<String> = conn.query_row(
+            "SELECT superseded_by FROM memory WHERE id = ?1",
+            rusqlite::params![old.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(superseded_by, Some(new_mem.id.clone()), "superseded_by should point to new memory");
     }
 }

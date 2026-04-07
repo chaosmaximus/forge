@@ -773,6 +773,11 @@ fn meaningful_words(text: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Public wrapper for meaningful_words (used by healing worker).
+pub fn meaningful_words_pub(text: &str) -> HashSet<String> {
+    meaningful_words(text)
+}
+
 /// Find and merge near-duplicate memories using word overlap on title AND content.
 /// Only deduplicates memories of the same type and project.
 /// Computes title overlap and content overlap separately, then takes the max of
