@@ -375,6 +375,144 @@ pub async fn team_status(team_name: String, team_id: Option<String>) {
     }
 }
 
+pub async fn run_team(
+    name: String,
+    templates: Option<Vec<String>>,
+    from_file: Option<String>,
+    topology: Option<String>,
+) {
+    let (team_name, template_names, topo) = if let Some(path) = from_file {
+        // Read and parse JSON config file
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: cannot read file '{}': {}", path, e);
+                std::process::exit(1);
+            }
+        };
+        let config: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error: invalid JSON in '{}': {}", path, e);
+                std::process::exit(1);
+            }
+        };
+        let file_team_name = config
+            .get("team_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        // Validate all template_names are strings — reject non-string entries
+        let raw_templates = config.get("template_names").and_then(|v| v.as_array());
+        let file_templates: Vec<String> = match raw_templates {
+            Some(arr) => {
+                let mut names = Vec::with_capacity(arr.len());
+                for (i, v) in arr.iter().enumerate() {
+                    match v.as_str() {
+                        Some(s) => names.push(s.to_string()),
+                        None => {
+                            eprintln!("error: template_names[{}] is not a string in '{}'", i, path);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                names
+            }
+            None => Vec::new(),
+        };
+        if file_templates.is_empty() {
+            eprintln!("error: 'template_names' array is missing or empty in '{}'", path);
+            std::process::exit(1);
+        }
+        let file_topology = config
+            .get("topology")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        // CLI --name takes precedence over JSON team_name
+        let resolved_name = if name.trim().is_empty() {
+            match file_team_name {
+                Some(n) => n,
+                None => {
+                    eprintln!("error: --name not provided and 'team_name' missing in '{}'", path);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            name
+        };
+        // CLI --topology takes precedence over JSON topology
+        let resolved_topology = topology.or(file_topology);
+        (resolved_name, file_templates, resolved_topology)
+    } else if let Some(tmpls) = templates {
+        if tmpls.is_empty() {
+            eprintln!("error: --templates must not be empty");
+            std::process::exit(1);
+        }
+        (name, tmpls, topology)
+    } else {
+        eprintln!("error: must provide --templates or --from-file");
+        std::process::exit(1);
+    };
+
+    // Reject whitespace-only team names
+    let team_name = team_name.trim().to_string();
+    if team_name.is_empty() {
+        eprintln!("error: team name must not be empty or whitespace-only");
+        std::process::exit(1);
+    }
+
+    let req = Request::RunTeam {
+        team_name: team_name.clone(),
+        template_names,
+        topology: topo,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::RunTeamResult { team_name, agents_spawned, session_ids } }) => {
+            println!("Team '{}' started: {} agent(s) spawned", team_name, agents_spawned);
+            for sid in &session_ids {
+                println!("  {}", sid);
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn stop_team(name: String) {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        eprintln!("error: team name must not be empty or whitespace-only");
+        std::process::exit(1);
+    }
+    let req = Request::StopTeam { team_name: name.clone() };
+    match client::send(&req).await {
+        Ok(Response::Ok { data: ResponseData::TeamStopped { team_name, agents_retired } }) => {
+            println!("Team '{}' stopped: {} agent(s) retired", team_name, agents_retired);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 // ── Meetings ──
 
 pub async fn create_meeting(

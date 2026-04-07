@@ -994,6 +994,27 @@ enum TeamAction {
         #[arg(long)]
         team_id: Option<String>,
     },
+    /// Run a full team from templates or a JSON config file
+    Run {
+        /// Team name (required with --templates, optional with --from-file if JSON has team_name)
+        #[arg(long, default_value = "")]
+        name: String,
+        /// Comma-separated template names (e.g. tech-lead,frontend-dev,backend-dev)
+        #[arg(long, value_delimiter = ',')]
+        templates: Option<Vec<String>>,
+        /// Path to a JSON config file with team_name, template_names, topology
+        #[arg(long)]
+        from_file: Option<String>,
+        /// Topology: star, mesh, or chain (default: mesh)
+        #[arg(long)]
+        topology: Option<String>,
+    },
+    /// Stop a running team: retire all agents, end all sessions
+    Stop {
+        /// Team name
+        #[arg(long)]
+        name: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1475,6 +1496,12 @@ async fn main() {
             TeamAction::Status { name, team_id } => {
                 commands::teams::team_status(name, team_id).await;
             }
+            TeamAction::Run { name, templates, from_file, topology } => {
+                commands::teams::run_team(name, templates, from_file, topology).await;
+            }
+            TeamAction::Stop { name } => {
+                commands::teams::stop_team(name).await;
+            }
         },
         Commands::Meeting { action } => match action {
             MeetingAction::Create { team, topic, context, orchestrator, participants } => {
@@ -1503,7 +1530,6 @@ async fn main() {
                 match client::send(&req).await {
                     Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
                     Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
-                    Ok(other) => eprintln!("Unexpected: {other:?}"),
                     Err(e) => eprintln!("Connection error: {e}"),
                 }
             }
@@ -1512,7 +1538,6 @@ async fn main() {
                 match client::send(&req).await {
                     Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
                     Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
-                    Ok(other) => eprintln!("Unexpected: {other:?}"),
                     Err(e) => eprintln!("Connection error: {e}"),
                 }
             }
@@ -1625,7 +1650,6 @@ async fn main() {
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
-                Ok(other) => eprintln!("Unexpected: {other:?}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -1634,7 +1658,6 @@ async fn main() {
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
-                Ok(other) => eprintln!("Unexpected: {other:?}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -1643,7 +1666,6 @@ async fn main() {
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
-                Ok(other) => eprintln!("Unexpected: {other:?}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -1652,7 +1674,6 @@ async fn main() {
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
-                Ok(other) => eprintln!("Unexpected: {other:?}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -1661,7 +1682,6 @@ async fn main() {
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
-                Ok(other) => eprintln!("Unexpected: {other:?}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -2088,6 +2108,92 @@ mod tests {
                     assert!(team_id.is_none());
                 }
                 other => panic!("expected Status, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_run_with_templates_parses() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "team", "run",
+            "--name", "Sprint",
+            "--templates", "tech-lead,frontend-dev,backend-dev",
+            "--topology", "star",
+        ]);
+        assert!(cli.is_ok(), "team run --templates should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::Run { name, templates, from_file, topology } => {
+                    assert_eq!(name, "Sprint");
+                    assert_eq!(templates, Some(vec![
+                        "tech-lead".to_string(),
+                        "frontend-dev".to_string(),
+                        "backend-dev".to_string(),
+                    ]));
+                    assert!(from_file.is_none());
+                    assert_eq!(topology.as_deref(), Some("star"));
+                }
+                other => panic!("expected Run, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_run_with_from_file_parses() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "team", "run",
+            "--name", "Sprint",
+            "--from-file", "team-config.json",
+        ]);
+        assert!(cli.is_ok(), "team run --from-file should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::Run { name, templates, from_file, topology } => {
+                    assert_eq!(name, "Sprint");
+                    assert!(templates.is_none());
+                    assert_eq!(from_file.as_deref(), Some("team-config.json"));
+                    assert!(topology.is_none());
+                }
+                other => panic!("expected Run, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_run_from_file_without_name_parses() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "team", "run",
+            "--from-file", "team-config.json",
+        ]);
+        assert!(cli.is_ok(), "team run --from-file without --name should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::Run { name, from_file, .. } => {
+                    assert!(name.is_empty(), "name should default to empty");
+                    assert_eq!(from_file.as_deref(), Some("team-config.json"));
+                }
+                other => panic!("expected Run, got {:?}", other),
+            },
+            other => panic!("expected Team, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_team_stop_parses() {
+        let cli = Cli::try_parse_from([
+            "forge-next", "team", "stop",
+            "--name", "Sprint",
+        ]);
+        assert!(cli.is_ok(), "team stop should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Team { action } => match action {
+                TeamAction::Stop { name } => {
+                    assert_eq!(name, "Sprint");
+                }
+                other => panic!("expected Stop, got {:?}", other),
             },
             other => panic!("expected Team, got {:?}", other),
         }

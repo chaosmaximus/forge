@@ -6,6 +6,7 @@
 use crate::db::ops;
 use crate::lsp::client::{file_uri, LspClient};
 use crate::lsp::detect::{detect_language_servers, LspServerConfig};
+use crate::lsp::regex_symbols::extract_symbols_regex;
 use crate::lsp::symbols::{convert_symbols, extract_imports};
 use crate::lsp::LspManager;
 use crate::reality::cluster::run_label_propagation;
@@ -399,15 +400,13 @@ async fn run_index(
     manager: &mut LspManager,
 ) -> Result<(), String> {
     let servers = detect_language_servers(project_dir);
-    if servers.is_empty() {
-        return Ok(()); // no language servers available
-    }
 
     let indexed_at = now_str();
     let mut all_files: Vec<CodeFile> = Vec::new();
     let mut all_symbols: Vec<CodeSymbol> = Vec::new();
     let mut all_call_edges: Vec<(String, String)> = Vec::new();
 
+    // Phase 1: LSP-based indexing
     for config in &servers {
         match manager.get_client(config).await {
             Ok(client) => {
@@ -421,6 +420,68 @@ async fn run_index(
                 }
             }
             Err(e) => eprintln!("[indexer] {} spawn failed: {}", config.command, e),
+        }
+    }
+
+    // Phase 2: Regex-based fallback for TS/JS files not covered by LSP
+    let ts_extensions: &[&str] = &["ts", "tsx", "js", "jsx"];
+    let ts_files = collect_source_files(project_dir, ts_extensions);
+    if !ts_files.is_empty() {
+        let indexed_paths: HashSet<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+        let unindexed: Vec<&str> = ts_files
+            .iter()
+            .filter(|p| !indexed_paths.contains(p.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        if !unindexed.is_empty() {
+            eprintln!(
+                "[indexer] regex fallback: {} TS/JS files not covered by LSP",
+                unindexed.len()
+            );
+            for path in &unindexed {
+                let content = match std::fs::read_to_string(path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("[indexer] cannot read {path}: {e}");
+                        continue;
+                    }
+                };
+
+                let hash = file_hash(path);
+                let language = match Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                {
+                    Some("ts" | "tsx") => "typescript",
+                    Some("js" | "jsx") => "javascript",
+                    _ => continue,
+                };
+
+                let file_record = CodeFile {
+                    id: format!("file:{}", path),
+                    path: path.to_string(),
+                    language: language.to_string(),
+                    project: project_dir.to_string(),
+                    hash: hash.clone(),
+                    indexed_at: indexed_at.clone(),
+                };
+                all_files.push(file_record);
+
+                // Check hash cache — skip re-extraction for unchanged files
+                let cached = HASH_CACHE.lock().unwrap().get(*path).cloned();
+                if cached.as_deref() == Some(&hash) {
+                    continue;
+                }
+
+                let syms = extract_symbols_regex(&content, path, language);
+                if !syms.is_empty() {
+                    HASH_CACHE
+                        .lock()
+                        .unwrap()
+                        .insert(path.to_string(), hash);
+                }
+                all_symbols.extend(syms);
+            }
         }
     }
 
@@ -688,5 +749,105 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM edge WHERE edge_type = 'imports'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(edge_count, stored, "DB edge count should match returned count");
+    }
+
+    #[test]
+    fn test_regex_fallback_produces_symbols() {
+        // Verify the regex fallback path produces CodeFile + CodeSymbol records
+        // by directly calling the same logic used in run_index's Phase 2.
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+
+        // Create TS files
+        std::fs::write(
+            dir.join("index.ts"),
+            "export function main() {}\nexport class App {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("utils.js"),
+            "function helper() {}\nconst process = (x) => { return x; }\n",
+        )
+        .unwrap();
+
+        let ts_extensions: &[&str] = &["ts", "tsx", "js", "jsx"];
+        let ts_files = collect_source_files(dir.to_str().unwrap(), ts_extensions);
+        assert_eq!(ts_files.len(), 2, "should find 2 TS/JS files");
+
+        // Simulate: no files were indexed by LSP (empty indexed set)
+        let indexed_paths: HashSet<&str> = HashSet::new();
+        let unindexed: Vec<&str> = ts_files
+            .iter()
+            .filter(|p| !indexed_paths.contains(p.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        assert_eq!(unindexed.len(), 2);
+
+        let mut all_files: Vec<CodeFile> = Vec::new();
+        let mut all_symbols: Vec<CodeSymbol> = Vec::new();
+
+        for path in &unindexed {
+            let content = std::fs::read_to_string(path).unwrap();
+            let language = match Path::new(path).extension().and_then(|e| e.to_str()) {
+                Some("ts" | "tsx") => "typescript",
+                Some("js" | "jsx") => "javascript",
+                _ => continue,
+            };
+
+            all_files.push(CodeFile {
+                id: format!("file:{}", path),
+                path: path.to_string(),
+                language: language.to_string(),
+                project: dir.to_str().unwrap().to_string(),
+                hash: file_hash(path),
+                indexed_at: "2026-01-01T00:00:00Z".to_string(),
+            });
+
+            let syms = extract_symbols_regex(&content, path, language);
+            all_symbols.extend(syms);
+        }
+
+        assert_eq!(all_files.len(), 2, "should create 2 CodeFile records");
+        assert!(
+            all_symbols.len() >= 3,
+            "should extract at least 3 symbols (main, App, helper), got {}",
+            all_symbols.len()
+        );
+
+        let names: Vec<&str> = all_symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"main"), "should find 'main' function");
+        assert!(names.contains(&"App"), "should find 'App' class");
+        assert!(names.contains(&"helper"), "should find 'helper' function");
+    }
+
+    #[test]
+    fn test_regex_fallback_skips_lsp_indexed_files() {
+        // Ensure files already indexed by LSP are not re-indexed by regex fallback
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+
+        std::fs::write(dir.join("indexed.ts"), "export function indexed() {}\n").unwrap();
+        std::fs::write(dir.join("unindexed.ts"), "export function unindexed() {}\n").unwrap();
+
+        let ts_extensions: &[&str] = &["ts", "tsx", "js", "jsx"];
+        let ts_files = collect_source_files(dir.to_str().unwrap(), ts_extensions);
+
+        // Simulate: indexed.ts was already handled by LSP
+        let indexed_path = dir.join("indexed.ts");
+        let indexed_path_str = indexed_path.to_str().unwrap();
+        let mut indexed_paths: HashSet<&str> = HashSet::new();
+        indexed_paths.insert(indexed_path_str);
+
+        let unindexed: Vec<&str> = ts_files
+            .iter()
+            .filter(|p| !indexed_paths.contains(p.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+
+        assert_eq!(unindexed.len(), 1, "only 1 file should be unindexed");
+        assert!(
+            unindexed[0].ends_with("unindexed.ts"),
+            "the unindexed file should be unindexed.ts"
+        );
     }
 }

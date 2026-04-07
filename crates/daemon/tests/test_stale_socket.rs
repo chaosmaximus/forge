@@ -3,6 +3,7 @@
 //! Validates that `is_daemon_alive()` uses the canonical PID path
 //! (~/.forge/forge.pid) rather than deriving from the socket parent dir.
 
+use serial_test::serial;
 use std::io::Write;
 use tempfile::TempDir;
 
@@ -20,6 +21,7 @@ fn setup_forge_home(tmp: &TempDir) -> std::path::PathBuf {
 
 #[cfg(unix)]
 #[test]
+#[serial]
 fn test_is_daemon_alive_no_pid_file() {
     let tmp = TempDir::new().unwrap();
     let _forge_dir = setup_forge_home(&tmp);
@@ -32,6 +34,7 @@ fn test_is_daemon_alive_no_pid_file() {
 
 #[cfg(unix)]
 #[test]
+#[serial]
 fn test_is_daemon_alive_invalid_pid_content() {
     let tmp = TempDir::new().unwrap();
     let forge_dir = setup_forge_home(&tmp);
@@ -49,6 +52,7 @@ fn test_is_daemon_alive_invalid_pid_content() {
 
 #[cfg(unix)]
 #[test]
+#[serial]
 fn test_is_daemon_alive_dead_pid() {
     let tmp = TempDir::new().unwrap();
     let forge_dir = setup_forge_home(&tmp);
@@ -67,6 +71,7 @@ fn test_is_daemon_alive_dead_pid() {
 
 #[cfg(unix)]
 #[test]
+#[serial]
 fn test_is_daemon_alive_current_process() {
     let tmp = TempDir::new().unwrap();
     let forge_dir = setup_forge_home(&tmp);
@@ -84,6 +89,7 @@ fn test_is_daemon_alive_current_process() {
 
 #[cfg(unix)]
 #[test]
+#[serial]
 fn test_is_daemon_alive_uses_canonical_path_not_socket_parent() {
     let tmp = TempDir::new().unwrap();
     let forge_dir = setup_forge_home(&tmp);

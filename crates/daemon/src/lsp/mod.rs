@@ -1,5 +1,6 @@
 pub mod client;
 pub mod detect;
+pub mod regex_symbols;
 pub mod symbols;
 
 use client::LspClient;
@@ -43,9 +44,14 @@ impl LspManager {
         };
 
         if needs_spawn {
+            // Use config.root_dir if set (e.g. TS in a subdirectory), else project root
+            let effective_root = config
+                .root_dir
+                .as_deref()
+                .unwrap_or(&self.project_dir);
             let client = tokio::time::timeout(
                 std::time::Duration::from_secs(60),
-                LspClient::spawn(config, &self.project_dir),
+                LspClient::spawn(config, effective_root),
             )
             .await
             .map_err(|_| format!("{} timed out during spawn/initialize", config.command))?

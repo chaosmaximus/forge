@@ -1076,7 +1076,7 @@ fn compute_required_votes(total_participants: usize, threshold: &str) -> usize {
         "unanimous" => total_participants,
         "two_thirds" => {
             // Ceiling of 2/3
-            (total_participants * 2 + 2) / 3
+            (total_participants * 2).div_ceil(3)
         }
         _ => {
             // "majority": strict majority = floor(n/2) + 1
