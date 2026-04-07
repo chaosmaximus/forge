@@ -330,6 +330,12 @@ pub async fn auth_middleware(
         .map(|ci| ci.0.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
+    // Exempt localhost from auth failure recording — consistent with API rate limiter (ISS-1).
+    let is_localhost = client_ip == "127.0.0.1"
+        || client_ip == "::1"
+        || client_ip.starts_with("127.")
+        || client_ip == "localhost";
+
     // Extract Bearer token from Authorization header
     let token = req
         .headers()
@@ -340,8 +346,10 @@ pub async fn auth_middleware(
     let token = match token {
         Some(t) => t.to_string(),
         None => {
-            if let Some(ref limiter) = rate_limiter {
-                limiter.record_auth_failure(&client_ip).await;
+            if !is_localhost {
+                if let Some(ref limiter) = rate_limiter {
+                    limiter.record_auth_failure(&client_ip).await;
+                }
             }
             return (
                 StatusCode::UNAUTHORIZED,
@@ -372,9 +380,11 @@ pub async fn auth_middleware(
             response
         }
         Err(e) => {
-            // Record auth failure for rate-limit lockout
-            if let Some(ref limiter) = rate_limiter {
-                limiter.record_auth_failure(&client_ip).await;
+            // Record auth failure for rate-limit lockout (skip localhost — ISS-1)
+            if !is_localhost {
+                if let Some(ref limiter) = rate_limiter {
+                    limiter.record_auth_failure(&client_ip).await;
+                }
             }
             // Log detailed error server-side, return generic message to client
             tracing::warn!(error = %e, "JWT validation failed");

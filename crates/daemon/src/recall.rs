@@ -9,6 +9,20 @@ use std::collections::{HashMap, HashSet};
 /// Score = sum(1 / (k + rank_i + 1)) across lists where the item appears.
 /// k=60 is the standard constant. Higher k gives more weight to lower-ranked items.
 fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String, f64)> {
+    // Short-circuit: single list needs no fusion — normalize scores to [0,1] and return.
+    // We must normalize because downstream code uses fixed fallback scores (e.g. 0.001
+    // for graph-expanded items) that would compare incorrectly against raw BM25 scores.
+    if lists.len() == 1 {
+        let max_score = lists[0].iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
+        let mut result: Vec<(String, f64)> = lists[0]
+            .iter()
+            .map(|(id, score)| (id.clone(), score / max_score))
+            .collect();
+        result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        result.truncate(limit);
+        return result;
+    }
+
     let mut scores: HashMap<String, f64> = HashMap::new();
     let mut max_original: HashMap<String, f64> = HashMap::new();
 

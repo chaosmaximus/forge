@@ -382,6 +382,19 @@ pub async fn run_team(
     topology: Option<String>,
 ) {
     let (team_name, template_names, topo) = if let Some(path) = from_file {
+        // Reject files larger than 1MB to prevent resource exhaustion
+        match std::fs::metadata(&path) {
+            Ok(meta) => {
+                if meta.len() > 1_048_576 {
+                    eprintln!("error: file '{}' exceeds 1MB limit", path);
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("error: cannot stat file '{}': {}", path, e);
+                std::process::exit(1);
+            }
+        }
         // Read and parse JSON config file
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,

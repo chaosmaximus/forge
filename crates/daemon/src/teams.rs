@@ -625,20 +625,16 @@ pub fn record_agent_cost(
             "amount must be non-negative".to_string(),
         ));
     }
-    // Increment budget_spent on the session
-    conn.execute(
-        "UPDATE session SET budget_spent = COALESCE(budget_spent, 0) + ?1 WHERE id = ?2",
-        params![amount, session_id],
-    )?;
-
-    // Read back total spent
+    // Atomically increment budget_spent and read back in one statement (RETURNING).
+    // This eliminates the TOCTOU race where two concurrent recordings could both
+    // pass the limit check with stale totals.
     let total_spent: f64 = conn.query_row(
-        "SELECT COALESCE(budget_spent, 0) FROM session WHERE id = ?1",
-        params![session_id],
+        "UPDATE session SET budget_spent = COALESCE(budget_spent, 0) + ?1 WHERE id = ?2 RETURNING budget_spent",
+        params![amount, session_id],
         |row| row.get(0),
     )?;
 
-    // Look up budget_limit from the agent's template
+    // Look up budget_limit from the agent's template (read-only, no race concern)
     let budget_limit: Option<f64> = conn.query_row(
         "SELECT at.budget_limit FROM session s
          JOIN agent_template at ON at.id = s.template_id
@@ -2259,5 +2255,44 @@ mod tests {
         // Responses from both teams
         let responses = get_meeting_responses(&conn, &meeting_id).unwrap();
         assert_eq!(responses.len(), 2);
+    }
+
+    #[test]
+    fn test_record_agent_cost_atomic_accumulation() {
+        let conn = setup();
+        let t = make_template("Worker");
+        create_agent_template(&conn, &t).unwrap();
+        // Set a budget_limit on the template
+        conn.execute(
+            "UPDATE agent_template SET budget_limit = 100.0 WHERE id = ?1",
+            params![t.id],
+        )
+        .unwrap();
+
+        spawn_agent(&conn, "Worker", "s-cost-test", Some("forge"), None).unwrap();
+
+        // First cost: 30.0 — should not exceed
+        let (spent, limit, exceeded) =
+            record_agent_cost(&conn, "s-cost-test", 30.0, "task-1").unwrap();
+        assert!((spent - 30.0).abs() < f64::EPSILON);
+        assert_eq!(limit, Some(100.0));
+        assert!(!exceeded);
+
+        // Second cost: 50.0 — total 80.0, still under
+        let (spent, limit, exceeded) =
+            record_agent_cost(&conn, "s-cost-test", 50.0, "task-2").unwrap();
+        assert!((spent - 80.0).abs() < f64::EPSILON);
+        assert_eq!(limit, Some(100.0));
+        assert!(!exceeded);
+
+        // Third cost: 25.0 — total 105.0, exceeds budget
+        let (spent, _limit, exceeded) =
+            record_agent_cost(&conn, "s-cost-test", 25.0, "task-3").unwrap();
+        assert!((spent - 105.0).abs() < f64::EPSILON);
+        assert!(exceeded);
+
+        // Negative amount should be rejected
+        let err = record_agent_cost(&conn, "s-cost-test", -5.0, "cheat");
+        assert!(err.is_err());
     }
 }

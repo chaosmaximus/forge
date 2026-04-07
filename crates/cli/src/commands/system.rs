@@ -736,8 +736,9 @@ pub async fn ack_messages(ids: Vec<String>) {
     }
 
     // Fallback: try as notification IDs (context injection shows notification IDs)
+    // Cap at 20 to prevent unbounded sequential requests
     let mut notif_count = 0;
-    for id in &ids {
+    for id in ids.iter().take(20) {
         let req = Request::AckNotification { id: id.clone() };
         if let Ok(Response::Ok { data: ResponseData::NotificationAcked { .. } }) = client::send(&req).await {
             notif_count += 1;

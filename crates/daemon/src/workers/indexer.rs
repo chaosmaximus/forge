@@ -115,10 +115,15 @@ pub async fn run_indexer(
 /// This is the most reliable source — sessions register with their actual working directory.
 pub fn find_project_dir_from_db(conn: &Connection) -> Option<String> {
     let sql = "SELECT cwd FROM session WHERE status = 'active' AND cwd IS NOT NULL AND cwd != '' AND cwd != '/tmp' ORDER BY started_at DESC LIMIT 1";
-    conn.query_row(sql, [], |row| row.get::<_, String>(0)).ok().filter(|cwd| {
-        // Validate the directory actually exists
-        std::path::Path::new(cwd).is_dir()
-    })
+    conn.query_row(sql, [], |row| row.get::<_, String>(0))
+        .ok()
+        .and_then(|cwd| {
+            // Canonicalize to resolve symlinks and normalize path components
+            std::fs::canonicalize(&cwd)
+                .ok()
+                .and_then(|p| p.to_str().map(|s| s.to_string()))
+                .filter(|canonical| std::path::Path::new(canonical).is_dir())
+        })
 }
 
 /// Discover the project directory from env or Claude transcript paths.

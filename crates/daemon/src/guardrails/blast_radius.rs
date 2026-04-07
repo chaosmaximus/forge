@@ -36,7 +36,9 @@ fn resolve_file_targets(file: &str) -> Vec<String> {
     targets.push(file.to_string());
 
     // 3. Try to compute the absolute path via project dir for matching legacy edges
-    if let Some(project_dir) = crate::workers::indexer::find_project_dir() {
+    if let Some(raw_project_dir) = crate::workers::indexer::find_project_dir() {
+        // Strip trailing slashes to prevent double-slash paths like /mnt/project//src/file.rs
+        let project_dir = raw_project_dir.trim_end_matches('/');
         let abs = if file.starts_with('/') {
             file.to_string()
         } else {
