@@ -3933,6 +3933,107 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::BackfillAffects => {
+            // Scan all decision/lesson memories and create affects edges for file paths in content/title
+            use std::sync::LazyLock;
+            static FILE_PATH_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+                regex::Regex::new(r"(?:crates|src|lib|app)/[\w/]+\.(?:rs|ts|tsx|js|py|go)").unwrap()
+            });
+
+            let mut stmt = state.conn.prepare(
+                "SELECT id, title, content FROM memory WHERE memory_type IN ('decision', 'lesson') AND status = 'active'"
+            ).unwrap();
+            let rows: Vec<(String, String, String)> = stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            }).unwrap().filter_map(|r| r.ok()).collect();
+
+            let memories_scanned = rows.len();
+            let mut edges_created = 0usize;
+
+            let _ = state.conn.execute_batch("PRAGMA foreign_keys=OFF;");
+            let mut seen_global = std::collections::HashSet::new();
+            for (mem_id, title, content) in &rows {
+                for text in [title, content] {
+                    for cap in FILE_PATH_RE.find_iter(text) {
+                        let file_target = format!("file:{}", cap.as_str());
+                        let edge_key = format!("{}→{}", mem_id, file_target);
+                        if seen_global.insert(edge_key) {
+                            // Check if edge already exists
+                            let exists: bool = state.conn.query_row(
+                                "SELECT COUNT(*) > 0 FROM edge WHERE from_id = ?1 AND to_id = ?2 AND edge_type = 'affects'",
+                                rusqlite::params![mem_id, file_target],
+                                |row| row.get(0),
+                            ).unwrap_or(false);
+                            if !exists
+                                && ops::store_edge(&state.conn, mem_id, &file_target, "affects", "{}").is_ok()
+                            {
+                                edges_created += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = state.conn.execute_batch("PRAGMA foreign_keys=ON;");
+
+            Response::Ok {
+                data: ResponseData::BackfillAffectsResult {
+                    memories_scanned,
+                    edges_created,
+                },
+            }
+        }
+
+        Request::FindSymbol { name, file } => {
+            let query = if let Some(ref f) = file {
+                format!(
+                    "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE '%{}%' AND file_path LIKE '%{}%' ORDER BY file_path, line_start LIMIT 50",
+                    name.replace('\'', "''"), f.replace('\'', "''")
+                )
+            } else {
+                format!(
+                    "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE '%{}%' ORDER BY file_path, line_start LIMIT 50",
+                    name.replace('\'', "''")
+                )
+            };
+            match state.conn.prepare(&query) {
+                Ok(mut stmt) => {
+                    let symbols: Vec<forge_core::protocol::response::SymbolInfo> = stmt.query_map([], |row| {
+                        Ok(forge_core::protocol::response::SymbolInfo {
+                            name: row.get(0)?,
+                            kind: row.get(1)?,
+                            file: row.get(2)?,
+                            line: row.get::<_, Option<u32>>(3)?.unwrap_or(0),
+                            parent: row.get(4)?,
+                        })
+                    }).unwrap().filter_map(|r| r.ok()).collect();
+                    Response::Ok { data: ResponseData::SymbolResults { symbols } }
+                }
+                Err(e) => Response::Error { message: format!("find_symbol query failed: {e}") },
+            }
+        }
+
+        Request::GetSymbolsOverview { file } => {
+            let query = format!(
+                "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE file_path LIKE '%{}%' ORDER BY line_start LIMIT 200",
+                file.replace('\'', "''")
+            );
+            match state.conn.prepare(&query) {
+                Ok(mut stmt) => {
+                    let symbols: Vec<forge_core::protocol::response::SymbolInfo> = stmt.query_map([], |row| {
+                        Ok(forge_core::protocol::response::SymbolInfo {
+                            name: row.get(0)?,
+                            kind: row.get(1)?,
+                            file: row.get(2)?,
+                            line: row.get::<_, Option<u32>>(3)?.unwrap_or(0),
+                            parent: row.get(4)?,
+                        })
+                    }).unwrap().filter_map(|r| r.ok()).collect();
+                    Response::Ok { data: ResponseData::SymbolResults { symbols } }
+                }
+                Err(e) => Response::Error { message: format!("get_symbols_overview query failed: {e}") },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

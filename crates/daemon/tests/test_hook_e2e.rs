@@ -228,7 +228,9 @@ fn test_session_end_hook_succeeds() {
 
 #[test]
 fn test_full_pipeline_remember_check_via_cli() {
-    // 1. Store a decision linked to a file
+    // 1. Store a decision that mentions a file path in content.
+    //    Since Session 12, the remember handler auto-creates affects edges
+    //    for file paths matching (crates|src|lib|app)/.../*.rs patterns.
     let output = Command::new(forge_next())
         .args([
             "remember",
@@ -244,19 +246,32 @@ fn test_full_pipeline_remember_check_via_cli() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let id = stdout.split("Stored: ").nth(1).unwrap_or("").trim();
 
-    // 2. Guardrails check on unlinked file → safe
+    // 2. Guardrails check on the mentioned file → should find the linked decision
+    //    (affects edge was auto-created by the remember handler)
     let output = Command::new(forge_next())
         .args(["check", "--file", "src/hook_test.rs", "--action", "edit"])
         .output()
         .expect("check");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Safe to proceed"),
-        "unlinked file should be safe: {}",
+        stdout.contains("decision") || stdout.contains("linked"),
+        "file mentioned in decision content should have affects edge: {}",
         stdout
     );
 
-    // 3. Clean up
+    // 3. Guardrails check on a file NOT mentioned → should be safe
+    let output = Command::new(forge_next())
+        .args(["check", "--file", "src/unrelated_file_xyz.rs", "--action", "edit"])
+        .output()
+        .expect("check");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Safe to proceed"),
+        "unrelated file should be safe: {}",
+        stdout
+    );
+
+    // 4. Clean up
     if !id.is_empty() {
         let _ = Command::new(forge_next())
             .args(["forget", id])

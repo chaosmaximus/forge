@@ -309,3 +309,66 @@ pub async fn run_server(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::BufReader;
+
+    #[tokio::test]
+    async fn test_read_line_limited_normal() {
+        let data = b"hello world\n";
+        let cursor = std::io::Cursor::new(data);
+        let mut reader = BufReader::new(cursor);
+        let mut buf = String::new();
+        let n = read_line_limited(&mut reader, &mut buf, 1024).await.unwrap();
+        assert_eq!(n, 12);
+        assert_eq!(buf, "hello world\n");
+    }
+
+    #[tokio::test]
+    async fn test_read_line_limited_exceeds_max() {
+        let data = b"this is a very long line that exceeds the limit\n";
+        let cursor = std::io::Cursor::new(data);
+        let mut reader = BufReader::new(cursor);
+        let mut buf = String::new();
+        let result = read_line_limited(&mut reader, &mut buf, 10).await;
+        assert!(result.is_err(), "should fail when line exceeds max_bytes");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn test_read_line_limited_empty_eof() {
+        let data = b"";
+        let cursor = std::io::Cursor::new(data);
+        let mut reader = BufReader::new(cursor);
+        let mut buf = String::new();
+        let n = read_line_limited(&mut reader, &mut buf, 1024).await.unwrap();
+        assert_eq!(n, 0, "EOF should return 0");
+        assert_eq!(buf, "");
+    }
+
+    #[tokio::test]
+    async fn test_read_line_limited_no_newline() {
+        // Data without trailing newline — should read to EOF
+        let data = b"no newline here";
+        let cursor = std::io::Cursor::new(data);
+        let mut reader = BufReader::new(cursor);
+        let mut buf = String::new();
+        let n = read_line_limited(&mut reader, &mut buf, 1024).await.unwrap();
+        assert_eq!(n, 15);
+        assert_eq!(buf, "no newline here");
+    }
+
+    #[tokio::test]
+    async fn test_read_line_limited_exact_max() {
+        let data = b"12345\n";
+        let cursor = std::io::Cursor::new(data);
+        let mut reader = BufReader::new(cursor);
+        let mut buf = String::new();
+        let n = read_line_limited(&mut reader, &mut buf, 6).await.unwrap();
+        assert_eq!(n, 6, "should fit exactly within max_bytes");
+        assert_eq!(buf, "12345\n");
+    }
+}

@@ -446,6 +446,32 @@ enum Commands {
     #[command(name = "cleanup-memory")]
     CleanupMemory,
 
+    /// Run database vacuum: purge faded memories, cleanup orphan code entries, reclaim disk space
+    #[command(name = "vacuum")]
+    VacuumDb,
+
+    /// Backfill affects edges on existing decision/lesson memories (scans content for file paths)
+    #[command(name = "backfill-affects")]
+    BackfillAffects,
+
+    /// Find code symbols by name (Serena find_symbol replacement)
+    #[command(name = "find-symbol")]
+    FindSymbol {
+        /// Symbol name (substring match)
+        name: String,
+        /// Optional file path filter
+        #[arg(long)]
+        file: Option<String>,
+    },
+
+    /// Get all symbols in a file (Serena get_symbols_overview replacement)
+    #[command(name = "symbols")]
+    GetSymbolsOverview {
+        /// File path (substring match)
+        #[arg(long)]
+        file: String,
+    },
+
     /// Bootstrap: scan and process all existing transcript files
     #[command(name = "bootstrap")]
     Bootstrap {
@@ -1410,6 +1436,82 @@ async fn main() {
                 Err(e) => {
                     eprintln!("cleanup-memory error: {e}");
                 }
+            }
+        }
+        Commands::VacuumDb => {
+            match client::send(&forge_core::protocol::Request::VacuumDb).await {
+                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::Vacuumed {
+                    faded_purged, orphan_files_removed, orphan_symbols_removed, freed_bytes,
+                } }) => {
+                    println!("Database Vacuum Complete");
+                    println!("  Faded memories purged: {faded_purged}");
+                    println!("  Orphan files removed: {orphan_files_removed}");
+                    println!("  Orphan symbols removed: {orphan_symbols_removed}");
+                    if freed_bytes > 0 {
+                        println!("  Disk space freed: {:.1} MB", freed_bytes as f64 / 1_048_576.0);
+                    }
+                }
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("vacuum failed: {message}");
+                }
+                Ok(other) => eprintln!("unexpected response: {:?}", other),
+                Err(e) => { eprintln!("vacuum error: {e}"); std::process::exit(1); }
+            }
+        }
+        Commands::BackfillAffects => {
+            match client::send(&forge_core::protocol::Request::BackfillAffects).await {
+                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::BackfillAffectsResult {
+                    memories_scanned, edges_created,
+                } }) => {
+                    println!("Backfill Affects Complete");
+                    println!("  Memories scanned: {memories_scanned}");
+                    println!("  New affects edges created: {edges_created}");
+                }
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("backfill-affects failed: {message}");
+                }
+                Ok(other) => eprintln!("unexpected response: {:?}", other),
+                Err(e) => { eprintln!("backfill-affects error: {e}"); std::process::exit(1); }
+            }
+        }
+        Commands::FindSymbol { name, file } => {
+            match client::send(&forge_core::protocol::Request::FindSymbol { name, file }).await {
+                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::SymbolResults { symbols } }) => {
+                    if symbols.is_empty() {
+                        println!("No symbols found.");
+                    } else {
+                        println!("{} symbol(s) found:\n", symbols.len());
+                        for s in &symbols {
+                            let parent_str = s.parent.as_deref().map(|p| format!(" (in {p})")).unwrap_or_default();
+                            println!("  {} [{}] {}:{}{}", s.name, s.kind, s.file, s.line, parent_str);
+                        }
+                    }
+                }
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("find-symbol failed: {message}");
+                }
+                Ok(other) => eprintln!("unexpected response: {:?}", other),
+                Err(e) => { eprintln!("find-symbol error: {e}"); std::process::exit(1); }
+            }
+        }
+        Commands::GetSymbolsOverview { file } => {
+            match client::send(&forge_core::protocol::Request::GetSymbolsOverview { file }).await {
+                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::SymbolResults { symbols } }) => {
+                    if symbols.is_empty() {
+                        println!("No symbols found in file.");
+                    } else {
+                        println!("{} symbol(s):\n", symbols.len());
+                        for s in &symbols {
+                            let parent_str = s.parent.as_deref().map(|p| format!(" (in {p})")).unwrap_or_default();
+                            println!("  L{:<5} {} [{}]{}", s.line, s.name, s.kind, parent_str);
+                        }
+                    }
+                }
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("symbols failed: {message}");
+                }
+                Ok(other) => eprintln!("unexpected response: {:?}", other),
+                Err(e) => { eprintln!("symbols error: {e}"); std::process::exit(1); }
             }
         }
         Commands::Bootstrap { project } => {

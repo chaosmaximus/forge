@@ -689,7 +689,28 @@ pub enum ResponseData {
         freed_bytes: u64,
     },
 
+    /// Backfill affects edges result
+    BackfillAffectsResult {
+        memories_scanned: usize,
+        edges_created: usize,
+    },
+
+    /// Symbol search results
+    SymbolResults {
+        symbols: Vec<SymbolInfo>,
+    },
+
     Shutdown,
+}
+
+/// Symbol information returned by FindSymbol and GetSymbolsOverview
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SymbolInfo {
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    pub line: u32,
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

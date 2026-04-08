@@ -545,6 +545,11 @@ async fn run_index(
     // Import extraction pass (regex-based, no LSP needed)
     let import_edges_stored = extract_and_store_imports(&locked.conn, &all_files);
 
+    // Regex-based call edge detection — always runs to supplement LSP results
+    // (LSP references are often incomplete: 11 edges from 5781 functions is typical)
+    let regex_call_edges = extract_call_edges_regex(&locked.conn, &all_files, &all_symbols);
+    eprintln!("[indexer] call edges: {} from LSP, {} from regex", edges_stored, regex_call_edges);
+
     // Run community detection on the updated graph
     run_clustering(&locked.conn, project_dir);
 
@@ -705,6 +710,95 @@ fn resolve_rust_import_to_file(
     }
     // std:: and other external crates — can't resolve to local files
     None
+}
+
+/// Regex-based call edge detection for Rust files.
+/// Scans file content for function call patterns (`identifier(`) and matches
+/// against known symbols from the code_symbol table. Creates "calls" edges
+/// from calling file → called symbol's file.
+pub fn extract_call_edges_regex(
+    conn: &Connection,
+    files: &[CodeFile],
+    symbols: &[CodeSymbol],
+) -> usize {
+    use std::collections::HashMap;
+    use std::sync::LazyLock;
+
+    // Regex: word boundary + identifier + opening paren (Rust function calls)
+    // Excludes common keywords that look like calls (if, while, for, match, etc.)
+    static CALL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\b([a-z_][a-z0-9_]{2,})\s*\(").unwrap()
+    });
+
+    static RUST_KEYWORDS: LazyLock<std::collections::HashSet<&'static str>> = LazyLock::new(|| {
+        [
+            "if", "else", "while", "for", "loop", "match", "return", "let", "mut",
+            "pub", "fn", "struct", "enum", "impl", "use", "mod", "type", "trait",
+            "where", "async", "await", "move", "ref", "self", "super", "crate",
+            "const", "static", "unsafe", "extern", "dyn", "box", "macro_rules",
+            "assert", "assert_eq", "assert_ne", "debug_assert", "debug_assert_eq",
+            "panic", "todo", "unimplemented", "unreachable", "println", "eprintln",
+            "format", "write", "writeln", "vec", "cfg", "test", "derive", "allow",
+            "warn", "deny", "forbid", "feature", "include", "include_str",
+            "Some", "None", "Ok", "Err", "true", "false",
+        ].into_iter().collect()
+    });
+
+    // Build lookup: function_name → Vec<(symbol_id, file_path)>
+    // Only include functions (not structs, enums, etc.)
+    let mut symbol_lookup: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for sym in symbols {
+        if sym.kind == "function" {
+            symbol_lookup
+                .entry(sym.name.clone())
+                .or_default()
+                .push((sym.id.clone(), sym.file_path.clone()));
+        }
+    }
+
+    // Disable FK checks for edge creation
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF;");
+
+    let mut edges_stored = 0usize;
+    let mut seen = std::collections::HashSet::new();
+
+    for file in files {
+        if file.language != "rust" {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&file.path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let from_id = format!("file:{}", file.path);
+
+        for cap in CALL_RE.captures_iter(&content) {
+            let name = &cap[1];
+            // Skip keywords and very short names (< 3 chars already filtered by regex)
+            if RUST_KEYWORDS.contains(name) {
+                continue;
+            }
+            // Look up in symbol table
+            if let Some(targets) = symbol_lookup.get(name) {
+                for (sym_id, sym_file) in targets {
+                    // Skip self-file calls
+                    if sym_file == &file.path {
+                        continue;
+                    }
+                    let edge_key = format!("{}→{}", from_id, sym_id);
+                    if seen.insert(edge_key)
+                        && ops::store_edge(conn, &from_id, sym_id, "calls", "{}").is_ok()
+                    {
+                        edges_stored += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
+    edges_stored
 }
 
 /// Run community detection clustering if a reality exists for this project.
@@ -1080,5 +1174,154 @@ mod tests {
             unindexed[0].ends_with("unindexed.ts"),
             "the unindexed file should be unindexed.ts"
         );
+    }
+
+    /// Create an in-memory DB with just the edge table (no sqlite-vec needed)
+    fn edge_only_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS edge (
+                id TEXT PRIMARY KEY,
+                from_id TEXT NOT NULL,
+                to_id TEXT NOT NULL,
+                edge_type TEXT NOT NULL,
+                properties TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                valid_from TEXT NOT NULL,
+                valid_until TEXT
+            );
+        ").unwrap();
+        conn
+    }
+
+    fn test_code_file(path: &std::path::Path) -> CodeFile {
+        CodeFile {
+            id: format!("file:{}", path.display()),
+            path: path.to_string_lossy().to_string(),
+            language: "rust".into(),
+            project: "test".into(),
+            hash: String::new(),
+            indexed_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_extract_call_edges_regex_basic() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+
+        // File A defines a function
+        let file_a = dir.join("lib.rs");
+        std::fs::write(&file_a, "pub fn process_data(input: &str) -> String { input.to_string() }").unwrap();
+
+        // File B calls that function
+        let file_b = dir.join("main.rs");
+        std::fs::write(&file_b, "fn main() { let result = process_data(\"hello\"); }").unwrap();
+
+        let files = vec![
+            test_code_file(&file_a),
+            test_code_file(&file_b),
+        ];
+
+        let symbols = vec![
+            CodeSymbol {
+                id: "lib.rs:process_data:1".into(),
+                name: "process_data".into(),
+                kind: "function".into(),
+                file_path: file_a.to_string_lossy().to_string(),
+                line_start: 1,
+                line_end: Some(1),
+                signature: None,
+            },
+        ];
+
+        let conn = edge_only_db();
+
+        let edges = extract_call_edges_regex(&conn, &files, &symbols);
+        assert!(edges >= 1, "should create at least 1 call edge from main.rs → lib.rs:process_data, got {edges}");
+    }
+
+    #[test]
+    fn test_extract_call_edges_regex_skips_keywords() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+
+        // File with keyword-like patterns that should NOT be detected as calls
+        let file_a = dir.join("test.rs");
+        std::fs::write(&file_a, "fn test() { if (true) { while (true) { for x in items { match (val) { } } } } }").unwrap();
+
+        let files = vec![
+            test_code_file(&file_a),
+        ];
+        let symbols = vec![];  // No symbols to match against
+
+        let conn = edge_only_db();
+
+        let edges = extract_call_edges_regex(&conn, &files, &symbols);
+        assert_eq!(edges, 0, "keywords should not create call edges");
+    }
+
+    #[test]
+    fn test_extract_call_edges_regex_skips_self_file() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+
+        // File calls its own function — should NOT create an edge
+        let file_a = dir.join("lib.rs");
+        std::fs::write(&file_a, "fn helper() {} fn main() { helper(); }").unwrap();
+
+        let files = vec![
+            test_code_file(&file_a),
+        ];
+        let symbols = vec![
+            CodeSymbol {
+                id: "lib.rs:helper:1".into(),
+                name: "helper".into(),
+                kind: "function".into(),
+                file_path: file_a.to_string_lossy().to_string(),
+                line_start: 1,
+                line_end: Some(1),
+                signature: None,
+            },
+        ];
+
+        let conn = edge_only_db();
+
+        let edges = extract_call_edges_regex(&conn, &files, &symbols);
+        assert_eq!(edges, 0, "self-file calls should be excluded");
+    }
+
+    #[test]
+    fn test_extract_call_edges_regex_deduplicates() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+
+        let file_a = dir.join("lib.rs");
+        std::fs::write(&file_a, "pub fn do_work() {}").unwrap();
+
+        // File B calls do_work multiple times
+        let file_b = dir.join("main.rs");
+        std::fs::write(&file_b, "fn main() { do_work(); do_work(); do_work(); }").unwrap();
+
+        let files = vec![
+            test_code_file(&file_a),
+            test_code_file(&file_b),
+        ];
+        let symbols = vec![
+            CodeSymbol {
+                id: "lib.rs:do_work:1".into(),
+                name: "do_work".into(),
+                kind: "function".into(),
+                file_path: file_a.to_string_lossy().to_string(),
+                line_start: 1,
+                line_end: Some(1),
+                signature: None,
+            },
+        ];
+
+        let conn = edge_only_db();
+
+        let edges = extract_call_edges_regex(&conn, &files, &symbols);
+        assert_eq!(edges, 1, "multiple calls to same function should create only 1 edge");
     }
 }

@@ -736,5 +736,21 @@ pub enum Request {
     /// Run database vacuum: purge faded memories, cleanup orphan code entries, then VACUUM.
     VacuumDb,
 
+    /// Backfill affects edges on existing decision/lesson memories by scanning their content/title
+    /// for file path patterns and creating affects edges to matched files.
+    BackfillAffects,
+
+    /// Query code symbols by name (Serena find_symbol replacement).
+    FindSymbol {
+        name: String,
+        /// Optional file path filter
+        file: Option<String>,
+    },
+
+    /// Get all symbols in a file (Serena get_symbols_overview replacement).
+    GetSymbolsOverview {
+        file: String,
+    },
+
     Shutdown,
 }
