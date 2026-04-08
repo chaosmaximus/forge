@@ -798,3 +798,166 @@ fn test_full_memory_lifecycle_quality() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Session 13: New command integration tests
+// ---------------------------------------------------------------------------
+
+/// Test FindSymbol returns symbols stored via the indexer.
+#[test]
+fn test_find_symbol_via_handler() {
+    let mut state = fresh_state();
+
+    // Store a symbol directly in the DB
+    let sym = CodeSymbol {
+        id: "test.rs:process_data:1".into(),
+        name: "process_data".into(),
+        kind: "function".into(),
+        file_path: "/tmp/test.rs".into(),
+        line_start: 10,
+        line_end: Some(20),
+        signature: Some("fn process_data(input: &str) -> String".into()),
+    };
+    ops::store_symbol(&state.conn, &sym).unwrap();
+
+    // Find by name
+    let resp = handle_request(&mut state, Request::FindSymbol {
+        name: "process_data".into(),
+        file: None,
+    });
+    match resp {
+        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+            assert_eq!(symbols.len(), 1, "should find 1 symbol");
+            assert_eq!(symbols[0].name, "process_data");
+            assert_eq!(symbols[0].line, 10);
+        }
+        other => panic!("expected SymbolResults, got {:?}", other),
+    }
+
+    // Find with file filter
+    let resp = handle_request(&mut state, Request::FindSymbol {
+        name: "process_data".into(),
+        file: Some("/tmp/test.rs".into()),
+    });
+    match resp {
+        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+            assert_eq!(symbols.len(), 1);
+        }
+        other => panic!("expected SymbolResults, got {:?}", other),
+    }
+
+    // Find with wrong file filter
+    let resp = handle_request(&mut state, Request::FindSymbol {
+        name: "process_data".into(),
+        file: Some("nonexistent.rs".into()),
+    });
+    match resp {
+        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+            assert_eq!(symbols.len(), 0, "wrong file filter should return 0");
+        }
+        other => panic!("expected SymbolResults, got {:?}", other),
+    }
+}
+
+/// Test GetSymbolsOverview returns all symbols in a file.
+#[test]
+fn test_symbols_overview_via_handler() {
+    let mut state = fresh_state();
+
+    // Store multiple symbols in the same file
+    for (name, line) in &[("init", 1), ("process", 10), ("cleanup", 20)] {
+        let sym = CodeSymbol {
+            id: format!("mod.rs:{}:{}", name, line),
+            name: name.to_string(),
+            kind: "function".into(),
+            file_path: "/tmp/mod.rs".into(),
+            line_start: *line,
+            line_end: None,
+            signature: None,
+        };
+        ops::store_symbol(&state.conn, &sym).unwrap();
+    }
+
+    let resp = handle_request(&mut state, Request::GetSymbolsOverview {
+        file: "mod.rs".into(),
+    });
+    match resp {
+        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+            assert_eq!(symbols.len(), 3, "should find 3 symbols");
+            // Should be ordered by line number
+            assert_eq!(symbols[0].name, "init");
+            assert_eq!(symbols[1].name, "process");
+            assert_eq!(symbols[2].name, "cleanup");
+        }
+        other => panic!("expected SymbolResults, got {:?}", other),
+    }
+}
+
+/// Test empty FindSymbol name returns empty results (not everything).
+#[test]
+fn test_find_symbol_empty_name() {
+    let mut state = fresh_state();
+
+    let resp = handle_request(&mut state, Request::FindSymbol {
+        name: "".into(),
+        file: None,
+    });
+    match resp {
+        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+            assert_eq!(symbols.len(), 0, "empty name should return empty");
+        }
+        other => panic!("expected SymbolResults, got {:?}", other),
+    }
+}
+
+/// Test VacuumDb runs without error on a fresh database.
+#[test]
+fn test_vacuum_via_handler() {
+    let mut state = fresh_state();
+
+    let resp = handle_request(&mut state, Request::VacuumDb);
+    match resp {
+        Response::Ok { data: ResponseData::Vacuumed { faded_purged, orphan_files_removed, orphan_symbols_removed, freed_bytes: _ } } => {
+            // Fresh DB has nothing to purge
+            assert_eq!(faded_purged, 0);
+            assert_eq!(orphan_files_removed, 0);
+            assert_eq!(orphan_symbols_removed, 0);
+        }
+        other => panic!("expected Vacuumed, got {:?}", other),
+    }
+}
+
+/// Test BackfillAffects is idempotent — Remember handler already creates affects edges,
+/// so backfill should find 0 new edges for already-processed memories.
+/// Also tests that Remember handler correctly creates affects edges on store.
+#[test]
+fn test_backfill_affects_via_handler() {
+    let mut state = fresh_state();
+
+    // Store a decision that mentions file paths — handler auto-creates affects edges
+    let mem_id = do_remember(
+        &mut state,
+        MemoryType::Decision,
+        "Handler refactoring",
+        "The handler in crates/daemon/src/server/handler.rs should be split into smaller modules. Also affects src/db/ops.rs.",
+        None,
+    );
+
+    // Verify the remember handler already created affects edges
+    let edge_count: i64 = state.conn.query_row(
+        "SELECT COUNT(*) FROM edge WHERE from_id = ?1 AND edge_type = 'affects'",
+        rusqlite::params![mem_id],
+        |row| row.get(0),
+    ).unwrap();
+    assert!(edge_count >= 2, "remember handler should create affects edges for handler.rs and ops.rs, got {}", edge_count);
+
+    // Run backfill — should find 0 new edges (already created by remember handler)
+    let resp = handle_request(&mut state, Request::BackfillAffects);
+    match resp {
+        Response::Ok { data: ResponseData::BackfillAffectsResult { memories_scanned, edges_created } } => {
+            assert!(memories_scanned >= 1, "should scan at least 1 memory");
+            assert_eq!(edges_created, 0, "backfill should find 0 new edges (remember handler already created them)");
+        }
+        other => panic!("expected BackfillAffectsResult, got {:?}", other),
+    }
+}
