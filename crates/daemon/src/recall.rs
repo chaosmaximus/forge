@@ -764,6 +764,43 @@ pub fn compile_dynamic_suffix(
         vec![]
     };
 
+    // Attention keywords: derived from session's current_task + team goal.
+    // Memories matching these keywords get a 1.5x boost in context ranking.
+    let attention_keywords: Vec<String> = {
+        let mut keywords = Vec::new();
+        // From current session task
+        if let Some(sid) = session_id {
+            if let Ok(Some(task_text)) = conn.query_row(
+                "SELECT current_task FROM session WHERE id = ?1",
+                params![sid],
+                |row| row.get::<_, Option<String>>(0),
+            ) {
+                for word in task_text.split_whitespace() {
+                    let w = word.to_lowercase();
+                    if w.len() > 3 {
+                        keywords.push(w);
+                    }
+                }
+            }
+        }
+        // From active team goal
+        if let Ok(goal) = conn.query_row(
+            "SELECT goal FROM team WHERE goal IS NOT NULL AND goal != '' ORDER BY created_at DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        ) {
+            for word in goal.split_whitespace() {
+                let w = word.to_lowercase();
+                if w.len() > 3 {
+                    keywords.push(w);
+                }
+            }
+        }
+        keywords.sort();
+        keywords.dedup();
+        keywords
+    };
+
     // (id, title, confidence, valence, intensity, tags_json, content, sql_rank)
     type RankedRow = (String, String, f64, String, f64, String, String, f64);
 
@@ -817,10 +854,17 @@ pub fn compile_dynamic_suffix(
             .into_iter()
             .map(|(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
                 let mut boost = 1.0_f64;
-                if !domain_keywords.is_empty() {
-                    let searchable = format!("{} {} {}", tags, content, title).to_lowercase();
-                    if domain_keywords.iter().any(|kw| searchable.contains(kw)) {
-                        boost = 1.3;
+                let searchable = format!("{} {} {}", tags, content, title).to_lowercase();
+                if !domain_keywords.is_empty() && domain_keywords.iter().any(|kw| searchable.contains(kw)) {
+                    boost *= 1.3;
+                }
+                // Attention boost: task/goal keywords get 1.5x priority
+                if !attention_keywords.is_empty() {
+                    let matches = attention_keywords.iter().filter(|kw| searchable.contains(kw.as_str())).count();
+                    if matches >= 2 {
+                        boost *= 1.5;
+                    } else if matches == 1 {
+                        boost *= 1.2;
                     }
                 }
                 let rank_score = sql_rank * boost;
@@ -896,10 +940,17 @@ pub fn compile_dynamic_suffix(
             .into_iter()
             .map(|(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
                 let mut boost = 1.0_f64;
-                if !domain_keywords.is_empty() {
-                    let searchable = format!("{} {} {}", tags, content, title).to_lowercase();
-                    if domain_keywords.iter().any(|kw| searchable.contains(kw)) {
-                        boost = 1.3;
+                let searchable = format!("{} {} {}", tags, content, title).to_lowercase();
+                if !domain_keywords.is_empty() && domain_keywords.iter().any(|kw| searchable.contains(kw)) {
+                    boost *= 1.3;
+                }
+                // Attention boost: task/goal keywords get 1.5x priority
+                if !attention_keywords.is_empty() {
+                    let matches = attention_keywords.iter().filter(|kw| searchable.contains(kw.as_str())).count();
+                    if matches >= 2 {
+                        boost *= 1.5;
+                    } else if matches == 1 {
+                        boost *= 1.2;
                     }
                 }
                 let rank_score = sql_rank * boost;
