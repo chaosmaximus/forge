@@ -1324,6 +1324,41 @@ pub fn compile_dynamic_suffix(
         }
     }
 
+    // ── Project Conventions ──
+    // Inject project-specific conventions (test commands, lint commands, patterns, etc.)
+    // These are stored as decisions with metadata convention_type=project_conventions.
+    // Agents read this block instead of hardcoding project-specific knowledge.
+    {
+        let conv_sql = if let Some(proj) = project {
+            format!(
+                "SELECT content FROM memory
+                 WHERE status = 'active' AND metadata LIKE '%project_conventions%'
+                 AND (project = '{}' OR project IS NULL OR project = '')
+                 LIMIT 1",
+                proj.replace('\'', "''")
+            )
+        } else {
+            "SELECT content FROM memory
+             WHERE status = 'active' AND metadata LIKE '%project_conventions%'
+             LIMIT 1".to_string()
+        };
+        if let Ok(content) = conn.query_row(&conv_sql, [], |row| row.get::<_, String>(0)) {
+            // Parse pipe-delimited conventions into XML
+            xml.push_str("<project-conventions hint=\"project-specific knowledge — use these for test/lint/build commands\">\n");
+            for entry in content.split('|') {
+                let entry = entry.trim();
+                if let Some((key, val)) = entry.split_once(':') {
+                    xml.push_str(&format!(
+                        "  <convention key=\"{}\">{}</convention>\n",
+                        xml_escape(key.trim()),
+                        xml_escape(val.trim()),
+                    ));
+                }
+            }
+            xml.push_str("</project-conventions>\n");
+        }
+    }
+
     // ── Guardrails (Anti-patterns) ──
     // Inject lessons tagged as anti-patterns — WHAT NOT TO DO
     {
@@ -3277,5 +3312,53 @@ mod tests {
             assert_ne!(r.memory.memory_type, MemoryType::Protocol,
                 "protocol memories should not appear when filtering for decisions");
         }
+    }
+
+    #[test]
+    fn test_project_conventions_injected_into_context() {
+        let conn = setup();
+
+        // Store a project conventions memory with the right metadata
+        let mem = Memory::new(
+            MemoryType::Decision,
+            "Project conventions: test-project",
+            "test_command: cargo test --workspace | lint_command: cargo clippy | test_patterns: #[test], #[tokio::test]",
+        );
+        let mem_id = mem.id.clone();
+        ops::remember(&conn, &mem).unwrap();
+        // Set metadata and project directly (Memory struct doesn't expose metadata)
+        conn.execute(
+            "UPDATE memory SET metadata = ?1, project = ?2 WHERE id = ?3",
+            rusqlite::params![
+                r#"{"convention_type":"project_conventions"}"#,
+                "test-project",
+                mem_id,
+            ],
+        ).unwrap();
+
+        let ctx = compile_context(&conn, "claude-code", Some("test-project"));
+        assert!(
+            ctx.contains("project-conventions"),
+            "context should include project-conventions section, got: {}",
+            &ctx[..ctx.len().min(500)]
+        );
+        assert!(
+            ctx.contains("cargo test"),
+            "conventions should include test_command"
+        );
+        assert!(
+            ctx.contains("tokio::test"),
+            "conventions should include test patterns"
+        );
+    }
+
+    #[test]
+    fn test_no_conventions_when_none_stored() {
+        let conn = setup();
+        let ctx = compile_context(&conn, "claude-code", None);
+        assert!(
+            !ctx.contains("project-conventions"),
+            "context should not include conventions when none stored"
+        );
     }
 }
