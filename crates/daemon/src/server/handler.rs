@@ -2545,7 +2545,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             } else {
                 crate::sessions::ack_messages_admin(&state.conn, &message_ids)
             };
-            let msg_count = msg_result.unwrap_or(0);
+            let msg_count = msg_result.unwrap_or_else(|e| {
+                eprintln!("[ack] message ack failed: {e}");
+                0
+            });
 
             // Unified ack: if no messages matched, try acking as notifications.
             // This fixes the protocol gap where `ack` on a notification ID silently fails.
