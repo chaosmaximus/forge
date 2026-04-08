@@ -46,15 +46,12 @@ pub fn register_session(
 ) -> rusqlite::Result<()> {
     let caps = capabilities.unwrap_or("[]");
     let task = current_task.unwrap_or("");
-    // Derive project from CWD basename if not explicitly provided
-    let derived_project: Option<String> = if project.is_some() && !project.unwrap_or("").is_empty() {
-        project.map(String::from)
-    } else if let Some(cwd_path) = cwd {
-        std::path::Path::new(cwd_path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-    } else {
-        None
+    // Derive project from CWD if not explicitly provided.
+    // Walks up from CWD to find a project root (directory containing .git, Cargo.toml, etc.)
+    // and uses its name. Falls back to CWD basename.
+    let derived_project: Option<String> = match project {
+        Some(p) if !p.is_empty() => Some(p.to_string()),
+        _ => cwd.map(detect_project_name),
     };
     conn.execute(
         "INSERT OR REPLACE INTO session (id, agent, project, cwd, started_at, status, capabilities, current_task)
@@ -62,6 +59,35 @@ pub fn register_session(
         params![id, agent, derived_project, cwd, caps, task],
     )?;
     Ok(())
+}
+
+/// Detect project name from a CWD path by walking up to find the project root.
+/// Looks for marker files (.git, Cargo.toml, package.json, pyproject.toml, go.mod).
+/// Returns the name of the directory containing the marker, or CWD basename as fallback.
+fn detect_project_name(cwd: &str) -> String {
+    let markers = [".git", "Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
+    let mut dir = std::path::Path::new(cwd);
+
+    // Walk up from CWD looking for project root markers
+    loop {
+        for marker in &markers {
+            if dir.join(marker).exists() {
+                return dir.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".into());
+            }
+        }
+        match dir.parent() {
+            Some(parent) if parent != dir => dir = parent,
+            _ => break,
+        }
+    }
+
+    // Fallback: CWD basename
+    std::path::Path::new(cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// Mark a session as ended. Returns true if the session existed.
