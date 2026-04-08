@@ -344,8 +344,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         static FILE_PATH_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
                             regex::Regex::new(r"(?:crates|src|lib|app)/[\w/]+\.(?:rs|ts|tsx|js|py|go)").unwrap()
                         });
-                        // Disable FK checks — affects edges point to file: IDs not in memory table
-                        let _ = state.conn.execute_batch("PRAGMA foreign_keys=OFF;");
+                        // Note: edge table has no foreign keys — affects edges can point to any ID
                         let mut seen = std::collections::HashSet::new();
                         for text in [&memory.content, &memory.title] {
                             for cap in FILE_PATH_RE.find_iter(text) {
@@ -357,7 +356,6 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                 }
                             }
                         }
-                        let _ = state.conn.execute_batch("PRAGMA foreign_keys=ON;");
                     }
 
                     Response::Ok {
@@ -3950,7 +3948,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let memories_scanned = rows.len();
             let mut edges_created = 0usize;
 
-            let _ = state.conn.execute_batch("PRAGMA foreign_keys=OFF;");
+            // Note: edge table has no foreign keys — no need to toggle PRAGMA
             let mut seen_global = std::collections::HashSet::new();
             for (mem_id, title, content) in &rows {
                 for text in [title, content] {
@@ -3973,7 +3971,6 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     }
                 }
             }
-            let _ = state.conn.execute_batch("PRAGMA foreign_keys=ON;");
 
             Response::Ok {
                 data: ResponseData::BackfillAffectsResult {

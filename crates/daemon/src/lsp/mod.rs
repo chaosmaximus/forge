@@ -1,5 +1,7 @@
 pub mod client;
 pub mod detect;
+pub mod regex_go;
+pub mod regex_python;
 pub mod regex_symbols;
 pub mod symbols;
 

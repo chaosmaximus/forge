@@ -6,6 +6,8 @@
 use crate::db::ops;
 use crate::lsp::client::{file_uri, LspClient};
 use crate::lsp::detect::{detect_language_servers, LspServerConfig};
+use crate::lsp::regex_go::extract_symbols_go;
+use crate::lsp::regex_python::extract_symbols_python;
 use crate::lsp::regex_symbols::extract_symbols_regex;
 use crate::lsp::symbols::{convert_symbols, extract_imports};
 use crate::lsp::LspManager;
@@ -508,6 +510,54 @@ async fn run_index(
         }
     }
 
+    // Phase 3: Regex-based fallback for Python files not covered by LSP
+    let py_extensions: &[&str] = &["py"];
+    let py_files = collect_source_files(project_dir, py_extensions);
+    if !py_files.is_empty() {
+        let indexed_paths: HashSet<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+        let unindexed: Vec<&str> = py_files.iter().filter(|p| !indexed_paths.contains(p.as_str())).map(|s| s.as_str()).collect();
+        for path in unindexed {
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let hash = file_hash(path);
+            all_files.push(CodeFile {
+                id: format!("file:{}", path), path: path.to_string(), language: "python".into(),
+                project: project_dir.to_string(), hash: hash.clone(), indexed_at: indexed_at.clone(),
+            });
+            let cached = HASH_CACHE.lock().unwrap().get(path).cloned();
+            if cached.as_deref() == Some(&hash) { continue; }
+            let syms = extract_symbols_python(path, &content);
+            if !syms.is_empty() { HASH_CACHE.lock().unwrap().insert(path.to_string(), hash); }
+            all_symbols.extend(syms);
+        }
+    }
+
+    // Phase 4: Regex-based fallback for Go files not covered by LSP
+    let go_extensions: &[&str] = &["go"];
+    let go_files = collect_source_files(project_dir, go_extensions);
+    if !go_files.is_empty() {
+        let indexed_paths: HashSet<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+        let unindexed: Vec<&str> = go_files.iter().filter(|p| !indexed_paths.contains(p.as_str())).map(|s| s.as_str()).collect();
+        for path in unindexed {
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let hash = file_hash(path);
+            all_files.push(CodeFile {
+                id: format!("file:{}", path), path: path.to_string(), language: "go".into(),
+                project: project_dir.to_string(), hash: hash.clone(), indexed_at: indexed_at.clone(),
+            });
+            let cached = HASH_CACHE.lock().unwrap().get(path).cloned();
+            if cached.as_deref() == Some(&hash) { continue; }
+            let syms = extract_symbols_go(path, &content);
+            if !syms.is_empty() { HASH_CACHE.lock().unwrap().insert(path.to_string(), hash); }
+            all_symbols.extend(syms);
+        }
+    }
+
     if all_files.is_empty() {
         return Ok(());
     }
@@ -581,9 +631,7 @@ async fn run_index(
 /// Extract import edges from already-indexed files and store them.
 /// Returns the number of import edges stored.
 pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize {
-    // Disable FK checks — edge table has FK to memory(id) but import edges
-    // use file paths as from_id/to_id, not memory IDs
-    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF;");
+    // Note: edge table has no foreign keys — edges can connect any IDs
 
     // Clear old import edges before re-indexing
     if let Err(e) = conn.execute("DELETE FROM edge WHERE edge_type = 'imports'", []) {
@@ -756,8 +804,7 @@ pub fn extract_call_edges_regex(
         }
     }
 
-    // Disable FK checks for edge creation
-    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF;");
+    // Note: edge table has no foreign keys — edges can connect any IDs
 
     let mut edges_stored = 0usize;
     let mut seen = std::collections::HashSet::new();
@@ -797,7 +844,6 @@ pub fn extract_call_edges_regex(
         }
     }
 
-    let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
     edges_stored
 }
 
