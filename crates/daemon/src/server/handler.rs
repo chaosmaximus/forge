@@ -337,6 +337,24 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         }
                     }
 
+                    // Create affects edges for file paths mentioned in the memory content/title.
+                    // This enables blast-radius to find decisions that reference specific files.
+                    if is_decision || matches!(memory.memory_type, forge_core::types::MemoryType::Lesson) {
+                        use std::sync::LazyLock;
+                        static FILE_PATH_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+                            regex::Regex::new(r"(?:crates|src|lib|app)/[\w/]+\.(?:rs|ts|tsx|js|py|go)").unwrap()
+                        });
+                        let mut seen = std::collections::HashSet::new();
+                        for text in [&memory.content, &memory.title] {
+                            for cap in FILE_PATH_RE.find_iter(text) {
+                                let file_target = format!("file:{}", cap.as_str());
+                                if seen.insert(file_target.clone()) {
+                                    let _ = ops::store_edge(&state.conn, &id, &file_target, "affects", "{}");
+                                }
+                            }
+                        }
+                    }
+
                     Response::Ok {
                         data: ResponseData::Stored { id },
                     }
@@ -4439,6 +4457,116 @@ mod tests {
             }
             _ => panic!("expected BlastRadius response"),
         }
+    }
+
+    #[test]
+    fn test_remember_decision_creates_affects_edges() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Store a decision that mentions file paths in its content
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Refactor crates/daemon/src/server/handler.rs".into(),
+            content: "The handler in crates/daemon/src/server/handler.rs should be split. Also affects src/db/ops.rs for the edge storage.".into(),
+            confidence: Some(0.9),
+            tags: None,
+            project: None,
+            metadata: None,
+        });
+        let id = match resp {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            other => panic!("expected Stored, got {:?}", other),
+        };
+
+        // Check that affects edges were created
+        let edge_count: i64 = state.conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE from_id = ?1 AND edge_type = 'affects'",
+            rusqlite::params![id],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(
+            edge_count >= 2,
+            "expected at least 2 affects edges (handler.rs + ops.rs), got {edge_count}",
+        );
+
+        // Verify blast-radius now finds this decision
+        let resp = handle_request(&mut state, Request::BlastRadius {
+            file: "crates/daemon/src/server/handler.rs".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::BlastRadius { decisions, .. } } => {
+                assert!(
+                    !decisions.is_empty(),
+                    "blast-radius should find the decision that affects handler.rs",
+                );
+                assert!(
+                    decisions.iter().any(|d| d.title.contains("Refactor")),
+                    "decision title should contain 'Refactor', got: {:?}",
+                    decisions,
+                );
+            }
+            other => panic!("expected BlastRadius response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_remember_lesson_creates_affects_edges() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Lesson,
+            title: "Lesson about src/auth/mod.rs".into(),
+            content: "The auth module needs better error handling.".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+            metadata: None,
+        });
+        let id = match resp {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            other => panic!("expected Stored, got {:?}", other),
+        };
+
+        // Check that an affects edge was created from the title
+        let edge_count: i64 = state.conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE from_id = ?1 AND edge_type = 'affects'",
+            rusqlite::params![id],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(
+            edge_count >= 1,
+            "expected at least 1 affects edge from title file path, got {edge_count}",
+        );
+    }
+
+    #[test]
+    fn test_remember_pattern_no_affects_edges() {
+        // Pattern memories should NOT create affects edges
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let resp = handle_request(&mut state, Request::Remember {
+            memory_type: MemoryType::Pattern,
+            title: "Pattern about src/db/ops.rs".into(),
+            content: "Always use transactions in src/db/ops.rs".into(),
+            confidence: None,
+            tags: None,
+            project: None,
+            metadata: None,
+        });
+        let id = match resp {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            other => panic!("expected Stored, got {:?}", other),
+        };
+
+        let edge_count: i64 = state.conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE from_id = ?1 AND edge_type = 'affects'",
+            rusqlite::params![id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(
+            edge_count, 0,
+            "Pattern memories should not create affects edges, got {edge_count}",
+        );
     }
 
     #[test]

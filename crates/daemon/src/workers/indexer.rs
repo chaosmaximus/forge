@@ -586,6 +586,10 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
         return 0;
     }
 
+    // Build a lookup table from module-path suffixes to file paths for Rust resolution.
+    // e.g., "server::handler" → "/abs/crates/daemon/src/server/handler.rs"
+    let module_to_file = build_rust_module_lookup(files);
+
     let mut import_edges_stored = 0usize;
     let mut files_read = 0usize;
     let mut total_imports_found = 0usize;
@@ -602,14 +606,105 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
         total_imports_found += imports.len();
         for (from_path, imported_module) in &imports {
             let from_id = format!("file:{from_path}");
+            // Store the raw module-path edge (for find_callers LIKE matching)
             match ops::store_edge(conn, &from_id, imported_module, "imports", "{}") {
                 Ok(_) => import_edges_stored += 1,
                 Err(e) => eprintln!("[indexer] store_edge failed: {e}"),
+            }
+            // For Rust imports, also store a file:-prefixed edge so find_importers can match
+            if file.language == "rust" {
+                if let Some(resolved) = resolve_rust_import_to_file(imported_module, from_path, &module_to_file) {
+                    let to_id = format!("file:{resolved}");
+                    match ops::store_edge(conn, &from_id, &to_id, "imports", "{}") {
+                        Ok(_) => import_edges_stored += 1,
+                        Err(e) => eprintln!("[indexer] store_edge (resolved) failed: {e}"),
+                    }
+                }
             }
         }
     }
     eprintln!("[indexer] import extraction: {files_read} files read, {total_imports_found} imports found, {import_edges_stored} edges stored");
     import_edges_stored
+}
+
+/// Build a lookup from Rust module path suffixes to actual file paths.
+/// Maps "server::handler" → file_path for all .rs files in the index.
+fn build_rust_module_lookup(files: &[CodeFile]) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for file in files {
+        if file.language != "rust" {
+            continue;
+        }
+        let path = &file.path;
+        let stem = path.trim_end_matches(".rs");
+        // Find the "src/" segment — everything after it is the module path
+        let after_src = if let Some(idx) = stem.find("/src/") {
+            &stem[idx + 5..]
+        } else if let Some(rest) = stem.strip_prefix("src/") {
+            rest
+        } else {
+            continue;
+        };
+        // Skip lib.rs and main.rs — crate roots
+        if after_src == "lib" || after_src == "main" {
+            continue;
+        }
+        // Strip trailing /mod (e.g., server/mod → server)
+        let module = after_src.trim_end_matches("/mod");
+        let module_path = module.replace('/', "::");
+        map.insert(module_path, path.clone());
+    }
+    map
+}
+
+/// Try to resolve a Rust import (e.g., "crate::server::handler") to a file path.
+/// Uses the module lookup table built from indexed files.
+/// For `mod name;` declarations (bare names), resolves relative to the importing file.
+fn resolve_rust_import_to_file(
+    imported: &str,
+    from_path: &str,
+    module_lookup: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if let Some(suffix) = imported.strip_prefix("crate::") {
+        // "crate::server::handler" → look up "server::handler"
+        if let Some(path) = module_lookup.get(suffix) {
+            return Some(path.clone());
+        }
+    } else if let Some(rel_module) = imported.strip_prefix("super::") {
+        // Relative imports — resolve based on the importing file's directory (go up one)
+        let dir = std::path::Path::new(from_path).parent()?;
+        let base_dir = dir.parent()?;
+        let module_file = base_dir.join(rel_module.replace("::", "/")).with_extension("rs");
+        let path_str = module_file.to_string_lossy().to_string();
+        if module_lookup.values().any(|v| v == &path_str) {
+            return Some(path_str);
+        }
+    } else if let Some(rel_module) = imported.strip_prefix("self::") {
+        // self:: imports — resolve relative to current directory
+        let dir = std::path::Path::new(from_path).parent()?;
+        let module_file = dir.join(rel_module.replace("::", "/")).with_extension("rs");
+        let path_str = module_file.to_string_lossy().to_string();
+        if module_lookup.values().any(|v| v == &path_str) {
+            return Some(path_str);
+        }
+    } else if !imported.contains("::") {
+        // Bare name from `mod name;` — resolve relative to importing file's directory
+        let dir = std::path::Path::new(from_path).parent()?;
+        // Try dir/name.rs first
+        let file_rs = dir.join(imported).with_extension("rs");
+        let path_str = file_rs.to_string_lossy().to_string();
+        if module_lookup.values().any(|v| v == &path_str) {
+            return Some(path_str);
+        }
+        // Try dir/name/mod.rs
+        let mod_rs = dir.join(imported).join("mod.rs");
+        let mod_path = mod_rs.to_string_lossy().to_string();
+        if module_lookup.values().any(|v| v == &mod_path) {
+            return Some(mod_path);
+        }
+    }
+    // std:: and other external crates — can't resolve to local files
+    None
 }
 
 /// Run community detection clustering if a reality exists for this project.
@@ -773,6 +868,118 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM edge WHERE edge_type = 'imports'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(edge_count, stored, "DB edge count should match returned count");
+    }
+
+    #[test]
+    fn test_rust_import_creates_file_prefixed_edge() {
+        // Verify that Rust crate:: imports produce an additional file:-prefixed edge
+        // when the target module can be resolved to an actual file in the index.
+        use crate::db::schema::create_schema;
+        use rusqlite::Connection;
+
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let src_dir = tmp.path().join("src");
+        let server_dir = src_dir.join("server");
+        std::fs::create_dir_all(&server_dir).unwrap();
+
+        let main_path = src_dir.join("main.rs");
+        std::fs::write(&main_path, "use crate::server::handler;\nfn main() {}").unwrap();
+        let handler_path = server_dir.join("handler.rs");
+        std::fs::write(&handler_path, "pub fn handle() {}").unwrap();
+
+        let files = vec![
+            CodeFile {
+                id: format!("file:{}", main_path.display()),
+                path: main_path.to_str().unwrap().to_string(),
+                language: "rust".to_string(),
+                project: tmp.path().to_str().unwrap().to_string(),
+                hash: "hash1".to_string(),
+                indexed_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            CodeFile {
+                id: format!("file:{}", handler_path.display()),
+                path: handler_path.to_str().unwrap().to_string(),
+                language: "rust".to_string(),
+                project: tmp.path().to_str().unwrap().to_string(),
+                hash: "hash2".to_string(),
+                indexed_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        ];
+
+        let stored = extract_and_store_imports(&conn, &files);
+        // Should store: 1 raw module-path edge + 1 file:-prefixed resolved edge
+        assert!(stored >= 2, "expected at least 2 edges (raw + resolved), got {stored}");
+
+        // Check that a file:-prefixed edge exists for the resolved handler path
+        let handler_str = handler_path.to_str().unwrap();
+        let file_edge_target = format!("file:{handler_str}");
+        let has_file_edge: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM edge WHERE edge_type = 'imports' AND to_id = ?1",
+                rusqlite::params![file_edge_target],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            has_file_edge,
+            "expected a file:-prefixed import edge with to_id = {file_edge_target}",
+        );
+    }
+
+    #[test]
+    fn test_build_rust_module_lookup() {
+        let files = vec![
+            CodeFile {
+                id: "f1".into(),
+                path: "/project/crates/daemon/src/server/handler.rs".into(),
+                language: "rust".into(),
+                project: "/project".into(),
+                hash: "h1".into(),
+                indexed_at: "now".into(),
+            },
+            CodeFile {
+                id: "f2".into(),
+                path: "/project/src/db/ops.rs".into(),
+                language: "rust".into(),
+                project: "/project".into(),
+                hash: "h2".into(),
+                indexed_at: "now".into(),
+            },
+            CodeFile {
+                id: "f3".into(),
+                path: "/project/src/lib.rs".into(),
+                language: "rust".into(),
+                project: "/project".into(),
+                hash: "h3".into(),
+                indexed_at: "now".into(),
+            },
+            CodeFile {
+                id: "f4".into(),
+                path: "/project/src/app.py".into(),
+                language: "python".into(),
+                project: "/project".into(),
+                hash: "h4".into(),
+                indexed_at: "now".into(),
+            },
+        ];
+
+        let lookup = build_rust_module_lookup(&files);
+        assert_eq!(
+            lookup.get("server::handler"),
+            Some(&"/project/crates/daemon/src/server/handler.rs".to_string()),
+        );
+        assert_eq!(
+            lookup.get("db::ops"),
+            Some(&"/project/src/db/ops.rs".to_string()),
+        );
+        // lib.rs is a crate root — should not be in the lookup
+        assert!(lookup.get("lib").is_none());
+        // Python files should not be in the lookup
+        assert!(lookup.get("app").is_none());
     }
 
     #[test]

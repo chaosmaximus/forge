@@ -27,7 +27,7 @@ pub struct BlastRadius {
 ///   - `file:absolute/path` (new import edge format after the indexer fix)
 ///   - bare relative paths
 fn resolve_file_targets(file: &str) -> Vec<String> {
-    let mut targets = Vec::with_capacity(4);
+    let mut targets = Vec::with_capacity(6);
 
     // 1. Canonical: file:{relative_path}
     targets.push(format!("file:{file}"));
@@ -54,9 +54,43 @@ fn resolve_file_targets(file: &str) -> Vec<String> {
         // bare absolute already covered by #2
     }
 
+    // 6. Rust module path variants: convert file path to crate::module::path format
+    // so that import edges stored as "crate::server::handler" can match against
+    // a file like "crates/daemon/src/server/handler.rs".
+    if file.ends_with(".rs") {
+        if let Some(module_path) = file_path_to_rust_module(file) {
+            targets.push(module_path);
+        }
+    }
+
     targets.sort();
     targets.dedup();
     targets
+}
+
+/// Convert a Rust file path to a `crate::module::path` format.
+/// e.g., "crates/daemon/src/server/handler.rs" → "crate::server::handler"
+/// e.g., "src/db/ops.rs" → "crate::db::ops"
+/// Returns None if the path doesn't contain a `src/` segment.
+fn file_path_to_rust_module(file: &str) -> Option<String> {
+    let stem = file.trim_end_matches(".rs");
+    // Find the "src/" segment — everything after it is the module path
+    let after_src = if let Some(idx) = stem.find("/src/") {
+        &stem[idx + 5..] // skip "/src/"
+    } else if let Some(rest) = stem.strip_prefix("src/") {
+        rest
+    } else {
+        return None;
+    };
+    // Skip lib and main — they are crate roots, not importable modules
+    if after_src == "lib" || after_src == "main" {
+        return None;
+    }
+    // Strip trailing /mod (e.g., server/mod → server)
+    let module = after_src.trim_end_matches("/mod");
+    // Convert path separators to Rust module separators
+    let module_path = format!("crate::{}", module.replace('/', "::"));
+    Some(module_path)
 }
 
 /// Main entry point: analyse the blast radius of changing `file`.
@@ -548,6 +582,73 @@ mod tests {
             br.callers >= 1,
             "expected at least 1 caller from legacy bare-path import edge, got {}",
             br.callers,
+        );
+    }
+
+    #[test]
+    fn test_file_path_to_rust_module() {
+        // Standard crate path
+        assert_eq!(
+            file_path_to_rust_module("crates/daemon/src/server/handler.rs"),
+            Some("crate::server::handler".to_string()),
+        );
+        // Direct src/ path
+        assert_eq!(
+            file_path_to_rust_module("src/db/ops.rs"),
+            Some("crate::db::ops".to_string()),
+        );
+        // mod.rs should strip trailing /mod
+        assert_eq!(
+            file_path_to_rust_module("src/server/mod.rs"),
+            Some("crate::server".to_string()),
+        );
+        // lib.rs and main.rs are crate roots — not importable
+        assert_eq!(file_path_to_rust_module("src/lib.rs"), None);
+        assert_eq!(file_path_to_rust_module("src/main.rs"), None);
+        // No src/ segment
+        assert_eq!(file_path_to_rust_module("build.rs"), None);
+        // Deeply nested
+        assert_eq!(
+            file_path_to_rust_module("crates/daemon/src/db/manas/layer.rs"),
+            Some("crate::db::manas::layer".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_importers_match_rust_module_path() {
+        // Tests that find_importers returns results when edges use crate:: module paths
+        // and we query by file path (which resolve_file_targets converts to module path).
+        let conn = setup_db();
+
+        // Store import edge with module-path to_id (as extract_imports produces)
+        store_edge(
+            &conn,
+            "file:crates/daemon/src/main.rs",
+            "crate::server::handler",
+            "imports",
+            "{}",
+        )
+        .unwrap();
+
+        // resolve_file_targets should include "crate::server::handler" in targets
+        let targets = resolve_file_targets("crates/daemon/src/server/handler.rs");
+        assert!(
+            targets.contains(&"crate::server::handler".to_string()),
+            "targets should contain crate::server::handler, got: {:?}",
+            targets,
+        );
+
+        // find_importers should now match
+        let importers = find_importers(&conn, &targets);
+        assert!(
+            !importers.is_empty(),
+            "importers should find main.rs via module-path matching, got: {:?}",
+            importers,
+        );
+        assert!(
+            importers.iter().any(|i| i.contains("main.rs")),
+            "importers should contain main.rs, got: {:?}",
+            importers,
         );
     }
 }
