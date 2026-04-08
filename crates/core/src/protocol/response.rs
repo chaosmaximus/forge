@@ -686,6 +686,7 @@ pub enum ResponseData {
         faded_purged: usize,
         orphan_files_removed: usize,
         orphan_symbols_removed: usize,
+        orphan_edges_removed: usize,
         freed_bytes: u64,
     },
 

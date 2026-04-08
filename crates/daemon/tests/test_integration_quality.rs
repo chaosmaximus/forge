@@ -917,11 +917,12 @@ fn test_vacuum_via_handler() {
 
     let resp = handle_request(&mut state, Request::VacuumDb);
     match resp {
-        Response::Ok { data: ResponseData::Vacuumed { faded_purged, orphan_files_removed, orphan_symbols_removed, freed_bytes: _ } } => {
+        Response::Ok { data: ResponseData::Vacuumed { faded_purged, orphan_files_removed, orphan_symbols_removed, orphan_edges_removed, freed_bytes: _ } } => {
             // Fresh DB has nothing to purge
             assert_eq!(faded_purged, 0);
             assert_eq!(orphan_files_removed, 0);
             assert_eq!(orphan_symbols_removed, 0);
+            assert_eq!(orphan_edges_removed, 0);
         }
         other => panic!("expected Vacuumed, got {:?}", other),
     }

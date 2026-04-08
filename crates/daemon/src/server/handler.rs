@@ -3958,13 +3958,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             let freed = size_before.saturating_sub(size_after);
 
-            eprintln!("[vacuum] faded={faded_purged} orphan_files={orphan_files} orphan_symbols={orphan_symbols} freed={freed}");
+            eprintln!("[vacuum] faded={faded_purged} orphan_files={orphan_files} orphan_symbols={orphan_symbols} orphan_edges={orphan_edges} freed={freed}");
 
             Response::Ok {
                 data: ResponseData::Vacuumed {
                     faded_purged,
                     orphan_files_removed: orphan_files,
                     orphan_symbols_removed: orphan_symbols,
+                    orphan_edges_removed: orphan_edges,
                     freed_bytes: freed,
                 },
             }

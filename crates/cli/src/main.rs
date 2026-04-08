@@ -1473,12 +1473,13 @@ async fn main() {
         Commands::VacuumDb => {
             match client::send(&forge_core::protocol::Request::VacuumDb).await {
                 Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::Vacuumed {
-                    faded_purged, orphan_files_removed, orphan_symbols_removed, freed_bytes,
+                    faded_purged, orphan_files_removed, orphan_symbols_removed, orphan_edges_removed, freed_bytes,
                 } }) => {
                     println!("Database Vacuum Complete");
                     println!("  Faded memories purged: {faded_purged}");
                     println!("  Orphan files removed: {orphan_files_removed}");
                     println!("  Orphan symbols removed: {orphan_symbols_removed}");
+                    println!("  Orphan edges removed: {orphan_edges_removed}");
                     if freed_bytes > 0 {
                         println!("  Disk space freed: {:.1} MB", freed_bytes as f64 / 1_048_576.0);
                     }

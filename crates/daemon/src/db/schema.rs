@@ -910,7 +910,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             SELECT MIN(rowid) FROM edge GROUP BY from_id, to_id, edge_type
         )",
         [],
-    ).unwrap_or(0);
+    ).unwrap_or_else(|e| { eprintln!("[schema] edge dedup failed: {e}"); 0 });
     if edge_deduped > 0 {
         eprintln!("[schema] deduplicated {edge_deduped} duplicate edge rows");
     }
@@ -924,7 +924,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             SELECT MIN(id) FROM team GROUP BY name, organization_id
         )",
         [],
-    ).unwrap_or(0);
+    ).unwrap_or_else(|e| { eprintln!("[schema] team dedup failed: {e}"); 0 });
     if team_deduped > 0 {
         eprintln!("[schema] deduplicated {team_deduped} duplicate team rows");
     }
