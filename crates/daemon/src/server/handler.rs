@@ -344,17 +344,20 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         static FILE_PATH_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
                             regex::Regex::new(r"(?:crates|src|lib|app)/[\w/]+\.(?:rs|ts|tsx|js|py|go)").unwrap()
                         });
+                        // Disable FK checks — affects edges point to file: IDs not in memory table
+                        let _ = state.conn.execute_batch("PRAGMA foreign_keys=OFF;");
                         let mut seen = std::collections::HashSet::new();
                         for text in [&memory.content, &memory.title] {
                             for cap in FILE_PATH_RE.find_iter(text) {
                                 let file_target = format!("file:{}", cap.as_str());
                                 if seen.insert(file_target.clone()) {
                                     if let Err(e) = ops::store_edge(&state.conn, &id, &file_target, "affects", "{}") {
-                                        eprintln!("[handler] failed to create affects edge {} -> {}: {}", id, file_target, e);
+                                        eprintln!("[handler] affects edge error: {e}");
                                     }
                                 }
                             }
                         }
+                        let _ = state.conn.execute_batch("PRAGMA foreign_keys=ON;");
                     }
 
                     Response::Ok {
