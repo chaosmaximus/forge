@@ -46,10 +46,20 @@ pub fn register_session(
 ) -> rusqlite::Result<()> {
     let caps = capabilities.unwrap_or("[]");
     let task = current_task.unwrap_or("");
+    // Derive project from CWD basename if not explicitly provided
+    let derived_project: Option<String> = if project.is_some() && !project.unwrap_or("").is_empty() {
+        project.map(String::from)
+    } else if let Some(cwd_path) = cwd {
+        std::path::Path::new(cwd_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+    } else {
+        None
+    };
     conn.execute(
         "INSERT OR REPLACE INTO session (id, agent, project, cwd, started_at, status, capabilities, current_task)
          VALUES (?1, ?2, ?3, ?4, datetime('now'), 'active', ?5, ?6)",
-        params![id, agent, project, cwd, caps, task],
+        params![id, agent, derived_project, cwd, caps, task],
     )?;
     Ok(())
 }
