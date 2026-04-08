@@ -1,3 +1,6 @@
+// HUD is WIP — many fields and functions are defined for future rendering phases
+#![allow(dead_code)]
+
 mod render;
 mod state;
 mod stdin;

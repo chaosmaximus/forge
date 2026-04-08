@@ -1350,6 +1350,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     ));
                 }
             }
+            // Warn if the code graph appears empty (no indexed files at all)
+            let file_count: usize = state.conn.query_row(
+                "SELECT COUNT(*) FROM code_file", [], |row| row.get(0),
+            ).unwrap_or(0);
+            if file_count == 0 {
+                warnings.push(
+                    "No code graph available. The indexer has not run for this project yet. \
+                     Ensure the daemon is running and the project directory is detected. \
+                     Check: forge-next doctor".to_string()
+                );
+            } else if decisions.is_empty() && br.callers == 0 && br.importers.is_empty() {
+                // Code graph exists but no edges for this specific file
+                let file_exists: bool = state.conn.query_row(
+                    "SELECT COUNT(*) > 0 FROM code_file WHERE path LIKE ?1",
+                    rusqlite::params![format!("%{}", file)],
+                    |row| row.get(0),
+                ).unwrap_or(false);
+                if !file_exists {
+                    warnings.push(format!(
+                        "File '{}' not found in the code graph. It may not have been indexed yet.",
+                        file
+                    ));
+                }
+            }
             Response::Ok {
                 data: ResponseData::BlastRadius {
                     decisions,
