@@ -446,6 +446,10 @@ enum Commands {
     #[command(name = "cleanup-memory")]
     CleanupMemory,
 
+    /// Gracefully restart the daemon: drain in-flight requests, shut down, auto-start on next call
+    #[command(name = "restart")]
+    Restart,
+
     /// Run database vacuum: purge faded memories, cleanup orphan code entries, reclaim disk space
     #[command(name = "vacuum")]
     VacuumDb,
@@ -1435,6 +1439,34 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("cleanup-memory error: {e}");
+                }
+            }
+        }
+        Commands::Restart => {
+            println!("Sending graceful shutdown to daemon...");
+            match client::send(&forge_core::protocol::Request::Shutdown).await {
+                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::Shutdown }) => {
+                    println!("Daemon shutting down (draining in-flight requests, max 5s)...");
+                    // Wait for daemon to exit
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                    // Verify it's down, then trigger auto-start
+                    println!("Restarting daemon...");
+                    match client::send(&forge_core::protocol::Request::Health).await {
+                        Ok(forge_core::protocol::Response::Ok { .. }) => {
+                            println!("Daemon restarted successfully.");
+                        }
+                        _ => {
+                            println!("Daemon restart in progress — next command will auto-start it.");
+                        }
+                    }
+                }
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("shutdown failed: {message}");
+                }
+                Ok(_) => eprintln!("unexpected response"),
+                Err(e) => {
+                    // Connection error likely means daemon already stopped
+                    eprintln!("Daemon appears to be down ({}). Next command will auto-start it.", e);
                 }
             }
         }

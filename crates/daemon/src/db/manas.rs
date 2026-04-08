@@ -1337,24 +1337,71 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
 /// agent and description already exists, the one with higher strength wins
 /// and the insert is skipped. This prevents the extractor from creating
 /// hundreds of near-identical identity facets over time.
-pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Result<()> {
-    // Dedup check: merge with existing facet that has the same description for this agent
-    let existing: Option<(String, f64)> = conn
-        .query_row(
-            "SELECT id, strength FROM identity WHERE agent = ?1 AND description = ?2 AND active = 1",
-            params![facet.agent, facet.description],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .ok();
+/// Source priority for identity facets: CLI/user-defined always outranks extracted.
+fn source_priority(source: &str) -> u8 {
+    match source {
+        "cli" | "user_defined" | "manual" => 3, // Explicit user intent — highest
+        "correction" => 2, // User corrected an extracted facet
+        "extracted" => 1,  // Auto-extracted from transcripts
+        _ => 0,            // Unknown
+    }
+}
 
-    if let Some((existing_id, existing_strength)) = existing {
-        // Merge: keep higher strength, skip the insert
-        if facet.strength > existing_strength {
+pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Result<()> {
+    // Dedup check: merge with existing facet that has the same description for this agent.
+    // Scoped by user_id for multi-user isolation.
+    let existing: Option<(String, f64, String)> = match conn.query_row(
+        "SELECT id, strength, COALESCE(source, 'extracted') FROM identity
+         WHERE agent = ?1 AND description = ?2 AND active = 1
+         AND COALESCE(user_id, '') = COALESCE(?3, '')
+         LIMIT 1",
+        params![facet.agent, facet.description, facet.user_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ) {
+        Ok(row) => Some(row),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => {
+            eprintln!("[identity] dedup query error: {e}");
+            return Err(e);
+        }
+    };
+
+    if let Some((existing_id, existing_strength, existing_source)) = existing {
+        let new_priority = source_priority(&facet.source);
+        let old_priority = source_priority(&existing_source);
+
+        // Higher-priority source always wins. At same priority, higher strength wins.
+        let should_update = new_priority > old_priority
+            || (new_priority == old_priority && facet.strength > existing_strength);
+
+        if should_update {
             conn.execute(
-                "UPDATE identity SET strength = ?1 WHERE id = ?2",
-                params![facet.strength, existing_id],
+                "UPDATE identity SET strength = ?1, source = ?2 WHERE id = ?3",
+                params![facet.strength, facet.source, existing_id],
             )?;
         }
+        return Ok(());
+    }
+
+    // Also check for same facet TYPE with a CLI-set facet (fuzzy dedup)
+    // If a CLI facet exists for the same type + user, don't let extracted facets accumulate
+    let same_type_cli: Option<String> = match conn.query_row(
+        "SELECT id FROM identity WHERE agent = ?1 AND facet = ?2 AND active = 1
+         AND source IN ('cli', 'user_defined', 'manual')
+         AND COALESCE(user_id, '') = COALESCE(?3, '')
+         LIMIT 1",
+        params![facet.agent, facet.facet, facet.user_id],
+        |row| row.get(0),
+    ) {
+        Ok(id) => Some(id),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => {
+            eprintln!("[identity] same-type CLI check error: {e}");
+            None // Non-fatal: proceed with insert
+        }
+    };
+    if same_type_cli.is_some() && source_priority(&facet.source) < 2 {
+        // CLI facet exists for this type — don't add extracted duplicates
         return Ok(());
     }
 

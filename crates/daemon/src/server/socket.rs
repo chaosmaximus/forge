@@ -119,7 +119,8 @@ pub async fn run_server(
     }
 
     // Limit concurrent connections to prevent FD exhaustion
-    let conn_semaphore = Arc::new(tokio::sync::Semaphore::new(64));
+    const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+    let conn_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
     // Accept loop with shutdown support
     let mut shutdown_rx = shutdown_tx.subscribe();
@@ -301,10 +302,28 @@ pub async fn run_server(
                 });
             }
             _ = shutdown_rx.changed() => {
-                eprintln!("[daemon] shutdown signal received");
+                eprintln!("[daemon] shutdown signal received, draining in-flight requests...");
                 break;
             }
         }
+    }
+
+    // Graceful drain: wait for in-flight connections to complete (max 5 seconds).
+    // The semaphore has 64 permits — when all are available, no connections are active.
+    let drain_start = std::time::Instant::now();
+    let drain_timeout = std::time::Duration::from_secs(5);
+    loop {
+        let available = conn_semaphore.available_permits();
+        if available == MAX_CONCURRENT_CONNECTIONS {
+            eprintln!("[daemon] all connections drained, exiting cleanly");
+            break;
+        }
+        if drain_start.elapsed() > drain_timeout {
+            let in_flight = MAX_CONCURRENT_CONNECTIONS - available;
+            eprintln!("[daemon] drain timeout (5s), {in_flight} connections still active — forcing exit");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
     Ok(())

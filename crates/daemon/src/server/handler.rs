@@ -3078,10 +3078,16 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 &state.conn, &session_id, &status, current_task.as_deref(),
             ) {
                 Ok(_updated) => {
-                    crate::events::emit(&state.events, "agent_status_changed", serde_json::json!({
+                    let now = forge_core::time::now_iso();
+                    let mut event_data = serde_json::json!({
                         "session_id": session_id, "old_status": old_status, "new_status": status,
-                        "current_task": current_task,
-                    }));
+                        "current_task": current_task, "timestamp": now,
+                    });
+                    // Add completed_at when agent transitions to a terminal/idle state
+                    if (status == "retired" || status == "idle") && (old_status == "busy" || old_status == "active") {
+                        event_data["completed_at"] = serde_json::Value::String(now.clone());
+                    }
+                    crate::events::emit(&state.events, "agent_status_changed", event_data);
                     Response::Ok { data: ResponseData::AgentStatusUpdated { session_id, status } }
                 }
                 Err(e) => Response::Error { message: format!("update_agent_status failed: {e}") },
