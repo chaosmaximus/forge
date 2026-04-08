@@ -893,39 +893,39 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
     }
 
     let dir = std::path::Path::new(project_dir);
-    let mut conventions = Vec::new();
+    let mut conventions: Vec<String> = Vec::new();
     let mut languages = Vec::new();
 
     // Rust
     if dir.join("Cargo.toml").exists() {
-        conventions.push("test_command: cargo test --workspace");
-        conventions.push("lint_command: cargo clippy -- -W clippy::all");
-        conventions.push("test_patterns: #[test], #[tokio::test]");
-        conventions.push("build_command: cargo build --release");
+        conventions.push("test_command: cargo test --workspace".into());
+        conventions.push("lint_command: cargo clippy -- -W clippy::all".into());
+        conventions.push("test_patterns: #[test], #[tokio::test]".into());
+        conventions.push("build_command: cargo build --release".into());
         languages.push("rust");
     }
 
     // Node/TypeScript
     if dir.join("package.json").exists() {
-        conventions.push("test_command: npm test");
-        conventions.push("lint_command: npm run lint");
-        conventions.push("test_patterns: describe(, it(, test(");
+        conventions.push("test_command: npm test".into());
+        conventions.push("lint_command: npm run lint".into());
+        conventions.push("test_patterns: describe(, it(, test(".into());
         languages.push("typescript");
     }
 
     // Python
     if dir.join("pyproject.toml").exists() || dir.join("setup.py").exists() || dir.join("requirements.txt").exists() {
-        conventions.push("test_command: pytest");
-        conventions.push("lint_command: ruff check .");
-        conventions.push("test_patterns: def test_, class Test");
+        conventions.push("test_command: pytest".into());
+        conventions.push("lint_command: ruff check .".into());
+        conventions.push("test_patterns: def test_, class Test".into());
         languages.push("python");
     }
 
     // Go
     if dir.join("go.mod").exists() {
-        conventions.push("test_command: go test ./...");
-        conventions.push("lint_command: golangci-lint run");
-        conventions.push("test_patterns: func Test");
+        conventions.push("test_command: go test ./...".into());
+        conventions.push("lint_command: golangci-lint run".into());
+        conventions.push("test_patterns: func Test".into());
         languages.push("go");
     }
 
@@ -934,8 +934,87 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
     }
 
     let language_str = languages.join(", ");
-    let lang_convention = format!("language: {}", &language_str);
-    conventions.push(&lang_convention);
+    conventions.push(format!("language: {}", &language_str));
+
+    // Autonomous domain detection: analyze dependencies to infer domain concerns.
+    // Instead of hardcoded domain templates, we derive concerns from what's actually used.
+    let mut domain_signals = Vec::new();
+    let mut frameworks = Vec::new();
+
+    // Safe file read: cap at 100KB, reject symlinks
+    let safe_read = |path: std::path::PathBuf| -> Option<String> {
+        let meta = std::fs::symlink_metadata(&path).ok()?;
+        if meta.file_type().is_symlink() || meta.len() > 100_000 {
+            return None;
+        }
+        std::fs::read_to_string(&path).ok()
+    };
+
+    // Rust: analyze Cargo.toml [dependencies]
+    if let Some(cargo) = safe_read(dir.join("Cargo.toml")) {
+        let cargo_lower = cargo.to_lowercase();
+        if cargo_lower.contains("actix") || cargo_lower.contains("axum") || cargo_lower.contains("warp") || cargo_lower.contains("rocket") {
+            frameworks.push("web framework");
+        }
+        if cargo_lower.contains("sqlx") || cargo_lower.contains("diesel") || cargo_lower.contains("rusqlite") || cargo_lower.contains("sea-orm") {
+            frameworks.push("database ORM");
+        }
+        if cargo_lower.contains("tokio") { frameworks.push("async runtime"); }
+        if cargo_lower.contains("serde") { frameworks.push("serialization"); }
+        if cargo_lower.contains("jsonwebtoken") || cargo_lower.contains("jwt") { domain_signals.push("authentication (JWT)"); }
+        if cargo_lower.contains("tonic") || cargo_lower.contains("prost") { frameworks.push("gRPC"); }
+    }
+
+    // Python: analyze requirements.txt or pyproject.toml
+    for req_file in &["requirements.txt", "pyproject.toml", "setup.py", "setup.cfg"] {
+        if let Some(reqs) = safe_read(dir.join(req_file)) {
+            let reqs_lower = reqs.to_lowercase();
+            if reqs_lower.contains("django") || reqs_lower.contains("flask") || reqs_lower.contains("fastapi") || reqs_lower.contains("starlette") {
+                frameworks.push("web framework");
+            }
+            if reqs_lower.contains("sklearn") || reqs_lower.contains("scikit-learn") || reqs_lower.contains("xgboost") || reqs_lower.contains("lightgbm") || reqs_lower.contains("catboost") {
+                domain_signals.push("ML/model training — consider: model governance, data lineage, experiment tracking");
+            }
+            if reqs_lower.contains("torch") || reqs_lower.contains("tensorflow") || reqs_lower.contains("keras") {
+                domain_signals.push("deep learning — consider: GPU management, model versioning, training reproducibility");
+            }
+            if reqs_lower.contains("pandas") || reqs_lower.contains("polars") || reqs_lower.contains("pyspark") {
+                domain_signals.push("data processing — consider: data quality, schema validation, pipeline idempotency");
+            }
+            if reqs_lower.contains("stripe") || reqs_lower.contains("payment") || reqs_lower.contains("billing") {
+                domain_signals.push("payments — consider: PCI-DSS, idempotent transactions, audit logging");
+            }
+            if reqs_lower.contains("celery") || reqs_lower.contains("rq") || reqs_lower.contains("dramatiq") {
+                frameworks.push("task queue");
+            }
+            if reqs_lower.contains("sqlalchemy") || reqs_lower.contains("alembic") {
+                frameworks.push("database ORM");
+            }
+            break; // Only read first found
+        }
+    }
+
+    // Node: analyze package.json
+    if let Some(pkg) = safe_read(dir.join("package.json")) {
+        let pkg_lower = pkg.to_lowercase();
+        if pkg_lower.contains("react") || pkg_lower.contains("vue") || pkg_lower.contains("angular") || pkg_lower.contains("svelte") {
+            frameworks.push("frontend SPA");
+        }
+        if pkg_lower.contains("express") || pkg_lower.contains("fastify") || pkg_lower.contains("hono") || pkg_lower.contains("next") {
+            frameworks.push("web framework");
+        }
+        if pkg_lower.contains("prisma") || pkg_lower.contains("drizzle") || pkg_lower.contains("typeorm") || pkg_lower.contains("sequelize") {
+            frameworks.push("database ORM");
+        }
+        if pkg_lower.contains("stripe") { domain_signals.push("payments — consider: PCI-DSS, idempotent transactions"); }
+    }
+
+    if !frameworks.is_empty() {
+        conventions.push(format!("frameworks: {}", frameworks.join(", ")));
+    }
+    if !domain_signals.is_empty() {
+        conventions.push(format!("domain_concerns: {}", domain_signals.join("; ")));
+    }
 
     let content = conventions.join(" | ");
     let title = format!("Project conventions: {}", project_name);

@@ -68,8 +68,10 @@ fn detect_project_name(cwd: &str) -> String {
     let markers = [".git", "Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
     let mut dir = std::path::Path::new(cwd);
 
-    // Walk up from CWD looking for project root markers
+    // Walk up from CWD looking for project root markers (capped at 20 levels)
+    let mut depth = 0;
     loop {
+        if depth > 20 { break; }
         for marker in &markers {
             if dir.join(marker).exists() {
                 return dir.file_name()
@@ -78,7 +80,7 @@ fn detect_project_name(cwd: &str) -> String {
             }
         }
         match dir.parent() {
-            Some(parent) if parent != dir => dir = parent,
+            Some(parent) if parent != dir => { dir = parent; depth += 1; }
             _ => break,
         }
     }
