@@ -123,30 +123,65 @@ async fn process_file(
         }
     };
 
-    // Guard against OOM: skip files larger than 50 MB but still advance offset
-    // so incremental parsers can resume when new content appears.
-    const MAX_FILE_SIZE: u64 = 50_000_000;
+    // ISS-D8: For files over 50MB, read only the last 10MB (tail) instead of skipping.
+    // This ensures long conversations (120MB+) still get their most recent decisions extracted.
+    // Files over 200MB are truly skipped to prevent OOM.
+    const MAX_FULL_READ: u64 = 50_000_000;     // 50MB — read entire file
+    const MAX_TAIL_READ: usize = 10_000_000;    // 10MB — tail read for oversized files
+    const MAX_SKIP_SIZE: u64 = 200_000_000;     // 200MB — skip entirely (OOM protection)
+
     let metadata = tokio::fs::metadata(&canonical)
         .await
         .map_err(|e| format!("failed to stat {}: {e}", canonical.display()))?;
-    if metadata.len() > MAX_FILE_SIZE {
-        // Advance offset to file end so we don't re-check this file until it grows
-        offsets.insert(path.clone(), metadata.len() as usize);
+    let file_size = metadata.len();
+
+    if file_size > MAX_SKIP_SIZE {
+        offsets.insert(path.clone(), file_size as usize);
         eprintln!(
-            "[extractor] file too large ({} bytes), skipping but advancing offset: {}",
-            metadata.len(),
-            canonical.display()
+            "[extractor] file too large ({} bytes > 200MB), skipping: {}",
+            file_size, canonical.display()
         );
         return Ok(());
     }
 
-    // Read the file
-    let content = tokio::fs::read_to_string(&canonical)
-        .await
-        .map_err(|e| format!("failed to read {}: {e}", canonical.display()))?;
+    // Read content: full file for small files, tail for oversized
+    let (content, content_file_offset) = if file_size <= MAX_FULL_READ {
+        let full = tokio::fs::read_to_string(&canonical)
+            .await
+            .map_err(|e| format!("failed to read {}: {e}", canonical.display()))?;
+        (full, 0usize)
+    } else {
+        // Tail read: last 10MB of the file
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let tail_start = (file_size as usize).saturating_sub(MAX_TAIL_READ);
+        let mut file = tokio::fs::File::open(&canonical)
+            .await
+            .map_err(|e| format!("failed to open for tail read {}: {e}", canonical.display()))?;
+        file.seek(std::io::SeekFrom::Start(tail_start as u64))
+            .await
+            .map_err(|e| format!("failed to seek {}: {e}", canonical.display()))?;
+        let mut buf = Vec::with_capacity(MAX_TAIL_READ);
+        file.read_to_end(&mut buf)
+            .await
+            .map_err(|e| format!("failed to tail-read {}: {e}", canonical.display()))?;
 
-    // Get the last offset for this file (or 0 if first time)
-    let last_offset = offsets.get(path).copied().unwrap_or(0);
+        // Find first newline to start at a complete line boundary (JSONL safety)
+        let line_start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+        let actual_start = tail_start + line_start;
+        let tail_str = String::from_utf8_lossy(&buf[line_start..]).to_string();
+        eprintln!(
+            "[extractor] tail-reading last {:.1}MB of {:.1}MB file: {}",
+            tail_str.len() as f64 / 1_048_576.0,
+            file_size as f64 / 1_048_576.0,
+            canonical.display()
+        );
+        (tail_str, actual_start)
+    };
+
+    // Get the last offset for this file (or 0 if first time).
+    // Adjust for tail reads: if last_offset is before our tail window, start from 0 in the tail.
+    let raw_last_offset = offsets.get(path).copied().unwrap_or(0);
+    let last_offset = raw_last_offset.saturating_sub(content_file_offset);
 
     // Parse incrementally using the matched adapter
     let parse_start = std::time::Instant::now();
@@ -157,7 +192,8 @@ async fn process_file(
     // prevents duplicate memories if the same chunks are re-processed. This avoids
     // the 18x re-extraction problem where the extractor would re-process the same
     // transcript region on every watcher notification during an active session.
-    offsets.insert(path.clone(), new_offset);
+    // For tail reads, adjust offset back to full-file coordinates.
+    offsets.insert(path.clone(), content_file_offset + new_offset);
 
     if chunks.is_empty() {
         return Ok(());
@@ -828,5 +864,39 @@ mod tests {
                     || lower.contains("finally")
             });
         assert!(has_steps, "paragraph-style procedure should pass quality gate");
+    }
+
+    #[test]
+    fn test_tail_read_offset_math() {
+        // ISS-D8: verify offset calculations for tail reads
+        // Simulates a 120MB file where we read the last 10MB
+
+        let file_size: usize = 120_000_000;
+        let max_tail: usize = 10_000_000;
+        let tail_start = file_size.saturating_sub(max_tail); // 110_000_000
+
+        // Simulate finding first newline at byte 42 in the tail buffer
+        let line_start = 42usize;
+        let content_file_offset = tail_start + line_start; // 110_000_042
+
+        // Case 1: first time seeing this file (raw_last_offset = 0)
+        let raw_last_offset = 0usize;
+        let last_offset = if raw_last_offset > content_file_offset { raw_last_offset - content_file_offset } else { 0 };
+        assert_eq!(last_offset, 0, "first time: should start at beginning of tail content");
+
+        // Case 2: previously processed up to byte 115_000_000 (within our tail window)
+        let raw_last_offset = 115_000_000usize;
+        let last_offset = if raw_last_offset > content_file_offset { raw_last_offset - content_file_offset } else { 0 };
+        assert_eq!(last_offset, 115_000_000 - 110_000_042, "should resume within tail");
+
+        // Case 3: after parse, new_offset is relative to tail content
+        let new_relative_offset = 5_000_000usize;
+        let stored_offset = content_file_offset + new_relative_offset;
+        assert_eq!(stored_offset, 115_000_042, "stored offset should be in full-file coordinates");
+
+        // Case 4: next cycle, raw_last_offset = stored_offset from case 3
+        let raw_last_offset = stored_offset;
+        let last_offset = if raw_last_offset > content_file_offset { raw_last_offset - content_file_offset } else { 0 };
+        assert_eq!(last_offset, new_relative_offset, "should resume from where we left off");
     }
 }

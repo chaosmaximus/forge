@@ -210,6 +210,22 @@ async fn main() {
         }
     };
 
+    // ISS-D9: Auto-vacuum on startup when DB exceeds 100MB.
+    // Prevents unbounded growth from broad indexing.
+    if let Ok(meta) = std::fs::metadata(&db_path) {
+        let db_mb = meta.len() as f64 / 1_048_576.0;
+        if db_mb > 100.0 {
+            tracing::info!("DB is {db_mb:.1}MB — running auto-vacuum");
+            let _ = worker_state.conn.execute_batch("VACUUM;");
+            if let Ok(meta2) = std::fs::metadata(&db_path) {
+                let freed = meta.len().saturating_sub(meta2.len());
+                if freed > 0 {
+                    tracing::info!("auto-vacuum freed {:.1}MB", freed as f64 / 1_048_576.0);
+                }
+            }
+        }
+    }
+
     // Extract shared resources BEFORE wrapping in Arc<Mutex>.
     // These are shared between the socket handler (read path), writer actor,
     // and workers so they all see the same events and HLC.

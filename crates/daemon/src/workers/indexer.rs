@@ -25,20 +25,25 @@ use tokio::sync::{watch, Mutex};
 // (default: 300 = 5 minutes)
 
 /// Directories to skip when walking the project tree.
+/// ISS-D9: Expanded to cover common build/dependency/cache directories
+/// that inflate symbol counts (94K+ symbols from scanning node_modules paths).
 const SKIP_DIRS: &[&str] = &[
-    ".git",
-    ".hg",
-    "target",
-    "node_modules",
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    "dist",
-    "build",
-    ".tox",
-    ".venv",
-    "venv",
+    ".git", ".hg", ".svn",
+    "target", "build", "dist", "out",
+    "node_modules", "bower_components",
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".tox",
+    ".venv", "venv", "env", ".env",
+    ".next", ".nuxt", ".output",
+    "vendor", "third_party",
+    "coverage", ".coverage", "htmlcov",
+    "__generated__", "generated",
+    ".terraform", ".serverless",
+    ".cache", ".parcel-cache",
 ];
+
+/// ISS-D9: Cap file collection per project to prevent DB bloat.
+/// 5000 source files is generous for any single project.
+const MAX_FILES_PER_PROJECT: usize = 5000;
 
 /// Content-hash cache: skips re-indexing unchanged files across index runs.
 /// Key = file path, Value = size:mtime hash string.
@@ -199,6 +204,13 @@ fn collect_source_files(project_dir: &str, extensions: &[&str]) -> Vec<String> {
     let skip_dirs: HashSet<&str> = SKIP_DIRS.iter().copied().collect();
     let mut files = Vec::new();
     walk_dir_recursive(Path::new(project_dir), &skip_dirs, extensions, &mut files, 0);
+    if files.len() > MAX_FILES_PER_PROJECT {
+        eprintln!(
+            "[indexer] capping file collection: {} files found, limiting to {} for {}",
+            files.len(), MAX_FILES_PER_PROJECT, project_dir
+        );
+        files.truncate(MAX_FILES_PER_PROJECT);
+    }
     files
 }
 
