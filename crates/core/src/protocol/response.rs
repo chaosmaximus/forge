@@ -681,6 +681,14 @@ pub enum ResponseData {
         entries: Vec<serde_json::Value>,
     },
 
+    /// Database vacuum result: purged faded memories, removed orphan code entries, freed bytes.
+    Vacuumed {
+        faded_purged: usize,
+        orphan_files_removed: usize,
+        orphan_symbols_removed: usize,
+        freed_bytes: u64,
+    },
+
     Shutdown,
 }
 

@@ -211,7 +211,8 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::Shutdown
         | Request::LicenseStatus
         | Request::SetLicense { .. }
-        | Request::WorkspaceStatus => None,
+        | Request::WorkspaceStatus
+        | Request::VacuumDb => None,
 
         // === Pro tier: sync operations ===
         Request::SyncExport { .. }

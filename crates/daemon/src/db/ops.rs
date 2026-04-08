@@ -875,6 +875,78 @@ pub fn cleanup_garbage_memories(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(deleted)
 }
 
+/// Purge faded memories older than the given number of days.
+/// Deletes memories with status='faded' AND created_at < threshold.
+/// Also cleans up associated edges and FTS entries (via triggers).
+/// Returns number of memories purged.
+pub fn purge_faded_memories(conn: &Connection, older_than_days: i64) -> rusqlite::Result<usize> {
+    // Collect IDs of faded memories older than threshold
+    let threshold = format!("-{older_than_days} days");
+    let ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM memory WHERE status = 'faded' AND created_at < datetime('now', ?1)"
+        )?;
+        let rows = stmt.query_map(params![threshold], |row| row.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let count = ids.len();
+
+    // Delete edges referencing these memories
+    for id in &ids {
+        conn.execute("DELETE FROM edge WHERE from_id = ?1 OR to_id = ?1", params![id])?;
+    }
+
+    // Delete from memory_vec (embedding virtual table)
+    for id in &ids {
+        let _ = conn.execute("DELETE FROM memory_vec WHERE id = ?1", params![id]);
+    }
+
+    // Delete from memory (FTS cleanup happens via triggers)
+    for id in &ids {
+        conn.execute("DELETE FROM memory WHERE id = ?1", params![id])?;
+    }
+
+    Ok(count)
+}
+
+/// Remove code_file and code_symbol entries for files that no longer exist on disk.
+/// Returns (files_removed, symbols_removed).
+pub fn cleanup_orphan_code_entries(conn: &Connection) -> rusqlite::Result<(usize, usize)> {
+    // Query all code_file paths
+    let paths: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, path FROM code_file")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let mut files_removed = 0usize;
+    let mut symbols_removed = 0usize;
+
+    for (id, path) in &paths {
+        if !std::path::Path::new(path).exists() {
+            // Delete symbols for this file
+            let syms = conn.execute(
+                "DELETE FROM code_symbol WHERE file_path = ?1",
+                params![path],
+            )?;
+            symbols_removed += syms;
+
+            // Delete the file entry
+            conn.execute("DELETE FROM code_file WHERE id = ?1", params![id])?;
+            files_removed += 1;
+        }
+    }
+
+    Ok((files_removed, symbols_removed))
+}
+
 /// Normalize fragmented project names using HOME-based prefix stripping.
 /// Applies the same logic as extract_project_from_path but to existing memories.
 /// Returns the number of memories updated.

@@ -245,7 +245,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     // Cross-session perception: when a decision is stored and there are
                     // multiple active sessions, create a subtle perception so other sessions
                     // become aware. Only for decisions (important enough to notify).
-                    if is_decision {
+                    // Skip test-generated decisions — prevent perception pollution
+                    let is_test_decision = title_clone.starts_with("Hook E2E test")
+                        || memory.session_id.starts_with("hook-test-")
+                        || memory.session_id.starts_with("test-hook-");
+                    if is_decision && !is_test_decision {
                         let active_count = crate::sessions::list_sessions(&state.conn, true)
                             .map(|s| s.len())
                             .unwrap_or(0);
@@ -3858,6 +3862,50 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 },
                 Err(e) => Response::Error {
                     message: format!("routing stats query failed: {e}"),
+                },
+            }
+        }
+
+        Request::VacuumDb => {
+            // Phase 1: Purge faded memories older than 30 days
+            let faded_purged = ops::purge_faded_memories(&state.conn, 30).unwrap_or_else(|e| {
+                eprintln!("[vacuum] purge_faded_memories failed: {e}"); 0
+            });
+
+            // Phase 2: Remove orphan code entries (files no longer on disk)
+            let (orphan_files, orphan_symbols) = ops::cleanup_orphan_code_entries(&state.conn).unwrap_or_else(|e| {
+                eprintln!("[vacuum] cleanup_orphan_code_entries failed: {e}"); (0, 0)
+            });
+
+            // Phase 3: Get DB size before, VACUUM, get DB size after
+            let db_path: Option<String> = state.conn.query_row(
+                "PRAGMA database_list",
+                [],
+                |row| row.get::<_, String>(2),
+            ).ok().filter(|p| !p.is_empty());
+
+            let size_before = db_path.as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            let _ = state.conn.execute_batch("VACUUM;");
+
+            let size_after = db_path.as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            let freed = size_before.saturating_sub(size_after);
+
+            eprintln!("[vacuum] faded={faded_purged} orphan_files={orphan_files} orphan_symbols={orphan_symbols} freed={freed}");
+
+            Response::Ok {
+                data: ResponseData::Vacuumed {
+                    faded_purged,
+                    orphan_files_removed: orphan_files,
+                    orphan_symbols_removed: orphan_symbols,
+                    freed_bytes: freed,
                 },
             }
         }

@@ -733,5 +733,8 @@ pub enum Request {
         session_id: Option<String>,
     },
 
+    /// Run database vacuum: purge faded memories, cleanup orphan code entries, then VACUUM.
+    VacuumDb,
+
     Shutdown,
 }
