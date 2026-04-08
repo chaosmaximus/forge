@@ -2546,6 +2546,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 crate::sessions::ack_messages_admin(&state.conn, &message_ids)
             };
             // H2 fix: Don't swallow DB errors — only fall through to notifications on Ok(0).
+            // Design: notification fallback ONLY fires when msg_count==0. Mixed batches
+            // (some message IDs + some notification IDs) will NOT ack the notifications.
+            // This is intentional — callers should use separate ack calls per entity type.
             let msg_count = match msg_result {
                 Ok(count) => count,
                 Err(e) => {

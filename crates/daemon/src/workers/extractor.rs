@@ -165,9 +165,11 @@ async fn process_file(
             .await
             .map_err(|e| format!("failed to tail-read {}: {e}", canonical.display()))?;
 
-        // M2+M3: Handle empty buffer (file shrunk between stat and read)
+        // M2+M3: Handle empty buffer (file shrunk between stat and read).
+        // Reset offset to 0 — file_size from stat is stale and would cause
+        // offset-beyond-content on the next cycle with the smaller file.
         if buf.is_empty() {
-            offsets.insert(path.clone(), file_size as usize);
+            offsets.insert(path.clone(), 0);
             return Ok(());
         }
 

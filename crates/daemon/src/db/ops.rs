@@ -957,14 +957,17 @@ pub fn cleanup_orphaned_affects_edges(conn: &Connection) -> rusqlite::Result<usi
         let path = to_id.strip_prefix("file:").unwrap_or(to_id);
         let p = std::path::Path::new(path);
 
-        // Only check existence for absolute paths or paths we can resolve
+        // Only check existence for absolute paths or paths we can resolve.
+        // Skip relative paths when no project roots are known — CWD may differ
+        // from project root, which would falsely mark valid edges as orphaned.
         let exists = if p.is_absolute() {
             p.exists()
+        } else if project_roots.is_empty() {
+            true // assume exists — can't verify without project root
         } else {
-            // Try resolving against known project roots
             project_roots.iter().any(|root| {
                 std::path::Path::new(root).join(path).exists()
-            }) || p.exists() // also try CWD as last resort
+            })
         };
 
         if !exists {
@@ -4077,11 +4080,21 @@ mod tests {
     fn test_cleanup_orphaned_affects_edges() {
         let conn = open_db();
 
+        // Seed a project root so cleanup can resolve relative paths.
+        // Without this, relative paths are skipped (assumed valid) when project_roots is empty.
+        let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        conn.execute(
+            "INSERT INTO code_file (id, path, language, project, hash, indexed_at)
+             VALUES ('cf-test', 'test.rs', 'rust', ?1, 'abc', datetime('now'))",
+            params![&cwd],
+        ).unwrap();
+
         // Create a memory
         let mem = Memory::new(MemoryType::Decision, "Auth decision", "Use JWT for auth in src/auth.rs");
         remember(&conn, &mem).unwrap();
 
-        // Create affects edges: one to a file that exists, one to a file that doesn't
+        // Create affects edges: one to a file that exists (Cargo.toml in project root),
+        // one to a file that doesn't exist in any project root
         store_edge(&conn, &mem.id, "file:Cargo.toml", "affects", "{}").unwrap();
         store_edge(&conn, &mem.id, "file:src/nonexistent_file_xyz.rs", "affects", "{}").unwrap();
 
@@ -4097,5 +4110,18 @@ mod tests {
             "SELECT COUNT(*) FROM edge WHERE edge_type = 'affects'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(remaining, 1, "should have 1 remaining affects edge (Cargo.toml exists)");
+    }
+
+    #[test]
+    fn test_cleanup_orphaned_affects_edges_no_project_roots() {
+        let conn = open_db();
+        let mem = Memory::new(MemoryType::Decision, "Test", "content");
+        remember(&conn, &mem).unwrap();
+
+        // With no project roots, relative paths should be preserved (not falsely deleted)
+        store_edge(&conn, &mem.id, "file:src/unknown.rs", "affects", "{}").unwrap();
+
+        let removed = cleanup_orphaned_affects_edges(&conn).unwrap();
+        assert_eq!(removed, 0, "relative paths should NOT be deleted when no project roots known");
     }
 }
