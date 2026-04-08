@@ -568,6 +568,14 @@ async fn run_index(
         return Ok(());
     }
 
+    // Auto-detect and store project conventions if none exist yet.
+    // This enables agents to discover test commands, lint tools, etc. without hardcoding.
+    {
+        let locked = state.lock().await;
+        auto_detect_conventions(&locked.conn, project_dir);
+        drop(locked);
+    }
+
     // Take lock only for the batch DB writes
     let locked = state.lock().await;
 
@@ -854,6 +862,96 @@ pub fn extract_call_edges_regex(
 }
 
 /// Run community detection clustering if a reality exists for this project.
+/// Auto-detect project conventions from marker files and store as a memory.
+/// Only creates conventions if none exist yet for this project.
+/// Detects: test_command, lint_command, test_patterns, language, framework.
+pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
+    // Check if conventions already exist for this project
+    let project_name = std::path::Path::new(project_dir)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let proj_escaped = project_dir.replace('\'', "''");
+    let name_escaped = project_name.replace('\'', "''");
+    let exists: bool = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) > 0 FROM memory
+             WHERE status = 'active' AND metadata LIKE '%project_conventions%'
+             AND (project = '{proj_escaped}' OR project = '{name_escaped}')",
+        ),
+        [],
+        |row| row.get(0),
+    ).unwrap_or(false);
+
+    if exists {
+        return; // Conventions already stored
+    }
+
+    let dir = std::path::Path::new(project_dir);
+    let mut conventions = Vec::new();
+    let mut languages = Vec::new();
+
+    // Rust
+    if dir.join("Cargo.toml").exists() {
+        conventions.push("test_command: cargo test --workspace");
+        conventions.push("lint_command: cargo clippy -- -W clippy::all");
+        conventions.push("test_patterns: #[test], #[tokio::test]");
+        conventions.push("build_command: cargo build --release");
+        languages.push("rust");
+    }
+
+    // Node/TypeScript
+    if dir.join("package.json").exists() {
+        conventions.push("test_command: npm test");
+        conventions.push("lint_command: npm run lint");
+        conventions.push("test_patterns: describe(, it(, test(");
+        languages.push("typescript");
+    }
+
+    // Python
+    if dir.join("pyproject.toml").exists() || dir.join("setup.py").exists() || dir.join("requirements.txt").exists() {
+        conventions.push("test_command: pytest");
+        conventions.push("lint_command: ruff check .");
+        conventions.push("test_patterns: def test_, class Test");
+        languages.push("python");
+    }
+
+    // Go
+    if dir.join("go.mod").exists() {
+        conventions.push("test_command: go test ./...");
+        conventions.push("lint_command: golangci-lint run");
+        conventions.push("test_patterns: func Test");
+        languages.push("go");
+    }
+
+    if conventions.is_empty() {
+        return; // Unknown project type
+    }
+
+    let language_str = languages.join(", ");
+    let lang_convention = format!("language: {}", &language_str);
+    conventions.push(&lang_convention);
+
+    let content = conventions.join(" | ");
+    let title = format!("Project conventions: {}", project_name);
+    let id = ulid::Ulid::new().to_string();
+    let now = forge_core::time::timestamp_now();
+
+    let result = conn.execute(
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, project, created_at, updated_at, accessed_at, metadata)
+         VALUES (?1, 'decision', ?2, ?3, 0.8, 'active', '[]', ?4, ?5, ?5, ?5, ?6)",
+        rusqlite::params![
+            id, title, content, project_name, now,
+            r#"{"convention_type":"project_conventions"}"#,
+        ],
+    );
+
+    match result {
+        Ok(_) => eprintln!("[indexer] auto-detected conventions for {project_name}: {language_str}"),
+        Err(e) => eprintln!("[indexer] failed to store conventions: {e}"),
+    }
+}
+
 pub fn run_clustering(conn: &Connection, project_dir: &str) {
     match ops::get_reality_by_path(conn, project_dir, "default") {
         Ok(Some(reality)) => {
@@ -1375,5 +1473,87 @@ mod tests {
 
         let edges = extract_call_edges_regex(&conn, &files, &symbols);
         assert_eq!(edges, 1, "multiple calls to same function should create only 1 edge");
+    }
+
+    #[test]
+    fn test_auto_detect_conventions_rust() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Minimal schema for memory table
+        conn.execute_batch("
+            CREATE TABLE memory (
+                id TEXT PRIMARY KEY, memory_type TEXT, title TEXT, content TEXT,
+                confidence REAL, status TEXT, tags TEXT, project TEXT,
+                created_at TEXT, updated_at TEXT, accessed_at TEXT, metadata TEXT
+            );
+        ").unwrap();
+
+        auto_detect_conventions(&conn, dir.to_str().unwrap());
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory WHERE metadata LIKE '%project_conventions%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "should create 1 conventions memory");
+
+        let content: String = conn.query_row(
+            "SELECT content FROM memory WHERE metadata LIKE '%project_conventions%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert!(content.contains("cargo test"), "should detect Rust test command");
+        assert!(content.contains("#[test]"), "should include Rust test patterns");
+    }
+
+    #[test]
+    fn test_auto_detect_conventions_idempotent() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            CREATE TABLE memory (
+                id TEXT PRIMARY KEY, memory_type TEXT, title TEXT, content TEXT,
+                confidence REAL, status TEXT, tags TEXT, project TEXT,
+                created_at TEXT, updated_at TEXT, accessed_at TEXT, metadata TEXT
+            );
+        ").unwrap();
+
+        // Run twice
+        auto_detect_conventions(&conn, dir.to_str().unwrap());
+        auto_detect_conventions(&conn, dir.to_str().unwrap());
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory WHERE metadata LIKE '%project_conventions%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "should not create duplicate conventions");
+    }
+
+    #[test]
+    fn test_auto_detect_conventions_python() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+        std::fs::write(dir.join("pyproject.toml"), "[tool.pytest]").unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            CREATE TABLE memory (
+                id TEXT PRIMARY KEY, memory_type TEXT, title TEXT, content TEXT,
+                confidence REAL, status TEXT, tags TEXT, project TEXT,
+                created_at TEXT, updated_at TEXT, accessed_at TEXT, metadata TEXT
+            );
+        ").unwrap();
+
+        auto_detect_conventions(&conn, dir.to_str().unwrap());
+
+        let content: String = conn.query_row(
+            "SELECT content FROM memory WHERE metadata LIKE '%project_conventions%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert!(content.contains("pytest"), "should detect Python test command");
     }
 }
