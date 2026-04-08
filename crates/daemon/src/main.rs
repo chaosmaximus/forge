@@ -216,7 +216,9 @@ async fn main() {
         let db_mb = meta.len() as f64 / 1_048_576.0;
         if db_mb > 100.0 {
             tracing::info!("DB is {db_mb:.1}MB — running auto-vacuum");
-            let _ = worker_state.conn.execute_batch("VACUUM;");
+            if let Err(e) = worker_state.conn.execute_batch("VACUUM;") {
+                tracing::warn!("auto-vacuum failed: {e}");
+            }
             if let Ok(meta2) = std::fs::metadata(&db_path) {
                 let freed = meta.len().saturating_sub(meta2.len());
                 if freed > 0 {

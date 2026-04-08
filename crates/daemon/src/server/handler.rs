@@ -2545,18 +2545,24 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             } else {
                 crate::sessions::ack_messages_admin(&state.conn, &message_ids)
             };
-            let msg_count = msg_result.unwrap_or_else(|e| {
-                eprintln!("[ack] message ack failed: {e}");
-                0
-            });
+            // H2 fix: Don't swallow DB errors — only fall through to notifications on Ok(0).
+            let msg_count = match msg_result {
+                Ok(count) => count,
+                Err(e) => {
+                    return Response::Error { message: format!("ack_messages failed: {e}") };
+                }
+            };
 
             // Unified ack: if no messages matched, try acking as notifications.
             // This fixes the protocol gap where `ack` on a notification ID silently fails.
+            // H1 fix: check Ok(true) not just is_ok() — Ok(false) means ID not found.
             let notif_count = if msg_count == 0 {
                 let mut count = 0usize;
                 for id in &message_ids {
-                    if crate::notifications::ack_notification(&state.conn, id).is_ok() {
-                        count += 1;
+                    match crate::notifications::ack_notification(&state.conn, id) {
+                        Ok(true) => count += 1,
+                        Ok(false) => {} // ID not in notification table either
+                        Err(e) => eprintln!("[ack] notification ack error for {id}: {e}"),
                     }
                 }
                 count

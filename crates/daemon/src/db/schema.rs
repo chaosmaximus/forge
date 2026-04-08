@@ -904,29 +904,41 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 
     // ── Migration: dedup edges THEN create UNIQUE index (ISS-D6) ──
     // MUST dedup before index creation — CREATE UNIQUE INDEX fails on duplicate data.
-    // The IF NOT EXISTS only checks if the index exists, NOT if data is compatible.
-    let edge_deduped: usize = conn.execute(
-        "DELETE FROM edge WHERE rowid NOT IN (
-            SELECT MIN(rowid) FROM edge GROUP BY from_id, to_id, edge_type
-        )",
-        [],
-    ).unwrap_or_else(|e| { eprintln!("[schema] edge dedup failed: {e}"); 0 });
-    if edge_deduped > 0 {
-        eprintln!("[schema] deduplicated {edge_deduped} duplicate edge rows");
+    // M1 fix: only dedup if UNIQUE index doesn't already exist (avoids full-table scan on every startup).
+    let edge_idx_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_edge_unique'",
+        [], |r| r.get(0),
+    ).unwrap_or(false);
+    if !edge_idx_exists {
+        let edge_deduped: usize = conn.execute(
+            "DELETE FROM edge WHERE rowid NOT IN (
+                SELECT MIN(rowid) FROM edge GROUP BY from_id, to_id, edge_type
+            )",
+            [],
+        ).unwrap_or_else(|e| { eprintln!("[schema] edge dedup failed: {e}"); 0 });
+        if edge_deduped > 0 {
+            eprintln!("[schema] deduplicated {edge_deduped} duplicate edge rows");
+        }
     }
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_edge_unique ON edge(from_id, to_id, edge_type);"
     )?;
 
     // ── Migration: dedup teams THEN create UNIQUE index (ISS-D6) ──
-    let team_deduped: usize = conn.execute(
-        "DELETE FROM team WHERE id NOT IN (
-            SELECT MIN(id) FROM team GROUP BY name, organization_id
-        )",
-        [],
-    ).unwrap_or_else(|e| { eprintln!("[schema] team dedup failed: {e}"); 0 });
-    if team_deduped > 0 {
-        eprintln!("[schema] deduplicated {team_deduped} duplicate team rows");
+    let team_idx_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_team_name_org'",
+        [], |r| r.get(0),
+    ).unwrap_or(false);
+    if !team_idx_exists {
+        let team_deduped: usize = conn.execute(
+            "DELETE FROM team WHERE id NOT IN (
+                SELECT MIN(id) FROM team GROUP BY name, organization_id
+            )",
+            [],
+        ).unwrap_or_else(|e| { eprintln!("[schema] team dedup failed: {e}"); 0 });
+        if team_deduped > 0 {
+            eprintln!("[schema] deduplicated {team_deduped} duplicate team rows");
+        }
     }
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_team_name_org ON team(name, organization_id);"
