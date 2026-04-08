@@ -49,6 +49,11 @@ const ENTITY_STOP_WORDS: &[&str] = &[
     "session", "phase", "wave", "sprint", "step", "task", "todo",
     "open", "closed", "pending", "progress", "total", "first", "last",
     "next", "previous", "current", "recent", "old", "existing",
+    // Infrastructure/tooling terms (too generic for entities)
+    "debug", "docker", "implemented", "skill", "evaluator", "generator",
+    "daemon", "server", "client", "handler", "worker", "index", "indexer",
+    "hook", "hooks", "pipeline", "feature", "convention", "conventions",
+    "binary", "compile", "clippy", "linter", "formatter", "ci",
 ];
 
 // ──────────────────────────────────────────────

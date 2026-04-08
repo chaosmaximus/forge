@@ -127,6 +127,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_edge_from ON edge(from_id);
         CREATE INDEX IF NOT EXISTS idx_edge_to ON edge(to_id);
         CREATE INDEX IF NOT EXISTS idx_edge_type ON edge(edge_type);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_edge_unique ON edge(from_id, to_id, edge_type);
 
         CREATE TABLE IF NOT EXISTS code_file (
             id TEXT PRIMARY KEY,

@@ -1326,26 +1326,34 @@ pub fn compile_dynamic_suffix(
 
     // ── Project Conventions ──
     // Inject project-specific conventions (test commands, lint commands, patterns, etc.)
-    // These are stored as decisions with metadata convention_type=project_conventions.
-    // Agents read this block instead of hardcoding project-specific knowledge.
+    // Stored as decisions with metadata containing "project_conventions" + memory_type = decision.
+    // Budget-capped at 2000 chars to prevent DoS via large content.
     {
-        let conv_sql = if let Some(proj) = project {
-            format!(
+        let conv_result: rusqlite::Result<String> = if let Some(proj) = project {
+            conn.query_row(
                 "SELECT content FROM memory
-                 WHERE status = 'active' AND metadata LIKE '%project_conventions%'
-                 AND (project = '{}' OR project IS NULL OR project = '')
-                 LIMIT 1",
-                proj.replace('\'', "''")
+                 WHERE status = 'active' AND memory_type = 'decision'
+                 AND metadata LIKE '%project_conventions%'
+                 AND project = ?1
+                 ORDER BY confidence DESC LIMIT 1",
+                params![proj],
+                |row| row.get(0),
             )
         } else {
-            "SELECT content FROM memory
-             WHERE status = 'active' AND metadata LIKE '%project_conventions%'
-             LIMIT 1".to_string()
+            conn.query_row(
+                "SELECT content FROM memory
+                 WHERE status = 'active' AND memory_type = 'decision'
+                 AND metadata LIKE '%project_conventions%'
+                 ORDER BY confidence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
         };
-        if let Ok(content) = conn.query_row(&conv_sql, [], |row| row.get::<_, String>(0)) {
-            // Parse pipe-delimited conventions into XML
+        if let Ok(content) = conv_result {
+            // Budget cap: truncate to prevent unbounded context injection
+            let capped = if content.len() > 2000 { &content[..2000] } else { &content };
             xml.push_str("<project-conventions hint=\"project-specific knowledge — use these for test/lint/build commands\">\n");
-            for entry in content.split('|') {
+            for entry in capped.split('|') {
                 let entry = entry.trim();
                 if let Some((key, val)) = entry.split_once(':') {
                     xml.push_str(&format!(

@@ -3938,12 +3938,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 regex::Regex::new(r"(?:crates|src|lib|app)/[\w/]+\.(?:rs|ts|tsx|js|py|go)").unwrap()
             });
 
-            let mut stmt = state.conn.prepare(
+            let rows: Vec<(String, String, String)> = match state.conn.prepare(
                 "SELECT id, title, content FROM memory WHERE memory_type IN ('decision', 'lesson') AND status = 'active'"
-            ).unwrap();
-            let rows: Vec<(String, String, String)> = stmt.query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            }).unwrap().filter_map(|r| r.ok()).collect();
+            ) {
+                Ok(mut stmt) => stmt.query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                }).ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default(),
+                Err(e) => return Response::Error { message: format!("backfill query failed: {e}") },
+            };
 
             let memories_scanned = rows.len();
             let mut edges_created = 0usize;
@@ -3984,20 +3986,23 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             if name.trim().is_empty() {
                 return Response::Ok { data: ResponseData::SymbolResults { symbols: vec![] } };
             }
-            let query = if let Some(ref f) = file {
-                format!(
-                    "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE '%{}%' AND file_path LIKE '%{}%' ORDER BY file_path, line_start LIMIT 50",
-                    name.replace('\'', "''"), f.replace('\'', "''")
+            let name_pattern = format!("%{}%", name);
+            let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(ref f) = file {
+                let file_pattern = format!("%{}%", f);
+                (
+                    "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE ?1 AND file_path LIKE ?2 ORDER BY file_path, line_start LIMIT 50",
+                    vec![Box::new(name_pattern) as Box<dyn rusqlite::types::ToSql>, Box::new(file_pattern)],
                 )
             } else {
-                format!(
-                    "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE '%{}%' ORDER BY file_path, line_start LIMIT 50",
-                    name.replace('\'', "''")
+                (
+                    "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE ?1 ORDER BY file_path, line_start LIMIT 50",
+                    vec![Box::new(name_pattern) as Box<dyn rusqlite::types::ToSql>],
                 )
             };
-            match state.conn.prepare(&query) {
+            match state.conn.prepare(sql) {
                 Ok(mut stmt) => {
-                    let symbols: Vec<forge_core::protocol::response::SymbolInfo> = stmt.query_map([], |row| {
+                    let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+                    let symbols: Vec<forge_core::protocol::response::SymbolInfo> = stmt.query_map(params_refs.as_slice(), |row| {
                         Ok(forge_core::protocol::response::SymbolInfo {
                             name: row.get(0)?,
                             kind: row.get(1)?,
@@ -4005,7 +4010,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             line: row.get::<_, Option<u32>>(3)?.unwrap_or(0),
                             parent: row.get(4)?,
                         })
-                    }).unwrap().filter_map(|r| r.ok()).collect();
+                    }).ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default();
                     Response::Ok { data: ResponseData::SymbolResults { symbols } }
                 }
                 Err(e) => Response::Error { message: format!("find_symbol query failed: {e}") },
@@ -4013,13 +4018,12 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::GetSymbolsOverview { file } => {
-            let query = format!(
-                "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE file_path LIKE '%{}%' ORDER BY line_start LIMIT 200",
-                file.replace('\'', "''")
-            );
-            match state.conn.prepare(&query) {
+            let file_pattern = format!("%{}%", file);
+            match state.conn.prepare(
+                "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE file_path LIKE ?1 ORDER BY line_start LIMIT 200"
+            ) {
                 Ok(mut stmt) => {
-                    let symbols: Vec<forge_core::protocol::response::SymbolInfo> = stmt.query_map([], |row| {
+                    let symbols: Vec<forge_core::protocol::response::SymbolInfo> = stmt.query_map(rusqlite::params![file_pattern], |row| {
                         Ok(forge_core::protocol::response::SymbolInfo {
                             name: row.get(0)?,
                             kind: row.get(1)?,
@@ -4027,7 +4031,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             line: row.get::<_, Option<u32>>(3)?.unwrap_or(0),
                             parent: row.get(4)?,
                         })
-                    }).unwrap().filter_map(|r| r.ok()).collect();
+                    }).ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default();
                     Response::Ok { data: ResponseData::SymbolResults { symbols } }
                 }
                 Err(e) => Response::Error { message: format!("get_symbols_overview query failed: {e}") },
