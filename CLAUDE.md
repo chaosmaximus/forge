@@ -21,21 +21,34 @@ Forge orchestrates the full lifecycle and delegates to Superpowers, Codex, and o
 | "set up CI/CD" / "add tests" / "add e2e tests" | `forge:forge` | ~~test-driven-development~~ |
 | "performance issue" / "optimize" / "N+1 queries" | `forge:forge` | ~~systematic-debugging~~ |
 
-### Skills that Forge calls internally — do NOT call directly
+### Forge workflow skills — use these for development discipline
 
-| Superpowers Skill | Forge Phase |
-|-------------------|-------------|
-| `superpowers:brainstorming` | Think phase (via forge-think) |
-| `superpowers:writing-plans` | Plan phase (via forge-feature/forge-new) |
-| `superpowers:subagent-driven-development` | Build phase (via forge agents) |
-| `superpowers:test-driven-development` | Build phase (generators follow TDD) |
-| `superpowers:systematic-debugging` | Debug phase (when tests/verification fail) |
-| `superpowers:requesting-code-review` | Review phase (via forge-review) |
-| `superpowers:verification-before-completion` | Ship phase (via forge-ship) |
-| `superpowers:finishing-a-development-branch` | Ship phase (via forge-ship) |
-| `superpowers:dispatching-parallel-agents` | Build phase (forge dispatches its own agent team) |
-| `superpowers:using-git-worktrees` | Build phase (forge-generator uses worktrees) |
-| `feature-dev:feature-dev` | Entire lifecycle (forge-feature supersedes this) |
+| Forge Skill | When to Use |
+|-------------|------------|
+| `forge:forge-tdd` | Before implementing ANY feature or fix — test first, watch fail, implement, verify |
+| `forge:forge-debug` | When encountering ANY bug or failure — root cause before fix |
+| `forge:forge-verify` | Before claiming work is done — evidence before assertions |
+| `forge:forge-think` | Requirements discovery — BDD specs, acceptance criteria |
+| `forge:forge-feature` | Full build lifecycle — explore, plan, build (with two-stage review), ship |
+| `forge:forge-review` | Code review — standard or adversarial |
+| `forge:forge-ship` | Final verification + PR creation |
+| `forge:forge-research` | Deep research with bounded exploration |
+
+### These plugins are SUPERSEDED by Forge — do NOT use them
+
+| Superseded Plugin | Forge Replacement |
+|-------------------|-------------------|
+| `superpowers:brainstorming` | `forge:forge-think` |
+| `superpowers:writing-plans` | `forge:forge-feature` (plan phase) |
+| `superpowers:subagent-driven-development` | `forge:forge-feature` (build phase with two-stage review) |
+| `superpowers:test-driven-development` | `forge:forge-tdd` |
+| `superpowers:systematic-debugging` | `forge:forge-debug` |
+| `superpowers:requesting-code-review` | `forge:forge-review` |
+| `superpowers:verification-before-completion` | `forge:forge-verify` |
+| `superpowers:finishing-a-development-branch` | `forge:forge-ship` |
+| `superpowers:dispatching-parallel-agents` | Forge agent team (forge-planner/generator/evaluator) |
+| `episodic-memory:*` | Forge 8-layer Manas memory (`forge-next recall/remember`) |
+| `feature-dev:feature-dev` | `forge:forge-feature` |
 
 ### When NOT to use Forge
 
