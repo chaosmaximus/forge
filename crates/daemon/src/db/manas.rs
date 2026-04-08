@@ -1900,7 +1900,9 @@ pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqli
         if *count < 3 {
             continue;
         }
-        // Skip high-frequency words (>5% of all titles)
+        // Skip high-frequency words (>5% of all titles).
+        // Guard: when threshold < 3, filter would suppress words at the minimum gap detection
+        // threshold (3 references), making the feature useless on small DBs (<60 memories).
         if *count > frequency_threshold && frequency_threshold >= 3 {
             continue;
         }

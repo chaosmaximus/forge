@@ -928,8 +928,20 @@ pub fn purge_faded_memories(conn: &Connection, older_than_days: i64) -> rusqlite
 
 /// Remove affects edges whose target file no longer exists on disk.
 /// Affects edges use `file:{path}` as to_id. If the path doesn't exist, the edge is orphaned.
+///
+/// M4: Only checks absolute paths or paths resolved against known project roots from code_file.
+/// Relative paths without a known project root are left alone (CWD varies between contexts).
 /// Returns number of edges removed.
 pub fn cleanup_orphaned_affects_edges(conn: &Connection) -> rusqlite::Result<usize> {
+    // Collect known project roots from code_file paths (for resolving relative affects edges)
+    let project_roots: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT project FROM code_file WHERE project != ''"
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     let edges: Vec<(String, String)> = {
         let mut stmt = conn.prepare(
             "SELECT id, to_id FROM edge WHERE edge_type = 'affects' AND to_id LIKE 'file:%'"
@@ -943,7 +955,19 @@ pub fn cleanup_orphaned_affects_edges(conn: &Connection) -> rusqlite::Result<usi
     let mut removed = 0usize;
     for (id, to_id) in &edges {
         let path = to_id.strip_prefix("file:").unwrap_or(to_id);
-        if !std::path::Path::new(path).exists() {
+        let p = std::path::Path::new(path);
+
+        // Only check existence for absolute paths or paths we can resolve
+        let exists = if p.is_absolute() {
+            p.exists()
+        } else {
+            // Try resolving against known project roots
+            project_roots.iter().any(|root| {
+                std::path::Path::new(root).join(path).exists()
+            }) || p.exists() // also try CWD as last resort
+        };
+
+        if !exists {
             conn.execute("DELETE FROM edge WHERE id = ?1", params![id])?;
             removed += 1;
         }

@@ -209,6 +209,8 @@ fn collect_source_files(project_dir: &str, extensions: &[&str]) -> Vec<String> {
             "[indexer] capping file collection: {} files found, limiting to {} for {}",
             files.len(), MAX_FILES_PER_PROJECT, project_dir
         );
+        // L3: sort by path for deterministic truncation across runs
+        files.sort();
         files.truncate(MAX_FILES_PER_PROJECT);
     }
     files
