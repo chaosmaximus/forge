@@ -926,6 +926,32 @@ pub fn purge_faded_memories(conn: &Connection, older_than_days: i64) -> rusqlite
     Ok(count)
 }
 
+/// Remove affects edges whose target file no longer exists on disk.
+/// Affects edges use `file:{path}` as to_id. If the path doesn't exist, the edge is orphaned.
+/// Returns number of edges removed.
+pub fn cleanup_orphaned_affects_edges(conn: &Connection) -> rusqlite::Result<usize> {
+    let edges: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, to_id FROM edge WHERE edge_type = 'affects' AND to_id LIKE 'file:%'"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let mut removed = 0usize;
+    for (id, to_id) in &edges {
+        let path = to_id.strip_prefix("file:").unwrap_or(to_id);
+        if !std::path::Path::new(path).exists() {
+            conn.execute("DELETE FROM edge WHERE id = ?1", params![id])?;
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
+}
+
 /// Remove code_file and code_symbol entries for files that no longer exist on disk.
 /// Returns (files_removed, symbols_removed).
 pub fn cleanup_orphan_code_entries(conn: &Connection) -> rusqlite::Result<(usize, usize)> {
@@ -4021,5 +4047,31 @@ mod tests {
             "SELECT COUNT(*) FROM memory WHERE status = 'active'", [], |r| r.get(0)
         ).unwrap();
         assert_eq!(active, 2, "both memories should remain active");
+    }
+
+    #[test]
+    fn test_cleanup_orphaned_affects_edges() {
+        let conn = open_db();
+
+        // Create a memory
+        let mem = Memory::new(MemoryType::Decision, "Auth decision", "Use JWT for auth in src/auth.rs");
+        remember(&conn, &mem).unwrap();
+
+        // Create affects edges: one to a file that exists, one to a file that doesn't
+        store_edge(&conn, &mem.id, "file:Cargo.toml", "affects", "{}").unwrap();
+        store_edge(&conn, &mem.id, "file:src/nonexistent_file_xyz.rs", "affects", "{}").unwrap();
+
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE edge_type = 'affects'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(total, 2, "should have 2 affects edges");
+
+        let removed = cleanup_orphaned_affects_edges(&conn).unwrap();
+        assert_eq!(removed, 1, "should remove 1 orphaned edge (nonexistent file)");
+
+        let remaining: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE edge_type = 'affects'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(remaining, 1, "should have 1 remaining affects edge (Cargo.toml exists)");
     }
 }

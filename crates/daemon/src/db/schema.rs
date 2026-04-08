@@ -127,7 +127,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_edge_from ON edge(from_id);
         CREATE INDEX IF NOT EXISTS idx_edge_to ON edge(to_id);
         CREATE INDEX IF NOT EXISTS idx_edge_type ON edge(edge_type);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_edge_unique ON edge(from_id, to_id, edge_type);
+        -- NOTE: UNIQUE index created AFTER dedup migration (see end of create_schema)
 
         CREATE TABLE IF NOT EXISTS code_file (
             id TEXT PRIMARY KEY,
@@ -348,7 +348,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_team_org ON team(organization_id);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_team_name_org ON team(name, organization_id);
+        -- NOTE: UNIQUE index created AFTER dedup migration (see end of create_schema)
 
         CREATE TABLE IF NOT EXISTS team_member (
             team_id TEXT NOT NULL,
@@ -902,17 +902,35 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         ");
     }
 
-    // ── Migration: deduplicate teams by (name, organization_id) ──
-    // Keep only the oldest team per (name, org_id) pair. Delete newer duplicates.
-    let deduped: usize = conn.execute(
+    // ── Migration: dedup edges THEN create UNIQUE index (ISS-D6) ──
+    // MUST dedup before index creation — CREATE UNIQUE INDEX fails on duplicate data.
+    // The IF NOT EXISTS only checks if the index exists, NOT if data is compatible.
+    let edge_deduped: usize = conn.execute(
+        "DELETE FROM edge WHERE rowid NOT IN (
+            SELECT MIN(rowid) FROM edge GROUP BY from_id, to_id, edge_type
+        )",
+        [],
+    ).unwrap_or(0);
+    if edge_deduped > 0 {
+        eprintln!("[schema] deduplicated {edge_deduped} duplicate edge rows");
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_edge_unique ON edge(from_id, to_id, edge_type);"
+    )?;
+
+    // ── Migration: dedup teams THEN create UNIQUE index (ISS-D6) ──
+    let team_deduped: usize = conn.execute(
         "DELETE FROM team WHERE id NOT IN (
             SELECT MIN(id) FROM team GROUP BY name, organization_id
         )",
         [],
     ).unwrap_or(0);
-    if deduped > 0 {
-        eprintln!("[schema] deduplicated {deduped} duplicate team rows");
+    if team_deduped > 0 {
+        eprintln!("[schema] deduplicated {team_deduped} duplicate team rows");
     }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_team_name_org ON team(name, organization_id);"
+    )?;
 
     Ok(())
 }
@@ -1223,5 +1241,87 @@ mod tests {
             "SELECT COUNT(*) FROM agent_template", [], |row| row.get(0),
         ).unwrap();
         assert_eq!(count, 18, "should still be 18 after double-seed (INSERT OR IGNORE)");
+    }
+
+    #[test]
+    fn test_schema_survives_duplicate_edges() {
+        // ISS-D6: create_schema must succeed on a DB with pre-existing duplicate edges.
+        // Simulates an existing user's DB that accumulated duplicates before the UNIQUE index.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+
+        // First pass: create schema (fresh DB, no duplicates — succeeds)
+        create_schema(&conn).unwrap();
+
+        // Drop the unique index to simulate a pre-Session-13 DB
+        conn.execute("DROP INDEX IF EXISTS idx_edge_unique", []).unwrap();
+
+        // Insert duplicate edges (same from_id, to_id, edge_type)
+        let now = forge_core::time::now_iso();
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO edge (id, from_id, to_id, edge_type, properties, created_at, valid_from)
+                 VALUES (?1, 'file:src/main.rs', 'sym:main', 'calls', '{}', ?2, ?2)",
+                rusqlite::params![format!("dup-edge-{i}"), &now],
+            ).unwrap();
+        }
+
+        // Verify duplicates exist
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE from_id = 'file:src/main.rs' AND to_id = 'sym:main'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 3, "should have 3 duplicate edges");
+
+        // Second pass: create_schema must NOT crash — dedup runs before unique index
+        create_schema(&conn).unwrap();
+
+        // After dedup, only 1 should remain
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE from_id = 'file:src/main.rs' AND to_id = 'sym:main'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "dedup should keep only 1 edge per (from_id, to_id, edge_type)");
+
+        // Unique index should exist
+        let has_idx: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_edge_unique'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert!(has_idx, "unique index should exist after migration");
+    }
+
+    #[test]
+    fn test_schema_survives_duplicate_teams() {
+        // ISS-D6: create_schema must succeed on a DB with pre-existing duplicate teams.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // Drop unique index to simulate pre-Session-13 DB
+        conn.execute("DROP INDEX IF EXISTS idx_team_name_org", []).unwrap();
+
+        // Insert duplicate teams
+        let now = forge_core::time::now_iso();
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO team (id, name, organization_id, created_by, status, created_at)
+                 VALUES (?1, 'uat-team', 'default', 'system', 'active', ?2)",
+                rusqlite::params![format!("dup-team-{i}"), &now],
+            ).unwrap();
+        }
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM team WHERE name = 'uat-team'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 3, "should have 3 duplicate teams");
+
+        // Re-run create_schema — must not crash
+        create_schema(&conn).unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM team WHERE name = 'uat-team'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "dedup should keep only 1 team per (name, org)");
     }
 }

@@ -344,7 +344,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         static FILE_PATH_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
                             regex::Regex::new(r"(?:crates|src|lib|app)/[\w/]+\.(?:rs|ts|tsx|js|py|go)").unwrap()
                         });
-                        // Note: edge table has no foreign keys — affects edges can point to any ID
+                        // Create affects edges eagerly; orphaned edges cleaned up during vacuum.
+                        // File existence not checked here — CWD varies between daemon and project contexts.
                         let mut seen = std::collections::HashSet::new();
                         for text in [&memory.content, &memory.title] {
                             for cap in FILE_PATH_RE.find_iter(text) {
@@ -3927,6 +3928,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let (orphan_files, orphan_symbols) = ops::cleanup_orphan_code_entries(&state.conn).unwrap_or_else(|e| {
                 eprintln!("[vacuum] cleanup_orphan_code_entries failed: {e}"); (0, 0)
             });
+
+            // Phase 2b: Remove orphaned affects edges (file:* targets that no longer exist)
+            let orphan_edges = ops::cleanup_orphaned_affects_edges(&state.conn).unwrap_or_else(|e| {
+                eprintln!("[vacuum] cleanup_orphaned_affects_edges failed: {e}"); 0
+            });
+            if orphan_edges > 0 {
+                eprintln!("[vacuum] removed {orphan_edges} orphaned affects edges");
+            }
 
             // Phase 3: Get DB size before, VACUUM, get DB size after
             let db_path: Option<String> = state.conn.query_row(
