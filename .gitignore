@@ -54,10 +54,13 @@ archive/
 .playwright-mcp/
 app/forge/test-results/
 app/forge/uat-screenshots/
+app/forge/e2e/screenshots/
 app/forge/e2e/robot/*.html
 app/forge/e2e/robot/*.xml
 app/forge/e2e/playwright/playwright-report/
+app/forge/e2e/playwright/uat-screenshots/
 *.png
+uat-*.png
 product/site/.astro/
 product/site/.firebase/
 product/site/public/models/
