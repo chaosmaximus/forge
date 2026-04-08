@@ -962,3 +962,60 @@ fn test_backfill_affects_via_handler() {
         other => panic!("expected BackfillAffectsResult, got {:?}", other),
     }
 }
+
+/// L2: Test unified ack — SessionAck should fall back to notification table
+/// when message IDs don't match any session_message rows.
+#[test]
+fn test_unified_ack_falls_back_to_notification() {
+    let mut state = fresh_state();
+
+    // Create a notification directly in the DB
+    let notif_id = NotificationBuilder::new("alert", "high", "Build failed", "CI pipeline broke", "ci")
+        .build(&state.conn)
+        .expect("create notification");
+
+    // Verify notification is pending
+    let status: String = state.conn.query_row(
+        "SELECT status FROM notification WHERE id = ?1",
+        rusqlite::params![&notif_id],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(status, "pending", "notification should start as pending");
+
+    // Call SessionAck with the notification ID — should fall back to notification table
+    let resp = handle_request(&mut state, Request::SessionAck {
+        message_ids: vec![notif_id.clone()],
+        session_id: None,
+    });
+    match resp {
+        Response::Ok { data: ResponseData::MessagesAcked { count } } => {
+            assert_eq!(count, 1, "unified ack should have acked 1 notification");
+        }
+        other => panic!("expected MessagesAcked, got {:?}", other),
+    }
+
+    // Verify notification is now acknowledged
+    let status: String = state.conn.query_row(
+        "SELECT status FROM notification WHERE id = ?1",
+        rusqlite::params![&notif_id],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(status, "acknowledged", "notification should be acknowledged after unified ack");
+}
+
+/// L2: Test unified ack with garbage IDs returns 0, not inflated count.
+#[test]
+fn test_unified_ack_garbage_ids_returns_zero() {
+    let mut state = fresh_state();
+
+    let resp = handle_request(&mut state, Request::SessionAck {
+        message_ids: vec!["garbage-1".into(), "garbage-2".into(), "garbage-3".into()],
+        session_id: None,
+    });
+    match resp {
+        Response::Ok { data: ResponseData::MessagesAcked { count } } => {
+            assert_eq!(count, 0, "garbage IDs should return 0 acked (not inflated)");
+        }
+        other => panic!("expected MessagesAcked, got {:?}", other),
+    }
+}

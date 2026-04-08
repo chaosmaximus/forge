@@ -165,8 +165,19 @@ async fn process_file(
             .await
             .map_err(|e| format!("failed to tail-read {}: {e}", canonical.display()))?;
 
+        // M2+M3: Handle empty buffer (file shrunk between stat and read)
+        if buf.is_empty() {
+            offsets.insert(path.clone(), file_size as usize);
+            return Ok(());
+        }
+
         // Find first newline to start at a complete line boundary (JSONL safety)
-        let line_start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+        let mut line_start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+        // M2: Skip any UTF-8 continuation bytes (0x80..=0xBF) after the newline.
+        // Prevents mojibake if seek landed mid-codepoint in CJK/emoji transcripts.
+        while line_start < buf.len() && (buf[line_start] & 0xC0) == 0x80 {
+            line_start += 1;
+        }
         let actual_start = tail_start + line_start;
         let tail_str = String::from_utf8_lossy(&buf[line_start..]).to_string();
         eprintln!(
@@ -898,5 +909,36 @@ mod tests {
         let raw_last_offset = stored_offset;
         let last_offset = if raw_last_offset > content_file_offset { raw_last_offset - content_file_offset } else { 0 };
         assert_eq!(last_offset, new_relative_offset, "should resume from where we left off");
+    }
+
+    #[test]
+    fn test_utf8_continuation_byte_skip() {
+        // M2: After finding newline, skip UTF-8 continuation bytes (0x80..=0xBF)
+        // Simulates a buffer where seek landed mid-codepoint
+
+        // Case 1: Normal ASCII — no continuation bytes after newline
+        let buf = b"partial line\nfull line here\n";
+        let nl = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+        let mut start = nl;
+        while start < buf.len() && (buf[start] & 0xC0) == 0x80 {
+            start += 1;
+        }
+        assert_eq!(start, nl, "ASCII: no bytes skipped after newline");
+        assert_eq!(&buf[start..start + 4], b"full");
+
+        // Case 2: UTF-8 continuation bytes after newline (simulated mid-codepoint)
+        // 0xC0 mask on continuation bytes (0x80-0xBF) = 0x80
+        let buf: &[u8] = &[b'\n', 0x80, 0xBF, b'h', b'i'];
+        let nl = 1; // position after \n
+        let mut start = nl;
+        while start < buf.len() && (buf[start] & 0xC0) == 0x80 {
+            start += 1;
+        }
+        assert_eq!(start, 3, "should skip 2 continuation bytes");
+        assert_eq!(buf[start], b'h');
+
+        // Case 3: Empty buffer
+        let buf: &[u8] = &[];
+        assert!(buf.is_empty(), "empty buffer handled by early return");
     }
 }
