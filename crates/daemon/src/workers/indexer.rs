@@ -360,8 +360,8 @@ async fn index_with_server(
             .filter(|s| s.kind == "function" || s.kind == "class")
             .collect();
 
-        // Limit to first 100 symbols to avoid excessive LSP calls
-        for sym in callable_symbols.iter().take(100) {
+        // Limit to first 200 symbols to avoid excessive LSP calls
+        for sym in callable_symbols.iter().take(200) {
             let sym_uri = file_uri(&sym.file_path);
             let content = std::fs::read_to_string(&sym.file_path).unwrap_or_default();
             if let Err(e) = client
@@ -371,12 +371,18 @@ async fn index_with_server(
                 eprintln!("[indexer] failed to open document for references: {e}");
             }
 
+            // Find the actual character position of the symbol name on its line.
+            // LSP positions are 0-based, line_start is 1-based.
+            let line_0 = sym.line_start.saturating_sub(1);
+            let character = content
+                .lines()
+                .nth(line_0)
+                .and_then(|line| line.find(&sym.name))
+                .unwrap_or(4) as u32;
+
             match tokio::time::timeout(
-                Duration::from_secs(10),
-                // Use character offset 4 (past typical indentation/visibility keywords)
-                // to land inside the symbol token rather than at column 0
-                // which may be whitespace, a doc comment, or an attribute
-                client.references(&sym_uri, sym.line_start as u32, 4),
+                Duration::from_secs(15),
+                client.references(&sym_uri, line_0 as u32, character),
             )
             .await
             {

@@ -185,7 +185,13 @@ impl LspClient {
             },
             initialization_options: None,
             trace: None,
-            workspace_folders: None,
+            workspace_folders: Some(vec![lsp_types::WorkspaceFolder {
+                uri: root_uri_str.parse().unwrap(),
+                name: std::path::Path::new(root_dir)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "workspace".into()),
+            }]),
             client_info: Some(ClientInfo {
                 name: "forge-daemon".into(),
                 version: Some(env!("CARGO_PKG_VERSION").into()),
@@ -203,6 +209,11 @@ impl LspClient {
         client
             .send_notification("initialized", InitializedParams {})
             .await?;
+
+        // Give the language server time to start indexing the workspace.
+        // rust-analyzer in particular needs to build its project model
+        // before textDocument/references can return meaningful results.
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         Ok(client)
     }

@@ -863,6 +863,38 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         eprintln!("[schema] warning: failed to seed team templates: {e}");
     }
 
+    // ── Migration: remove FK constraints from edge table ──
+    // Legacy databases have FOREIGN KEY (from_id/to_id) REFERENCES memory(id)
+    // on the edge table, but import/call/affects edges use non-memory IDs (file: prefixed).
+    // These FKs block all edge creation silently. Recreate without FKs if present.
+    let has_fk: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM pragma_foreign_key_list('edge')",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(false);
+    if has_fk {
+        eprintln!("[schema] migrating edge table: removing legacy FK constraints");
+        let _ = conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS edge_migrated (
+                id TEXT PRIMARY KEY,
+                from_id TEXT NOT NULL,
+                to_id TEXT NOT NULL,
+                edge_type TEXT NOT NULL,
+                properties TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                valid_from TEXT NOT NULL,
+                valid_until TEXT,
+                reality_id TEXT
+            );
+            INSERT OR IGNORE INTO edge_migrated SELECT * FROM edge;
+            DROP TABLE edge;
+            ALTER TABLE edge_migrated RENAME TO edge;
+            CREATE INDEX IF NOT EXISTS idx_edge_from ON edge(from_id);
+            CREATE INDEX IF NOT EXISTS idx_edge_to ON edge(to_id);
+            CREATE INDEX IF NOT EXISTS idx_edge_type ON edge(edge_type);
+        ");
+    }
+
     Ok(())
 }
 
