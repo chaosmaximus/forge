@@ -332,6 +332,7 @@ pub enum Request {
 
     /// Send a message to another session (notification or request)
     SessionSend {
+        #[serde(alias = "to_session")]
         to: String,                    // session ID or "*" for broadcast
         kind: String,                  // "notification" or "request"
         topic: String,

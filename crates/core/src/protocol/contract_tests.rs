@@ -1123,6 +1123,15 @@ mod tests {
                 "act_on_notification reject",
                 r#"{"method":"act_on_notification","params":{"id":"n1","approved":false}}"#,
             ),
+            // ISS-D7: to_session alias for session_send
+            (
+                "session_send with to",
+                r#"{"method":"session_send","params":{"to":"s2","kind":"notification","topic":"test","parts":[]}}"#,
+            ),
+            (
+                "session_send with to_session alias",
+                r#"{"method":"session_send","params":{"to_session":"s2","kind":"notification","topic":"test","parts":[]}}"#,
+            ),
         ];
 
         for (label, json) in &cases {

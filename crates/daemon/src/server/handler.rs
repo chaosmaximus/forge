@@ -2539,17 +2539,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::SessionAck { message_ids, session_id } => {
-            let result = if let Some(sid) = session_id {
-                // Scoped ack: only messages addressed to this session
-                crate::sessions::ack_messages(&state.conn, &message_ids, &sid)
+            // Try acking as session messages first
+            let msg_result = if let Some(sid) = &session_id {
+                crate::sessions::ack_messages(&state.conn, &message_ids, sid)
             } else {
-                // Admin/CLI ack: ack regardless of to_session
                 crate::sessions::ack_messages_admin(&state.conn, &message_ids)
             };
-            match result {
-                Ok(count) => Response::Ok { data: ResponseData::MessagesAcked { count } },
-                Err(e) => Response::Error { message: format!("ack_messages failed: {e}") },
-            }
+            let msg_count = msg_result.unwrap_or(0);
+
+            // Unified ack: if no messages matched, try acking as notifications.
+            // This fixes the protocol gap where `ack` on a notification ID silently fails.
+            let notif_count = if msg_count == 0 {
+                let mut count = 0usize;
+                for id in &message_ids {
+                    if crate::notifications::ack_notification(&state.conn, id).is_ok() {
+                        count += 1;
+                    }
+                }
+                count
+            } else {
+                0
+            };
+
+            let total = msg_count + notif_count;
+            Response::Ok { data: ResponseData::MessagesAcked { count: total } }
         }
 
         Request::ListEntities { project, limit } => {
