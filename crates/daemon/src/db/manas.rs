@@ -1889,10 +1889,19 @@ pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqli
         }
     }
 
-    // 3. For words appearing 3+ times, check if entity exists
+    // 3. For words appearing 3+ times, check if entity exists.
+    // ISS-D10: Skip words appearing in >5% of titles — too common to be meaningful entities.
+    // This prevents noisy perceptions for domain-adjacent terms like "auth", "jwt", "audit".
+    let title_count = rows.len().max(1);
+    let frequency_threshold = (title_count as f64 * 0.05).ceil() as usize;
+
     let mut gaps = Vec::new();
     for (word, count) in &word_freq {
         if *count < 3 {
+            continue;
+        }
+        // Skip high-frequency words (>5% of all titles)
+        if *count > frequency_threshold && frequency_threshold >= 3 {
             continue;
         }
 

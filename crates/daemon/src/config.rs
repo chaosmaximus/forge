@@ -973,13 +973,17 @@ impl ForgeConfig {
                 valid_tiers, self.license.tier
             ));
         }
-        // Security: warn when HTTP is exposed without auth on non-loopback
+        // ISS-D11: Security warning emitted only once (not on every config reload).
         if self.http.enabled && !self.auth.enabled && self.http.bind != "127.0.0.1" && self.http.bind != "localhost" {
-            eprintln!(
-                "[config] SECURITY WARNING: HTTP is bound to {} without auth enabled. \
-                 The API is accessible to any network client without authentication. \
-                 Set auth.enabled=true or bind to 127.0.0.1 for production."
-            , self.http.bind);
+            use std::sync::Once;
+            static WARN_ONCE: Once = Once::new();
+            WARN_ONCE.call_once(|| {
+                eprintln!(
+                    "[config] SECURITY WARNING: HTTP is bound to {} without auth enabled. \
+                     The API is accessible to any network client without authentication. \
+                     Set auth.enabled=true or bind to 127.0.0.1 for production."
+                , self.http.bind);
+            });
         }
         Ok(())
     }
