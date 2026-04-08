@@ -3981,6 +3981,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::FindSymbol { name, file } => {
+            if name.trim().is_empty() {
+                return Response::Ok { data: ResponseData::SymbolResults { symbols: vec![] } };
+            }
             let query = if let Some(ref f) = file {
                 format!(
                     "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE '%{}%' AND file_path LIKE '%{}%' ORDER BY file_path, line_start LIMIT 50",

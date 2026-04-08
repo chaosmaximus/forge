@@ -609,10 +609,15 @@ async fn run_index(
     // Import extraction pass (regex-based, no LSP needed)
     let import_edges_stored = extract_and_store_imports(&locked.conn, &all_files);
 
-    // Regex-based call edge detection — always runs to supplement LSP results
-    // (LSP references are often incomplete: 11 edges from 5781 functions is typical)
-    let regex_call_edges = extract_call_edges_regex(&locked.conn, &all_files, &all_symbols);
-    eprintln!("[indexer] call edges: {} from LSP, {} from regex", edges_stored, regex_call_edges);
+    // Regex-based call edge detection — always runs to supplement LSP results.
+    // If all_symbols is empty (files cached, symbols not re-extracted), load from DB.
+    let symbols_for_calls = if all_symbols.is_empty() {
+        ops::list_symbols(&locked.conn).unwrap_or_default()
+    } else {
+        all_symbols.clone()
+    };
+    let regex_call_edges = extract_call_edges_regex(&locked.conn, &all_files, &symbols_for_calls);
+    eprintln!("[indexer] call edges: {} from LSP, {} from regex (symbols: {})", edges_stored, regex_call_edges, symbols_for_calls.len());
 
     // Run community detection on the updated graph
     run_clustering(&locked.conn, project_dir);

@@ -645,6 +645,25 @@ pub fn count_symbols(conn: &Connection) -> rusqlite::Result<usize> {
     conn.query_row("SELECT count(*) FROM code_symbol", [], |r| r.get(0))
 }
 
+/// List all code symbols (for call edge detection when symbols are cached and not in memory).
+pub fn list_symbols(conn: &Connection) -> rusqlite::Result<Vec<CodeSymbol>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, kind, file_path, line_start, line_end, signature FROM code_symbol"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CodeSymbol {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            kind: row.get(2)?,
+            file_path: row.get(3)?,
+            line_start: row.get::<_, Option<usize>>(4)?.unwrap_or(0),
+            line_end: row.get(5)?,
+            signature: row.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// Insert an edge into the SQLite edge table (persisted, unlike in-memory GraphStore).
 pub fn store_edge(conn: &Connection, from_id: &str, to_id: &str, edge_type: &str, properties: &str) -> rusqlite::Result<()> {
     let id = ulid::Ulid::new().to_string();
