@@ -147,3 +147,56 @@ pub async fn run_watcher(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_watch_config_type() {
+        // WatchConfig is (PathBuf, String) — verify it can be constructed and destructured
+        let config: WatchConfig = (PathBuf::from("/tmp/transcripts"), "jsonl".to_string());
+        let (dir, ext) = &config;
+        assert_eq!(dir, &PathBuf::from("/tmp/transcripts"));
+        assert_eq!(ext, "jsonl");
+    }
+
+    #[tokio::test]
+    async fn test_run_watcher_empty_configs_returns_immediately() {
+        // run_watcher with empty watch_configs should return immediately
+        // without blocking, since there's nothing to watch.
+        let (tx, _rx) = mpsc::channel::<PathBuf>(16);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            run_watcher(tx, vec![], shutdown_rx),
+        )
+        .await;
+
+        assert!(result.is_ok(), "run_watcher with empty configs should return immediately");
+    }
+
+    #[tokio::test]
+    async fn test_run_watcher_shutdown_signal() {
+        // run_watcher should exit when shutdown signal is sent
+        let (tx, _rx) = mpsc::channel::<PathBuf>(16);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        // Use a non-existent directory so the watcher has nothing to watch initially
+        let configs: Vec<WatchConfig> = vec![
+            (PathBuf::from("/tmp/nonexistent_forge_test_dir_12345"), "jsonl".to_string()),
+        ];
+
+        let handle = tokio::spawn(async move {
+            run_watcher(tx, configs, shutdown_rx).await;
+        });
+
+        // Give the watcher a moment to start, then send shutdown
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = shutdown_tx.send(true);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        assert!(result.is_ok(), "watcher should exit after shutdown signal");
+    }
+}

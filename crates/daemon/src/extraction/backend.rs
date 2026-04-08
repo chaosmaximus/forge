@@ -266,4 +266,67 @@ mod tests {
         let result = detect_backend(&cfg).await;
         assert_eq!(result, BackendChoice::ClaudeApi);
     }
+
+    #[tokio::test]
+    async fn test_select_backend_gemini() {
+        // Explicit "gemini" backend with a valid API key should return Gemini variant
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "gemini".to_string();
+        cfg.extraction.gemini.api_key = "test-gemini-api-key".to_string();
+
+        let result = detect_backend(&cfg).await;
+        assert_eq!(result, BackendChoice::Gemini);
+    }
+
+    #[tokio::test]
+    async fn test_select_backend_ollama() {
+        // Explicit "ollama" backend — ollama is not running in test env,
+        // so detect_backend should return None with a reason mentioning the endpoint.
+        let mut cfg = ForgeConfig::default();
+        cfg.extraction.backend = "ollama".to_string();
+
+        let result = detect_backend(&cfg).await;
+        match result {
+            BackendChoice::Ollama => {
+                // Ollama happens to be running locally — acceptable
+            }
+            BackendChoice::None(reason) => {
+                assert!(
+                    reason.contains("ollama"),
+                    "reason should mention ollama: {reason}"
+                );
+            }
+            other => {
+                panic!("expected Ollama or None, got {other:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_select_backend_default() {
+        // Default config has backend = "auto".
+        // In auto mode, the function tries ollama, then cloud providers with keys,
+        // then claude CLI. With no keys and no running services, it should return None.
+        let cfg = ForgeConfig::default();
+        assert_eq!(cfg.extraction.backend, "auto");
+
+        let result = detect_backend(&cfg).await;
+        // In CI/test: ollama likely not running, no API keys set, claude CLI
+        // may or may not be on PATH. We accept any valid result from the auto path.
+        match &result {
+            BackendChoice::None(reason) => {
+                assert!(
+                    reason.contains("no extraction backend available"),
+                    "auto-fallback reason should list tried backends: {reason}"
+                );
+            }
+            BackendChoice::Ollama
+            | BackendChoice::ClaudeApi
+            | BackendChoice::OpenAi
+            | BackendChoice::Gemini
+            | BackendChoice::ClaudeCli => {
+                // Some backend was detected in the environment — also valid
+            }
+        }
+    }
 }

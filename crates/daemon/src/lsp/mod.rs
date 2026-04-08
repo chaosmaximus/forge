@@ -76,3 +76,34 @@ impl LspManager {
         &self.project_dir
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lsp_manager_new() {
+        let manager = LspManager::new("/home/user/project".to_string());
+        // Verify the manager is created with an empty clients map and the correct project dir
+        assert_eq!(manager.project_dir(), "/home/user/project");
+        assert!(manager.clients.is_empty());
+    }
+
+    #[test]
+    fn test_lsp_manager_project_dir() {
+        // Verify project_dir() accessor returns the path passed to the constructor
+        let path = "/tmp/my-workspace/repo".to_string();
+        let manager = LspManager::new(path.clone());
+        assert_eq!(manager.project_dir(), path);
+    }
+
+    #[test]
+    fn test_lsp_manager_different_project_dirs() {
+        // Verify two managers with different project dirs are independent
+        let m1 = LspManager::new("/project/a".to_string());
+        let m2 = LspManager::new("/project/b".to_string());
+        assert_eq!(m1.project_dir(), "/project/a");
+        assert_eq!(m2.project_dir(), "/project/b");
+        assert_ne!(m1.project_dir(), m2.project_dir());
+    }
+}

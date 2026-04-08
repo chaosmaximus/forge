@@ -253,4 +253,76 @@ mod tests {
         assert_eq!(json["status"], "starting");
         assert_eq!(json["indexed"], false);
     }
+
+    #[tokio::test]
+    async fn test_health_response_format() {
+        // Verify the health (liveness) endpoint returns valid JSON with the expected structure:
+        // { "status": "ok" } — no extra fields, correct content-type.
+        let state = test_app_state();
+        let app = test_router(state);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify content-type is application/json
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .expect("should have content-type header")
+            .to_str()
+            .unwrap();
+        assert!(
+            content_type.contains("application/json"),
+            "content-type should be JSON, got: {content_type}"
+        );
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Must be an object with exactly one key: "status"
+        let obj = json.as_object().expect("response should be a JSON object");
+        assert_eq!(obj.len(), 1, "liveness response should have exactly 1 field");
+        assert_eq!(json["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn test_readiness_check() {
+        // Verify readiness endpoint returns ok status and a positive worker count
+        // when the daemon (database + writer channel) is healthy.
+        let state = test_app_state();
+        let app = test_router(state);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Verify structure: { "status": "ok", "workers": N }
+        let obj = json.as_object().expect("response should be a JSON object");
+        assert_eq!(obj.len(), 2, "readiness response should have exactly 2 fields");
+        assert_eq!(json["status"], "ok");
+        let workers = json["workers"]
+            .as_u64()
+            .expect("workers should be a positive integer");
+        assert_eq!(workers, 8, "expected 8 workers");
+    }
 }
