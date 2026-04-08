@@ -349,7 +349,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             for cap in FILE_PATH_RE.find_iter(text) {
                                 let file_target = format!("file:{}", cap.as_str());
                                 if seen.insert(file_target.clone()) {
-                                    let _ = ops::store_edge(&state.conn, &id, &file_target, "affects", "{}");
+                                    if let Err(e) = ops::store_edge(&state.conn, &id, &file_target, "affects", "{}") {
+                                        eprintln!("[handler] failed to create affects edge {} -> {}: {}", id, file_target, e);
+                                    }
                                 }
                             }
                         }
