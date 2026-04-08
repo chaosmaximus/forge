@@ -1,4 +1,5 @@
 pub mod adapters;
+pub mod common;
 pub mod bootstrap;
 pub mod chunk;
 pub mod claude_memory;

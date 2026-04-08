@@ -12,49 +12,8 @@ use forge_core::types::{
 // Includes common English words + generic development/programming terms
 // that are too broad to be meaningful entities.
 // ──────────────────────────────────────────────
-const ENTITY_STOP_WORDS: &[&str] = &[
-    // English grammar
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "need", "must",
-    "in", "on", "at", "to", "for", "with", "by", "from", "of", "about",
-    "into", "through", "during", "before", "after", "above", "below",
-    "and", "or", "but", "not", "no", "nor", "so", "yet",
-    "it", "its", "this", "that", "these", "those", "my", "your", "his",
-    "her", "our", "their", "what", "which", "who", "whom", "how", "when",
-    "where", "why", "all", "each", "every", "both", "few", "more", "most",
-    "other", "some", "any", "such", "only", "own", "same", "than", "too",
-    "very", "just", "also", "then", "now", "here", "there", "up", "out",
-    "if", "as", "like", "even", "still", "well", "back", "way", "down",
-    // Generic verbs/actions
-    "use", "used", "using", "new", "add", "added", "set", "get", "make",
-    "run", "start", "stop", "end", "show", "find", "check", "take", "give",
-    "try", "work", "call", "move", "keep", "let", "put", "say", "said",
-    "write", "read", "update", "create", "delete", "remove", "change",
-    "build", "fix", "test", "done", "made", "left", "right",
-    // Generic development terms (too broad for entities)
-    "code", "file", "files", "data", "type", "types", "error", "errors",
-    "function", "method", "class", "module", "system", "service",
-    "config", "configuration", "settings", "option", "options", "value",
-    "values", "list", "item", "items", "name", "path", "string",
-    "number", "count", "size", "time", "log", "output", "input",
-    "result", "results", "status", "state", "mode", "level", "version",
-    // Common words that appeared as noisy knowledge gaps
-    "root", "commits", "comprehensive", "conversation", "deployment",
-    "design", "feedback", "findings", "master", "proactive", "prototype",
-    "roadmap", "tdd", "tools", "verification", "cloud", "latency",
-    "models", "ndjson", "observability", "transport", "turns", "hybrid",
-    "mcp", "summary", "spec", "plugin", "plan", "complete",
-    // Session/progress markers
-    "session", "phase", "wave", "sprint", "step", "task", "todo",
-    "open", "closed", "pending", "progress", "total", "first", "last",
-    "next", "previous", "current", "recent", "old", "existing",
-    // Infrastructure/tooling terms (too generic for entities)
-    "debug", "docker", "implemented", "skill", "evaluator", "generator",
-    "daemon", "server", "client", "handler", "worker", "index", "indexer",
-    "hook", "hooks", "pipeline", "feature", "convention", "conventions",
-    "binary", "compile", "clippy", "linter", "formatter", "ci",
-];
+// Use the shared stop-word list from common.rs
+use crate::common::STOP_WORDS as ENTITY_STOP_WORDS;
 
 // ──────────────────────────────────────────────
 // Helper: string conversions for enums

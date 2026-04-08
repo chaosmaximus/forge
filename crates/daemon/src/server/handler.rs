@@ -3691,13 +3691,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let config = crate::config::load_config().workspace;
             // List team names from DB
             let team_names: Vec<String> = {
-                let mut stmt = state.conn.prepare(
-                    "SELECT name FROM team WHERE status = 'active' ORDER BY name"
-                ).unwrap();
-                stmt.query_map([], |row| row.get::<_, String>(0))
-                    .unwrap()
-                    .filter_map(|r| r.ok())
-                    .collect()
+                match state.conn.prepare(
+                    "SELECT DISTINCT name FROM team WHERE status = 'active' ORDER BY name"
+                ) {
+                    Ok(mut stmt) => stmt.query_map([], |row| row.get::<_, String>(0))
+                        .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default(),
+                    Err(_) => vec![],
+                }
             };
 
             Response::Ok {

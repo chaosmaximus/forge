@@ -772,14 +772,7 @@ pub fn query_stats(conn: &Connection, hours: u64) -> rusqlite::Result<StatsData>
 
 /// Stop words filtered out before word-overlap comparison in semantic dedup.
 /// These inflate overlap scores for unrelated memories and should be excluded.
-const STOP_WORDS: &[&str] = &[
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "to", "in", "for", "of", "and", "or", "with", "on", "at", "by",
-    "from", "that", "this", "it", "as", "not", "but", "do", "has",
-    "have", "had", "will", "would", "can", "could", "should", "may",
-    "might", "we", "i", "you", "they", "he", "she", "its", "our",
-    "their", "my", "your",
-];
+use crate::common::STOP_WORDS;
 
 /// Extract meaningful words from text: lowercase, split on non-alphanumeric,
 /// filter out stop words and single-character tokens.

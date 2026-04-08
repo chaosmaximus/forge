@@ -150,8 +150,7 @@ fn detect_anti_patterns(conn: &rusqlite::Connection, threshold: f64) -> Vec<(Str
 
     // 3. Keyword overlap similarity (Jaccard index on significant words)
     let mut detections = Vec::new();
-    let stop_words: HashSet<String> = ["the", "and", "for", "that", "this", "with", "from", "not", "are", "was", "but", "have", "has"]
-        .iter().map(|s| s.to_string()).collect();
+    let stop_words: HashSet<String> = crate::common::STOP_WORDS.iter().map(|s| s.to_string()).collect();
 
     for (ap_title, ap_content) in &anti_patterns {
         let ap_text = format!("{} {}", ap_title, ap_content).to_lowercase();

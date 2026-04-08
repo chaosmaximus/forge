@@ -817,6 +817,37 @@ pub fn list_team_templates(conn: &Connection) -> rusqlite::Result<Vec<serde_json
     Ok(results)
 }
 
+/// Seed default agent templates if none exist.
+/// Provides claude-code, codex, and gemini-cli templates for the web app.
+pub fn seed_agent_templates(conn: &Connection) -> rusqlite::Result<()> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM agent_template",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    if count > 0 {
+        return Ok(());
+    }
+
+    let now = forge_core::time::now_iso();
+    let templates: &[(&str, &str, &str)] = &[
+        ("claude-code", "Claude Code agent — primary AI coding agent with full tool access", "claude-code"),
+        ("codex", "OpenAI Codex agent — adversarial review and second opinions", "codex"),
+        ("gemini-cli", "Gemini CLI agent — alternative AI agent for diversity of thought", "gemini-cli"),
+    ];
+
+    for (name, desc, agent_type) in templates {
+        let id = format!("tpl-{}", ulid::Ulid::new());
+        conn.execute(
+            "INSERT OR IGNORE INTO agent_template (id, name, description, agent_type, organization_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'default', ?5, ?5)",
+            params![id, name, desc, agent_type, now],
+        )?;
+    }
+
+    Ok(())
+}
+
 // ── Meeting Protocol ──
 
 /// Create a meeting — sends FISP messages to all participants.

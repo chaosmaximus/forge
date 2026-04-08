@@ -348,6 +348,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_team_org ON team(organization_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_team_name_org ON team(name, organization_id);
 
         CREATE TABLE IF NOT EXISTS team_member (
             team_id TEXT NOT NULL,
@@ -864,6 +865,11 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         eprintln!("[schema] warning: failed to seed team templates: {e}");
     }
 
+    // Seed default agent templates (idempotent) — required for web app spawn_agent
+    if let Err(e) = crate::teams::seed_agent_templates(conn) {
+        eprintln!("[schema] warning: failed to seed agent templates: {e}");
+    }
+
     // ── Migration: remove FK constraints from edge table ──
     // Legacy databases have FOREIGN KEY (from_id/to_id) REFERENCES memory(id)
     // on the edge table, but import/call/affects edges use non-memory IDs (file: prefixed).
@@ -894,6 +900,18 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_edge_to ON edge(to_id);
             CREATE INDEX IF NOT EXISTS idx_edge_type ON edge(edge_type);
         ");
+    }
+
+    // ── Migration: deduplicate teams by (name, organization_id) ──
+    // Keep only the oldest team per (name, org_id) pair. Delete newer duplicates.
+    let deduped: usize = conn.execute(
+        "DELETE FROM team WHERE id NOT IN (
+            SELECT MIN(id) FROM team GROUP BY name, organization_id
+        )",
+        [],
+    ).unwrap_or(0);
+    if deduped > 0 {
+        eprintln!("[schema] deduplicated {deduped} duplicate team rows");
     }
 
     Ok(())
