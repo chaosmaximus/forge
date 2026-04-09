@@ -447,4 +447,20 @@ mod tests {
         std::env::remove_var("KUBECONFIG");
         assert!(result.is_none(), "should return None for missing kubeconfig");
     }
+
+    #[test]
+    fn test_k8s_context_reads_real_kubeconfig() {
+        // If ~/.kube/config exists, should return the current context
+        let home = std::env::var("HOME").unwrap_or_default();
+        let kubeconfig = format!("{home}/.kube/config");
+        if std::path::Path::new(&kubeconfig).exists() {
+            // Reset KUBECONFIG to use default path
+            std::env::remove_var("KUBECONFIG");
+            let result = read_k8s_context();
+            assert!(result.is_some(), "should read context from real kubeconfig");
+            let (ctx, _ns) = result.unwrap();
+            assert!(!ctx.is_empty(), "context name should not be empty");
+        }
+        // If no kubeconfig, this test is a no-op (skipped)
+    }
 }
