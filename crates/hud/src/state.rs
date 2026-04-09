@@ -17,6 +17,8 @@ pub struct HudState {
     #[serde(default)] pub k8s: Option<K8sContext>,
     #[serde(default)] pub hud_config: Option<HudConfigState>,
     #[serde(default)] pub cwd: Option<String>,
+    /// Per-project memory stats keyed by project name
+    #[serde(default)] pub projects: HashMap<String, MemoryStats>,
 }
 
 #[derive(Deserialize, Default, Clone)]

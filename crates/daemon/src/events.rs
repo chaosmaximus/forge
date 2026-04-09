@@ -117,6 +117,41 @@ fn resolve_hud_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(forge_core::forge_dir()).join("hud")
 }
 
+/// Build per-project memory stats: {project_name: {decisions, lessons, patterns}}.
+fn build_project_stats(conn: &rusqlite::Connection) -> serde_json::Value {
+    let mut projects = serde_json::Map::new();
+    let mut stmt = match conn.prepare(
+        "SELECT COALESCE(project, ''), memory_type, COUNT(*)
+         FROM memory WHERE status = 'active' AND project IS NOT NULL AND project != ''
+         GROUP BY project, memory_type"
+    ) {
+        Ok(s) => s,
+        Err(_) => return serde_json::Value::Object(projects),
+    };
+
+    let rows: Vec<(String, String, u64)> = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?))
+    }).ok()
+        .map(|r| r.flatten().collect())
+        .unwrap_or_default();
+
+    for (proj, mtype, count) in rows {
+        let entry = projects.entry(proj).or_insert_with(|| serde_json::json!({
+            "decisions": 0, "lessons": 0, "patterns": 0
+        }));
+        if let Some(obj) = entry.as_object_mut() {
+            match mtype.as_str() {
+                "decision" => { obj.insert("decisions".into(), count.into()); }
+                "lesson" => { obj.insert("lessons".into(), count.into()); }
+                "pattern" => { obj.insert("patterns".into(), count.into()); }
+                _ => {}
+            }
+        }
+    }
+
+    serde_json::Value::Object(projects)
+}
+
 /// Build complete HUD state JSON by querying the daemon DB.
 fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
     // Open read-only connection (lightweight, same as socket handler pattern)
@@ -180,6 +215,9 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
         [], |r| r.get(0),
     ).ok().or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
 
+    // Per-project memory stats breakdown
+    let projects = build_project_stats(&conn);
+
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "memory": {
@@ -195,6 +233,7 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
         "k8s": k8s,
         "hud_config": hud_config,
         "cwd": cwd,
+        "projects": projects,
         "team": {},
     })
 }

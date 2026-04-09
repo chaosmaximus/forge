@@ -1,9 +1,10 @@
 use crate::render::colors::*;
 use crate::state::HudState;
+use crate::stdin::StdinData;
 
-/// Line 3: Forge version, security status, agent team, k8s context
-///   Forge v0.3.0 │ ✓ secure │ ⎈ gke_prod │ ◐ planner (Bash)
-pub fn render_line3(state: &HudState, _width: usize) -> String {
+/// Line 3: Forge version, security status, k8s context, pwd, memory, agents
+///   Forge v0.4.0 │ ✓ secure │ ⎈ gke_prod │ 📂 forge │ 42 decisions
+pub fn render_line3(stdin: &StdinData, state: &HudState, _width: usize) -> String {
     let sep = format!(" {DIM}\u{2502}{RESET} "); // │
 
     // Determine which sections to show (from config, or all by default)
@@ -17,21 +18,19 @@ pub fn render_line3(state: &HudState, _width: usize) -> String {
 
     let section_enabled = |name: &str| show_sections.iter().any(|s| s == name);
 
-    let version = render_version(&state.version);
-    let mut parts: Vec<String> = vec![version];
+    // Line 3: CWD + project memory stats + agents/tasks
+    // Version, secure, k8s moved to line 1 to avoid redundancy
+    let mut parts: Vec<String> = Vec::new();
 
-    if section_enabled("security") {
+    // Security only shows when there's a problem (exposed secrets)
+    if section_enabled("security") && state.security.exposed > 0 {
         parts.push(render_security(&state.security));
     }
 
-    if section_enabled("k8s") {
-        if let Some(k8s_str) = render_k8s(&state.k8s) {
-            parts.push(k8s_str);
-        }
-    }
-
     if section_enabled("pwd") {
-        if let Some(pwd_str) = render_pwd(&state.cwd) {
+        // Use session CWD from stdin (current Claude Code session), not daemon state
+        let session_cwd = stdin.cwd.as_deref().or(state.cwd.as_deref());
+        if let Some(pwd_str) = render_pwd(&session_cwd.map(String::from)) {
             parts.push(pwd_str);
         }
     }
@@ -39,7 +38,13 @@ pub fn render_line3(state: &HudState, _width: usize) -> String {
     if section_enabled("agents") && !state.team.is_empty() {
         parts.push(render_team(&state.team));
     } else if section_enabled("memory") && state.team.is_empty() {
-        let mem = render_memory_fallback(&state.memory);
+        // Use project-scoped stats if available, else fall back to global
+        let project = stdin.project_name();
+        let mem = if !project.is_empty() {
+            render_memory_project(state, &project)
+        } else {
+            render_memory_fallback(&state.memory)
+        };
         if !mem.is_empty() {
             parts.push(mem);
         }
@@ -148,6 +153,39 @@ fn render_k8s(k8s: &Option<crate::state::K8sContext>) -> Option<String> {
         .map(|n| format!("/{}", sanitize(n)))
         .unwrap_or_default();
     Some(format!("{CYAN}\u{2388} {short}{ns}{RESET}")) // ⎈
+}
+
+/// Render memory stats for a specific project (from per-project breakdown).
+/// Matches by exact name, then by path suffix (project names may be stored as
+/// `-mnt-colab-disk-User-project` while we search for `project`).
+/// Falls back to global stats if no match.
+fn render_memory_project(state: &HudState, project: &str) -> String {
+    // Exact match first
+    if let Some(proj_stats) = state.projects.get(project) {
+        return render_memory_fallback(proj_stats);
+    }
+    // Suffix match: find project names ending with the basename
+    let suffix = format!("-{}", project);
+    for (name, stats) in &state.projects {
+        if name.ends_with(&suffix) || name.ends_with(project) {
+            return render_memory_fallback(stats);
+        }
+    }
+    // Aggregate all projects containing the name in their path
+    let mut agg = crate::state::MemoryStats::default();
+    let lower = project.to_lowercase().replace('-', "_");
+    for (name, stats) in &state.projects {
+        let normalized = name.to_lowercase().replace('-', "_");
+        if normalized.contains(&lower) {
+            agg.decisions += stats.decisions;
+            agg.lessons += stats.lessons;
+            agg.patterns += stats.patterns;
+        }
+    }
+    if agg.decisions + agg.lessons + agg.patterns > 0 {
+        return render_memory_fallback(&agg);
+    }
+    render_memory_fallback(&state.memory)
 }
 
 fn render_memory_fallback(m: &crate::state::MemoryStats) -> String {
