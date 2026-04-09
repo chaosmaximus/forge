@@ -56,6 +56,37 @@ pub fn render_line3(stdin: &StdinData, state: &HudState, _width: usize) -> Strin
         }
     }
 
+    // Show active sessions count (other projects = interesting, same project = context)
+    if !state.sessions.is_empty() {
+        let current_project = stdin.project_name();
+        let other_count = state.sessions.iter()
+            .filter(|s| !s.project.is_empty() && s.project != current_project)
+            .count();
+        let same_count = state.sessions.iter()
+            .filter(|s| s.project == current_project || (current_project.is_empty() && s.project.is_empty()))
+            .count();
+
+        let mut session_parts = Vec::new();
+        if same_count > 0 {
+            session_parts.push(format!("{same_count} here"));
+        }
+        if other_count > 0 {
+            // Show which other projects have active sessions
+            let mut other_projects: Vec<&str> = state.sessions.iter()
+                .filter(|s| !s.project.is_empty() && s.project != current_project)
+                .map(|s| s.project.as_str())
+                .collect();
+            other_projects.sort();
+            other_projects.dedup();
+            let names: String = other_projects.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+            let extra = if other_projects.len() > 3 { format!("+{}", other_projects.len() - 3) } else { String::new() };
+            session_parts.push(format!("{other_count} in {names}{extra}"));
+        }
+        if !session_parts.is_empty() {
+            parts.push(format!("{DIM}\u{1F4E1} {}{RESET}", session_parts.join(", "))); // 📡
+        }
+    }
+
     format!("  {}", parts.join(&sep))
 }
 

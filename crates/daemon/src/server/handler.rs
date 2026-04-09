@@ -1112,6 +1112,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         "id": id,
                         "agent": agent_clone,
                         "action": "registered",
+                        "project": project,
+                        "cwd": cwd,
                     }));
                     Response::Ok {
                         data: ResponseData::SessionRegistered { id },

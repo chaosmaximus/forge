@@ -19,6 +19,18 @@ pub struct HudState {
     #[serde(default)] pub cwd: Option<String>,
     /// Per-project memory stats keyed by project name
     #[serde(default)] pub projects: HashMap<String, MemoryStats>,
+    /// Active sessions across all projects
+    #[serde(default)] pub sessions: Vec<SessionEntry>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct SessionEntry {
+    pub id: String,
+    pub agent: String,
+    pub project: String,
+    pub cwd: String,
+    pub since: String,
 }
 
 #[derive(Deserialize, Default, Clone)]

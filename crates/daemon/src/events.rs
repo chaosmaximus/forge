@@ -50,12 +50,34 @@ pub fn spawn_hud_writer(tx: &EventSender) {
         let _ = std::fs::create_dir_all(&hud_dir);
         let hud_path = hud_dir.join("hud-state.json");
 
-        // Track agent team state across events (persists between events)
+        // Track state across events (persists between events)
         let mut team_state: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+        let mut session_state: Vec<serde_json::Value> = Vec::new();
 
         loop {
             match rx.recv().await {
                 Ok(event) => {
+                    // Track session registrations from events
+                    if event.event == "session_changed" && event.data.get("action").and_then(|v| v.as_str()) == Some("registered") {
+                        if let Some(obj) = event.data.as_object() {
+                            let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let agent = obj.get("agent").and_then(|v| v.as_str()).unwrap_or("claude-code").to_string();
+                            let project = obj.get("project").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let cwd = obj.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            // Avoid duplicates
+                            session_state.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(&id));
+                            session_state.push(serde_json::json!({
+                                "id": id, "agent": agent, "project": project, "cwd": cwd,
+                                "since": &event.timestamp,
+                            }));
+                        }
+                    }
+                    if event.event == "session_changed" && event.data.get("action").and_then(|v| v.as_str()) == Some("ended") {
+                        if let Some(id) = event.data.get("id").and_then(|v| v.as_str()) {
+                            session_state.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(id));
+                        }
+                    }
+
                     // Update agent team state from events
                     if event.event == "agent_status" || event.event == "agent_status_changed" {
                         if let Some(obj) = event.data.as_object() {
@@ -77,6 +99,9 @@ pub fn spawn_hud_writer(tx: &EventSender) {
                     let mut state = build_hud_state(&db_path, &event);
                     if let Some(team) = state.get_mut("team") {
                         *team = serde_json::json!(team_state);
+                    }
+                    if let Some(sessions) = state.get_mut("sessions") {
+                        *sessions = serde_json::json!(session_state);
                     }
 
                     // Write to the shared HUD state file (all sessions see the same file).
@@ -159,11 +184,8 @@ fn build_project_stats(conn: &rusqlite::Connection) -> serde_json::Value {
 
 /// Build complete HUD state JSON by querying the daemon DB.
 fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
-    // Open read-only connection (lightweight, same as socket handler pattern)
-    let conn = match rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) {
+    // Open connection with WAL mode to see latest writes from the writer actor
+    let conn = match rusqlite::Connection::open(db_path) {
         Ok(c) => c,
         Err(_) => {
             return serde_json::json!({
@@ -223,6 +245,8 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
     // Per-project memory stats breakdown
     let projects = build_project_stats(&conn);
 
+    // Sessions are tracked via events (not DB query — avoids WAL visibility issues)
+
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "memory": {
@@ -239,6 +263,7 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
         "hud_config": hud_config,
         "cwd": cwd,
         "projects": projects,
+        "sessions": [],
         "team": {},
     })
 }
