@@ -302,9 +302,17 @@ pub fn run_bootstrap(
         // Extract project from path
         let project = extract_project_from_path(path);
 
-        // Apply project filter if specified
+        // Apply project filter if specified.
+        // Match by: exact name, suffix (path ends with filter), or basename contains filter.
+        // E.g. filter "hive-platform" matches project "hive-finance-hive-production-hive-platform"
         if let Some(filter) = project_filter {
-            if project.as_deref() != Some(filter) {
+            let matches = project.as_deref().map(|p| {
+                p == filter
+                    || p.ends_with(&format!("-{filter}"))
+                    || p.ends_with(&format!("/{filter}"))
+                    || p.replace('-', "/").ends_with(&format!("/{filter}"))
+            }).unwrap_or(false);
+            if !matches {
                 result.files_skipped += 1;
                 continue;
             }
