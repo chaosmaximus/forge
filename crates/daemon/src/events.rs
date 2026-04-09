@@ -50,33 +50,38 @@ pub fn spawn_hud_writer(tx: &EventSender) {
         let _ = std::fs::create_dir_all(&hud_dir);
         let hud_path = hud_dir.join("hud-state.json");
 
+        // Track agent team state across events (persists between events)
+        let mut team_state: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    // Build full HUD state by querying the DB
-                    let mut state = build_hud_state(&db_path, &event);
-
-                    // Merge agent status from event data for live updates
+                    // Update agent team state from events
                     if event.event == "agent_status" || event.event == "agent_status_changed" {
                         if let Some(obj) = event.data.as_object() {
                             let agent_id = obj.get("agent_id").or(obj.get("transcript"))
-                                .and_then(|v| v.as_str()).unwrap_or("unknown");
+                                .and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
                             let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
                             let last_tool = obj.get("last_tool").and_then(|v| v.as_str());
                             let agent_type = obj.get("agent").and_then(|v| v.as_str());
 
-                            let team = state.get_mut("team")
-                                .and_then(|t| t.as_object_mut());
-                            if let Some(team) = team {
-                                team.insert(agent_id.to_string(), serde_json::json!({
-                                    "status": if status == "working" || status == "thinking" { "running" } else { status },
-                                    "agent_type": agent_type,
-                                    "last_tool": last_tool,
-                                }));
-                            }
+                            team_state.insert(agent_id, serde_json::json!({
+                                "status": if status == "working" || status == "thinking" { "running" } else { status },
+                                "agent_type": agent_type,
+                                "last_tool": last_tool,
+                            }));
                         }
                     }
 
+                    // Build full HUD state by querying the DB
+                    let mut state = build_hud_state(&db_path, &event);
+                    if let Some(team) = state.get_mut("team") {
+                        *team = serde_json::json!(team_state);
+                    }
+
+                    // Write to the shared HUD state file (all sessions see the same file).
+                    // The HUD binary uses stdin.cwd to scope stats to the current project,
+                    // so the shared file contains global + per-project breakdowns.
                     let _ = std::fs::write(&hud_path, state.to_string());
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
