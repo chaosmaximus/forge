@@ -78,20 +78,30 @@ pub fn spawn_hud_writer(tx: &EventSender) {
                         }
                     }
 
-                    // Update agent team state from events
-                    if event.event == "agent_status" || event.event == "agent_status_changed" {
+                    // Update agent team state from agent_status_changed events.
+                    // Only track real team agents (planner/generator/evaluator), not
+                    // transcript watcher events which use transcript paths as IDs.
+                    if event.event == "agent_status_changed" {
                         if let Some(obj) = event.data.as_object() {
-                            let agent_id = obj.get("agent_id").or(obj.get("transcript"))
-                                .and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                            let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            let last_tool = obj.get("last_tool").and_then(|v| v.as_str());
-                            let agent_type = obj.get("agent").and_then(|v| v.as_str());
+                            let agent_id = obj.get("agent_id").and_then(|v| v.as_str());
+                            // Skip transcript watcher events (agent_id is a file path)
+                            if let Some(id) = agent_id {
+                                if !id.contains('/') && !id.contains(".jsonl") {
+                                    let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    let last_tool = obj.get("last_tool").and_then(|v| v.as_str());
+                                    let agent_type = obj.get("agent").and_then(|v| v.as_str());
 
-                            team_state.insert(agent_id, serde_json::json!({
-                                "status": if status == "working" || status == "thinking" { "running" } else { status },
-                                "agent_type": agent_type,
-                                "last_tool": last_tool,
-                            }));
+                                    if status == "done" || status == "ended" {
+                                        team_state.remove(id);
+                                    } else {
+                                        team_state.insert(id.to_string(), serde_json::json!({
+                                            "status": if status == "working" || status == "thinking" { "running" } else { status },
+                                            "agent_type": agent_type,
+                                            "last_tool": last_tool,
+                                        }));
+                                    }
+                                }
+                            }
                         }
                     }
 
