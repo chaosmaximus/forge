@@ -72,7 +72,11 @@ pub async fn detect_backend(config: &ForgeConfig) -> BackendChoice {
             }
         }
         _ => {
-            // Auto: try local first (free), then cloud providers with API keys, then CLI
+            // Auto: Claude CLI first (best quality, uses session's own subscription),
+            // then local (free), then cloud API keys as fallback.
+            if is_claude_cli_available().await {
+                return BackendChoice::ClaudeCli;
+            }
             let endpoint = &config.extraction.ollama.endpoint;
             if is_ollama_available(endpoint).await {
                 return BackendChoice::Ollama;
@@ -82,14 +86,11 @@ pub async fn detect_backend(config: &ForgeConfig) -> BackendChoice {
             {
                 return BackendChoice::ClaudeApi;
             }
-            if resolve_api_key(&config.extraction.openai.api_key, "OPENAI_API_KEY").is_some() {
-                return BackendChoice::OpenAi;
-            }
             if resolve_api_key(&config.extraction.gemini.api_key, "GEMINI_API_KEY").is_some() {
                 return BackendChoice::Gemini;
             }
-            if is_claude_cli_available().await {
-                return BackendChoice::ClaudeCli;
+            if resolve_api_key(&config.extraction.openai.api_key, "OPENAI_API_KEY").is_some() {
+                return BackendChoice::OpenAi;
             }
             BackendChoice::None(
                 "no extraction backend available (tried ollama, claude API, openai, gemini, claude CLI)".to_string(),
@@ -100,7 +101,7 @@ pub async fn detect_backend(config: &ForgeConfig) -> BackendChoice {
 
 /// Check if `claude` CLI is available on PATH.
 /// Wrapped in a 5-second timeout to prevent hangs on unresponsive binaries.
-async fn is_claude_cli_available() -> bool {
+pub(crate) async fn is_claude_cli_available() -> bool {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::process::Command::new("claude")
             .arg("--version")

@@ -108,26 +108,26 @@ pub async fn route_extraction(
         "smart router scored complexity"
     );
 
-    // Try to select the best provider for the tier
+    // Try to select the best provider for the tier.
+    // Claude CLI is always first — uses the session's own subscription, best quality.
     let backend = match tier {
         ComplexityTier::Free => {
-            // Prefer Claude Haiku (best quality-to-cost), then Gemini Flash, then Ollama.
-            // Quality of extraction matters more than cost — bad extractions degrade memory.
-            try_claude_api(config).await
+            try_claude_cli().await
+                .or_async(|| try_claude_api(config)).await
                 .or_async(|| try_gemini(config)).await
                 .or_async(|| try_ollama(config)).await
                 .or_async(|| try_openai(config)).await
         }
         ComplexityTier::Cheap => {
-            // Prefer Claude Haiku, then Gemini Flash (cheap cloud)
-            try_claude_api(config).await
+            try_claude_cli().await
+                .or_async(|| try_claude_api(config)).await
                 .or_async(|| try_gemini(config)).await
                 .or_async(|| try_openai(config)).await
                 .or_async(|| try_ollama(config)).await
         }
         ComplexityTier::Full => {
-            // Prefer Claude API (full reasoning), then OpenAI, then Gemini
-            try_claude_api(config).await
+            try_claude_cli().await
+                .or_async(|| try_claude_api(config)).await
                 .or_async(|| try_openai(config)).await
                 .or_async(|| try_gemini(config)).await
                 .or_async(|| try_ollama(config)).await
@@ -186,6 +186,14 @@ async fn try_openai(config: &ForgeConfig) -> Option<BackendChoice> {
         "OPENAI_API_KEY",
     ).is_some() {
         Some(BackendChoice::OpenAi)
+    } else {
+        None
+    }
+}
+
+async fn try_claude_cli() -> Option<BackendChoice> {
+    if super::backend::is_claude_cli_available().await {
+        Some(BackendChoice::ClaudeCli)
     } else {
         None
     }
