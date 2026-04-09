@@ -215,7 +215,10 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::VacuumDb
         | Request::BackfillAffects
         | Request::FindSymbol { .. }
-        | Request::GetSymbolsOverview { .. } => None,
+        | Request::GetSymbolsOverview { .. }
+        | Request::GetHudConfig { .. }
+        | Request::SetHudConfig { .. }
+        | Request::ExportHudConfig { .. } => None,
 
         // === Pro tier: sync operations ===
         Request::SyncExport { .. }

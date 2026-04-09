@@ -8,6 +8,7 @@ pub mod db;
 pub mod events;
 pub mod extraction;
 pub mod guardrails;
+pub mod hud_config;
 pub mod lsp;
 pub mod migrate;
 pub mod notifications;

@@ -753,5 +753,30 @@ pub enum Request {
         file: String,
     },
 
+    /// Get merged HUD configuration (cascade: org → team → project → user).
+    /// Returns the effective config with provenance for each field.
+    GetHudConfig {
+        user_id: Option<String>,
+        team_id: Option<String>,
+        organization_id: Option<String>,
+        project: Option<String>,
+    },
+
+    /// Set a HUD configuration value at a specific scope.
+    /// Keys must start with "hud." — validated by handler.
+    SetHudConfig {
+        scope_type: String,   // "organization" | "team" | "project" | "user"
+        scope_id: String,
+        key: String,          // e.g. "hud.sections", "hud.density", "hud.theme"
+        value: String,
+        locked: bool,
+    },
+
+    /// Export HUD configuration as TOML for committing to .forge/hud.toml
+    ExportHudConfig {
+        scope_type: String,
+        scope_id: String,
+    },
+
     Shutdown,
 }

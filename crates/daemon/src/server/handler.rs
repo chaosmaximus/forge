@@ -4103,6 +4103,72 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── HUD Configuration ──
+
+        Request::GetHudConfig { user_id, team_id, organization_id, project } => {
+            match crate::hud_config::get_merged_hud_config(
+                &state.conn,
+                organization_id.as_deref().or(Some("default")),
+                team_id.as_deref(),
+                project.as_deref(),
+                user_id.as_deref(),
+            ) {
+                Ok(entries) => {
+                    let result: Vec<forge_core::protocol::response::HudConfigEntry> = entries.into_iter().map(|e| {
+                        forge_core::protocol::response::HudConfigEntry {
+                            key: e.key,
+                            value: e.value,
+                            scope_type: e.scope_type,
+                            scope_id: e.scope_id,
+                            locked: e.locked,
+                        }
+                    }).collect();
+                    Response::Ok { data: ResponseData::HudConfigResult { entries: result } }
+                }
+                Err(e) => Response::Error { message: format!("get_hud_config failed: {e}") },
+            }
+        }
+
+        Request::SetHudConfig { scope_type, scope_id, key, value, locked } => {
+            // Validate the key/value
+            if let Err(msg) = crate::hud_config::validate_hud_config(&key, &value) {
+                return Response::Error { message: msg };
+            }
+
+            // Check if the key is locked at a higher scope
+            if let Ok(Some((lock_scope, lock_id))) = crate::hud_config::check_lock(
+                &state.conn, &key, &scope_type, None, None, None,
+            ) {
+                return Response::Error {
+                    message: format!("{key} is locked at {lock_scope} scope ({lock_id})"),
+                };
+            }
+
+            // Delegate to existing SetScopedConfig logic
+            let id = ulid::Ulid::new().to_string();
+            let now = forge_core::time::now_iso();
+            match state.conn.execute(
+                "INSERT OR REPLACE INTO config_scope (id, scope_type, scope_id, key, value, locked, set_by, set_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'user', ?7)",
+                rusqlite::params![id, scope_type, scope_id, key, value, locked, now],
+            ) {
+                Ok(_) => {
+                    crate::events::emit(&state.events, "hud_config_changed", serde_json::json!({
+                        "key": &key, "scope_type": &scope_type, "scope_id": &scope_id,
+                    }));
+                    Response::Ok { data: ResponseData::HudConfigSet { key, scope_type, scope_id } }
+                }
+                Err(e) => Response::Error { message: format!("set_hud_config failed: {e}") },
+            }
+        }
+
+        Request::ExportHudConfig { scope_type, scope_id } => {
+            match crate::hud_config::export_as_toml(&state.conn, &scope_type, &scope_id) {
+                Ok(toml) => Response::Ok { data: ResponseData::HudConfigExport { toml } },
+                Err(e) => Response::Error { message: format!("export_hud_config failed: {e}") },
+            }
+        }
+
         Request::Shutdown => Response::Ok {
             data: ResponseData::Shutdown,
         },

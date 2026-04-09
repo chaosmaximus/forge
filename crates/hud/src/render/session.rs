@@ -1,32 +1,51 @@
 use crate::render::colors::*;
 use crate::state::HudState;
 
-/// Line 3: Forge version, security status, agent team
-///   Forge v0.3.0 │ ✓ secure │ ◐ planner (Bash) ◐ generator (Edit) ✓ evaluator
+/// Line 3: Forge version, security status, agent team, k8s context
+///   Forge v0.3.0 │ ✓ secure │ ⎈ gke_prod │ ◐ planner (Bash)
 pub fn render_line3(state: &HudState, _width: usize) -> String {
     let sep = format!(" {DIM}\u{2502}{RESET} "); // │
 
+    // Determine which sections to show (from config, or all by default)
+    let show_sections: Vec<String> = state.hud_config.as_ref()
+        .filter(|c| !c.sections.is_empty())
+        .map(|c| c.sections.clone())
+        .unwrap_or_else(|| vec![
+            "memory".into(), "health".into(), "agents".into(),
+            "k8s".into(), "git".into(), "security".into(), "tasks".into(),
+        ]);
+
+    let section_enabled = |name: &str| show_sections.iter().any(|s| s == name);
+
     let version = render_version(&state.version);
-    let security = render_security(&state.security);
+    let mut parts: Vec<String> = vec![version];
 
-    let agents_or_memory = if !state.team.is_empty() {
-        render_team(&state.team)
-    } else {
-        render_memory_fallback(&state.memory)
-    };
-
-    let tasks = state.tasks.as_ref().and_then(|t| render_tasks(t));
-
-    let mut result = format!("  {version}{sep}{security}");
-    if !agents_or_memory.is_empty() {
-        result.push_str(&sep);
-        result.push_str(&agents_or_memory);
+    if section_enabled("security") {
+        parts.push(render_security(&state.security));
     }
-    if let Some(task_str) = tasks {
-        result.push_str(&sep);
-        result.push_str(&task_str);
+
+    if section_enabled("k8s") {
+        if let Some(k8s_str) = render_k8s(&state.k8s) {
+            parts.push(k8s_str);
+        }
     }
-    result
+
+    if section_enabled("agents") && !state.team.is_empty() {
+        parts.push(render_team(&state.team));
+    } else if section_enabled("memory") && state.team.is_empty() {
+        let mem = render_memory_fallback(&state.memory);
+        if !mem.is_empty() {
+            parts.push(mem);
+        }
+    }
+
+    if section_enabled("tasks") {
+        if let Some(task_str) = state.tasks.as_ref().and_then(render_tasks) {
+            parts.push(task_str);
+        }
+    }
+
+    format!("  {}", parts.join(&sep))
 }
 
 fn render_version(v: &Option<String>) -> String {
@@ -90,6 +109,24 @@ fn render_tasks(t: &crate::state::TaskStats) -> Option<String> {
         "{YELLOW}\u{25b8}{RESET} {truncated} {DIM}({}/{}){RESET}",
         t.completed, t.total
     ))
+}
+
+fn render_k8s(k8s: &Option<crate::state::K8sContext>) -> Option<String> {
+    let ctx = k8s.as_ref()?;
+    let name = ctx.context.as_ref()?;
+    if name.is_empty() {
+        return None;
+    }
+    // Shorten common GKE/EKS prefixes for compact display
+    let short = name
+        .strip_prefix("gke_").or_else(|| name.strip_prefix("arn:aws:eks:"))
+        .unwrap_or(name);
+    let short = sanitize(short);
+    let ns = ctx.namespace.as_ref()
+        .filter(|n| !n.is_empty() && *n != "default")
+        .map(|n| format!("/{}", sanitize(n)))
+        .unwrap_or_default();
+    Some(format!("{CYAN}\u{2388} {short}{ns}{RESET}")) // ⎈
 }
 
 fn render_memory_fallback(m: &crate::state::MemoryStats) -> String {

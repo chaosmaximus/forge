@@ -14,6 +14,22 @@ pub struct HudState {
     #[serde(default)] pub team: HashMap<String, AgentInfo>,
     #[serde(default)] pub security: SecurityStats,
     #[serde(default)] pub tasks: Option<TaskStats>,
+    #[serde(default)] pub k8s: Option<K8sContext>,
+    #[serde(default)] pub hud_config: Option<HudConfigState>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct K8sContext {
+    pub context: Option<String>,
+    pub namespace: Option<String>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct HudConfigState {
+    pub sections: Vec<String>,
+    pub density: String,
 }
 
 #[derive(Deserialize, Default)]

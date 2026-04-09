@@ -701,7 +701,34 @@ pub enum ResponseData {
         symbols: Vec<SymbolInfo>,
     },
 
+    /// Merged HUD configuration with provenance per field
+    HudConfigResult {
+        entries: Vec<HudConfigEntry>,
+    },
+
+    /// HUD config set confirmation
+    HudConfigSet {
+        key: String,
+        scope_type: String,
+        scope_id: String,
+    },
+
+    /// HUD config export as TOML string
+    HudConfigExport {
+        toml: String,
+    },
+
     Shutdown,
+}
+
+/// A single HUD config entry with its provenance (which scope it came from)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HudConfigEntry {
+    pub key: String,
+    pub value: String,
+    pub scope_type: String,
+    pub scope_id: String,
+    pub locked: bool,
 }
 
 /// Symbol information returned by FindSymbol and GetSymbolsOverview
