@@ -483,6 +483,11 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
     },
+
+    /// Initialize Forge for the current directory.
+    /// Registers a session, bootstraps memories from past transcripts,
+    /// and shows project context. Run this from any Claude Code session.
+    Init,
     /// Force-run all consolidation phases (dedup, decay, promotion, etc.)
     Consolidate,
     /// Trigger extraction on pending transcripts
@@ -1549,6 +1554,9 @@ async fn main() {
         }
         Commands::Bootstrap { project } => {
             commands::system::bootstrap(project).await;
+        }
+        Commands::Init => {
+            commands::system::init().await;
         }
         Commands::Consolidate => {
             commands::system::consolidate().await;

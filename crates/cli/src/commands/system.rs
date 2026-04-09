@@ -2122,6 +2122,152 @@ pub async fn set_current_task(session_id: String, task: String) {
     }
 }
 
+/// Initialize Forge for the current directory.
+/// Registers session, bootstraps memories, checks health and hooks.
+pub async fn init() {
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let project = std::path::Path::new(&cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    println!("Forge Init — {project}");
+    println!("  CWD: {cwd}");
+    println!();
+
+    // 1. Check daemon health
+    print!("  [1/4] Daemon health... ");
+    match client::send(&Request::Health).await {
+        Ok(Response::Ok { data: ResponseData::Health { decisions, lessons, patterns, .. } }) => {
+            let total = decisions + lessons + patterns;
+            println!("✓ ({total} memories globally)");
+        }
+        Ok(Response::Error { message }) => {
+            println!("✗ {message}");
+            eprintln!("Daemon not healthy. Try: cargo build --release -p forge-daemon && forge-next restart");
+            std::process::exit(1);
+        }
+        _ => {
+            println!("✗ daemon not responding");
+            eprintln!("Start daemon: forge-daemon &");
+            std::process::exit(1);
+        }
+    }
+
+    // 2. Register session
+    print!("  [2/4] Registering session... ");
+    let session_id = format!("init-{}", forge_core::time::timestamp_now());
+    match client::send(&Request::RegisterSession {
+        id: session_id.clone(),
+        agent: "claude-code".to_string(),
+        project: Some(project.clone()),
+        cwd: Some(cwd.clone()),
+        capabilities: None,
+        current_task: None,
+    }).await {
+        Ok(Response::Ok { .. }) => println!("✓ session {session_id}"),
+        Ok(Response::Error { message }) => println!("⚠ {message}"),
+        Err(e) => println!("⚠ {e}"),
+    }
+
+    // 3. Bootstrap transcripts for this project
+    print!("  [3/4] Bootstrapping memories... ");
+    match client::send(&Request::Bootstrap { project: Some(project.clone()) }).await {
+        Ok(Response::Ok { data: ResponseData::BootstrapComplete {
+            files_processed, memories_extracted, ..
+        }}) => {
+            if files_processed > 0 {
+                println!("✓ {files_processed} transcripts → {memories_extracted} memories");
+            } else {
+                println!("✓ (no new transcripts to process)");
+            }
+        }
+        Ok(Response::Error { message }) => println!("⚠ {message}"),
+        Ok(_) => println!("✓"),
+        Err(e) => println!("⚠ {e}"),
+    }
+
+    // 4. Check hooks
+    print!("  [4/4] Hook health... ");
+    let home = std::env::var("HOME").unwrap_or_default();
+    let plugin_candidates = [
+        format!("{home}/.claude/plugins/cache/forge-marketplace/forge/0.3.0"),
+        format!("{home}/.claude/plugins/cache/forge-marketplace/forge"),
+        format!("{home}/.claude/plugins/forge"),
+    ];
+    let plugin_root = plugin_candidates.iter()
+        .find(|p| std::path::Path::new(&format!("{p}/scripts/hooks")).is_dir())
+        .cloned()
+        .unwrap_or_else(|| plugin_candidates[0].clone());
+    let hooks_json = format!("{plugin_root}/hooks.json");
+    let hooks_dir = format!("{plugin_root}/scripts/hooks");
+
+    let mut hook_issues = Vec::new();
+    if !std::path::Path::new(&hooks_json).exists() {
+        hook_issues.push("hooks.json not found — plugin may not be installed".to_string());
+    }
+    if !std::path::Path::new(&hooks_dir).exists() {
+        hook_issues.push("hooks/ directory not found".to_string());
+    } else {
+        // Check critical hooks exist and are executable
+        for hook in &["session-start.sh", "session-end.sh", "user-prompt.sh", "stop.sh"] {
+            let path = format!("{hooks_dir}/{hook}");
+            let p = std::path::Path::new(&path);
+            if !p.exists() {
+                hook_issues.push(format!("{hook} missing"));
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(p) {
+                        if meta.permissions().mode() & 0o111 == 0 {
+                            hook_issues.push(format!("{hook} not executable"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if hook_issues.is_empty() {
+        println!("✓ all hooks present and executable");
+    } else {
+        println!("⚠ issues:");
+        for issue in &hook_issues {
+            println!("    - {issue}");
+        }
+    }
+
+    // Summary: show project-specific recall
+    println!();
+    if let Ok(Response::Ok { data: ResponseData::Memories { results, .. } }) = client::send(&Request::Recall {
+        query: project.clone(),
+        memory_type: None,
+        project: Some(project.clone()),
+        limit: Some(5),
+        layer: None,
+        since: None,
+    }).await {
+        if results.is_empty() {
+            println!("  No memories for project '{project}' yet. Start working — Forge learns as you go.");
+        } else {
+            println!("  {project} context ({} memories):", results.len());
+            for r in results.iter().take(3) {
+                let title = if r.memory.title.len() > 70 { format!("{}...", &r.memory.title[..67]) } else { r.memory.title.clone() };
+                println!("    • {title}");
+            }
+            if results.len() > 3 {
+                println!("    ... and {} more", results.len() - 3);
+            }
+        }
+    }
+
+    println!();
+    println!("  Forge is ready. Memories will accumulate as you work.");
+}
+
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
 }
