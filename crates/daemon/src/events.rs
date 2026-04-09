@@ -33,25 +33,50 @@ fn timestamp_now() -> String {
     forge_core::time::timestamp_now()
 }
 
-/// Spawn a background task that writes HUD state on every event.
+/// Spawn a background task that writes HUD state on every daemon event.
 /// The HUD binary (forge-hud) reads this file to render the status line.
+///
+/// Opens a read-only DB connection to query memory/security/team stats.
+/// Also reads K8s context and HUD config for the renderer.
 pub fn spawn_hud_writer(tx: &EventSender) {
     let mut rx = tx.subscribe();
+    let db_path = std::env::var("FORGE_DB")
+        .unwrap_or_else(|_| forge_core::default_db_path());
+
     tokio::spawn(async move {
-        let forge_dir = forge_core::forge_dir();
-        let hud_dir = std::path::PathBuf::from(&forge_dir).join("hud");
+        // Write to the same path the HUD binary reads from.
+        // Priority: CLAUDE_PLUGIN_DATA > known plugin data dirs > ~/.forge/
+        let hud_dir = resolve_hud_dir();
         let _ = std::fs::create_dir_all(&hud_dir);
         let hud_path = hud_dir.join("hud-state.json");
 
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let state = serde_json::json!({
-                        "last_event": event.event,
-                        "last_data": event.data,
-                        "last_timestamp": event.timestamp,
-                        "daemon_up": true,
-                    });
+                    // Build full HUD state by querying the DB
+                    let mut state = build_hud_state(&db_path, &event);
+
+                    // Merge agent status from event data for live updates
+                    if event.event == "agent_status" || event.event == "agent_status_changed" {
+                        if let Some(obj) = event.data.as_object() {
+                            let agent_id = obj.get("agent_id").or(obj.get("transcript"))
+                                .and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let last_tool = obj.get("last_tool").and_then(|v| v.as_str());
+                            let agent_type = obj.get("agent").and_then(|v| v.as_str());
+
+                            let team = state.get_mut("team")
+                                .and_then(|t| t.as_object_mut());
+                            if let Some(team) = team {
+                                team.insert(agent_id.to_string(), serde_json::json!({
+                                    "status": if status == "working" || status == "thinking" { "running" } else { status },
+                                    "agent_type": agent_type,
+                                    "last_tool": last_tool,
+                                }));
+                            }
+                        }
+                    }
+
                     let _ = std::fs::write(&hud_path, state.to_string());
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -62,6 +87,109 @@ pub fn spawn_hud_writer(tx: &EventSender) {
             }
         }
     });
+}
+
+/// Resolve the HUD directory — matches the path the HUD binary reads from.
+/// Checks: CLAUDE_PLUGIN_DATA, known plugin data dirs, ~/.forge/
+fn resolve_hud_dir() -> std::path::PathBuf {
+    // 1. CLAUDE_PLUGIN_DATA (set by Claude Code)
+    if let Ok(d) = std::env::var("CLAUDE_PLUGIN_DATA") {
+        if !d.is_empty() && !d.contains("codex") {
+            return std::path::PathBuf::from(d).join("hud");
+        }
+    }
+
+    // 2. Known plugin data directories
+    if let Ok(home) = std::env::var("HOME") {
+        let candidates = [
+            format!("{home}/.claude/plugins/data/forge-forge-marketplace"),
+            format!("{home}/.claude/plugins/data/forge"),
+            format!("{home}/.claude/plugin-data/forge"),
+        ];
+        for c in &candidates {
+            if std::path::Path::new(c).is_dir() {
+                return std::path::PathBuf::from(c).join("hud");
+            }
+        }
+    }
+
+    // 3. Fallback to ~/.forge/
+    std::path::PathBuf::from(forge_core::forge_dir()).join("hud")
+}
+
+/// Build complete HUD state JSON by querying the daemon DB.
+fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
+    // Open read-only connection (lightweight, same as socket handler pattern)
+    let conn = match rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(_) => {
+            return serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "daemon_up": true,
+                "last_event": event.event,
+            });
+        }
+    };
+
+    // Memory stats
+    let decisions: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory WHERE memory_type = 'decision' AND status = 'active'",
+        [], |r| r.get(0),
+    ).unwrap_or(0);
+    let lessons: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory WHERE memory_type = 'lesson' AND status = 'active'",
+        [], |r| r.get(0),
+    ).unwrap_or(0);
+    let patterns: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory WHERE memory_type = 'pattern' AND status = 'active'",
+        [], |r| r.get(0),
+    ).unwrap_or(0);
+
+    // Security stats (secrets)
+    let exposed: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM diagnostic WHERE severity = 'error' AND source = 'secret-scanner'",
+        [], |r| r.get(0),
+    ).unwrap_or(0);
+
+    // K8s context
+    let k8s = crate::hud_config::read_k8s_context().map(|(ctx, ns)| {
+        serde_json::json!({ "context": ctx, "namespace": ns })
+    });
+
+    // HUD config (merged for current user)
+    let hud_config = crate::hud_config::get_merged_hud_config(&conn, Some("default"), None, None, None)
+        .ok()
+        .map(|entries| {
+            let sections: Vec<String> = entries.iter()
+                .find(|e| e.key == "hud.sections")
+                .and_then(|e| serde_json::from_str(&e.value).ok())
+                .unwrap_or_default();
+            let density = entries.iter()
+                .find(|e| e.key == "hud.density")
+                .map(|e| e.value.clone())
+                .unwrap_or_else(|| "normal".to_string());
+            serde_json::json!({ "sections": sections, "density": density })
+        });
+
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "memory": {
+            "decisions": decisions,
+            "lessons": lessons,
+            "patterns": patterns,
+        },
+        "security": {
+            "total": 0,
+            "stale": 0,
+            "exposed": exposed,
+        },
+        "k8s": k8s,
+        "hud_config": hud_config,
+        "team": {},
+    })
 }
 
 #[cfg(test)]
