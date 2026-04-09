@@ -12,7 +12,7 @@ pub fn render_line3(state: &HudState, _width: usize) -> String {
         .map(|c| c.sections.clone())
         .unwrap_or_else(|| vec![
             "memory".into(), "health".into(), "agents".into(),
-            "k8s".into(), "git".into(), "security".into(), "tasks".into(),
+            "k8s".into(), "pwd".into(), "git".into(), "security".into(), "tasks".into(),
         ]);
 
     let section_enabled = |name: &str| show_sections.iter().any(|s| s == name);
@@ -27,6 +27,12 @@ pub fn render_line3(state: &HudState, _width: usize) -> String {
     if section_enabled("k8s") {
         if let Some(k8s_str) = render_k8s(&state.k8s) {
             parts.push(k8s_str);
+        }
+    }
+
+    if section_enabled("pwd") {
+        if let Some(pwd_str) = render_pwd(&state.cwd) {
+            parts.push(pwd_str);
         }
     }
 
@@ -109,6 +115,21 @@ fn render_tasks(t: &crate::state::TaskStats) -> Option<String> {
         "{YELLOW}\u{25b8}{RESET} {truncated} {DIM}({}/{}){RESET}",
         t.completed, t.total
     ))
+}
+
+fn render_pwd(cwd: &Option<String>) -> Option<String> {
+    let path = cwd.as_ref()?;
+    if path.is_empty() {
+        return None;
+    }
+    // Show last 2 path components for brevity (e.g. "DurgaSaiK/forge")
+    let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let short = if components.len() > 2 {
+        components[components.len() - 2..].join("/")
+    } else {
+        components.join("/")
+    };
+    Some(format!("{DIM}\u{1F4C2} {}{RESET}", sanitize(&short))) // 📂
 }
 
 fn render_k8s(k8s: &Option<crate::state::K8sContext>) -> Option<String> {

@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 
 /// Known HUD sections — validated on set.
 pub const KNOWN_SECTIONS: &[&str] = &[
-    "memory", "health", "agents", "k8s", "git", "security", "tasks",
+    "memory", "health", "agents", "k8s", "pwd", "git", "security", "tasks",
 ];
 
 /// Valid density values.
@@ -18,7 +18,7 @@ pub const VALID_DENSITIES: &[&str] = &["compact", "normal", "verbose"];
 pub const VALID_THEMES: &[&str] = &["dark", "light", "high-contrast"];
 
 /// Default HUD config (applied when no scoped config exists).
-pub const DEFAULT_SECTIONS: &str = r#"["memory","health","agents","k8s","git","security","tasks"]"#;
+pub const DEFAULT_SECTIONS: &str = r#"["memory","health","agents","k8s","pwd","git","security","tasks"]"#;
 pub const DEFAULT_DENSITY: &str = "normal";
 pub const DEFAULT_THEME: &str = "dark";
 pub const DEFAULT_REFRESH_SECS: &str = "10";

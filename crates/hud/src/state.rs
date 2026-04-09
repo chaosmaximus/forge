@@ -16,6 +16,7 @@ pub struct HudState {
     #[serde(default)] pub tasks: Option<TaskStats>,
     #[serde(default)] pub k8s: Option<K8sContext>,
     #[serde(default)] pub hud_config: Option<HudConfigState>,
+    #[serde(default)] pub cwd: Option<String>,
 }
 
 #[derive(Deserialize, Default, Clone)]
