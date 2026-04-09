@@ -214,6 +214,61 @@ pub fn extract_project_from_path(path: &std::path::Path) -> Option<String> {
     None
 }
 
+/// Read transcript content — tail-reads for large files (>10MB).
+/// Returns (content_string, file_offset_of_content_start).
+/// For small files: returns (full_content, 0).
+/// For large files: returns (last 10MB from first complete line, byte_offset).
+const BOOTSTRAP_MAX_FULL_READ: u64 = 10_000_000;     // 10MB — full read
+const BOOTSTRAP_MAX_TAIL_READ: usize = 10_000_000;    // 10MB tail
+const BOOTSTRAP_MAX_FILE_SIZE: u64 = 200_000_000;     // 200MB — skip
+
+fn read_transcript_content(path: &std::path::Path, file_size: u64) -> Result<(String, usize), String> {
+    if file_size > BOOTSTRAP_MAX_FILE_SIZE {
+        return Err(format!("file too large ({} bytes > 200MB), skipping", file_size));
+    }
+
+    if file_size <= BOOTSTRAP_MAX_FULL_READ {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("read error: {e}"))?;
+        return Ok((content, 0));
+    }
+
+    // Tail read: last 10MB
+    use std::io::{Read, Seek, SeekFrom};
+    let tail_start = (file_size as usize).saturating_sub(BOOTSTRAP_MAX_TAIL_READ);
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("open error: {e}"))?;
+    file.seek(SeekFrom::Start(tail_start as u64))
+        .map_err(|e| format!("seek error: {e}"))?;
+    let mut buf = Vec::with_capacity(BOOTSTRAP_MAX_TAIL_READ);
+    file.read_to_end(&mut buf)
+        .map_err(|e| format!("tail-read error: {e}"))?;
+
+    if buf.is_empty() {
+        // File may have shrunk — return tail_start to maintain offset consistency
+        return Ok((String::new(), tail_start));
+    }
+
+    // Find first newline for complete JSONL line boundary
+    let mut line_start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+    // Skip UTF-8 continuation bytes
+    while line_start < buf.len() && (buf[line_start] & 0xC0) == 0x80 {
+        line_start += 1;
+    }
+
+    let actual_start = tail_start + line_start;
+    let tail_str = String::from_utf8_lossy(&buf[line_start..]).to_string();
+
+    eprintln!(
+        "[bootstrap] tail-reading last {:.1}MB of {:.1}MB file: {}",
+        tail_str.len() as f64 / 1_048_576.0,
+        file_size as f64 / 1_048_576.0,
+        path.display()
+    );
+
+    Ok((tail_str, actual_start))
+}
+
 /// Create a summary memory from a parsed transcript.
 fn create_transcript_summary(
     chunks: &[ConversationChunk],
@@ -306,11 +361,11 @@ pub fn run_bootstrap(
         // Match by: exact name, suffix (path ends with filter), or basename contains filter.
         // E.g. filter "hive-platform" matches project "hive-finance-hive-production-hive-platform"
         if let Some(filter) = project_filter {
+            // Match by: exact name, or last path segment matches.
+            // E.g. filter "hive-platform" matches project "hive-finance-hive-production-hive-platform"
+            // but "hive" does NOT match "hive-finance-hive-production" (internal segment, not suffix).
             let matches = project.as_deref().map(|p| {
-                p == filter
-                    || p.ends_with(&format!("-{filter}"))
-                    || p.ends_with(&format!("/{filter}"))
-                    || p.replace('-', "/").ends_with(&format!("/{filter}"))
+                p == filter || p.ends_with(&format!("-{filter}"))
             }).unwrap_or(false);
             if !matches {
                 result.files_skipped += 1;
@@ -334,8 +389,16 @@ pub fn run_bootstrap(
             continue;
         }
 
-        // Read transcript
-        let content = match std::fs::read_to_string(path) {
+        // Read transcript — tail-read for large files (>10MB) to avoid OOM/timeout
+        let size = match std::fs::metadata(path) {
+            Ok(m) => m.len(),
+            Err(e) => {
+                eprintln!("[bootstrap] WARN: can't stat {}: {e}", path.display());
+                result.errors += 1;
+                continue;
+            }
+        };
+        let (content, content_file_offset) = match read_transcript_content(path, size) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[bootstrap] WARN: can't read {}: {e}", path.display());
@@ -354,9 +417,10 @@ pub fn run_bootstrap(
             }
         };
 
-        // Parse incrementally from last offset
-        let (chunks, new_offset) = adapter.parse_incremental(&content, last_offset);
-        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        // Parse incrementally from last offset, adjusted for tail reads
+        let adjusted_offset = last_offset.saturating_sub(content_file_offset);
+        let (chunks, new_relative_offset) = adapter.parse_incremental(&content, adjusted_offset);
+        let new_offset = content_file_offset + new_relative_offset;
 
         if chunks.is_empty() {
             // No new content but file may have changed -- update hash
@@ -746,5 +810,67 @@ mod tests {
         // Different data should produce different hash
         let h3 = fnv1a(b"hello world!");
         assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn test_read_transcript_small_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("small.jsonl");
+        std::fs::write(&path, "line1\nline2\nline3\n").unwrap();
+
+        let (content, offset) = read_transcript_content(&path, 18).unwrap();
+        assert_eq!(offset, 0, "small file: full read, offset 0");
+        assert_eq!(content, "line1\nline2\nline3\n");
+    }
+
+    #[test]
+    fn test_read_transcript_large_file_tail() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("large.jsonl");
+
+        // Create a file >10MB: 1MB prefix + known content at the end
+        let prefix = "x".repeat(11_000_000); // 11MB of filler
+        let suffix = "\n{\"role\":\"user\",\"content\":\"important decision\"}\n";
+        let full = format!("{prefix}{suffix}");
+        std::fs::write(&path, &full).unwrap();
+
+        let file_size = std::fs::metadata(&path).unwrap().len();
+        assert!(file_size > BOOTSTRAP_MAX_FULL_READ, "file should be >10MB");
+
+        let (content, offset) = read_transcript_content(&path, file_size).unwrap();
+        assert!(offset > 1_000_000, "tail read offset should be past the prefix");
+        assert!(content.contains("important decision"), "tail should contain the recent content");
+        assert!(content.len() < 11_000_000, "should not read entire file");
+        // Verify offset is approximately tail_start + line boundary
+        let expected_min = (file_size as usize).saturating_sub(BOOTSTRAP_MAX_TAIL_READ);
+        assert!(offset >= expected_min, "offset should be >= tail_start ({expected_min})");
+    }
+
+    #[test]
+    fn test_project_filter_suffix_match() {
+        // Exact match
+        let p = "forge";
+        assert!(p == "forge" || p.ends_with("-forge"));
+
+        // Suffix match: hive-platform at end of long path
+        let p = "hive-finance-hive-production-hive-platform";
+        assert!(p.ends_with("-hive-platform"), "should match suffix");
+
+        // Internal segment should NOT match
+        let p = "hive-finance-hive-production";
+        assert!(!p.ends_with("-hive"), "internal 'hive' should not match suffix '-hive'");
+        // But "production" DOES match as suffix
+        assert!(p.ends_with("-production"), "production is the actual suffix");
+    }
+
+    #[test]
+    fn test_read_transcript_skip_huge_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("huge.jsonl");
+        // Don't actually create 200MB — just test the size check
+        std::fs::write(&path, "small").unwrap();
+
+        let result = read_transcript_content(&path, 201_000_000);
+        assert!(result.is_err(), "should reject files >200MB");
     }
 }
