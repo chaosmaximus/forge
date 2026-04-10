@@ -7895,4 +7895,111 @@ mod tests {
             other => panic!("expected TeamSent for system sender, got {:?}", other),
         }
     }
+
+    // ── Skills Handler Tests ──
+
+    #[test]
+    fn test_skills_list_empty() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::SkillsList {
+            category: None,
+            search: None,
+            limit: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::SkillsList { skills, count } } => {
+                assert_eq!(count, 0, "should return 0 skills on fresh DB");
+                assert!(skills.is_empty());
+            }
+            other => panic!("expected SkillsList, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_skills_install_nonexistent() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Installing a non-existent skill should return an error
+        let resp = handle_request(&mut state, Request::SkillsInstall {
+            name: "nonexistent-skill".into(),
+            project: "forge".into(),
+        });
+        match resp {
+            Response::Error { message } => {
+                assert!(message.contains("not found"), "should report skill not found: {message}");
+            }
+            other => panic!("expected Error for nonexistent skill, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_skills_list_with_search() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // List with search filter should return empty (no skills match)
+        let resp = handle_request(&mut state, Request::SkillsList {
+            category: None,
+            search: Some("nonexistent".into()),
+            limit: Some(10),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::SkillsList { count, .. } } => {
+                assert_eq!(count, 0, "search for nonexistent should return 0");
+            }
+            other => panic!("expected SkillsList, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_skills_info_not_found() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::SkillsInfo {
+            name: "nonexistent-skill".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::SkillInfo { skill } } => {
+                assert!(skill.is_none(), "nonexistent skill should return None");
+            }
+            other => panic!("expected SkillInfo, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cleanup_sessions_prefix_preserves_others() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Register sessions with different prefixes
+        for id in &["temp-1", "temp-2", "keep-1"] {
+            handle_request(&mut state, Request::RegisterSession {
+                id: id.to_string(),
+                agent: "claude-code".into(),
+                project: Some("forge".into()),
+                cwd: None,
+                capabilities: None,
+                current_task: None,
+            });
+        }
+
+        // Cleanup only "temp-" prefix sessions
+        let resp = handle_request(&mut state, Request::CleanupSessions {
+            prefix: Some("temp".into()),
+            older_than_secs: None,
+            prune_ended: false,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::SessionsCleaned { ended } } => {
+                assert_eq!(ended, 2, "should end 2 temp- sessions, got {ended}");
+            }
+            other => panic!("expected SessionsCleaned, got {:?}", other),
+        }
+
+        // "keep-1" should still be active
+        let resp = handle_request(&mut state, Request::Sessions { active_only: Some(true) });
+        match resp {
+            Response::Ok { data: ResponseData::Sessions { count, .. } } => {
+                assert_eq!(count, 1, "keep-1 should survive prefix cleanup");
+            }
+            other => panic!("expected Sessions, got {:?}", other),
+        }
+    }
 }

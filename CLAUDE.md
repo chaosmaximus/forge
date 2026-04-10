@@ -220,7 +220,7 @@ Track all gaps in `product/engineering/daemon-team/SESSION-GAPS.md`.
 
 ## Architecture (v0.7.0 — FISP)
 
-**Daemon-first. CLI-first. No MCP server. 8-layer memory. Actor model. Tunable. 1,756+ tests. Enterprise-ready (HTTP, JWT, RBAC, Docker, Helm, Prometheus).**
+**Daemon-first. CLI-first. No MCP server. 8-layer memory. Actor model. Tunable. 1,230+ tests. Enterprise-ready (HTTP, JWT, RBAC, Docker, Helm, Prometheus).**
 
 ```
 forge-daemon (Rust, single binary) — always-on daemon, Unix socket + HTTP API
@@ -263,10 +263,10 @@ forge-hud (Rust)       — StatusLine rendering
 ### Running Tests
 
 ```bash
-# Full workspace (730+ Rust tests)
+# Full workspace (1,230+ Rust tests)
 cargo test --workspace
 
-# Daemon only (675+ tests)
+# Daemon only (960+ tests)
 cargo test -p forge-daemon
 
 # Socket E2E (requires release binary built)
@@ -309,32 +309,25 @@ cargo clippy -p forge-daemon -p forge-core -p forge-cli -- -W clippy::all
 Track all items in `product/engineering/daemon-team/SESSION-GAPS.md`.
 
 ### Code gaps (daemon team)
-- Skills CLI commands — handler wired but `forge-next skills list/install/info` NOT in CLI
-- Skills HTTP API — `/api/skills` endpoint for canvas
-- Team topology enforcement — star/mesh/chain not enforced in FISP routing
-- Team create --from-file — loading team templates from JSON files
-- Tests for run_team/stop_team (adversarial S4)
 - WASM Task Runner (wasmtime dep — dedicated session)
-- Code graph TypeScript/frontend indexing
-- Smart router quality guard — auto-escalate tier on quality drop
 - Raft leader election for leaderless teams
-- Context stats don't track hook-based injections
-- Perception accumulation (763+ unconsumed) — worker tuning needed
-- Adversarial suggestions: file path leaks in skill_info, team size cap, status validation, team param slugification, dedup threshold tuning
-- Docker image < 80MB (currently ~95MB)
+- Full Rust MCP server (replace CLI-first with MCP protocol)
+- Agent team overhaul — wave-to-wave handoff, context passing
 
-### Infrastructure (founder + daemon)
+### Infrastructure (founder)
 - Dodo Payments KYC + products
 - Terms of Service / Privacy Policy
 - Apple Developer ID (binary signing)
-- Starlight docs site deployment
-- Git secret scan on repo
-- CLI reference update with Session 10 commands
+- Starlight docs site deployment (`firebase deploy` — 21 pages built)
 
 ### Architecture (multi-day, future sessions)
 - Multi-tenant isolation (per-team DB)
-- OIDC provider support (Okta, Azure AD)
-- Auto-update mechanism
-- Memory sync between devices
-- Full Rust MCP server
-- Agent team overhaul — wave-to-wave handoff, context passing
+
+### Resolved (Sessions 11-15)
+- ~~Skills CLI~~ (Session 10+11), ~~Skills HTTP API~~ (Session 11)
+- ~~Team topology~~ (Session 13), ~~Team --from-file~~ (Session 12), ~~run_team/stop_team tests~~ (Session 12)
+- ~~TS/JS indexing~~ (Session 12), ~~Smart router quality guard~~ (Session 11)
+- ~~Context stats~~ (Session 11), ~~Perception accumulation~~ (Session 11), ~~Docker < 80MB~~ (Session 12, 41.7MB)
+- ~~Adversarial S1-S6~~ (Session 11), ~~Git secret scan~~ (Session 10), ~~CLI reference~~ (Session 11)
+- ~~OIDC~~ (Session 10, generic via issuer_url), ~~Memory sync~~ (implemented, SSH transport + HLC)
+- ~~Auto-update~~ (N/A — web deploys via CI/CD, CLI via Homebrew)
