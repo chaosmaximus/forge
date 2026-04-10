@@ -197,7 +197,7 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::FileMemoryMap { .. }
         | Request::CodeSearch { .. }
         | Request::ListRealities { .. }
-        | Request::ForceIndex
+        | Request::ForceIndex { .. }
         | Request::ListNotifications { .. }
         | Request::AckNotification { .. }
         | Request::DismissNotification { .. }

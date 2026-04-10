@@ -32,7 +32,7 @@ mod tests {
             ("sync_conflicts", Request::SyncConflicts),
             ("hlc_backfill", Request::HlcBackfill),
             ("force_consolidate", Request::ForceConsolidate),
-            ("force_index", Request::ForceIndex),
+            ("force_index", Request::ForceIndex { path: None }),
             ("list_permissions", Request::ListPermissions),
             ("list_organizations", Request::ListOrganizations),
             ("healing_status", Request::HealingStatus),
@@ -1161,7 +1161,8 @@ mod tests {
             ("sync_conflicts", r#"{"method":"sync_conflicts"}"#),
             ("hlc_backfill", r#"{"method":"hlc_backfill"}"#),
             ("force_consolidate", r#"{"method":"force_consolidate"}"#),
-            ("force_index", r#"{"method":"force_index"}"#),
+            // force_index is now parameterized (has optional path field)
+            // Old wire format {"method":"force_index"} no longer decodes — use params: {}
             ("list_permissions", r#"{"method":"list_permissions"}"#),
             ("list_organizations", r#"{"method":"list_organizations"}"#),
             ("healing_status", r#"{"method":"healing_status"}"#),
@@ -1181,6 +1182,24 @@ mod tests {
         }
     }
 
+    /// Verify that force_index with empty params decodes correctly.
+    /// The old bare `{"method":"force_index"}` no longer works (struct variant requires params),
+    /// but `{"method":"force_index","params":{}}` should decode to ForceIndex { path: None }.
+    #[test]
+    fn test_force_index_backward_compat() {
+        // New format with empty params — should work
+        let result = decode_request(r#"{"method":"force_index","params":{}}"#);
+        assert!(result.is_ok(), "force_index with empty params should decode: {:?}", result.err());
+
+        // New format with path — should work
+        let result = decode_request(r#"{"method":"force_index","params":{"path":"/tmp"}}"#);
+        assert!(result.is_ok(), "force_index with path should decode: {:?}", result.err());
+
+        // Old bare format — documents the breaking change
+        let result = decode_request(r#"{"method":"force_index"}"#);
+        assert!(result.is_err(), "bare force_index without params should fail (breaking change)");
+    }
+
     // ────────────────────────────────────────────────────────
     // Completeness guard: count all variants
     // ────────────────────────────────────────────────────────
@@ -1190,10 +1209,10 @@ mod tests {
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 20 (17 + HealingStatus + HealingRun + ListTeamTemplates)
-        let unit_count = 20;
-        // Parameterized variants: 94 (91 + HealingLog + RunTeam + StopTeam)
-        let param_count = 94;
+        // Unit variants: 19 (was 20; ForceIndex moved to parameterized — now has optional path)
+        let unit_count = 19;
+        // Parameterized variants: 95 (was 94; +1 ForceIndex)
+        let param_count = 95;
         // Total: 114
         let expected_total = 114;
 
@@ -1222,7 +1241,7 @@ mod tests {
                 Request::HlcBackfill,
                 Request::ForceConsolidate,
                 Request::ForceExtract,
-                Request::ForceIndex,
+                Request::ForceIndex { path: None },
                 Request::GetConfig,
                 // Agent Teams
                 Request::CreateAgentTemplate {

@@ -1351,7 +1351,14 @@ pub fn compile_dynamic_suffix(
         };
         if let Ok(content) = conv_result {
             // Budget cap: truncate to prevent unbounded context injection
-            let capped = if content.len() > 2000 { &content[..2000] } else { &content };
+            let capped = if content.len() > 2000 {
+                // ISSUE-25: ensure we don't slice inside a multi-byte UTF-8 character
+                let mut end = 2000;
+                while !content.is_char_boundary(end) && end > 0 { end -= 1; }
+                &content[..end]
+            } else {
+                &content
+            };
             xml.push_str("<project-conventions hint=\"project-specific knowledge — use these for test/lint/build commands\">\n");
             for entry in capped.split('|') {
                 let entry = entry.trim();
@@ -3368,5 +3375,28 @@ mod tests {
             !ctx.contains("project-conventions"),
             "context should not include conventions when none stored"
         );
+    }
+
+    #[test]
+    fn test_utf8_boundary_truncation() {
+        // ISSUE-25: verify content truncation doesn't panic on multi-byte UTF-8
+        // Directly test the char boundary logic
+        let mut content = "a".repeat(1998);
+        content.push_str("—"); // em dash (U+2014) = 3 bytes → total = 2001 bytes
+        content.push_str("end");
+        assert_eq!(content.len(), 2004); // 1998 + 3 + 3
+
+        // Simulate the truncation logic from compile_context
+        let capped = if content.len() > 2000 {
+            let mut end = 2000;
+            while !content.is_char_boundary(end) && end > 0 { end -= 1; }
+            &content[..end]
+        } else {
+            &content
+        };
+
+        // Should truncate to 1998 (before the em dash), not panic at 2000
+        assert_eq!(capped.len(), 1998, "should truncate to char boundary before em dash");
+        assert!(capped.ends_with('a'), "should end with 'a', not in the middle of em dash");
     }
 }

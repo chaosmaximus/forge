@@ -376,7 +376,11 @@ enum Commands {
 
     /// Force-trigger the code indexer and show current index counts
     #[command(name = "force-index")]
-    ForceIndex,
+    ForceIndex {
+        /// Directory to index. If omitted, re-processes existing indexed files.
+        #[arg(long)]
+        path: Option<String>,
+    },
 
     /// Run proactive checks on a file or show all active diagnostics
     Verify {
@@ -1389,8 +1393,8 @@ async fn main() {
             commands::system::code_search(query, kind, limit).await;
         }
 
-        Commands::ForceIndex => {
-            commands::system::force_index().await;
+        Commands::ForceIndex { path } => {
+            commands::system::force_index(path).await;
         }
 
         Commands::Verify { file } => {
@@ -2017,7 +2021,9 @@ mod tests {
         let cli = Cli::try_parse_from(["forge-next", "force-index"]);
         assert!(cli.is_ok(), "force-index should parse: {:?}", cli.err());
         match cli.unwrap().command {
-            Commands::ForceIndex => {}
+            Commands::ForceIndex { path } => {
+                assert!(path.is_none(), "default path should be None");
+            }
             other => panic!("expected ForceIndex, got {:?}", other),
         }
     }

@@ -2943,28 +2943,57 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::ForceIndex => {
-            // Re-process already-indexed files: extract import edges + run clustering
-            // (LSP-based symbol extraction continues on the background interval)
-            let files = ops::list_code_files(&state.conn);
-            let import_edges = crate::workers::indexer::extract_and_store_imports(&state.conn, &files);
+        Request::ForceIndex { path } => {
+            if let Some(ref dir) = path {
+                // Index a specific directory (ISSUE-17: multi-project support)
+                // Security: ForceIndex is admin-only (RBAC gated in rbac.rs).
+                // No workspace boundary check — intentional for single-user daemon.
+                // For multi-tenant: add workspace boundary enforcement.
+                let canonical = match std::fs::canonicalize(dir) {
+                    Ok(p) => p.to_string_lossy().to_string(),
+                    Err(e) => {
+                        return Response::Error {
+                            message: format!("cannot resolve path '{}': {}", dir, e),
+                        };
+                    }
+                };
+                if !std::path::Path::new(&canonical).is_dir() {
+                    return Response::Error {
+                        message: format!("'{}' is not a directory", dir),
+                    };
+                }
 
-            // Run clustering for any project that has a reality
-            let projects: std::collections::HashSet<String> = files.iter().map(|f| f.project.clone()).collect();
-            for project_dir in &projects {
-                crate::workers::indexer::run_clustering(&state.conn, project_dir);
-            }
+                let (files_indexed, symbols_indexed) =
+                    crate::workers::indexer::index_directory_sync(&state.conn, &canonical);
 
-            let files_indexed = files.len();
-            let symbols_indexed: usize = state.conn
-                .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
-                .unwrap_or(0);
+                eprintln!("[force-index] indexed {} files, {} symbols from {}", files_indexed, symbols_indexed, canonical);
 
-            eprintln!("[force-index] processed {} files, {} import edges, {} symbols",
-                files_indexed, import_edges, symbols_indexed);
+                Response::Ok {
+                    data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
+                }
+            } else {
+                // Re-process already-indexed files: extract import edges + run clustering
+                // (LSP-based symbol extraction continues on the background interval)
+                let files = ops::list_code_files(&state.conn);
+                let import_edges = crate::workers::indexer::extract_and_store_imports(&state.conn, &files);
 
-            Response::Ok {
-                data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
+                // Run clustering for any project that has a reality
+                let projects: std::collections::HashSet<String> = files.iter().map(|f| f.project.clone()).collect();
+                for project_dir in &projects {
+                    crate::workers::indexer::run_clustering(&state.conn, project_dir);
+                }
+
+                let files_indexed = files.len();
+                let symbols_indexed: usize = state.conn
+                    .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
+                    .unwrap_or(0);
+
+                eprintln!("[force-index] processed {} files, {} import edges, {} symbols",
+                    files_indexed, import_edges, symbols_indexed);
+
+                Response::Ok {
+                    data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
+                }
             }
         }
 
@@ -7034,7 +7063,7 @@ mod tests {
         ops::store_file(&state.conn, &file).unwrap();
 
         // ForceIndex should extract imports from the already-indexed file
-        let resp = handle_request(&mut state, Request::ForceIndex);
+        let resp = handle_request(&mut state, Request::ForceIndex { path: None });
         match resp {
             Response::Ok { data: ResponseData::IndexComplete { files_indexed, .. } } => {
                 assert_eq!(files_indexed, 1, "should report 1 file indexed");

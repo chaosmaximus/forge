@@ -63,7 +63,7 @@ fn is_admin_only(request: &Request) -> bool {
             | Request::RevokePermission { .. }
             | Request::Import { .. }
             | Request::SyncImport { .. }
-            | Request::ForceIndex
+            | Request::ForceIndex { .. }
     )
 }
 

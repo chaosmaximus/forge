@@ -446,7 +446,13 @@ pub enum Request {
     },
 
     /// Force-trigger the code indexer and return current index counts.
-    ForceIndex,
+    /// When `path` is provided, indexes that specific directory instead of
+    /// the daemon's primary workspace. This enables multi-project indexing.
+    ForceIndex {
+        /// Optional directory to index. If None, re-processes existing indexed files.
+        #[serde(default)]
+        path: Option<String>,
+    },
 
     // ── Agent Teams ──
 

@@ -128,7 +128,7 @@ impl ExtractedMemory {
 
 /// Parse extraction output JSON. Handles:
 /// - Clean JSON array
-/// - JSON wrapped in ```json code fences
+/// - JSON wrapped in ```json or ``` code fences (ISSUE-22: Gemini wrapping)
 /// - JSON array embedded in surrounding text
 /// - Empty responses
 ///
@@ -140,14 +140,20 @@ pub fn parse_extraction_output(output: &str) -> Vec<ExtractedMemory> {
         return Vec::new();
     }
 
+    // ISSUE-22: Strip markdown fences FIRST, before any parsing strategy.
+    // Gemini often wraps JSON in ```json ... ``` blocks, and may include
+    // natural language before/after the fence that confuses bracket-matching.
+    let stripped = strip_markdown_fences(trimmed);
+    let content = stripped.trim();
+
     // Try parsing the whole thing as JSON first
-    if let Ok(memories) = serde_json::from_str::<Vec<ExtractedMemory>>(trimmed) {
+    if let Ok(memories) = serde_json::from_str::<Vec<ExtractedMemory>>(content) {
         return filter_low_confidence(memories);
     }
 
     // Try finding a JSON array embedded anywhere in the text (most robust)
-    // This handles: code fences, thinking blocks, prose around JSON, truncated fences
-    if let Some(json_str) = extract_json_array(trimmed) {
+    // This handles: thinking blocks, prose around JSON, truncated fences
+    if let Some(json_str) = extract_json_array(content) {
         if let Ok(memories) = serde_json::from_str::<Vec<ExtractedMemory>>(json_str) {
             return filter_low_confidence(memories);
         }
@@ -164,7 +170,7 @@ pub fn parse_extraction_output(output: &str) -> Vec<ExtractedMemory> {
         }
     }
 
-    // Try extracting from ```json ... ``` code fences
+    // Try extracting from ```json ... ``` code fences on original (in case strip missed nested fences)
     if let Some(json_str) = extract_code_fence(trimmed) {
         if let Ok(memories) = serde_json::from_str::<Vec<ExtractedMemory>>(json_str) {
             return filter_low_confidence(memories);
@@ -180,13 +186,50 @@ pub fn parse_extraction_output(output: &str) -> Vec<ExtractedMemory> {
     Vec::new()
 }
 
+/// Strip markdown code fences from LLM output (ISSUE-22).
+/// Handles: ```json, ```JSON, ```, with or without language tags.
+/// Preserves content between fences, discards content outside.
+fn strip_markdown_fences(s: &str) -> &str {
+    // Try ```json first (case-insensitive start)
+    let lower = s.to_lowercase();
+    let start_markers = ["```json\n", "```json\r\n", "```json ", "```\n", "```\r\n"];
+
+    for marker in &start_markers {
+        if let Some(start) = lower.find(marker) {
+            let content_start = start + marker.len();
+            if !s.is_char_boundary(content_start) {
+                continue;
+            }
+            let rest = &s[content_start..];
+            // Find the closing fence
+            if let Some(end) = rest.find("\n```") {
+                return rest[..end].trim();
+            }
+            // No closing fence — Gemini may have omitted it; use rest of string
+            if let Some(end) = rest.rfind("```") {
+                return rest[..end].trim();
+            }
+            return rest.trim();
+        }
+    }
+
+    // No fences found — return as-is
+    s
+}
+
 /// Extract content between ```json and ``` fences.
+/// ISSUE-25: uses char boundary checks to prevent panics on multi-byte UTF-8.
 fn extract_code_fence(s: &str) -> Option<&str> {
     let start_marker = "```json";
     let end_marker = "```";
 
     let start = s.find(start_marker)?;
     let content_start = start + start_marker.len();
+    // Defensive: verify char boundary (start_marker is ASCII so this is always true,
+    // but guard against future changes to the marker)
+    if !s.is_char_boundary(content_start) {
+        return None;
+    }
     let rest = &s[content_start..];
     let end = rest.find(end_marker)?;
     Some(rest[..end].trim())
@@ -430,5 +473,75 @@ Done. I found 1 memory worth extracting."#;
             participants: vec![],
         };
         assert!(em.is_valid_type(), "'identity' should be a valid type");
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_json() {
+        // ISSUE-22: Gemini wraps JSON in ```json blocks
+        let input = "Here's what I found:\n```json\n[{\"type\": \"decision\", \"title\": \"test\", \"content\": \"c\", \"confidence\": 0.9, \"tags\": [], \"affects\": []}]\n```\nDone.";
+        let result = parse_extraction_output(input);
+        assert_eq!(result.len(), 1, "should parse 1 memory from fenced JSON");
+        assert_eq!(result[0].title, "test");
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_plain() {
+        // ISSUE-22: plain ``` fences (no json tag)
+        let input = "```\n[{\"type\": \"lesson\", \"title\": \"plain fence\", \"content\": \"c\", \"confidence\": 0.8, \"tags\": [], \"affects\": []}]\n```";
+        let result = parse_extraction_output(input);
+        assert_eq!(result.len(), 1, "should parse from plain fences");
+        assert_eq!(result[0].title, "plain fence");
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_no_closing() {
+        // ISSUE-22: Gemini omits closing fence
+        let input = "```json\n[{\"type\": \"decision\", \"title\": \"no close\", \"content\": \"c\", \"confidence\": 0.7, \"tags\": [], \"affects\": []}]";
+        let result = parse_extraction_output(input);
+        assert_eq!(result.len(), 1, "should parse even without closing fence");
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_with_thinking() {
+        // ISSUE-22: Gemini includes thinking/explanation around the JSON
+        let input = "Let me analyze the conversation...\n\n```json\n[{\"type\": \"pattern\", \"title\": \"thinking\", \"content\": \"c\", \"confidence\": 0.6, \"tags\": [], \"affects\": []}]\n```\n\nThese are the key findings.";
+        let result = parse_extraction_output(input);
+        assert_eq!(result.len(), 1, "should parse with surrounding text");
+    }
+
+    #[test]
+    fn test_strip_fn_no_fences() {
+        // strip_markdown_fences should return input as-is when no fences
+        let input = "[{\"type\": \"decision\"}]";
+        let result = strip_markdown_fences(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_extract_code_fence_utf8_content() {
+        // ISSUE-25: code fence extraction with multi-byte UTF-8 content
+        let input = "Here's the result:\n```json\n[{\"title\": \"Handle em—dashes\", \"type\": \"lesson\"}]\n```\nDone.";
+        let result = extract_code_fence(input);
+        assert!(result.is_some(), "should extract content from fence");
+        let content = result.unwrap();
+        assert!(content.contains("em—dashes"), "should preserve multi-byte chars");
+    }
+
+    #[test]
+    fn test_extract_code_fence_utf8_before_fence() {
+        // ISSUE-25: multi-byte chars before the fence marker
+        let input = "Some text with café and naïve — then:\n```json\n[]\n```";
+        let result = extract_code_fence(input);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "[]");
+    }
+
+    #[test]
+    fn test_extract_json_array_utf8() {
+        // ISSUE-25: JSON array extraction with multi-byte chars
+        let input = "The résumé says: [{\"title\": \"日本語テスト\"}] — end";
+        let result = extract_json_array(input);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("日本語テスト"));
     }
 }

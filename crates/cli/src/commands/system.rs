@@ -1288,8 +1288,9 @@ pub async fn config_delete_scoped(scope: String, scope_id: String, key: String) 
 }
 
 /// Force-trigger the code indexer and show current index counts.
-pub async fn force_index() {
-    match client::send(&Request::ForceIndex).await {
+/// When `path` is provided, indexes that specific directory.
+pub async fn force_index(path: Option<String>) {
+    match client::send(&Request::ForceIndex { path: path.clone() }).await {
         Ok(Response::Ok {
             data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
         }) => {

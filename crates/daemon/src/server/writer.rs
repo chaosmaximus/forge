@@ -459,7 +459,7 @@ mod tests {
         }));
 
         // ForceIndex: write (triggers indexing)
-        assert!(!is_read_only(&Request::ForceIndex));
+        assert!(!is_read_only(&Request::ForceIndex { path: None }));
 
         // Scoped config: write
         assert!(!is_read_only(&Request::SetScopedConfig {

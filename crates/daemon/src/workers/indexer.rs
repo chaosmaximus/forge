@@ -387,11 +387,17 @@ async fn index_with_server(
 
             // Find the actual character position of the symbol name on its line.
             // LSP positions are 0-based, line_start is 1-based.
+            // ISSUE-25: convert byte offset to UTF-16 code unit offset (LSP standard).
             let line_0 = sym.line_start.saturating_sub(1);
             let character = content
                 .lines()
                 .nth(line_0)
-                .and_then(|line| line.find(&sym.name))
+                .and_then(|line| {
+                    let byte_offset = line.find(&sym.name)?;
+                    // Count UTF-16 code units up to the byte offset
+                    let utf16_offset = line[..byte_offset].encode_utf16().count();
+                    Some(utf16_offset)
+                })
                 .unwrap_or(4) as u32;
 
             match tokio::time::timeout(
@@ -659,6 +665,100 @@ async fn run_index(
         eprintln!("[indexer] stored {} import edges", import_edges_stored);
     }
     Ok(())
+}
+
+/// Synchronously index a specific directory using regex-based extractors.
+/// This is called from the ForceIndex handler when `--path <dir>` is provided.
+/// Returns (files_indexed, symbols_indexed).
+pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usize) {
+    let indexed_at = now_str();
+    let mut all_files: Vec<CodeFile> = Vec::new();
+    let mut all_symbols: Vec<CodeSymbol> = Vec::new();
+
+    // Collect and index all supported languages via regex extractors
+    let lang_extensions: &[(&str, &[&str])] = &[
+        ("rust", &["rs"]),
+        ("python", &["py"]),
+        ("typescript", &["ts", "tsx"]),
+        ("javascript", &["js", "jsx"]),
+        ("go", &["go"]),
+    ];
+
+    for &(language, extensions) in lang_extensions {
+        let source_files = collect_source_files(project_dir, extensions);
+        for path in &source_files {
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let hash = file_hash(path);
+            all_files.push(CodeFile {
+                id: format!("file:{}", path),
+                path: path.clone(),
+                language: language.to_string(),
+                project: project_dir.to_string(),
+                hash: hash.clone(),
+                indexed_at: indexed_at.clone(),
+            });
+
+            // Check hash cache — skip re-extraction for unchanged files
+            let cached = HASH_CACHE.lock().unwrap().get(path.as_str()).cloned();
+            if cached.as_deref() == Some(&hash) {
+                continue;
+            }
+
+            let syms = match language {
+                "python" => extract_symbols_python(path, &content),
+                "typescript" | "javascript" => extract_symbols_regex(&content, path, language),
+                "go" => extract_symbols_go(path, &content),
+                "rust" => {
+                    // Rust regex extraction: use TS/JS extractor patterns adapted for Rust
+                    // (fn, struct, impl, enum, trait, mod, use)
+                    Vec::new() // Rust symbols come from LSP on periodic index; regex is supplemental
+                }
+                _ => Vec::new(),
+            };
+            if !syms.is_empty() {
+                HASH_CACHE.lock().unwrap().insert(path.to_string(), hash);
+            }
+            all_symbols.extend(syms);
+        }
+    }
+
+    if all_files.is_empty() {
+        eprintln!("[force-index] no source files found in {}", project_dir);
+        return (0, 0);
+    }
+
+    // Store files and symbols
+    let mut files_stored = 0usize;
+    let mut symbols_stored = 0usize;
+    for file in &all_files {
+        if ops::store_file(conn, file).is_ok() {
+            files_stored += 1;
+        }
+    }
+    for sym in &all_symbols {
+        if ops::store_symbol(conn, sym).is_ok() {
+            symbols_stored += 1;
+        }
+    }
+
+    // Extract import edges
+    let import_edges = extract_and_store_imports(conn, &all_files);
+
+    // Run clustering
+    run_clustering(conn, project_dir);
+
+    // Auto-detect project conventions
+    auto_detect_conventions(conn, project_dir);
+
+    eprintln!(
+        "[force-index] {} files, {} symbols, {} import edges for {}",
+        files_stored, symbols_stored, import_edges, project_dir
+    );
+
+    (files_stored, symbols_stored)
 }
 
 /// Extract import edges from already-indexed files and store them.
@@ -1629,6 +1729,109 @@ mod tests {
             [], |row| row.get(0),
         ).unwrap();
         assert_eq!(count, 1, "should not create duplicate conventions");
+    }
+
+    #[test]
+    fn test_index_directory_sync_python() {
+        // ISSUE-17: verify that index_directory_sync indexes a specific directory
+        use crate::db::schema::create_schema;
+
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+
+        // Create Python files
+        std::fs::write(dir.join("app.py"), "import os\n\nclass MyApp:\n    def run(self):\n        pass\n\ndef main():\n    app = MyApp()\n").unwrap();
+        std::fs::write(dir.join("utils.py"), "MAX_RETRIES = 5\n\ndef helper(x):\n    return x * 2\n").unwrap();
+
+        let (files, symbols) = index_directory_sync(&conn, dir.to_str().unwrap());
+        assert_eq!(files, 2, "should index 2 Python files, got {files}");
+        assert!(symbols >= 4, "should find at least 4 symbols (MyApp, run, main, MAX_RETRIES, helper), got {symbols}");
+
+        // Verify files stored in DB
+        let db_files: usize = conn.query_row(
+            "SELECT COUNT(*) FROM code_file WHERE project = ?1",
+            rusqlite::params![dir.to_str().unwrap()],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(db_files, 2, "should store 2 files in DB");
+
+        // Verify symbols stored
+        let db_symbols: usize = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0),
+        ).unwrap();
+        assert!(db_symbols >= 4, "should store at least 4 symbols in DB, got {db_symbols}");
+    }
+
+    #[test]
+    fn test_index_directory_sync_mixed_languages() {
+        // ISSUE-17: verify multi-language indexing
+        use crate::db::schema::create_schema;
+
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+
+        std::fs::write(dir.join("app.py"), "def main(): pass\n").unwrap();
+        std::fs::write(dir.join("index.ts"), "export function render() {}\n").unwrap();
+        std::fs::write(dir.join("main.go"), "package main\nfunc main() {}\n").unwrap();
+
+        let (files, _symbols) = index_directory_sync(&conn, dir.to_str().unwrap());
+        assert_eq!(files, 3, "should index 3 files across Python/TS/Go, got {files}");
+    }
+
+    #[test]
+    fn test_index_directory_sync_empty() {
+        // ISSUE-17: empty directory returns (0, 0)
+        use crate::db::schema::create_schema;
+
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(tmp.path().join("readme.md"), "# Hello").unwrap();
+
+        let (files, symbols) = index_directory_sync(&conn, tmp.path().to_str().unwrap());
+        assert_eq!(files, 0);
+        assert_eq!(symbols, 0);
+    }
+
+    #[test]
+    fn test_index_directory_sync_utf8_content() {
+        // ISSUE-25: verify indexing doesn't panic on files with multi-byte UTF-8
+        use crate::db::schema::create_schema;
+
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+
+        // Python file with em dashes, smart quotes, and other multi-byte UTF-8
+        std::fs::write(dir.join("utf8_test.py"), r#"
+"""This module handles data — including "smart quotes" and em—dashes.
+
+It also has: café, naïve, résumé, and 日本語.
+"""
+
+MAX_RETRIES = 5  # Don't change — it's the optimal value
+
+def process_data(input_data):
+    """Process the input — returning cleaned output."""
+    return input_data
+"#).unwrap();
+
+        let (files, symbols) = index_directory_sync(&conn, dir.to_str().unwrap());
+        assert_eq!(files, 1, "should index 1 Python file");
+        assert!(symbols >= 2, "should find at least 2 symbols (MAX_RETRIES, process_data), got {symbols}");
     }
 
     #[test]

@@ -61,6 +61,10 @@ pub fn parse_claude_memory_file(path: &Path) -> Result<Option<Memory>, String> {
         return Ok(None);
     };
 
+    // ISSUE-25: verify char boundaries before slicing
+    if !content.is_char_boundary(end) || !content.is_char_boundary(end + 3) {
+        return Ok(None);
+    }
     let frontmatter = &content[3..end];
     let body = content[end + 3..].trim();
 
