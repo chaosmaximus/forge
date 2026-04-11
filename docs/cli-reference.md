@@ -140,7 +140,7 @@ forge-next register-session --id sess-abc123 --agent claude-code --project forge
 
 ### end-session
 
-End an active agent session.
+End an active agent session. Returns per-session KPIs for observability.
 
 ```
 forge-next end-session --id ID
@@ -153,6 +153,13 @@ forge-next end-session --id ID
 ```bash
 forge-next end-session --id sess-abc123
 ```
+
+The response includes `session_kpis` with the following metrics:
+- `session_duration_secs` -- total session duration
+- `context_injections` -- number of context injections during the session
+- `context_chars_injected` -- total characters of context injected
+- `a2a_messages_sent` -- A2A messages sent from this session
+- `a2a_messages_received` -- A2A messages received by this session
 
 ### sessions
 
@@ -285,6 +292,8 @@ forge-next send --to "*" --kind notification --topic schema_changed --text "migr
 # Send a request with timeout
 forge-next send --to sess-abc123 --kind request --topic review_code --text "Please review PR #42" --timeout 300
 ```
+
+**Protocol note:** The underlying NDJSON protocol also supports a `from_session` field for sender identification. When using the CLI, the sender is recorded as `"api"` by default. For programmatic use via the Unix socket or HTTP API, include `"from_session": "<session-id>"` in the request payload.
 
 ### messages
 

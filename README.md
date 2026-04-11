@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-1%2C756%2B%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-1%2C245%2B%20passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/endpoints-98-blue" alt="Endpoints" />
   <img src="https://img.shields.io/badge/workers-8-orange" alt="Workers" />
   <img src="https://img.shields.io/badge/memory%20layers-8-purple" alt="Memory Layers" />
@@ -91,8 +91,8 @@ graph TB
     end
 
     subgraph Daemon["Forge Daemon — Rust"]
-        Socket["Unix Socket API · 75+ commands"]
-        Manas["8-Layer Manas Memory"]
+        Socket["Unix Socket API · 98 endpoints"]
+        Manas["8-Layer Manas Memory · org_id scoped"]
         Workers["9 Background Workers"]
         Guards["Guardrails Engine"]
         Identity["Identity · Disposition · Skills"]
@@ -129,6 +129,7 @@ graph TB
 - **Bootstrap** — 100+ memories from existing transcripts in 60s
 - **Cross-session** — decisions persist across sessions and projects
 - **Semantic search** — BM25 + vector + graph traversal via RRF
+- **Multi-tenant isolation** — organization_id scoping on all memory queries
 
 </td>
 <td width="50%" valign="top">
@@ -162,8 +163,10 @@ graph TB
 - **8 background workers** — continuous ambient processing
 - **Self-healing graph** — sleep-cycle consolidation overnight
 - **Predictive prefetch** — zero cold-start context injection
-- **Memory sync** — encrypted peer-to-peer across machines
+- **Memory sync** — encrypted peer-to-peer with cross-tier sync policies
 - **Event stream** — 12 real-time event types for UI integration
+- **Session KPIs** — per-session observability (duration, context injections, A2A messages, hooks fired)
+- **A2A message notifications** — pending messages injected into agent context automatically
 
 </td>
 </tr>
@@ -271,18 +274,17 @@ Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to re
 
 ```
 98 protocol endpoints · 8 background workers · 8 memory layers
-1,223+ Rust tests · 12 adversarial security reviews · 0 warnings (clippy)
-Enterprise: Docker · Helm · JWT/OIDC · RBAC · Audit · Prometheus
+1,245+ Rust tests · 15 adversarial security reviews · 0 warnings (clippy)
+Enterprise: Docker · Helm · JWT/OIDC · RBAC · Audit · Prometheus · Multi-tenant
 ```
 
 | Component | Tests | Framework |
 |-----------|-------|-----------|
-| forge-hud | 76 | Rust |
+| forge-daemon (unit) | 990 | Rust |
+| forge-daemon (integration) | 123 | Rust |
 | forge-core | 56 | Rust |
-| forge-daemon | 968 | Rust |
-| forge-cli | 18 | Rust |
-| Integration / E2E | 105 | Rust |
-| **Total (Rust)** | **1,223** | |
+| forge-cli | 76 | Rust |
+| **Total (Rust)** | **1,245** | |
 
 ```bash
 cargo test --workspace              # full suite

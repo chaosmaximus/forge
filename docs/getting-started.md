@@ -264,6 +264,36 @@ Forge never stores actual secret values -- only SHA256 fingerprints for tracking
 | `forge-next import --file F` | Import memories from file |
 | `forge scan .` | Scan for exposed secrets |
 
+## Multi-Tenant Setup
+
+Forge supports multi-tenant isolation through organization_id scoping. All memory queries, recall results, and sync operations are filtered by organization.
+
+Create an organization:
+
+```bash
+forge-next org-create --name "Acme Corp" --description "Main development organization"
+```
+
+Or initialize from a template:
+
+```bash
+forge-next org-from-template --template startup --name "MyStartup"
+```
+
+Initialize the workspace directory structure:
+
+```bash
+forge-next org-init --name "MyStartup"
+```
+
+View the workspace status:
+
+```bash
+forge-next workspace-status
+```
+
+Memory sync respects cross-tier sync policies: decisions and lessons propagate from local to team, but only decisions and protocols propagate from team to organization level. Preferences stay local.
+
 ## Next Steps
 
 - [Cloud Deployment](cloud-deployment.md) -- deploy Forge to Kubernetes for team-wide shared memory

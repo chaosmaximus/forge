@@ -30,6 +30,7 @@ All data stays on the user's machine. No cloud services, no telemetry, no data c
 - **UTF-8 safe truncation:** Content truncated at valid UTF-8 boundaries
 - **50MB file limit:** Prevents memory exhaustion from large inputs
 - **PID locking:** Exclusive flock with /proc liveness check for stale lock recovery
+- **Multi-tenant isolation:** All memory queries, recall results, and context compilation are scoped by `organization_id`. Memory sync exports filter by org_id, preventing cross-tenant data leakage. Cross-tier sync policies control which memory types propagate between local, team, and organization levels.
 
 ### HTTP Transport Security
 - **JWT/OIDC authentication:** RS256 signature validation, JWKS with TTL cache, OIDC discovery
@@ -73,7 +74,7 @@ All data stays on the user's machine. No cloud services, no telemetry, no data c
   - 3 CRITICAL findings fixed: auth bypass path, IP spoofing, dead lockout code
   - 6 IMPORTANT findings fixed: WS rate limit, PTY TOCTOU, CORS port validation, PID truncation
   - All HIGH/MEDIUM findings addressed through Session 15
-- **1,223 Rust tests, 0 clippy warnings** (Session 15)
+- **1,245 Rust tests, 0 clippy warnings** (Session 16)
 
 ## Data Protection
 
