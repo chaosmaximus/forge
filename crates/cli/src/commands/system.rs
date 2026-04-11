@@ -379,6 +379,7 @@ pub async fn post_edit_check(file: String) {
                 applicable_skills,
                 decisions_to_review,
                 cached_diagnostics,
+                proactive_context,
             },
         }) => {
             for diag in &cached_diagnostics {
@@ -401,6 +402,9 @@ pub async fn post_edit_check(file: String) {
             }
             for decision in &decisions_to_review {
                 println!("Decision to review: {decision}");
+            }
+            for pc in &proactive_context {
+                println!("[proactive {}] {}", pc.knowledge_type, pc.content);
             }
         }
         Ok(Response::Error { message }) => {
@@ -471,7 +475,7 @@ pub async fn pre_bash_check(command: String) {
     match client::send(&Request::PreBashCheck { command: command.clone() }).await {
         Ok(Response::Ok {
             data: ResponseData::PreBashChecked {
-                safe, warnings, relevant_skills,
+                safe, warnings, relevant_skills, proactive_context,
             },
         }) => {
             for w in &warnings {
@@ -480,7 +484,10 @@ pub async fn pre_bash_check(command: String) {
             for s in &relevant_skills {
                 println!("Skill: {s}");
             }
-            if safe && warnings.is_empty() && relevant_skills.is_empty() {
+            for pc in &proactive_context {
+                println!("[proactive {}] {}", pc.knowledge_type, pc.content);
+            }
+            if safe && warnings.is_empty() && relevant_skills.is_empty() && proactive_context.is_empty() {
                 // Silent on safe -- context budget rule
             }
         }
@@ -500,10 +507,13 @@ pub async fn pre_bash_check(command: String) {
 pub async fn post_bash_check(command: String, exit_code: i32) {
     match client::send(&Request::PostBashCheck { command: command.clone(), exit_code }).await {
         Ok(Response::Ok {
-            data: ResponseData::PostBashChecked { suggestions },
+            data: ResponseData::PostBashChecked { suggestions, proactive_context },
         }) => {
             for s in &suggestions {
                 println!("{s}");
+            }
+            for pc in &proactive_context {
+                println!("[proactive {}] {}", pc.knowledge_type, pc.content);
             }
         }
         Ok(Response::Error { message }) => {

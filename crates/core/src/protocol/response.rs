@@ -153,14 +153,23 @@ pub enum ResponseData {
         applicable_skills: Vec<String>,
         decisions_to_review: Vec<String>,
         cached_diagnostics: Vec<String>,
+        /// Proactive context injected via Prajna matrix (hook_event → knowledge_type scoring)
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        proactive_context: Vec<ProactiveInjection>,
     },
     PreBashChecked {
         safe: bool,
         warnings: Vec<String>,
         relevant_skills: Vec<String>,
+        /// Proactive context injected via Prajna matrix
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        proactive_context: Vec<ProactiveInjection>,
     },
     PostBashChecked {
         suggestions: Vec<String>,
+        /// Proactive context injected via Prajna matrix
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        proactive_context: Vec<ProactiveInjection>,
     },
     BlastRadius {
         decisions: Vec<BlastRadiusDecision>,
@@ -778,6 +787,16 @@ pub struct BlastRadiusDecision {
     pub id: String,
     pub title: String,
     pub confidence: f64,
+}
+
+/// A piece of proactive context injected by the Prajna matrix.
+/// The daemon scores (hook_event, knowledge_type) pairs and surfaces
+/// relevant knowledge when relevance exceeds the threshold.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProactiveInjection {
+    pub knowledge_type: String, // "decision", "anti_pattern", "blast_radius", "skill", etc.
+    pub relevance: f64,         // 0.0-1.0 relevance score
+    pub content: String,        // the actual knowledge to surface
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

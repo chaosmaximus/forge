@@ -1289,21 +1289,31 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }));
             }
 
+            // Proactive context injection via Prajna matrix
+            let proactive_context = crate::proactive::build_proactive_context(
+                &state.conn, crate::proactive::HOOK_PRE_BASH, None,
+            );
+
             Response::Ok {
                 data: ResponseData::PreBashChecked {
                     safe: result.safe,
                     warnings: result.warnings,
                     relevant_skills: result.relevant_skills,
+                    proactive_context,
                 },
             }
         }
 
         Request::PostBashCheck { command, exit_code } => {
             let result = crate::guardrails::check::post_bash_check(&state.conn, &command, exit_code);
+            let proactive_context = crate::proactive::build_proactive_context(
+                &state.conn, crate::proactive::HOOK_POST_BASH, None,
+            );
 
             Response::Ok {
                 data: ResponseData::PostBashChecked {
                     suggestions: result.suggestions,
+                    proactive_context,
                 },
             }
         }
@@ -1320,6 +1330,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }));
             }
 
+            let proactive_context = crate::proactive::build_proactive_context(
+                &state.conn, crate::proactive::HOOK_POST_EDIT, None,
+            );
+
             Response::Ok {
                 data: ResponseData::PostEditChecked {
                     file: result.file,
@@ -1330,6 +1344,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     applicable_skills: result.applicable_skills,
                     decisions_to_review: result.decisions_to_review,
                     cached_diagnostics: result.cached_diagnostics,
+                    proactive_context,
                 },
             }
         }
@@ -4653,7 +4668,7 @@ mod tests {
             Response::Ok { data: ResponseData::PostEditChecked {
                 file, callers_count, calling_files, relevant_lessons,
                 dangerous_patterns, applicable_skills, decisions_to_review,
-                cached_diagnostics,
+                cached_diagnostics, ..
             } } => {
                 assert_eq!(file, "src/lib.rs");
                 assert_eq!(callers_count, 0);

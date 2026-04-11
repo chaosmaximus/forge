@@ -142,6 +142,105 @@ pub fn context_relevance(
     bootstrap_relevance(hook_event, knowledge_type)
 }
 
+/// Build proactive context injections for a given hook event.
+/// Queries the database for each knowledge type that passes the relevance threshold,
+/// fetching the most relevant content for each type.
+pub fn build_proactive_context(
+    conn: &Connection,
+    hook_event: &str,
+    project: Option<&str>,
+) -> Vec<forge_core::protocol::response::ProactiveInjection> {
+    use forge_core::protocol::response::ProactiveInjection;
+
+    let knowledge_types = [
+        (KT_BLAST_RADIUS, "blast_radius context"),
+        (KT_ANTI_PATTERN, "anti_pattern"),
+        (KT_UAT_LESSON, "uat_lesson"),
+        (KT_DECISION, "decision"),
+        (KT_TEST_REMINDER, "test_reminder"),
+        (KT_SKILL, "skill"),
+        (KT_NOTIFICATION, "notification"),
+    ];
+
+    let mut injections = Vec::new();
+
+    for (kt, memory_type) in &knowledge_types {
+        let relevance = context_relevance(conn, hook_event, kt, project);
+        if relevance < RELEVANCE_THRESHOLD {
+            continue;
+        }
+
+        // Fetch the most relevant content for this knowledge type
+        let content = match *kt {
+            KT_ANTI_PATTERN => fetch_recent_by_tag(conn, "anti-pattern", project, 1),
+            KT_UAT_LESSON => fetch_recent_by_type(conn, "lesson", project, 1),
+            KT_DECISION => fetch_recent_by_type(conn, "decision", project, 1),
+            KT_TEST_REMINDER => fetch_recent_by_tag(conn, "test", project, 1),
+            KT_SKILL => fetch_recent_by_type(conn, "pattern", project, 1),
+            KT_NOTIFICATION => fetch_pending_notifications(conn, project),
+            KT_BLAST_RADIUS => continue, // blast_radius is computed per-file, not from memory
+            _ => continue,
+        };
+
+        if !content.is_empty() {
+            injections.push(ProactiveInjection {
+                knowledge_type: memory_type.to_string(),
+                relevance,
+                content,
+            });
+        }
+    }
+
+    injections
+}
+
+/// Fetch recent memories by type, optionally scoped to project.
+fn fetch_recent_by_type(conn: &Connection, memory_type: &str, project: Option<&str>, limit: usize) -> String {
+    let result: Vec<String> = if let Some(proj) = project {
+        let mut stmt = match conn.prepare(
+            "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' AND project = ?2 ORDER BY accessed_at DESC LIMIT ?3"
+        ) { Ok(s) => s, Err(_) => return String::new() };
+        stmt.query_map(rusqlite::params![memory_type, proj, limit], |r| r.get(0))
+            .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+    } else {
+        let mut stmt = match conn.prepare(
+            "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' ORDER BY accessed_at DESC LIMIT ?2"
+        ) { Ok(s) => s, Err(_) => return String::new() };
+        stmt.query_map(rusqlite::params![memory_type, limit], |r| r.get(0))
+            .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+    };
+    result.join("; ")
+}
+
+/// Fetch recent memories by tag.
+fn fetch_recent_by_tag(conn: &Connection, tag: &str, project: Option<&str>, limit: usize) -> String {
+    let pattern = format!("%{}%", tag);
+    let result: Vec<String> = if let Some(proj) = project {
+        let mut stmt = match conn.prepare(
+            "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' AND project = ?2 ORDER BY accessed_at DESC LIMIT ?3"
+        ) { Ok(s) => s, Err(_) => return String::new() };
+        stmt.query_map(rusqlite::params![pattern, proj, limit], |r| r.get(0))
+            .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+    } else {
+        let mut stmt = match conn.prepare(
+            "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' ORDER BY accessed_at DESC LIMIT ?2"
+        ) { Ok(s) => s, Err(_) => return String::new() };
+        stmt.query_map(rusqlite::params![pattern, limit], |r| r.get(0))
+            .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+    };
+    result.join("; ")
+}
+
+/// Fetch pending notifications for the project.
+fn fetch_pending_notifications(conn: &Connection, _project: Option<&str>) -> String {
+    let mut stmt = match conn.prepare(
+        "SELECT message FROM notification WHERE status = 'pending' AND dismissed = 0 ORDER BY created_at DESC LIMIT 3"
+    ) { Ok(s) => s, Err(_) => return String::new() };
+    let result: Vec<String> = stmt.query_map([], |r| r.get(0))
+        .ok().map(|rows| rows.flatten().collect()).unwrap_or_default();
+    result.join("; ")
+}
+
 /// Returns true if the knowledge type should be surfaced at the given hook event.
 pub fn should_surface(
     conn: &Connection,
@@ -236,6 +335,49 @@ mod tests {
             !should_surface(&conn, HOOK_POST_EDIT, KT_BLAST_RADIUS, None),
             "blast_radius at PostEdit should NOT surface (relevance 0.2 < threshold 0.3)"
         );
+    }
+
+    #[test]
+    fn test_build_proactive_context_returns_relevant_types() {
+        let conn = setup_effectiveness_db();
+
+        // Store a decision memory
+        let m = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Decision,
+            "Use JWT for auth",
+            "JWT chosen for stateless authentication",
+        );
+        crate::db::ops::remember(&conn, &m).unwrap();
+
+        // Build proactive context for PreEdit (should include decisions at 0.7 relevance)
+        let ctx = build_proactive_context(&conn, HOOK_PRE_EDIT, None);
+        let has_decision = ctx.iter().any(|c| c.knowledge_type == "decision");
+        assert!(has_decision, "PreEdit should surface decisions (relevance 0.7 >= 0.3 threshold)");
+    }
+
+    #[test]
+    fn test_build_proactive_context_filters_low_relevance() {
+        let conn = setup_effectiveness_db();
+
+        // Store a lesson (uat_lesson)
+        let m = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Lesson,
+            "Always verify test output",
+            "UAT lesson from production incident",
+        );
+        crate::db::ops::remember(&conn, &m).unwrap();
+
+        // Build proactive context for PostEdit — uat_lesson has no bootstrap entry (defaults to 0.1)
+        let ctx = build_proactive_context(&conn, HOOK_POST_EDIT, None);
+        let has_uat = ctx.iter().any(|c| c.knowledge_type == "uat_lesson");
+        assert!(!has_uat, "PostEdit should NOT surface uat_lesson (relevance 0.1 < 0.3 threshold)");
+    }
+
+    #[test]
+    fn test_build_proactive_context_empty_db() {
+        let conn = setup_effectiveness_db();
+        let ctx = build_proactive_context(&conn, HOOK_PRE_BASH, None);
+        assert!(ctx.is_empty(), "empty DB should produce no proactive context");
     }
 
     #[test]
