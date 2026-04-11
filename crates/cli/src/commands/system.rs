@@ -646,7 +646,7 @@ pub async fn send_message(to: String, kind: String, topic: String, text: String,
         data: None,
         memory_id: None,
     }];
-    let req = Request::SessionSend { to, kind, topic, parts, project, timeout_secs: timeout, meeting_id: None };
+    let req = Request::SessionSend { to, kind, topic, parts, project, timeout_secs: timeout, meeting_id: None, from_session: None };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::MessageSent { id, status } }) => {
             println!("Message sent: {id} (status: {status})");

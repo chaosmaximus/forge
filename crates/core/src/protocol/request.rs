@@ -342,6 +342,10 @@ pub enum Request {
         /// If set, this message is a response to a meeting question.
         /// The daemon auto-records it as a meeting participant response.
         meeting_id: Option<String>,
+        /// Sender session ID — used as from_session in the message.
+        /// When absent, defaults to "api".
+        #[serde(default)]
+        from_session: Option<String>,
     },
     /// Respond to a received request
     SessionRespond {

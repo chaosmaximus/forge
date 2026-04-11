@@ -2539,14 +2539,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         // ── A2A Inter-Session Protocol (FISP) ──
 
-        Request::SessionSend { to, kind, topic, parts, project, timeout_secs, meeting_id } => {
+        Request::SessionSend { to, kind, topic, parts, project, timeout_secs, meeting_id, from_session } => {
             // A2A permission enforcement
             let config = crate::config::load_config();
             if !config.a2a.enabled {
                 return Response::Error { message: "A2A messaging is disabled".into() };
             }
 
-            let from = "api";
+            let from = from_session.as_deref().unwrap_or("api");
 
             // In controlled mode, check permissions before sending
             if config.a2a.trust == "controlled" {
@@ -8439,6 +8439,7 @@ mod tests {
                 project: None,
                 timeout_secs: None,
                 meeting_id: None,
+                from_session: None,
             });
             match &resp {
                 Response::Ok { data: ResponseData::MessageSent { .. } } => {}
@@ -8462,6 +8463,7 @@ mod tests {
             project: None,
             timeout_secs: None,
             meeting_id: None,
+            from_session: None,
         });
         match resp {
             Response::Error { message } => {
@@ -8501,6 +8503,7 @@ mod tests {
             project: None,
             timeout_secs: None,
             meeting_id: None,
+            from_session: None,
         });
         match resp {
             Response::Error { message } => {

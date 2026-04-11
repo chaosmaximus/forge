@@ -1319,6 +1319,7 @@ mod tests {
                     project: None,
                     timeout_secs: None,
                     meeting_id: None,
+                    from_session: None,
                 },
                 Request::SessionRespond {
                     message_id: "m1".into(),
