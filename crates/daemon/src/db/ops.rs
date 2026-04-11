@@ -1163,19 +1163,28 @@ pub fn normalize_project_names(conn: &Connection) -> rusqlite::Result<usize> {
 
     let mut total_updated = 0;
     for proj in &projects {
-        // Only normalize values that match the Claude-encoded path pattern for current HOME.
-        // Must start with the home prefix (e.g. "-mnt-colab-disk-DurgaSaiK-").
-        // Don't touch values that merely start with '-' — they could be valid project names.
-        if let Some(rest) = proj.strip_prefix(&home_prefix) {
-            if rest.is_empty() { continue; } // home dir itself
-            let normalized = rest.to_string();
-            if normalized != *proj {
-                let updated = conn.execute(
-                    "UPDATE memory SET project = ?1 WHERE project = ?2 AND deleted_at IS NULL",
-                    rusqlite::params![normalized, proj],
-                )?;
-                total_updated += updated;
+        let normalized = if let Some(rest) = proj.strip_prefix(&home_prefix) {
+            // HOME-based path: "-home-user-project" → "project"
+            if rest.is_empty() { continue; }
+            rest.to_string()
+        } else {
+            // CWD-based path: extract last path segment
+            // Pattern: "mnt-colab-disk-User-project" or "-mnt-colab-disk-User-project"
+            let trimmed = proj.trim_start_matches('-');
+            if trimmed.contains('-') && (trimmed.starts_with("mnt-") || trimmed.starts_with("home-") || trimmed.starts_with("tmp-")) {
+                // This looks like an encoded path — extract the last segment
+                trimmed.rsplit('-').next().unwrap_or(trimmed).to_string()
+            } else {
+                continue; // Already a clean project name
             }
+        };
+
+        if !normalized.is_empty() && normalized != *proj {
+            let updated = conn.execute(
+                "UPDATE memory SET project = ?1 WHERE project = ?2 AND deleted_at IS NULL",
+                rusqlite::params![normalized, proj],
+            )?;
+            total_updated += updated;
         }
     }
     Ok(total_updated)
