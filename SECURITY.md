@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.7.x (current) | :white_check_mark: |
+| 0.4.x (current) | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
@@ -67,12 +67,13 @@ All data stays on the user's machine. No cloud services, no telemetry, no data c
 
 ## Security Reviews
 
-- **9 adversarial security reviews** completed (Session 10)
+- **15 adversarial security reviews** completed (Sessions 6-15)
+  - 9 internal evaluator reviews (Sessions 6-10)
+  - 6 Codex (GPT-5.2) adversarial rounds (Sessions 6-9)
   - 3 CRITICAL findings fixed: auth bypass path, IP spoofing, dead lockout code
   - 6 IMPORTANT findings fixed: WS rate limit, PTY TOCTOU, CORS port validation, PID truncation
-  - 6 SUGGESTIONS documented for future hardening
-- **5 Codex adversarial reviews** (Sessions 6-9)
-- **794+ daemon tests, 55 core tests, 0 clippy warnings**
+  - All HIGH/MEDIUM findings addressed through Session 15
+- **1,223 Rust tests, 0 clippy warnings** (Session 15)
 
 ## Data Protection
 

@@ -271,19 +271,18 @@ Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to re
 
 ```
 98 protocol endpoints · 8 background workers · 8 memory layers
-1,756+ tests · 12 adversarial security reviews · 0 warnings (clippy)
+1,223+ Rust tests · 12 adversarial security reviews · 0 warnings (clippy)
 Enterprise: Docker · Helm · JWT/OIDC · RBAC · Audit · Prometheus
 ```
 
 | Component | Tests | Framework |
 |-----------|-------|-----------|
-| forge-core | 55 | Rust |
-| forge-daemon | 675 | Rust |
-| forge-cli | 20 | Rust |
-| forge app — canvas engine | 1,026 | Vitest |
-| forge app — Playwright E2E | 64 | Playwright |
-| Install scripts | 14 | Bash |
-| **Total** | **1,756+** | |
+| forge-hud | 76 | Rust |
+| forge-core | 56 | Rust |
+| forge-daemon | 968 | Rust |
+| forge-cli | 18 | Rust |
+| Integration / E2E | 105 | Rust |
+| **Total (Rust)** | **1,223** | |
 
 ```bash
 cargo test --workspace              # full suite

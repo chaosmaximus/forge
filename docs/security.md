@@ -270,13 +270,13 @@ Write operations have a 30-second timeout. If the writer actor does not respond 
 
 ## Adversarial Testing
 
-Forge has undergone 6 rounds of adversarial review using Codex (GPT-5.2) as an independent reviewer. Each round produced findings that were fixed before the next round.
+Forge has undergone 15 rounds of adversarial review using Codex (GPT-5.2) and internal evaluator agents across Sessions 6-15. Each round produced findings that were fixed before the next round.
 
 | Metric | Count |
 |--------|-------|
-| Adversarial review rounds | 6 |
-| Total findings (all fixed) | 59 |
-| Unit tests | 677+ |
+| Adversarial review rounds | 15 (6 Codex + 9 evaluator) |
+| Total findings (all fixed) | 80+ |
+| Rust unit tests | 1,223 |
 | Live UAT tests | 77 |
 | K8s cluster tests | 15 |
 | Clippy warnings | 0 |
