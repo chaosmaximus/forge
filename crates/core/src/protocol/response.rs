@@ -531,6 +531,17 @@ pub enum ResponseData {
         symbols_indexed: usize,
     },
 
+    // ── Contradictions ──
+
+    Contradictions {
+        contradictions: Vec<ContradictionInfo>,
+        count: usize,
+    },
+    ContradictionResolved {
+        contradiction_id: String,
+        resolution: String,
+    },
+
     // ── Agent Teams ──
 
     /// Agent template was created
@@ -780,6 +791,21 @@ pub struct ExportEdge {
     pub to_id: String,
     pub edge_type: String,
     pub properties: serde_json::Value,
+}
+
+/// A detected contradiction between two memories.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContradictionInfo {
+    pub id: String,
+    pub memory_a_id: String,
+    pub memory_a_title: String,
+    pub memory_a_valence: String,
+    pub memory_b_id: String,
+    pub memory_b_title: String,
+    pub memory_b_valence: String,
+    pub shared_tags: usize,
+    pub resolved: bool,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

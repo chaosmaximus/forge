@@ -198,6 +198,8 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::CodeSearch { .. }
         | Request::ListRealities { .. }
         | Request::ForceIndex { .. }
+        | Request::ListContradictions { .. }
+        | Request::ResolveContradiction { .. }
         | Request::ListNotifications { .. }
         | Request::AckNotification { .. }
         | Request::DismissNotification { .. }

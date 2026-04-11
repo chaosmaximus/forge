@@ -454,6 +454,24 @@ pub enum Request {
         path: Option<String>,
     },
 
+    // ── Contradictions ──
+
+    /// List detected contradictions between active memories.
+    ListContradictions {
+        #[serde(default)]
+        status: Option<String>, // "unresolved" | "resolved" | None (all)
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+
+    /// Resolve a contradiction by choosing a winner or providing a synthesis.
+    ResolveContradiction {
+        /// The contradiction edge ID (e.g., "edge-contradiction-{id_a}-{id_b}")
+        contradiction_id: String,
+        /// Which memory wins ("a" or "b"), or "synthesize" for auto-resolution
+        resolution: String,
+    },
+
     // ── Agent Teams ──
 
     /// Create a reusable agent template (CTO, CMO, etc.)

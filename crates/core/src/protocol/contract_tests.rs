@@ -1211,10 +1211,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 19 (was 20; ForceIndex moved to parameterized — now has optional path)
         let unit_count = 19;
-        // Parameterized variants: 95 (was 94; +1 ForceIndex)
-        let param_count = 95;
-        // Total: 114
-        let expected_total = 114;
+        // Parameterized variants: 97 (was 95; +2 ListContradictions, ResolveContradiction)
+        let param_count = 97;
+        // Total: 116
+        let expected_total = 116;
 
         assert_eq!(
             unit_count + param_count,
@@ -1242,6 +1242,8 @@ mod tests {
                 Request::ForceConsolidate,
                 Request::ForceExtract,
                 Request::ForceIndex { path: None },
+                Request::ListContradictions { status: None, limit: None },
+                Request::ResolveContradiction { contradiction_id: "c1".into(), resolution: "a".into() },
                 Request::GetConfig,
                 // Agent Teams
                 Request::CreateAgentTemplate {

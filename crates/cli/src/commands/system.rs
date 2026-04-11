@@ -1320,6 +1320,61 @@ pub async fn force_index(path: Option<String>) {
     }
 }
 
+/// List detected contradictions between active memories.
+pub async fn contradictions(status: Option<String>, limit: usize) {
+    match client::send(&Request::ListContradictions { status, limit: Some(limit) }).await {
+        Ok(Response::Ok {
+            data: ResponseData::Contradictions { contradictions, count },
+        }) => {
+            if count == 0 {
+                println!("No contradictions detected.");
+                return;
+            }
+            println!("{count} contradiction(s):\n");
+            for c in &contradictions {
+                let status = if c.resolved { "RESOLVED" } else { "UNRESOLVED" };
+                println!("  [{status}] {}", c.id);
+                println!("    A: \"{}\" ({})", c.memory_a_title, c.memory_a_valence);
+                println!("    B: \"{}\" ({})", c.memory_b_title, c.memory_b_valence);
+                println!("    Shared tags: {}", c.shared_tags);
+                println!();
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Resolve a contradiction by choosing which memory wins.
+pub async fn resolve_contradiction(contradiction_id: String, pick: String) {
+    match client::send(&Request::ResolveContradiction {
+        contradiction_id: contradiction_id.clone(),
+        resolution: pick.clone(),
+    }).await {
+        Ok(Response::Ok {
+            data: ResponseData::ContradictionResolved { .. },
+        }) => {
+            println!("Resolved: {} (winner: memory {})", contradiction_id, pick);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Show extraction metrics, token usage, and cost tracking.
 pub async fn stats(hours: u64) {
     let req = Request::GetStats { hours: Some(hours) };

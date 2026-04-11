@@ -3012,6 +3012,127 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // ── Contradictions ──
+
+        Request::ListContradictions { status, limit } => {
+            let lim = limit.unwrap_or(50);
+            // Query contradiction edges joined with memory titles
+            let sql = "SELECT e.id, e.from_id, e.to_id, e.properties, e.created_at,
+                               m1.title, m1.valence, m2.title, m2.valence
+                        FROM edge e
+                        LEFT JOIN memory m1 ON e.from_id = m1.id
+                        LEFT JOIN memory m2 ON e.to_id = m2.id
+                        WHERE e.edge_type = 'contradicts'
+                        ORDER BY e.created_at DESC
+                        LIMIT ?1";
+            let mut stmt = match state.conn.prepare(sql) {
+                Ok(s) => s,
+                Err(e) => return Response::Error { message: format!("list_contradictions: {e}") },
+            };
+            let rows: Vec<forge_core::protocol::response::ContradictionInfo> = stmt
+                .query_map(rusqlite::params![lim], |row| {
+                    let id: String = row.get(0)?;
+                    let from_id: String = row.get(1)?;
+                    let to_id: String = row.get(2)?;
+                    let props: String = row.get(3)?;
+                    let created_at: String = row.get(4)?;
+                    let title_a: String = row.get::<_, Option<String>>(5)?.unwrap_or_default();
+                    let valence_a: String = row.get::<_, Option<String>>(6)?.unwrap_or_default();
+                    let title_b: String = row.get::<_, Option<String>>(7)?.unwrap_or_default();
+                    let valence_b: String = row.get::<_, Option<String>>(8)?.unwrap_or_default();
+                    let shared_tags: usize = serde_json::from_str::<serde_json::Value>(&props)
+                        .ok()
+                        .and_then(|v| v["shared_tags"].as_u64())
+                        .unwrap_or(0) as usize;
+                    // Check if resolved (supersede edge exists from either memory)
+                    let resolved = false; // will be enriched below
+                    Ok(forge_core::protocol::response::ContradictionInfo {
+                        id, memory_a_id: from_id, memory_a_title: title_a, memory_a_valence: valence_a,
+                        memory_b_id: to_id, memory_b_title: title_b, memory_b_valence: valence_b,
+                        shared_tags, resolved, created_at,
+                    })
+                })
+                .ok()
+                .map(|r| r.flatten().collect())
+                .unwrap_or_default();
+
+            // Enrich with resolution status: check if either memory has been superseded
+            let mut enriched: Vec<forge_core::protocol::response::ContradictionInfo> = rows.into_iter().map(|mut c| {
+                let has_supersede: bool = state.conn.query_row(
+                    "SELECT COUNT(*) > 0 FROM edge WHERE edge_type = 'supersedes' AND (from_id = ?1 OR from_id = ?2)",
+                    rusqlite::params![c.memory_a_id, c.memory_b_id],
+                    |r| r.get(0),
+                ).unwrap_or(false);
+                c.resolved = has_supersede;
+                c
+            }).collect();
+
+            // Filter by status if requested
+            if let Some(ref s) = status {
+                match s.as_str() {
+                    "unresolved" => enriched.retain(|c| !c.resolved),
+                    "resolved" => enriched.retain(|c| c.resolved),
+                    _ => {}
+                }
+            }
+
+            let count = enriched.len();
+            Response::Ok {
+                data: ResponseData::Contradictions { contradictions: enriched, count },
+            }
+        }
+
+        Request::ResolveContradiction { contradiction_id, resolution } => {
+            // Find the contradiction edge
+            let edge = state.conn.query_row(
+                "SELECT from_id, to_id FROM edge WHERE id = ?1 AND edge_type = 'contradicts'",
+                rusqlite::params![contradiction_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            );
+            let (from_id, to_id) = match edge {
+                Ok(pair) => pair,
+                Err(_) => return Response::Error {
+                    message: format!("contradiction '{}' not found", contradiction_id),
+                },
+            };
+
+            // Apply resolution
+            match resolution.as_str() {
+                "a" => {
+                    // Memory A wins — supersede B
+                    let _ = state.conn.execute(
+                        "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+                        rusqlite::params![to_id],
+                    );
+                    let _ = ops::store_edge(&state.conn, &from_id, &to_id, "supersedes", "{}");
+                }
+                "b" => {
+                    // Memory B wins — supersede A
+                    let _ = state.conn.execute(
+                        "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+                        rusqlite::params![from_id],
+                    );
+                    let _ = ops::store_edge(&state.conn, &to_id, &from_id, "supersedes", "{}");
+                }
+                _ => {
+                    return Response::Error {
+                        message: format!("invalid resolution '{}': expected 'a' or 'b'", resolution),
+                    };
+                }
+            }
+
+            // Remove the contradiction diagnostic
+            let diag_id = contradiction_id.replace("edge-contradiction-", "contradiction-");
+            let _ = state.conn.execute(
+                "DELETE FROM diagnostic WHERE id = ?1",
+                rusqlite::params![diag_id],
+            );
+
+            Response::Ok {
+                data: ResponseData::ContradictionResolved { contradiction_id, resolution },
+            }
+        }
+
         // ── Agent Teams: Template CRUD ──
 
         Request::CreateAgentTemplate {
@@ -8015,6 +8136,132 @@ mod tests {
                 assert_eq!(count, 1, "keep-1 should survive prefix cleanup");
             }
             other => panic!("expected Sessions, got {:?}", other),
+        }
+    }
+
+    // ── Contradiction Handler Tests ──
+
+    #[test]
+    fn test_list_contradictions_empty() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::ListContradictions {
+            status: None,
+            limit: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Contradictions { count, .. } } => {
+                assert_eq!(count, 0, "empty DB should have 0 contradictions");
+            }
+            other => panic!("expected Contradictions, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_list_contradictions_with_data() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Create two memories with opposite valence + shared tags → contradiction
+        let mut m1 = Memory::new(MemoryType::Decision, "Use JWT for auth", "JWT is stateless and scalable");
+        m1.valence = "positive".into();
+        m1.intensity = 0.8;
+        m1.tags = vec!["auth".into(), "security".into(), "api".into()];
+        ops::remember(&state.conn, &m1).unwrap();
+
+        let mut m2 = Memory::new(MemoryType::Decision, "Avoid JWT for auth", "JWT tokens can't be revoked");
+        m2.valence = "negative".into();
+        m2.intensity = 0.8;
+        m2.tags = vec!["auth".into(), "security".into(), "session".into()];
+        ops::remember(&state.conn, &m2).unwrap();
+
+        // Run contradiction detection
+        let found = ops::detect_contradictions(&state.conn).unwrap();
+        assert!(found >= 1, "should detect at least 1 contradiction, got {found}");
+
+        // List contradictions
+        let resp = handle_request(&mut state, Request::ListContradictions {
+            status: None,
+            limit: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Contradictions { contradictions, count } } => {
+                assert!(count >= 1, "should list at least 1 contradiction, got {count}");
+                let c = &contradictions[0];
+                assert!(!c.memory_a_title.is_empty());
+                assert!(!c.memory_b_title.is_empty());
+                assert!(c.shared_tags >= 2, "should have 2+ shared tags");
+                assert!(!c.resolved, "should be unresolved initially");
+            }
+            other => panic!("expected Contradictions, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_contradiction() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Create contradicting memories
+        let mut m1 = Memory::new(MemoryType::Decision, "Use REST API", "REST is standard");
+        m1.valence = "positive".into();
+        m1.intensity = 0.9;
+        m1.tags = vec!["api".into(), "architecture".into()];
+        ops::remember(&state.conn, &m1).unwrap();
+
+        let mut m2 = Memory::new(MemoryType::Decision, "Avoid REST API", "GraphQL is better");
+        m2.valence = "negative".into();
+        m2.intensity = 0.9;
+        m2.tags = vec!["api".into(), "architecture".into()];
+        ops::remember(&state.conn, &m2).unwrap();
+
+        // Detect contradiction
+        ops::detect_contradictions(&state.conn).unwrap();
+
+        // Get the contradiction ID
+        let resp = handle_request(&mut state, Request::ListContradictions { status: None, limit: None });
+        let contradiction_id = match resp {
+            Response::Ok { data: ResponseData::Contradictions { contradictions, .. } } => {
+                assert!(!contradictions.is_empty());
+                contradictions[0].id.clone()
+            }
+            other => panic!("expected Contradictions, got {:?}", other),
+        };
+
+        // Resolve: memory A wins
+        let resp = handle_request(&mut state, Request::ResolveContradiction {
+            contradiction_id: contradiction_id.clone(),
+            resolution: "a".into(),
+        });
+        match resp {
+            Response::Ok { data: ResponseData::ContradictionResolved { resolution, .. } } => {
+                assert_eq!(resolution, "a");
+            }
+            other => panic!("expected ContradictionResolved, got {:?}", other),
+        }
+
+        // Verify: contradiction should now be resolved
+        let resp = handle_request(&mut state, Request::ListContradictions {
+            status: Some("unresolved".into()),
+            limit: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::Contradictions { count, .. } } => {
+                assert_eq!(count, 0, "should have 0 unresolved after resolution");
+            }
+            other => panic!("expected Contradictions, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_contradiction_not_found() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(&mut state, Request::ResolveContradiction {
+            contradiction_id: "nonexistent".into(),
+            resolution: "a".into(),
+        });
+        match resp {
+            Response::Error { message } => {
+                assert!(message.contains("not found"));
+            }
+            other => panic!("expected Error, got {:?}", other),
         }
     }
 }

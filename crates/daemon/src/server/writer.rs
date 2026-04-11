@@ -100,6 +100,7 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::FileMemoryMap { .. }
             | Request::CodeSearch { .. }
             | Request::ListRealities { .. }
+            | Request::ListContradictions { .. }
             | Request::ListAgentTemplates { .. }
             | Request::GetAgentTemplate { .. }
             | Request::ListAgents { .. }

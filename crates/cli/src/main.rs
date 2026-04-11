@@ -382,6 +382,27 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// List detected contradictions between active memories
+    #[command(name = "contradictions")]
+    Contradictions {
+        /// Filter: "unresolved" | "resolved" | omit for all
+        #[arg(long)]
+        status: Option<String>,
+        /// Maximum results
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+
+    /// Resolve a contradiction by choosing which memory wins
+    #[command(name = "resolve-contradiction")]
+    ResolveContradiction {
+        /// Contradiction edge ID
+        id: String,
+        /// Resolution: "a" (first memory wins) or "b" (second wins)
+        #[arg(long)]
+        pick: String,
+    },
+
     /// Run proactive checks on a file or show all active diagnostics
     Verify {
         /// File to check (omit to show all active diagnostics)
@@ -1395,6 +1416,13 @@ async fn main() {
 
         Commands::ForceIndex { path } => {
             commands::system::force_index(path).await;
+        }
+
+        Commands::Contradictions { status, limit } => {
+            commands::system::contradictions(status, limit).await;
+        }
+        Commands::ResolveContradiction { id, pick } => {
+            commands::system::resolve_contradiction(id, pick).await;
         }
 
         Commands::Verify { file } => {
