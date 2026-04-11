@@ -58,7 +58,7 @@ fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String,
 /// Fetch a single Memory record from SQLite by its ID.
 fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), COALESCE(alternatives, '[]'), COALESCE(participants, '[]')
+        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), COALESCE(alternatives, '[]'), COALESCE(participants, '[]'), organization_id
          FROM memory WHERE id = ?1",
     )?;
 
@@ -111,6 +111,7 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
             alternatives,
             participants,
+            organization_id: row.get::<_, Option<String>>(19)?,
         }))
     } else {
         Ok(None)
@@ -188,6 +189,7 @@ pub fn hybrid_recall(
 ///
 /// When `reality_id` is provided, results are filtered to memories that either
 /// belong to that reality or have no reality_id (global memories visible everywhere).
+/// When `org_id` is provided, results are filtered to that organization.
 pub fn hybrid_recall_scoped(
     conn: &Connection,
     query: &str,
@@ -197,10 +199,25 @@ pub fn hybrid_recall_scoped(
     limit: usize,
     reality_id: Option<&str>,
 ) -> Vec<MemoryResult> {
+    hybrid_recall_scoped_org(conn, query, query_embedding, memory_type, project, limit, reality_id, None)
+}
+
+/// Hybrid recall with reality_id + organization_id scoping.
+#[allow(clippy::too_many_arguments)]
+pub fn hybrid_recall_scoped_org(
+    conn: &Connection,
+    query: &str,
+    query_embedding: Option<&[f32]>,
+    memory_type: Option<&MemoryType>,
+    project: Option<&str>,
+    limit: usize,
+    reality_id: Option<&str>,
+    org_id: Option<&str>,
+) -> Vec<MemoryResult> {
     let mut ranked_lists: Vec<Vec<(String, f64)>> = Vec::new();
 
-    // 1. BM25 search (project-scoped: includes global memories)
-    match ops::recall_bm25_project(conn, query, project, limit * 3) {
+    // 1. BM25 search (project-scoped + org-scoped: includes global memories)
+    match ops::recall_bm25_project_org(conn, query, project, limit * 3, org_id) {
         Ok(bm25_results) => {
             let bm25_list: Vec<(String, f64)> = bm25_results
                 .into_iter()

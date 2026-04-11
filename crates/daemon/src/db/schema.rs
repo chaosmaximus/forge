@@ -90,11 +90,13 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             project TEXT,
             tags TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
-            accessed_at TEXT NOT NULL
+            accessed_at TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT 'default'
         );
         CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(memory_type);
         CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status);
         CREATE INDEX IF NOT EXISTS idx_memory_project ON memory(project);
+        CREATE INDEX IF NOT EXISTS idx_memory_org ON memory(organization_id);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
             title, content, tags,
@@ -525,6 +527,18 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN portability TEXT DEFAULT 'unknown'", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN visibility TEXT DEFAULT 'inherited'", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN deleted_at TEXT", []);
+
+    // Multi-tenant isolation: organization_id on memory (safe to re-run)
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN organization_id TEXT NOT NULL DEFAULT 'default'", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_org ON memory(organization_id)", []);
+    // Backfill: derive org_id from the session that created each memory
+    let _ = conn.execute(
+        "UPDATE memory SET organization_id = COALESCE(
+            (SELECT s.organization_id FROM session s WHERE s.id = memory.session_id AND s.organization_id IS NOT NULL LIMIT 1),
+            'default'
+        ) WHERE organization_id = 'default' AND session_id != ''",
+        [],
+    );
 
     // Identity scoping (per-user, not per-agent-type)
     let _ = conn.execute("ALTER TABLE identity ADD COLUMN user_id TEXT", []);

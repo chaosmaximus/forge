@@ -56,6 +56,8 @@ pub struct Memory {
     pub alternatives: Vec<String>,  // What was considered but rejected (counterfactual memory)
     #[serde(default)]
     pub participants: Vec<String>,  // Who was involved (relational memory)
+    #[serde(default)]
+    pub organization_id: Option<String>, // Multi-tenant isolation: org that owns this memory
 }
 
 fn default_valence() -> String {
@@ -86,6 +88,7 @@ impl Memory {
             activation_level: 0.0,
             alternatives: Vec::new(),
             participants: Vec::new(),
+            organization_id: None,
         }
     }
 
@@ -101,6 +104,11 @@ impl Memory {
 
     pub fn with_project(mut self, project: impl Into<String>) -> Self {
         self.project = Some(project.into());
+        self
+    }
+
+    pub fn with_organization(mut self, org_id: impl Into<String>) -> Self {
+        self.organization_id = Some(org_id.into());
         self
     }
 

@@ -441,7 +441,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
 pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize {
     // Find pairs of active memories with opposite valence, shared tags, high intensity
     let mut stmt = match conn.prepare(&format!(
-        "SELECT id, title, content, tags, valence, intensity, confidence, project FROM memory
+        "SELECT id, title, content, tags, valence, intensity, confidence, project, organization_id FROM memory
          WHERE status = 'active' AND valence IN ('positive', 'negative') AND intensity > 0.5
          LIMIT {batch_limit}"
     )) {
@@ -460,6 +460,7 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
         valence: String,
         confidence: f64,
         project: Option<String>,
+        organization_id: String,
     }
 
     let rows: Vec<ConflictRow> = match stmt.query_map([], |row| {
@@ -472,6 +473,7 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
             valence: row.get(4)?,
             confidence: row.get(6)?,
             project: row.get(7)?,
+            organization_id: row.get::<_, String>(8).unwrap_or_else(|_| "default".to_string()),
         })
     }) {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
@@ -498,6 +500,11 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
                 continue;
             }
             if rows[j].tags.len() < 2 {
+                continue;
+            }
+
+            // Must be in the same organization (multi-tenant isolation)
+            if rows[i].organization_id != rows[j].organization_id {
                 continue;
             }
 
@@ -635,7 +642,7 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
     // Find candidate pairs: newer memory shares 2+ tags with older memory,
     // same project, same memory_type, both active
     let mut stmt = match conn.prepare(&format!(
-        "SELECT id, title, content, tags, memory_type, project, created_at FROM memory
+        "SELECT id, title, content, tags, memory_type, project, created_at, organization_id FROM memory
          WHERE status = 'active' AND tags != '[]'
          ORDER BY created_at ASC
          LIMIT {batch_limit}"
@@ -654,6 +661,7 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
         memory_type: String,
         project: Option<String>,
         created_at: String,
+        organization_id: String,
     }
 
     let rows: Vec<ReweaveRow> = match stmt.query_map([], |row| {
@@ -665,6 +673,7 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
             memory_type: row.get(4)?,
             project: row.get(5)?,
             created_at: row.get(6)?,
+            organization_id: row.get::<_, String>(7).unwrap_or_else(|_| "default".to_string()),
         })
     }) {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
@@ -707,6 +716,11 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
 
             // Must have same project (both None or both same value)
             if rows[i].project != rows[j].project {
+                continue;
+            }
+
+            // Must be in the same organization (multi-tenant isolation)
+            if rows[i].organization_id != rows[j].organization_id {
                 continue;
             }
 
@@ -1029,7 +1043,7 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
 
     // Get active decision/lesson/pattern memories that have embeddings
     let sql = format!(
-        "SELECT m.id, m.memory_type, m.title, m.content, m.confidence, m.created_at
+        "SELECT m.id, m.memory_type, m.title, m.content, m.confidence, m.created_at, m.organization_id
          FROM memory m
          INNER JOIN memory_vec mv ON m.id = mv.id
          WHERE m.status = 'active'
@@ -1053,6 +1067,7 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
         content: String,
         confidence: f64,
         created_at: String,
+        organization_id: String,
     }
 
     let candidates: Vec<Candidate> = stmt
@@ -1064,6 +1079,7 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
                 content: row.get(3)?,
                 confidence: row.get(4)?,
                 created_at: row.get(5)?,
+                organization_id: row.get::<_, String>(6).unwrap_or_else(|_| "default".to_string()),
             })
         })
         .ok()
@@ -1122,7 +1138,7 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
 
             // Get neighbor details
             let neighbor = match conn.query_row(
-                "SELECT memory_type, title, content, confidence, created_at FROM memory WHERE id = ?1 AND status = 'active'",
+                "SELECT memory_type, title, content, confidence, created_at, organization_id FROM memory WHERE id = ?1 AND status = 'active'",
                 rusqlite::params![neighbor_id],
                 |row| {
                     Ok((
@@ -1131,6 +1147,7 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
                         row.get::<_, String>(2)?,
                         row.get::<_, f64>(3)?,
                         row.get::<_, String>(4)?,
+                        row.get::<_, String>(5).unwrap_or_else(|_| "default".to_string()),
                     ))
                 },
             ) {
@@ -1138,7 +1155,13 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
                 Err(_) => continue,
             };
 
-            let (n_type, n_title, n_content, n_confidence, n_created_at) = neighbor;
+            let (n_type, n_title, n_content, n_confidence, n_created_at, n_org_id) = neighbor;
+
+            // Must be in the same organization (multi-tenant isolation)
+            if n_org_id != candidate.organization_id {
+                stats.false_positives_skipped += 1;
+                continue;
+            }
 
             // Must be same type
             if n_type != candidate.memory_type {

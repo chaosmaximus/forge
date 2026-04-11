@@ -150,6 +150,16 @@ pub fn build_proactive_context(
     hook_event: &str,
     project: Option<&str>,
 ) -> Vec<forge_core::protocol::response::ProactiveInjection> {
+    build_proactive_context_with_org(conn, hook_event, project, None)
+}
+
+/// Build proactive context with optional organization_id filtering (multi-tenant isolation).
+pub fn build_proactive_context_with_org(
+    conn: &Connection,
+    hook_event: &str,
+    project: Option<&str>,
+    org_id: Option<&str>,
+) -> Vec<forge_core::protocol::response::ProactiveInjection> {
     use forge_core::protocol::response::ProactiveInjection;
 
     let knowledge_types = [
@@ -172,11 +182,11 @@ pub fn build_proactive_context(
 
         // Fetch the most relevant content for this knowledge type
         let content = match *kt {
-            KT_ANTI_PATTERN => fetch_recent_by_tag(conn, "anti-pattern", project, 1),
-            KT_UAT_LESSON => fetch_recent_by_type(conn, "lesson", project, 1),
-            KT_DECISION => fetch_recent_by_type(conn, "decision", project, 1),
-            KT_TEST_REMINDER => fetch_recent_by_tag(conn, "test", project, 1),
-            KT_SKILL => fetch_recent_by_type(conn, "pattern", project, 1),
+            KT_ANTI_PATTERN => fetch_recent_by_tag(conn, "anti-pattern", project, org_id, 1),
+            KT_UAT_LESSON => fetch_recent_by_type(conn, "lesson", project, org_id, 1),
+            KT_DECISION => fetch_recent_by_type(conn, "decision", project, org_id, 1),
+            KT_TEST_REMINDER => fetch_recent_by_tag(conn, "test", project, org_id, 1),
+            KT_SKILL => fetch_recent_by_type(conn, "pattern", project, org_id, 1),
             KT_NOTIFICATION => fetch_pending_notifications(conn, project),
             KT_BLAST_RADIUS => continue, // blast_radius is computed per-file, not from memory
             _ => continue,
@@ -194,39 +204,73 @@ pub fn build_proactive_context(
     injections
 }
 
-/// Fetch recent memories by type, optionally scoped to project.
-fn fetch_recent_by_type(conn: &Connection, memory_type: &str, project: Option<&str>, limit: usize) -> String {
-    let result: Vec<String> = if let Some(proj) = project {
-        let mut stmt = match conn.prepare(
-            "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' AND project = ?2 ORDER BY accessed_at DESC LIMIT ?3"
-        ) { Ok(s) => s, Err(_) => return String::new() };
-        stmt.query_map(rusqlite::params![memory_type, proj, limit], |r| r.get(0))
-            .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
-    } else {
-        let mut stmt = match conn.prepare(
-            "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' ORDER BY accessed_at DESC LIMIT ?2"
-        ) { Ok(s) => s, Err(_) => return String::new() };
-        stmt.query_map(rusqlite::params![memory_type, limit], |r| r.get(0))
-            .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+/// Fetch recent memories by type, optionally scoped to project and organization.
+fn fetch_recent_by_type(conn: &Connection, memory_type: &str, project: Option<&str>, org_id: Option<&str>, limit: usize) -> String {
+    let result: Vec<String> = match (project, org_id) {
+        (Some(proj), Some(org)) => {
+            let mut stmt = match conn.prepare(
+                "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' AND project = ?2 AND organization_id = ?3 ORDER BY accessed_at DESC LIMIT ?4"
+            ) { Ok(s) => s, Err(_) => return String::new() };
+            stmt.query_map(rusqlite::params![memory_type, proj, org, limit], |r| r.get(0))
+                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+        }
+        (Some(proj), None) => {
+            let mut stmt = match conn.prepare(
+                "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' AND project = ?2 ORDER BY accessed_at DESC LIMIT ?3"
+            ) { Ok(s) => s, Err(_) => return String::new() };
+            stmt.query_map(rusqlite::params![memory_type, proj, limit], |r| r.get(0))
+                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+        }
+        (None, Some(org)) => {
+            let mut stmt = match conn.prepare(
+                "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' AND organization_id = ?2 ORDER BY accessed_at DESC LIMIT ?3"
+            ) { Ok(s) => s, Err(_) => return String::new() };
+            stmt.query_map(rusqlite::params![memory_type, org, limit], |r| r.get(0))
+                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+        }
+        (None, None) => {
+            let mut stmt = match conn.prepare(
+                "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' ORDER BY accessed_at DESC LIMIT ?2"
+            ) { Ok(s) => s, Err(_) => return String::new() };
+            stmt.query_map(rusqlite::params![memory_type, limit], |r| r.get(0))
+                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+        }
     };
     result.join("; ")
 }
 
-/// Fetch recent memories by tag.
-fn fetch_recent_by_tag(conn: &Connection, tag: &str, project: Option<&str>, limit: usize) -> String {
+/// Fetch recent memories by tag, optionally scoped to project and organization.
+fn fetch_recent_by_tag(conn: &Connection, tag: &str, project: Option<&str>, org_id: Option<&str>, limit: usize) -> String {
     let pattern = format!("%{}%", tag);
-    let result: Vec<String> = if let Some(proj) = project {
-        let mut stmt = match conn.prepare(
-            "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' AND project = ?2 ORDER BY accessed_at DESC LIMIT ?3"
-        ) { Ok(s) => s, Err(_) => return String::new() };
-        stmt.query_map(rusqlite::params![pattern, proj, limit], |r| r.get(0))
-            .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
-    } else {
-        let mut stmt = match conn.prepare(
-            "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' ORDER BY accessed_at DESC LIMIT ?2"
-        ) { Ok(s) => s, Err(_) => return String::new() };
-        stmt.query_map(rusqlite::params![pattern, limit], |r| r.get(0))
-            .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+    let result: Vec<String> = match (project, org_id) {
+        (Some(proj), Some(org)) => {
+            let mut stmt = match conn.prepare(
+                "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' AND project = ?2 AND organization_id = ?3 ORDER BY accessed_at DESC LIMIT ?4"
+            ) { Ok(s) => s, Err(_) => return String::new() };
+            stmt.query_map(rusqlite::params![pattern, proj, org, limit], |r| r.get(0))
+                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+        }
+        (Some(proj), None) => {
+            let mut stmt = match conn.prepare(
+                "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' AND project = ?2 ORDER BY accessed_at DESC LIMIT ?3"
+            ) { Ok(s) => s, Err(_) => return String::new() };
+            stmt.query_map(rusqlite::params![pattern, proj, limit], |r| r.get(0))
+                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+        }
+        (None, Some(org)) => {
+            let mut stmt = match conn.prepare(
+                "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' AND organization_id = ?2 ORDER BY accessed_at DESC LIMIT ?3"
+            ) { Ok(s) => s, Err(_) => return String::new() };
+            stmt.query_map(rusqlite::params![pattern, org, limit], |r| r.get(0))
+                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+        }
+        (None, None) => {
+            let mut stmt = match conn.prepare(
+                "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' ORDER BY accessed_at DESC LIMIT ?2"
+            ) { Ok(s) => s, Err(_) => return String::new() };
+            stmt.query_map(rusqlite::params![pattern, limit], |r| r.get(0))
+                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+        }
     };
     result.join("; ")
 }

@@ -175,6 +175,19 @@ impl DaemonState {
     }
 }
 
+/// Extract organization_id from a session. Returns "default" if session not found.
+fn get_session_org_id(conn: &Connection, session_id: Option<&str>) -> String {
+    if let Some(sid) = session_id {
+        conn.query_row(
+            "SELECT COALESCE(organization_id, 'default') FROM session WHERE id = ?1",
+            rusqlite::params![sid],
+            |row| row.get::<_, String>(0),
+        ).unwrap_or_else(|_| "default".to_string())
+    } else {
+        "default".to_string()
+    }
+}
+
 /// Send a fire-and-forget TouchMemories command through the writer actor channel.
 /// Called after Recall/CompileContext to update access_count and activation_level
 /// on the write connection, since the read-only handler connection can't write.
@@ -223,6 +236,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // Assign active session ID so CLI-stored memories are linked to a session
             memory.session_id = crate::sessions::get_active_session_id(&state.conn, "cli")
                 .unwrap_or_default();
+            // Multi-tenant: derive organization_id from the active session
+            let org_id = get_session_org_id(&state.conn, if memory.session_id.is_empty() { None } else { Some(&memory.session_id) });
+            memory.organization_id = Some(org_id);
             // Stamp HLC before storing
             memory.set_hlc(state.hlc.now(), state.hlc.node_id().to_string());
             let id = memory.id.clone();
@@ -371,6 +387,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::Recall { query, memory_type, project, limit, layer, since } => {
             let lim = limit.unwrap_or(10);
+
+            // Multi-tenant: extract org_id from the active session for this project
+            let _org_id = {
+                let active_sid = crate::sessions::get_active_session_id(&state.conn, "cli").unwrap_or_default();
+                get_session_org_id(&state.conn, if active_sid.is_empty() { None } else { Some(&active_sid) })
+            };
+            // TODO: pass _org_id to recall functions when they are updated to accept org_id: Option<&str>
 
             let results = match layer.as_deref() {
                 // "experience" → only memory table (hybrid_recall, no manas_recall)
@@ -542,28 +565,50 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::Forget { id } => match ops::forget(&state.conn, &id) {
-            Ok(true) => {
-                crate::events::emit(&state.events, "memory_forgotten", serde_json::json!({
-                    "id": id,
-                }));
-                Response::Ok {
-                    data: ResponseData::Forgotten { id },
+        Request::Forget { id } => {
+            // Multi-tenant: extract org_id for scoped forget
+            let _org_id = {
+                // Look up the memory's session to derive org_id
+                let mem_session: Option<String> = state.conn.query_row(
+                    "SELECT session_id FROM memory WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                ).ok();
+                get_session_org_id(&state.conn, mem_session.as_deref())
+            };
+            // TODO: pass _org_id to ops::forget when it is updated to accept org_id: Option<&str>
+            match ops::forget(&state.conn, &id) {
+                Ok(true) => {
+                    crate::events::emit(&state.events, "memory_forgotten", serde_json::json!({
+                        "id": id,
+                    }));
+                    Response::Ok {
+                        data: ResponseData::Forgotten { id },
+                    }
                 }
+                Ok(false) => Response::Error {
+                    message: format!("memory not found or already deleted: {id}"),
+                },
+                Err(e) => Response::Error {
+                    message: format!("forget failed: {e}"),
+                },
             }
-            Ok(false) => Response::Error {
-                message: format!("memory not found or already deleted: {id}"),
-            },
-            Err(e) => Response::Error {
-                message: format!("forget failed: {e}"),
-            },
-        },
+        }
 
         Request::Supersede { old_id, new_id } => {
-            // Verify both memories exist
+            // Multi-tenant: derive org_id from the old memory's session
+            let supersede_org_id = {
+                let mem_session: Option<String> = state.conn.query_row(
+                    "SELECT session_id FROM memory WHERE id = ?1",
+                    rusqlite::params![old_id],
+                    |row| row.get(0),
+                ).ok();
+                get_session_org_id(&state.conn, mem_session.as_deref())
+            };
+            // Verify both memories exist within the same organization
             let old_exists: bool = state.conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active')",
-                rusqlite::params![old_id],
+                "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active' AND (organization_id = ?2 OR ?2 IS NULL))",
+                rusqlite::params![old_id, supersede_org_id],
                 |row| row.get(0),
             ).unwrap_or(false);
             if !old_exists {
@@ -572,8 +617,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 };
             }
             let new_exists: bool = state.conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active')",
-                rusqlite::params![new_id],
+                "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active' AND (organization_id = ?2 OR ?2 IS NULL))",
+                rusqlite::params![new_id, supersede_org_id],
                 |row| row.get(0),
             ).unwrap_or(false);
             if !new_exists {
@@ -1782,6 +1827,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::CompletionCheck { session_id, claimed_done } => {
+            // Multi-tenant: scope completion check to the session's organization
+            let completion_org_id = get_session_org_id(&state.conn, Some(&session_id));
             if !claimed_done {
                 Response::Ok {
                     data: ResponseData::CompletionCheckResult {
@@ -1794,10 +1841,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 let lessons: Vec<String> = state.conn.prepare(
                     "SELECT title || ': ' || SUBSTR(content, 1, 150) FROM memory
                      WHERE memory_type IN ('lesson', 'decision') AND status = 'active'
+                     AND (organization_id = ?1 OR ?1 IS NULL)
                      AND (tags LIKE '%testing%' OR tags LIKE '%production-readiness%' OR tags LIKE '%anti-pattern%' OR tags LIKE '%uat%')
                      ORDER BY quality_score DESC, confidence DESC LIMIT 3"
                 ).ok()
-                    .map(|mut stmt| stmt.query_map([], |row| row.get(0))
+                    .map(|mut stmt| stmt.query_map(rusqlite::params![completion_org_id], |row| row.get(0))
                         .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default())
                     .unwrap_or_default();
 
@@ -1821,7 +1869,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::TaskCompletionCheck { session_id: _, task_subject, task_description: _ } => {
+        Request::TaskCompletionCheck { session_id, task_subject, task_description: _ } => {
+            // Multi-tenant: scope task completion to the session's organization
+            let task_org_id = get_session_org_id(&state.conn, Some(&session_id));
             let subject_lower = task_subject.to_lowercase();
             let is_shipping = subject_lower.contains("ship") || subject_lower.contains("deploy")
                 || subject_lower.contains("release") || subject_lower.contains("production")
@@ -1834,10 +1884,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 let lessons: Vec<String> = state.conn.prepare(
                     "SELECT title FROM memory
                      WHERE memory_type = 'lesson' AND status = 'active'
+                     AND (organization_id = ?1 OR ?1 IS NULL)
                      AND (tags LIKE '%uat%' OR tags LIKE '%production%' OR tags LIKE '%deployment%')
                      ORDER BY quality_score DESC LIMIT 3"
                 ).ok()
-                    .map(|mut stmt| stmt.query_map([], |row| row.get(0))
+                    .map(|mut stmt| stmt.query_map(rusqlite::params![task_org_id], |row| row.get(0))
                         .ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default())
                     .unwrap_or_default();
 

@@ -69,13 +69,14 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     let alternatives_json = serde_json::to_string(&memory.alternatives).unwrap_or_else(|_| "[]".to_string());
     let participants_json = serde_json::to_string(&memory.participants).unwrap_or_else(|_| "[]".to_string());
 
-    // Check for existing memory with same title, type, AND project.
-    // Including project in the dedup key prevents cross-project merging where a
-    // decision from "proj-a" silently overwrites an identically-titled decision
-    // from "proj-b".
+    let org_id = memory.organization_id.as_deref().unwrap_or("default");
+
+    // Check for existing memory with same title, type, project, AND organization.
+    // Including project+org in the dedup key prevents cross-project and cross-org
+    // merging where a decision from one tenant silently overwrites another's.
     let existing_id: Option<String> = conn.query_row(
-        "SELECT id FROM memory WHERE title = ?1 AND memory_type = ?2 AND COALESCE(project, '') = COALESCE(?3, '') AND status = 'active'",
-        params![memory.title, mt, memory.project],
+        "SELECT id FROM memory WHERE title = ?1 AND memory_type = ?2 AND COALESCE(project, '') = COALESCE(?3, '') AND COALESCE(organization_id, 'default') = ?4 AND status = 'active'",
+        params![memory.title, mt, memory.project, org_id],
         |row| row.get(0),
     ).optional()?;
 
@@ -92,8 +93,8 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     } else {
         // Insert new
         conn.execute(
-            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants, organization_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 memory.id, mt, memory.title, memory.content,
                 memory.confidence, status,
@@ -103,6 +104,7 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
                 memory.hlc_timestamp, memory.node_id,
                 memory.session_id, memory.access_count as i64,
                 alternatives_json, participants_json,
+                org_id,
             ],
         )?;
     }
@@ -117,10 +119,11 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
     let tags_json = serde_json::to_string(&memory.tags).unwrap_or_else(|_| "[]".to_string());
     let alternatives_json = serde_json::to_string(&memory.alternatives).unwrap_or_else(|_| "[]".to_string());
     let participants_json = serde_json::to_string(&memory.participants).unwrap_or_else(|_| "[]".to_string());
+    let org_id = memory.organization_id.as_deref().unwrap_or("default");
 
     conn.execute(
-        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants, organization_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             memory.id, mt, memory.title, memory.content,
             memory.confidence, status,
@@ -130,6 +133,7 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
             memory.hlc_timestamp, memory.node_id,
             memory.session_id, memory.access_count as i64,
             alternatives_json, participants_json,
+            org_id,
         ],
     )?;
     Ok(())
@@ -216,72 +220,34 @@ fn sanitize_fts5_query(query: &str) -> String {
 }
 
 /// Full-text search using FTS5 BM25 scoring. Returns active memories ranked by relevance.
+/// When `org_id` is `Some("X")`, only returns memories from that organization.
+/// When `org_id` is `None`, returns all active memories (backward compat).
 pub fn recall_bm25(conn: &Connection, query: &str, limit: usize) -> rusqlite::Result<Vec<BM25Result>> {
+    recall_bm25_org(conn, query, limit, None)
+}
+
+/// Full-text search using FTS5 BM25 scoring with optional organization filter.
+pub fn recall_bm25_org(conn: &Connection, query: &str, limit: usize, org_id: Option<&str>) -> rusqlite::Result<Vec<BM25Result>> {
     // NEW-2: Sanitize the query to prevent FTS5 operator injection
     let safe_query = sanitize_fts5_query(query);
     if safe_query.is_empty() {
         return Ok(Vec::new()); // No valid search terms after sanitization
     }
 
-    let sql = "
-        SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
-        FROM memory_fts
-        JOIN memory m ON memory_fts.rowid = m.rowid
-        WHERE memory_fts MATCH ?1
-          AND m.status = 'active'
-        ORDER BY score
-        LIMIT ?2
-    ";
-
-    let mut stmt = conn.prepare(sql)?;
-    let results = stmt.query_map(params![safe_query, limit as i64], |row| {
-        Ok(BM25Result {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            content: row.get(2)?,
-            score: {
-                let raw: f64 = row.get(3)?;
-                raw.abs()
-            },
-            memory_type: row.get(4)?,
-            confidence: row.get(5)?,
-            valence: row.get(6)?,
-            intensity: row.get(7)?,
-        })
-    })?;
-
-    results.collect()
-}
-
-/// Full-text search using FTS5 BM25 scoring with optional project filter.
-///
-/// When `project` is `Some("X")`, returns only memories where `project = 'X'`
-/// OR `project IS NULL` OR `project = ''` (global memories visible in every project).
-/// When `project` is `None`, returns all active memories (existing behavior).
-pub fn recall_bm25_project(
-    conn: &Connection,
-    query: &str,
-    project: Option<&str>,
-    limit: usize,
-) -> rusqlite::Result<Vec<BM25Result>> {
-    let safe_query = sanitize_fts5_query(query);
-    if safe_query.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    match project {
-        Some(proj) => {
-            let mut stmt = conn.prepare(
-                "SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
-                 FROM memory_fts
-                 JOIN memory m ON memory_fts.rowid = m.rowid
-                 WHERE memory_fts MATCH ?1
-                   AND m.status = 'active'
-                   AND (m.project = ?2 OR m.project IS NULL OR m.project = '')
-                 ORDER BY score
-                 LIMIT ?3"
-            )?;
-            let results = stmt.query_map(params![safe_query, proj, limit as i64], |row| {
+    match org_id {
+        Some(org) => {
+            let sql = "
+                SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
+                FROM memory_fts
+                JOIN memory m ON memory_fts.rowid = m.rowid
+                WHERE memory_fts MATCH ?1
+                  AND m.status = 'active'
+                  AND COALESCE(m.organization_id, 'default') = ?2
+                ORDER BY score
+                LIMIT ?3
+            ";
+            let mut stmt = conn.prepare(sql)?;
+            let results = stmt.query_map(params![safe_query, org, limit as i64], |row| {
                 Ok(BM25Result {
                     id: row.get(0)?,
                     title: row.get(1)?,
@@ -298,34 +264,163 @@ pub fn recall_bm25_project(
             })?;
             results.collect()
         }
-        None => recall_bm25(conn, query, limit),
+        None => {
+            let sql = "
+                SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
+                FROM memory_fts
+                JOIN memory m ON memory_fts.rowid = m.rowid
+                WHERE memory_fts MATCH ?1
+                  AND m.status = 'active'
+                ORDER BY score
+                LIMIT ?2
+            ";
+            let mut stmt = conn.prepare(sql)?;
+            let results = stmt.query_map(params![safe_query, limit as i64], |row| {
+                Ok(BM25Result {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    score: {
+                        let raw: f64 = row.get(3)?;
+                        raw.abs()
+                    },
+                    memory_type: row.get(4)?,
+                    confidence: row.get(5)?,
+                    valence: row.get(6)?,
+                    intensity: row.get(7)?,
+                })
+            })?;
+            results.collect()
+        }
+    }
+}
+
+/// Full-text search using FTS5 BM25 scoring with optional project and organization filter.
+///
+/// When `project` is `Some("X")`, returns only memories where `project = 'X'`
+/// OR `project IS NULL` OR `project = ''` (global memories visible in every project).
+/// When `project` is `None`, returns all active memories (existing behavior).
+/// When `org_id` is `Some("X")`, additionally filters to that organization.
+pub fn recall_bm25_project(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<BM25Result>> {
+    recall_bm25_project_org(conn, query, project, limit, None)
+}
+
+/// Full-text search with project + organization filtering.
+pub fn recall_bm25_project_org(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+    limit: usize,
+    org_id: Option<&str>,
+) -> rusqlite::Result<Vec<BM25Result>> {
+    let safe_query = sanitize_fts5_query(query);
+    if safe_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build the org filter clause
+    let org_filter = if org_id.is_some() {
+        " AND COALESCE(m.organization_id, 'default') = ?4"
+    } else {
+        ""
+    };
+
+    match project {
+        Some(proj) => {
+            let sql = format!(
+                "SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
+                 FROM memory_fts
+                 JOIN memory m ON memory_fts.rowid = m.rowid
+                 WHERE memory_fts MATCH ?1
+                   AND m.status = 'active'
+                   AND (m.project = ?2 OR m.project IS NULL OR m.project = ''){}
+                 ORDER BY score
+                 LIMIT ?3",
+                org_filter,
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mapper = |row: &rusqlite::Row| {
+                Ok(BM25Result {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    score: { let raw: f64 = row.get(3)?; raw.abs() },
+                    memory_type: row.get(4)?,
+                    confidence: row.get(5)?,
+                    valence: row.get(6)?,
+                    intensity: row.get(7)?,
+                })
+            };
+            if let Some(org) = org_id {
+                stmt.query_map(params![safe_query, proj, limit as i64, org], mapper)?.collect()
+            } else {
+                stmt.query_map(params![safe_query, proj, limit as i64], mapper)?.collect()
+            }
+        }
+        None => recall_bm25_org(conn, query, limit, org_id),
     }
 }
 
 /// Soft-delete a memory by setting status to 'superseded'.
+/// When `org_id` is `Some("X")`, additionally checks the memory belongs to that org.
 /// Returns true if a row was updated (was active before).
 pub fn forget(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    let rows_changed = conn.execute(
-        "UPDATE memory SET status = 'superseded' WHERE id = ?1 AND status = 'active'",
-        params![id],
-    )?;
+    forget_org(conn, id, None)
+}
+
+/// Soft-delete a memory with optional organization scoping.
+pub fn forget_org(conn: &Connection, id: &str, org_id: Option<&str>) -> rusqlite::Result<bool> {
+    let rows_changed = match org_id {
+        Some(org) => conn.execute(
+            "UPDATE memory SET status = 'superseded' WHERE id = ?1 AND status = 'active' AND COALESCE(organization_id, 'default') = ?2",
+            params![id, org],
+        )?,
+        None => conn.execute(
+            "UPDATE memory SET status = 'superseded' WHERE id = ?1 AND status = 'active'",
+            params![id],
+        )?,
+    };
     Ok(rows_changed > 0)
 }
 
 /// Health counts grouped by project.
+/// When `org_id` is `Some("X")`, only counts memories from that organization.
 pub fn health_by_project(conn: &Connection) -> rusqlite::Result<std::collections::HashMap<String, HealthCounts>> {
-    let mut stmt = conn.prepare(
-        "SELECT COALESCE(NULLIF(project, ''), '_global') as proj, memory_type, count(*) as cnt
-         FROM memory WHERE status = 'active' GROUP BY proj, memory_type"
-    )?;
+    health_by_project_org(conn, None)
+}
 
+/// Health counts grouped by project with optional organization filter.
+pub fn health_by_project_org(conn: &Connection, org_id: Option<&str>) -> rusqlite::Result<std::collections::HashMap<String, HealthCounts>> {
+    let (sql, use_org) = match org_id {
+        Some(_) => (
+            "SELECT COALESCE(NULLIF(project, ''), '_global') as proj, memory_type, count(*) as cnt
+             FROM memory WHERE status = 'active' AND COALESCE(organization_id, 'default') = ?1 GROUP BY proj, memory_type",
+            true,
+        ),
+        None => (
+            "SELECT COALESCE(NULLIF(project, ''), '_global') as proj, memory_type, count(*) as cnt
+             FROM memory WHERE status = 'active' GROUP BY proj, memory_type",
+            false,
+        ),
+    };
+
+    let mut stmt = conn.prepare(sql)?;
     let mut projects: std::collections::HashMap<String, HealthCounts> = std::collections::HashMap::new();
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, usize>(2)?))
-    })?;
+    let mapper = |row: &rusqlite::Row| -> rusqlite::Result<(String, String, usize)> {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    };
+    let collected: Vec<(String, String, usize)> = if use_org {
+        stmt.query_map(params![org_id.unwrap()], mapper)?.flatten().collect()
+    } else {
+        stmt.query_map([], mapper)?.flatten().collect()
+    };
 
-    for row in rows.flatten() {
-        let (proj, mtype, count) = row;
+    for (proj, mtype, count) in collected {
         let entry = projects.entry(proj).or_default();
         match mtype.as_str() {
             "decision" => entry.decisions = count,
@@ -346,13 +441,26 @@ pub fn health_by_project(conn: &Connection) -> rusqlite::Result<std::collections
 }
 
 /// Count active memories per type and total edges.
+/// When `org_id` is `Some("X")`, only counts memories from that organization.
 pub fn health(conn: &Connection) -> rusqlite::Result<HealthCounts> {
+    health_org(conn, None)
+}
+
+/// Count active memories per type with optional organization filter.
+pub fn health_org(conn: &Connection, org_id: Option<&str>) -> rusqlite::Result<HealthCounts> {
     let count_type = |type_name: &str| -> rusqlite::Result<usize> {
-        conn.query_row(
-            "SELECT COUNT(*) FROM memory WHERE memory_type = ?1 AND status = 'active'",
-            params![type_name],
-            |row| row.get::<_, i64>(0),
-        )
+        match org_id {
+            Some(org) => conn.query_row(
+                "SELECT COUNT(*) FROM memory WHERE memory_type = ?1 AND status = 'active' AND COALESCE(organization_id, 'default') = ?2",
+                params![type_name, org],
+                |row| row.get::<_, i64>(0),
+            ),
+            None => conn.query_row(
+                "SELECT COUNT(*) FROM memory WHERE memory_type = ?1 AND status = 'active'",
+                params![type_name],
+                |row| row.get::<_, i64>(0),
+            ),
+        }
         .map(|n| n as usize)
     };
 
@@ -546,19 +654,35 @@ pub fn cleanup_stale_files(conn: &Connection, current_paths: &[&str]) -> rusqlit
 }
 
 /// Export all active memories as full Memory objects.
+/// When `org_id` is `Some("X")`, only exports memories from that organization.
 pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0)
-         FROM memory WHERE status = 'active' ORDER BY created_at DESC"
-    )?;
-    let rows = stmt.query_map([], |row| {
+    export_memories_org(conn, None)
+}
+
+/// Export active memories with optional organization filter.
+pub fn export_memories_org(conn: &Connection, org_id: Option<&str>) -> rusqlite::Result<Vec<Memory>> {
+    let (sql, use_org) = match org_id {
+        Some(_) => (
+            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id
+             FROM memory WHERE status = 'active' AND COALESCE(organization_id, 'default') = ?1 ORDER BY created_at DESC",
+            true,
+        ),
+        None => (
+            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id
+             FROM memory WHERE status = 'active' ORDER BY created_at DESC",
+            false,
+        ),
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let mapper = |row: &rusqlite::Row| -> rusqlite::Result<Memory> {
         let mt_str: String = row.get(1)?;
         let memory_type = match mt_str.as_str() {
             "decision" => MemoryType::Decision,
             "lesson" => MemoryType::Lesson,
             "pattern" => MemoryType::Pattern,
             "preference" => MemoryType::Preference,
-            _ => MemoryType::Decision, // fallback
+            _ => MemoryType::Decision,
         };
         let tags_json: String = row.get(7)?;
         let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
@@ -583,9 +707,14 @@ pub fn export_memories(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
             activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
             alternatives: Vec::new(),
             participants: Vec::new(),
+            organization_id: row.get::<_, Option<String>>(17)?,
         })
-    })?;
-    rows.collect()
+    };
+    if use_org {
+        stmt.query_map(params![org_id.unwrap()], mapper)?.collect()
+    } else {
+        stmt.query_map([], mapper)?.collect()
+    }
 }
 
 /// Export all code files.
@@ -1202,7 +1331,7 @@ pub fn link_related_memories(conn: &Connection, limit: usize) -> rusqlite::Resul
 pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
         "SELECT id, memory_type, title, content, confidence, status, project, tags,
-                created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0)
+                created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id
          FROM memory WHERE status = 'active' AND access_count >= 5
          ORDER BY access_count DESC LIMIT 5"
     )?;
@@ -1238,6 +1367,7 @@ pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Ve
             activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
             alternatives: Vec::new(),
             participants: Vec::new(),
+            organization_id: row.get::<_, Option<String>>(17)?,
         })
     })?;
     rows.collect()

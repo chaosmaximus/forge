@@ -229,7 +229,8 @@ fn build_export_query(project: Option<&str>, since: Option<&str>) -> (String, Ve
     let base = "SELECT id, memory_type, title, content, confidence, status, project, tags,
                        created_at, accessed_at, valence, intensity, hlc_timestamp, node_id,
                        session_id, access_count, COALESCE(activation_level, 0.0),
-                       COALESCE(alternatives, '[]'), COALESCE(participants, '[]')
+                       COALESCE(alternatives, '[]'), COALESCE(participants, '[]'),
+                       organization_id
                 FROM memory WHERE status = 'active'";
 
     let mut clauses = String::from(base);
@@ -289,6 +290,7 @@ fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
         alternatives,
         participants,
+        organization_id: row.get::<_, Option<String>>(19).unwrap_or(None),
     })
 }
 
@@ -852,6 +854,7 @@ mod tests {
             activation_level: 0.0,
             alternatives: vec![],
             participants: vec![],
+            organization_id: None,
         })
         .unwrap();
 
@@ -892,6 +895,7 @@ mod tests {
             activation_level: 0.0,
         alternatives: Vec::new(),
         participants: Vec::new(),
+        organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -932,6 +936,7 @@ mod tests {
             activation_level: 0.0,
         alternatives: Vec::new(),
         participants: Vec::new(),
+        organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -981,6 +986,7 @@ mod tests {
             activation_level: 0.0,
         alternatives: Vec::new(),
         participants: Vec::new(),
+        organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1040,6 +1046,7 @@ mod tests {
             activation_level: 0.0,
         alternatives: Vec::new(),
         participants: Vec::new(),
+        organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1081,6 +1088,7 @@ mod tests {
             activation_level: 0.0,
         alternatives: Vec::new(),
         participants: Vec::new(),
+        organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1215,6 +1223,7 @@ mod tests {
             activation_level: 0.0,
         alternatives: Vec::new(),
         participants: Vec::new(),
+        organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1268,6 +1277,7 @@ mod tests {
             activation_level: 0.0,
         alternatives: Vec::new(),
         participants: Vec::new(),
+        organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
