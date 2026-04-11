@@ -1,5 +1,33 @@
 # Forge — Cognitive Infrastructure for AI Agents
 
+## SESSION START PROTOCOL (do this FIRST, every session)
+
+```bash
+# 1. Check health
+forge-next health && forge-next manas-health
+
+# 2. Recall relevant context BEFORE any work
+forge-next recall "<topic of this session>" --limit 10
+
+# 3. Check for team messages
+forge-next messages --session claude-code --limit 5
+
+# 4. Read handoff state
+cat product/HANDOFF.md
+```
+
+**If `forge-next` fails:** The daemon may not be running. Start it: `cargo run --release -p forge-daemon &`
+
+**If `forge:*` skills fail with "Unknown skill":** The plugin cache is stale. Sync it:
+```bash
+rsync -av --delete skills/ ~/.claude/plugins/marketplaces/forge-marketplace/skills/
+rsync -av --delete agents/ ~/.claude/plugins/marketplaces/forge-marketplace/agents/
+rsync -av .claude-plugin/ ~/.claude/plugins/marketplaces/forge-marketplace/.claude-plugin/
+```
+Then restart the Claude Code session.
+
+---
+
 ## CRITICAL: Forge is the ONLY Entry Point for Development
 
 **Before invoking ANY development-related skill, invoke `forge:forge` FIRST. This is non-negotiable.**
@@ -21,10 +49,11 @@ Forge orchestrates the full lifecycle and delegates to Superpowers, Codex, and o
 | "set up CI/CD" / "add tests" / "add e2e tests" | `forge:forge` | ~~test-driven-development~~ |
 | "performance issue" / "optimize" / "N+1 queries" | `forge:forge` | ~~systematic-debugging~~ |
 
-### Forge workflow skills — use these for development discipline
+### Forge Workflow Skills
 
 | Forge Skill | When to Use |
 |-------------|------------|
+| `forge:forge` | **Start here.** Auto-detects whether to use forge:new or forge:feature |
 | `forge:forge-tdd` | Before implementing ANY feature or fix — test first, watch fail, implement, verify |
 | `forge:forge-debug` | When encountering ANY bug or failure — root cause before fix |
 | `forge:forge-verify` | Before claiming work is done — evidence before assertions |
@@ -33,6 +62,11 @@ Forge orchestrates the full lifecycle and delegates to Superpowers, Codex, and o
 | `forge:forge-review` | Code review — standard or adversarial |
 | `forge:forge-ship` | Final verification + PR creation |
 | `forge:forge-research` | Deep research with bounded exploration |
+| `forge:forge-new` | Building a new project from scratch (PRD → design → agent team build) |
+| `forge:forge-security` | Security scanning — `forge scan .` or always-on `--watch` mode |
+| `forge:forge-handoff` | Pause/resume work across sessions |
+| `forge:forge-setup` | First-time prerequisite checks |
+| `forge:forge-agents` | View detailed status of running Forge agents |
 
 ### These plugins are SUPERSEDED by Forge — do NOT use them
 
@@ -58,36 +92,7 @@ Forge is for **development work**. These tasks should NOT go through forge:
 - Writing documentation, cover letters, presentations
 - Configuring Claude Code settings, hooks, keybindings
 - Creating or editing skills (use `skill-creator:skill-creator`)
-- Searching conversation history (use `episodic-memory`)
 - Data manipulation (spreadsheets, CSVs) without code changes
-
-## How to Use Forge
-
-### Skills (Applications)
-
-| Skill | When to Use |
-|-------|------------|
-| `forge:forge` | **Start here.** Auto-detects whether to use forge:new or forge:feature |
-| `forge:forge-new` | Building a new project from scratch (PRD → design → agent team build) |
-| `forge:forge-feature` | Modifying existing code (explore → plan → agent team build) |
-| `forge:forge-review` | Code review — standard or council mode (multi-reviewer with Codex) |
-| `forge:forge-ship` | Final verification, PR creation |
-| `forge:forge-research` | Autonomous research loop — bounded exploration with git checkpoints |
-| `forge:forge-security` | Security scanning — `forge scan .` or always-on `--watch` mode |
-| `forge:forge-handoff` | Pause/resume work across sessions |
-| `forge:forge-setup` | First-time prerequisite checks |
-| `forge:forge-think` | Product discovery — BDD requirements, feature specs, acceptance criteria |
-| `forge:forge-agents` | View detailed status of running Forge agents |
-
-### Skill Development
-
-Use `skill-creator:skill-creator` for creating and improving skills within Forge. This skill provides:
-- Structured skill creation workflow (intent → interview → draft → test → iterate)
-- Automated evaluation with test cases and benchmark comparison
-- Description optimization for better skill triggering
-- Blind A/B comparison between skill versions
-
-**When to use:** Creating new `forge:*` skills, improving existing skill descriptions for better triggering, evaluating skill quality with quantitative benchmarks.
 
 ### Agent Team
 
@@ -101,9 +106,33 @@ For multi-file tasks, Forge dispatches an agent team:
 
 **USE THESE AGENTS** for implementation work. Don't use raw subagents when Forge agents are available.
 
-### CLI-First Commands (v0.7.0 — Session 10)
+---
 
-`forge-next` is the Rust CLI client for the forge-daemon. **This is the only interface** — no MCP server.
+## Memory — ALWAYS Use It
+
+**Every session must recall before planning and remember after deciding.**
+
+```bash
+# Recall before any planning
+forge-next recall "<topic>" --limit 10
+
+# Store every architectural/design decision
+forge-next remember --type decision --title "..." --content "..."
+
+# Store lessons learned from bugs/failures
+forge-next remember --type lesson --title "..." --content "..."
+
+# Store patterns discovered
+forge-next remember --type pattern --title "..." --content "..."
+
+# Check health
+forge-next health
+forge-next manas-health
+forge-next doctor
+forge-next healing-status
+```
+
+### Full CLI Reference
 
 ```bash
 # Memory
@@ -116,13 +145,13 @@ forge-next supersede --old-id <old> --new-id <new>
 forge-next register-session --id <id> --agent <agent> [--project P] [--cwd D]
 forge-next end-session --id <id>
 forge-next sessions [--all]
-forge-next set-task --session <id> --task "description"  # Session card auto-populate
+forge-next set-task --session <id> --task "description"
 
 # Context & health
 forge-next compile-context --agent claude-code [--project P] [--focus <topic>]
 forge-next health
 forge-next health-by-project
-forge-next doctor                         # Comprehensive system diagnostics
+forge-next doctor
 forge-next manas-health
 
 # Identity (Ahankara)
@@ -134,7 +163,7 @@ forge-next identity remove <id>
 forge-next check --file <path> [--action edit]
 forge-next blast-radius --file <path>
 
-# A2A inter-session messaging (FISP protocol)
+# A2A messaging (FISP protocol)
 forge-next send --to <session-id> --kind notification --topic <topic> --text "..."
 forge-next send --to "*" --kind notification --topic schema_changed --text "..." --project P
 forge-next messages --session <session-id> [--status pending] [--limit N]
@@ -155,179 +184,159 @@ forge-next workspace-status
 forge-next license-status
 forge-next license-set --tier pro --key <license-key>
 
-# Memory healing
+# Healing
 forge-next healing-status
 forge-next healing-run
 forge-next healing-log [--limit N]
 
 # Extraction & quality
-forge-next backfill-project               # Fix NULL project on memories
-forge-next consolidate                    # Force consolidation phases
-forge-next extract                        # Trigger extraction on pending transcripts
+forge-next backfill-project
+forge-next consolidate
+forge-next extract
 
-# Import/export
+# Import/export & sync
 forge-next export [--format json]
 forge-next import [--file F]
 forge-next ingest-claude
-
-# Memory sync
 forge-next sync-export [--project P] [--since S]
-forge-next sync-import                    # reads NDJSON from stdin
-forge-next sync-pull <host> [--project P] # pull remote memories via SSH
-forge-next sync-push <host> [--project P] # push local memories via SSH
-forge-next sync-conflicts                 # list unresolved conflicts
-forge-next sync-resolve <id>              # resolve a conflict
+forge-next sync-import
+forge-next sync-pull <host> [--project P]
+forge-next sync-push <host> [--project P]
+forge-next sync-conflicts
+forge-next sync-resolve <id>
 
 # Code intelligence
-forge scan .                              # Detect exposed secrets
-forge scan . --watch --interval 30        # Always-on security monitor
+forge scan .
+forge scan . --watch --interval 30
 
 # Other
 forge-next platform
 forge-next tools
 forge-next perceptions [--project P] [--limit N] [--offset N]
 forge-next lsp-status
-forge-next config get-effective           # aliased as 'config get'
+forge-next config get-effective
 
 # Hooks (<5ms, called by Claude Code automatically)
-forge hook session-start                  # Context injection
-forge hook post-edit <file>               # Secret scan per file
-forge hook session-end                    # Update HUD state
-forge agent                               # Agent lifecycle tracking
+forge hook session-start
+forge hook post-edit <file>
+forge hook session-end
+forge agent
 ```
 
-### Storing Memory
+---
 
-**ALWAYS store important decisions.** When you make an architectural choice:
-```bash
-forge-next remember --type decision --title "..." --content "..."
-```
+## Dogfooding Protocol
 
-### Dogfooding Protocol
-
-**Forge builds itself.** Every session should follow this circular loop:
-1. **Pull & check** — `git pull`, read team requests, check Forge health
-2. **Recall** — `forge-next recall` relevant decisions before planning
-3. **Build** — use Forge agents (planner/generator/evaluator), store decisions
-4. **Test** — TDD, adversarial review, UAT with live daemon
+**Forge builds itself.** Every session follows this loop:
+1. **Pull & check** — `git pull`, `forge-next health`, `forge-next doctor`
+2. **Recall** — `forge-next recall "<topic>"` before ANY planning
+3. **Build** — use Forge agents (planner/generator/evaluator), store decisions with `forge-next remember`
+4. **Test** — TDD, adversarial review, UAT with live daemon, run E2E tests
 5. **Track** — store issues in Forge memory, write artifacts to workspace
-6. **Evaluate** — run `forge-next doctor`, check healing, review perceptions
+6. **Evaluate** — `forge-next doctor`, `forge-next healing-status`, review perceptions
 7. **Push & handoff** — update HANDOFF.md, push, start fresh session if needed
 
 Track all gaps in `product/engineering/daemon-team/SESSION-GAPS.md`.
 
 ---
 
-## Architecture (v0.7.0 — FISP)
+## Architecture (v0.7.0)
 
-**Daemon-first. CLI-first. No MCP server. 8-layer memory. Actor model. Tunable. 1,230+ tests. Enterprise-ready (HTTP, JWT, RBAC, Docker, Helm, Prometheus).**
+**Daemon-first. CLI-first. 8-layer memory. Actor model. 990+ tests. 0 clippy.**
 
 ```
-forge-daemon (Rust, single binary) — always-on daemon, Unix socket + HTTP API
-  ├── Actor architecture (hot/cold path separation, like Docker)
+forge-daemon (Rust, single binary)
+  ├── Actor architecture (hot/cold path separation)
   │   ├── Socket handler: per-connection read-only SQLite (NEVER blocks)
-  │   ├── HTTP server: Axum, same protocol via POST /api (port 8420)
+  │   ├── HTTP server: Axum, POST /api (port 8430)
   │   ├── Writer actor: serializes writes via mpsc channel
-  │   └── Workers: background tasks (extraction, embedding, consolidation, etc.)
-  ├── SQLite FTS5 + sqlite-vec (memory + vectors + edges, single file, WAL mode)
-  ├── 8-layer Manas memory (platform, tools, skills, domain DNA, experience, perception, declared, latent)
-  ├── Enterprise security (JWT/OIDC auth, RBAC Admin/Member/Viewer, append-only audit log)
-  ├── Observability (Prometheus /metrics, Grafana dashboard, OTLP tracing)
-  ├── A2A/FISP protocol (inter-session messaging, broadcast, delegation, meetings)
-  ├── Context intelligence (excluded_layers, domain DNA boost, project-scoped prefetch)
-  ├── Guardrails engine (check + blast_radius)
+  │   └── Workers: extraction, embedding, consolidation, healing, perception, reaper
+  ├── SQLite FTS5 + sqlite-vec (single file, WAL mode)
+  ├── 8-layer Manas memory
+  ├── Enterprise: JWT/OIDC, RBAC, audit log, multi-tenant
+  ├── A2A/FISP protocol (messaging, broadcast, meetings)
+  ├── Guardrails (check + blast_radius)
   ├── Multi-agent adapters (Claude Code + Cline + Codex CLI)
   ├── Auto-extraction (Gemini 2.5 Flash / Claude Haiku / Ollama)
-  ├── Session tracking + session cards (capabilities, current_task)
-  ├── Notification engine (context injection, alerts, meeting timeouts)
-  └── Event bus (tokio::broadcast for Mac app + A2A notifications)
-
-Deploy: Docker (<100MB) · Helm (StatefulSet + Litestream sidecar) · docker-compose
+  └── Event bus (SSE + tokio::broadcast)
 
 forge-next (Rust CLI)  — client for daemon, auto-starts daemon
 forge-hud (Rust)       — StatusLine rendering
-```
 
-**Key architecture:**
-- `forge-daemon` handles everything via Unix domain socket (NDJSON protocol)
-- Adapters watch transcript directories for Claude Code, Cline, and Codex CLI
-- sqlite-vec stores persistent embeddings (768-dim, cosine distance)
-- Graph traversal via SQL recursive CTEs on edge table
-- Guardrails query the knowledge graph before agent actions
-- Identity system (Ahankara) for per-agent personality facets
-- Proactive context compiler assembles from all 8 layers + identity + disposition
-- Security: umask 0177, 50MB file limit, symlink defense, parameterized SQL, UTF-8 safe truncation
+App (SolidJS + Tauri + PixiJS)
+  ├── 48 components, 140 daemon endpoints available
+  ├── Canvas engine (PixiJS infinite canvas, agent cards, team frames)
+  ├── Bridge: HTTP POST to daemon :8430, WebSocket for terminals, SSE for events
+  ├── 4-tier feature gating (Free / Pro $12 / Team $19 / Enterprise)
+  ├── 28 Playwright E2E tests (100% P0 passing)
+  └── Tauri: 90+ IPC commands, PTY terminal, deep linking
+
+Deploy: Docker (41.7MB distroless) · Helm · docker-compose
+```
 
 ## Development
 
 ### Running Tests
 
 ```bash
-# Full workspace (1,230+ Rust tests)
-cargo test --workspace
-
-# Daemon only (960+ tests)
+# Daemon tests (990+)
 cargo test -p forge-daemon
 
-# Socket E2E (requires release binary built)
+# Core protocol tests (56)
+cargo test -p forge-core --lib
+
+# Socket E2E (requires release binary)
 cargo build --release -p forge-daemon
 cargo test -p forge-daemon --test test_socket_e2e -- --test-threads=1
 
 # Clippy (zero warnings required)
 cargo clippy -p forge-daemon -p forge-core -p forge-cli -- -W clippy::all
+
+# App E2E tests (requires daemon running on :8430)
+cd app/forge && npx playwright test --config e2e/playwright/playwright.config.ts --project=all
+
+# App unit tests
+cd app/forge && npx vitest run
 ```
+
+### Plugin Sync
+
+After changing skills, agents, or plugin config, sync to the marketplace cache:
+```bash
+rsync -av --delete skills/ ~/.claude/plugins/marketplaces/forge-marketplace/skills/
+rsync -av --delete agents/ ~/.claude/plugins/marketplaces/forge-marketplace/agents/
+rsync -av .claude-plugin/ ~/.claude/plugins/marketplaces/forge-marketplace/.claude-plugin/
+```
+Then restart the Claude Code session for skills to take effect.
 
 ### Critical Rules
 
 - **Codex** — use `codex exec --model gpt-5.2` (default o4-mini broken on ChatGPT auth)
-- **Plugin cache** — `~/.claude/plugins/cache/forge-marketplace/forge/0.3.0/`. After changes, sync with: `cp target/release/forge "$CACHE/servers/forge"`
-
-### CI Pipeline (6 jobs, all green)
-
-- static-validation (shellcheck, plugin/hooks/skills/agents validation)
-- unit-tests (BATS)
-- integration-tests (hook behavior)
-- python-tests (115 tests + adversarial suite)
-- rust-build (forge + forge-hud)
-- security-scan (hardcoded secrets, dangerous patterns)
+- **Plugin cache** — `~/.claude/plugins/marketplaces/forge-marketplace/`. After skill changes, run the sync above.
+- **Daemon port** — HTTP API on port 8430 (`POST /api` with `{method, params}` JSON)
+- **Unit variants** — Some daemon endpoints (health, healing_status, healing_run, doctor, license_status, sync_conflicts, list_team_templates) are unit variants — do NOT send `params: {}`, omit params entirely
+- **Parameterized variants** — Most other endpoints require `params: {}` even if empty (manas_health, sessions, budget_status, etc.)
 
 ## Security
 
-- Parameterized Cypher queries (`$param` syntax, never string interpolation)
+- Parameterized SQL (never string interpolation)
 - Property key validation regex `^[A-Za-z_][A-Za-z0-9_]{0,63}$`
-- axon_cypher sandbox blocks memory node labels + write keywords
 - Per-agent ACL enforcement via `agent_id`
 - Hook scripts derive paths from script location (not env vars)
-- Trust-level filtering on session context injection (`trust_level = 'user'`)
-- Symlink defense in scanner and workspace boundary checks
-- Secret scanner NEVER stores actual values — SHA256 fingerprint only
-- 6 adversarial reviews completed (Forge evaluator + Codex gpt-5.2)
-- 15 adversarial tests in CI
+- Secret scanner: SHA256 fingerprint only, never stores actual values
+- Symlink defense, umask 0177, 50MB file limit, UTF-8 safe truncation
 
 ## Remaining Work
 
 Track all items in `product/engineering/daemon-team/SESSION-GAPS.md`.
 
-### Code gaps (daemon team)
-- WASM Task Runner (wasmtime dep — dedicated session)
+### Code gaps (P2, not launch-blocking)
+- WASM Task Runner (wasmtime dep)
 - Raft leader election for leaderless teams
-- Full Rust MCP server (replace CLI-first with MCP protocol)
-- Agent team overhaul — wave-to-wave handoff, context passing
 
-### Infrastructure (founder)
+### Founder tasks
 - Dodo Payments KYC + products
 - Terms of Service / Privacy Policy
 - Apple Developer ID (binary signing)
-- Starlight docs site deployment (`firebase deploy` — 21 pages built)
-
-### Architecture (multi-day, future sessions)
-- Multi-tenant isolation (per-team DB)
-
-### Resolved (Sessions 11-15)
-- ~~Skills CLI~~ (Session 10+11), ~~Skills HTTP API~~ (Session 11)
-- ~~Team topology~~ (Session 13), ~~Team --from-file~~ (Session 12), ~~run_team/stop_team tests~~ (Session 12)
-- ~~TS/JS indexing~~ (Session 12), ~~Smart router quality guard~~ (Session 11)
-- ~~Context stats~~ (Session 11), ~~Perception accumulation~~ (Session 11), ~~Docker < 80MB~~ (Session 12, 41.7MB)
-- ~~Adversarial S1-S6~~ (Session 11), ~~Git secret scan~~ (Session 10), ~~CLI reference~~ (Session 11)
-- ~~OIDC~~ (Session 10, generic via issuer_url), ~~Memory sync~~ (implemented, SSH transport + HLC)
-- ~~Auto-update~~ (N/A — web deploys via CI/CD, CLI via Homebrew)
+- Firebase docs site deploy (`firebase deploy` — 21 pages built)
+- Replace license public key placeholder in `app/forge/src/lib/licensePublicKey.ts`
