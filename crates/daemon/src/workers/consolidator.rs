@@ -1,10 +1,16 @@
-// workers/consolidator.rs — Memory consolidator (15 phases)
+// workers/consolidator.rs — Memory consolidator (22 phases)
 //
-// Periodically runs: exact dedup, semantic dedup, link related, confidence decay,
-// episodic->semantic promotion, reconsolidation, embedding merge,
-// edge strengthening, contradiction detection, activation decay,
-// entity detection, contradiction synthesis, knowledge gap detection,
-// memory reweave, and quality scoring.
+// Runs every 30 minutes (configurable). 22 phases in 5 groups:
+//
+// Core (1-10): exact dedup, semantic dedup, link related, confidence decay,
+//   episodic→semantic promotion, reconsolidation, embedding merge,
+//   edge strengthening, contradiction detection, activation decay.
+// Knowledge Intelligence (11-15): entity detection, contradiction synthesis,
+//   knowledge gap detection, memory reweave, quality scoring.
+// Additional (16-18): portability classification, protocol extraction, anti-pattern tagging.
+// Notifications (19a-d): protocol suggestions, contradiction alerts, quality decline, meeting timeout.
+// Healing (20-22): topic supersede, session staleness fade, quality pressure.
+//
 // Memories that fall below 0.1 effective confidence are marked "faded".
 
 use crate::db::ops;
