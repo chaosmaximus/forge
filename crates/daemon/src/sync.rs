@@ -294,6 +294,80 @@ fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
     })
 }
 
+// ── Cross-Tier Sync Policies ──
+
+/// Sync direction — defines valid sync flows between tiers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SyncDirection {
+    /// local → team: individual pushes up to shared team memory
+    LocalToTeam,
+    /// team → local: team broadcasts down to members
+    TeamToLocal,
+    /// team → org: team pushes up to organization
+    TeamToOrg,
+    /// org → team: org broadcasts down to teams
+    OrgToTeam,
+}
+
+/// Determines which memory types are allowed to sync in a given direction.
+/// Returns true if the memory type is allowed for this sync direction.
+pub fn is_sync_allowed(direction: &SyncDirection, memory_type: &MemoryType) -> bool {
+    match direction {
+        // Local → Team: decisions and lessons propagate up, preferences don't
+        SyncDirection::LocalToTeam => matches!(
+            memory_type,
+            MemoryType::Decision | MemoryType::Lesson | MemoryType::Pattern | MemoryType::Protocol
+        ),
+        // Team → Local: everything propagates down (team shares with members)
+        SyncDirection::TeamToLocal => true,
+        // Team → Org: only decisions and protocols propagate to org level
+        SyncDirection::TeamToOrg => matches!(
+            memory_type,
+            MemoryType::Decision | MemoryType::Protocol
+        ),
+        // Org → Team: everything propagates down (org-wide policies)
+        SyncDirection::OrgToTeam => true,
+    }
+}
+
+/// Filter memories by sync policy before export.
+/// Returns only memories allowed for the given sync direction.
+pub fn filter_by_sync_policy(memories: Vec<Memory>, direction: &SyncDirection) -> Vec<Memory> {
+    memories
+        .into_iter()
+        .filter(|m| is_sync_allowed(direction, &m.memory_type))
+        .collect()
+}
+
+/// Export memories with cross-tier sync policy applied.
+/// Filters by direction rules + org_id scoping.
+pub fn sync_export_with_policy(
+    conn: &Connection,
+    project: Option<&str>,
+    since: Option<&str>,
+    direction: &SyncDirection,
+    org_id: Option<&str>,
+) -> rusqlite::Result<Vec<String>> {
+    // Export all active memories (scoped by project/since/org)
+    let all_lines = sync_export(conn, project, since)?;
+
+    // Parse, filter by policy, re-serialize
+    let mut filtered_lines = Vec::new();
+    for line in &all_lines {
+        if let Ok(memory) = serde_json::from_str::<Memory>(line) {
+            // Check org_id match if specified
+            let org_ok = match org_id {
+                Some(oid) => memory.organization_id.as_deref() == Some(oid) || memory.organization_id.is_none(),
+                None => true,
+            };
+            if org_ok && is_sync_allowed(direction, &memory.memory_type) {
+                filtered_lines.push(line.clone());
+            }
+        }
+    }
+    Ok(filtered_lines)
+}
+
 // ── Task 4: Sync Import with Conflict Detection ──
 
 pub struct SyncImportResult {
@@ -1317,5 +1391,46 @@ mod tests {
 
         let result = sync_export(&conn, None, None);
         assert!(result.is_ok(), "sync_export should succeed when all memories have HLC");
+    }
+
+    #[test]
+    fn test_sync_policy_local_to_team() {
+        // Decisions propagate, preferences don't
+        assert!(is_sync_allowed(&SyncDirection::LocalToTeam, &MemoryType::Decision));
+        assert!(is_sync_allowed(&SyncDirection::LocalToTeam, &MemoryType::Lesson));
+        assert!(is_sync_allowed(&SyncDirection::LocalToTeam, &MemoryType::Protocol));
+        assert!(!is_sync_allowed(&SyncDirection::LocalToTeam, &MemoryType::Preference));
+    }
+
+    #[test]
+    fn test_sync_policy_team_to_org() {
+        // Only decisions and protocols propagate to org level
+        assert!(is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Decision));
+        assert!(is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Protocol));
+        assert!(!is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Lesson));
+        assert!(!is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Pattern));
+        assert!(!is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Preference));
+    }
+
+    #[test]
+    fn test_sync_policy_downward_allows_all() {
+        // Team→Local and Org→Team allow everything
+        for mt in [MemoryType::Decision, MemoryType::Lesson, MemoryType::Pattern, MemoryType::Preference, MemoryType::Protocol] {
+            assert!(is_sync_allowed(&SyncDirection::TeamToLocal, &mt));
+            assert!(is_sync_allowed(&SyncDirection::OrgToTeam, &mt));
+        }
+    }
+
+    #[test]
+    fn test_filter_by_sync_policy() {
+        let memories = vec![
+            Memory::new(MemoryType::Decision, "Keep this", "content"),
+            Memory::new(MemoryType::Preference, "Drop this", "content"),
+            Memory::new(MemoryType::Lesson, "Keep this too", "content"),
+        ];
+        let filtered = filter_by_sync_policy(memories, &SyncDirection::LocalToTeam);
+        assert_eq!(filtered.len(), 2, "preference should be filtered out");
+        assert_eq!(filtered[0].title, "Keep this");
+        assert_eq!(filtered[1].title, "Keep this too");
     }
 }
