@@ -96,7 +96,6 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(memory_type);
         CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status);
         CREATE INDEX IF NOT EXISTS idx_memory_project ON memory(project);
-        CREATE INDEX IF NOT EXISTS idx_memory_org ON memory(organization_id);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
             title, content, tags,
