@@ -4,7 +4,8 @@
 //
 // Core (1-10): exact dedup, semantic dedup, link related, confidence decay,
 //   episodic→semantic promotion, reconsolidation, embedding merge,
-//   edge strengthening, contradiction detection, activation decay.
+//   edge strengthening, contradiction detection (9a: valence-based, 9b: content-based),
+//   activation decay.
 // Knowledge Intelligence (11-15): entity detection, contradiction synthesis,
 //   knowledge gap detection, memory reweave, quality scoring.
 // Additional (16-18): portability classification, protocol extraction, anti-pattern tagging.
@@ -163,15 +164,41 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Err(e) => eprintln!("[consolidator] edge strengthening error: {}", e),
     }
 
-    // Phase 9: Contradiction detection
+    // Phase 9: Contradiction detection (two strategies)
+    // 9a: Valence-based (requires opposite valence + shared tags + intensity > 0.5)
     match ops::detect_contradictions(conn) {
         Ok(found) => {
             stats.contradictions = found;
             if found > 0 {
-                eprintln!("[consolidator] detected {} contradictory memory pairs", found);
+                eprintln!("[consolidator] detected {} valence-based contradictions", found);
+            } else {
+                // Log why valence-based detection found nothing — most memories are neutral
+                let valence_counts: Vec<(String, i64)> = conn
+                    .prepare(
+                        "SELECT valence, COUNT(*) FROM memory WHERE status = 'active' GROUP BY valence"
+                    )
+                    .and_then(|mut s| {
+                        s.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let summary: Vec<String> = valence_counts.iter()
+                    .map(|(v, c)| format!("{}={}", v, c))
+                    .collect();
+                eprintln!(
+                    "[consolidator] valence-based contradiction: 0 found (valence distribution: {})",
+                    if summary.is_empty() { "none".to_string() } else { summary.join(", ") }
+                );
             }
         }
         Err(e) => eprintln!("[consolidator] contradiction detection error: {}", e),
+    }
+
+    // 9b: Content-based (same type + high title overlap + low content overlap)
+    let content_contradictions = detect_content_contradictions(conn);
+    stats.contradictions += content_contradictions;
+    if content_contradictions > 0 {
+        eprintln!("[consolidator] detected {} content-based contradictions", content_contradictions);
     }
 
     // Phase 10: Decay activation levels (fast — single UPDATE)
@@ -433,6 +460,190 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
     }
 
     stats
+}
+
+/// Content-based contradiction detection: finds same-type active memories
+/// with high title word overlap (>= 50%) but divergent content (< 30% overlap).
+/// This complements `ops::detect_contradictions` which only catches
+/// valence-based contradictions (positive vs negative with shared tags).
+/// Most memories have valence='neutral' and intensity=0.0, so the valence-based
+/// detector produces zero results in practice.
+///
+/// Returns number of contradiction pairs found.
+pub fn detect_content_contradictions(conn: &Connection) -> usize {
+    use crate::db::diagnostics::{store_diagnostic, Diagnostic};
+
+    // Fetch active memories grouped by type — only types that can contradict
+    let mut stmt = match conn.prepare(
+        "SELECT id, memory_type, title, content FROM memory
+         WHERE status = 'active' AND memory_type IN ('decision', 'pattern', 'protocol')
+         ORDER BY memory_type, created_at DESC"
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[consolidator] content contradiction query error: {e}");
+            return 0;
+        }
+    };
+
+    struct Row {
+        id: String,
+        memory_type: String,
+        title: String,
+        content: String,
+    }
+
+    let rows: Vec<Row> = match stmt.query_map([], |row| {
+        Ok(Row {
+            id: row.get(0)?,
+            memory_type: row.get(1)?,
+            title: row.get(2)?,
+            content: row.get(3)?,
+        })
+    }) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            eprintln!("[consolidator] content contradiction row error: {e}");
+            return 0;
+        }
+    };
+
+    if rows.is_empty() {
+        eprintln!("[consolidator] content contradiction: 0 candidate memories");
+        return 0;
+    }
+
+    /// Extract lowercase word set from text (alphanumeric words with 3+ chars).
+    fn word_set(text: &str) -> std::collections::HashSet<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .map(|w| w.to_string())
+            .collect()
+    }
+
+    /// Jaccard overlap between two word sets.
+    fn jaccard(a: &std::collections::HashSet<String>, b: &std::collections::HashSet<String>) -> f64 {
+        if a.is_empty() || b.is_empty() {
+            return 0.0;
+        }
+        let intersection = a.intersection(b).count() as f64;
+        let union = a.union(b).count() as f64;
+        intersection / union
+    }
+
+    let mut found = 0usize;
+    // Limit total comparisons to avoid O(n^2) blowup on large memory sets
+    let max_comparisons = 5000usize;
+    let mut comparisons = 0usize;
+
+    for i in 0..rows.len() {
+        if comparisons >= max_comparisons {
+            break;
+        }
+        let a = &rows[i];
+        let title_words_a = word_set(&a.title);
+        if title_words_a.len() < 2 {
+            continue;
+        }
+
+        for b in rows.iter().skip(i + 1) {
+            if comparisons >= max_comparisons {
+                break;
+            }
+
+            // Must be same type
+            if a.memory_type != b.memory_type {
+                continue;
+            }
+
+            comparisons += 1;
+
+            let title_words_b = word_set(&b.title);
+            if title_words_b.len() < 2 {
+                continue;
+            }
+
+            // High title overlap (>= 50% Jaccard) means they're about the same topic
+            let title_overlap = jaccard(&title_words_a, &title_words_b);
+            if title_overlap < 0.5 {
+                continue;
+            }
+
+            // Low content overlap (< 30%) means they say different things
+            let content_words_a = word_set(&a.content);
+            let content_words_b = word_set(&b.content);
+            let content_overlap = jaccard(&content_words_a, &content_words_b);
+            if content_overlap >= 0.3 {
+                continue;
+            }
+
+            // Check if this contradiction edge already exists (either direction)
+            let diag_id = format!("contradiction-{}-{}", a.id, b.id);
+            let diag_id_rev = format!("contradiction-{}-{}", b.id, a.id);
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM diagnostic WHERE id IN (?1, ?2)",
+                    rusqlite::params![diag_id, diag_id_rev],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            if exists {
+                continue;
+            }
+
+            // Also check if edge already exists
+            let edge_exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM edge WHERE edge_type = 'contradicts'
+                     AND ((from_id = ?1 AND to_id = ?2) OR (from_id = ?2 AND to_id = ?1))",
+                    rusqlite::params![a.id, b.id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            if edge_exists {
+                continue;
+            }
+
+            // Create diagnostic warning
+            let message = format!(
+                "Content contradiction: \"{}\" vs \"{}\". Title overlap {:.0}%, content overlap {:.0}%.",
+                a.title, b.title, title_overlap * 100.0, content_overlap * 100.0
+            );
+            let diag = Diagnostic {
+                id: diag_id.clone(),
+                file_path: "memory://contradictions".to_string(),
+                severity: "warning".to_string(),
+                message,
+                source: "forge-consolidator".to_string(),
+                line: None,
+                column: None,
+                created_at: forge_core::time::now_iso(),
+                expires_at: forge_core::time::now_offset(86400),
+            };
+            if let Err(e) = store_diagnostic(conn, &diag) {
+                eprintln!("[consolidator] content contradiction diagnostic error: {e}");
+                continue;
+            }
+
+            // Create 'contradicts' edge
+            let edge_id = format!("edge-contradiction-{}-{}", a.id, b.id);
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO edge (id, from_id, to_id, edge_type, properties, created_at, valid_from)
+                 VALUES (?1, ?2, ?3, 'contradicts', ?4, ?5, ?5)",
+                rusqlite::params![
+                    edge_id,
+                    a.id,
+                    b.id,
+                    format!("{{\"detection\":\"content\",\"title_overlap\":{:.2},\"content_overlap\":{:.2}}}", title_overlap, content_overlap),
+                    forge_core::time::now_iso(),
+                ],
+            );
+            found += 1;
+        }
+    }
+
+    found
 }
 
 /// Synthesize contradictions: find pairs of conflicting memories (same tags,
@@ -1204,10 +1415,10 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
                 continue;
             }
 
-            // Supersede: update status + superseded_by
+            // Supersede: update status + superseded_by (org-scoped for multi-tenant safety)
             if conn.execute(
-                "UPDATE memory SET status = 'superseded', superseded_by = ?1 WHERE id = ?2",
-                rusqlite::params![new_id, old_id],
+                "UPDATE memory SET status = 'superseded', superseded_by = ?1 WHERE id = ?2 AND organization_id = ?3",
+                rusqlite::params![new_id, old_id, &candidate.organization_id],
             ).is_err() {
                 continue;
             }
@@ -2228,5 +2439,176 @@ mod tests {
         // Normal-quality should decay by 0.1 (standard): 0.5 - 0.1 = 0.4
         assert!((normal_quality - 0.4).abs() < 0.01,
             "normal-quality memory should decay by 0.1 (standard), got {normal_quality}");
+    }
+
+    // ── Content-based contradiction detection tests ──
+
+    #[test]
+    fn test_content_contradiction_detects_same_topic_different_conclusions() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Two decisions about the same topic ("primary storage backend") but
+        // completely different content conclusions.
+        let a = Memory::new(
+            MemoryType::Decision,
+            "Use Redis for the primary storage backend",
+            "Redis provides fast in-memory caching with persistence options and cluster support",
+        );
+        ops::remember(&conn, &a).unwrap();
+
+        let b = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for the primary storage backend",
+            "SQLite is a lightweight embedded database that requires no separate server process",
+        );
+        ops::remember(&conn, &b).unwrap();
+
+        let found = detect_content_contradictions(&conn);
+        assert!(found >= 1, "should detect content contradiction, got {found}");
+
+        // Verify edge was created
+        let edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE edge_type = 'contradicts'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(edge_count >= 1, "should have a contradicts edge, got {edge_count}");
+
+        // Verify diagnostic was created
+        let diag_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM diagnostic WHERE source = 'forge-consolidator' AND message LIKE '%Content contradiction%'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(diag_count >= 1, "should have a contradiction diagnostic, got {diag_count}");
+    }
+
+    #[test]
+    fn test_content_contradiction_skips_similar_content() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Two decisions about same topic with very similar content — not a contradiction
+        let a = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for the primary storage backend",
+            "We chose SQLite for the primary storage backend because it is lightweight and embedded",
+        );
+        ops::remember(&conn, &a).unwrap();
+
+        let b = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for the primary storage backend layer",
+            "We chose SQLite for the primary storage backend because it is lightweight and requires no server",
+        );
+        // Use raw SQL to bypass title dedup
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, project)
+             VALUES (?1, 'decision', 'Use SQLite for the primary storage backend layer',
+                     'We chose SQLite for the primary storage backend because it is lightweight and requires no server',
+                     0.9, 'active', '[]', datetime('now'), datetime('now'), NULL)",
+            rusqlite::params![b.id],
+        ).unwrap();
+
+        let found = detect_content_contradictions(&conn);
+        assert_eq!(found, 0, "should not detect contradiction for similar content");
+    }
+
+    #[test]
+    fn test_content_contradiction_skips_different_types() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // A decision and a lesson with same title pattern — different types, no contradiction
+        let a = Memory::new(
+            MemoryType::Decision,
+            "Use Redis for the primary storage backend",
+            "Redis provides fast in-memory caching with persistence options",
+        );
+        ops::remember(&conn, &a).unwrap();
+
+        let b = Memory::new(
+            MemoryType::Lesson,
+            "Use SQLite for the primary storage backend",
+            "SQLite is a lightweight embedded database that requires no server",
+        );
+        ops::remember(&conn, &b).unwrap();
+
+        let found = detect_content_contradictions(&conn);
+        assert_eq!(found, 0, "should not detect contradiction across different types");
+    }
+
+    #[test]
+    fn test_content_contradiction_idempotent() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let a = Memory::new(
+            MemoryType::Decision,
+            "Use Redis for the primary storage backend",
+            "Redis provides fast in-memory caching with persistence options and cluster support",
+        );
+        ops::remember(&conn, &a).unwrap();
+
+        let b = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for the primary storage backend",
+            "SQLite is a lightweight embedded database that requires no separate server process",
+        );
+        ops::remember(&conn, &b).unwrap();
+
+        let found1 = detect_content_contradictions(&conn);
+        assert!(found1 >= 1, "first run should find contradictions");
+
+        let found2 = detect_content_contradictions(&conn);
+        assert_eq!(found2, 0, "second run should be idempotent — already detected");
+    }
+
+    #[test]
+    fn test_content_contradiction_integrated_in_all_phases() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Create contradicting decisions with neutral valence (default).
+        // Titles must survive semantic dedup (Phase 2) which uses meaningful_words
+        // with stop words filtered and threshold 0.65 on max(weighted, title_score, content_score).
+        // Title meaningful overlap: 5/8 = 0.625 < 0.65 → survives dedup.
+        // Content meaningful overlap: ~0 → combined = max(0.3125, 0.625, 0) = 0.625 < 0.65.
+        // My Jaccard (3+ char words, no stop filter): 6/12 = 0.50 >= 0.50 threshold.
+        let a = Memory::new(
+            MemoryType::Decision,
+            "Adopt Redis cluster caching for backend data layer solution",
+            "Redis provides blazing fast distributed cache with cluster failover and replication",
+        );
+        ops::remember(&conn, &a).unwrap();
+
+        let b = Memory::new(
+            MemoryType::Decision,
+            "Adopt SQLite embedded storage for backend data layer solution",
+            "SQLite offers zero-configuration embedded database with ACID transactions and WAL journaling",
+        );
+        ops::remember(&conn, &b).unwrap();
+
+        // Run full consolidation — Phase 9b should pick these up
+        let config = crate::config::ConsolidationConfig::default();
+        let stats = run_all_phases(&conn, &config);
+
+        assert!(stats.contradictions >= 1,
+            "run_all_phases should detect content contradictions even with neutral valence, got {}",
+            stats.contradictions);
+
+        // Verify edge was created
+        let edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM edge WHERE edge_type = 'contradicts'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(edge_count >= 1, "should have contradicts edge after full consolidation");
     }
 }

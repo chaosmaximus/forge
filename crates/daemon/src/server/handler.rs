@@ -1798,7 +1798,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 summaries
             };
 
-            // Record injection for observability
+            // Record injection for observability — route through writer channel
+            // since ContextRefresh runs on a read-only connection in production
             let delta_items = notifications.len() + warnings.len() + anti_patterns.len();
             if delta_items > 0 || messages_pending > 0 {
                 let summary = format!(
@@ -1809,10 +1810,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 let chars_est = notifications.iter().chain(warnings.iter()).chain(anti_patterns.iter())
                     .chain(message_summaries.iter())
                     .map(|s| s.len()).sum::<usize>();
-                let _ = crate::db::effectiveness::record_injection_with_size(
-                    &state.conn, &session_id, "UserPromptSubmit", "delta",
-                    &summary, chars_est,
-                );
+                if let Some(tx) = &state.writer_tx {
+                    let _ = tx.try_send(super::writer::WriteCommand::RecordInjection {
+                        session_id: session_id.clone(),
+                        hook_event: "UserPromptSubmit".to_string(),
+                        context_type: "delta".to_string(),
+                        content_summary: summary,
+                        chars_injected: chars_est,
+                    });
+                }
             }
 
             Response::Ok {
@@ -1850,14 +1856,19 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     .unwrap_or_default();
 
                 let severity = if lessons.is_empty() { "none" } else { "high" };
-                // Record injection for observability
+                // Record injection for observability — route through writer channel
+                // since CompletionCheck runs on a read-only connection in production
                 if !lessons.is_empty() {
                     let chars_est: usize = lessons.iter().map(|s| s.len()).sum();
-                    let _ = crate::db::effectiveness::record_injection_with_size(
-                        &state.conn, &session_id, "Stop", "completion_lesson",
-                        &format!("{} lessons, severity={}", lessons.len(), severity),
-                        chars_est,
-                    );
+                    if let Some(tx) = &state.writer_tx {
+                        let _ = tx.try_send(super::writer::WriteCommand::RecordInjection {
+                            session_id: session_id.clone(),
+                            hook_event: "Stop".to_string(),
+                            context_type: "completion_lesson".to_string(),
+                            content_summary: format!("{} lessons, severity={}", lessons.len(), severity),
+                            chars_injected: chars_est,
+                        });
+                    }
                 }
                 Response::Ok {
                     data: ResponseData::CompletionCheckResult {
