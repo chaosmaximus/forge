@@ -49,8 +49,8 @@ fn reap_stale_sessions(
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
         .map_err(|e| format!("pragma: {}", e))?;
 
-    // Atomic reap: UPDATE with full WHERE clause to avoid TOCTOU race.
-    // A session that heartbeats between SELECT and UPDATE won't be reaped.
+    // Phase 1: Reap sessions whose heartbeats have stopped.
+    // Atomic: UPDATE with full WHERE clause to avoid TOCTOU race.
     let reap_sql = format!(
         "UPDATE session SET status = 'ended', ended_at = datetime('now') \
          WHERE status = 'active' \
@@ -67,7 +67,6 @@ fn reap_stale_sessions(
         .collect();
 
     for session_id in &stale_ids {
-
         events::emit(
             events,
             "session_reaped",
@@ -76,12 +75,41 @@ fn reap_stale_sessions(
                 "reason": "heartbeat_timeout"
             }),
         );
-
         eprintln!("[reaper] reaped stale session: {}", session_id);
     }
 
-    if !stale_ids.is_empty() {
-        eprintln!("[reaper] reaped {} stale session(s)", stale_ids.len());
+    // Phase 2: Reap sessions that never heartbeated AND are older than 24 hours.
+    // These are typically hook-test sessions or leaked registrations where
+    // the session-end hook never fired. Without this, they accumulate forever.
+    let orphan_sql =
+        "UPDATE session SET status = 'ended', ended_at = datetime('now') \
+         WHERE status = 'active' \
+         AND last_heartbeat_at IS NULL \
+         AND started_at < datetime('now', '-86400 seconds') \
+         RETURNING id";
+    let mut stmt2 = conn.prepare(orphan_sql).map_err(|e| format!("prepare orphan: {}", e))?;
+    let orphan_ids: Vec<String> = stmt2
+        .query_map([], |row| row.get(0))
+        .map_err(|e| format!("query orphan: {}", e))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for session_id in &orphan_ids {
+        events::emit(
+            events,
+            "session_reaped",
+            serde_json::json!({
+                "session_id": session_id,
+                "reason": "no_heartbeat_24h"
+            }),
+        );
+        eprintln!("[reaper] reaped orphan session (no heartbeat, >24h): {}", session_id);
+    }
+
+    let total = stale_ids.len() + orphan_ids.len();
+    if total > 0 {
+        eprintln!("[reaper] reaped {} session(s) ({} stale heartbeat, {} orphan)",
+            total, stale_ids.len(), orphan_ids.len());
     }
 
     Ok(())
@@ -153,6 +181,36 @@ mod tests {
             .query_row("SELECT status FROM session WHERE id = 's1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(status, "active");
+    }
+
+    #[test]
+    fn test_reap_orphan_sessions_no_heartbeat_24h() {
+        let (path, conn, _dir) = setup_db();
+        let tx = create_event_bus();
+        let mut rx = tx.subscribe();
+
+        // Register a session with no heartbeat, created >24h ago
+        crate::sessions::register_session(&conn, "orphan1", "hook-test", None, None, None, None).unwrap();
+        conn.execute(
+            "UPDATE session SET started_at = datetime('now', '-90000 seconds') WHERE id = 'orphan1'",
+            [],
+        ).unwrap();
+
+        // Register a recent session with no heartbeat (should NOT be reaped)
+        crate::sessions::register_session(&conn, "recent1", "hook-test", None, None, None, None).unwrap();
+
+        reap_stale_sessions(&path, 300, &tx).unwrap();
+
+        let orphan: String = conn.query_row("SELECT status FROM session WHERE id = 'orphan1'", [], |r| r.get(0)).unwrap();
+        let recent: String = conn.query_row("SELECT status FROM session WHERE id = 'recent1'", [], |r| r.get(0)).unwrap();
+
+        assert_eq!(orphan, "ended", "orphan session >24h should be reaped");
+        assert_eq!(recent, "active", "recent session should be left alone");
+
+        // Verify event was emitted for orphan
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event, "session_reaped");
+        assert_eq!(event.data["reason"], "no_heartbeat_24h");
     }
 
     #[test]
