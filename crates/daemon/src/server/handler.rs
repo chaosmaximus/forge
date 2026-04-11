@@ -455,7 +455,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
                 // "perception" → list perceptions matching query (project-scoped)
                 Some("perception") => {
-                    let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None)
+                    let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None, None)
                         .unwrap_or_default();
                     let query_lower = query.to_lowercase();
                     perceptions.into_iter()
@@ -1131,16 +1131,20 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 eprintln!("[handler] failed to save working set for session {}: {e}", id);
             }
 
+            // Compile session KPIs before ending
+            let session_kpis = crate::sessions::compile_session_kpis(&state.conn, &id);
+
             match crate::sessions::end_session(&state.conn, &id) {
                 Ok(found) => {
                     if found {
                         crate::events::emit(&state.events, "session_changed", serde_json::json!({
                             "id": id,
                             "action": "ended",
+                            "kpis": serde_json::to_value(&session_kpis).ok(),
                         }));
                     }
                     Response::Ok {
-                        data: ResponseData::SessionEnded { id, found },
+                        data: ResponseData::SessionEnded { id, found, session_kpis },
                     }
                 }
                 Err(e) => Response::Error {
@@ -1510,7 +1514,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::ListPerceptions { project, limit, offset } => {
             let off = offset.unwrap_or(0);
             let lim = limit.unwrap_or(20).min(100); // Cap at 100
-            match crate::db::manas::list_unconsumed_perceptions(&state.conn, None) {
+            match crate::db::manas::list_unconsumed_perceptions(&state.conn, None, None) {
                 Ok(perceptions) => {
                     // Apply project filter, offset, and limit in-memory
                     let filtered: Vec<_> = perceptions.into_iter()
@@ -1713,11 +1717,52 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 |row| row.get::<_, i64>(0),
             ).unwrap_or(0) as usize;
 
+            // Fetch actual A2A message summaries (top 5, capped at 200 chars each)
+            let message_summaries: Vec<String> = {
+                let mut summaries = Vec::new();
+                if let Ok(mut stmt) = state.conn.prepare(
+                    "SELECT from_session, topic, parts FROM session_message \
+                     WHERE to_session = ?1 AND status = 'pending' \
+                     ORDER BY created_at DESC LIMIT 5"
+                ) {
+                    if let Ok(rows) = stmt.query_map(rusqlite::params![session_id], |row| {
+                        let from: String = row.get(0)?;
+                        let topic: String = row.get(1)?;
+                        let parts: String = row.get(2)?;
+                        Ok((from, topic, parts))
+                    }) {
+                        for row in rows.flatten() {
+                            let (from, topic, parts) = row;
+                            // Cap from/topic to prevent oversized summaries
+                            let from_cap: String = from.chars().take(40).collect();
+                            let topic_cap: String = topic.chars().take(60).collect();
+                            // Extract text from parts JSON, cap at 200 chars
+                            let text = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&parts) {
+                                v.as_array()
+                                    .and_then(|arr| arr.iter().find(|p| p["kind"] == "text"))
+                                    .and_then(|p| p["text"].as_str())
+                                    .unwrap_or("")
+                                    .chars().take(200).collect::<String>()
+                            } else {
+                                String::new()
+                            };
+                            summaries.push(format!("[from:{from_cap}] ({topic_cap}) {text}"));
+                        }
+                    }
+                }
+                summaries
+            };
+
             // Record injection for observability
             let delta_items = notifications.len() + warnings.len() + anti_patterns.len();
             if delta_items > 0 || messages_pending > 0 {
-                let summary = format!("notif={} warn={} ap={} msg={}", notifications.len(), warnings.len(), anti_patterns.len(), messages_pending);
+                let summary = format!(
+                    "notif={} warn={} ap={} msg={} summaries={}",
+                    notifications.len(), warnings.len(), anti_patterns.len(),
+                    messages_pending, message_summaries.len()
+                );
                 let chars_est = notifications.iter().chain(warnings.iter()).chain(anti_patterns.iter())
+                    .chain(message_summaries.iter())
                     .map(|s| s.len()).sum::<usize>();
                 let _ = crate::db::effectiveness::record_injection_with_size(
                     &state.conn, &session_id, "UserPromptSubmit", "delta",
@@ -1731,6 +1776,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     warnings,
                     anti_patterns,
                     messages_pending,
+                    message_summaries,
                 },
             }
         }
@@ -2480,6 +2526,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     return Response::Error {
                         message: format!("A2A permission denied: {} -> {}", from_agent, to_agent),
                     };
+                }
+            }
+
+            // Rate limit: max 50 messages per minute per sender
+            let recent_sent: i64 = state.conn.query_row(
+                "SELECT COUNT(*) FROM session_message WHERE from_session = ?1 AND created_at > datetime('now', '-60 seconds')",
+                rusqlite::params![from],
+                |row| row.get(0),
+            ).unwrap_or(0);
+
+            if recent_sent >= 50 {
+                return Response::Error { message: "rate limit exceeded: max 50 messages per minute".to_string() };
+            }
+
+            // Queue depth limit: max 100 pending messages per recipient
+            if to != "*" {
+                let pending_count: i64 = state.conn.query_row(
+                    "SELECT COUNT(*) FROM session_message WHERE to_session = ?1 AND status = 'pending'",
+                    rusqlite::params![to],
+                    |row| row.get(0),
+                ).unwrap_or(0);
+
+                if pending_count >= 100 {
+                    return Response::Error { message: "recipient queue full: max 100 pending messages".to_string() };
                 }
             }
 
@@ -5036,7 +5106,7 @@ mod tests {
         // End
         let resp = handle_request(&mut state, Request::EndSession { id: "s1".into() });
         match resp {
-            Response::Ok { data: ResponseData::SessionEnded { id, found } } => {
+            Response::Ok { data: ResponseData::SessionEnded { id, found, .. } } => {
                 assert_eq!(id, "s1");
                 assert!(found);
             }
@@ -6385,11 +6455,12 @@ mod tests {
             session_id: "s1".into(), since: None,
         });
         match resp {
-            Response::Ok { data: ResponseData::ContextDelta { notifications, warnings, anti_patterns, messages_pending } } => {
+            Response::Ok { data: ResponseData::ContextDelta { notifications, warnings, anti_patterns, messages_pending, message_summaries } } => {
                 assert!(notifications.is_empty());
                 assert!(warnings.is_empty());
                 assert!(anti_patterns.is_empty());
                 assert_eq!(messages_pending, 0);
+                assert!(message_summaries.is_empty());
             }
             other => panic!("expected ContextDelta, got {:?}", other),
         }
@@ -6822,7 +6893,7 @@ mod tests {
         assert!(matches!(resp, Response::Ok { data: ResponseData::Stored { .. } }));
 
         // Verify cross-session perception was created
-        let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None).unwrap();
+        let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None, None).unwrap();
         let cross = perceptions.iter().find(|p| {
             p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
         });
@@ -6853,7 +6924,7 @@ mod tests {
         });
 
         // Verify NO cross-session perception was created
-        let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None).unwrap();
+        let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None, None).unwrap();
         let cross = perceptions.iter().find(|p| {
             p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
         });
@@ -6877,7 +6948,7 @@ mod tests {
             metadata: None,
         });
 
-        let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None).unwrap();
+        let perceptions = crate::db::manas::list_unconsumed_perceptions(&state.conn, None, None).unwrap();
         let cross = perceptions.iter().find(|p| {
             p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
         });
@@ -8262,6 +8333,90 @@ mod tests {
                 assert!(message.contains("not found"));
             }
             other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_context_refresh_includes_message_summaries() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        // Register sender and recipient sessions
+        crate::sessions::register_session(&state.conn, "sender1", "claude-code", None, None, None, None).unwrap();
+        crate::sessions::register_session(&state.conn, "recv1", "claude-code", None, None, None, None).unwrap();
+
+        // Send a message from sender1 to recv1
+        let parts = r#"[{"kind":"text","text":"Hello from sender, this is a test message"}]"#;
+        crate::sessions::send_message(
+            &state.conn, "sender1", "recv1", "notification", "greet", parts, None, None, None,
+        ).unwrap();
+
+        // ContextRefresh for recv1 should include the message summary
+        let resp = handle_request(&mut state, Request::ContextRefresh {
+            session_id: "recv1".into(), since: None,
+        });
+        match resp {
+            Response::Ok { data: ResponseData::ContextDelta { messages_pending, message_summaries, .. } } => {
+                assert_eq!(messages_pending, 1);
+                assert_eq!(message_summaries.len(), 1);
+                assert!(message_summaries[0].contains("[from:sender1]"), "should contain sender: {}", message_summaries[0]);
+                assert!(message_summaries[0].contains("(greet)"), "should contain topic: {}", message_summaries[0]);
+                assert!(message_summaries[0].contains("Hello from sender"), "should contain text: {}", message_summaries[0]);
+            }
+            other => panic!("expected ContextDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_send_message_rate_limit() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        crate::sessions::register_session(&state.conn, "flood_sender", "claude-code", None, None, None, None).unwrap();
+        crate::sessions::register_session(&state.conn, "flood_recv", "claude-code", None, None, None, None).unwrap();
+
+        // Send 50 messages (should all succeed)
+        for i in 0..50 {
+            let parts = vec![forge_core::protocol::request::MessagePart {
+                kind: "text".into(),
+                text: Some(format!("msg {i}")),
+                path: None,
+                data: None,
+                memory_id: None,
+            }];
+            let resp = handle_request(&mut state, Request::SessionSend {
+                to: "flood_recv".into(),
+                kind: "notification".into(),
+                topic: "test".into(),
+                parts,
+                project: None,
+                timeout_secs: None,
+                meeting_id: None,
+            });
+            match &resp {
+                Response::Ok { data: ResponseData::MessageSent { .. } } => {}
+                other => panic!("message {i} should succeed, got {:?}", other),
+            }
+        }
+
+        // 51st message should be rate-limited
+        let parts = vec![forge_core::protocol::request::MessagePart {
+            kind: "text".into(),
+            text: Some("should fail".into()),
+            path: None,
+            data: None,
+            memory_id: None,
+        }];
+        let resp = handle_request(&mut state, Request::SessionSend {
+            to: "flood_recv".into(),
+            kind: "notification".into(),
+            topic: "test".into(),
+            parts,
+            project: None,
+            timeout_secs: None,
+            meeting_id: None,
+        });
+        match resp {
+            Response::Error { message } => {
+                assert!(message.contains("rate limit"), "should contain rate limit message: {message}");
+            }
+            other => panic!("expected rate limit Error, got {:?}", other),
         }
     }
 }

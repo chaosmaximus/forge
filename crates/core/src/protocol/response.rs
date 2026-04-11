@@ -203,6 +203,9 @@ pub enum ResponseData {
         warnings: Vec<String>,
         anti_patterns: Vec<String>,
         messages_pending: usize,
+        /// A2A message summaries — topic + first 200 chars of content from pending session_messages
+        #[serde(default)]
+        message_summaries: Vec<String>,
     },
     /// Result of completion signal check.
     CompletionCheckResult {
@@ -245,7 +248,13 @@ pub enum ResponseData {
     },
 
     SessionRegistered { id: String },
-    SessionEnded { id: String, found: bool },
+    SessionEnded {
+        id: String,
+        found: bool,
+        /// Per-session KPIs aggregated at session end
+        #[serde(default)]
+        session_kpis: Option<SessionKpis>,
+    },
     Sessions { sessions: Vec<SessionInfo>, count: usize },
     SessionsCleaned { ended: usize },
     /// Acknowledgment that current_task was updated on a session.
@@ -813,6 +822,18 @@ pub struct BlastRadiusDecision {
     pub id: String,
     pub title: String,
     pub confidence: f64,
+}
+
+/// Per-session KPIs aggregated at session end for observability.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionKpis {
+    pub session_duration_secs: u64,
+    pub context_injections: usize,
+    pub context_chars_injected: usize,
+    pub a2a_messages_sent: usize,
+    pub a2a_messages_received: usize,
+    pub memories_created: usize,
+    pub hooks_fired: HashMap<String, usize>,
 }
 
 /// A piece of proactive context injected by the Prajna matrix.

@@ -1194,22 +1194,16 @@ pub fn compile_dynamic_suffix(
     if excluded_layers.iter().any(|l| l == "perceptions") {
         xml.push_str("<perceptions/>\n");
     } else {
-        let critical: Vec<_> = crate::db::manas::list_unconsumed_perceptions(conn, None)
+        let critical: Vec<_> = crate::db::manas::list_unconsumed_perceptions(conn, None, project)
             .unwrap_or_default()
             .into_iter()
             .filter(|p| {
-                let project_ok = match (&p.project, project) {
-                    (Some(pp), Some(proj)) => pp == proj,
-                    (None, _) => true,
-                    (_, None) => true,
-                };
-                project_ok
-                    && matches!(
-                        p.severity,
-                        forge_core::types::manas::Severity::Warning
-                            | forge_core::types::manas::Severity::Error
-                            | forge_core::types::manas::Severity::Critical
-                    )
+                matches!(
+                    p.severity,
+                    forge_core::types::manas::Severity::Warning
+                        | forge_core::types::manas::Severity::Error
+                        | forge_core::types::manas::Severity::Critical
+                )
             })
             .take(3)
             .collect();
@@ -1256,6 +1250,41 @@ pub fn compile_dynamic_suffix(
                 xml.push_str(&sessions_xml);
                 used += sessions_xml.len();
             }
+        }
+    }
+
+    // Available agent templates — surfaces agent capabilities for discoverability
+    if !excluded_layers.iter().any(|l| l == "agents") {
+        let agents: Vec<(String, String, String)> = conn.prepare(
+            "SELECT name, COALESCE(description, ''), COALESCE(agent_type, 'general')
+             FROM agent_template ORDER BY name"
+        )
+        .ok()
+        .map(|mut stmt| {
+            stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+        if !agents.is_empty() {
+            let mut agents_xml = String::from(
+                "<agents hint=\"available agent templates — use for team dispatch\">"
+            );
+            for (name, desc, agent_type) in &agents {
+                agents_xml.push_str(&format!(
+                    "\n  <agent name=\"{}\" type=\"{}\">{}</agent>",
+                    xml_escape(name),
+                    xml_escape(agent_type),
+                    xml_escape(desc),
+                ));
+            }
+            agents_xml.push_str("\n</agents>\n");
+            // Agents are budget-exempt — critical for team dispatch discoverability
+            xml.push_str(&agents_xml);
         }
     }
 
@@ -3398,5 +3427,43 @@ mod tests {
         // Should truncate to 1998 (before the em dash), not panic at 2000
         assert_eq!(capped.len(), 1998, "should truncate to char boundary before em dash");
         assert!(capped.ends_with('a'), "should end with 'a', not in the middle of em dash");
+    }
+
+    #[test]
+    fn test_compile_dynamic_suffix_includes_agents() {
+        let conn = setup();
+
+        // Seed agent_template table with test data
+        conn.execute(
+            "INSERT INTO agent_template (id, name, description, agent_type, created_at, updated_at)
+             VALUES ('test-1', 'test-planner', 'Plans architecture', 'planner', '2026-04-03', '2026-04-03')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO agent_template (id, name, description, agent_type, created_at, updated_at)
+             VALUES ('test-2', 'test-coder', 'Writes code', 'generator', '2026-04-03', '2026-04-03')",
+            [],
+        ).unwrap();
+
+        let ctx_config = crate::config::ContextConfig {
+            budget_chars: 10000,
+            ..Default::default()
+        };
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn, "claude-code", None, &ctx_config, &[], None, None,
+        );
+
+        assert!(suffix.contains("<agents"), "should contain <agents> section");
+        assert!(suffix.contains("test-planner"), "should list test-planner agent");
+        assert!(suffix.contains("test-coder"), "should list test-coder agent");
+        assert!(suffix.contains("Plans architecture"), "should include description");
+        assert!(suffix.contains("planner"), "should include agent type");
+
+        // Verify exclusion works
+        let excluded = vec!["agents".to_string()];
+        let (suffix_excluded, _) = compile_dynamic_suffix(
+            &conn, "claude-code", None, &ctx_config, &excluded, None, None,
+        );
+        assert!(!suffix_excluded.contains("<agents"), "agents section should be excluded");
     }
 }

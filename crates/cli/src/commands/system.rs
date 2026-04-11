@@ -597,9 +597,21 @@ pub async fn register_session(id: String, agent: String, project: Option<String>
 /// End an active agent session.
 pub async fn end_session(id: String) {
     match client::send(&Request::EndSession { id: id.clone() }).await {
-        Ok(Response::Ok { data: ResponseData::SessionEnded { found, .. } }) => {
+        Ok(Response::Ok { data: ResponseData::SessionEnded { found, session_kpis, .. } }) => {
             if found {
                 println!("Session ended: {id}");
+                if let Some(kpis) = session_kpis {
+                    println!("  duration: {}s", kpis.session_duration_secs);
+                    println!("  context injections: {} ({} chars)", kpis.context_injections, kpis.context_chars_injected);
+                    println!("  a2a messages: {} sent, {} received", kpis.a2a_messages_sent, kpis.a2a_messages_received);
+                    println!("  memories created: {}", kpis.memories_created);
+                    if !kpis.hooks_fired.is_empty() {
+                        let hooks: Vec<String> = kpis.hooks_fired.iter()
+                            .map(|(k, v)| format!("{}={}", k, v))
+                            .collect();
+                        println!("  hooks: {}", hooks.join(", "));
+                    }
+                }
             } else {
                 println!("Session not found or already ended: {id}");
             }
@@ -1796,6 +1808,7 @@ pub async fn context_refresh(session_id: String, since: Option<String>) {
                     warnings,
                     anti_patterns,
                     messages_pending,
+                    message_summaries,
                 },
         }) => {
             for n in &notifications {
@@ -1809,6 +1822,9 @@ pub async fn context_refresh(session_id: String, since: Option<String>) {
             }
             if messages_pending > 0 {
                 println!("messages-pending: {}", messages_pending);
+            }
+            for summary in &message_summaries {
+                println!("a2a-message: {}", summary);
             }
         }
         Ok(Response::Error { message }) => {

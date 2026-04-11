@@ -582,6 +582,73 @@ pub fn list_a2a_permissions(conn: &Connection) -> rusqlite::Result<Vec<forge_cor
     rows.collect()
 }
 
+/// Compile per-session KPIs from existing tables. Called at session end.
+pub fn compile_session_kpis(
+    conn: &Connection,
+    session_id: &str,
+) -> Option<forge_core::protocol::response::SessionKpis> {
+    use std::collections::HashMap;
+
+    // Session duration
+    let duration_secs: u64 = conn.query_row(
+        "SELECT CAST((julianday(COALESCE(ended_at, datetime('now'))) - julianday(started_at)) * 86400 AS INTEGER)
+         FROM session WHERE id = ?1",
+        params![session_id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0).max(0) as u64;
+
+    // Context injections from effectiveness table
+    let (injection_count, chars_injected): (usize, usize) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(chars_injected), 0) FROM context_effectiveness WHERE session_id = ?1",
+        params![session_id],
+        |row| Ok((row.get::<_, i64>(0)? as usize, row.get::<_, i64>(1)? as usize)),
+    ).unwrap_or((0, 0));
+
+    // A2A messages sent/received
+    let msgs_sent: usize = conn.query_row(
+        "SELECT COUNT(*) FROM session_message WHERE from_session = ?1",
+        params![session_id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) as usize;
+
+    let msgs_received: usize = conn.query_row(
+        "SELECT COUNT(*) FROM session_message WHERE to_session = ?1",
+        params![session_id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) as usize;
+
+    // Memories created during this session (via metadata containing session_id)
+    let memories_created: usize = conn.query_row(
+        "SELECT COUNT(*) FROM memory WHERE metadata LIKE ?1",
+        params![format!("%{}%", session_id)],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) as usize;
+
+    // Hooks fired by type (from effectiveness table)
+    let mut hooks_fired: HashMap<String, usize> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT hook_event, COUNT(*) FROM context_effectiveness WHERE session_id = ?1 GROUP BY hook_event"
+    ) {
+        if let Ok(rows) = stmt.query_map(params![session_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+        }) {
+            for row in rows.flatten() {
+                hooks_fired.insert(row.0, row.1);
+            }
+        }
+    }
+
+    Some(forge_core::protocol::response::SessionKpis {
+        session_duration_secs: duration_secs,
+        context_injections: injection_count,
+        context_chars_injected: chars_injected,
+        a2a_messages_sent: msgs_sent,
+        a2a_messages_received: msgs_received,
+        memories_created,
+        hooks_fired,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,7 +892,7 @@ mod tests {
         crate::db::manas::store_perception(&conn, &perception).unwrap();
 
         // Verify perception was stored
-        let perceptions = crate::db::manas::list_unconsumed_perceptions(&conn, None).unwrap();
+        let perceptions = crate::db::manas::list_unconsumed_perceptions(&conn, None, None).unwrap();
         let cross_session = perceptions.iter().find(|p| {
             p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
         });

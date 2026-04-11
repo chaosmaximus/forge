@@ -858,25 +858,46 @@ pub fn store_perception(conn: &Connection, p: &Perception) -> rusqlite::Result<(
     Ok(())
 }
 
-/// List unconsumed perceptions, optionally filtered by kind.
+/// List unconsumed perceptions, optionally filtered by kind and/or project.
+/// When `project` is `Some`, returns perceptions matching that project OR global (project IS NULL).
 pub fn list_unconsumed_perceptions(
     conn: &Connection,
     kind_filter: Option<&PerceptionKind>,
+    project: Option<&str>,
 ) -> rusqlite::Result<Vec<Perception>> {
-    if let Some(k) = kind_filter {
-        let mut stmt = conn.prepare(
-            "SELECT id, kind, data, severity, project, created_at, expires_at, consumed
-             FROM perception WHERE consumed = 0 AND kind = ?1 ORDER BY created_at DESC"
-        )?;
-        let rows = stmt.query_map(params![perception_kind_str(k)], row_to_perception)?;
-        rows.collect()
-    } else {
-        let mut stmt = conn.prepare(
-            "SELECT id, kind, data, severity, project, created_at, expires_at, consumed
-             FROM perception WHERE consumed = 0 ORDER BY created_at DESC"
-        )?;
-        let rows = stmt.query_map([], row_to_perception)?;
-        rows.collect()
+    match (kind_filter, project) {
+        (Some(k), Some(proj)) => {
+            let mut stmt = conn.prepare(
+                "SELECT id, kind, data, severity, project, created_at, expires_at, consumed
+                 FROM perception WHERE consumed = 0 AND kind = ?1 AND (project = ?2 OR project IS NULL) ORDER BY created_at DESC"
+            )?;
+            let rows = stmt.query_map(params![perception_kind_str(k), proj], row_to_perception)?;
+            rows.collect()
+        }
+        (Some(k), None) => {
+            let mut stmt = conn.prepare(
+                "SELECT id, kind, data, severity, project, created_at, expires_at, consumed
+                 FROM perception WHERE consumed = 0 AND kind = ?1 ORDER BY created_at DESC"
+            )?;
+            let rows = stmt.query_map(params![perception_kind_str(k)], row_to_perception)?;
+            rows.collect()
+        }
+        (None, Some(proj)) => {
+            let mut stmt = conn.prepare(
+                "SELECT id, kind, data, severity, project, created_at, expires_at, consumed
+                 FROM perception WHERE consumed = 0 AND (project = ?1 OR project IS NULL) ORDER BY created_at DESC"
+            )?;
+            let rows = stmt.query_map(params![proj], row_to_perception)?;
+            rows.collect()
+        }
+        (None, None) => {
+            let mut stmt = conn.prepare(
+                "SELECT id, kind, data, severity, project, created_at, expires_at, consumed
+                 FROM perception WHERE consumed = 0 ORDER BY created_at DESC"
+            )?;
+            let rows = stmt.query_map([], row_to_perception)?;
+            rows.collect()
+        }
     }
 }
 
@@ -2319,11 +2340,11 @@ mod tests {
         store_perception(&conn, &p2).unwrap();
 
         // List unconsumed
-        let unconsumed = list_unconsumed_perceptions(&conn, None).unwrap();
+        let unconsumed = list_unconsumed_perceptions(&conn, None, None).unwrap();
         assert_eq!(unconsumed.len(), 2);
 
         // Filter by kind
-        let errors = list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error)).unwrap();
+        let errors = list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), None).unwrap();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].data, "compilation failed");
 
@@ -2332,7 +2353,7 @@ mod tests {
         assert!(consumed);
 
         // Now only one unconsumed
-        let unconsumed = list_unconsumed_perceptions(&conn, None).unwrap();
+        let unconsumed = list_unconsumed_perceptions(&conn, None, None).unwrap();
         assert_eq!(unconsumed.len(), 1);
         assert_eq!(unconsumed[0].id, "p2");
 
@@ -3078,5 +3099,73 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept_id, "dup-2", "should keep the newest (MAX id) duplicate");
+    }
+
+    #[test]
+    fn test_list_unconsumed_perceptions_project_scoped() {
+        let conn = open_db();
+
+        // Create perceptions for two different projects + one global
+        let p_forge = Perception {
+            id: "pf1".into(),
+            kind: PerceptionKind::Error,
+            data: "forge build failed".into(),
+            severity: Severity::Error,
+            project: Some("forge".into()),
+            created_at: "2026-04-03 12:00:00".into(),
+            expires_at: None,
+            consumed: false,
+        };
+        let p_other = Perception {
+            id: "po1".into(),
+            kind: PerceptionKind::Error,
+            data: "other-project build failed".into(),
+            severity: Severity::Error,
+            project: Some("other-project".into()),
+            created_at: "2026-04-03 12:01:00".into(),
+            expires_at: None,
+            consumed: false,
+        };
+        let p_global = Perception {
+            id: "pg1".into(),
+            kind: PerceptionKind::UserFeedback,
+            data: "global warning".into(),
+            severity: Severity::Warning,
+            project: None,
+            created_at: "2026-04-03 12:02:00".into(),
+            expires_at: None,
+            consumed: false,
+        };
+        store_perception(&conn, &p_forge).unwrap();
+        store_perception(&conn, &p_other).unwrap();
+        store_perception(&conn, &p_global).unwrap();
+
+        // No project filter: returns all 3
+        let all = list_unconsumed_perceptions(&conn, None, None).unwrap();
+        assert_eq!(all.len(), 3, "no filter should return all perceptions");
+
+        // Filter by project "forge": returns forge perception + global (project IS NULL)
+        let forge_only = list_unconsumed_perceptions(&conn, None, Some("forge")).unwrap();
+        assert_eq!(forge_only.len(), 2, "forge filter should return forge + global");
+        let ids: Vec<&str> = forge_only.iter().map(|p| p.id.as_str()).collect();
+        assert!(ids.contains(&"pf1"), "should contain forge perception");
+        assert!(ids.contains(&"pg1"), "should contain global perception");
+        assert!(!ids.contains(&"po1"), "should NOT contain other-project perception");
+
+        // Filter by project "other-project": returns other + global
+        let other_only = list_unconsumed_perceptions(&conn, None, Some("other-project")).unwrap();
+        assert_eq!(other_only.len(), 2, "other-project filter should return other + global");
+        let ids: Vec<&str> = other_only.iter().map(|p| p.id.as_str()).collect();
+        assert!(ids.contains(&"po1"), "should contain other-project perception");
+        assert!(ids.contains(&"pg1"), "should contain global perception");
+
+        // Filter by kind + project: only errors from "forge" (+ global errors, but pg1 is Warning)
+        let forge_errors = list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), Some("forge")).unwrap();
+        assert_eq!(forge_errors.len(), 1, "only forge Error perception matches");
+        assert_eq!(forge_errors[0].id, "pf1");
+
+        // Filter by kind + no project: all errors regardless of project
+        let all_errors = list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), None).unwrap();
+        assert_eq!(all_errors.len(), 2, "should return both error perceptions");
     }
 }

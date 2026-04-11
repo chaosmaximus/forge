@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(expired, 1, "should expire the past perception");
 
         // Verify only the fresh one remains
-        let remaining = db_manas::list_unconsumed_perceptions(&conn, None).unwrap();
+        let remaining = db_manas::list_unconsumed_perceptions(&conn, None, None).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, "p-fresh");
     }
