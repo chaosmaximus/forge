@@ -8419,4 +8419,76 @@ mod tests {
             other => panic!("expected rate limit Error, got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_send_message_queue_depth_limit() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        crate::sessions::register_session(&state.conn, "qdl_sender", "test", None, None, None, None).unwrap();
+        crate::sessions::register_session(&state.conn, "qdl_recv", "test", None, None, None, None).unwrap();
+
+        // Insert 100 pending messages directly to avoid rate limit
+        for _i in 0..100 {
+            let id = ulid::Ulid::new().to_string();
+            state.conn.execute(
+                "INSERT INTO session_message (id, from_session, to_session, kind, topic, parts, status, project, created_at)
+                 VALUES (?1, 'other_sender', 'qdl_recv', 'notification', 'test', '[]', 'pending', NULL, datetime('now'))",
+                rusqlite::params![id],
+            ).unwrap();
+        }
+
+        // 101st message via handler should be rejected
+        let parts = vec![forge_core::protocol::request::MessagePart {
+            kind: "text".into(),
+            text: Some("should fail".into()),
+            path: None, data: None, memory_id: None,
+        }];
+        let resp = handle_request(&mut state, Request::SessionSend {
+            to: "qdl_recv".into(),
+            kind: "notification".into(),
+            topic: "test".into(),
+            parts,
+            project: None,
+            timeout_secs: None,
+            meeting_id: None,
+        });
+        match resp {
+            Response::Error { message } => {
+                assert!(message.contains("queue full"), "should contain queue full message: {message}");
+            }
+            other => panic!("expected queue full Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compile_session_kpis() {
+        let state = DaemonState::new(":memory:").unwrap();
+
+        // Register a session
+        crate::sessions::register_session(&state.conn, "kpi-test", "claude-code", Some("forge"), None, None, None).unwrap();
+
+        // Simulate context injection
+        let _ = crate::db::effectiveness::record_injection_with_size(
+            &state.conn, "kpi-test", "UserPromptSubmit", "delta", "test injection", 150,
+        );
+        let _ = crate::db::effectiveness::record_injection_with_size(
+            &state.conn, "kpi-test", "PostEdit", "proactive", "blast radius", 200,
+        );
+
+        // Send a message TO this session
+        crate::sessions::send_message(
+            &state.conn, "other-session", "kpi-test", "notification", "test", "[]", Some("forge"), None, None,
+        ).unwrap();
+
+        // Compile KPIs
+        let kpis = crate::sessions::compile_session_kpis(&state.conn, "kpi-test");
+        assert!(kpis.is_some(), "KPIs should be Some");
+        let kpis = kpis.unwrap();
+        assert_eq!(kpis.context_injections, 2, "should have 2 injections");
+        assert_eq!(kpis.context_chars_injected, 350, "should have 350 chars injected");
+        assert_eq!(kpis.a2a_messages_received, 1, "should have 1 message received");
+        assert_eq!(kpis.a2a_messages_sent, 0, "should have 0 messages sent");
+        assert_eq!(kpis.hooks_fired.len(), 2, "should have 2 hook types");
+        assert_eq!(*kpis.hooks_fired.get("UserPromptSubmit").unwrap_or(&0), 1);
+        assert_eq!(*kpis.hooks_fired.get("PostEdit").unwrap_or(&0), 1);
+    }
 }

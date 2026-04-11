@@ -618,9 +618,11 @@ pub fn compile_session_kpis(
     ).unwrap_or(0) as usize;
 
     // Memories created during this session (via metadata containing session_id)
+    // Escape LIKE metacharacters in session_id to prevent wildcard injection
+    let escaped_sid = session_id.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     let memories_created: usize = conn.query_row(
-        "SELECT COUNT(*) FROM memory WHERE metadata LIKE ?1",
-        params![format!("%{}%", session_id)],
+        "SELECT COUNT(*) FROM memory WHERE metadata LIKE ?1 ESCAPE '\\'",
+        params![format!("%{}%", escaped_sid)],
         |row| row.get::<_, i64>(0),
     ).unwrap_or(0) as usize;
 
