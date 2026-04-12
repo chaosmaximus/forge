@@ -164,7 +164,7 @@ pub fn list_skills(
             if sanitized.trim().is_empty() {
                 return Ok(Vec::new());
             }
-            let fts_query = format!("{}*", sanitized);
+            let fts_query = format!("{sanitized}*");
             if let Some(cat) = cat_opt {
                 let mut stmt = conn
                     .prepare(
@@ -210,7 +210,7 @@ pub fn install_skill(conn: &Connection, skill_name: &str, project: &str) -> Resu
         .unwrap_or(false);
 
     if !exists {
-        return Err(format!("skill '{}' not found in registry", skill_name));
+        return Err(format!("skill '{skill_name}' not found in registry"));
     }
 
     conn.execute(
@@ -232,8 +232,7 @@ pub fn uninstall_skill(conn: &Connection, skill_name: &str, project: &str) -> Re
 
     if updated == 0 {
         return Err(format!(
-            "skill '{}' not found or not installed for project '{}'",
-            skill_name, project
+            "skill '{skill_name}' not found or not installed for project '{project}'"
         ));
     }
     Ok(())
@@ -264,7 +263,7 @@ pub fn skill_info(
                 let root_prefix = if root.ends_with('/') {
                     root.to_string()
                 } else {
-                    format!("{}/", root)
+                    format!("{root}/")
                 };
                 if entry.file_path.starts_with(&root_prefix) {
                     entry.file_path = entry.file_path[root_prefix.len()..].to_string();
@@ -453,7 +452,7 @@ mod tests {
 
         // Search that should match description
         let review_results = list_skills(&conn, None, Some("code"), 100).unwrap();
-        assert!(review_results.len() >= 1);
+        assert!(!review_results.is_empty());
     }
 
     #[test]

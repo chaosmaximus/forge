@@ -24,9 +24,9 @@ struct V1Cache {
 /// Import v1 cache.json into SQLite. Returns (imported, skipped).
 pub fn import_v1_cache(conn: &Connection, cache_path: &str) -> Result<(usize, usize), String> {
     let content = std::fs::read_to_string(cache_path)
-        .map_err(|e| format!("cannot read {}: {}", cache_path, e))?;
+        .map_err(|e| format!("cannot read {cache_path}: {e}"))?;
     let cache: V1Cache =
-        serde_json::from_str(&content).map_err(|e| format!("cannot parse: {}", e))?;
+        serde_json::from_str(&content).map_err(|e| format!("cannot parse: {e}"))?;
 
     let mut imported = 0;
     let mut skipped = 0;
@@ -60,7 +60,7 @@ pub fn import_v1_cache(conn: &Connection, cache_path: &str) -> Result<(usize, us
         match ops::remember(conn, &memory) {
             Ok(()) => imported += 1,
             Err(e) => {
-                eprintln!("[migrate] error: {}", e);
+                eprintln!("[migrate] error: {e}");
                 skipped += 1;
             }
         }

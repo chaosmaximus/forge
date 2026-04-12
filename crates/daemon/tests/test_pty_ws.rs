@@ -57,7 +57,7 @@ async fn test_terminal_ws_round_trip() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // 3. Connect WebSocket client.
-    let url = format!("ws://127.0.0.1:{}/api/terminal?cols=80&rows=24", port);
+    let url = format!("ws://127.0.0.1:{port}/api/terminal?cols=80&rows=24");
     let (ws_stream, _response) = timeout(Duration::from_secs(5), connect_async(&url))
         .await
         .expect("WS connect timed out")
@@ -74,7 +74,7 @@ async fn test_terminal_ws_round_trip() {
 
     let first_text = match first_msg {
         Message::Text(t) => t,
-        other => panic!("expected Text message with PTY ID, got: {:?}", other),
+        other => panic!("expected Text message with PTY ID, got: {other:?}"),
     };
 
     let id_json: serde_json::Value =
@@ -82,7 +82,7 @@ async fn test_terminal_ws_round_trip() {
     let pty_id = id_json["id"]
         .as_u64()
         .expect("first message should contain numeric 'id' field");
-    assert!(pty_id > 0, "PTY ID should be positive, got {}", pty_id);
+    assert!(pty_id > 0, "PTY ID should be positive, got {pty_id}");
 
     // 5. Send `echo INTEGRATION_TEST_OK\n` as text.
     ws_tx
@@ -116,7 +116,7 @@ async fn test_terminal_ws_round_trip() {
                 Ok(Message::Close(_)) => break,
                 Ok(_) => continue,
                 Err(e) => {
-                    eprintln!("WS recv error: {}", e);
+                    eprintln!("WS recv error: {e}");
                     break;
                 }
             }
@@ -129,8 +129,7 @@ async fn test_terminal_ws_round_trip() {
     // 7. Assert marker was found.
     assert!(
         found,
-        "marker '{}' not found in PTY output. Collected: {:?}",
-        marker, collected_output
+        "marker '{marker}' not found in PTY output. Collected: {collected_output:?}"
     );
 
     // 8. Close the WebSocket.
@@ -159,8 +158,7 @@ async fn test_terminal_ws_round_trip() {
 
     assert!(
         cleaned_up.is_ok() && cleaned_up.unwrap(),
-        "PTY session {} should have been cleaned up after WS close",
-        pty_id
+        "PTY session {pty_id} should have been cleaned up after WS close"
     );
 
     // Abort the server task (it runs forever otherwise).
@@ -182,7 +180,7 @@ async fn test_terminal_ws_receives_pty_id_json() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let url = format!("ws://127.0.0.1:{}/api/terminal", port);
+    let url = format!("ws://127.0.0.1:{port}/api/terminal");
     let (ws_stream, _) = timeout(Duration::from_secs(5), connect_async(&url))
         .await
         .expect("WS connect timed out")
@@ -198,7 +196,7 @@ async fn test_terminal_ws_receives_pty_id_json() {
 
     let text = match first_msg {
         Message::Text(t) => t,
-        other => panic!("expected Text, got: {:?}", other),
+        other => panic!("expected Text, got: {other:?}"),
     };
 
     let json: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -224,7 +222,7 @@ async fn test_terminal_ws_resize_command() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let url = format!("ws://127.0.0.1:{}/api/terminal?cols=80&rows=24", port);
+    let url = format!("ws://127.0.0.1:{port}/api/terminal?cols=80&rows=24");
     let (ws_stream, _) = timeout(Duration::from_secs(5), connect_async(&url))
         .await
         .expect("WS connect timed out")

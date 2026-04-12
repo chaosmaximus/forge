@@ -207,8 +207,7 @@ impl CodeRealityEngine {
             .unwrap_or(0);
 
         let mut xml = format!(
-            "<code-structure reality=\"{}\" domain=\"{}\" files=\"{}\" symbols=\"{}\">",
-            reality_name, domain, file_count, symbol_count
+            "<code-structure reality=\"{reality_name}\" domain=\"{domain}\" files=\"{file_count}\" symbols=\"{symbol_count}\">"
         );
 
         if total_clusters > 0 {
@@ -217,7 +216,7 @@ impl CodeRealityEngine {
                 .and_then(|mut stmt| stmt.query_map([], |row| row.get(0))?.collect())
                 .unwrap_or_default();
 
-            xml.push_str(&format!("\n  <clusters count=\"{}\">", total_clusters));
+            xml.push_str(&format!("\n  <clusters count=\"{total_clusters}\">"));
             for (idx, cid) in cluster_ids.iter().enumerate() {
                 let files: Vec<String> = conn
                     .prepare("SELECT from_id FROM edge WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1 LIMIT 5")
@@ -257,7 +256,7 @@ impl CodeRealityEngine {
         kind: Option<&str>,
         limit: usize,
     ) -> Vec<serde_json::Value> {
-        let pattern = format!("%{}%", query);
+        let pattern = format!("%{query}%");
         let effective_limit = limit.min(100);
 
         if let Some(kind_filter) = kind {

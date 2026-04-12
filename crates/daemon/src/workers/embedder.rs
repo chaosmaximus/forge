@@ -23,7 +23,7 @@ pub async fn run_embedder(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    eprintln!("[embedder] started, interval = {:?}", interval);
+    eprintln!("[embedder] started, interval = {interval:?}");
 
     loop {
         tokio::select! {

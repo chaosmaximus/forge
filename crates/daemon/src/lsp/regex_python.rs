@@ -75,7 +75,7 @@ pub fn extract_symbols_python(file_path: &str, content: &str) -> Vec<CodeSymbol>
             current_class = Some(name.clone());
             class_indent = indent;
             symbols.push(CodeSymbol {
-                id: format!("{}:{}:{}", file_path, name, line_num),
+                id: format!("{file_path}:{name}:{line_num}"),
                 name,
                 kind: "class".into(),
                 file_path: file_path.to_string(),
@@ -92,7 +92,7 @@ pub fn extract_symbols_python(file_path: &str, content: &str) -> Vec<CodeSymbol>
                 let name = cap[1].to_string();
                 let parent = current_class.clone();
                 symbols.push(CodeSymbol {
-                    id: format!("{}:{}:{}", file_path, name, line_num),
+                    id: format!("{file_path}:{name}:{line_num}"),
                     name,
                     kind: "function".into(),
                     file_path: file_path.to_string(),
@@ -108,7 +108,7 @@ pub fn extract_symbols_python(file_path: &str, content: &str) -> Vec<CodeSymbol>
         if let Some(cap) = RE_FUNCTION.captures(trimmed) {
             let name = cap[1].to_string();
             symbols.push(CodeSymbol {
-                id: format!("{}:{}:{}", file_path, name, line_num),
+                id: format!("{file_path}:{name}:{line_num}"),
                 name,
                 kind: "function".into(),
                 file_path: file_path.to_string(),
@@ -123,7 +123,7 @@ pub fn extract_symbols_python(file_path: &str, content: &str) -> Vec<CodeSymbol>
         if let Some(cap) = RE_ASYNC_FUNCTION.captures(trimmed) {
             let name = cap[1].to_string();
             symbols.push(CodeSymbol {
-                id: format!("{}:{}:{}", file_path, name, line_num),
+                id: format!("{file_path}:{name}:{line_num}"),
                 name,
                 kind: "function".into(),
                 file_path: file_path.to_string(),
@@ -138,7 +138,7 @@ pub fn extract_symbols_python(file_path: &str, content: &str) -> Vec<CodeSymbol>
         if let Some(cap) = RE_CONSTANT.captures(trimmed) {
             let name = cap[1].to_string();
             symbols.push(CodeSymbol {
-                id: format!("{}:{}:{}", file_path, name, line_num),
+                id: format!("{file_path}:{name}:{line_num}"),
                 name,
                 kind: "variable".into(),
                 file_path: file_path.to_string(),

@@ -129,7 +129,7 @@ fn is_arrow_or_async_arrow(line: &str) -> bool {
 
 fn make_symbol(file_path: &str, name: &str, kind: &str, line_idx: usize) -> CodeSymbol {
     CodeSymbol {
-        id: format!("sym:{}:{}", file_path, name),
+        id: format!("sym:{file_path}:{name}"),
         name: name.to_string(),
         kind: kind.to_string(),
         file_path: file_path.to_string(),

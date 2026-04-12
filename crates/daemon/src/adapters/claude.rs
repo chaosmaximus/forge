@@ -83,7 +83,7 @@ mod tests {
     fn test_claude_adapter_parse() {
         let adapter = ClaudeAdapter::new("/tmp/fake_home");
         let line = r#"{"type":"user","message":{"role":"user","content":"Build a JWT auth system"},"uuid":"u1","timestamp":"2026-04-02T12:00:00Z","sessionId":"s1"}"#;
-        let content = format!("{}\n", line);
+        let content = format!("{line}\n");
 
         let chunks = adapter.parse(&content);
         assert_eq!(chunks.len(), 1);

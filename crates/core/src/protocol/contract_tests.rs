@@ -43,10 +43,8 @@ mod tests {
         for (expected_method, request) in &cases {
             let json = serde_json::to_string(request).unwrap();
             assert!(
-                json.contains(&format!("\"method\":\"{}\"", expected_method)),
-                "Unit variant should serialize to method='{}', got: {}",
-                expected_method,
-                json
+                json.contains(&format!("\"method\":\"{expected_method}\"")),
+                "Unit variant should serialize to method='{expected_method}', got: {json}"
             );
 
             // Round-trip: deserialize back and verify equality
@@ -60,8 +58,7 @@ mod tests {
             assert_eq!(
                 request,
                 &decoded.unwrap(),
-                "Round-trip failed for unit variant '{}'",
-                expected_method
+                "Round-trip failed for unit variant '{expected_method}'"
             );
         }
     }
@@ -701,10 +698,8 @@ mod tests {
         for (expected_method, request) in &cases {
             let json = serde_json::to_string(request).unwrap();
             assert!(
-                json.contains(&format!("\"method\":\"{}\"", expected_method)),
-                "Parameterized variant should serialize to method='{}', got: {}",
-                expected_method,
-                json
+                json.contains(&format!("\"method\":\"{expected_method}\"")),
+                "Parameterized variant should serialize to method='{expected_method}', got: {json}"
             );
 
             // Round-trip: deserialize back and verify equality
@@ -718,8 +713,7 @@ mod tests {
             assert_eq!(
                 request,
                 &decoded.unwrap(),
-                "Round-trip failed for parameterized variant '{}'",
-                expected_method
+                "Round-trip failed for parameterized variant '{expected_method}'"
             );
         }
     }
@@ -1634,8 +1628,7 @@ mod tests {
         assert_eq!(
             variants.len(),
             expected_total,
-            "all_variants() must return exactly {} variants",
-            expected_total
+            "all_variants() must return exactly {expected_total} variants"
         );
 
         // Verify every variant serializes successfully

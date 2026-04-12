@@ -62,7 +62,7 @@ pub fn build_call_edges(
         if ref_path == definition_file {
             continue;
         }
-        let from_id = format!("file:{}", ref_path);
+        let from_id = format!("file:{ref_path}");
         if seen.insert(from_id.clone()) {
             edges.push((from_id, symbol_id.to_string()));
         }
@@ -239,7 +239,7 @@ mod tests {
 
     /// Helper to create an lsp_types::Location for testing build_call_edges.
     fn make_location(path: &str, line: u32) -> lsp_types::Location {
-        let uri: lsp_types::Uri = format!("file://{}", path)
+        let uri: lsp_types::Uri = format!("file://{path}")
             .parse()
             .expect("valid URI");
         lsp_types::Location {

@@ -33,7 +33,7 @@ fn test_platform_sql_injection_key() {
         Response::Ok { data: ResponseData::PlatformStored { key } } => {
             assert_eq!(key, injection_key);
         }
-        other => panic!("expected PlatformStored, got: {:?}", other),
+        other => panic!("expected PlatformStored, got: {other:?}"),
     }
 
     // Verify it's retrievable
@@ -41,9 +41,9 @@ fn test_platform_sql_injection_key() {
     match resp {
         Response::Ok { data: ResponseData::PlatformList { entries } } => {
             let found = entries.iter().any(|e| e.key == injection_key && e.value == "linux");
-            assert!(found, "injection key should be stored as-is, got: {:?}", entries);
+            assert!(found, "injection key should be stored as-is, got: {entries:?}");
         }
-        other => panic!("expected PlatformList, got: {:?}", other),
+        other => panic!("expected PlatformList, got: {other:?}"),
     }
 
     // Verify the platform table still exists (not DROPped)
@@ -52,7 +52,7 @@ fn test_platform_sql_injection_key() {
         Response::Ok { data: ResponseData::ManasHealthData { platform_count, .. } } => {
             assert!(platform_count > 0, "platform table should still exist with entries");
         }
-        other => panic!("expected ManasHealthData, got: {:?}", other),
+        other => panic!("expected ManasHealthData, got: {other:?}"),
     }
 }
 
@@ -77,7 +77,7 @@ fn test_tool_sql_injection_name() {
         Response::Ok { data: ResponseData::ToolStored { id } } => {
             assert_eq!(id, "t-inject-1");
         }
-        other => panic!("expected ToolStored, got: {:?}", other),
+        other => panic!("expected ToolStored, got: {other:?}"),
     }
 
     // Verify tool is retrievable with the injection name intact
@@ -87,7 +87,7 @@ fn test_tool_sql_injection_name() {
             let our_tool = tools.iter().find(|t| t.name == injection_name);
             assert!(our_tool.is_some(), "should find tool with injection name");
         }
-        other => panic!("expected ToolList, got: {:?}", other),
+        other => panic!("expected ToolList, got: {other:?}"),
     }
 }
 
@@ -112,7 +112,7 @@ fn test_identity_sql_injection_description() {
         Response::Ok { data: ResponseData::IdentityStored { id } } => {
             assert_eq!(id, "if-inject-1");
         }
-        other => panic!("expected IdentityStored, got: {:?}", other),
+        other => panic!("expected IdentityStored, got: {other:?}"),
     }
 
     // Verify the identity is stored correctly and strength is NOT 999
@@ -130,7 +130,7 @@ fn test_identity_sql_injection_description() {
                 facets[0].strength
             );
         }
-        other => panic!("expected IdentityList, got: {:?}", other),
+        other => panic!("expected IdentityList, got: {other:?}"),
     }
 }
 
@@ -190,7 +190,7 @@ fn test_identity_strength_clamping() {
                 neg.strength
             );
         }
-        other => panic!("expected IdentityList, got: {:?}", other),
+        other => panic!("expected IdentityList, got: {other:?}"),
     }
 }
 
@@ -214,7 +214,7 @@ fn test_disposition_value_extremes() {
     };
     // Should not panic
     let result = manas::store_disposition(&conn, &d_max);
-    assert!(result.is_ok(), "f64::MAX should store without panic: {:?}", result);
+    assert!(result.is_ok(), "f64::MAX should store without panic: {result:?}");
 
     // Store disposition with NEG_INFINITY
     let d_neg_inf = Disposition {
@@ -228,7 +228,7 @@ fn test_disposition_value_extremes() {
         evidence: vec![],
     };
     let result = manas::store_disposition(&conn, &d_neg_inf);
-    assert!(result.is_ok(), "f64::NEG_INFINITY should store without panic: {:?}", result);
+    assert!(result.is_ok(), "f64::NEG_INFINITY should store without panic: {result:?}");
 
     // Store disposition with NaN — SQLite treats NaN as NULL, which violates NOT NULL constraint.
     // This is expected and correct behavior: the system should reject invalid values cleanly.
@@ -270,9 +270,9 @@ fn test_platform_empty_key() {
         }
         Response::Error { message } => {
             // An error is also acceptable — no panic is the key requirement
-            assert!(!message.is_empty(), "error message should be non-empty: {}", message);
+            assert!(!message.is_empty(), "error message should be non-empty: {message}");
         }
-        other => panic!("unexpected response for empty key: {:?}", other),
+        other => panic!("unexpected response for empty key: {other:?}"),
     }
 }
 
@@ -301,7 +301,7 @@ fn test_tool_empty_capabilities() {
             assert!(our_tool.is_some(), "should find our stored tool");
             assert!(our_tool.unwrap().capabilities.is_empty(), "empty capabilities should round-trip");
         }
-        other => panic!("expected ToolList, got: {:?}", other),
+        other => panic!("expected ToolList, got: {other:?}"),
     }
 }
 
@@ -329,7 +329,7 @@ fn test_perception_huge_data_payload() {
         Response::Ok { data: ResponseData::PerceptionStored { id } } => {
             assert_eq!(id, "p-huge");
         }
-        other => panic!("expected PerceptionStored for 100KB data, got: {:?}", other),
+        other => panic!("expected PerceptionStored for 100KB data, got: {other:?}"),
     }
 
     // Verify it retrieves correctly
@@ -342,7 +342,7 @@ fn test_perception_huge_data_payload() {
             assert_eq!(count, 1);
             assert_eq!(perceptions[0].data.len(), 100 * 1024, "100KB data should be preserved");
         }
-        other => panic!("expected PerceptionList, got: {:?}", other),
+        other => panic!("expected PerceptionList, got: {other:?}"),
     }
 }
 
@@ -381,7 +381,7 @@ fn test_identity_unicode_description() {
                 "unicode description should round-trip exactly"
             );
         }
-        other => panic!("expected IdentityList, got: {:?}", other),
+        other => panic!("expected IdentityList, got: {other:?}"),
     }
 }
 
@@ -407,7 +407,7 @@ fn test_declared_binary_content() {
 
     // Should store without panic
     let result = manas::store_declared(&conn, &d);
-    assert!(result.is_ok(), "control chars in content should store: {:?}", result);
+    assert!(result.is_ok(), "control chars in content should store: {result:?}");
 
     // Should retrieve without panic
     let entries = manas::list_declared(&conn, None).unwrap();
@@ -446,7 +446,7 @@ fn test_tool_name_special_chars() {
                 "XSS in capabilities should be stored as-is"
             );
         }
-        other => panic!("expected ToolList, got: {:?}", other),
+        other => panic!("expected ToolList, got: {other:?}"),
     }
 }
 
@@ -465,8 +465,8 @@ fn test_manas_health_after_mass_insert() {
         handle_request(
             &mut state,
             Request::StorePlatform {
-                key: format!("key_{}", i),
-                value: format!("val_{}", i),
+                key: format!("key_{i}"),
+                value: format!("val_{i}"),
             },
         );
     }
@@ -474,8 +474,8 @@ fn test_manas_health_after_mass_insert() {
     // Layer 1: Tools (10 entries)
     for i in 0..10 {
         let tool = Tool {
-            id: format!("t-mass-{}", i),
-            name: format!("tool_{}", i),
+            id: format!("t-mass-{i}"),
+            name: format!("tool_{i}"),
             kind: ToolKind::Cli,
             capabilities: vec![],
             config: None,
@@ -490,10 +490,10 @@ fn test_manas_health_after_mass_insert() {
     // Layer 2: Skills (10 entries via direct DB ops)
     for i in 0..10 {
         let skill = Skill {
-            id: format!("s-mass-{}", i),
-            name: format!("skill_{}", i),
+            id: format!("s-mass-{i}"),
+            name: format!("skill_{i}"),
             domain: "testing".into(),
-            description: format!("Skill number {}", i),
+            description: format!("Skill number {i}"),
             steps: vec![],
             success_count: 0,
             fail_count: 0,
@@ -512,10 +512,10 @@ fn test_manas_health_after_mass_insert() {
     // Layer 3: Domain DNA (10 entries via direct DB ops)
     for i in 0..10 {
         let dna = DomainDna {
-            id: format!("dd-mass-{}", i),
+            id: format!("dd-mass-{i}"),
             project: "test-project".into(),
-            aspect: format!("aspect_{}", i),
-            pattern: format!("pattern_{}", i),
+            aspect: format!("aspect_{i}"),
+            pattern: format!("pattern_{i}"),
             confidence: 0.8,
             evidence: vec!["evidence".into()],
             detected_at: "2026-04-03 12:00:00".into(),
@@ -526,9 +526,9 @@ fn test_manas_health_after_mass_insert() {
     // Layer 4: Perceptions (10 entries)
     for i in 0..10 {
         let perception = Perception {
-            id: format!("p-mass-{}", i),
+            id: format!("p-mass-{i}"),
             kind: PerceptionKind::Error,
-            data: format!("error #{}", i),
+            data: format!("error #{i}"),
             severity: Severity::Warning,
             project: None,
             created_at: "2026-04-03 12:00:00".into(),
@@ -541,11 +541,11 @@ fn test_manas_health_after_mass_insert() {
     // Layer 5: Declared (10 entries via direct DB ops)
     for i in 0..10 {
         let d = Declared {
-            id: format!("dk-mass-{}", i),
+            id: format!("dk-mass-{i}"),
             source: "test".into(),
-            path: Some(format!("/test/path_{}", i)),
-            content: format!("content {}", i),
-            hash: format!("hash_{}", i),
+            path: Some(format!("/test/path_{i}")),
+            content: format!("content {i}"),
+            hash: format!("hash_{i}"),
             project: None,
             ingested_at: "2026-04-03 12:00:00".into(),
         };
@@ -555,10 +555,10 @@ fn test_manas_health_after_mass_insert() {
     // Layer 6: Identity (10 entries)
     for i in 0..10 {
         let facet = IdentityFacet {
-            id: format!("if-mass-{}", i),
+            id: format!("if-mass-{i}"),
             agent: "forge-mass".into(),
-            facet: format!("facet_{}", i),
-            description: format!("desc {}", i),
+            facet: format!("facet_{i}"),
+            description: format!("desc {i}"),
             strength: 0.5,
             source: "test".into(),
             active: true,
@@ -571,10 +571,10 @@ fn test_manas_health_after_mass_insert() {
     // Layer 7: Disposition (10 entries via direct DB ops)
     for i in 0..10 {
         let d = Disposition {
-            id: format!("dp-mass-{}", i),
+            id: format!("dp-mass-{i}"),
             agent: "forge-mass".into(),
             disposition_trait: DispositionTrait::Caution,
-            domain: Some(format!("domain_{}", i)),
+            domain: Some(format!("domain_{i}")),
             value: 0.5,
             trend: Trend::Stable,
             updated_at: "2026-04-03 12:00:00".into(),
@@ -600,8 +600,8 @@ fn test_manas_health_after_mass_insert() {
             },
         } => {
             // Platform may have auto-detected entries from DaemonState::new, so >= 10
-            assert!(platform_count >= 10, "platform should have >= 10 entries, got: {}", platform_count);
-            assert!(tool_count >= 10, "should have >= 10 tools (includes auto-detected), got: {}", tool_count);
+            assert!(platform_count >= 10, "platform should have >= 10 entries, got: {platform_count}");
+            assert!(tool_count >= 10, "should have >= 10 tools (includes auto-detected), got: {tool_count}");
             assert_eq!(skill_count, 10, "should have 10 skills");
             assert_eq!(domain_dna_count, 10, "should have 10 domain DNA entries");
             assert_eq!(perception_unconsumed, 10, "should have 10 unconsumed perceptions");
@@ -609,7 +609,7 @@ fn test_manas_health_after_mass_insert() {
             assert_eq!(identity_facets, 10, "should have 10 active identity facets");
             assert_eq!(disposition_traits, 10, "should have 10 dispositions");
         }
-        other => panic!("expected ManasHealthData, got: {:?}", other),
+        other => panic!("expected ManasHealthData, got: {other:?}"),
     }
 }
 
@@ -620,9 +620,9 @@ fn test_perception_expire_during_list() {
     // Store 5 perceptions with expires_at in the past
     for i in 0..5 {
         let perception = Perception {
-            id: format!("p-expired-{}", i),
+            id: format!("p-expired-{i}"),
             kind: PerceptionKind::Error,
-            data: format!("expired error #{}", i),
+            data: format!("expired error #{i}"),
             severity: Severity::Info,
             project: None,
             created_at: "2025-01-01 00:00:00".into(),
@@ -635,9 +635,9 @@ fn test_perception_expire_during_list() {
     // Store 5 perceptions without expiry (should persist)
     for i in 0..5 {
         let perception = Perception {
-            id: format!("p-live-{}", i),
+            id: format!("p-live-{i}"),
             kind: PerceptionKind::BuildResult,
-            data: format!("live result #{}", i),
+            data: format!("live result #{i}"),
             severity: Severity::Info,
             project: None,
             created_at: "2026-04-03 12:00:00".into(),
@@ -648,7 +648,7 @@ fn test_perception_expire_during_list() {
     }
 
     // Consume the expired ones (simulating expiration via ConsumePerceptions)
-    let expired_ids: Vec<String> = (0..5).map(|i| format!("p-expired-{}", i)).collect();
+    let expired_ids: Vec<String> = (0..5).map(|i| format!("p-expired-{i}")).collect();
     let resp = handle_request(
         &mut state,
         Request::ConsumePerceptions { ids: expired_ids },
@@ -657,7 +657,7 @@ fn test_perception_expire_during_list() {
         Response::Ok { data: ResponseData::PerceptionsConsumed { count } } => {
             assert_eq!(*count, 5, "should consume 5 expired perceptions");
         }
-        other => panic!("expected PerceptionsConsumed, got: {:?}", other),
+        other => panic!("expected PerceptionsConsumed, got: {other:?}"),
     }
 
     // List unconsumed — should only have the 5 live ones
@@ -676,7 +676,7 @@ fn test_perception_expire_during_list() {
                 );
             }
         }
-        other => panic!("expected PerceptionList, got: {:?}", other),
+        other => panic!("expected PerceptionList, got: {other:?}"),
     }
 }
 
@@ -698,7 +698,7 @@ fn test_identity_deactivate_nonexistent() {
             assert_eq!(id, "nonexistent-id-12345");
             assert!(!found, "should return found=false for nonexistent ID");
         }
-        other => panic!("expected IdentityDeactivated, got: {:?}", other),
+        other => panic!("expected IdentityDeactivated, got: {other:?}"),
     }
 }
 
@@ -726,7 +726,7 @@ fn test_platform_overwrite() {
             assert_eq!(os_entries.len(), 1, "should have exactly 1 test_os entry after overwrite");
             assert_eq!(os_entries[0].value, "macos", "value should be 'macos' after overwrite");
         }
-        other => panic!("expected PlatformList, got: {:?}", other),
+        other => panic!("expected PlatformList, got: {other:?}"),
     }
 }
 
@@ -1017,16 +1017,16 @@ fn test_manas_health_includes_all_layers() {
                 ..
             },
         } => {
-            assert!(platform_count > 0, "platform_count should be > 0, got: {}", platform_count);
-            assert!(tool_count > 0, "tool_count should be > 0, got: {}", tool_count);
-            assert!(skill_count > 0, "skill_count should be > 0, got: {}", skill_count);
-            assert!(domain_dna_count > 0, "domain_dna_count should be > 0, got: {}", domain_dna_count);
-            assert!(perception_unconsumed > 0, "perception_unconsumed should be > 0, got: {}", perception_unconsumed);
-            assert!(declared_count > 0, "declared_count should be > 0, got: {}", declared_count);
-            assert!(identity_facets > 0, "identity_facets should be > 0, got: {}", identity_facets);
-            assert!(disposition_traits > 0, "disposition_traits should be > 0, got: {}", disposition_traits);
+            assert!(platform_count > 0, "platform_count should be > 0, got: {platform_count}");
+            assert!(tool_count > 0, "tool_count should be > 0, got: {tool_count}");
+            assert!(skill_count > 0, "skill_count should be > 0, got: {skill_count}");
+            assert!(domain_dna_count > 0, "domain_dna_count should be > 0, got: {domain_dna_count}");
+            assert!(perception_unconsumed > 0, "perception_unconsumed should be > 0, got: {perception_unconsumed}");
+            assert!(declared_count > 0, "declared_count should be > 0, got: {declared_count}");
+            assert!(identity_facets > 0, "identity_facets should be > 0, got: {identity_facets}");
+            assert!(disposition_traits > 0, "disposition_traits should be > 0, got: {disposition_traits}");
         }
-        other => panic!("expected ManasHealthData, got: {:?}", other),
+        other => panic!("expected ManasHealthData, got: {other:?}"),
     }
 }
 
@@ -1083,7 +1083,7 @@ fn test_doctor_includes_manas_counts() {
             },
         } => {
             assert!(daemon_up, "daemon should be up");
-            assert!(tool_count >= 1, "should have >= 1 tool (auto-detected + stored), got: {}", tool_count);
+            assert!(tool_count >= 1, "should have >= 1 tool (auto-detected + stored), got: {tool_count}");
             assert_eq!(identity_count, 1, "should have 1 identity facet");
             // platform_count may be > 0 from auto-detect; just check it exists
             let _ = platform_count;
@@ -1094,6 +1094,6 @@ fn test_doctor_includes_manas_counts() {
             assert_eq!(declared_count, 0, "should have 0 declared entries");
             assert_eq!(disposition_count, 0, "should have 0 dispositions");
         }
-        other => panic!("expected Doctor response, got: {:?}", other),
+        other => panic!("expected Doctor response, got: {other:?}"),
     }
 }

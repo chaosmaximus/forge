@@ -144,14 +144,14 @@ fn request_type_name(request: &Request) -> String {
         }
     }
     // Fallback: debug format
-    format!("{:?}", request).chars().take(50).collect()
+    format!("{request:?}").chars().take(50).collect()
 }
 
 /// Derive a short summary from a Request for audit logging (truncated to 200 chars).
 fn request_summary(request: &Request) -> String {
     let full = match serde_json::to_string(request) {
         Ok(s) => s,
-        Err(_) => format!("{:?}", request),
+        Err(_) => format!("{request:?}"),
     };
     if full.len() <= 200 {
         full
@@ -529,7 +529,7 @@ mod tests {
         let resp = reply_rx.await.unwrap();
         match resp {
             Response::Ok { .. } => {}
-            other => panic!("expected Ok, got {:?}", other),
+            other => panic!("expected Ok, got {other:?}"),
         }
 
         drop(tx); // close channel -> actor exits
@@ -562,7 +562,7 @@ mod tests {
         let resp = reply_rx.await.unwrap();
         match resp {
             Response::Ok { .. } => {}
-            other => panic!("expected Ok for Remember, got {:?}", other),
+            other => panic!("expected Ok for Remember, got {other:?}"),
         }
 
         drop(tx);
@@ -627,7 +627,7 @@ mod tests {
 
         match resp {
             Response::Ok { .. } => {}
-            other => panic!("expected Ok, got {:?}", other),
+            other => panic!("expected Ok, got {other:?}"),
         }
 
         // The write should complete in well under 1 second.
@@ -696,7 +696,7 @@ mod tests {
             );
             match resp {
                 Response::Ok { .. } => {}
-                other => panic!("worker write failed: {:?}", other),
+                other => panic!("worker write failed: {other:?}"),
             }
         }
 
@@ -719,7 +719,7 @@ mod tests {
         let resp = reply_rx.await.unwrap();
         match resp {
             Response::Ok { .. } => {}
-            other => panic!("writer write failed: {:?}", other),
+            other => panic!("writer write failed: {other:?}"),
         }
 
         // Both writes should have succeeded — verify via the worker connection.
@@ -732,8 +732,7 @@ mod tests {
                 .unwrap();
             assert!(
                 count >= 2,
-                "expected at least 2 memories (worker + writer), got {}",
-                count
+                "expected at least 2 memories (worker + writer), got {count}"
             );
         }
 
@@ -839,7 +838,7 @@ mod tests {
         let resp = reply_rx.await.unwrap();
         match resp {
             Response::Ok { .. } => {}
-            other => panic!("expected Ok, got {:?}", other),
+            other => panic!("expected Ok, got {other:?}"),
         }
 
         // We can't directly query the in-memory DB from here because the actor
@@ -906,7 +905,7 @@ mod tests {
         let resp = reply_rx.await.unwrap();
         match resp {
             Response::Ok { .. } => {}
-            other => panic!("expected Ok, got {:?}", other),
+            other => panic!("expected Ok, got {other:?}"),
         }
 
         drop(tx);
@@ -1069,7 +1068,7 @@ mod tests {
         let resp = reply_rx.await.unwrap();
         match resp {
             Response::Ok { .. } => {}
-            other => panic!("expected Ok, got {:?}", other),
+            other => panic!("expected Ok, got {other:?}"),
         }
 
         drop(tx);

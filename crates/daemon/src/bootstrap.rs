@@ -224,7 +224,7 @@ const BOOTSTRAP_MAX_FILE_SIZE: u64 = 200_000_000;     // 200MB — skip
 
 fn read_transcript_content(path: &std::path::Path, file_size: u64) -> Result<(String, usize), String> {
     if file_size > BOOTSTRAP_MAX_FILE_SIZE {
-        return Err(format!("file too large ({} bytes > 200MB), skipping", file_size));
+        return Err(format!("file too large ({file_size} bytes > 200MB), skipping"));
     }
 
     if file_size <= BOOTSTRAP_MAX_FULL_READ {
@@ -299,7 +299,7 @@ fn create_transcript_summary(
             let remaining_days = days - ((year - 1970) * 365 + (year - 1970) / 4);
             let month = (remaining_days / 30).min(11) + 1;
             let day = (remaining_days % 30) + 1;
-            format!("{}-{:02}-{:02}", year, month, day)
+            format!("{year}-{month:02}-{day:02}")
         })
         .unwrap_or_else(|| "unknown date".to_string());
 
@@ -411,7 +411,7 @@ pub fn run_bootstrap(
         let adapter = match adapters.iter().find(|a| a.name() == adapter_name.as_str()) {
             Some(a) => a,
             None => {
-                eprintln!("[bootstrap] WARN: no adapter for {}", adapter_name);
+                eprintln!("[bootstrap] WARN: no adapter for {adapter_name}");
                 result.errors += 1;
                 continue;
             }
@@ -563,8 +563,8 @@ mod tests {
         // When HOME matches the encoded prefix, strip it to get the project name
         let home = std::env::var("HOME").unwrap_or_default();
         let home_encoded = home.trim_start_matches('/').replace('/', "-");
-        let hash = format!("-{}-forge", home_encoded);
-        let path_str = format!("/home/user/.claude/projects/{}/abc123.jsonl", hash);
+        let hash = format!("-{home_encoded}-forge");
+        let path_str = format!("/home/user/.claude/projects/{hash}/abc123.jsonl");
         let project = extract_project_from_path(&std::path::PathBuf::from(&path_str));
         assert_eq!(project.as_deref(), Some("forge"));
     }
@@ -574,8 +574,8 @@ mod tests {
         // Multi-segment project name should be preserved (not just last segment)
         let home = std::env::var("HOME").unwrap_or_default();
         let home_encoded = home.trim_start_matches('/').replace('/', "-");
-        let hash = format!("-{}-hive-finance-hive-production", home_encoded);
-        let path_str = format!("/home/user/.claude/projects/{}/session.jsonl", hash);
+        let hash = format!("-{home_encoded}-hive-finance-hive-production");
+        let path_str = format!("/home/user/.claude/projects/{hash}/session.jsonl");
         let project = extract_project_from_path(&std::path::PathBuf::from(&path_str));
         assert_eq!(project.as_deref(), Some("hive-finance-hive-production"));
     }
@@ -702,7 +702,7 @@ mod tests {
                 for (i, line) in relevant.lines().enumerate() {
                     if !line.is_empty() {
                         chunks.push(ConversationChunk {
-                            id: format!("chunk-{}", i),
+                            id: format!("chunk-{i}"),
                             session_id: "test-session".to_string(),
                             role: if i % 2 == 0 { "user".to_string() } else { "assistant".to_string() },
                             content: line.to_string(),

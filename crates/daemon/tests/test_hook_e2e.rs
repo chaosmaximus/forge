@@ -49,13 +49,11 @@ fn test_session_start_hook_outputs_valid_json() {
     // Should contain valid JSON with hookSpecificOutput
     assert!(
         stdout.contains("hookSpecificOutput"),
-        "session-start hook must output hookSpecificOutput JSON, got: {}",
-        stdout
+        "session-start hook must output hookSpecificOutput JSON, got: {stdout}"
     );
     assert!(
         stdout.contains("forge-context"),
-        "session-start hook must include forge-context XML, got: {}",
-        stdout
+        "session-start hook must include forge-context XML, got: {stdout}"
     );
 }
 
@@ -82,8 +80,7 @@ fn test_session_start_hook_registers_session() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(&session_id),
-        "session {} should be registered after hook, got: {}",
-        session_id, stdout
+        "session {session_id} should be registered after hook, got: {stdout}"
     );
 }
 
@@ -157,7 +154,7 @@ fn test_pre_edit_hook_blocks_sensitive_files() {
             .and_then(|mut child| {
                 use std::io::Write;
                 if let Some(ref mut stdin) = child.stdin {
-                    let input = format!("{{\"tool_input\":{{\"file_path\":\"{}\"}}}}", file);
+                    let input = format!("{{\"tool_input\":{{\"file_path\":\"{file}\"}}}}");
                     stdin.write_all(input.as_bytes())?;
                 }
                 child.wait_with_output()
@@ -167,8 +164,7 @@ fn test_pre_edit_hook_blocks_sensitive_files() {
         assert_eq!(
             output.status.code(),
             Some(2),
-            "{} should be blocked",
-            file
+            "{file} should be blocked"
         );
     }
 }
@@ -193,7 +189,7 @@ fn test_pre_edit_hook_rejects_shell_injection() {
             .and_then(|mut child| {
                 use std::io::Write;
                 if let Some(ref mut stdin) = child.stdin {
-                    let json = format!("{{\"tool_input\":{{\"file_path\":\"{}\"}}}}", input);
+                    let json = format!("{{\"tool_input\":{{\"file_path\":\"{input}\"}}}}");
                     stdin.write_all(json.as_bytes())?;
                 }
                 child.wait_with_output()
@@ -255,8 +251,7 @@ fn test_full_pipeline_remember_check_via_cli() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("decision") || stdout.contains("linked"),
-        "file mentioned in decision content should have affects edge: {}",
-        stdout
+        "file mentioned in decision content should have affects edge: {stdout}"
     );
 
     // 3. Guardrails check on a file NOT mentioned → should be safe
@@ -267,8 +262,7 @@ fn test_full_pipeline_remember_check_via_cli() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Safe to proceed"),
-        "unrelated file should be safe: {}",
-        stdout
+        "unrelated file should be safe: {stdout}"
     );
 
     // 4. Clean up

@@ -228,7 +228,7 @@ pub fn hybrid_recall_scoped_org(
             }
         }
         Err(e) => {
-            eprintln!("[recall] BM25 search error: {}", e);
+            eprintln!("[recall] BM25 search error: {e}");
         }
     }
 
@@ -246,7 +246,7 @@ pub fn hybrid_recall_scoped_org(
                 }
             }
             Err(e) => {
-                eprintln!("[recall] vector search error: {}", e);
+                eprintln!("[recall] vector search error: {e}");
             }
         }
     }
@@ -526,7 +526,7 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<
                     Ok(_) => {} // no template or empty system_context
                     Err(rusqlite::Error::QueryReturnedNoRows) => {} // session has no template
                     Err(e) => {
-                        eprintln!("[context] role-context query failed for session {}: {}", sid, e);
+                        eprintln!("[context] role-context query failed for session {sid}: {e}");
                     }
                 }
             }
@@ -709,10 +709,8 @@ pub fn compile_prefetch_hints(
                 let nweighted = naccess as f64 * weight * 0.5; // neighbors get half weight
                 if seen_titles.insert(ntitle.clone()) {
                     ranked.push((ntitle, nweighted));
-                } else {
-                    if let Some(entry) = ranked.iter_mut().find(|(t, _)| t == &ntitle) {
-                        entry.1 += nweighted;
-                    }
+                } else if let Some(entry) = ranked.iter_mut().find(|(t, _)| t == &ntitle) {
+                    entry.1 += nweighted;
                 }
             }
         }
@@ -761,10 +759,10 @@ pub fn compile_dynamic_suffix(
             // Use OR between words so "e2e testing" matches either "e2e" or "testing"
             // Each term is double-quoted to prevent FTS5 special syntax interpretation
             let terms: Vec<String> = sanitized.split_whitespace()
-                .map(|t| format!("\"{}\"", t))
+                .map(|t| format!("\"{t}\""))
                 .collect();
             let fts_query = terms.join(" OR ");
-            format!(" AND memory.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH '{}')", fts_query)
+            format!(" AND memory.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH '{fts_query}')")
         }
     } else {
         String::new()
@@ -871,7 +869,7 @@ pub fn compile_dynamic_suffix(
             .into_iter()
             .map(|(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
                 let mut boost = 1.0_f64;
-                let searchable = format!("{} {} {}", tags, content, title).to_lowercase();
+                let searchable = format!("{tags} {content} {title}").to_lowercase();
                 if !domain_keywords.is_empty() && domain_keywords.iter().any(|kw| searchable.contains(kw)) {
                     boost *= 1.3;
                 }
@@ -957,7 +955,7 @@ pub fn compile_dynamic_suffix(
             .into_iter()
             .map(|(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
                 let mut boost = 1.0_f64;
-                let searchable = format!("{} {} {}", tags, content, title).to_lowercase();
+                let searchable = format!("{tags} {content} {title}").to_lowercase();
                 if !domain_keywords.is_empty() && domain_keywords.iter().any(|kw| searchable.contains(kw)) {
                     boost *= 1.3;
                 }
@@ -1181,7 +1179,7 @@ pub fn compile_dynamic_suffix(
             );
 
             if total_clusters > 0 {
-                cs_xml.push_str(&format!("\n  <clusters count=\"{}\">", total_clusters));
+                cs_xml.push_str(&format!("\n  <clusters count=\"{total_clusters}\">"));
                 for (idx, (cid, files)) in cluster_rows.iter().enumerate() {
                     let file_names: Vec<&str> = files.iter().map(|f| {
                         f.rsplit('/').next().unwrap_or(f.as_str())
@@ -1501,8 +1499,7 @@ pub fn compile_dynamic_suffix(
             ).unwrap_or(0);
 
         xml.push_str(&format!(
-            "<project-momentum sessions-7d=\"{}\" memories-24h=\"{}\" protocols=\"{}\" />\n",
-            session_count, recent_memories, protocol_count,
+            "<project-momentum sessions-7d=\"{session_count}\" memories-24h=\"{recent_memories}\" protocols=\"{protocol_count}\" />\n",
         ));
     }
 
@@ -1585,7 +1582,7 @@ pub fn compile_dynamic_suffix(
                         .and_then(|v| v.as_str().map(|s| {
                             if s.chars().count() > 200 {
                                 let truncated: String = s.chars().take(200).collect();
-                                format!("{}...", truncated)
+                                format!("{truncated}...")
                             } else {
                                 s.to_string()
                             }
@@ -1696,8 +1693,7 @@ pub fn compile_context(
     let prefix = compile_static_prefix(conn, agent, None);
     let (suffix, _touched) = compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None, None);
     format!(
-        "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
-        prefix, suffix
+        "<forge-context version=\"0.7.0\">\n{prefix}\n{suffix}\n</forge-context>"
     )
 }
 
@@ -2373,8 +2369,8 @@ mod tests {
         for i in 0..50 {
             let mem = Memory::new(
                 MemoryType::Decision,
-                &format!("Decision {} about architecture and design patterns", i),
-                &"x".repeat(200),
+                format!("Decision {i} about architecture and design patterns"),
+                "x".repeat(200),
             )
             .with_confidence(0.9);
             ops::remember(&conn, &mem).unwrap();
@@ -3428,7 +3424,7 @@ mod tests {
         // ISSUE-25: verify content truncation doesn't panic on multi-byte UTF-8
         // Directly test the char boundary logic
         let mut content = "a".repeat(1998);
-        content.push_str("—"); // em dash (U+2014) = 3 bytes → total = 2001 bytes
+        content.push('—'); // em dash (U+2014) = 3 bytes → total = 2001 bytes
         content.push_str("end");
         assert_eq!(content.len(), 2004); // 1998 + 3 + 3
 

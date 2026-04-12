@@ -34,7 +34,7 @@ pub fn check_action(conn: &Connection, file: &str, action: &str) -> GuardrailRes
 
 /// Check action with optional organization_id filtering (multi-tenant isolation).
 pub fn check_action_with_org(conn: &Connection, file: &str, action: &str, _org_id: Option<&str>) -> GuardrailResult {
-    let file_target = format!("file:{}", file);
+    let file_target = format!("file:{file}");
 
     // Check 1: Linked decisions (existing)
     let decisions = find_decisions_for_file(conn, &file_target);
@@ -68,17 +68,16 @@ pub fn check_action_with_org(conn: &Connection, file: &str, action: &str, _org_i
             "LOW"
         };
         warnings.push(format!(
-            "Blast radius: {} files call symbols from {} — {}",
-            callers_count, file, severity
+            "Blast radius: {callers_count} files call symbols from {file} — {severity}"
         ));
     }
 
     for lesson in &relevant_lessons {
-        warnings.push(format!("Lesson: {}", lesson));
+        warnings.push(format!("Lesson: {lesson}"));
     }
 
     for pattern in &dangerous_patterns {
-        warnings.push(format!("Dangerous pattern: {}", pattern));
+        warnings.push(format!("Dangerous pattern: {pattern}"));
     }
 
     let decisions_affected: Vec<String> = decisions.iter().map(|(id, _, _)| id.clone()).collect();
@@ -119,7 +118,7 @@ pub struct PostEditResult {
 /// This does NOT parse the new file content. It uses the EXISTING code graph
 /// to surface what the agent should be aware of after editing.
 pub fn post_edit_check(conn: &Connection, file: &str) -> PostEditResult {
-    let file_target = format!("file:{}", file);
+    let file_target = format!("file:{file}");
 
     // Reuse the same helper functions from check_action
     let (callers_count, calling_files) = count_callers(conn, file);
@@ -195,7 +194,7 @@ fn count_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
     }
 
     // Use LIKE %file to match both absolute and relative paths stored in code_symbol.
-    let like_pattern = format!("%{}", file);
+    let like_pattern = format!("%{file}");
 
     let mut stmt = match conn.prepare(
         "SELECT DISTINCT cs2.file_path
@@ -308,7 +307,7 @@ pub fn pre_bash_check(conn: &Connection, command: &str) -> PreBashResult {
     let cmd_lower = command.to_lowercase();
     for (pattern, warning) in destructive_patterns {
         if cmd_lower.contains(pattern) {
-            warnings.push(format!("Destructive: {} -- {}", pattern, warning));
+            warnings.push(format!("Destructive: {pattern} -- {warning}"));
             safe = false;
         }
     }
@@ -316,7 +315,7 @@ pub fn pre_bash_check(conn: &Connection, command: &str) -> PreBashResult {
     // Check 2: Relevant lessons about this command from memory
     let cmd_name = command.split_whitespace().next().unwrap_or("");
     if !cmd_name.is_empty() {
-        let search = format!("%{}%", cmd_name);
+        let search = format!("%{cmd_name}%");
 
         if let Ok(mut stmt) = conn.prepare(
             "SELECT title FROM memory WHERE status = 'active'
@@ -327,7 +326,7 @@ pub fn pre_bash_check(conn: &Connection, command: &str) -> PreBashResult {
         ) {
             if let Ok(rows) = stmt.query_map(params![search], |row| row.get::<_, String>(0)) {
                 for r in rows.flatten() {
-                    warnings.push(format!("Lesson: {}", r));
+                    warnings.push(format!("Lesson: {r}"));
                 }
             }
         }
@@ -380,7 +379,7 @@ pub fn post_bash_check(conn: &Connection, command: &str, exit_code: i32) -> Post
         return PostBashResult { suggestions };
     }
 
-    let search = format!("%{}%", cmd_name);
+    let search = format!("%{cmd_name}%");
 
     // Surface lessons about similar command failures
     if let Ok(mut stmt) = conn.prepare(
@@ -492,7 +491,7 @@ fn find_applicable_skills(conn: &Connection, file: &str) -> Vec<String> {
 
     let like_params: Vec<String> = search_terms
         .iter()
-        .map(|t| format!("%{}%", t))
+        .map(|t| format!("%{t}%"))
         .collect();
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = like_params
@@ -511,7 +510,7 @@ fn find_applicable_skills(conn: &Connection, file: &str) -> Vec<String> {
     };
 
     rows.filter_map(|r| r.ok())
-        .map(|(name, domain)| format!("Skill: {} ({})", name, domain))
+        .map(|(name, domain)| format!("Skill: {name} ({domain})"))
         .collect()
 }
 
@@ -700,11 +699,11 @@ mod tests {
 
         // Create 6 callers from different files => HIGH severity
         for i in 0..6 {
-            let caller_id = format!("sym:caller{}:fn", i);
-            let caller_file = format!("src/caller{}.rs", i);
+            let caller_id = format!("sym:caller{i}:fn");
+            let caller_file = format!("src/caller{i}.rs");
             store_symbol(&conn, &CodeSymbol {
                 id: caller_id.clone(),
-                name: format!("caller_{}", i),
+                name: format!("caller_{i}"),
                 kind: "function".into(),
                 file_path: caller_file,
                 line_start: 1,

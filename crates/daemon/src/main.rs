@@ -47,7 +47,7 @@ fn acquire_pid_lock(pid_path: &str) -> std::fs::File {
                     #[cfg(unix)]
                     {
                         // Check if process exists by reading /proc/<pid>/status
-                        let alive = std::path::Path::new(&format!("/proc/{}", pid_num)).exists();
+                        let alive = std::path::Path::new(&format!("/proc/{pid_num}")).exists();
                         if !alive {
                             tracing::warn!(
                                 pid = pid_num,
@@ -143,7 +143,7 @@ async fn main() {
         match init_otlp_layer(&otlp_endpoint, &otlp_service) {
             Ok(layer) => {
                 // Can't use tracing::info yet — subscriber isn't installed.
-                eprintln!("[daemon] OTLP trace export enabled (endpoint={})", otlp_endpoint);
+                eprintln!("[daemon] OTLP trace export enabled (endpoint={otlp_endpoint})");
                 Some(layer)
             }
             Err(e) => {
@@ -188,7 +188,7 @@ async fn main() {
 
     // Write PID — file is now locked exclusively
     let pid = std::process::id();
-    if let Err(e) = write!(&pid_file, "{}", pid) {
+    if let Err(e) = write!(&pid_file, "{pid}") {
         tracing::error!("failed to write PID to {pid_path}: {e}");
         std::process::exit(1);
     }
@@ -315,7 +315,7 @@ async fn main() {
             {
                 let locked = startup_state.lock().await;
                 match forge_daemon::db::manas::ingest_project_declared(&locked.conn, &project_dir) {
-                    Ok((ingested, _)) if ingested > 0 => eprintln!("[daemon] ingested {} declared knowledge files", ingested),
+                    Ok((ingested, _)) if ingested > 0 => eprintln!("[daemon] ingested {ingested} declared knowledge files"),
                     Ok(_) => {},
                     Err(e) => eprintln!("[daemon] WARN: declared knowledge ingestion failed: {e}"),
                 }
@@ -324,7 +324,7 @@ async fn main() {
             {
                 let locked = startup_state.lock().await;
                 match forge_daemon::db::manas::detect_domain_dna(&locked.conn, &project_dir) {
-                    Ok(n) if n > 0 => eprintln!("[daemon] detected {} project type markers", n),
+                    Ok(n) if n > 0 => eprintln!("[daemon] detected {n} project type markers"),
                     Ok(_) => {},
                     Err(e) => eprintln!("[daemon] WARN: domain DNA detection failed: {e}"),
                 }
@@ -343,7 +343,7 @@ async fn main() {
                 ) AND active = 1",
                 [],
             ) {
-                Ok(n) if n > 0 => eprintln!("[daemon] cleaned {} duplicate identity facets", n),
+                Ok(n) if n > 0 => eprintln!("[daemon] cleaned {n} duplicate identity facets"),
                 Ok(_) => {},
                 Err(e) => eprintln!("[daemon] WARN: identity dedup failed: {e}"),
             }

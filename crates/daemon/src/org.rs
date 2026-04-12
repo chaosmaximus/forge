@@ -14,7 +14,7 @@ fn validate_name(name: &str) -> rusqlite::Result<()> {
     }
     if trimmed.len() > MAX_NAME_LEN {
         return Err(rusqlite::Error::InvalidParameterName(
-            format!("name exceeds {} chars", MAX_NAME_LEN),
+            format!("name exceeds {MAX_NAME_LEN} chars"),
         ));
     }
     Ok(())
@@ -24,7 +24,7 @@ fn validate_description(desc: Option<&str>) -> rusqlite::Result<()> {
     if let Some(d) = desc {
         if d.len() > MAX_DESCRIPTION_LEN {
             return Err(rusqlite::Error::InvalidParameterName(
-                format!("description exceeds {} chars", MAX_DESCRIPTION_LEN),
+                format!("description exceeds {MAX_DESCRIPTION_LEN} chars"),
             ));
         }
     }
@@ -252,11 +252,11 @@ pub fn team_session_ids(
                 SELECT id, 0 FROM team WHERE name = ?1
                 UNION
                 SELECT t.id, tt.depth + 1 FROM team t JOIN team_tree tt ON t.parent_team_id = tt.id
-                WHERE tt.depth < {}
+                WHERE tt.depth < {MAX_TREE_DEPTH}
             )
             SELECT s.id FROM session s
             WHERE s.team_id IN (SELECT id FROM team_tree)
-              AND s.status = 'active'", MAX_TREE_DEPTH),
+              AND s.status = 'active'"),
         )?;
         let rows = stmt.query_map(params![team_name], |row| row.get(0))?;
         rows.collect()

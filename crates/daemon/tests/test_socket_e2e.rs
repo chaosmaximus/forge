@@ -40,7 +40,7 @@ impl TestDaemon {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .unwrap_or_else(|e| panic!("failed to start daemon at {}: {e}", daemon_bin));
+            .unwrap_or_else(|e| panic!("failed to start daemon at {daemon_bin}: {e}"));
 
         // Wait for socket to appear (up to 5 seconds)
         for _ in 0..50 {
@@ -73,7 +73,7 @@ impl TestDaemon {
             .unwrap();
 
         // Send request (NDJSON: one line)
-        writeln!(stream, "{}", json).expect("write request");
+        writeln!(stream, "{json}").expect("write request");
         stream.flush().expect("flush");
 
         // Read response line
@@ -254,7 +254,7 @@ fn test_socket_forget_and_verify() {
     assert_eq!(resp["data"]["count"], 1);
 
     // Forget
-    let forget_json = format!(r#"{{"method":"forget","params":{{"id":"{}"}}}}"#, id);
+    let forget_json = format!(r#"{{"method":"forget","params":{{"id":"{id}"}}}}"#);
     let resp = daemon.request(&forget_json);
     assert_eq!(resp["status"], "ok");
     assert_eq!(resp["data"]["kind"], "forgotten");
@@ -303,9 +303,8 @@ fn test_socket_concurrent_connections() {
                 let mut stream = UnixStream::connect(&socket_path).expect("connect");
                 stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
                 let req = format!(
-                    r#"{{"method":"remember","params":{{"memory_type":"decision","title":"Concurrent {}","content":"Test {}"}}}}
-"#,
-                    i, i
+                    r#"{{"method":"remember","params":{{"memory_type":"decision","title":"Concurrent {i}","content":"Test {i}"}}}}
+"#
                 );
                 stream.write_all(req.as_bytes()).expect("write");
                 stream.flush().expect("flush");

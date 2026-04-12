@@ -128,7 +128,7 @@ pub fn update_agent_template(
         return Ok(false);
     }
 
-    sets.push(format!("updated_at = ?{}", idx));
+    sets.push(format!("updated_at = ?{idx}"));
     values.push(Box::new(forge_core::time::now_iso()));
     idx += 1;
 
@@ -1131,7 +1131,7 @@ pub fn record_vote(
     let options: Vec<String> = serde_json::from_str(&options_json).unwrap_or_default();
     if !options.is_empty() && !options.contains(&choice.to_string()) {
         return Err(rusqlite::Error::InvalidParameterName(
-            format!("invalid choice '{}'; valid options: {:?}", choice, options),
+            format!("invalid choice '{choice}'; valid options: {options:?}"),
         ));
     }
 
@@ -1143,7 +1143,7 @@ pub fn record_vote(
     )?;
     if !is_participant {
         return Err(rusqlite::Error::InvalidParameterName(
-            format!("session '{}' is not a participant of meeting '{}'", session_id, meeting_id),
+            format!("session '{session_id}' is not a participant of meeting '{meeting_id}'"),
         ));
     }
 

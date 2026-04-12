@@ -60,7 +60,7 @@ pub fn path_to_file_uri(path: &str) -> String {
                         String::from(b as char)
                     } else {
                         // Percent-encode everything else
-                        format!("%{:02X}", b)
+                        format!("%{b:02X}")
                     }
                 })
                 .collect::<String>()
@@ -68,7 +68,7 @@ pub fn path_to_file_uri(path: &str) -> String {
         .collect::<Vec<_>>()
         .join("/");
 
-    format!("file://{}", encoded)
+    format!("file://{encoded}")
 }
 
 /// A minimal JSON-RPC LSP client that communicates over stdin/stdout.
@@ -163,7 +163,7 @@ impl LspClient {
         let root_uri_str = path_to_file_uri(root_dir);
         let root_uri: Uri = root_uri_str
             .parse()
-            .map_err(|e| format!("Invalid root URI '{}': {}", root_uri_str, e))?;
+            .map_err(|e| format!("Invalid root URI '{root_uri_str}': {e}"))?;
 
         #[allow(deprecated)]
         let init_params = InitializeParams {
@@ -306,7 +306,7 @@ impl LspClient {
     ) -> Result<Vec<DocumentSymbol>, String> {
         let uri: Uri = file_uri
             .parse()
-            .map_err(|e| format!("Invalid URI '{}': {}", file_uri, e))?;
+            .map_err(|e| format!("Invalid URI '{file_uri}': {e}"))?;
 
         let params = DocumentSymbolParams {
             text_document: TextDocumentIdentifier { uri },
@@ -432,8 +432,7 @@ impl LspClient {
                         }
                         return resp.result.ok_or_else(|| {
                             format!(
-                                "Response to {} (id={}) has no result and no error",
-                                method, id
+                                "Response to {method} (id={id}) has no result and no error"
                             )
                         });
                     }
@@ -450,8 +449,7 @@ impl LspClient {
             skipped += 1;
             if skipped > MAX_SKIPPED {
                 return Err(format!(
-                    "Exceeded {} non-response messages waiting for id {}",
-                    MAX_SKIPPED, id
+                    "Exceeded {MAX_SKIPPED} non-response messages waiting for id {id}"
                 ));
             }
         }
@@ -474,21 +472,21 @@ impl LspClient {
     /// Write an LSP message with Content-Length framing.
     async fn write_message<T: Serialize>(&mut self, msg: &T) -> Result<(), String> {
         let body =
-            serde_json::to_string(msg).map_err(|e| format!("Serialize error: {}", e))?;
+            serde_json::to_string(msg).map_err(|e| format!("Serialize error: {e}"))?;
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
 
         self.stdin
             .write_all(header.as_bytes())
             .await
-            .map_err(|e| format!("Write header error: {}", e))?;
+            .map_err(|e| format!("Write header error: {e}"))?;
         self.stdin
             .write_all(body.as_bytes())
             .await
-            .map_err(|e| format!("Write body error: {}", e))?;
+            .map_err(|e| format!("Write body error: {e}"))?;
         self.stdin
             .flush()
             .await
-            .map_err(|e| format!("Flush error: {}", e))?;
+            .map_err(|e| format!("Flush error: {e}"))?;
 
         Ok(())
     }
@@ -503,7 +501,7 @@ impl LspClient {
             self.stdout
                 .read_line(&mut line)
                 .await
-                .map_err(|e| format!("Read header error: {}", e))?;
+                .map_err(|e| format!("Read header error: {e}"))?;
 
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -514,7 +512,7 @@ impl LspClient {
                 content_length = Some(
                     val.trim()
                         .parse::<usize>()
-                        .map_err(|e| format!("Invalid Content-Length: {}", e))?,
+                        .map_err(|e| format!("Invalid Content-Length: {e}"))?,
                 );
             }
             // Ignore other headers (Content-Type, etc.).
@@ -527,8 +525,7 @@ impl LspClient {
         const MAX_LSP_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MB
         if len > MAX_LSP_MESSAGE_BYTES {
             return Err(format!(
-                "LSP message too large ({} bytes, max {})",
-                len, MAX_LSP_MESSAGE_BYTES
+                "LSP message too large ({len} bytes, max {MAX_LSP_MESSAGE_BYTES})"
             ));
         }
 
@@ -536,9 +533,9 @@ impl LspClient {
         self.stdout
             .read_exact(&mut buf)
             .await
-            .map_err(|e| format!("Read body error: {}", e))?;
+            .map_err(|e| format!("Read body error: {e}"))?;
 
-        String::from_utf8(buf).map_err(|e| format!("Invalid UTF-8 in LSP body: {}", e))
+        String::from_utf8(buf).map_err(|e| format!("Invalid UTF-8 in LSP body: {e}"))
     }
 }
 

@@ -194,8 +194,7 @@ pub fn sync_export(
     let empty_hlc_count = rows.iter().filter(|m| m.hlc_timestamp.is_empty()).count();
     if empty_hlc_count > 0 {
         return Err(rusqlite::Error::InvalidParameterName(format!(
-            "{} memories have empty HLC timestamps — run HLC backfill before export",
-            empty_hlc_count
+            "{empty_hlc_count} memories have empty HLC timestamps — run HLC backfill before export"
         )));
     }
 
@@ -239,15 +238,14 @@ fn build_export_query(project: Option<&str>, since: Option<&str>) -> (String, Ve
 
     if let Some(p) = project {
         clauses.push_str(&format!(
-            " AND (project = ?{idx} OR project IS NULL OR project = '')",
-            idx = param_idx
+            " AND (project = ?{param_idx} OR project IS NULL OR project = '')"
         ));
         param_values.push(p.to_string());
         param_idx += 1;
     }
 
     if let Some(s) = since {
-        clauses.push_str(&format!(" AND hlc_timestamp > ?{idx}", idx = param_idx));
+        clauses.push_str(&format!(" AND hlc_timestamp > ?{param_idx}"));
         param_values.push(s.to_string());
     }
 
@@ -459,8 +457,7 @@ pub fn sync_import(
                     // comparison is semantically dangerous (any non-empty remote wins).
                     // Treat as conflict to prevent silent overwrites.
                     eprintln!(
-                        "[sync] WARN: local memory {} has empty HLC — treating as conflict for safety",
-                        existing_id
+                        "[sync] WARN: local memory {existing_id} has empty HLC — treating as conflict for safety"
                     );
                     conn.execute(
                         "UPDATE memory SET status = 'conflict' WHERE id = ?1",
@@ -803,9 +800,7 @@ mod tests {
         let after_merge = hlc.now();
         assert!(
             after_merge > remote_ts,
-            "after merge, HLC should be ahead of remote: {} vs {}",
-            after_merge,
-            remote_ts
+            "after merge, HLC should be ahead of remote: {after_merge} vs {remote_ts}"
         );
     }
 
@@ -1377,7 +1372,7 @@ mod tests {
         let result = sync_export(&conn, None, None);
         assert!(result.is_err(), "sync_export should reject memories with empty HLC");
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("empty HLC"), "error should mention empty HLC: {}", err_msg);
+        assert!(err_msg.contains("empty HLC"), "error should mention empty HLC: {err_msg}");
     }
 
     #[test]

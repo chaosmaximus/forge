@@ -12,9 +12,9 @@ pub async fn sync_export(project: Option<String>, since: Option<String>) {
         }) => {
             // Output NDJSON to stdout (for piping to SSH)
             for line in &lines {
-                println!("{}", line);
+                println!("{line}");
             }
-            eprintln!("Exported {} entries from node {}", count, node_id);
+            eprintln!("Exported {count} entries from node {node_id}");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -79,10 +79,10 @@ pub async fn sync_import() {
 pub async fn sync_pull(host: String, project: Option<String>) {
     let mut remote_cmd = "forge-next sync-export".to_string();
     if let Some(ref p) = project {
-        remote_cmd.push_str(&format!(" --project {}", p));
+        remote_cmd.push_str(&format!(" --project {p}"));
     }
 
-    eprintln!("Pulling from {}...", host);
+    eprintln!("Pulling from {host}...");
 
     // Run ssh to get remote export
     let output = std::process::Command::new("ssh")
@@ -148,7 +148,7 @@ pub async fn sync_pull(host: String, project: Option<String>) {
 /// Push memories to a remote host via SSH.
 /// Runs: local sync-export | ssh <host> forge-next sync-import
 pub async fn sync_push(host: String, project: Option<String>) {
-    eprintln!("Pushing to {}...", host);
+    eprintln!("Pushing to {host}...");
 
     // First, export locally
     let request = Request::SyncExport {
@@ -160,7 +160,7 @@ pub async fn sync_push(host: String, project: Option<String>) {
         Ok(Response::Ok {
             data: ResponseData::SyncExported { lines, count, node_id: _ },
         }) => {
-            eprintln!("Exporting {} entries...", count);
+            eprintln!("Exporting {count} entries...");
             lines
         }
         Ok(Response::Error { message }) => {

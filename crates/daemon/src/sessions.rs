@@ -242,7 +242,7 @@ pub fn increment_tool_use_count(conn: &Connection, session_id: &str, delta: usiz
 pub fn cleanup_sessions(conn: &Connection, prefix: Option<&str>) -> rusqlite::Result<usize> {
     match prefix {
         Some(pfx) => {
-            let pattern = format!("{}%", pfx);
+            let pattern = format!("{pfx}%");
             conn.execute(
                 "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status = 'active' AND id LIKE ?1",
                 params![pattern],
@@ -382,7 +382,7 @@ pub fn respond_to_message(
         Ok((orig_from, orig_to, topic, project)) => {
             // Ownership check: only the original recipient can respond
             if orig_to != from_session {
-                eprintln!("[a2a] WARN: session {} tried to respond to message {} addressed to {}", from_session, message_id, orig_to);
+                eprintln!("[a2a] WARN: session {from_session} tried to respond to message {message_id} addressed to {orig_to}");
                 return Ok(false);
             }
             // Update the original message's status

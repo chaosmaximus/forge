@@ -173,7 +173,7 @@ pub fn write_decision(
     let date = today_ymd();
     let slug = slugify(title);
     let team_slug = slugify(team);
-    let filename = format!("{}-{}.md", date, slug);
+    let filename = format!("{date}-{slug}.md");
     let dir = workspace_root.join("teams").join(&team_slug).join("decisions");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(&filename);
@@ -211,7 +211,7 @@ pub fn write_meeting_minutes(
 ) -> io::Result<PathBuf> {
     let date = today_ymd();
     let slug = slugify(topic);
-    let filename = format!("{}-{}.md", date, slug);
+    let filename = format!("{date}-{slug}.md");
     let dir = workspace_root.join("teams").join(team).join("meetings");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(&filename);
@@ -234,7 +234,7 @@ pub fn write_meeting_minutes(
     );
 
     for (participant, contribution) in contributions {
-        md.push_str(&format!("### {}\n{}\n\n", participant, contribution));
+        md.push_str(&format!("### {participant}\n{contribution}\n\n"));
     }
 
     md.push_str(&format!(
@@ -383,7 +383,7 @@ mod tests {
 
         // Check filename
         let filename = path.file_name().unwrap().to_str().unwrap();
-        assert!(filename.ends_with("-use-jwt-for-authentication.md"), "filename: {}", filename);
+        assert!(filename.ends_with("-use-jwt-for-authentication.md"), "filename: {filename}");
         assert!(filename.starts_with(&today_ymd()), "filename should start with today's date");
 
         // Check content
@@ -423,7 +423,7 @@ mod tests {
 
         // Check filename
         let filename = path.file_name().unwrap().to_str().unwrap();
-        assert!(filename.ends_with("-licensing-model.md"), "filename: {}", filename);
+        assert!(filename.ends_with("-licensing-model.md"), "filename: {filename}");
 
         // Check content
         let content = std::fs::read_to_string(&path).unwrap();

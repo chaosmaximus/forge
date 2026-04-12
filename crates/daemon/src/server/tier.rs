@@ -399,7 +399,7 @@ mod tests {
             },
         ];
         for op in ops {
-            assert!(check_tier("free", &op).is_ok(), "Free tier should allow {:?}", op);
+            assert!(check_tier("free", &op).is_ok(), "Free tier should allow {op:?}");
         }
     }
 
@@ -423,7 +423,7 @@ mod tests {
         ];
         for op in blocked {
             let result = check_tier("free", &op);
-            assert!(result.is_err(), "Free tier should block {:?}", op);
+            assert!(result.is_err(), "Free tier should block {op:?}");
             let msg = result.unwrap_err();
             assert!(msg.contains("Team tier"), "Error should mention Team tier: {msg}");
             assert!(msg.contains("$19/seat"), "Error should mention pricing: {msg}");
@@ -444,7 +444,7 @@ mod tests {
         ];
         for op in blocked {
             let result = check_tier("free", &op);
-            assert!(result.is_err(), "Free tier should block {:?}", op);
+            assert!(result.is_err(), "Free tier should block {op:?}");
             let msg = result.unwrap_err();
             assert!(msg.contains("Pro tier"), "Error should mention Pro tier: {msg}");
             assert!(msg.contains("$12/mo"), "Error should mention pricing: {msg}");

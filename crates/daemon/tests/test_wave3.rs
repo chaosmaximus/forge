@@ -32,10 +32,10 @@ fn test_confidence_decay_idempotent() {
 
     // Stored confidence is never modified — this is the core fix for HIGH-1
     let conf: f64 = state.conn.query_row("SELECT confidence FROM memory WHERE id = 'd1'", [], |r| r.get(0)).unwrap();
-    assert!((conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {}", conf);
+    assert!((conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {conf}");
 
     let conf2: f64 = state.conn.query_row("SELECT confidence FROM memory WHERE id = 'd2'", [], |r| r.get(0)).unwrap();
-    assert!((conf2 - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {}", conf2);
+    assert!((conf2 - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {conf2}");
 
     // Status checks
     let s1: String = state.conn.query_row("SELECT status FROM memory WHERE id = 'd1'", [], |r| r.get(0)).unwrap();
@@ -57,7 +57,7 @@ fn test_migrate_and_recall() {
         {"type":"lesson","title":"Avoid MongoDB","content":"Schema issues","confidence":0.8,"status":"active"}
     ]}"#;
     let mut tmp = NamedTempFile::new().unwrap();
-    write!(tmp, "{}", cache).unwrap();
+    write!(tmp, "{cache}").unwrap();
 
     let (imported, _) = import_v1_cache(&state.conn, tmp.path().to_str().unwrap()).unwrap();
     assert_eq!(imported, 2);
@@ -92,7 +92,7 @@ fn test_code_storage_and_doctor() {
             assert_eq!(file_count, 1);
             assert_eq!(symbol_count, 1);
         }
-        other => panic!("expected Doctor, got: {:?}", other),
+        other => panic!("expected Doctor, got: {other:?}"),
     }
 }
 
@@ -118,6 +118,6 @@ fn test_doctor_via_handler() {
             assert_eq!(memory_count, 1);
             assert!(!workers.is_empty());
         }
-        other => panic!("expected Doctor, got: {:?}", other),
+        other => panic!("expected Doctor, got: {other:?}"),
     }
 }

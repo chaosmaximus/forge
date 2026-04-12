@@ -39,7 +39,7 @@ fn remember(
             assert!(!id.is_empty(), "stored id must be non-empty");
             id
         }
-        other => panic!("expected Stored response, got: {:?}", other),
+        other => panic!("expected Stored response, got: {other:?}"),
     }
 }
 
@@ -65,7 +65,7 @@ fn recall(state: &mut DaemonState, query: &str) -> Vec<MemoryResult> {
             );
             results
         }
-        other => panic!("expected Memories response, got: {:?}", other),
+        other => panic!("expected Memories response, got: {other:?}"),
     }
 }
 
@@ -126,7 +126,7 @@ fn test_sql_injection_in_recall() {
         } => {
             assert_eq!(decisions, 1, "should still have exactly 1 decision after injection attempts");
         }
-        other => panic!("expected Health response, got: {:?}", other),
+        other => panic!("expected Health response, got: {other:?}"),
     }
 }
 
@@ -151,7 +151,7 @@ fn test_sql_injection_in_guardrails() {
         } => {
             assert!(safe, "injection file should be safe (no decisions linked)");
         }
-        other => panic!("expected GuardrailsCheck response, got: {:?}", other),
+        other => panic!("expected GuardrailsCheck response, got: {other:?}"),
     }
 
     // GuardrailsCheck with SQL injection in action parameter
@@ -168,7 +168,7 @@ fn test_sql_injection_in_guardrails() {
         } => {
             assert!(safe, "injection action should be safe");
         }
-        other => panic!("expected GuardrailsCheck response, got: {:?}", other),
+        other => panic!("expected GuardrailsCheck response, got: {other:?}"),
     }
 
     // BlastRadius with path traversal attempt
@@ -189,7 +189,7 @@ fn test_sql_injection_in_guardrails() {
             assert!(decisions.is_empty(), "path traversal should find no decisions");
             assert!(files_affected.is_empty(), "path traversal should find no affected files");
         }
-        other => panic!("expected BlastRadius response, got: {:?}", other),
+        other => panic!("expected BlastRadius response, got: {other:?}"),
     }
 
     // BlastRadius with SQL injection
@@ -205,7 +205,7 @@ fn test_sql_injection_in_guardrails() {
         } => {
             assert!(decisions.is_empty(), "SQL injection in blast radius should find no decisions");
         }
-        other => panic!("expected BlastRadius response, got: {:?}", other),
+        other => panic!("expected BlastRadius response, got: {other:?}"),
     }
 
     // Verify tables still intact
@@ -214,7 +214,7 @@ fn test_sql_injection_in_guardrails() {
         Response::Ok {
             data: ResponseData::Health { .. },
         } => { /* tables intact */ }
-        other => panic!("expected Health response after injections, got: {:?}", other),
+        other => panic!("expected Health response after injections, got: {other:?}"),
     }
 }
 
@@ -294,8 +294,7 @@ fn test_unicode_edge_cases() {
             let titles: Vec<&str> = memories.iter().map(|m| m.memory.title.as_str()).collect();
             assert!(
                 titles.iter().any(|t| t.contains('\u{1F510}')),
-                "emoji should be preserved in export, got titles: {:?}",
-                titles
+                "emoji should be preserved in export, got titles: {titles:?}"
             );
             assert!(
                 memories.iter().any(|m| m.memory.content.contains('\u{8BA4}')),
@@ -310,7 +309,7 @@ fn test_unicode_edge_cases() {
                 "accented characters should be preserved in export"
             );
         }
-        other => panic!("expected Export response, got: {:?}", other),
+        other => panic!("expected Export response, got: {other:?}"),
     }
 }
 
@@ -382,7 +381,7 @@ fn test_extremely_long_strings() {
                 "100k content should be fully preserved"
             );
         }
-        other => panic!("expected Export response, got: {:?}", other),
+        other => panic!("expected Export response, got: {other:?}"),
     }
 
     // GuardrailsCheck with 5,000 character path — should not crash
@@ -400,7 +399,7 @@ fn test_extremely_long_strings() {
         } => {
             assert!(safe, "long path should be safe (no decisions linked)");
         }
-        other => panic!("expected GuardrailsCheck response, got: {:?}", other),
+        other => panic!("expected GuardrailsCheck response, got: {other:?}"),
     }
 }
 
@@ -428,7 +427,7 @@ fn test_empty_and_null_inputs() {
         Response::Ok { data: ResponseData::Stored { id } } => {
             assert!(!id.is_empty(), "should store even with empty title");
         }
-        other => panic!("expected Stored for empty title, got: {:?}", other),
+        other => panic!("expected Stored for empty title, got: {other:?}"),
     }
 
     // Remember with empty content — should store
@@ -448,7 +447,7 @@ fn test_empty_and_null_inputs() {
         Response::Ok { data: ResponseData::Stored { id } } => {
             assert!(!id.is_empty(), "should store even with empty content");
         }
-        other => panic!("expected Stored for empty content, got: {:?}", other),
+        other => panic!("expected Stored for empty content, got: {other:?}"),
     }
 
     // Recall with empty query — should not crash, returns empty (sanitizer strips all)
@@ -467,11 +466,10 @@ fn test_empty_and_null_inputs() {
         Response::Error { message } => {
             assert!(
                 message.contains("not found") || message.contains("already deleted"),
-                "empty id forget should error, got: {}",
-                message
+                "empty id forget should error, got: {message}"
             );
         }
-        other => panic!("expected Error for empty id forget, got: {:?}", other),
+        other => panic!("expected Error for empty id forget, got: {other:?}"),
     }
 
     // GuardrailsCheck with empty file — should return safe
@@ -488,7 +486,7 @@ fn test_empty_and_null_inputs() {
         } => {
             assert!(safe, "empty file should be safe");
         }
-        other => panic!("expected GuardrailsCheck for empty file, got: {:?}", other),
+        other => panic!("expected GuardrailsCheck for empty file, got: {other:?}"),
     }
 
     // BlastRadius with empty file — should return empty result
@@ -509,7 +507,7 @@ fn test_empty_and_null_inputs() {
             assert!(decisions.is_empty(), "empty file blast radius should have no decisions");
             assert!(files_affected.is_empty(), "empty file blast radius should have no affected files");
         }
-        other => panic!("expected BlastRadius for empty file, got: {:?}", other),
+        other => panic!("expected BlastRadius for empty file, got: {other:?}"),
     }
 }
 
@@ -609,7 +607,7 @@ fn test_special_characters_in_fields() {
             assert!(tags.contains(&"tag.with.dots".to_string()), "dots tag preserved");
             assert!(tags.contains(&"tag/with/slashes".to_string()), "slashes tag preserved");
         }
-        other => panic!("expected Export response, got: {:?}", other),
+        other => panic!("expected Export response, got: {other:?}"),
     }
 }
 
@@ -626,7 +624,7 @@ fn test_duplicate_handling() {
             &mut state,
             MemoryType::Decision,
             "Use JWT for auth",
-            &format!("Attempt #{}", i),
+            &format!("Attempt #{i}"),
             None,
         );
     }
@@ -642,7 +640,7 @@ fn test_duplicate_handling() {
                 "10 inserts of same title+type should dedup to 1"
             );
         }
-        other => panic!("expected Health response, got: {:?}", other),
+        other => panic!("expected Health response, got: {other:?}"),
     }
 
     // Content should be the last one (dedup updates content)
@@ -673,7 +671,7 @@ fn test_duplicate_handling() {
             assert_eq!(decisions, 1, "should still have 1 decision");
             assert_eq!(lessons, 1, "should have 1 lesson with same title but different type");
         }
-        other => panic!("expected Health response, got: {:?}", other),
+        other => panic!("expected Health response, got: {other:?}"),
     }
 }
 
@@ -695,11 +693,10 @@ fn test_import_malformed_data() {
         Response::Error { message } => {
             assert!(
                 message.contains("parse error"),
-                "invalid JSON should produce parse error, got: {}",
-                message
+                "invalid JSON should produce parse error, got: {message}"
             );
         }
-        other => panic!("expected Error for invalid JSON import, got: {:?}", other),
+        other => panic!("expected Error for invalid JSON import, got: {other:?}"),
     }
 
     // 8b: JSON missing required fields → skipped count > 0
@@ -732,9 +729,9 @@ fn test_import_malformed_data() {
             },
         } => {
             assert_eq!(memories_imported, 0, "malformed memories should not be imported");
-            assert!(skipped > 0, "malformed memories should be skipped, skipped={}", skipped);
+            assert!(skipped > 0, "malformed memories should be skipped, skipped={skipped}");
         }
-        other => panic!("expected Import response for partial data, got: {:?}", other),
+        other => panic!("expected Import response for partial data, got: {other:?}"),
     }
 
     // 8c: > 10,000 records → rejected (record limit)
@@ -771,11 +768,10 @@ fn test_import_malformed_data() {
         Response::Error { message } => {
             assert!(
                 message.contains("10000") || message.contains("record limit"),
-                "oversized import should mention record limit, got: {}",
-                message
+                "oversized import should mention record limit, got: {message}"
             );
         }
-        other => panic!("expected Error for oversized import, got: {:?}", other),
+        other => panic!("expected Error for oversized import, got: {other:?}"),
     }
 
     // 8d: Empty data with valid structure → 0 imported
@@ -804,6 +800,6 @@ fn test_import_malformed_data() {
             assert_eq!(symbols_imported, 0, "empty import should import 0 symbols");
             assert_eq!(skipped, 0, "empty import should skip 0");
         }
-        other => panic!("expected Import response for empty data, got: {:?}", other),
+        other => panic!("expected Import response for empty data, got: {other:?}"),
     }
 }

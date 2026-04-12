@@ -39,7 +39,7 @@ pub async fn run_extractor(
     // Default 15s gap = extract roughly every 2-3 conversation turns.
     // At ~65 extractions/day with haiku: ~$1.50/month.
     // Configurable via config.workers.extraction_debounce_secs
-    eprintln!("[extractor] ready, waiting for files ({}s debounce)...", debounce_secs);
+    eprintln!("[extractor] ready, waiting for files ({debounce_secs}s debounce)...");
 
     loop {
         // Wait for a file event or shutdown
@@ -671,7 +671,7 @@ async fn process_file(
                             if let Err(e) = ops::store_edge(
                                 &locked.conn,
                                 &memory.id,
-                                &format!("file:{}", affected),
+                                &format!("file:{affected}"),
                                 "affects",
                                 "{}",
                             ) {
@@ -894,12 +894,12 @@ mod tests {
 
         // Case 1: first time seeing this file (raw_last_offset = 0)
         let raw_last_offset = 0usize;
-        let last_offset = if raw_last_offset > content_file_offset { raw_last_offset - content_file_offset } else { 0 };
+        let last_offset = raw_last_offset.saturating_sub(content_file_offset);
         assert_eq!(last_offset, 0, "first time: should start at beginning of tail content");
 
         // Case 2: previously processed up to byte 115_000_000 (within our tail window)
         let raw_last_offset = 115_000_000usize;
-        let last_offset = if raw_last_offset > content_file_offset { raw_last_offset - content_file_offset } else { 0 };
+        let last_offset = raw_last_offset.saturating_sub(content_file_offset);
         assert_eq!(last_offset, 115_000_000 - 110_000_042, "should resume within tail");
 
         // Case 3: after parse, new_offset is relative to tail content
@@ -909,7 +909,7 @@ mod tests {
 
         // Case 4: next cycle, raw_last_offset = stored_offset from case 3
         let raw_last_offset = stored_offset;
-        let last_offset = if raw_last_offset > content_file_offset { raw_last_offset - content_file_offset } else { 0 };
+        let last_offset = raw_last_offset.saturating_sub(content_file_offset);
         assert_eq!(last_offset, new_relative_offset, "should resume from where we left off");
     }
 

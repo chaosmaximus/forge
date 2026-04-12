@@ -72,7 +72,7 @@ pub fn new_jwks_cache() -> SharedJwksCache {
 async fn fetch_jwks_from_oidc(issuer_url: &str) -> Result<JwkSet, String> {
     // Security: require HTTPS for issuer URL (except localhost for dev)
     if !issuer_url.starts_with("https://") && !issuer_url.starts_with("http://localhost") && !issuer_url.starts_with("http://127.0.0.1") {
-        return Err(format!("issuer_url must use HTTPS (got: {})", issuer_url));
+        return Err(format!("issuer_url must use HTTPS (got: {issuer_url})"));
     }
 
     let discovery_url = format!(
@@ -101,8 +101,7 @@ async fn fetch_jwks_from_oidc(issuer_url: &str) -> Result<JwkSet, String> {
         let normalized_disc = disc_issuer.trim_end_matches('/');
         if normalized_config != normalized_disc {
             return Err(format!(
-                "OIDC discovery issuer mismatch: configured={}, discovery={}",
-                issuer_url, disc_issuer
+                "OIDC discovery issuer mismatch: configured={issuer_url}, discovery={disc_issuer}"
             ));
         }
     }
@@ -113,7 +112,7 @@ async fn fetch_jwks_from_oidc(issuer_url: &str) -> Result<JwkSet, String> {
 
     // Security: jwks_uri must also use HTTPS (except localhost for dev)
     if !jwks_uri.starts_with("https://") && !jwks_uri.starts_with("http://localhost") && !jwks_uri.starts_with("http://127.0.0.1") {
-        return Err(format!("jwks_uri must use HTTPS (got: {})", jwks_uri));
+        return Err(format!("jwks_uri must use HTTPS (got: {jwks_uri})"));
     }
 
     let jwks: JwkSet = client

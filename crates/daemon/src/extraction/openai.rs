@@ -14,7 +14,7 @@ pub async fn extract(
     conversation_text: &str,
 ) -> ExtractionResult {
     let system_prompt = prompt::EXTRACTION_SYSTEM_PROMPT;
-    let user_message = format!("Conversation:\n{}", conversation_text);
+    let user_message = format!("Conversation:\n{conversation_text}");
 
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));

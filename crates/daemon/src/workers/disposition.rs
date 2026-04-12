@@ -37,8 +37,7 @@ pub async fn run_disposition(
 ) {
     let interval = Duration::from_secs(interval_secs);
     eprintln!(
-        "[disposition] started, interval = {:?}",
-        interval
+        "[disposition] started, interval = {interval:?}"
     );
 
     loop {
@@ -86,13 +85,13 @@ fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
     let sessions = match query_recent_sessions_for_agent(conn, agent_name) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[disposition] session query error for {}: {}", agent_name, e);
+            eprintln!("[disposition] session query error for {agent_name}: {e}");
             return;
         }
     };
 
     if sessions.is_empty() {
-        eprintln!("[disposition] no sessions found for agent '{}' — cannot compute traits", agent_name);
+        eprintln!("[disposition] no sessions found for agent '{agent_name}' — cannot compute traits");
         return;
     }
 
@@ -138,7 +137,7 @@ fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
     let now = manas::now_offset(0);
 
     let caution = Disposition {
-        id: format!("{}-caution", agent_name),
+        id: format!("{agent_name}-caution"),
         agent: agent_name.to_string(),
         disposition_trait: DispositionTrait::Caution,
         domain: None,
@@ -149,7 +148,7 @@ fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
     };
 
     let thoroughness = Disposition {
-        id: format!("{}-thoroughness", agent_name),
+        id: format!("{agent_name}-thoroughness"),
         agent: agent_name.to_string(),
         disposition_trait: DispositionTrait::Thoroughness,
         domain: None,
@@ -160,10 +159,10 @@ fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
     };
 
     if let Err(e) = manas::store_disposition(conn, &caution) {
-        eprintln!("[disposition] store caution error for {}: {}", agent_name, e);
+        eprintln!("[disposition] store caution error for {agent_name}: {e}");
     }
     if let Err(e) = manas::store_disposition(conn, &thoroughness) {
-        eprintln!("[disposition] store thoroughness error for {}: {}", agent_name, e);
+        eprintln!("[disposition] store thoroughness error for {agent_name}: {e}");
     }
 
     eprintln!(
@@ -198,7 +197,7 @@ fn query_active_agents(conn: &rusqlite::Connection) -> Vec<String> {
     };
     let agents: Vec<String> = rows.filter_map(|r| r.ok()).collect();
     if agents.is_empty() {
-        eprintln!("[disposition] no active agents found, using default: {}", DEFAULT_AGENT_NAME);
+        eprintln!("[disposition] no active agents found, using default: {DEFAULT_AGENT_NAME}");
         vec![DEFAULT_AGENT_NAME.to_string()]
     } else {
         agents
@@ -311,11 +310,11 @@ fn get_current_value(
     trait_type: DispositionTrait,
 ) -> f64 {
     let id = match trait_type {
-        DispositionTrait::Caution => format!("{}-caution", agent_name),
-        DispositionTrait::Thoroughness => format!("{}-thoroughness", agent_name),
-        DispositionTrait::Autonomy => format!("{}-autonomy", agent_name),
-        DispositionTrait::Verbosity => format!("{}-verbosity", agent_name),
-        DispositionTrait::Creativity => format!("{}-creativity", agent_name),
+        DispositionTrait::Caution => format!("{agent_name}-caution"),
+        DispositionTrait::Thoroughness => format!("{agent_name}-thoroughness"),
+        DispositionTrait::Autonomy => format!("{agent_name}-autonomy"),
+        DispositionTrait::Verbosity => format!("{agent_name}-verbosity"),
+        DispositionTrait::Creativity => format!("{agent_name}-creativity"),
     };
 
     match conn.query_row(
@@ -326,7 +325,7 @@ fn get_current_value(
         Ok(v) => v,
         Err(rusqlite::Error::QueryReturnedNoRows) => DEFAULT_VALUE, // Expected: first-time trait
         Err(e) => {
-            eprintln!("[disposition] WARN: failed to read {:?} for {}: {e}", trait_type, agent_name);
+            eprintln!("[disposition] WARN: failed to read {trait_type:?} for {agent_name}: {e}");
             DEFAULT_VALUE
         }
     }
@@ -363,15 +362,13 @@ mod tests {
         let caution = get_current_value(&conn, DEFAULT_AGENT_NAME, DispositionTrait::Caution);
         assert!(
             (caution - DEFAULT_VALUE).abs() < f64::EPSILON,
-            "initial caution should be {}",
-            DEFAULT_VALUE
+            "initial caution should be {DEFAULT_VALUE}"
         );
 
         let thoroughness = get_current_value(&conn, DEFAULT_AGENT_NAME, DispositionTrait::Thoroughness);
         assert!(
             (thoroughness - DEFAULT_VALUE).abs() < f64::EPSILON,
-            "initial thoroughness should be {}",
-            DEFAULT_VALUE
+            "initial thoroughness should be {DEFAULT_VALUE}"
         );
     }
 
@@ -381,7 +378,7 @@ mod tests {
 
         // Store a disposition with value near 1.0
         let d = Disposition {
-            id: format!("{}-caution", DEFAULT_AGENT_NAME),
+            id: format!("{DEFAULT_AGENT_NAME}-caution"),
             agent: DEFAULT_AGENT_NAME.to_string(),
             disposition_trait: DispositionTrait::Caution,
             domain: None,
@@ -395,7 +392,7 @@ mod tests {
         // Simulate adding MAX_DELTA — should clamp to 1.0
         let current = get_current_value(&conn, DEFAULT_AGENT_NAME, DispositionTrait::Caution);
         let new_val = (current + MAX_DELTA).clamp(0.0, 1.0);
-        assert!(new_val <= 1.0, "value must not exceed 1.0, got {}", new_val);
+        assert!(new_val <= 1.0, "value must not exceed 1.0, got {new_val}");
         assert!(
             (new_val - 1.0).abs() < f64::EPSILON,
             "0.98 + 0.05 should clamp to 1.0"
@@ -403,7 +400,7 @@ mod tests {
 
         // Store a disposition with value near 0.0
         let d2 = Disposition {
-            id: format!("{}-thoroughness", DEFAULT_AGENT_NAME),
+            id: format!("{DEFAULT_AGENT_NAME}-thoroughness"),
             agent: DEFAULT_AGENT_NAME.to_string(),
             disposition_trait: DispositionTrait::Thoroughness,
             domain: None,
@@ -419,8 +416,7 @@ mod tests {
         let new_val2 = (current2 - MAX_DELTA).clamp(0.0, 1.0);
         assert!(
             new_val2 >= 0.0,
-            "value must not go below 0.0, got {}",
-            new_val2
+            "value must not go below 0.0, got {new_val2}"
         );
         assert!(
             new_val2.abs() < f64::EPSILON,
@@ -478,14 +474,14 @@ mod tests {
             [],
             |row| row.get(0),
         ).expect("caution trait should exist after tick");
-        assert!(caution >= 0.0 && caution <= 1.0, "caution should be in [0,1], got {}", caution);
+        assert!((0.0..=1.0).contains(&caution), "caution should be in [0,1], got {caution}");
 
         let thoroughness: f64 = conn.query_row(
             "SELECT value FROM disposition WHERE id = 'claude-code-thoroughness'",
             [],
             |row| row.get(0),
         ).expect("thoroughness trait should exist after tick");
-        assert!(thoroughness >= 0.0 && thoroughness <= 1.0, "thoroughness should be in [0,1], got {}", thoroughness);
+        assert!((0.0..=1.0).contains(&thoroughness), "thoroughness should be in [0,1], got {thoroughness}");
     }
 
     #[test]
@@ -506,7 +502,7 @@ mod tests {
             [],
             |row| row.get(0),
         ).unwrap();
-        assert!(count >= 2, "should have at least 2 traits (caution + thoroughness), got {}", count);
+        assert!(count >= 2, "should have at least 2 traits (caution + thoroughness), got {count}");
     }
 
     #[test]

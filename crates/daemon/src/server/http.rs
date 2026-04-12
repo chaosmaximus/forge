@@ -786,8 +786,7 @@ mod tests {
         let headers = response.headers();
         assert!(
             headers.contains_key("access-control-allow-origin"),
-            "Expected CORS header access-control-allow-origin, got headers: {:?}",
-            headers
+            "Expected CORS header access-control-allow-origin, got headers: {headers:?}"
         );
     }
 
@@ -1394,7 +1393,7 @@ Pfkte+2kAeYPMK9Sa+apqqE=
         let resp = reply_rx.await.unwrap();
         match resp {
             Response::Ok { .. } => {}
-            other => panic!("expected Ok for socket-path write, got {:?}", other),
+            other => panic!("expected Ok for socket-path write, got {other:?}"),
         }
 
         drop(tx);

@@ -410,8 +410,7 @@ mod tests {
         for op in &admin_ops {
             assert!(
                 check_permission(&Role::Admin, op).is_ok(),
-                "Admin should be able to perform {:?}",
-                op
+                "Admin should be able to perform {op:?}"
             );
         }
     }
@@ -449,8 +448,7 @@ mod tests {
             let result = check_permission(&Role::Member, op);
             assert!(
                 result.is_err(),
-                "Member should be blocked from {:?}",
-                op
+                "Member should be blocked from {op:?}"
             );
             assert!(
                 result.unwrap_err().contains("insufficient permissions"),
@@ -487,8 +485,7 @@ mod tests {
         for op in &admin_ops {
             assert!(
                 check_permission(&Role::Viewer, op).is_err(),
-                "Viewer should be blocked from {:?}",
-                op
+                "Viewer should be blocked from {op:?}"
             );
         }
     }

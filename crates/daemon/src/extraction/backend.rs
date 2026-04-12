@@ -244,7 +244,7 @@ mod tests {
             BackendChoice::Gemini => {
                 // If GEMINI_API_KEY was somehow still available (race), accept
             }
-            _ => panic!("should return None or Gemini, got {:?}", result),
+            _ => panic!("should return None or Gemini, got {result:?}"),
         }
     }
 

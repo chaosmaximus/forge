@@ -21,15 +21,14 @@ pub async fn run_session_reaper(
     let timeout = config.workers.heartbeat_timeout_secs;
 
     eprintln!(
-        "[reaper] started — interval={}s, timeout={}s",
-        interval, timeout
+        "[reaper] started — interval={interval}s, timeout={timeout}s"
     );
 
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(interval)) => {
                 if let Err(e) = reap_stale_sessions(&db_path, timeout, &events) {
-                    eprintln!("[reaper] error: {}", e);
+                    eprintln!("[reaper] error: {e}");
                 }
             }
             _ = shutdown_rx.changed() => {
@@ -45,9 +44,9 @@ fn reap_stale_sessions(
     timeout_secs: u64,
     events: &EventSender,
 ) -> Result<(), String> {
-    let conn = Connection::open(db_path).map_err(|e| format!("db open: {}", e))?;
+    let conn = Connection::open(db_path).map_err(|e| format!("db open: {e}"))?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-        .map_err(|e| format!("pragma: {}", e))?;
+        .map_err(|e| format!("pragma: {e}"))?;
 
     // Phase 1: Reap sessions whose heartbeats have stopped.
     // Atomic: UPDATE with full WHERE clause to avoid TOCTOU race.
@@ -55,14 +54,13 @@ fn reap_stale_sessions(
         "UPDATE session SET status = 'ended', ended_at = datetime('now') \
          WHERE status = 'active' \
          AND last_heartbeat_at IS NOT NULL \
-         AND last_heartbeat_at < datetime('now', '-{} seconds') \
-         RETURNING id",
-        timeout_secs
+         AND last_heartbeat_at < datetime('now', '-{timeout_secs} seconds') \
+         RETURNING id"
     );
-    let mut stmt = conn.prepare(&reap_sql).map_err(|e| format!("prepare: {}", e))?;
+    let mut stmt = conn.prepare(&reap_sql).map_err(|e| format!("prepare: {e}"))?;
     let stale_ids: Vec<String> = stmt
         .query_map([], |row| row.get(0))
-        .map_err(|e| format!("query: {}", e))?
+        .map_err(|e| format!("query: {e}"))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -75,7 +73,7 @@ fn reap_stale_sessions(
                 "reason": "heartbeat_timeout"
             }),
         );
-        eprintln!("[reaper] reaped stale session: {}", session_id);
+        eprintln!("[reaper] reaped stale session: {session_id}");
     }
 
     // Phase 2: Reap sessions that never heartbeated AND are older than 24 hours.
@@ -87,10 +85,10 @@ fn reap_stale_sessions(
          AND last_heartbeat_at IS NULL \
          AND started_at < datetime('now', '-86400 seconds') \
          RETURNING id";
-    let mut stmt2 = conn.prepare(orphan_sql).map_err(|e| format!("prepare orphan: {}", e))?;
+    let mut stmt2 = conn.prepare(orphan_sql).map_err(|e| format!("prepare orphan: {e}"))?;
     let orphan_ids: Vec<String> = stmt2
         .query_map([], |row| row.get(0))
-        .map_err(|e| format!("query orphan: {}", e))?
+        .map_err(|e| format!("query orphan: {e}"))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -103,7 +101,7 @@ fn reap_stale_sessions(
                 "reason": "no_heartbeat_24h"
             }),
         );
-        eprintln!("[reaper] reaped orphan session (no heartbeat, >24h): {}", session_id);
+        eprintln!("[reaper] reaped orphan session (no heartbeat, >24h): {session_id}");
     }
 
     let total = stale_ids.len() + orphan_ids.len();

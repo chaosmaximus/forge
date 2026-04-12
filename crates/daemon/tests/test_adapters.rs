@@ -7,8 +7,7 @@ fn test_detect_adapters_finds_claude() {
     // On this machine, ~/.claude/projects/ exists (we're running in Claude Code)
     assert!(
         names.contains(&"claude-code"),
-        "expected claude-code adapter, got: {:?}",
-        names
+        "expected claude-code adapter, got: {names:?}"
     );
 }
 
@@ -18,7 +17,7 @@ fn test_adapter_for_path_routes_correctly() {
     let adapters = adapters::detect_adapters();
 
     // Claude path should route to claude-code adapter
-    let claude_path = format!("{}/.claude/projects/test/session.jsonl", home);
+    let claude_path = format!("{home}/.claude/projects/test/session.jsonl");
     let adapter = adapters::adapter_for_path(&adapters, std::path::Path::new(&claude_path));
     assert!(adapter.is_some(), "should find adapter for Claude path");
     assert_eq!(adapter.unwrap().name(), "claude-code");
@@ -41,8 +40,7 @@ fn test_codex_adapter_detected_if_installed() {
     {
         assert!(
             names.contains(&"codex"),
-            "expected codex adapter when ~/.codex/sessions exists, got: {:?}",
-            names
+            "expected codex adapter when ~/.codex/sessions exists, got: {names:?}"
         );
     }
 }
@@ -53,11 +51,10 @@ fn test_adapter_for_path_codex() {
     let adapters = adapters::detect_adapters();
 
     let codex_path = format!(
-        "{}/.codex/sessions/2026/04/03/rollout-abc.jsonl",
-        home
+        "{home}/.codex/sessions/2026/04/03/rollout-abc.jsonl"
     );
     let adapter = adapters::adapter_for_path(&adapters, std::path::Path::new(&codex_path));
-    if std::path::Path::new(&format!("{}/.codex/sessions", home)).exists() {
+    if std::path::Path::new(&format!("{home}/.codex/sessions")).exists() {
         assert!(adapter.is_some());
         assert_eq!(adapter.unwrap().name(), "codex");
     }

@@ -9,7 +9,7 @@ use super::prompt;
 /// SECURITY: api_key is never logged.
 pub async fn extract(api_key: &str, model: &str, conversation_text: &str) -> ExtractionResult {
     let system_prompt = prompt::EXTRACTION_SYSTEM_PROMPT;
-    let user_message = format!("Conversation:\n{}", conversation_text);
+    let user_message = format!("Conversation:\n{conversation_text}");
 
     let client = reqwest::Client::new();
     let body = serde_json::json!({

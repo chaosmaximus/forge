@@ -1472,7 +1472,7 @@ async fn main() {
                     eprintln!("cleanup-memory failed: {message}");
                 }
                 Ok(other) => {
-                    eprintln!("unexpected response: {:?}", other);
+                    eprintln!("unexpected response: {other:?}");
                 }
                 Err(e) => {
                     eprintln!("cleanup-memory error: {e}");
@@ -1503,7 +1503,7 @@ async fn main() {
                 Ok(_) => eprintln!("unexpected response"),
                 Err(e) => {
                     // Connection error likely means daemon already stopped
-                    eprintln!("Daemon appears to be down ({}). Next command will auto-start it.", e);
+                    eprintln!("Daemon appears to be down ({e}). Next command will auto-start it.");
                 }
             }
         }
@@ -1524,7 +1524,7 @@ async fn main() {
                 Ok(forge_core::protocol::Response::Error { message }) => {
                     eprintln!("vacuum failed: {message}");
                 }
-                Ok(other) => eprintln!("unexpected response: {:?}", other),
+                Ok(other) => eprintln!("unexpected response: {other:?}"),
                 Err(e) => { eprintln!("vacuum error: {e}"); std::process::exit(1); }
             }
         }
@@ -1540,7 +1540,7 @@ async fn main() {
                 Ok(forge_core::protocol::Response::Error { message }) => {
                     eprintln!("backfill-affects failed: {message}");
                 }
-                Ok(other) => eprintln!("unexpected response: {:?}", other),
+                Ok(other) => eprintln!("unexpected response: {other:?}"),
                 Err(e) => { eprintln!("backfill-affects error: {e}"); std::process::exit(1); }
             }
         }
@@ -1560,7 +1560,7 @@ async fn main() {
                 Ok(forge_core::protocol::Response::Error { message }) => {
                     eprintln!("find-symbol failed: {message}");
                 }
-                Ok(other) => eprintln!("unexpected response: {:?}", other),
+                Ok(other) => eprintln!("unexpected response: {other:?}"),
                 Err(e) => { eprintln!("find-symbol error: {e}"); std::process::exit(1); }
             }
         }
@@ -1580,7 +1580,7 @@ async fn main() {
                 Ok(forge_core::protocol::Response::Error { message }) => {
                     eprintln!("symbols failed: {message}");
                 }
-                Ok(other) => eprintln!("unexpected response: {:?}", other),
+                Ok(other) => eprintln!("unexpected response: {other:?}"),
                 Err(e) => { eprintln!("symbols error: {e}"); std::process::exit(1); }
             }
         }
@@ -1703,7 +1703,7 @@ async fn main() {
             MeetingAction::Vote { id, choice, session } => {
                 let req = forge_core::protocol::Request::MeetingVote { meeting_id: id, session_id: session, choice };
                 match client::send(&req).await {
-                    Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                    Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
                     Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
                     Err(e) => eprintln!("Connection error: {e}"),
                 }
@@ -1711,7 +1711,7 @@ async fn main() {
             MeetingAction::Result { id } => {
                 let req = forge_core::protocol::Request::MeetingResult { meeting_id: id };
                 match client::send(&req).await {
-                    Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                    Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
                     Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
                     Err(e) => eprintln!("Connection error: {e}"),
                 }
@@ -1799,7 +1799,7 @@ async fn main() {
             let req = forge_core::protocol::Request::LicenseStatus;
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::LicenseStatusResult { tier, has_key } }) => {
-                    println!("License Tier: {}", tier);
+                    println!("License Tier: {tier}");
                     println!("License Key:  {}", if has_key { "configured" } else { "none" });
                 }
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
@@ -1811,7 +1811,7 @@ async fn main() {
             let req = forge_core::protocol::Request::SetLicense { tier: tier.clone(), key };
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::LicenseSet { tier } }) => {
-                    println!("License tier set to: {}", tier);
+                    println!("License tier set to: {tier}");
                 }
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
                 Ok(other) => eprintln!("Unexpected: {other:?}"),
@@ -1823,7 +1823,7 @@ async fn main() {
         Commands::SkillsList { category, search, limit } => {
             let req = forge_core::protocol::Request::SkillsList { category, search, limit: Some(limit) };
             match client::send(&req).await {
-                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
@@ -1831,7 +1831,7 @@ async fn main() {
         Commands::SkillsInstall { name, project } => {
             let req = forge_core::protocol::Request::SkillsInstall { name, project };
             match client::send(&req).await {
-                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
@@ -1839,7 +1839,7 @@ async fn main() {
         Commands::SkillsUninstall { name, project } => {
             let req = forge_core::protocol::Request::SkillsUninstall { name, project };
             match client::send(&req).await {
-                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
@@ -1847,7 +1847,7 @@ async fn main() {
         Commands::SkillsInfo { name } => {
             let req = forge_core::protocol::Request::SkillsInfo { name };
             match client::send(&req).await {
-                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
@@ -1855,7 +1855,7 @@ async fn main() {
         Commands::SkillsRefresh => {
             let req = forge_core::protocol::Request::SkillsRefresh;
             match client::send(&req).await {
-                Ok(forge_core::protocol::Response::Ok { data }) => println!("{:?}", data),
+                Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
                 Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
@@ -1892,7 +1892,7 @@ mod tests {
             Commands::DetectReality { path } => {
                 assert_eq!(path.as_deref(), Some("/tmp/myproject"));
             }
-            other => panic!("expected DetectReality, got {:?}", other),
+            other => panic!("expected DetectReality, got {other:?}"),
         }
     }
 
@@ -1904,7 +1904,7 @@ mod tests {
             Commands::DetectReality { path } => {
                 assert!(path.is_none());
             }
-            other => panic!("expected DetectReality, got {:?}", other),
+            other => panic!("expected DetectReality, got {other:?}"),
         }
     }
 
@@ -1920,7 +1920,7 @@ mod tests {
                 assert_eq!(kind.as_deref(), Some("function"));
                 assert_eq!(limit, 5);
             }
-            other => panic!("expected CodeSearch, got {:?}", other),
+            other => panic!("expected CodeSearch, got {other:?}"),
         }
     }
 
@@ -1934,7 +1934,7 @@ mod tests {
                 assert!(kind.is_none());
                 assert_eq!(limit, 20);
             }
-            other => panic!("expected CodeSearch, got {:?}", other),
+            other => panic!("expected CodeSearch, got {other:?}"),
         }
     }
 
@@ -1946,7 +1946,7 @@ mod tests {
             Commands::Realities { organization } => {
                 assert!(organization.is_none());
             }
-            other => panic!("expected Realities, got {:?}", other),
+            other => panic!("expected Realities, got {other:?}"),
         }
     }
 
@@ -1972,9 +1972,9 @@ mod tests {
                     assert!(locked);
                     assert_eq!(ceiling, Some(100000.0));
                 }
-                other => panic!("expected SetScoped, got {:?}", other),
+                other => panic!("expected SetScoped, got {other:?}"),
             },
-            other => panic!("expected Config, got {:?}", other),
+            other => panic!("expected Config, got {other:?}"),
         }
     }
 
@@ -1996,9 +1996,9 @@ mod tests {
                     assert!(team.is_none());
                     assert_eq!(organization.as_deref(), Some("default"));
                 }
-                other => panic!("expected GetEffective, got {:?}", other),
+                other => panic!("expected GetEffective, got {other:?}"),
             },
-            other => panic!("expected Config, got {:?}", other),
+            other => panic!("expected Config, got {other:?}"),
         }
     }
 
@@ -2016,9 +2016,9 @@ mod tests {
                     assert_eq!(scope, "reality");
                     assert_eq!(scope_id, "r1");
                 }
-                other => panic!("expected ListScoped, got {:?}", other),
+                other => panic!("expected ListScoped, got {other:?}"),
             },
-            other => panic!("expected Config, got {:?}", other),
+            other => panic!("expected Config, got {other:?}"),
         }
     }
 
@@ -2038,9 +2038,9 @@ mod tests {
                     assert_eq!(scope_id, "default");
                     assert_eq!(key, "max_tokens");
                 }
-                other => panic!("expected DeleteScoped, got {:?}", other),
+                other => panic!("expected DeleteScoped, got {other:?}"),
             },
-            other => panic!("expected Config, got {:?}", other),
+            other => panic!("expected Config, got {other:?}"),
         }
     }
 
@@ -2052,7 +2052,7 @@ mod tests {
             Commands::ForceIndex { path } => {
                 assert!(path.is_none(), "default path should be None");
             }
-            other => panic!("expected ForceIndex, got {:?}", other),
+            other => panic!("expected ForceIndex, got {other:?}"),
         }
     }
 
@@ -2078,9 +2078,9 @@ mod tests {
                     assert_eq!(system_context.as_deref(), Some("You are the CTO"));
                     assert_eq!(decision_style.as_deref(), Some("analytical"));
                 }
-                other => panic!("expected Create, got {:?}", other),
+                other => panic!("expected Create, got {other:?}"),
             },
-            other => panic!("expected AgentTemplate, got {:?}", other),
+            other => panic!("expected AgentTemplate, got {other:?}"),
         }
     }
 
@@ -2093,9 +2093,9 @@ mod tests {
                 AgentTemplateAction::List { org } => {
                     assert!(org.is_none());
                 }
-                other => panic!("expected List, got {:?}", other),
+                other => panic!("expected List, got {other:?}"),
             },
-            other => panic!("expected AgentTemplate, got {:?}", other),
+            other => panic!("expected AgentTemplate, got {other:?}"),
         }
     }
 
@@ -2109,9 +2109,9 @@ mod tests {
                     assert_eq!(name.as_deref(), Some("CTO"));
                     assert!(id.is_none());
                 }
-                other => panic!("expected Get, got {:?}", other),
+                other => panic!("expected Get, got {other:?}"),
             },
-            other => panic!("expected AgentTemplate, got {:?}", other),
+            other => panic!("expected AgentTemplate, got {other:?}"),
         }
     }
 
@@ -2124,9 +2124,9 @@ mod tests {
                 AgentTemplateAction::Delete { id } => {
                     assert_eq!(id, "01KNF123");
                 }
-                other => panic!("expected Delete, got {:?}", other),
+                other => panic!("expected Delete, got {other:?}"),
             },
-            other => panic!("expected AgentTemplate, got {:?}", other),
+            other => panic!("expected AgentTemplate, got {other:?}"),
         }
     }
 
@@ -2150,9 +2150,9 @@ mod tests {
                     assert_eq!(project.as_deref(), Some("forge"));
                     assert_eq!(team.as_deref(), Some("board"));
                 }
-                other => panic!("expected Spawn, got {:?}", other),
+                other => panic!("expected Spawn, got {other:?}"),
             },
-            other => panic!("expected Agent, got {:?}", other),
+            other => panic!("expected Agent, got {other:?}"),
         }
     }
 
@@ -2165,9 +2165,9 @@ mod tests {
                 AgentAction::Retire { session } => {
                     assert_eq!(session, "cto-board");
                 }
-                other => panic!("expected Retire, got {:?}", other),
+                other => panic!("expected Retire, got {other:?}"),
             },
-            other => panic!("expected Agent, got {:?}", other),
+            other => panic!("expected Agent, got {other:?}"),
         }
     }
 
@@ -2179,7 +2179,7 @@ mod tests {
             Commands::Agents { team } => {
                 assert_eq!(team.as_deref(), Some("board"));
             }
-            other => panic!("expected Agents, got {:?}", other),
+            other => panic!("expected Agents, got {other:?}"),
         }
     }
 
@@ -2191,7 +2191,7 @@ mod tests {
             Commands::Agents { team } => {
                 assert!(team.is_none());
             }
-            other => panic!("expected Agents, got {:?}", other),
+            other => panic!("expected Agents, got {other:?}"),
         }
     }
 
@@ -2210,7 +2210,7 @@ mod tests {
                 assert_eq!(status, "thinking");
                 assert_eq!(task.as_deref(), Some("reviewing architecture"));
             }
-            other => panic!("expected AgentStatus, got {:?}", other),
+            other => panic!("expected AgentStatus, got {other:?}"),
         }
     }
 
@@ -2233,9 +2233,9 @@ mod tests {
                     assert_eq!(purpose.as_deref(), Some("Strategic decisions"));
                     assert!(parent.is_none());
                 }
-                other => panic!("expected Create, got {:?}", other),
+                other => panic!("expected Create, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 
@@ -2248,9 +2248,9 @@ mod tests {
                 TeamAction::Members { name } => {
                     assert_eq!(name, "board");
                 }
-                other => panic!("expected Members, got {:?}", other),
+                other => panic!("expected Members, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 
@@ -2268,9 +2268,9 @@ mod tests {
                     assert_eq!(name, "board");
                     assert_eq!(session, "cto-board");
                 }
-                other => panic!("expected SetOrchestrator, got {:?}", other),
+                other => panic!("expected SetOrchestrator, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 
@@ -2284,9 +2284,9 @@ mod tests {
                     assert_eq!(name, "board");
                     assert!(team_id.is_none());
                 }
-                other => panic!("expected Status, got {:?}", other),
+                other => panic!("expected Status, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 
@@ -2311,9 +2311,9 @@ mod tests {
                     assert!(from_file.is_none());
                     assert_eq!(topology.as_deref(), Some("star"));
                 }
-                other => panic!("expected Run, got {:?}", other),
+                other => panic!("expected Run, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 
@@ -2333,9 +2333,9 @@ mod tests {
                     assert_eq!(from_file.as_deref(), Some("team-config.json"));
                     assert!(topology.is_none());
                 }
-                other => panic!("expected Run, got {:?}", other),
+                other => panic!("expected Run, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 
@@ -2352,9 +2352,9 @@ mod tests {
                     assert!(name.is_empty(), "name should default to empty");
                     assert_eq!(from_file.as_deref(), Some("team-config.json"));
                 }
-                other => panic!("expected Run, got {:?}", other),
+                other => panic!("expected Run, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 
@@ -2370,9 +2370,9 @@ mod tests {
                 TeamAction::Stop { name } => {
                     assert_eq!(name, "Sprint");
                 }
-                other => panic!("expected Stop, got {:?}", other),
+                other => panic!("expected Stop, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 
@@ -2398,9 +2398,9 @@ mod tests {
                     assert_eq!(orchestrator, "ceo-session");
                     assert_eq!(participants, vec!["cto-board", "cmo-board", "cfo-board"]);
                 }
-                other => panic!("expected Create, got {:?}", other),
+                other => panic!("expected Create, got {other:?}"),
             },
-            other => panic!("expected Meeting, got {:?}", other),
+            other => panic!("expected Meeting, got {other:?}"),
         }
     }
 
@@ -2413,9 +2413,9 @@ mod tests {
                 MeetingAction::Status { id } => {
                     assert_eq!(id, "m-01");
                 }
-                other => panic!("expected Status, got {:?}", other),
+                other => panic!("expected Status, got {other:?}"),
             },
-            other => panic!("expected Meeting, got {:?}", other),
+            other => panic!("expected Meeting, got {other:?}"),
         }
     }
 
@@ -2428,9 +2428,9 @@ mod tests {
                 MeetingAction::Responses { id } => {
                     assert_eq!(id, "m-01");
                 }
-                other => panic!("expected Responses, got {:?}", other),
+                other => panic!("expected Responses, got {other:?}"),
             },
-            other => panic!("expected Meeting, got {:?}", other),
+            other => panic!("expected Meeting, got {other:?}"),
         }
     }
 
@@ -2448,9 +2448,9 @@ mod tests {
                     assert_eq!(id, "m-01");
                     assert_eq!(synthesis, "All agreed on PostgreSQL");
                 }
-                other => panic!("expected Synthesize, got {:?}", other),
+                other => panic!("expected Synthesize, got {other:?}"),
             },
-            other => panic!("expected Meeting, got {:?}", other),
+            other => panic!("expected Meeting, got {other:?}"),
         }
     }
 
@@ -2468,9 +2468,9 @@ mod tests {
                     assert_eq!(id, "m-01");
                     assert_eq!(decision, "Use PostgreSQL for prod");
                 }
-                other => panic!("expected Decide, got {:?}", other),
+                other => panic!("expected Decide, got {other:?}"),
             },
-            other => panic!("expected Meeting, got {:?}", other),
+            other => panic!("expected Meeting, got {other:?}"),
         }
     }
 
@@ -2488,9 +2488,9 @@ mod tests {
                     assert_eq!(team.as_deref(), Some("team-01"));
                     assert_eq!(status.as_deref(), Some("open"));
                 }
-                other => panic!("expected List, got {:?}", other),
+                other => panic!("expected List, got {other:?}"),
             },
-            other => panic!("expected Meeting, got {:?}", other),
+            other => panic!("expected Meeting, got {other:?}"),
         }
     }
 
@@ -2504,9 +2504,9 @@ mod tests {
                     assert!(team.is_none());
                     assert!(status.is_none());
                 }
-                other => panic!("expected List, got {:?}", other),
+                other => panic!("expected List, got {other:?}"),
             },
-            other => panic!("expected Meeting, got {:?}", other),
+            other => panic!("expected Meeting, got {other:?}"),
         }
     }
 
@@ -2519,9 +2519,9 @@ mod tests {
                 MeetingAction::Transcript { id } => {
                     assert_eq!(id, "m-01");
                 }
-                other => panic!("expected Transcript, got {:?}", other),
+                other => panic!("expected Transcript, got {other:?}"),
             },
-            other => panic!("expected Meeting, got {:?}", other),
+            other => panic!("expected Meeting, got {other:?}"),
         }
     }
 
@@ -2579,7 +2579,7 @@ mod tests {
                 assert_eq!(query, "test query");
                 assert_eq!(limit, 5);
             }
-            other => panic!("expected Recall, got {:?}", other),
+            other => panic!("expected Recall, got {other:?}"),
         }
     }
 
@@ -2599,7 +2599,7 @@ mod tests {
                 assert_eq!(session, Some("s1".into()));
                 assert!(team.is_none());
             }
-            other => panic!("expected Subscribe, got {:?}", other),
+            other => panic!("expected Subscribe, got {other:?}"),
         }
     }
 
@@ -2613,7 +2613,7 @@ mod tests {
                 assert!(session.is_none());
                 assert!(team.is_none());
             }
-            other => panic!("expected Subscribe, got {:?}", other),
+            other => panic!("expected Subscribe, got {other:?}"),
         }
     }
 
@@ -2630,7 +2630,7 @@ mod tests {
                 assert!(session.is_none());
                 assert_eq!(team, Some("team-alpha".into()));
             }
-            other => panic!("expected Subscribe, got {:?}", other),
+            other => panic!("expected Subscribe, got {other:?}"),
         }
     }
 
@@ -2642,7 +2642,7 @@ mod tests {
             Commands::SessionHeartbeat { session } => {
                 assert_eq!(session, "s1");
             }
-            other => panic!("expected SessionHeartbeat, got {:?}", other),
+            other => panic!("expected SessionHeartbeat, got {other:?}"),
         }
     }
 
@@ -2760,7 +2760,7 @@ mod tests {
                 assert!(limit.is_none());
                 assert!(full);
             }
-            other => panic!("expected Messages, got {:?}", other),
+            other => panic!("expected Messages, got {other:?}"),
         }
     }
 
@@ -2776,7 +2776,7 @@ mod tests {
                 assert_eq!(session, "s1");
                 assert!(!full);
             }
-            other => panic!("expected Messages, got {:?}", other),
+            other => panic!("expected Messages, got {other:?}"),
         }
     }
 
@@ -2797,7 +2797,7 @@ mod tests {
                 assert_eq!(limit, Some(5));
                 assert!(full);
             }
-            other => panic!("expected Messages, got {:?}", other),
+            other => panic!("expected Messages, got {other:?}"),
         }
     }
 
@@ -2814,7 +2814,7 @@ mod tests {
             Commands::MessageRead { id } => {
                 assert_eq!(id, "msg-01ABCDEF");
             }
-            other => panic!("expected MessageRead, got {:?}", other),
+            other => panic!("expected MessageRead, got {other:?}"),
         }
     }
 
@@ -2832,9 +2832,9 @@ mod tests {
                 ConfigAction::GetEffective { agent, .. } => {
                     assert_eq!(agent.as_deref(), Some("claude-code"));
                 }
-                other => panic!("expected GetEffective, got {:?}", other),
+                other => panic!("expected GetEffective, got {other:?}"),
             },
-            other => panic!("expected Config, got {:?}", other),
+            other => panic!("expected Config, got {other:?}"),
         }
     }
 
@@ -2851,9 +2851,9 @@ mod tests {
                 ConfigAction::GetEffective { agent, .. } => {
                     assert_eq!(agent.as_deref(), Some("claude-code"));
                 }
-                other => panic!("expected GetEffective, got {:?}", other),
+                other => panic!("expected GetEffective, got {other:?}"),
             },
-            other => panic!("expected Config, got {:?}", other),
+            other => panic!("expected Config, got {other:?}"),
         }
     }
 
@@ -2910,7 +2910,7 @@ mod tests {
         let cli = Cli::try_parse_from(["forge-next", "recall", "test query"]).unwrap();
         match cli.command {
             Commands::Recall { since, .. } => assert!(since.is_none(), "since should default to None"),
-            other => panic!("expected Recall, got {:?}", other),
+            other => panic!("expected Recall, got {other:?}"),
         }
     }
 
@@ -2938,7 +2938,7 @@ mod tests {
                 assert_eq!(limit, 5);
                 assert_eq!(offset, 10);
             }
-            other => panic!("expected Perceptions, got {:?}", other),
+            other => panic!("expected Perceptions, got {other:?}"),
         }
     }
 
@@ -2950,7 +2950,7 @@ mod tests {
             Commands::Perceptions { offset, .. } => {
                 assert_eq!(offset, 0, "offset should default to 0");
             }
-            other => panic!("expected Perceptions, got {:?}", other),
+            other => panic!("expected Perceptions, got {other:?}"),
         }
     }
 
@@ -2968,9 +2968,9 @@ mod tests {
                     assert_eq!(name, "board");
                     assert_eq!(team_id.as_deref(), Some("tid-123"));
                 }
-                other => panic!("expected Status, got {:?}", other),
+                other => panic!("expected Status, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 
@@ -2984,9 +2984,9 @@ mod tests {
                     assert_eq!(name, "board");
                     assert!(team_id.is_none(), "team_id should be None when not provided");
                 }
-                other => panic!("expected Status, got {:?}", other),
+                other => panic!("expected Status, got {other:?}"),
             },
-            other => panic!("expected Team, got {:?}", other),
+            other => panic!("expected Team, got {other:?}"),
         }
     }
 }

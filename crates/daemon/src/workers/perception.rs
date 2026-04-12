@@ -21,7 +21,7 @@ pub async fn run_perception(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    eprintln!("[perception] started, interval = {:?}", interval);
+    eprintln!("[perception] started, interval = {interval:?}");
 
     loop {
         tokio::select! {
@@ -43,10 +43,10 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
         match manas::expire_perceptions(&locked.conn) {
             Ok(expired) => {
                 if expired > 0 {
-                    eprintln!("[perception] expired {} old perceptions", expired);
+                    eprintln!("[perception] expired {expired} old perceptions");
                 }
             }
-            Err(e) => eprintln!("[perception] expire error: {}", e),
+            Err(e) => eprintln!("[perception] expire error: {e}"),
         }
     } // lock released
 
@@ -58,7 +58,7 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
             let locked = state.lock().await;
             for p in &perceptions {
                 if let Err(e) = manas::store_perception(&locked.conn, p) {
-                    eprintln!("[perception] store error: {}", e);
+                    eprintln!("[perception] store error: {e}");
                 }
             }
             eprintln!("[perception] stored {} git perceptions", perceptions.len());
@@ -91,7 +91,7 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
                 consumed: false,
             };
             if let Err(e) = manas::store_perception(&locked.conn, &perception) {
-                eprintln!("[perception] anti-pattern store error: {}", e);
+                eprintln!("[perception] anti-pattern store error: {e}");
             }
             // Emit event for real-time UI notification
             crate::events::emit(&locked.events, "anti_pattern_detected", serde_json::json!({
@@ -99,7 +99,7 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
                 "action": action_summary,
                 "confidence": confidence,
             }));
-            eprintln!("[perception] anti-pattern detected: {} (confidence: {:.2})", ap_title, confidence);
+            eprintln!("[perception] anti-pattern detected: {ap_title} (confidence: {confidence:.2})");
         }
     } // lock released
 }
@@ -153,7 +153,7 @@ fn detect_anti_patterns(conn: &rusqlite::Connection, threshold: f64) -> Vec<(Str
     let stop_words: HashSet<String> = crate::common::STOP_WORDS.iter().map(|s| s.to_string()).collect();
 
     for (ap_title, ap_content) in &anti_patterns {
-        let ap_text = format!("{} {}", ap_title, ap_content).to_lowercase();
+        let ap_text = format!("{ap_title} {ap_content}").to_lowercase();
         let ap_words: HashSet<String> = ap_text.split_whitespace()
             .filter(|w| w.len() > 3 && !stop_words.contains(*w))
             .map(|s| s.to_string())
@@ -161,7 +161,7 @@ fn detect_anti_patterns(conn: &rusqlite::Connection, threshold: f64) -> Vec<(Str
         if ap_words.len() < 3 { continue; }
 
         for (action_type, action_summary) in &recent_actions {
-            let action_text = format!("{} {}", action_type, action_summary).to_lowercase();
+            let action_text = format!("{action_type} {action_summary}").to_lowercase();
             let action_words: HashSet<String> = action_text.split_whitespace()
                 .filter(|w| w.len() > 3 && !stop_words.contains(*w))
                 .map(|s| s.to_string())
@@ -175,7 +175,7 @@ fn detect_anti_patterns(conn: &rusqlite::Connection, threshold: f64) -> Vec<(Str
             if similarity >= threshold {
                 detections.push((
                     ap_title.clone(),
-                    format!("{}: {}", action_type, action_summary),
+                    format!("{action_type}: {action_summary}"),
                     similarity,
                 ));
             }

@@ -170,11 +170,11 @@ async fn unix_subscribe(
             line = lines.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        println!("{}", line);
+                        println!("{line}");
                     }
                     Ok(None) => break, // EOF
                     Err(e) => {
-                        eprintln!("read error: {}", e);
+                        eprintln!("read error: {e}");
                         break;
                     }
                 }
@@ -204,13 +204,13 @@ async fn http_subscribe(
         params.push(format!("events={}", evts.join(",")));
     }
     if let Some(ref sid) = session_id {
-        params.push(format!("session_id={}", sid));
+        params.push(format!("session_id={sid}"));
     }
     if let Some(ref tid) = team_id {
-        params.push(format!("team_id={}", tid));
+        params.push(format!("team_id={tid}"));
     }
     if let Some(t) = token {
-        params.push(format!("token={}", t));
+        params.push(format!("token={t}"));
     }
     if !params.is_empty() {
         url = format!("{}?{}", url, params.join("&"));
@@ -237,12 +237,12 @@ async fn http_subscribe(
                         // SSE format: "data: {...}\n\n"
                         for line in text.lines() {
                             if let Some(data) = line.strip_prefix("data: ") {
-                                println!("{}", data);
+                                println!("{data}");
                             }
                         }
                     }
                     Some(Err(e)) => {
-                        eprintln!("stream error: {}", e);
+                        eprintln!("stream error: {e}");
                         break;
                     }
                     None => break, // Stream ended

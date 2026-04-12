@@ -10,7 +10,7 @@ use std::path::Path;
 /// Scan all Claude project memory directories and import memories.
 pub fn ingest_claude_memories(conn: &Connection) -> Result<(usize, usize), String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    let projects_dir = format!("{}/.claude/projects", home);
+    let projects_dir = format!("{home}/.claude/projects");
 
     let mut imported = 0usize;
     let mut skipped = 0usize;
@@ -100,7 +100,7 @@ pub fn parse_claude_memory_file(path: &Path) -> Result<Option<Memory>, String> {
     let full_content = if body.is_empty() {
         description.clone()
     } else {
-        format!("{}\n\n{}", description, body)
+        format!("{description}\n\n{body}")
     };
 
     // Tag with source project
@@ -140,7 +140,7 @@ type: feedback
 "Proactive" means clear communication and guidance, NOT autonomous action.
 "#;
         let mut tmp = NamedTempFile::with_suffix(".md").unwrap();
-        write!(tmp, "{}", content).unwrap();
+        write!(tmp, "{content}").unwrap();
 
         let memory = parse_claude_memory_file(tmp.path()).unwrap().unwrap();
         assert_eq!(memory.title, "User autonomy preference");
@@ -154,7 +154,7 @@ type: feedback
     fn test_parse_no_frontmatter() {
         let content = "# Just a regular markdown file\n\nNo frontmatter here.\n";
         let mut tmp = NamedTempFile::with_suffix(".md").unwrap();
-        write!(tmp, "{}", content).unwrap();
+        write!(tmp, "{content}").unwrap();
 
         let result = parse_claude_memory_file(tmp.path()).unwrap();
         assert!(result.is_none());
@@ -164,7 +164,7 @@ type: feedback
     fn test_parse_empty_name() {
         let content = "---\nname:\ndescription: Some desc\ntype: user\n---\nBody text.\n";
         let mut tmp = NamedTempFile::with_suffix(".md").unwrap();
-        write!(tmp, "{}", content).unwrap();
+        write!(tmp, "{content}").unwrap();
 
         let result = parse_claude_memory_file(tmp.path()).unwrap();
         assert!(result.is_none());
@@ -174,7 +174,7 @@ type: feedback
     fn test_parse_project_type() {
         let content = "---\nname: Forge plugin project\ndescription: v0.1.5 published\ntype: project\n---\n";
         let mut tmp = NamedTempFile::with_suffix(".md").unwrap();
-        write!(tmp, "{}", content).unwrap();
+        write!(tmp, "{content}").unwrap();
 
         let memory = parse_claude_memory_file(tmp.path()).unwrap().unwrap();
         assert_eq!(memory.memory_type, MemoryType::Decision); // project -> decision
@@ -184,7 +184,7 @@ type: feedback
     fn test_parse_user_type() {
         let content = "---\nname: User pref\ndescription: Prefers Rust\ntype: user\n---\n";
         let mut tmp = NamedTempFile::with_suffix(".md").unwrap();
-        write!(tmp, "{}", content).unwrap();
+        write!(tmp, "{content}").unwrap();
 
         let memory = parse_claude_memory_file(tmp.path()).unwrap().unwrap();
         assert_eq!(memory.memory_type, MemoryType::Preference); // user -> preference
@@ -194,7 +194,7 @@ type: feedback
     fn test_parse_reference_type() {
         let content = "---\nname: API reference\ndescription: REST API docs\ntype: reference\n---\n";
         let mut tmp = NamedTempFile::with_suffix(".md").unwrap();
-        write!(tmp, "{}", content).unwrap();
+        write!(tmp, "{content}").unwrap();
 
         let memory = parse_claude_memory_file(tmp.path()).unwrap().unwrap();
         assert_eq!(memory.memory_type, MemoryType::Pattern); // reference -> pattern

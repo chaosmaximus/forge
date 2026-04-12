@@ -208,7 +208,7 @@ fn sanitize_fts5_query(query: &str) -> String {
             }
             // FTS5 escape: double any internal double-quotes (shouldn't exist after cleaning, but defensive)
             let escaped = cleaned.replace('"', "\"\"");
-            Some(format!("\"{}\"", escaped))
+            Some(format!("\"{escaped}\""))
         })
         .collect();
 
@@ -338,10 +338,9 @@ pub fn recall_bm25_project_org(
                  JOIN memory m ON memory_fts.rowid = m.rowid
                  WHERE memory_fts MATCH ?1
                    AND m.status = 'active'
-                   AND (m.project = ?2 OR m.project IS NULL OR m.project = ''){}
+                   AND (m.project = ?2 OR m.project IS NULL OR m.project = ''){org_filter}
                  ORDER BY score
                  LIMIT ?3",
-                org_filter,
             );
             let mut stmt = conn.prepare(&sql)?;
             let mapper = |row: &rusqlite::Row| {
@@ -573,7 +572,7 @@ pub fn touch(conn: &Connection, ids: &[&str]) {
              AND (accessed_at < datetime('now', '-60 seconds') OR access_count = 0)",
             params![id],
         ) {
-            eprintln!("[ops] failed to touch memory {}: {e}", id);
+            eprintln!("[ops] failed to touch memory {id}: {e}");
         }
     }
 }
@@ -934,7 +933,7 @@ pub fn find_similar_by_title(
     if words.is_empty() {
         return Ok(Vec::new());
     }
-    let fts_terms: Vec<String> = words.iter().map(|w| format!("\"{}\"", w)).collect();
+    let fts_terms: Vec<String> = words.iter().map(|w| format!("\"{w}\"")).collect();
     let fts_query = fts_terms.join(" OR ");
     let sql = "
         SELECT m.id, m.title
@@ -1451,7 +1450,7 @@ pub fn promote_recurring_lessons(conn: &Connection, limit: usize) -> rusqlite::R
             }
 
             if let Err(e) = remember(conn, &pattern) {
-                eprintln!("[ops] failed to store promoted pattern '{}': {e}", title_a);
+                eprintln!("[ops] failed to store promoted pattern '{title_a}': {e}");
             }
 
             // Supersede the individual lessons
@@ -1513,7 +1512,7 @@ pub fn embedding_merge(conn: &Connection) -> rusqlite::Result<usize> {
         let emb_bytes = match emb_result {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("[consolidator] embedding lookup failed for {}: {e}", id);
+                eprintln!("[consolidator] embedding lookup failed for {id}: {e}");
                 continue;
             }
         };
@@ -1666,7 +1665,7 @@ pub fn detect_contradictions(conn: &Connection) -> rusqlite::Result<usize> {
             }
 
             // Check if this contradiction diagnostic already exists
-            let diag_id = format!("contradiction-{}-{}", id_a, id_b);
+            let diag_id = format!("contradiction-{id_a}-{id_b}");
             let exists: bool = conn
                 .query_row(
                     "SELECT COUNT(*) > 0 FROM diagnostic WHERE id = ?1",
@@ -1681,8 +1680,7 @@ pub fn detect_contradictions(conn: &Connection) -> rusqlite::Result<usize> {
 
             // Create diagnostic warning
             let message = format!(
-                "Contradictory memories detected: \"{}\" ({}) vs \"{}\" ({}). {} shared tags.",
-                title_a, valence_a, title_b, valence_b, shared
+                "Contradictory memories detected: \"{title_a}\" ({valence_a}) vs \"{title_b}\" ({valence_b}). {shared} shared tags."
             );
             let diag = Diagnostic {
                 id: diag_id,
@@ -1698,7 +1696,7 @@ pub fn detect_contradictions(conn: &Connection) -> rusqlite::Result<usize> {
             store_diagnostic(conn, &diag)?;
 
             // Create a 'contradicts' edge between the two memories
-            let edge_id = format!("edge-contradiction-{}-{}", id_a, id_b);
+            let edge_id = format!("edge-contradiction-{id_a}-{id_b}");
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO edge (id, from_id, to_id, edge_type, properties, created_at, valid_from)
                  VALUES (?1, ?2, ?3, 'contradicts', ?4, ?5, ?5)",
@@ -1786,12 +1784,12 @@ pub fn get_graph_data(
         })?;
         for row in rows.flatten() {
             let (key, value) = row;
-            let id = format!("platform:{}", key);
+            let id = format!("platform:{key}");
             let hash = fnv_hash(id.as_bytes());
             let x = ((hash % 1000) as f64 / 500.0) - 1.0;
             let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
             nodes.push(GraphNode {
-                id, title: format!("{}: {}", key, value), memory_type: "platform".to_string(),
+                id, title: format!("{key}: {value}"), memory_type: "platform".to_string(),
                 layer: "platform".to_string(), confidence: 1.0, activation_level: 0.0,
                 x, y: 0.0, z,
             });
@@ -1833,7 +1831,7 @@ pub fn get_graph_data(
             let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
             let confidence = (0.5 + (success_count as f64 * 0.1)).min(1.0);
             nodes.push(GraphNode {
-                id, title: format!("[{}] {}", domain, name), memory_type: "skill".to_string(),
+                id, title: format!("[{domain}] {name}"), memory_type: "skill".to_string(),
                 layer: "skill".to_string(), confidence, activation_level: 0.0,
                 x, y: 2.0, z,
             });
@@ -1855,7 +1853,7 @@ pub fn get_graph_data(
             let x = ((hash % 1000) as f64 / 500.0) - 1.0;
             let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
             nodes.push(GraphNode {
-                id, title: format!("[{}] {}", agent, facet), memory_type: "identity".to_string(),
+                id, title: format!("[{agent}] {facet}"), memory_type: "identity".to_string(),
                 layer: "identity".to_string(), confidence: strength, activation_level: 0.0,
                 x, y: 6.0, z,
             });
@@ -1877,7 +1875,7 @@ pub fn get_graph_data(
             let x = ((hash % 1000) as f64 / 500.0) - 1.0;
             let z = (((hash >> 16) % 1000) as f64 / 500.0) - 1.0;
             nodes.push(GraphNode {
-                id, title: format!("[{}] {}", agent, trait_name), memory_type: "disposition".to_string(),
+                id, title: format!("[{agent}] {trait_name}"), memory_type: "disposition".to_string(),
                 layer: "disposition".to_string(), confidence: value, activation_level: 0.0,
                 x, y: 7.0, z,
             });
@@ -2686,10 +2684,10 @@ mod tests {
 
         // Crucially: stored confidence is NEVER modified
         let mid_conf: f64 = conn.query_row("SELECT confidence FROM memory WHERE id = 'mid1'", [], |r| r.get(0)).unwrap();
-        assert!((mid_conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {}", mid_conf);
+        assert!((mid_conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {mid_conf}");
 
         let new_conf: f64 = conn.query_row("SELECT confidence FROM memory WHERE id = 'new1'", [], |r| r.get(0)).unwrap();
-        assert!((new_conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {}", new_conf);
+        assert!((new_conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {new_conf}");
     }
 
     #[test]
@@ -2722,7 +2720,7 @@ mod tests {
 
         // Stored confidence is STILL not modified
         let old_conf: f64 = conn.query_row("SELECT confidence FROM memory WHERE id = 'old1'", [], |r| r.get(0)).unwrap();
-        assert!((old_conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9 even after fading, got {}", old_conf);
+        assert!((old_conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9 even after fading, got {old_conf}");
     }
 
     #[test]
@@ -2746,7 +2744,7 @@ mod tests {
 
         // Confidence is still untouched
         let conf: f64 = conn.query_row("SELECT confidence FROM memory WHERE id = 'm1'", [], |r| r.get(0)).unwrap();
-        assert!((conf - 0.9).abs() < 0.001, "confidence must not change across multiple decay runs, got {}", conf);
+        assert!((conf - 0.9).abs() < 0.001, "confidence must not change across multiple decay runs, got {conf}");
     }
 
     #[test]
@@ -2956,10 +2954,10 @@ mod tests {
         // Project-scoped: forge → 2 forge + 1 global = 3
         let results = recall_bm25_project(&conn, "forge backend global conventional JWT CORS REST commits", Some("forge"), 10).unwrap();
         let titles: Vec<&str> = results.iter().map(|r| r.title.as_str()).collect();
-        assert!(titles.iter().any(|t| t.contains("JWT")), "should find forge memory JWT, got: {:?}", titles);
-        assert!(titles.iter().any(|t| t.contains("CORS")), "should find forge memory CORS, got: {:?}", titles);
-        assert!(titles.iter().any(|t| t.contains("conventional")), "should find global memory, got: {:?}", titles);
-        assert!(!titles.iter().any(|t| t.contains("REST")), "should NOT find backend memory, got: {:?}", titles);
+        assert!(titles.iter().any(|t| t.contains("JWT")), "should find forge memory JWT, got: {titles:?}");
+        assert!(titles.iter().any(|t| t.contains("CORS")), "should find forge memory CORS, got: {titles:?}");
+        assert!(titles.iter().any(|t| t.contains("conventional")), "should find global memory, got: {titles:?}");
+        assert!(!titles.iter().any(|t| t.contains("REST")), "should NOT find backend memory, got: {titles:?}");
         assert_eq!(results.len(), 3, "forge scope should return 2 forge + 1 global = 3");
 
         // No project filter → all 4
@@ -3074,7 +3072,7 @@ mod tests {
         for i in 0..3 {
             let mem = Memory::new(
                 MemoryType::Lesson,
-                &format!("Always run tests before pushing v{}", i),
+                format!("Always run tests before pushing v{i}"),
                 "Learned from breaking prod",
             ).with_confidence(0.7);
             remember(&conn, &mem).unwrap();

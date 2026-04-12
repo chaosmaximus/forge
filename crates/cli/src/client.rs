@@ -93,10 +93,10 @@ pub async fn connect() -> Result<UnixStream, String> {
 
     // Socket not available — check for stale socket and clean up before starting daemon
     if std::path::Path::new(&socket_path).exists() {
-        eprintln!("[cli] WARN: stale socket detected at {} — removing before daemon start", socket_path);
+        eprintln!("[cli] WARN: stale socket detected at {socket_path} — removing before daemon start");
         if let Err(e) = std::fs::remove_file(&socket_path) {
-            eprintln!("[cli] ERROR: failed to remove stale socket {}: {e}", socket_path);
-            return Err(format!("stale socket at {} could not be removed: {e}", socket_path));
+            eprintln!("[cli] ERROR: failed to remove stale socket {socket_path}: {e}");
+            return Err(format!("stale socket at {socket_path} could not be removed: {e}"));
         }
     }
 
@@ -149,9 +149,9 @@ pub async fn connect() -> Result<UnixStream, String> {
     }
 
     cmd.spawn()
-        .map_err(|e| format!("failed to start forge-daemon at '{}': {e}", daemon_path))?;
+        .map_err(|e| format!("failed to start forge-daemon at '{daemon_path}': {e}"))?;
 
-    eprintln!("[cli] daemon starting (log: {})", log_path);
+    eprintln!("[cli] daemon starting (log: {log_path})");
 
     // Poll for socket availability (up to 3 seconds, every 100ms)
     let max_attempts = 30;
@@ -164,9 +164,9 @@ pub async fn connect() -> Result<UnixStream, String> {
 
     // Daemon started but socket never appeared — clean up stale socket if present
     if std::path::Path::new(&socket_path).exists() {
-        eprintln!("[cli] WARN: daemon started but socket not connectable — cleaning stale socket at {}", socket_path);
+        eprintln!("[cli] WARN: daemon started but socket not connectable — cleaning stale socket at {socket_path}");
         if let Err(e) = std::fs::remove_file(&socket_path) {
-            eprintln!("[cli] ERROR: failed to clean stale socket {}: {e}", socket_path);
+            eprintln!("[cli] ERROR: failed to clean stale socket {socket_path}: {e}");
         }
     }
 

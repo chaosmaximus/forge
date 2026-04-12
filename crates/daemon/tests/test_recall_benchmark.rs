@@ -50,7 +50,7 @@ fn do_remember(
             assert!(!id.is_empty(), "stored ID must not be empty");
             id
         }
-        other => panic!("expected Stored, got: {:?}", other),
+        other => panic!("expected Stored, got: {other:?}"),
     }
 }
 
@@ -71,7 +71,7 @@ fn do_recall(state: &mut DaemonState, query: &str, limit: Option<usize>) -> Vec<
         Response::Ok {
             data: ResponseData::Memories { results, .. },
         } => results,
-        other => panic!("expected Memories, got: {:?}", other),
+        other => panic!("expected Memories, got: {other:?}"),
     }
 }
 
@@ -383,8 +383,7 @@ fn test_recall_benchmark_sqlite_query() {
     let has_readonly = top5.contains(&"Read-only connections cannot write in SQLite");
     assert!(
         has_wal || has_readonly,
-        "SQLite query: expected WAL or read-only memory in top-5, got: {:?}",
-        top5
+        "SQLite query: expected WAL or read-only memory in top-5, got: {top5:?}"
     );
 }
 
@@ -405,8 +404,7 @@ fn test_recall_benchmark_session_query() {
     let has_fisp = top5.contains(&"FISP inter-session messaging protocol");
     assert!(
         has_fisp,
-        "session query: expected FISP memory in top-5, got: {:?}",
-        top5
+        "session query: expected FISP memory in top-5, got: {top5:?}"
     );
 }
 
@@ -425,8 +423,7 @@ fn test_recall_benchmark_docker_query() {
     let has_distroless = top5.contains(&"Distroless Docker image");
     assert!(
         has_distroless,
-        "Docker query: expected Distroless memory in top-5, got: {:?}",
-        top5
+        "Docker query: expected Distroless memory in top-5, got: {top5:?}"
     );
 }
 
@@ -448,8 +445,7 @@ fn test_recall_benchmark_manas_query() {
     let has_proactive = top5.contains(&"Proactive context from 8 Manas layers");
     assert!(
         has_architecture || has_proactive,
-        "Manas query: expected architecture or proactive memory in top-5, got: {:?}",
-        top5
+        "Manas query: expected architecture or proactive memory in top-5, got: {top5:?}"
     );
 }
 
@@ -471,8 +467,7 @@ fn test_recall_benchmark_toml_query() {
     let has_config = top5.contains(&"Config writes must be surgical not full-serialize");
     assert!(
         has_surgical || has_config,
-        "TOML query: expected surgical or config memory in top-5, got: {:?}",
-        top5
+        "TOML query: expected surgical or config memory in top-5, got: {top5:?}"
     );
 }
 
@@ -507,9 +502,7 @@ fn test_recall_benchmark_score_discrimination() {
         // Scores should not be flat — there must be meaningful discrimination.
         assert!(
             max_score > min_score,
-            "query '{}': all scores identical ({:.4}), no discrimination",
-            query,
-            max_score
+            "query '{query}': all scores identical ({max_score:.4}), no discrimination"
         );
 
         // The score range ratio should exceed 1.5x.
@@ -517,13 +510,8 @@ fn test_recall_benchmark_score_discrimination() {
             let ratio = max_score / min_score;
             assert!(
                 ratio > 1.5,
-                "query '{}': discrimination ratio {:.4} (max={:.4}, min={:.4}) below 1.5 threshold. \
-                 Scores: {:?}",
-                query,
-                ratio,
-                max_score,
-                min_score,
-                scores
+                "query '{query}': discrimination ratio {ratio:.4} (max={max_score:.4}, min={min_score:.4}) below 1.5 threshold. \
+                 Scores: {scores:?}"
             );
         }
     }

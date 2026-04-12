@@ -41,10 +41,9 @@ fn test_claude_huge_single_line() {
     // Build a ~1MB content string embedded in a valid Claude JSONL line
     let big_text = "A".repeat(1_000_000);
     let line = format!(
-        r#"{{"type":"user","message":{{"role":"user","content":"{}"}},"uuid":"big1","sessionId":"s1"}}"#,
-        big_text
+        r#"{{"type":"user","message":{{"role":"user","content":"{big_text}"}},"uuid":"big1","sessionId":"s1"}}"#
     );
-    let content = format!("{}\n", line);
+    let content = format!("{line}\n");
     let chunks = adapter.parse(&content);
     // Should parse successfully — 1 chunk with the huge content
     assert_eq!(chunks.len(), 1, "should parse the 1MB line");
@@ -57,7 +56,7 @@ fn test_claude_incremental_partial_line() {
     // A complete line followed by a partial line (no trailing newline)
     let complete = r#"{"type":"user","message":{"role":"user","content":"first"},"uuid":"u1","sessionId":"s1"}"#;
     let partial = r#"{"type":"assistant","message":{"role":"assis"#;
-    let content = format!("{}\n{}", complete, partial);
+    let content = format!("{complete}\n{partial}");
 
     let (chunks, offset) = adapter.parse_incremental(&content, 0);
     assert_eq!(chunks.len(), 1, "should only parse the complete line");
@@ -104,11 +103,10 @@ fn test_cline_deeply_nested() {
     // Build content with 50 levels of nested arrays
     let mut inner = String::from(r#""deep""#);
     for _ in 0..50 {
-        inner = format!("[{}]", inner);
+        inner = format!("[{inner}]");
     }
     let content = format!(
-        r#"[{{"role":"user","content":{}}}]"#,
-        inner
+        r#"[{{"role":"user","content":{inner}}}]"#
     );
     // Should either parse (extracting nothing useful from nested arrays) or return empty.
     // Must NOT stack overflow or panic.
@@ -172,8 +170,7 @@ fn test_cline_huge_conversation() {
     for i in 0..1000 {
         let role = if i % 2 == 0 { "user" } else { "assistant" };
         messages.push(format!(
-            r#"{{"role":"{}","content":"Message number {}"}}"#,
-            role, i
+            r#"{{"role":"{role}","content":"Message number {i}"}}"#
         ));
     }
     let content = format!("[{}]", messages.join(","));
@@ -244,7 +241,7 @@ fn test_codex_incremental_boundary() {
     let partial = r#"{"type":"response_item","timestamp":"t4","payload":{"role":"assi"#;
 
     // 3 complete lines + partial 4th (no trailing newline)
-    let content = format!("{}\n{}\n{}\n{}", line1, line2, line3, partial);
+    let content = format!("{line1}\n{line2}\n{line3}\n{partial}");
 
     let (chunks, offset) = adapter.parse_incremental(&content, 0);
     assert_eq!(chunks.len(), 3, "should parse only the 3 complete lines, got {}", chunks.len());
@@ -264,22 +261,20 @@ fn test_codex_large_content_blocks() {
     // Build a response_item with 100 content blocks
     let mut blocks = Vec::new();
     for i in 0..100 {
-        blocks.push(format!(r#"{{"type":"output_text","text":"Block {}"}}"#, i));
+        blocks.push(format!(r#"{{"type":"output_text","text":"Block {i}"}}"#));
     }
     let blocks_json = blocks.join(",");
     let line = format!(
-        r#"{{"type":"response_item","timestamp":"t1","payload":{{"role":"assistant","content":[{}]}}}}"#,
-        blocks_json
+        r#"{{"type":"response_item","timestamp":"t1","payload":{{"role":"assistant","content":[{blocks_json}]}}}}"#
     );
-    let content = format!("{}\n", line);
+    let content = format!("{line}\n");
     let chunks = adapter.parse(&content);
     assert_eq!(chunks.len(), 1, "should produce 1 chunk");
     // All 100 blocks should be extracted (joined with \n)
     for i in 0..100 {
         assert!(
-            chunks[0].content.contains(&format!("Block {}", i)),
-            "missing Block {} in content",
-            i
+            chunks[0].content.contains(&format!("Block {i}")),
+            "missing Block {i} in content"
         );
     }
     // Count the number of blocks by splitting on newline
@@ -299,7 +294,7 @@ fn test_adapter_parse_does_not_panic_on_any_input() {
 
     // Build a string with 256 copies of each byte value 0-255 (256 * 256 = 65536 bytes)
     // Use lossy conversion since raw bytes may not be valid UTF-8
-    let all_bytes: Vec<u8> = (0..=255u8).flat_map(|b| std::iter::repeat(b).take(256)).collect();
+    let all_bytes: Vec<u8> = (0..=255u8).flat_map(|b| std::iter::repeat_n(b, 256)).collect();
     let garbage = String::from_utf8_lossy(&all_bytes).into_owned();
 
     // Must not panic — just return empty (or whatever, as long as no crash)

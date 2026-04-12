@@ -120,7 +120,7 @@ pub fn run_label_propagation(
     // 7. Insert new cluster edges
     let now = forge_core::time::now_iso();
     for (idx, group) in cluster_groups.iter().enumerate() {
-        let cluster_id = format!("cluster:{}:{}", reality_id, idx);
+        let cluster_id = format!("cluster:{reality_id}:{idx}");
         for &node_id in group {
             let edge_id = ulid::Ulid::new().to_string();
             conn.execute(
@@ -212,7 +212,7 @@ mod tests {
         let clusters = run_label_propagation(&conn, rid, 1).unwrap();
         // With only 1 iteration, result depends on convergence speed
         // but for a chain, it should produce at least 1 cluster
-        assert!(clusters >= 1, "should produce at least 1 cluster, got {}", clusters);
+        assert!(clusters >= 1, "should produce at least 1 cluster, got {clusters}");
     }
 
     #[test]
@@ -234,7 +234,7 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
 
-        assert!(count >= 3, "at least 3 cluster edges for 3 nodes in 1 cluster, got {}", count);
+        assert!(count >= 3, "at least 3 cluster edges for 3 nodes in 1 cluster, got {count}");
 
         // Verify the to_id follows the cluster:{reality_id}:{index} format
         let sample_to: String = conn.query_row(
@@ -242,7 +242,7 @@ mod tests {
             params![rid],
             |row| row.get(0),
         ).unwrap();
-        assert!(sample_to.starts_with(&format!("cluster:{}:", rid)),
+        assert!(sample_to.starts_with(&format!("cluster:{rid}:")),
             "cluster edge to_id should start with 'cluster:{rid}:', got: {sample_to}");
     }
 }

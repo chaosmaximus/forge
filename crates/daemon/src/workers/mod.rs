@@ -62,7 +62,7 @@ pub fn spawn_workers(
     // Detect installed agent adapters
     let detected = adapters::detect_adapters();
     let adapter_names: Vec<&str> = detected.iter().map(|a| a.name()).collect();
-    eprintln!("[workers] detected adapters: {:?}", adapter_names);
+    eprintln!("[workers] detected adapters: {adapter_names:?}");
 
     // Build watch configs from adapters
     let watch_configs: Vec<watcher::WatchConfig> = detected

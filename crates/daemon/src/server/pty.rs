@@ -257,7 +257,7 @@ mod tests {
         let (id, _rx) = mgr.create(80, 24, None).expect("create should succeed");
 
         let result = mgr.write(id, "echo hello\n");
-        assert!(result.is_ok(), "write should succeed: {:?}", result);
+        assert!(result.is_ok(), "write should succeed: {result:?}");
 
         mgr.close(id);
     }
@@ -268,7 +268,7 @@ mod tests {
         let (id, _rx) = mgr.create(80, 24, None).expect("create should succeed");
 
         let result = mgr.resize(id, 120, 40);
-        assert!(result.is_ok(), "resize should succeed: {:?}", result);
+        assert!(result.is_ok(), "resize should succeed: {result:?}");
 
         mgr.close(id);
     }

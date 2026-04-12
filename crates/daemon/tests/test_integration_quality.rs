@@ -60,7 +60,7 @@ fn do_remember(
             assert!(!id.is_empty(), "stored ID must not be empty");
             id
         }
-        other => panic!("expected Stored, got: {:?}", other),
+        other => panic!("expected Stored, got: {other:?}"),
     }
 }
 
@@ -85,7 +85,7 @@ fn do_recall(
         Response::Ok {
             data: ResponseData::Memories { results, .. },
         } => results,
-        other => panic!("expected Memories, got: {:?}", other),
+        other => panic!("expected Memories, got: {other:?}"),
     }
 }
 
@@ -185,8 +185,7 @@ fn test_indexer_blast_radius_pipeline() {
         .unwrap();
     assert!(
         edge_count >= 2,
-        "expected at least 2 import edges, found {}",
-        edge_count
+        "expected at least 2 import edges, found {edge_count}"
     );
 
     // Verify the edge from_id uses the "file:" prefix format.
@@ -202,8 +201,7 @@ fn test_indexer_blast_radius_pipeline() {
     for fid in &from_ids {
         assert!(
             fid.starts_with("file:"),
-            "indexer should store from_id with 'file:' prefix, got: {}",
-            fid
+            "indexer should store from_id with 'file:' prefix, got: {fid}"
         );
     }
 
@@ -364,8 +362,7 @@ fn test_recall_score_discrimination() {
     });
     assert!(
         has_relevant_at_top,
-        "expected a highly relevant memory in top 2, got titles: {:?}",
-        top_2_titles
+        "expected a highly relevant memory in top 2, got titles: {top_2_titles:?}"
     );
 
     // Verify score discrimination: the range should not be flat.
@@ -376,12 +373,8 @@ fn test_recall_score_discrimination() {
 
     assert!(
         score_range > 0.01,
-        "score range is too flat: max={:.4}, min={:.4}, range={:.4}; \
-         all scores clustered means BM25 scoring is broken. scores={:?}",
-        max_score,
-        min_score,
-        score_range,
-        scores
+        "score range is too flat: max={max_score:.4}, min={min_score:.4}, range={score_range:.4}; \
+         all scores clustered means BM25 scoring is broken. scores={scores:?}"
     );
 
     // Verify the top score is higher than the bottom score.
@@ -390,9 +383,7 @@ fn test_recall_score_discrimination() {
         let bottom_score = results.last().unwrap().score;
         assert!(
             top_score > bottom_score,
-            "top score ({:.4}) should be higher than bottom score ({:.4})",
-            top_score,
-            bottom_score,
+            "top score ({top_score:.4}) should be higher than bottom score ({bottom_score:.4})",
         );
     }
 }
@@ -456,8 +447,7 @@ fn test_notification_ack_via_handler() {
             );
         }
         other => panic!(
-            "expected NotificationAcked, got: {:?}",
-            other
+            "expected NotificationAcked, got: {other:?}"
         ),
     }
 
@@ -600,8 +590,7 @@ export function main() {
         .unwrap();
     assert!(
         sym_count >= 3,
-        "expected at least 3 symbols in code_symbol table, found {}",
-        sym_count
+        "expected at least 3 symbols in code_symbol table, found {sym_count}"
     );
 
     // Verify code files are stored.
@@ -778,7 +767,7 @@ fn test_full_memory_lifecycle_quality() {
         } => {
             assert_eq!(id, memory_id);
         }
-        other => panic!("expected Forgotten, got: {:?}", other),
+        other => panic!("expected Forgotten, got: {other:?}"),
     }
 
     // Step 4: Recall again — the forgotten memory should not appear.
@@ -831,7 +820,7 @@ fn test_find_symbol_via_handler() {
             assert_eq!(symbols[0].name, "process_data");
             assert_eq!(symbols[0].line, 10);
         }
-        other => panic!("expected SymbolResults, got {:?}", other),
+        other => panic!("expected SymbolResults, got {other:?}"),
     }
 
     // Find with file filter
@@ -843,7 +832,7 @@ fn test_find_symbol_via_handler() {
         Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
             assert_eq!(symbols.len(), 1);
         }
-        other => panic!("expected SymbolResults, got {:?}", other),
+        other => panic!("expected SymbolResults, got {other:?}"),
     }
 
     // Find with wrong file filter
@@ -855,7 +844,7 @@ fn test_find_symbol_via_handler() {
         Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
             assert_eq!(symbols.len(), 0, "wrong file filter should return 0");
         }
-        other => panic!("expected SymbolResults, got {:?}", other),
+        other => panic!("expected SymbolResults, got {other:?}"),
     }
 }
 
@@ -867,7 +856,7 @@ fn test_symbols_overview_via_handler() {
     // Store multiple symbols in the same file
     for (name, line) in &[("init", 1), ("process", 10), ("cleanup", 20)] {
         let sym = CodeSymbol {
-            id: format!("mod.rs:{}:{}", name, line),
+            id: format!("mod.rs:{name}:{line}"),
             name: name.to_string(),
             kind: "function".into(),
             file_path: "/tmp/mod.rs".into(),
@@ -889,7 +878,7 @@ fn test_symbols_overview_via_handler() {
             assert_eq!(symbols[1].name, "process");
             assert_eq!(symbols[2].name, "cleanup");
         }
-        other => panic!("expected SymbolResults, got {:?}", other),
+        other => panic!("expected SymbolResults, got {other:?}"),
     }
 }
 
@@ -906,7 +895,7 @@ fn test_find_symbol_empty_name() {
         Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
             assert_eq!(symbols.len(), 0, "empty name should return empty");
         }
-        other => panic!("expected SymbolResults, got {:?}", other),
+        other => panic!("expected SymbolResults, got {other:?}"),
     }
 }
 
@@ -924,7 +913,7 @@ fn test_vacuum_via_handler() {
             assert_eq!(orphan_symbols_removed, 0);
             assert_eq!(orphan_edges_removed, 0);
         }
-        other => panic!("expected Vacuumed, got {:?}", other),
+        other => panic!("expected Vacuumed, got {other:?}"),
     }
 }
 
@@ -950,7 +939,7 @@ fn test_backfill_affects_via_handler() {
         rusqlite::params![mem_id],
         |row| row.get(0),
     ).unwrap();
-    assert!(edge_count >= 2, "remember handler should create affects edges for handler.rs and ops.rs, got {}", edge_count);
+    assert!(edge_count >= 2, "remember handler should create affects edges for handler.rs and ops.rs, got {edge_count}");
 
     // Run backfill — should find 0 new edges (already created by remember handler)
     let resp = handle_request(&mut state, Request::BackfillAffects);
@@ -959,7 +948,7 @@ fn test_backfill_affects_via_handler() {
             assert!(memories_scanned >= 1, "should scan at least 1 memory");
             assert_eq!(edges_created, 0, "backfill should find 0 new edges (remember handler already created them)");
         }
-        other => panic!("expected BackfillAffectsResult, got {:?}", other),
+        other => panic!("expected BackfillAffectsResult, got {other:?}"),
     }
 }
 
@@ -991,7 +980,7 @@ fn test_unified_ack_falls_back_to_notification() {
         Response::Ok { data: ResponseData::MessagesAcked { count } } => {
             assert_eq!(count, 1, "unified ack should have acked 1 notification");
         }
-        other => panic!("expected MessagesAcked, got {:?}", other),
+        other => panic!("expected MessagesAcked, got {other:?}"),
     }
 
     // Verify notification is now acknowledged
@@ -1016,6 +1005,6 @@ fn test_unified_ack_garbage_ids_returns_zero() {
         Response::Ok { data: ResponseData::MessagesAcked { count } } => {
             assert_eq!(count, 0, "garbage IDs should return 0 acked (not inflated)");
         }
-        other => panic!("expected MessagesAcked, got {:?}", other),
+        other => panic!("expected MessagesAcked, got {other:?}"),
     }
 }

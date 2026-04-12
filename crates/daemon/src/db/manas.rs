@@ -35,7 +35,7 @@ fn tool_kind_from_str(s: &str) -> ToolKind {
         "builtin" => ToolKind::Builtin,
         "plugin" => ToolKind::Plugin,
         other => {
-            eprintln!("[manas] unknown tool kind '{}', defaulting to Cli", other);
+            eprintln!("[manas] unknown tool kind '{other}', defaulting to Cli");
             ToolKind::Cli
         }
     }
@@ -56,7 +56,7 @@ fn tool_health_from_str(s: &str) -> ToolHealth {
         "degraded" => ToolHealth::Degraded,
         "unavailable" => ToolHealth::Unavailable,
         other => {
-            eprintln!("[manas] unknown tool health '{}', defaulting to Unknown", other);
+            eprintln!("[manas] unknown tool health '{other}', defaulting to Unknown");
             ToolHealth::Unknown
         }
     }
@@ -88,7 +88,7 @@ fn perception_kind_from_str(s: &str) -> PerceptionKind {
         "action_summary" => PerceptionKind::ActionSummary,
         "knowledge_gap" => PerceptionKind::KnowledgeGap,
         other => {
-            eprintln!("[manas] unknown perception kind '{}', defaulting to Error", other);
+            eprintln!("[manas] unknown perception kind '{other}', defaulting to Error");
             PerceptionKind::Error
         }
     }
@@ -112,7 +112,7 @@ fn severity_from_str(s: &str) -> Severity {
         "error" => Severity::Error,
         "critical" => Severity::Critical,
         other => {
-            eprintln!("[manas] unknown severity '{}', defaulting to Info", other);
+            eprintln!("[manas] unknown severity '{other}', defaulting to Info");
             Severity::Info
         }
     }
@@ -136,7 +136,7 @@ fn disposition_trait_from_str(s: &str) -> DispositionTrait {
         "verbosity" => DispositionTrait::Verbosity,
         "creativity" => DispositionTrait::Creativity,
         other => {
-            eprintln!("[manas] unknown disposition trait '{}', defaulting to Caution", other);
+            eprintln!("[manas] unknown disposition trait '{other}', defaulting to Caution");
             DispositionTrait::Caution
         }
     }
@@ -156,7 +156,7 @@ fn trend_from_str(s: &str) -> Trend {
         "stable" => Trend::Stable,
         "falling" => Trend::Falling,
         other => {
-            eprintln!("[manas] unknown trend '{}', defaulting to Stable", other);
+            eprintln!("[manas] unknown trend '{other}', defaulting to Stable");
             Trend::Stable
         }
     }
@@ -474,7 +474,7 @@ pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
     for (name, caps) in known_tools {
         if command_exists(name) {
             let tool = Tool {
-                id: format!("cli:{}", name),
+                id: format!("cli:{name}"),
                 name: name.to_string(),
                 kind: ToolKind::Cli,
                 capabilities: caps.iter().map(|s| s.to_string()).collect(),
@@ -493,7 +493,7 @@ pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
     for (name, category, caps) in EXTRA_TOOL_PATTERNS {
         if command_exists(name) {
             let tool = Tool {
-                id: format!("cli:{}", name),
+                id: format!("cli:{name}"),
                 name: name.to_string(),
                 kind: ToolKind::Cli,
                 capabilities: caps.iter().map(|s| s.to_string()).collect(),
@@ -510,7 +510,7 @@ pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
         }
     }
 
-    eprintln!("[tools] discovered {} tools on PATH", found);
+    eprintln!("[tools] discovered {found} tools on PATH");
     Ok(found)
 }
 
@@ -671,7 +671,7 @@ pub fn correlate_skill(conn: &Connection, skill_id: &str, skill_title: &str, ski
             "UPDATE skill SET correlation_ids = ?1 WHERE id = ?2",
             params![ids_json, skill_id],
         )?;
-        eprintln!("[skill-intelligence] created {} correlations for '{}'", correlated, skill_title);
+        eprintln!("[skill-intelligence] created {correlated} correlations for '{skill_title}'");
     }
 
     Ok(correlated)
@@ -723,7 +723,7 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
 /// Search skills by name, description, or domain keyword (LIKE search).
 /// Respects project scoping: returns skills for the given project + global skills (project IS NULL).
 pub fn search_skills(conn: &Connection, query: &str, project: Option<&str>) -> rusqlite::Result<Vec<Skill>> {
-    let search = format!("%{}%", query);
+    let search = format!("%{query}%");
     if let Some(proj) = project {
         let mut stmt = conn.prepare(
             "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids
@@ -752,7 +752,7 @@ pub fn record_skill_result(conn: &Connection, skill_id: &str, success: bool) -> 
     // Safe: `field` is a compile-time literal, not user input
     let field = if success { "success_count" } else { "fail_count" };
     let updated = conn.execute(
-        &format!("UPDATE skill SET {} = {} + 1, last_used = datetime('now') WHERE id = ?1", field, field),
+        &format!("UPDATE skill SET {field} = {field} + 1, last_used = datetime('now') WHERE id = ?1"),
         params![skill_id],
     )?;
     Ok(updated > 0)
@@ -963,8 +963,7 @@ fn epoch_to_iso(secs: u64) -> String {
     let seconds = time_of_day % 60;
 
     format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        year, month, day, hours, minutes, seconds
+        "{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}"
     )
 }
 
@@ -1110,7 +1109,7 @@ pub fn get_declared_by_hash(conn: &Connection, hash: &str) -> rusqlite::Result<O
 
 /// Search declared knowledge entries by content or source using LIKE.
 pub fn search_declared(conn: &Connection, query: &str, project: Option<&str>) -> rusqlite::Result<Vec<Declared>> {
-    let search = format!("%{}%", query);
+    let search = format!("%{query}%");
     match project {
         Some(p) => {
             let mut stmt = conn.prepare(
@@ -1207,7 +1206,7 @@ pub fn ingest_project_declared(conn: &Connection, project_dir: &str) -> rusqlite
         .to_string();
 
     for filename in &doc_files {
-        let path = format!("{}/{}", project_dir, filename);
+        let path = format!("{project_dir}/{filename}");
         if !std::path::Path::new(&path).exists() {
             continue;
         }
@@ -1215,7 +1214,7 @@ pub fn ingest_project_declared(conn: &Connection, project_dir: &str) -> rusqlite
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[declared] ERROR reading {}: {}", path, e);
+                eprintln!("[declared] ERROR reading {path}: {e}");
                 continue;
             }
         };
@@ -1303,7 +1302,7 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
     let now = now_iso();
 
     for (file, lang, commands) in markers {
-        let path = format!("{}/{}", project_dir, file);
+        let path = format!("{project_dir}/{file}");
         if !std::path::Path::new(&path).exists() {
             continue;
         }
@@ -1311,7 +1310,7 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
         // Store language/framework detection — unique per marker file
         // so multiple languages in one repo coexist (e.g., Cargo.toml + Dockerfile)
         let dna = DomainDna {
-            id: format!("dna-{}-lang-{}", project_name, lang),
+            id: format!("dna-{project_name}-lang-{lang}"),
             project: project_name.clone(),
             aspect: "language".to_string(),
             pattern: lang.to_string(),
@@ -1330,7 +1329,7 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
                 _ => continue,
             };
             let dna = DomainDna {
-                id: format!("dna-{}-{}-{}", project_name, lang, aspect),
+                id: format!("dna-{project_name}-{lang}-{aspect}"),
                 project: project_name.clone(),
                 aspect: aspect.to_string(),
                 pattern: cmd.to_string(),
@@ -1342,7 +1341,7 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
         }
 
         detected += 1;
-        eprintln!("[domain-dna] detected {} project (from {})", lang, file);
+        eprintln!("[domain-dna] detected {lang} project (from {file})");
     }
 
     Ok(detected)
@@ -1609,7 +1608,7 @@ pub fn manas_health(conn: &Connection) -> rusqlite::Result<ManasHealth> {
     // SAFETY: table and where_clause are always hardcoded literals from the callers below.
     // No user input flows into this SQL. Using format! for DRY convenience only.
     let count_table = |table: &str, where_clause: &str| -> rusqlite::Result<usize> {
-        let sql = format!("SELECT COUNT(*) FROM {}{}", table, where_clause);
+        let sql = format!("SELECT COUNT(*) FROM {table}{where_clause}");
         conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
             .map(|n| n as usize)
     };
@@ -1937,7 +1936,7 @@ pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqli
             ) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("[knowledge_gaps] entity check error for '{}': {e}", word);
+                    eprintln!("[knowledge_gaps] entity check error for '{word}': {e}");
                     continue; // skip this word on error, don't create false gap
                 }
             }
@@ -1949,7 +1948,7 @@ pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqli
             ) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("[knowledge_gaps] entity check error for '{}': {e}", word);
+                    eprintln!("[knowledge_gaps] entity check error for '{word}': {e}");
                     continue;
                 }
             }
@@ -3039,12 +3038,12 @@ mod tests {
         // Create 3 perceptions with the same kind+data (simulating the bug)
         for i in 0..3 {
             let p = Perception {
-                id: format!("dup-{}", i),
+                id: format!("dup-{i}"),
                 kind: PerceptionKind::KnowledgeGap,
                 data: "Knowledge gap: no entity for 'consolidator' despite 5 references".into(),
                 severity: Severity::Info,
                 project: None,
-                created_at: format!("2026-04-03 12:0{}:00", i),
+                created_at: format!("2026-04-03 12:0{i}:00"),
                 expires_at: None,
                 consumed: false,
             };

@@ -80,8 +80,7 @@ fn epoch_to_iso(secs: u64) -> String {
     let seconds = time_of_day % 60;
 
     format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        year, month, day, hours, minutes, seconds
+        "{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}"
     )
 }
 

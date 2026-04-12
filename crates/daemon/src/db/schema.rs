@@ -1072,7 +1072,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 1, "v2 table '{}' should exist", table_name);
+            assert_eq!(count, 1, "v2 table '{table_name}' should exist");
         }
     }
 
@@ -1213,7 +1213,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 1, "manas table '{}' should exist", table_name);
+            assert_eq!(count, 1, "manas table '{table_name}' should exist");
         }
     }
 

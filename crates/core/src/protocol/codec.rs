@@ -7,7 +7,7 @@ use super::response::Response;
 /// NEW-3: Returns a JSON error object on serialization failure instead of panicking.
 pub fn encode_response(response: &Response) -> String {
     serde_json::to_string(response).unwrap_or_else(|e| {
-        format!(r#"{{"status":"error","message":"serialize error: {}"}}"#, e)
+        format!(r#"{{"status":"error","message":"serialize error: {e}"}}"#)
     })
 }
 

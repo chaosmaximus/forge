@@ -26,18 +26,18 @@ pub async fn manas_health() {
         }) => {
             println!("Manas 8-Layer Memory Health");
             println!("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
-            println!("Layer 1 (Platform):     {:>3} entries", platform_count);
-            println!("Layer 2 (Tool):         {:>3} tools", tool_count);
-            println!("Layer 3 (Skill):        {:>3} skills", skill_count);
-            println!("Layer 4 (Domain DNA):   {:>3} patterns", domain_dna_count);
-            println!("Layer 5 (Experience):   {:>3} memories", experience_count);
-            println!("Layer 6 (Perception):   {:>3} unconsumed", perception_unconsumed);
-            println!("Layer 7 (Declared):     {:>3} documents", declared_count);
-            println!("Layer 8 (Latent):       {:>3} embeddings", embedding_count);
+            println!("Layer 1 (Platform):     {platform_count:>3} entries");
+            println!("Layer 2 (Tool):         {tool_count:>3} tools");
+            println!("Layer 3 (Skill):        {skill_count:>3} skills");
+            println!("Layer 4 (Domain DNA):   {domain_dna_count:>3} patterns");
+            println!("Layer 5 (Experience):   {experience_count:>3} memories");
+            println!("Layer 6 (Perception):   {perception_unconsumed:>3} unconsumed");
+            println!("Layer 7 (Declared):     {declared_count:>3} documents");
+            println!("Layer 8 (Latent):       {embedding_count:>3} embeddings");
             println!("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
-            println!("Ahankara (Identity):    {} facets", identity_facets);
+            println!("Ahankara (Identity):    {identity_facets} facets");
             if trait_names.is_empty() {
-                println!("Disposition:            {} traits", disposition_traits);
+                println!("Disposition:            {disposition_traits} traits");
             } else {
                 println!("Disposition:            {} traits ({})", disposition_traits, trait_names.join(", "));
             }

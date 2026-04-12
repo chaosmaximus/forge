@@ -56,7 +56,7 @@ pub async fn run_indexer(
     interval_secs: u64,
 ) {
     let index_interval = Duration::from_secs(interval_secs);
-    eprintln!("[indexer] started, interval = {:?}", index_interval);
+    eprintln!("[indexer] started, interval = {index_interval:?}");
     let mut manager: Option<LspManager> = None;
     let mut first_run = true;
 
@@ -104,7 +104,7 @@ pub async fn run_indexer(
                 };
 
                 if let Err(e) = run_index(&project_dir, &state, mgr).await {
-                    eprintln!("[indexer] error: {}", e);
+                    eprintln!("[indexer] error: {e}");
                 }
             }
             _ = shutdown_rx.changed() => {
@@ -146,7 +146,7 @@ pub fn find_project_dir() -> Option<String> {
     //    Claude encodes project paths as e.g. `-mnt-colab-disk-DurgaSaiK-forge`
     //    which maps back to `/mnt/colab-disk/DurgaSaiK/forge`.
     let home = std::env::var("HOME").unwrap_or_default();
-    let projects_dir = format!("{}/.claude/projects", home);
+    let projects_dir = format!("{home}/.claude/projects");
     let entries = match std::fs::read_dir(&projects_dir) {
         Ok(e) => e,
         Err(_) => return None,
@@ -311,7 +311,7 @@ async fn index_with_server(
         let hash = file_hash(file_path);
 
         let file_record = CodeFile {
-            id: format!("file:{}", file_path),
+            id: format!("file:{file_path}"),
             path: file_path.clone(),
             language: config.language.clone(),
             project: project_dir.to_string(),
@@ -331,7 +331,7 @@ async fn index_with_server(
         // Send didOpen before requesting symbols (required by LSP protocol)
         let content = std::fs::read_to_string(file_path).unwrap_or_default();
         if let Err(e) = client.did_open(&uri, &config.language, &content).await {
-            eprintln!("[indexer] didOpen failed for {}: {}", file_path, e);
+            eprintln!("[indexer] didOpen failed for {file_path}: {e}");
             continue;
         }
 
@@ -362,7 +362,7 @@ async fn index_with_server(
 
         // Close the document after processing (Serena pattern: didOpen/didClose lifecycle)
         if let Err(e) = client.did_close(&uri).await {
-            eprintln!("[indexer] failed to close document {}: {e}", file_path);
+            eprintln!("[indexer] failed to close document {file_path}: {e}");
         }
     }
 
@@ -439,7 +439,7 @@ fn file_hash(path: &str) -> String {
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            format!("{}:{}", size, mtime)
+            format!("{size}:{mtime}")
         }
         Err(_) => String::new(),
     }
@@ -509,7 +509,7 @@ async fn run_index(
                 };
 
                 let file_record = CodeFile {
-                    id: format!("file:{}", path),
+                    id: format!("file:{path}"),
                     path: path.to_string(),
                     language: language.to_string(),
                     project: project_dir.to_string(),
@@ -549,7 +549,7 @@ async fn run_index(
             };
             let hash = file_hash(path);
             all_files.push(CodeFile {
-                id: format!("file:{}", path), path: path.to_string(), language: "python".into(),
+                id: format!("file:{path}"), path: path.to_string(), language: "python".into(),
                 project: project_dir.to_string(), hash: hash.clone(), indexed_at: indexed_at.clone(),
             });
             let cached = HASH_CACHE.lock().unwrap().get(path).cloned();
@@ -573,7 +573,7 @@ async fn run_index(
             };
             let hash = file_hash(path);
             all_files.push(CodeFile {
-                id: format!("file:{}", path), path: path.to_string(), language: "go".into(),
+                id: format!("file:{path}"), path: path.to_string(), language: "go".into(),
                 project: project_dir.to_string(), hash: hash.clone(), indexed_at: indexed_at.clone(),
             });
             let cached = HASH_CACHE.lock().unwrap().get(path).cloned();
@@ -646,7 +646,7 @@ async fn run_index(
     let current_paths: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
     if let Ok(cleaned) = ops::cleanup_stale_files(&locked.conn, &current_paths) {
         if cleaned > 0 {
-            eprintln!("[indexer] cleaned {} stale entries", cleaned);
+            eprintln!("[indexer] cleaned {cleaned} stale entries");
         }
     }
 
@@ -654,15 +654,14 @@ async fn run_index(
 
     if symbols_stored > 0 {
         eprintln!(
-            "[indexer] indexed {} symbols across {} file entries",
-            symbols_stored, files_stored
+            "[indexer] indexed {symbols_stored} symbols across {files_stored} file entries"
         );
     }
     if edges_stored > 0 {
-        eprintln!("[indexer] stored {} call edges", edges_stored);
+        eprintln!("[indexer] stored {edges_stored} call edges");
     }
     if import_edges_stored > 0 {
-        eprintln!("[indexer] stored {} import edges", import_edges_stored);
+        eprintln!("[indexer] stored {import_edges_stored} import edges");
     }
     Ok(())
 }
@@ -693,7 +692,7 @@ pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usi
             };
             let hash = file_hash(path);
             all_files.push(CodeFile {
-                id: format!("file:{}", path),
+                id: format!("file:{path}"),
                 path: path.clone(),
                 language: language.to_string(),
                 project: project_dir.to_string(),
@@ -726,7 +725,7 @@ pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usi
     }
 
     if all_files.is_empty() {
-        eprintln!("[force-index] no source files found in {}", project_dir);
+        eprintln!("[force-index] no source files found in {project_dir}");
         return (0, 0);
     }
 
@@ -754,8 +753,7 @@ pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usi
     auto_detect_conventions(conn, project_dir);
 
     eprintln!(
-        "[force-index] {} files, {} symbols, {} import edges for {}",
-        files_stored, symbols_stored, import_edges, project_dir
+        "[force-index] {files_stored} files, {symbols_stored} symbols, {import_edges} import edges for {project_dir}"
     );
 
     (files_stored, symbols_stored)
@@ -966,7 +964,7 @@ pub fn extract_call_edges_regex(
                     if sym_file == &file.path {
                         continue;
                     }
-                    let edge_key = format!("{}→{}", from_id, sym_id);
+                    let edge_key = format!("{from_id}→{sym_id}");
                     if seen.insert(edge_key)
                         && ops::store_edge(conn, &from_id, sym_id, "calls", "{}").is_ok()
                     {
@@ -1131,7 +1129,7 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
     }
 
     let content = conventions.join(" | ");
-    let title = format!("Project conventions: {}", project_name);
+    let title = format!("Project conventions: {project_name}");
     let id = ulid::Ulid::new().to_string();
     let now = forge_core::time::timestamp_now();
 
@@ -1199,7 +1197,7 @@ mod tests {
         std::fs::write(nm.join("dep.rs"), "fn dep() {}").unwrap();
 
         let files = collect_source_files(dir.to_str().unwrap(), &["rs"]);
-        assert_eq!(files.len(), 1, "should only find main.rs, got: {:?}", files);
+        assert_eq!(files.len(), 1, "should only find main.rs, got: {files:?}");
         assert!(files[0].ends_with("main.rs"));
     }
 
@@ -1215,7 +1213,7 @@ mod tests {
         std::fs::write(src.join("readme.md"), "").unwrap(); // non-matching extension
 
         let files = collect_source_files(dir.to_str().unwrap(), &["rs"]);
-        assert_eq!(files.len(), 2, "should find 2 .rs files, got: {:?}", files);
+        assert_eq!(files.len(), 2, "should find 2 .rs files, got: {files:?}");
     }
 
     #[test]
@@ -1230,7 +1228,7 @@ mod tests {
         std::fs::write(dir.join("styles.css"), "").unwrap(); // not matched
 
         let files = collect_source_files(dir.to_str().unwrap(), &["ts", "tsx", "js", "jsx"]);
-        assert_eq!(files.len(), 4, "should find 4 TS/JS files, got: {:?}", files);
+        assert_eq!(files.len(), 4, "should find 4 TS/JS files, got: {files:?}");
     }
 
     #[test]
@@ -1468,7 +1466,7 @@ mod tests {
             };
 
             all_files.push(CodeFile {
-                id: format!("file:{}", path),
+                id: format!("file:{path}"),
                 path: path.to_string(),
                 language: language.to_string(),
                 project: dir.to_str().unwrap().to_string(),

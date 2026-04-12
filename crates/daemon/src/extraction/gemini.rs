@@ -9,19 +9,18 @@ use super::prompt;
 /// SECURITY: api_key is never logged.
 pub async fn extract(api_key: &str, model: &str, conversation_text: &str) -> ExtractionResult {
     let system_prompt = prompt::EXTRACTION_SYSTEM_PROMPT;
-    let user_message = format!("Conversation:\n{}", conversation_text);
+    let user_message = format!("Conversation:\n{conversation_text}");
 
     let client = reqwest::Client::new();
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        model, api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     );
 
     // Gemma models don't support system_instruction — prepend to user message instead
     let is_gemma = model.starts_with("gemma");
     // Force JSON output for reliable parsing
     let body = if is_gemma {
-        let combined = format!("{}\n\n---\n\n{}", system_prompt, user_message);
+        let combined = format!("{system_prompt}\n\n---\n\n{user_message}");
         serde_json::json!({
             "contents": [{"parts": [{"text": combined}]}],
             "generationConfig": {

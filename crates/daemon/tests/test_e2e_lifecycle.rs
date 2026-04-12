@@ -46,7 +46,7 @@ fn do_remember(
             assert!(!id.is_empty());
             id
         }
-        other => panic!("expected Stored, got: {:?}", other),
+        other => panic!("expected Stored, got: {other:?}"),
     }
 }
 
@@ -71,7 +71,7 @@ fn do_recall(
     );
     match resp {
         Response::Ok { data: ResponseData::Memories { results, .. } } => results,
-        other => panic!("expected Memories, got: {:?}", other),
+        other => panic!("expected Memories, got: {other:?}"),
     }
 }
 
@@ -210,7 +210,7 @@ fn test_full_memory_lifecycle() {
             assert_eq!(patterns, 1, "should have 1 pattern");
             assert_eq!(preferences, 1, "should have 1 preference");
         }
-        other => panic!("expected Health, got: {:?}", other),
+        other => panic!("expected Health, got: {other:?}"),
     }
 
     // -- HealthByProject -> correct per-project breakdown --
@@ -231,7 +231,7 @@ fn test_full_memory_lifecycle() {
             let global_data = projects.get("_global").expect("_global should exist");
             assert_eq!(global_data.preferences, 1, "global preferences");
         }
-        other => panic!("expected HealthByProject, got: {:?}", other),
+        other => panic!("expected HealthByProject, got: {other:?}"),
     }
 
     // -- Doctor -> all fields populated --
@@ -252,7 +252,7 @@ fn test_full_memory_lifecycle() {
             // uptime_secs should be very small in a test
             assert!(uptime_secs < 60, "uptime should be small in a test");
         }
-        other => panic!("expected Doctor, got: {:?}", other),
+        other => panic!("expected Doctor, got: {other:?}"),
     }
 
     // -- Export -> all active memories present --
@@ -264,14 +264,14 @@ fn test_full_memory_lifecycle() {
             let export_ids: Vec<&str> = memories.iter().map(|m| m.memory.id.as_str()).collect();
             assert!(!export_ids.contains(&forge_id1.as_str()));
         }
-        other => panic!("expected Export, got: {:?}", other),
+        other => panic!("expected Export, got: {other:?}"),
     }
 
     // -- Shutdown -> returns ok --
     let resp = handle_request(&mut state, Request::Shutdown);
     match resp {
         Response::Ok { data: ResponseData::Shutdown } => {}
-        other => panic!("expected Shutdown, got: {:?}", other),
+        other => panic!("expected Shutdown, got: {other:?}"),
     }
 }
 
@@ -336,7 +336,7 @@ fn test_guardrails_full_lifecycle() {
             assert!(decisions_affected.contains(&d1_id));
             assert!(decisions_affected.contains(&d2_id));
         }
-        other => panic!("expected GuardrailsCheck, got: {:?}", other),
+        other => panic!("expected GuardrailsCheck, got: {other:?}"),
     }
 
     // -- GuardrailsCheck on src/main.rs -> safe=true (no edges) --
@@ -354,7 +354,7 @@ fn test_guardrails_full_lifecycle() {
             assert!(safe, "src/main.rs has no linked decisions => safe");
             assert!(decisions_affected.is_empty());
         }
-        other => panic!("expected GuardrailsCheck, got: {:?}", other),
+        other => panic!("expected GuardrailsCheck, got: {other:?}"),
     }
 
     // -- BlastRadius on src/auth.rs -> 2 decisions, files_affected includes src/db.rs --
@@ -374,8 +374,7 @@ fn test_guardrails_full_lifecycle() {
             // d1 also affects src/db.rs, so db.rs should be in files_affected
             assert!(
                 files_affected.contains(&"src/db.rs".to_string()),
-                "files_affected should include src/db.rs (co-affected via d1), got: {:?}",
-                files_affected
+                "files_affected should include src/db.rs (co-affected via d1), got: {files_affected:?}"
             );
             // src/auth.rs itself should NOT be in files_affected
             assert!(
@@ -383,7 +382,7 @@ fn test_guardrails_full_lifecycle() {
                 "target file should not appear in its own files_affected"
             );
         }
-        other => panic!("expected BlastRadius, got: {:?}", other),
+        other => panic!("expected BlastRadius, got: {other:?}"),
     }
 
     // -- Forget d1 -> GuardrailsCheck on src/auth.rs -> now only 1 decision (d2) --
@@ -403,7 +402,7 @@ fn test_guardrails_full_lifecycle() {
             assert_eq!(decisions_affected.len(), 1);
             assert_eq!(decisions_affected[0], d2_id);
         }
-        other => panic!("expected GuardrailsCheck, got: {:?}", other),
+        other => panic!("expected GuardrailsCheck, got: {other:?}"),
     }
 
     // -- Forget d2 -> GuardrailsCheck on src/auth.rs -> safe=true --
@@ -422,7 +421,7 @@ fn test_guardrails_full_lifecycle() {
             assert!(safe, "all decisions forgotten => safe");
             assert!(decisions_affected.is_empty());
         }
-        other => panic!("expected GuardrailsCheck, got: {:?}", other),
+        other => panic!("expected GuardrailsCheck, got: {other:?}"),
     }
 }
 
@@ -483,7 +482,7 @@ fn test_import_export_roundtrip() {
             })
             .to_string()
         }
-        other => panic!("expected Export, got: {:?}", other),
+        other => panic!("expected Export, got: {other:?}"),
     };
 
     // -- Create a fresh DaemonState --
@@ -495,7 +494,7 @@ fn test_import_export_roundtrip() {
         Response::Ok { data: ResponseData::Health { decisions, lessons, patterns, preferences, .. } } => {
             assert_eq!(decisions + lessons + patterns + preferences, 0);
         }
-        other => panic!("expected Health, got: {:?}", other),
+        other => panic!("expected Health, got: {other:?}"),
     }
 
     // -- Import the exported data into the fresh state --
@@ -507,7 +506,7 @@ fn test_import_export_roundtrip() {
             assert_eq!(memories_imported, 3, "all 3 memories should be imported");
             assert_eq!(skipped, 0, "no records should be skipped");
         }
-        other => panic!("expected Import, got: {:?}", other),
+        other => panic!("expected Import, got: {other:?}"),
     }
 
     // -- Recall on the fresh state -> all 3 memories present --
@@ -534,7 +533,7 @@ fn test_import_export_roundtrip() {
             assert_eq!(lessons, 1);
             assert_eq!(patterns, 1);
         }
-        other => panic!("expected Health, got: {:?}", other),
+        other => panic!("expected Health, got: {other:?}"),
     }
 }
 
@@ -585,7 +584,7 @@ fn test_vector_persistence_across_state() {
             assert!(daemon_up);
             assert_eq!(memory_count, 1, "doctor should report 1 memory");
         }
-        other => panic!("expected Doctor, got: {:?}", other),
+        other => panic!("expected Doctor, got: {other:?}"),
     }
 
     // Also verify embedding count directly
@@ -614,8 +613,8 @@ fn test_concurrent_operations() {
             } else {
                 MemoryType::Preference
             },
-            &format!("Memory number {} unique_token_{}", i, i),
-            &format!("Content for memory {} with searchable text item_{}", i, i),
+            &format!("Memory number {i} unique_token_{i}"),
+            &format!("Content for memory {i} with searchable text item_{i}"),
             Some(0.5 + (i as f64) * 0.01),
             Some(vec![format!("tag_{}", i)]),
             Some(format!("project_{}", i % 3)),
@@ -637,7 +636,7 @@ fn test_concurrent_operations() {
             assert_eq!(patterns, 12, "patterns: indices 2,6,10,...,46 = 12");
             assert_eq!(preferences, 12, "preferences: indices 3,7,11,...,47 = 12");
         }
-        other => panic!("expected Health, got: {:?}", other),
+        other => panic!("expected Health, got: {other:?}"),
     }
 
     // -- Recall -> spot check some are present --
@@ -651,7 +650,7 @@ fn test_concurrent_operations() {
     // -- Forget all 50 --
     for id in &ids {
         let forgotten = do_forget(&mut state, id);
-        assert!(forgotten, "forget should succeed for id {}", id);
+        assert!(forgotten, "forget should succeed for id {id}");
     }
 
     // -- Health -> all zero --
@@ -665,7 +664,7 @@ fn test_concurrent_operations() {
             assert_eq!(patterns, 0);
             assert_eq!(preferences, 0);
         }
-        other => panic!("expected Health, got: {:?}", other),
+        other => panic!("expected Health, got: {other:?}"),
     }
 }
 
@@ -709,7 +708,7 @@ fn test_edge_cases() {
                 "confidence should be >= 0.0"
             );
         }
-        other => panic!("expected Export, got: {:?}", other),
+        other => panic!("expected Export, got: {other:?}"),
     }
 
     // -- Remember with confidence 1.5 -> should be clamped to 1.0 --
@@ -733,7 +732,7 @@ fn test_edge_cases() {
                 high_conf.unwrap().memory.confidence
             );
         }
-        other => panic!("expected Export, got: {:?}", other),
+        other => panic!("expected Export, got: {other:?}"),
     }
 
     // -- Recall with empty query -> should not panic (may return empty) --
@@ -755,7 +754,7 @@ fn test_edge_cases() {
         Response::Error { .. } => {
             // Also acceptable: an error message rather than a panic
         }
-        other => panic!("unexpected response for empty query: {:?}", other),
+        other => panic!("unexpected response for empty query: {other:?}"),
     }
 
     // -- GuardrailsCheck with empty file -> safe=true (no edges) --
@@ -773,7 +772,7 @@ fn test_edge_cases() {
             assert!(safe, "empty file should be safe (no edges)");
             assert!(decisions_affected.is_empty());
         }
-        other => panic!("expected GuardrailsCheck, got: {:?}", other),
+        other => panic!("expected GuardrailsCheck, got: {other:?}"),
     }
 
     // -- BlastRadius with nonexistent file -> empty result --
@@ -791,7 +790,7 @@ fn test_edge_cases() {
             assert!(files_affected.is_empty(), "nonexistent file should have no co-affected files");
             assert!(importers.is_empty(), "nonexistent file should have no importers");
         }
-        other => panic!("expected BlastRadius, got: {:?}", other),
+        other => panic!("expected BlastRadius, got: {other:?}"),
     }
 
     // -- Forget a nonexistent ID -> should return Error, not panic --
@@ -805,11 +804,10 @@ fn test_edge_cases() {
         Response::Error { message } => {
             assert!(
                 message.contains("not found") || message.contains("already deleted"),
-                "error message should indicate not found, got: {}",
-                message
+                "error message should indicate not found, got: {message}"
             );
         }
-        other => panic!("expected Error for nonexistent forget, got: {:?}", other),
+        other => panic!("expected Error for nonexistent forget, got: {other:?}"),
     }
 
     // -- Status -> should return valid data --
@@ -821,6 +819,6 @@ fn test_edge_cases() {
             assert_eq!(memory_count, 3, "3 active memories in edge-case test");
             assert!(uptime_secs < 60);
         }
-        other => panic!("expected Status, got: {:?}", other),
+        other => panic!("expected Status, got: {other:?}"),
     }
 }

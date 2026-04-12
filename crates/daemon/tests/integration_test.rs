@@ -34,7 +34,7 @@ fn remember(
             assert!(!id.is_empty(), "stored id must be non-empty");
             id
         }
-        other => panic!("expected Stored response, got: {:?}", other),
+        other => panic!("expected Stored response, got: {other:?}"),
     }
 }
 
@@ -60,7 +60,7 @@ fn recall(state: &mut DaemonState, query: &str) -> Vec<MemoryResult> {
             );
             results
         }
-        other => panic!("expected Memories response, got: {:?}", other),
+        other => panic!("expected Memories response, got: {other:?}"),
     }
 }
 
@@ -86,7 +86,7 @@ fn health(state: &mut DaemonState) -> (usize, usize, usize, usize) {
                     ..
                 },
         } => (decisions, lessons, patterns, preferences),
-        other => panic!("expected Health response, got: {:?}", other),
+        other => panic!("expected Health response, got: {other:?}"),
     }
 }
 
@@ -184,7 +184,7 @@ fn test_full_memory_lifecycle() {
         } => {
             assert_eq!(id, id_jwt, "forgotten id should match the JWT decision id");
         }
-        other => panic!("expected Forgotten response, got: {:?}", other),
+        other => panic!("expected Forgotten response, got: {other:?}"),
     }
 
     // --- Step 6: Recall "JWT authentication" — should be gone ---
@@ -335,8 +335,7 @@ fn test_forget_nonexistent() {
             );
         }
         other => panic!(
-            "expected Error response for nonexistent id, got: {:?}",
-            other
+            "expected Error response for nonexistent id, got: {other:?}"
         ),
     }
 }

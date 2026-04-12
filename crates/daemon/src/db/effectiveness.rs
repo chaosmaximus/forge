@@ -237,10 +237,10 @@ mod tests {
         for i in 0..12 {
             let id = record_injection(
                 &conn,
-                &format!("sess-{}", i),
+                &format!("sess-{i}"),
                 "post-edit",
                 "pattern",
-                &format!("pattern hint {}", i),
+                &format!("pattern hint {i}"),
             )
             .unwrap();
             ids.push(id);
@@ -254,7 +254,7 @@ mod tests {
         let rate = effectiveness_rate(&conn, "post-edit", "pattern", None)
             .unwrap()
             .expect("should have rate with 12 samples");
-        assert!((rate - 0.75).abs() < 1e-9, "expected 0.75, got {}", rate);
+        assert!((rate - 0.75).abs() < 1e-9, "expected 0.75, got {rate}");
     }
 
     #[test]
@@ -265,10 +265,10 @@ mod tests {
         for i in 0..5 {
             record_injection(
                 &conn,
-                &format!("sess-{}", i),
+                &format!("sess-{i}"),
                 "session-start",
                 "memory",
-                &format!("memory chunk {}", i),
+                &format!("memory chunk {i}"),
             )
             .unwrap();
         }

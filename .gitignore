@@ -1,68 +1,65 @@
-# Bundled binaries
-servers/forge-core
-
-# Node
-node_modules/
-
-# Python
-__pycache__/
-*.pyc
-.venv/
-
-# Rust
-target/
-
-# OS
+# ── OS ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# IDE
+# ── IDE ──────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Spikes / experiments
-spikes/
+# ── Languages ────────────────────────────────────────────────────────
+# Node
+node_modules/
 
-# Cache directories
+# Rust
+target/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-__pycache__/
-*.pyc
 
-# Build artifacts
-target/
+# Build outputs
 dist/
-node_modules/
 
-# IDE
-.vscode/
-.idea/
-
-# Forge runtime state (not in repo)
+# ── Forge runtime (not in repo) ─────────────────────────────────────
 .forge/
-.superpowers/
 .claude/worktrees/
 .codex
-product/claude-skills/
-product/taste-skill/
-archive/swift-app-v01/.build/
-archive/
 .serena/
-.playwright-mcp/
+.superpowers/
+servers/forge-core
+
+# ── App test artifacts ───────────────────────────────────────────────
 app/forge/test-results/
 app/forge/uat-screenshots/
 app/forge/e2e/screenshots/
-app/forge/e2e/robot/*.html
-app/forge/e2e/robot/*.xml
+app/forge/e2e/playwright-report/
 app/forge/e2e/playwright/playwright-report/
 app/forge/e2e/playwright/uat-screenshots/
+app/forge/e2e/robot/*.html
+app/forge/e2e/robot/*.xml
+.playwright-mcp/
+
+# ── Screenshots (prevent accidental commits) ────────────────────────
 *.png
 uat-*.png
+
+# ── Archive ──────────────────────────────────────────────────────────
+archive/
+
+# ── Product / site artifacts ─────────────────────────────────────────
+product/claude-skills/
+product/taste-skill/
 product/site/.astro/
 product/site/.firebase/
 product/site/public/models/
 product/marketing/site/.astro/
 product/engineering/site/
+
+# ── Spikes / experiments ─────────────────────────────────────────────
+spikes/

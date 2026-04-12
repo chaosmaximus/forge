@@ -286,7 +286,7 @@ mod tests {
     fn test_codex_incremental_parse() {
         let line1 = r#"{"type":"response_item","timestamp":"2026-04-03T10:00:00Z","payload":{"role":"user","content":"Hello"}}"#;
         let line2 = r#"{"type":"response_item","timestamp":"2026-04-03T10:00:01Z","payload":{"role":"assistant","content":[{"type":"output_text","text":"Hi there!"}]}}"#;
-        let full = format!("{}\n{}\n", line1, line2);
+        let full = format!("{line1}\n{line2}\n");
 
         let adapter = CodexAdapter::new("/tmp/fake_home");
 

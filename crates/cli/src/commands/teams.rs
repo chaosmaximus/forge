@@ -95,7 +95,7 @@ pub async fn get_agent_template(id: Option<String>, name: Option<String>) {
                 } else {
                     template.system_context.clone()
                 };
-                println!("  Context:     {}", preview);
+                println!("  Context:     {preview}");
             }
             println!("  Created:     {}", template.created_at);
             println!("  Updated:     {}", template.updated_at);
@@ -160,7 +160,7 @@ pub async fn spawn_agent(
                 Some(t) => format!(", team={t}"),
                 None => String::new(),
             };
-            println!("Agent spawned: {} ({}{team_str})", session_id, template_name);
+            println!("Agent spawned: {session_id} ({template_name}{team_str})");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -386,12 +386,12 @@ pub async fn run_team(
         match std::fs::metadata(&path) {
             Ok(meta) => {
                 if meta.len() > 1_048_576 {
-                    eprintln!("error: file '{}' exceeds 1MB limit", path);
+                    eprintln!("error: file '{path}' exceeds 1MB limit");
                     std::process::exit(1);
                 }
             }
             Err(e) => {
-                eprintln!("error: cannot stat file '{}': {}", path, e);
+                eprintln!("error: cannot stat file '{path}': {e}");
                 std::process::exit(1);
             }
         }
@@ -399,14 +399,14 @@ pub async fn run_team(
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("error: cannot read file '{}': {}", path, e);
+                eprintln!("error: cannot read file '{path}': {e}");
                 std::process::exit(1);
             }
         };
         let config: serde_json::Value = match serde_json::from_str(&content) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("error: invalid JSON in '{}': {}", path, e);
+                eprintln!("error: invalid JSON in '{path}': {e}");
                 std::process::exit(1);
             }
         };
@@ -423,7 +423,7 @@ pub async fn run_team(
                     match v.as_str() {
                         Some(s) => names.push(s.to_string()),
                         None => {
-                            eprintln!("error: template_names[{}] is not a string in '{}'", i, path);
+                            eprintln!("error: template_names[{i}] is not a string in '{path}'");
                             std::process::exit(1);
                         }
                     }
@@ -433,7 +433,7 @@ pub async fn run_team(
             None => Vec::new(),
         };
         if file_templates.is_empty() {
-            eprintln!("error: 'template_names' array is missing or empty in '{}'", path);
+            eprintln!("error: 'template_names' array is missing or empty in '{path}'");
             std::process::exit(1);
         }
         let file_topology = config
@@ -445,7 +445,7 @@ pub async fn run_team(
             match file_team_name {
                 Some(n) => n,
                 None => {
-                    eprintln!("error: --name not provided and 'team_name' missing in '{}'", path);
+                    eprintln!("error: --name not provided and 'team_name' missing in '{path}'");
                     std::process::exit(1);
                 }
             }
@@ -481,9 +481,9 @@ pub async fn run_team(
     };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::RunTeamResult { team_name, agents_spawned, session_ids } }) => {
-            println!("Team '{}' started: {} agent(s) spawned", team_name, agents_spawned);
+            println!("Team '{team_name}' started: {agents_spawned} agent(s) spawned");
             for sid in &session_ids {
-                println!("  {}", sid);
+                println!("  {sid}");
             }
         }
         Ok(Response::Error { message }) => {
@@ -510,7 +510,7 @@ pub async fn stop_team(name: String) {
     let req = Request::StopTeam { team_name: name.clone() };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::TeamStopped { team_name, agents_retired } }) => {
-            println!("Team '{}' stopped: {} agent(s) retired", team_name, agents_retired);
+            println!("Team '{team_name}' stopped: {agents_retired} agent(s) retired");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -920,7 +920,7 @@ pub async fn team_tree(org: Option<String>) {
                         if purpose.is_empty() {
                             String::new()
                         } else {
-                            format!("\u{2014} {}", purpose)
+                            format!("\u{2014} {purpose}")
                         }
                     );
                     if let Some(children) = n["children"].as_array() {
@@ -970,7 +970,7 @@ pub async fn team_send(
     };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::TeamSent { messages_sent } }) => {
-            println!("Sent to {} session(s)", messages_sent);
+            println!("Sent to {messages_sent} session(s)");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

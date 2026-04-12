@@ -159,8 +159,7 @@ mod tests {
             let root = ts.root_dir.as_ref().unwrap();
             assert!(
                 root.ends_with("app"),
-                "root_dir should point to app/ subdir, got: {}",
-                root
+                "root_dir should point to app/ subdir, got: {root}"
             );
         }
         // Should not crash even without typescript-language-server installed

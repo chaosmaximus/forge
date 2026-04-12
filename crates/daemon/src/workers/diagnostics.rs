@@ -31,8 +31,7 @@ pub async fn run_diagnostics_worker(
 ) {
     let mut pending_files: HashSet<String> = HashSet::new();
     eprintln!(
-        "[diagnostics] ready, waiting for files ({}s debounce)...",
-        debounce_secs
+        "[diagnostics] ready, waiting for files ({debounce_secs}s debounce)..."
     );
 
     loop {
@@ -106,7 +105,7 @@ async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String], d
             {
                 let locked = state.lock().await;
                 if let Err(e) = diagnostics::clear_diagnostics(&locked.conn, file) {
-                    eprintln!("[diagnostics] failed to clear diagnostics for {}: {e}", file);
+                    eprintln!("[diagnostics] failed to clear diagnostics for {file}: {e}");
                 }
             } // lock released
 
@@ -143,7 +142,7 @@ async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String], d
             // Fallback: use state lock for everything (tests with :memory: databases)
             let locked = state.lock().await;
             if let Err(e) = diagnostics::clear_diagnostics(&locked.conn, file) {
-                eprintln!("[diagnostics] failed to clear diagnostics for {}: {e}", file);
+                eprintln!("[diagnostics] failed to clear diagnostics for {file}: {e}");
             }
             let diags = collect_consistency_diagnostics(&locked.conn, file);
             let bug_diags = collect_repeat_bug_diagnostics(&locked.conn, file);
@@ -191,7 +190,7 @@ pub(crate) fn run_consistency_check(conn: &Connection, file: &str) {
 
 /// Collect consistency diagnostics (read-only). Returns diagnostics without storing.
 fn collect_consistency_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnostic> {
-    let like_pattern = format!("%{}", file);
+    let like_pattern = format!("%{file}");
     let mut result = Vec::new();
 
     // Find symbols defined in this file
@@ -224,12 +223,11 @@ fn collect_consistency_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnos
 
         if caller_count > 0 {
             result.push(Diagnostic {
-                id: format!("consistency-{}", sym_id),
+                id: format!("consistency-{sym_id}"),
                 file_path: file.to_string(),
                 severity: "warning".into(),
                 message: format!(
-                    "{} files call {}() -- verify callers are updated",
-                    caller_count, sym_name
+                    "{caller_count} files call {sym_name}() -- verify callers are updated"
                 ),
                 source: "forge-consistency".into(),
                 line: None,
@@ -261,7 +259,7 @@ fn collect_repeat_bug_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnost
     let dir = file.rsplit('/').nth(1).unwrap_or("");
     let mut result = Vec::new();
 
-    let search_terms = [format!("%{}%", file_stem), format!("%{}%", dir)];
+    let search_terms = [format!("%{file_stem}%"), format!("%{dir}%")];
 
     for search in &search_terms {
         if search == "%%" {
@@ -293,7 +291,7 @@ fn collect_repeat_bug_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnost
                     "warning"
                 }
                 .into(),
-                message: format!("Past issue: {} (intensity: {:.1})", title, intensity),
+                message: format!("Past issue: {title} (intensity: {intensity:.1})"),
                 source: "forge-memory".into(),
                 line: None,
                 column: None,

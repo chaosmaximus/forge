@@ -50,7 +50,7 @@ pub fn parse_transcript(content: &str) -> Vec<ConversationChunk> {
     }
 
     if skipped > 0 {
-        eprintln!("[chunk] skipped {} unparseable lines", skipped);
+        eprintln!("[chunk] skipped {skipped} unparseable lines");
     }
 
     chunks
@@ -145,7 +145,7 @@ mod tests {
         // Build a 2-line transcript
         let line1 = r#"{"type":"user","message":{"role":"user","content":"Hello"},"uuid":"u1","timestamp":"2026-04-02T12:00:00Z","sessionId":"s1"}"#;
         let line2 = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi there!"}]},"uuid":"a1","timestamp":"2026-04-02T12:00:05Z","sessionId":"s1"}"#;
-        let full = format!("{}\n{}\n", line1, line2);
+        let full = format!("{line1}\n{line2}\n");
 
         // Offset = length of first line + newline (simulating already processed)
         let first_line_offset = line1.len() + 1; // +1 for the newline
@@ -167,7 +167,7 @@ mod tests {
         let complete_line = r#"{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","sessionId":"s1"}"#;
         let partial = r#"{"type":"assistant","message":{"role":"assis"#; // incomplete
 
-        let content = format!("{}\n{}", complete_line, partial);
+        let content = format!("{complete_line}\n{partial}");
 
         let (chunks, offset) = parse_transcript_incremental(&content, 0);
         assert_eq!(chunks.len(), 1, "should parse the complete line");
@@ -201,7 +201,7 @@ mod tests {
     fn test_incremental_file_truncation() {
         // Simulate a file that gets truncated (e.g., log rotation)
         let line1 = r#"{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","sessionId":"s1"}"#;
-        let original = format!("{}\n", line1);
+        let original = format!("{line1}\n");
 
         // First read: parse the full file
         let (chunks, offset) = parse_transcript_incremental(&original, 0);
@@ -210,7 +210,7 @@ mod tests {
 
         // File gets truncated to something shorter
         let truncated = r#"{"type":"user","message":{"role":"user","content":"new"},"uuid":"u2","sessionId":"s2"}"#;
-        let truncated_content = format!("{}\n", truncated);
+        let truncated_content = format!("{truncated}\n");
 
         // Old offset > new content length → should reset and parse from beginning
         assert!(offset > truncated_content.len());

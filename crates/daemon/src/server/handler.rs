@@ -50,21 +50,21 @@ impl DaemonState {
 
         // Prune low-quality skills (no steps, short descriptions, status-like names)
         match crate::db::manas::prune_junk_skills(&conn) {
-            Ok(n) if n > 0 => eprintln!("[daemon] pruned {} junk skills", n),
+            Ok(n) if n > 0 => eprintln!("[daemon] pruned {n} junk skills"),
             Ok(_) => {},
             Err(e) => eprintln!("[daemon] skill pruning error: {e}"),
         }
 
         // Backfill project on memories that have session_id but no project
         match crate::sessions::backfill_project(&conn) {
-            Ok(n) if n > 0 => eprintln!("[daemon] backfilled project on {} memories", n),
+            Ok(n) if n > 0 => eprintln!("[daemon] backfilled project on {n} memories"),
             Ok(_) => {},
             Err(e) => eprintln!("[daemon] project backfill error: {e}"),
         }
 
         // Auto-cleanup sessions older than 24h that are still ACTIVE (leaked sessions)
         match crate::sessions::cleanup_stale_sessions(&conn) {
-            Ok(n) if n > 0 => eprintln!("[daemon] auto-ended {} stale sessions (>24h active)", n),
+            Ok(n) if n > 0 => eprintln!("[daemon] auto-ended {n} stale sessions (>24h active)"),
             Ok(_) => {},
             Err(e) => eprintln!("[daemon] stale session cleanup error: {e}"),
         }
@@ -74,7 +74,7 @@ impl DaemonState {
 
         // Backfill HLC timestamps on existing memories that lack them
         match crate::sync::backfill_hlc(&conn, &hlc) {
-            Ok(count) if count > 0 => eprintln!("[daemon] backfilled HLC timestamps on {} existing memories", count),
+            Ok(count) if count > 0 => eprintln!("[daemon] backfilled HLC timestamps on {count} existing memories"),
             Ok(_) => {},
             Err(e) => eprintln!("[daemon] WARN: HLC backfill failed: {e} — sync may be unreliable"),
         }
@@ -220,7 +220,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             project,
             metadata,
         } => {
-            let type_str = format!("{:?}", memory_type);
+            let type_str = format!("{memory_type:?}");
             let is_decision = matches!(memory_type, forge_core::types::MemoryType::Decision);
             let title_clone = title.clone();
             let mut memory = Memory::new(memory_type, title, content);
@@ -273,7 +273,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             let perception = forge_core::types::manas::Perception {
                                 id: format!("xsession-{}", ulid::Ulid::new()),
                                 kind: forge_core::types::manas::PerceptionKind::CrossSessionDecision,
-                                data: format!("Another session stored decision: {}", title_clone),
+                                data: format!("Another session stored decision: {title_clone}"),
                                 severity: forge_core::types::manas::Severity::Info,
                                 project: project.clone(),
                                 created_at: forge_core::time::now_iso(),
@@ -441,7 +441,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 // "identity" → list identity facets matching query
                 Some("identity") => {
                     // Search across all agents via LIKE on facet/description
-                    let search = format!("%{}%", query);
+                    let search = format!("%{query}%");
                     let facets: Vec<forge_core::types::manas::IdentityFacet> = state.conn.prepare(
                         "SELECT id, agent, facet, description, strength, source, active, created_at
                          FROM identity WHERE active = 1 AND (facet LIKE ?1 OR description LIKE ?1)
@@ -752,7 +752,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             checks.push(forge_core::protocol::HealthCheck {
                 name: "daemon".into(),
                 status: "ok".into(),
-                message: format!("running (uptime: {}s)", uptime_secs),
+                message: format!("running (uptime: {uptime_secs}s)"),
             });
 
             // 2. Memory count
@@ -760,7 +760,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 forge_core::protocol::HealthCheck {
                     name: "memories".into(),
                     status: "ok".into(),
-                    message: format!("{} memories stored", memory_count),
+                    message: format!("{memory_count} memories stored"),
                 }
             } else {
                 forge_core::protocol::HealthCheck {
@@ -775,7 +775,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 forge_core::protocol::HealthCheck {
                     name: "embeddings".into(),
                     status: "ok".into(),
-                    message: format!("{} embeddings indexed", embeddings),
+                    message: format!("{embeddings} embeddings indexed"),
                 }
             } else {
                 forge_core::protocol::HealthCheck {
@@ -807,7 +807,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 forge_core::protocol::HealthCheck {
                     name: "extraction_backend".into(),
                     status: "ok".into(),
-                    message: format!("configured: {}", backend),
+                    message: format!("configured: {backend}"),
                 }
             } else {
                 // auto means it tries multiple — check if any API key is available
@@ -1030,7 +1030,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::Backfill { path } => {
             // C-1: Validate path is under ~/.claude/ to prevent arbitrary file read
             let home = std::env::var("HOME").unwrap_or_default();
-            let allowed_dir = format!("{}/.claude/", home);
+            let allowed_dir = format!("{home}/.claude/");
             let canonical = match std::fs::canonicalize(&path) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1082,7 +1082,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     }
                 }
                 Err(e) => Response::Error {
-                    message: format!("backfill failed to read {}: {e}", path),
+                    message: format!("backfill failed to read {path}: {e}"),
                 },
             }
         }
@@ -1132,13 +1132,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                     match ops::store_reality(&state.conn, &reality) {
                                         Ok(()) => Some(rid),
                                         Err(e) => {
-                                            eprintln!("[handler] auto-detect: failed to store reality for {}: {e}", cwd_path);
+                                            eprintln!("[handler] auto-detect: failed to store reality for {cwd_path}: {e}");
                                             None
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("[handler] auto-detect: failed to check reality for {}: {e}", cwd_path);
+                                    eprintln!("[handler] auto-detect: failed to check reality for {cwd_path}: {e}");
                                     None
                                 }
                             };
@@ -1173,7 +1173,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::EndSession { id } => {
             // Save working set before ending the session
             if let Err(e) = crate::sessions::save_working_set(&state.conn, &id) {
-                eprintln!("[handler] failed to save working set for session {}: {e}", id);
+                eprintln!("[handler] failed to save working set for session {id}: {e}");
             }
 
             // Compile session KPIs before ending
@@ -1272,8 +1272,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             }
 
-            eprintln!("[sessions] cleanup: ended {} sessions, pruned {} (prefix: {:?}, older_than: {:?}s)",
-                total_ended, total_pruned, prefix, older_than_secs);
+            eprintln!("[sessions] cleanup: ended {total_ended} sessions, pruned {total_pruned} (prefix: {prefix:?}, older_than: {older_than_secs:?}s)");
             crate::events::emit(&state.events, "session_changed", serde_json::json!({
                 "action": "cleanup",
                 "ended": total_ended,
@@ -1436,8 +1435,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 ).unwrap_or(false);
                 if !file_exists {
                     warnings.push(format!(
-                        "File '{}' not found in the code graph. It may not have been indexed yet.",
-                        file
+                        "File '{file}' not found in the code graph. It may not have been indexed yet."
                     ));
                 }
             }
@@ -1927,7 +1925,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             per_hook: stats.per_hook.iter().map(|h| (h.hook_event.clone(), h.injections, h.chars)).collect(),
                         },
                     },
-                    Err(e) => Response::Error { message: format!("stats error: {}", e) },
+                    Err(e) => Response::Error { message: format!("stats error: {e}") },
                 }
             } else {
                 match crate::db::effectiveness::global_injection_stats(&state.conn) {
@@ -1941,7 +1939,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             per_hook: vec![],
                         },
                     },
-                    Err(e) => Response::Error { message: format!("stats error: {}", e) },
+                    Err(e) => Response::Error { message: format!("stats error: {e}") },
                 }
             }
         }
@@ -1987,8 +1985,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     &state.conn, agent_name, project.as_deref(), &ctx_config, &excluded, sid, focus.as_deref(),
                 );
                 let full = format!(
-                    "<forge-context version=\"0.7.0\">\n{}\n{}\n</forge-context>",
-                    static_prefix, dynamic_suffix
+                    "<forge-context version=\"0.7.0\">\n{static_prefix}\n{dynamic_suffix}\n</forge-context>"
                 );
                 let chars = full.len();
                 // Record injection for observability — route through writer channel
@@ -2205,7 +2202,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             match crate::sync::backfill_hlc(&state.conn, &state.hlc) {
                 Ok(count) => {
                     if count > 0 {
-                        eprintln!("[daemon] backfilled HLC timestamps on {} existing memories", count);
+                        eprintln!("[daemon] backfilled HLC timestamps on {count} existing memories");
                     }
                     Response::Ok {
                         data: ResponseData::HlcBackfilled { count },
@@ -2221,7 +2218,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             match crate::db::ops::backfill_project_from_sessions(&state.conn) {
                 Ok((updated, skipped)) => {
                     if updated > 0 {
-                        eprintln!("[daemon] backfilled project on {} memories ({} still orphaned)", updated, skipped);
+                        eprintln!("[daemon] backfilled project on {updated} memories ({skipped} still orphaned)");
                     }
                     Response::Ok {
                         data: ResponseData::BackfillProjectResult { updated, skipped },
@@ -2310,7 +2307,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
                 // Create "affects" edges to files
                 for file in &finding.files {
-                    let file_node_id = format!("file:{}", file);
+                    let file_node_id = format!("file:{file}");
                     if let Err(e) = ops::store_edge(&state.conn, &mem_id, &file_node_id, "affects", "{}") {
                         eprintln!("[eval-feedback] failed to create affects edge: {e}");
                     }
@@ -2340,7 +2337,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
 
             if lessons_created > 0 || diagnostics_created > 0 {
-                eprintln!("[eval-feedback] stored {} lessons, {} diagnostics from evaluation", lessons_created, diagnostics_created);
+                eprintln!("[eval-feedback] stored {lessons_created} lessons, {diagnostics_created} diagnostics from evaluation");
             }
 
             Response::Ok {
@@ -2400,7 +2397,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     files_queued += 1;
                 }
             }
-            eprintln!("[extract] force-extract: {} files need processing", files_queued);
+            eprintln!("[extract] force-extract: {files_queued} files need processing");
             Response::Ok {
                 data: ResponseData::ExtractionTriggered { files_queued },
             }
@@ -2477,13 +2474,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     } else {
                         value.clone()
                     };
-                    eprintln!("[config] updated {} = {}", key, log_value);
+                    eprintln!("[config] updated {key} = {log_value}");
                     Response::Ok {
                         data: ResponseData::ConfigUpdated { key, value },
                     }
                 }
                 Err(e) => {
-                    eprintln!("[config] ERROR: failed to update {}: {}", key, e);
+                    eprintln!("[config] ERROR: failed to update {key}: {e}");
                     Response::Error {
                         message: format!("config update failed: {e}"),
                     }
@@ -2586,7 +2583,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     to_proj.as_deref(),
                 ) {
                     return Response::Error {
-                        message: format!("A2A permission denied: {} -> {}", from_agent, to_agent),
+                        message: format!("A2A permission denied: {from_agent} -> {to_agent}"),
                     };
                 }
             }
@@ -2657,7 +2654,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             match crate::sessions::respond_to_message(&state.conn, &message_id, from, &status, &parts_json) {
                 Ok(found) => {
                     if !found {
-                        eprintln!("[handler] respond_to_message: original message {} not found", message_id);
+                        eprintln!("[handler] respond_to_message: original message {message_id} not found");
                     }
                     crate::events::emit(&state.events, "session_message", serde_json::json!({
                         "message_id": &message_id, "status": &status, "action": "responded",
@@ -2775,7 +2772,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::SetScopedConfig { scope_type, scope_id, key, value, locked, ceiling } => {
             if !ops::validate_scope_type(&scope_type) {
                 return Response::Error {
-                    message: format!("invalid scope_type '{}': must be one of session, agent, reality, user, team, organization", scope_type),
+                    message: format!("invalid scope_type '{scope_type}': must be one of session, agent, reality, user, team, organization"),
                 };
             }
             match ops::set_scoped_config(&state.conn, &scope_type, &scope_id, &key, &value, locked, ceiling, "user") {
@@ -2791,7 +2788,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::DeleteScopedConfig { scope_type, scope_id, key } => {
             if !ops::validate_scope_type(&scope_type) {
                 return Response::Error {
-                    message: format!("invalid scope_type '{}': must be one of session, agent, reality, user, team, organization", scope_type),
+                    message: format!("invalid scope_type '{scope_type}': must be one of session, agent, reality, user, team, organization"),
                 };
             }
             match ops::delete_scoped_config(&state.conn, &scope_type, &scope_id, &key) {
@@ -2807,7 +2804,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::ListScopedConfig { scope_type, scope_id } => {
             if !ops::validate_scope_type(&scope_type) {
                 return Response::Error {
-                    message: format!("invalid scope_type '{}': must be one of session, agent, reality, user, team, organization", scope_type),
+                    message: format!("invalid scope_type '{scope_type}': must be one of session, agent, reality, user, team, organization"),
                 };
             }
             match ops::list_scoped_config(&state.conn, &scope_type, &scope_id) {
@@ -3041,7 +3038,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::CodeSearch { query, kind, limit } => {
             let effective_limit = limit.unwrap_or(20).min(100);
-            let pattern = format!("%{}%", query);
+            let pattern = format!("%{query}%");
 
             let hits: Vec<serde_json::Value> = if let Some(ref kind_filter) = kind {
                 state.conn.prepare(
@@ -3100,20 +3097,20 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     Ok(p) => p.to_string_lossy().to_string(),
                     Err(e) => {
                         return Response::Error {
-                            message: format!("cannot resolve path '{}': {}", dir, e),
+                            message: format!("cannot resolve path '{dir}': {e}"),
                         };
                     }
                 };
                 if !std::path::Path::new(&canonical).is_dir() {
                     return Response::Error {
-                        message: format!("'{}' is not a directory", dir),
+                        message: format!("'{dir}' is not a directory"),
                     };
                 }
 
                 let (files_indexed, symbols_indexed) =
                     crate::workers::indexer::index_directory_sync(&state.conn, &canonical);
 
-                eprintln!("[force-index] indexed {} files, {} symbols from {}", files_indexed, symbols_indexed, canonical);
+                eprintln!("[force-index] indexed {files_indexed} files, {symbols_indexed} symbols from {canonical}");
 
                 Response::Ok {
                     data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
@@ -3135,8 +3132,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
                     .unwrap_or(0);
 
-                eprintln!("[force-index] processed {} files, {} import edges, {} symbols",
-                    files_indexed, import_edges, symbols_indexed);
+                eprintln!("[force-index] processed {files_indexed} files, {import_edges} import edges, {symbols_indexed} symbols");
 
                 Response::Ok {
                     data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
@@ -3224,7 +3220,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let (from_id, to_id) = match edge {
                 Ok(pair) => pair,
                 Err(_) => return Response::Error {
-                    message: format!("contradiction '{}' not found", contradiction_id),
+                    message: format!("contradiction '{contradiction_id}' not found"),
                 },
             };
 
@@ -3248,7 +3244,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
                 _ => {
                     return Response::Error {
-                        message: format!("invalid resolution '{}': expected 'a' or 'b'", resolution),
+                        message: format!("invalid resolution '{resolution}': expected 'a' or 'b'"),
                     };
                 }
             }
@@ -3386,8 +3382,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             if !VALID_AGENT_STATUSES.contains(&status.as_str()) {
                 return Response::Error {
                     message: format!(
-                        "invalid agent status '{}': must be one of {:?}",
-                        status, VALID_AGENT_STATUSES
+                        "invalid agent status '{status}': must be one of {VALID_AGENT_STATUSES:?}"
                     ),
                 };
             }
@@ -3851,8 +3846,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             if from != orch_id.as_str() {
                                 return Response::Error {
                                     message: format!(
-                                        "star topology: only the orchestrator ({}) can send to team members, not {}",
-                                        orch_id, from
+                                        "star topology: only the orchestrator ({orch_id}) can send to team members, not {from}"
                                     ),
                                 };
                             }
@@ -4084,7 +4078,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     }
                 }
                 Ok(_) => Response::Error {
-                    message: format!("session '{}' not found or not active", session_id),
+                    message: format!("session '{session_id}' not found or not active"),
                 },
                 Err(e) => Response::Error {
                     message: format!("set_current_task failed: {e}"),
@@ -4320,7 +4314,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 for text in [title, content] {
                     for cap in FILE_PATH_RE.find_iter(text) {
                         let file_target = format!("file:{}", cap.as_str());
-                        let edge_key = format!("{}→{}", mem_id, file_target);
+                        let edge_key = format!("{mem_id}→{file_target}");
                         if seen_global.insert(edge_key) {
                             // Check if edge already exists
                             let exists: bool = state.conn.query_row(
@@ -4350,9 +4344,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             if name.trim().is_empty() {
                 return Response::Ok { data: ResponseData::SymbolResults { symbols: vec![] } };
             }
-            let name_pattern = format!("%{}%", name);
+            let name_pattern = format!("%{name}%");
             let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(ref f) = file {
-                let file_pattern = format!("%{}%", f);
+                let file_pattern = format!("%{f}%");
                 (
                     "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE ?1 AND file_path LIKE ?2 ORDER BY file_path, line_start LIMIT 50",
                     vec![Box::new(name_pattern) as Box<dyn rusqlite::types::ToSql>, Box::new(file_pattern)],
@@ -4382,7 +4376,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::GetSymbolsOverview { file } => {
-            let file_pattern = format!("%{}%", file);
+            let file_pattern = format!("%{file}%");
             match state.conn.prepare(
                 "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE file_path LIKE ?1 ORDER BY line_start LIMIT 200"
             ) {
@@ -4529,7 +4523,7 @@ mod tests {
                 assert!(!id.is_empty(), "stored id must be non-empty");
                 id
             }
-            other => panic!("expected Stored response, got {:?}", other),
+            other => panic!("expected Stored response, got {other:?}"),
         };
 
         // Recall "JWT auth"
@@ -4556,7 +4550,7 @@ mod tests {
                 );
                 assert_eq!(results[0].memory.id, stored_id);
             }
-            other => panic!("expected Memories response, got {:?}", other),
+            other => panic!("expected Memories response, got {other:?}"),
         }
     }
 
@@ -4572,7 +4566,7 @@ mod tests {
             } => {
                 assert_eq!(decisions, 0, "fresh DB should have 0 decisions");
             }
-            other => panic!("expected Health response, got {:?}", other),
+            other => panic!("expected Health response, got {other:?}"),
         }
     }
 
@@ -4616,7 +4610,7 @@ mod tests {
                 assert_eq!(projects.get("backend").unwrap().lessons, 1);
                 assert_eq!(projects.get("_global").unwrap().patterns, 1);
             }
-            other => panic!("expected HealthByProject response, got {:?}", other),
+            other => panic!("expected HealthByProject response, got {other:?}"),
         }
     }
 
@@ -5015,7 +5009,7 @@ mod tests {
         });
         let id = match resp {
             Response::Ok { data: ResponseData::Stored { id } } => id,
-            other => panic!("expected Stored, got {:?}", other),
+            other => panic!("expected Stored, got {other:?}"),
         };
 
         // Check that affects edges were created
@@ -5041,11 +5035,10 @@ mod tests {
                 );
                 assert!(
                     decisions.iter().any(|d| d.title.contains("Refactor")),
-                    "decision title should contain 'Refactor', got: {:?}",
-                    decisions,
+                    "decision title should contain 'Refactor', got: {decisions:?}",
                 );
             }
-            other => panic!("expected BlastRadius response, got {:?}", other),
+            other => panic!("expected BlastRadius response, got {other:?}"),
         }
     }
 
@@ -5064,7 +5057,7 @@ mod tests {
         });
         let id = match resp {
             Response::Ok { data: ResponseData::Stored { id } } => id,
-            other => panic!("expected Stored, got {:?}", other),
+            other => panic!("expected Stored, got {other:?}"),
         };
 
         // Check that an affects edge was created from the title
@@ -5095,7 +5088,7 @@ mod tests {
         });
         let id = match resp {
             Response::Ok { data: ResponseData::Stored { id } } => id,
-            other => panic!("expected Stored, got {:?}", other),
+            other => panic!("expected Stored, got {other:?}"),
         };
 
         let edge_count: i64 = state.conn.query_row(
@@ -5124,7 +5117,7 @@ mod tests {
         });
         match resp1 {
             Response::Ok { data: ResponseData::SessionRegistered { id } } => assert_eq!(id, "s1"),
-            other => panic!("expected SessionRegistered, got {:?}", other),
+            other => panic!("expected SessionRegistered, got {other:?}"),
         }
 
         let resp2 = handle_request(&mut state, Request::RegisterSession {
@@ -5137,7 +5130,7 @@ mod tests {
         });
         match resp2 {
             Response::Ok { data: ResponseData::SessionRegistered { id } } => assert_eq!(id, "s2"),
-            other => panic!("expected SessionRegistered, got {:?}", other),
+            other => panic!("expected SessionRegistered, got {other:?}"),
         }
 
         // List active sessions — should be 2
@@ -5147,7 +5140,7 @@ mod tests {
                 assert_eq!(count, 2);
                 assert_eq!(sessions.len(), 2);
             }
-            other => panic!("expected Sessions, got {:?}", other),
+            other => panic!("expected Sessions, got {other:?}"),
         }
     }
 
@@ -5172,7 +5165,7 @@ mod tests {
                 assert_eq!(id, "s1");
                 assert!(found);
             }
-            other => panic!("expected SessionEnded, got {:?}", other),
+            other => panic!("expected SessionEnded, got {other:?}"),
         }
 
         // List active — should be 0
@@ -5182,7 +5175,7 @@ mod tests {
                 assert_eq!(count, 0);
                 assert!(sessions.is_empty());
             }
-            other => panic!("expected Sessions, got {:?}", other),
+            other => panic!("expected Sessions, got {other:?}"),
         }
     }
 
@@ -5212,7 +5205,7 @@ mod tests {
             Response::Ok { data: ResponseData::SessionsCleaned { ended } } => {
                 assert_eq!(ended, 2, "should end 2 hook-test sessions");
             }
-            other => panic!("expected SessionsCleaned, got {:?}", other),
+            other => panic!("expected SessionsCleaned, got {other:?}"),
         }
 
         // Verify: only real session remains
@@ -5221,7 +5214,7 @@ mod tests {
             Response::Ok { data: ResponseData::Sessions { count, .. } } => {
                 assert_eq!(count, 1);
             }
-            other => panic!("expected Sessions, got {:?}", other),
+            other => panic!("expected Sessions, got {other:?}"),
         }
     }
 
@@ -5240,7 +5233,7 @@ mod tests {
             Response::Ok { data: ResponseData::PlatformStored { key } } => {
                 assert_eq!(key, "os");
             }
-            other => panic!("expected PlatformStored, got {:?}", other),
+            other => panic!("expected PlatformStored, got {other:?}"),
         }
 
         // Store another
@@ -5255,12 +5248,12 @@ mod tests {
             Response::Ok { data: ResponseData::PlatformList { entries } } => {
                 // detect_and_store_platform may have added entries, so check ours exist
                 let keys: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
-                assert!(keys.contains(&"os"), "should contain 'os', got: {:?}", keys);
-                assert!(keys.contains(&"arch"), "should contain 'arch', got: {:?}", keys);
+                assert!(keys.contains(&"os"), "should contain 'os', got: {keys:?}");
+                assert!(keys.contains(&"arch"), "should contain 'arch', got: {keys:?}");
                 let os_entry = entries.iter().find(|e| e.key == "os").unwrap();
                 assert_eq!(os_entry.value, "linux");
             }
-            other => panic!("expected PlatformList, got {:?}", other),
+            other => panic!("expected PlatformList, got {other:?}"),
         }
     }
 
@@ -5285,7 +5278,7 @@ mod tests {
             Response::Ok { data: ResponseData::IdentityStored { id } } => {
                 assert_eq!(id, "if-test-1");
             }
-            other => panic!("expected IdentityStored, got {:?}", other),
+            other => panic!("expected IdentityStored, got {other:?}"),
         }
 
         // List identity for the agent
@@ -5299,7 +5292,7 @@ mod tests {
                 assert_eq!(facets[0].facet, "role");
                 assert_eq!(facets[0].description, "memory system");
             }
-            other => panic!("expected IdentityList, got {:?}", other),
+            other => panic!("expected IdentityList, got {other:?}"),
         }
 
         // Deactivate
@@ -5311,7 +5304,7 @@ mod tests {
                 assert_eq!(id, "if-test-1");
                 assert!(found);
             }
-            other => panic!("expected IdentityDeactivated, got {:?}", other),
+            other => panic!("expected IdentityDeactivated, got {other:?}"),
         }
 
         // List again — active only, should be empty
@@ -5323,7 +5316,7 @@ mod tests {
                 assert_eq!(count, 0);
                 assert!(facets.is_empty());
             }
-            other => panic!("expected IdentityList (empty), got {:?}", other),
+            other => panic!("expected IdentityList (empty), got {other:?}"),
         }
     }
 
@@ -5361,7 +5354,7 @@ mod tests {
                 assert_eq!(embedding_count, 0);
                 assert!(trait_names.is_empty());
             }
-            other => panic!("expected ManasHealthData, got {:?}", other),
+            other => panic!("expected ManasHealthData, got {other:?}"),
         }
     }
 
@@ -5381,7 +5374,7 @@ mod tests {
             Response::Ok { data: ResponseData::HlcBackfilled { count } } => {
                 assert_eq!(count, 1, "should backfill 1 memory");
             }
-            other => panic!("expected HlcBackfilled, got {:?}", other),
+            other => panic!("expected HlcBackfilled, got {other:?}"),
         }
 
         // Second call should find 0
@@ -5390,7 +5383,7 @@ mod tests {
             Response::Ok { data: ResponseData::HlcBackfilled { count } } => {
                 assert_eq!(count, 0, "no more memories to backfill");
             }
-            other => panic!("expected HlcBackfilled, got {:?}", other),
+            other => panic!("expected HlcBackfilled, got {other:?}"),
         }
     }
 
@@ -5434,7 +5427,7 @@ mod tests {
                 assert_eq!(updated, 2, "should backfill 2 memories (1 from session, 1 from single-project fallback)");
                 assert_eq!(skipped, 0, "no memories should remain orphaned");
             }
-            other => panic!("expected BackfillProjectResult, got {:?}", other),
+            other => panic!("expected BackfillProjectResult, got {other:?}"),
         }
 
         // Verify m-orphan1 now has the project
@@ -5460,7 +5453,7 @@ mod tests {
                 assert_eq!(updated, 0, "no more memories to backfill");
                 assert_eq!(skipped, 0, "all memories should have project now");
             }
-            other => panic!("expected BackfillProjectResult, got {:?}", other),
+            other => panic!("expected BackfillProjectResult, got {other:?}"),
         }
     }
 
@@ -5484,7 +5477,7 @@ mod tests {
             Response::Ok { data: ResponseData::PerceptionStored { id } } => {
                 assert_eq!(id, "p-test-1");
             }
-            other => panic!("expected PerceptionStored, got {:?}", other),
+            other => panic!("expected PerceptionStored, got {other:?}"),
         }
 
         // List unconsumed perceptions
@@ -5500,7 +5493,7 @@ mod tests {
                 assert_eq!(perceptions[0].data, "compilation failed");
                 assert!(!perceptions[0].consumed);
             }
-            other => panic!("expected PerceptionList, got {:?}", other),
+            other => panic!("expected PerceptionList, got {other:?}"),
         }
 
         // Consume the perception
@@ -5511,7 +5504,7 @@ mod tests {
             Response::Ok { data: ResponseData::PerceptionsConsumed { count } } => {
                 assert_eq!(count, 1);
             }
-            other => panic!("expected PerceptionsConsumed, got {:?}", other),
+            other => panic!("expected PerceptionsConsumed, got {other:?}"),
         }
 
         // List unconsumed again — should be empty
@@ -5525,7 +5518,7 @@ mod tests {
                 assert_eq!(count, 0);
                 assert!(perceptions.is_empty());
             }
-            other => panic!("expected PerceptionList (empty), got {:?}", other),
+            other => panic!("expected PerceptionList (empty), got {other:?}"),
         }
     }
 
@@ -5550,7 +5543,7 @@ mod tests {
             Response::Ok { data: ResponseData::ToolStored { id } } => {
                 assert_eq!(id, "t-test-1");
             }
-            other => panic!("expected ToolStored, got {:?}", other),
+            other => panic!("expected ToolStored, got {other:?}"),
         }
 
         // List tools (includes auto-detected tools from startup + our manually stored one)
@@ -5567,7 +5560,7 @@ mod tests {
                 assert_eq!(manual.kind, forge_core::types::manas::ToolKind::Cli);
                 assert_eq!(manual.capabilities, vec!["build", "test"]);
             }
-            other => panic!("expected ToolList, got {:?}", other),
+            other => panic!("expected ToolList, got {other:?}"),
         }
     }
 
@@ -5825,7 +5818,7 @@ mod tests {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
                 assert!(count > 0, "should find memory in experience layer");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
 
         // Recall with layer=declared should NOT find it
@@ -5841,7 +5834,7 @@ mod tests {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
                 assert_eq!(count, 0, "should not find memory in declared layer");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
     }
 
@@ -5872,7 +5865,7 @@ mod tests {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
                 assert!(count > 0, "layer=None should find memory");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
     }
 
@@ -5908,7 +5901,7 @@ mod tests {
                 assert!(count > 0, "should find identity facet matching 'memory'");
                 assert_eq!(results[0].source, "identity");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
 
         // Non-matching query
@@ -5924,7 +5917,7 @@ mod tests {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
                 assert_eq!(count, 0, "should not find anything for non-matching query");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
     }
 
@@ -5959,7 +5952,7 @@ mod tests {
                 assert!(count > 0, "should find perception matching 'compilation'");
                 assert_eq!(results[0].source, "perception");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
     }
 
@@ -6001,7 +5994,7 @@ mod tests {
                 assert!(count > 0, "should find skill matching 'deploy'");
                 assert_eq!(results[0].source, "skill");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
 
         // Non-matching query
@@ -6017,7 +6010,7 @@ mod tests {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
                 assert_eq!(count, 0, "should not find anything for non-matching query");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
     }
 
@@ -6052,7 +6045,7 @@ mod tests {
                 assert!(!dynamic_suffix.is_empty(), "dynamic_suffix should not be empty");
                 assert_eq!(layers_used, 9, "full context uses 9 layers");
             }
-            other => panic!("expected CompiledContext, got {:?}", other),
+            other => panic!("expected CompiledContext, got {other:?}"),
         }
     }
 
@@ -6090,7 +6083,7 @@ mod tests {
                 assert!(dynamic_suffix.is_empty(), "dynamic_suffix should be empty");
                 assert_eq!(layers_used, 4, "static only uses 4 layers");
             }
-            other => panic!("expected CompiledContext, got {:?}", other),
+            other => panic!("expected CompiledContext, got {other:?}"),
         }
     }
 
@@ -6158,7 +6151,7 @@ mod tests {
                 id: id.to_string(),
                 file_path: file.to_string(),
                 severity: sev.to_string(),
-                message: format!("{} in {}", sev, file),
+                message: format!("{sev} in {file}"),
                 source: "forge-consistency".into(),
                 line: None,
                 column: None,
@@ -6289,7 +6282,7 @@ mod tests {
                 assert_eq!(lessons_created, 1, "should create 1 lesson");
                 assert_eq!(diagnostics_created, 0, "medium severity should not create diagnostics");
             }
-            other => panic!("expected EvaluationStored, got {:?}", other),
+            other => panic!("expected EvaluationStored, got {other:?}"),
         }
 
         // Verify the lesson is recallable
@@ -6308,7 +6301,7 @@ mod tests {
                 assert_eq!(results[0].memory.valence, "negative", "bug should have negative valence");
                 assert!((results[0].memory.intensity - 0.6).abs() < 0.01, "medium severity should have 0.6 intensity");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
     }
 
@@ -6334,7 +6327,7 @@ mod tests {
             } => {
                 assert!(exact_dedup > 0, "should dedup at least 1 duplicate memory");
             }
-            other => panic!("expected ConsolidationComplete, got {:?}", other),
+            other => panic!("expected ConsolidationComplete, got {other:?}"),
         }
     }
 
@@ -6396,7 +6389,7 @@ mod tests {
                 assert_eq!(lessons_created, 2, "should create 2 lessons");
                 assert_eq!(diagnostics_created, 2, "should create 2 diagnostics (both high+)");
             }
-            other => panic!("expected EvaluationStored, got {:?}", other),
+            other => panic!("expected EvaluationStored, got {other:?}"),
         }
 
         // Verify diagnostics exist and are retrievable
@@ -6440,7 +6433,7 @@ mod tests {
                 assert_eq!(lessons_created, 2, "should create 2 lessons even for low severity");
                 assert_eq!(diagnostics_created, 0, "should NOT create diagnostics for low/info severity");
             }
-            other => panic!("expected EvaluationStored, got {:?}", other),
+            other => panic!("expected EvaluationStored, got {other:?}"),
         }
 
         // Double-check no diagnostics in DB
@@ -6470,7 +6463,7 @@ mod tests {
             Response::Ok { data: ResponseData::EvaluationStored { lessons_created, .. } } => {
                 assert_eq!(lessons_created, 1);
             }
-            other => panic!("expected EvaluationStored, got {:?}", other),
+            other => panic!("expected EvaluationStored, got {other:?}"),
         }
 
         // Verify positive valence
@@ -6487,7 +6480,7 @@ mod tests {
                 assert_eq!(count, 1);
                 assert_eq!(results[0].memory.valence, "positive", "good_pattern should have positive valence");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
     }
 
@@ -6524,7 +6517,7 @@ mod tests {
                 assert_eq!(messages_pending, 0);
                 assert!(message_summaries.is_empty());
             }
-            other => panic!("expected ContextDelta, got {:?}", other),
+            other => panic!("expected ContextDelta, got {other:?}"),
         }
     }
 
@@ -6539,7 +6532,7 @@ mod tests {
                 assert!(!has_completion_signal);
                 assert_eq!(severity, "none");
             }
-            other => panic!("expected CompletionCheckResult, got {:?}", other),
+            other => panic!("expected CompletionCheckResult, got {other:?}"),
         }
     }
 
@@ -6563,7 +6556,7 @@ mod tests {
                 assert!(!relevant_lessons.is_empty(), "should surface UAT lesson");
                 assert_eq!(severity, "high");
             }
-            other => panic!("expected CompletionCheckResult, got {:?}", other),
+            other => panic!("expected CompletionCheckResult, got {other:?}"),
         }
     }
 
@@ -6586,7 +6579,7 @@ mod tests {
                 assert!(!warnings.is_empty(), "should warn about shipping");
                 assert!(!checklists.is_empty(), "should include UAT checklist");
             }
-            other => panic!("expected TaskCompletionCheckResult, got {:?}", other),
+            other => panic!("expected TaskCompletionCheckResult, got {other:?}"),
         }
     }
 
@@ -6601,7 +6594,7 @@ mod tests {
                 assert!(warnings.is_empty());
                 assert!(checklists.is_empty());
             }
-            other => panic!("expected TaskCompletionCheckResult, got {:?}", other),
+            other => panic!("expected TaskCompletionCheckResult, got {other:?}"),
         }
     }
 
@@ -6636,7 +6629,7 @@ mod tests {
                 assert_eq!(strengthened, 0);
                 assert_eq!(contradictions, 0);
             }
-            other => panic!("expected ConsolidationComplete, got {:?}", other),
+            other => panic!("expected ConsolidationComplete, got {other:?}"),
         }
     }
 
@@ -6674,7 +6667,7 @@ mod tests {
         match resp {
             Response::Ok { data: ResponseData::GraphData { nodes, edges: _, total_nodes, total_edges: _ } } => {
                 // Should have at least the 2 memory nodes plus platform/tool nodes
-                assert!(total_nodes >= 2, "should have at least 2 nodes, got {}", total_nodes);
+                assert!(total_nodes >= 2, "should have at least 2 nodes, got {total_nodes}");
                 // Verify the memory nodes are present
                 let memory_nodes: Vec<_> = nodes.iter().filter(|n| n.layer == "experience").collect();
                 assert!(memory_nodes.len() >= 2, "should have at least 2 experience nodes");
@@ -6684,7 +6677,7 @@ mod tests {
                     assert!(node.confidence > 0.0);
                 }
             }
-            other => panic!("expected GraphData, got {:?}", other),
+            other => panic!("expected GraphData, got {other:?}"),
         }
     }
 
@@ -6721,7 +6714,7 @@ mod tests {
                 // latency_ms can be 0 for fast parsing — just verify it's a valid number
                 assert!(latency_ms < 10_000, "latency should be reasonable");
             }
-            other => panic!("expected ExtractionResult, got {:?}", other),
+            other => panic!("expected ExtractionResult, got {other:?}"),
         }
     }
 
@@ -6752,7 +6745,7 @@ mod tests {
                     assert_eq!(node.layer, "experience", "all nodes should be experience layer");
                 }
             }
-            other => panic!("expected GraphData, got {:?}", other),
+            other => panic!("expected GraphData, got {other:?}"),
         }
 
         // Filter by identity layer — should be empty (no identity facets stored)
@@ -6764,7 +6757,7 @@ mod tests {
             Response::Ok { data: ResponseData::GraphData { nodes, .. } } => {
                 assert!(nodes.is_empty(), "identity layer should have no nodes when no facets stored");
             }
-            other => panic!("expected GraphData, got {:?}", other),
+            other => panic!("expected GraphData, got {other:?}"),
         }
     }
 
@@ -6793,7 +6786,7 @@ mod tests {
                 assert_eq!(model, "unknown", "unknown provider should default model to 'unknown'");
                 assert_eq!(memories_extracted, 0, "plain text should not parse as extraction output");
             }
-            other => panic!("expected ExtractionResult, got {:?}", other),
+            other => panic!("expected ExtractionResult, got {other:?}"),
         }
     }
 
@@ -6826,7 +6819,7 @@ mod tests {
                     assert!(node.y >= 0.0, "y={} should be non-negative", node.y);
                 }
             }
-            other => panic!("expected GraphData, got {:?}", other),
+            other => panic!("expected GraphData, got {other:?}"),
         }
     }
 
@@ -6883,7 +6876,7 @@ mod tests {
                 assert!(!results[1].is_empty(), "TypeScript query should return results");
                 // Third query about Python may or may not return results (FTS matching)
             }
-            other => panic!("expected BatchRecallResults, got {:?}", other),
+            other => panic!("expected BatchRecallResults, got {other:?}"),
         }
     }
 
@@ -6899,7 +6892,7 @@ mod tests {
             Response::Ok { data: ResponseData::BatchRecallResults { results } } => {
                 assert!(results.is_empty(), "empty queries should return empty results");
             }
-            other => panic!("expected BatchRecallResults, got {:?}", other),
+            other => panic!("expected BatchRecallResults, got {other:?}"),
         }
     }
 
@@ -6930,7 +6923,7 @@ mod tests {
                 assert!(!model.is_empty(), "default model should not be empty");
                 assert_eq!(memories_extracted, 0, "empty array should yield 0 memories");
             }
-            other => panic!("expected ExtractionResult, got {:?}", other),
+            other => panic!("expected ExtractionResult, got {other:?}"),
         }
     }
 
@@ -7039,7 +7032,7 @@ mod tests {
                 assert!((confidence - 0.95).abs() < f64::EPSILON);
                 assert!(is_new, "first detection should create a new reality");
             }
-            other => panic!("expected RealityDetected, got {:?}", other),
+            other => panic!("expected RealityDetected, got {other:?}"),
         }
     }
 
@@ -7060,7 +7053,7 @@ mod tests {
                 assert!(is_new, "first detection should create new reality");
                 reality_id
             }
-            other => panic!("expected RealityDetected, got {:?}", other),
+            other => panic!("expected RealityDetected, got {other:?}"),
         };
 
         // Verify it's in the DB
@@ -7089,7 +7082,7 @@ mod tests {
                 assert!(is_new);
                 reality_id
             }
-            other => panic!("expected RealityDetected, got {:?}", other),
+            other => panic!("expected RealityDetected, got {other:?}"),
         };
 
         // Second call reuses
@@ -7101,7 +7094,7 @@ mod tests {
                 assert!(!is_new, "second detection should reuse existing reality");
                 reality_id
             }
-            other => panic!("expected RealityDetected, got {:?}", other),
+            other => panic!("expected RealityDetected, got {other:?}"),
         };
 
         assert_eq!(id1, id2, "both calls should return the same reality ID");
@@ -7121,7 +7114,7 @@ mod tests {
             Response::Error { message } => {
                 assert!(message.contains("no reality engine can handle"), "error: {message}");
             }
-            other => panic!("expected Error, got {:?}", other),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 
@@ -7144,7 +7137,7 @@ mod tests {
         });
         match resp {
             Response::Ok { data: ResponseData::SessionRegistered { .. } } => {}
-            other => panic!("expected SessionRegistered, got {:?}", other),
+            other => panic!("expected SessionRegistered, got {other:?}"),
         }
 
         // Check that the session now has a reality_id
@@ -7210,7 +7203,7 @@ mod tests {
                 assert_eq!(callers, 1);
                 assert_eq!(calling_files, vec!["src/main.rs"]);
             }
-            other => panic!("expected CrossEngineResult, got {:?}", other),
+            other => panic!("expected CrossEngineResult, got {other:?}"),
         }
     }
 
@@ -7243,7 +7236,7 @@ mod tests {
                 let info2 = mappings.get("src/nonexistent.rs").expect("should have nonexistent.rs");
                 assert_eq!(info2.memory_count, 0, "nonexistent file should have 0 memories");
             }
-            other => panic!("expected FileMemoryMapResult, got {:?}", other),
+            other => panic!("expected FileMemoryMapResult, got {other:?}"),
         }
     }
 
@@ -7293,7 +7286,7 @@ mod tests {
             Response::Ok { data: ResponseData::CodeSearchResult { hits } } => {
                 assert_eq!(hits.len(), 2, "should find 2 symbols matching 'handle'");
             }
-            other => panic!("expected CodeSearchResult, got {:?}", other),
+            other => panic!("expected CodeSearchResult, got {other:?}"),
         }
 
         // Search with kind filter
@@ -7307,7 +7300,7 @@ mod tests {
                 assert_eq!(hits.len(), 1, "should find 1 class matching 'Daemon'");
                 assert_eq!(hits[0]["name"], "DaemonState");
             }
-            other => panic!("expected CodeSearchResult, got {:?}", other),
+            other => panic!("expected CodeSearchResult, got {other:?}"),
         }
     }
 
@@ -7337,7 +7330,7 @@ mod tests {
             Response::Ok { data: ResponseData::IndexComplete { files_indexed, .. } } => {
                 assert_eq!(files_indexed, 1, "should report 1 file indexed");
             }
-            other => panic!("expected IndexComplete, got {:?}", other),
+            other => panic!("expected IndexComplete, got {other:?}"),
         }
 
         // Verify import edges were created
@@ -7355,7 +7348,7 @@ mod tests {
         });
         match resp {
             Response::Ok { data: ResponseData::OrganizationCreated { id } } => assert!(!id.is_empty()),
-            other => panic!("expected OrganizationCreated, got {:?}", other),
+            other => panic!("expected OrganizationCreated, got {other:?}"),
         }
     }
 
@@ -7376,7 +7369,7 @@ mod tests {
         });
         match resp {
             Response::Ok { data: ResponseData::TeamSent { messages_sent } } => assert_eq!(messages_sent, 1),
-            other => panic!("expected TeamSent, got {:?}", other),
+            other => panic!("expected TeamSent, got {other:?}"),
         }
     }
 
@@ -7404,7 +7397,7 @@ mod tests {
                 assert!(names.contains(&"OrgAlpha"), "should contain OrgAlpha");
                 assert!(names.contains(&"OrgBeta"), "should contain OrgBeta");
             }
-            other => panic!("expected OrganizationList, got {:?}", other),
+            other => panic!("expected OrganizationList, got {other:?}"),
         }
     }
 
@@ -7437,7 +7430,7 @@ mod tests {
                 assert_eq!(children.len(), 1, "engineering should have 1 child");
                 assert_eq!(children[0]["name"], "backend");
             }
-            other => panic!("expected TeamTreeData, got {:?}", other),
+            other => panic!("expected TeamTreeData, got {other:?}"),
         }
     }
 
@@ -7471,7 +7464,7 @@ mod tests {
                 assert_eq!(children.len(), 1, "platform should have 1 child");
                 assert_eq!(children[0]["name"], "infra");
             }
-            other => panic!("expected TeamTreeData, got {:?}", other),
+            other => panic!("expected TeamTreeData, got {other:?}"),
         }
     }
 
@@ -7487,7 +7480,7 @@ mod tests {
                 assert!(!org_id.is_empty(), "org_id should not be empty");
                 assert_eq!(teams_created, 12, "startup template creates 12 teams");
             }
-            other => panic!("expected OrgFromTemplateCreated, got {:?}", other),
+            other => panic!("expected OrgFromTemplateCreated, got {other:?}"),
         }
     }
 
@@ -7501,9 +7494,9 @@ mod tests {
         match resp {
             Response::Error { message } => {
                 assert!(message.contains("nonexistent"),
-                    "error should mention the unknown template, got: {}", message);
+                    "error should mention the unknown template, got: {message}");
             }
-            other => panic!("expected Error, got {:?}", other),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 
@@ -7542,7 +7535,7 @@ mod tests {
             Response::Ok { data: ResponseData::TeamSent { messages_sent } } => {
                 assert_eq!(messages_sent, 1, "non-recursive should send to 1 session (parent team only)");
             }
-            other => panic!("expected TeamSent, got {:?}", other),
+            other => panic!("expected TeamSent, got {other:?}"),
         }
 
         // Recursive: parent + child team sessions
@@ -7554,7 +7547,7 @@ mod tests {
             Response::Ok { data: ResponseData::TeamSent { messages_sent } } => {
                 assert_eq!(messages_sent, 2, "recursive should send to 2 sessions (parent + child)");
             }
-            other => panic!("expected TeamSent, got {:?}", other),
+            other => panic!("expected TeamSent, got {other:?}"),
         }
     }
 
@@ -7576,7 +7569,7 @@ mod tests {
             Response::Ok { data: ResponseData::TeamSent { messages_sent } } => {
                 assert_eq!(messages_sent, 0, "empty team should have 0 messages sent");
             }
-            other => panic!("expected TeamSent, got {:?}", other),
+            other => panic!("expected TeamSent, got {other:?}"),
         }
     }
 
@@ -7671,7 +7664,7 @@ mod tests {
                     "old memory should be filtered out by since"
                 );
             }
-            other => panic!("expected Memories response, got {:?}", other),
+            other => panic!("expected Memories response, got {other:?}"),
         }
 
         // Recall WITHOUT since filter — should get both
@@ -7687,7 +7680,7 @@ mod tests {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
                 assert!(count >= 2, "without since filter, should find both memories, got {count}");
             }
-            other => panic!("expected Memories response, got {:?}", other),
+            other => panic!("expected Memories response, got {other:?}"),
         }
     }
 
@@ -7718,7 +7711,7 @@ mod tests {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
                 assert!(count > 0, "since=None should not filter anything");
             }
-            other => panic!("expected Memories response, got {:?}", other),
+            other => panic!("expected Memories response, got {other:?}"),
         }
     }
 
@@ -7752,7 +7745,7 @@ mod tests {
                 assert_eq!(count, 2, "should return exactly 2 perceptions after offset");
                 assert_eq!(perceptions.len(), 2);
             }
-            other => panic!("expected PerceptionList, got {:?}", other),
+            other => panic!("expected PerceptionList, got {other:?}"),
         }
 
         // List with offset=4, limit=10 — should return only 1 (5 total, skip 4)
@@ -7766,7 +7759,7 @@ mod tests {
                 assert_eq!(count, 1, "should return 1 perception (offset 4 of 5)");
                 assert_eq!(perceptions.len(), 1);
             }
-            other => panic!("expected PerceptionList, got {:?}", other),
+            other => panic!("expected PerceptionList, got {other:?}"),
         }
 
         // List with offset=0, no change from default behavior
@@ -7779,7 +7772,7 @@ mod tests {
             Response::Ok { data: ResponseData::PerceptionList { perceptions: _, count } } => {
                 assert_eq!(count, 5, "offset=None should return all 5");
             }
-            other => panic!("expected PerceptionList, got {:?}", other),
+            other => panic!("expected PerceptionList, got {other:?}"),
         }
     }
 
@@ -7794,7 +7787,7 @@ mod tests {
         });
         let org_id = match resp {
             Response::Ok { data: ResponseData::OrganizationCreated { id } } => id,
-            other => panic!("expected OrganizationCreated, got {:?}", other),
+            other => panic!("expected OrganizationCreated, got {other:?}"),
         };
 
         // Create a team via handler
@@ -7806,7 +7799,7 @@ mod tests {
         });
         let team_id = match resp {
             Response::Ok { data: ResponseData::TeamCreated { id, .. } } => id,
-            other => panic!("expected TeamCreated, got {:?}", other),
+            other => panic!("expected TeamCreated, got {other:?}"),
         };
 
         // Look up by team_id with a wrong team_name — should resolve from ID
@@ -7819,7 +7812,7 @@ mod tests {
                 let name = team.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 assert_eq!(name, "engineering", "should resolve name from team_id");
             }
-            other => panic!("expected TeamStatusData, got {:?}", other),
+            other => panic!("expected TeamStatusData, got {other:?}"),
         }
 
         // Look up by name only (team_id=None) — normal behavior
@@ -7832,7 +7825,7 @@ mod tests {
                 let name = team.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 assert_eq!(name, "engineering", "should find by name directly");
             }
-            other => panic!("expected TeamStatusData, got {:?}", other),
+            other => panic!("expected TeamStatusData, got {other:?}"),
         }
 
         // Look up with invalid team_id — should fall back to team_name
@@ -7845,7 +7838,7 @@ mod tests {
                 let name = team.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 assert_eq!(name, "engineering", "invalid team_id should fall back to team_name");
             }
-            other => panic!("expected TeamStatusData, got {:?}", other),
+            other => panic!("expected TeamStatusData, got {other:?}"),
         }
     }
 
@@ -7871,7 +7864,7 @@ mod tests {
             Response::Ok { data: ResponseData::Stored { id } } => {
                 assert!(!id.is_empty(), "stored decision should have a non-empty id");
             }
-            other => panic!("expected Stored, got {:?}", other),
+            other => panic!("expected Stored, got {other:?}"),
         }
 
         // Verify no workspace_decision_written event was emitted
@@ -7906,7 +7899,7 @@ mod tests {
 
         let id = match &resp {
             Response::Ok { data: ResponseData::Stored { id } } => id.clone(),
-            other => panic!("expected Stored, got {:?}", other),
+            other => panic!("expected Stored, got {other:?}"),
         };
 
         // Simulate what the auto-write code path does in team mode
@@ -7964,7 +7957,7 @@ mod tests {
             Response::Ok { data: ResponseData::Memories { count, .. } } => {
                 assert!(count > 0, "should find the decision");
             }
-            other => panic!("expected Memories, got {:?}", other),
+            other => panic!("expected Memories, got {other:?}"),
         }
 
         // Verify a TouchMemories command was sent through the channel
@@ -8002,7 +7995,7 @@ mod tests {
             Response::Ok { data: ResponseData::CleanupMemoryResult { garbage_deleted, .. } } => {
                 assert_eq!(garbage_deleted, 1, "should delete 1 garbage memory");
             }
-            other => panic!("expected CleanupMemoryResult, got {:?}", other),
+            other => panic!("expected CleanupMemoryResult, got {other:?}"),
         }
 
         // Verify garbage is soft-deleted, good one is untouched
@@ -8065,7 +8058,7 @@ mod tests {
             Response::Ok { data: ResponseData::CompiledContext { chars, .. } } => {
                 assert!(*chars > 0, "compiled context should have content");
             }
-            other => panic!("expected CompiledContext, got {:?}", other),
+            other => panic!("expected CompiledContext, got {other:?}"),
         }
 
         // Drain TouchMemories first (CompileContext sends touch before injection)
@@ -8100,7 +8093,7 @@ mod tests {
         });
         match resp {
             Response::Ok { data: ResponseData::TeamCreated { .. } } => {}
-            other => panic!("expected TeamCreated, got {:?}", other),
+            other => panic!("expected TeamCreated, got {other:?}"),
         }
 
         // Set topology to star
@@ -8126,7 +8119,7 @@ mod tests {
         });
         match resp {
             Response::Ok { .. } => {}
-            other => panic!("expected Ok, got {:?}", other),
+            other => panic!("expected Ok, got {other:?}"),
         }
 
         // Non-orchestrator member should be BLOCKED from sending
@@ -8139,7 +8132,7 @@ mod tests {
                 assert!(message.contains("star topology"), "error should mention star topology: {message}");
                 assert!(message.contains("orch-1"), "error should mention orchestrator: {message}");
             }
-            other => panic!("expected Error for non-orchestrator in star topology, got {:?}", other),
+            other => panic!("expected Error for non-orchestrator in star topology, got {other:?}"),
         }
 
         // Orchestrator SHOULD be able to send
@@ -8151,7 +8144,7 @@ mod tests {
             Response::Ok { data: ResponseData::TeamSent { messages_sent } } => {
                 assert!(messages_sent > 0, "orchestrator should be able to send in star topology");
             }
-            other => panic!("expected TeamSent for orchestrator, got {:?}", other),
+            other => panic!("expected TeamSent for orchestrator, got {other:?}"),
         }
 
         // "system" should also be allowed (graceful degradation)
@@ -8161,7 +8154,7 @@ mod tests {
         });
         match resp {
             Response::Ok { data: ResponseData::TeamSent { .. } } => {}
-            other => panic!("expected TeamSent for system sender, got {:?}", other),
+            other => panic!("expected TeamSent for system sender, got {other:?}"),
         }
     }
 
@@ -8180,7 +8173,7 @@ mod tests {
                 assert_eq!(count, 0, "should return 0 skills on fresh DB");
                 assert!(skills.is_empty());
             }
-            other => panic!("expected SkillsList, got {:?}", other),
+            other => panic!("expected SkillsList, got {other:?}"),
         }
     }
 
@@ -8197,7 +8190,7 @@ mod tests {
             Response::Error { message } => {
                 assert!(message.contains("not found"), "should report skill not found: {message}");
             }
-            other => panic!("expected Error for nonexistent skill, got {:?}", other),
+            other => panic!("expected Error for nonexistent skill, got {other:?}"),
         }
     }
 
@@ -8215,7 +8208,7 @@ mod tests {
             Response::Ok { data: ResponseData::SkillsList { count, .. } } => {
                 assert_eq!(count, 0, "search for nonexistent should return 0");
             }
-            other => panic!("expected SkillsList, got {:?}", other),
+            other => panic!("expected SkillsList, got {other:?}"),
         }
     }
 
@@ -8229,7 +8222,7 @@ mod tests {
             Response::Ok { data: ResponseData::SkillInfo { skill } } => {
                 assert!(skill.is_none(), "nonexistent skill should return None");
             }
-            other => panic!("expected SkillInfo, got {:?}", other),
+            other => panic!("expected SkillInfo, got {other:?}"),
         }
     }
 
@@ -8259,7 +8252,7 @@ mod tests {
             Response::Ok { data: ResponseData::SessionsCleaned { ended } } => {
                 assert_eq!(ended, 2, "should end 2 temp- sessions, got {ended}");
             }
-            other => panic!("expected SessionsCleaned, got {:?}", other),
+            other => panic!("expected SessionsCleaned, got {other:?}"),
         }
 
         // "keep-1" should still be active
@@ -8268,7 +8261,7 @@ mod tests {
             Response::Ok { data: ResponseData::Sessions { count, .. } } => {
                 assert_eq!(count, 1, "keep-1 should survive prefix cleanup");
             }
-            other => panic!("expected Sessions, got {:?}", other),
+            other => panic!("expected Sessions, got {other:?}"),
         }
     }
 
@@ -8285,7 +8278,7 @@ mod tests {
             Response::Ok { data: ResponseData::Contradictions { count, .. } } => {
                 assert_eq!(count, 0, "empty DB should have 0 contradictions");
             }
-            other => panic!("expected Contradictions, got {:?}", other),
+            other => panic!("expected Contradictions, got {other:?}"),
         }
     }
 
@@ -8324,7 +8317,7 @@ mod tests {
                 assert!(c.shared_tags >= 2, "should have 2+ shared tags");
                 assert!(!c.resolved, "should be unresolved initially");
             }
-            other => panic!("expected Contradictions, got {:?}", other),
+            other => panic!("expected Contradictions, got {other:?}"),
         }
     }
 
@@ -8355,7 +8348,7 @@ mod tests {
                 assert!(!contradictions.is_empty());
                 contradictions[0].id.clone()
             }
-            other => panic!("expected Contradictions, got {:?}", other),
+            other => panic!("expected Contradictions, got {other:?}"),
         };
 
         // Resolve: memory A wins
@@ -8367,7 +8360,7 @@ mod tests {
             Response::Ok { data: ResponseData::ContradictionResolved { resolution, .. } } => {
                 assert_eq!(resolution, "a");
             }
-            other => panic!("expected ContradictionResolved, got {:?}", other),
+            other => panic!("expected ContradictionResolved, got {other:?}"),
         }
 
         // Verify: contradiction should now be resolved
@@ -8379,7 +8372,7 @@ mod tests {
             Response::Ok { data: ResponseData::Contradictions { count, .. } } => {
                 assert_eq!(count, 0, "should have 0 unresolved after resolution");
             }
-            other => panic!("expected Contradictions, got {:?}", other),
+            other => panic!("expected Contradictions, got {other:?}"),
         }
     }
 
@@ -8394,7 +8387,7 @@ mod tests {
             Response::Error { message } => {
                 assert!(message.contains("not found"));
             }
-            other => panic!("expected Error, got {:?}", other),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 
@@ -8423,7 +8416,7 @@ mod tests {
                 assert!(message_summaries[0].contains("(greet)"), "should contain topic: {}", message_summaries[0]);
                 assert!(message_summaries[0].contains("Hello from sender"), "should contain text: {}", message_summaries[0]);
             }
-            other => panic!("expected ContextDelta, got {:?}", other),
+            other => panic!("expected ContextDelta, got {other:?}"),
         }
     }
 
@@ -8454,7 +8447,7 @@ mod tests {
             });
             match &resp {
                 Response::Ok { data: ResponseData::MessageSent { .. } } => {}
-                other => panic!("message {i} should succeed, got {:?}", other),
+                other => panic!("message {i} should succeed, got {other:?}"),
             }
         }
 
@@ -8480,7 +8473,7 @@ mod tests {
             Response::Error { message } => {
                 assert!(message.contains("rate limit"), "should contain rate limit message: {message}");
             }
-            other => panic!("expected rate limit Error, got {:?}", other),
+            other => panic!("expected rate limit Error, got {other:?}"),
         }
     }
 
@@ -8520,7 +8513,7 @@ mod tests {
             Response::Error { message } => {
                 assert!(message.contains("queue full"), "should contain queue full message: {message}");
             }
-            other => panic!("expected queue full Error, got {:?}", other),
+            other => panic!("expected queue full Error, got {other:?}"),
         }
     }
 

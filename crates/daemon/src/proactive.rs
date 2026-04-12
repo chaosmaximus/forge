@@ -241,7 +241,7 @@ fn fetch_recent_by_type(conn: &Connection, memory_type: &str, project: Option<&s
 
 /// Fetch recent memories by tag, optionally scoped to project and organization.
 fn fetch_recent_by_tag(conn: &Connection, tag: &str, project: Option<&str>, org_id: Option<&str>, limit: usize) -> String {
-    let pattern = format!("%{}%", tag);
+    let pattern = format!("%{tag}%");
     let result: Vec<String> = match (project, org_id) {
         (Some(proj), Some(org)) => {
             let mut stmt = match conn.prepare(

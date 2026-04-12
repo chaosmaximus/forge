@@ -634,21 +634,18 @@ mod tests {
         let targets = resolve_file_targets("crates/daemon/src/server/handler.rs");
         assert!(
             targets.contains(&"crate::server::handler".to_string()),
-            "targets should contain crate::server::handler, got: {:?}",
-            targets,
+            "targets should contain crate::server::handler, got: {targets:?}",
         );
 
         // find_importers should now match
         let importers = find_importers(&conn, &targets);
         assert!(
             !importers.is_empty(),
-            "importers should find main.rs via module-path matching, got: {:?}",
-            importers,
+            "importers should find main.rs via module-path matching, got: {importers:?}",
         );
         assert!(
             importers.iter().any(|i| i.contains("main.rs")),
-            "importers should contain main.rs, got: {:?}",
-            importers,
+            "importers should contain main.rs, got: {importers:?}",
         );
     }
 }

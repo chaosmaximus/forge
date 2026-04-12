@@ -37,7 +37,7 @@ impl LspManager {
             if c.is_alive() {
                 false
             } else {
-                eprintln!("[lsp-manager] {} server died, restarting", language);
+                eprintln!("[lsp-manager] {language} server died, restarting");
                 self.clients.remove(&language);
                 true
             }
@@ -68,7 +68,7 @@ impl LspManager {
     pub async fn shutdown_all(self) {
         for (language, client) in self.clients {
             if let Err(e) = client.shutdown().await {
-                eprintln!("[lsp-manager] {} shutdown error: {}", language, e);
+                eprintln!("[lsp-manager] {language} shutdown error: {e}");
             }
         }
     }

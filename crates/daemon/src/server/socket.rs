@@ -70,7 +70,7 @@ async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(
 #[cfg(unix)]
 pub fn is_daemon_alive() -> bool {
     let forge_dir = forge_core::forge_dir();
-    let pid_path = format!("{}/forge.pid", forge_dir);
+    let pid_path = format!("{forge_dir}/forge.pid");
     if let Ok(content) = std::fs::read_to_string(&pid_path) {
         if let Ok(pid) = content.trim().parse::<i32>() {
             // Signal 0 = existence check, does not actually send a signal
@@ -100,7 +100,7 @@ pub async fn run_server(
         }
 
         // FAIL-LOUD: log stale socket detection so operators can see it
-        eprintln!("[daemon] stale socket detected at {}, cleaning up", socket_path);
+        eprintln!("[daemon] stale socket detected at {socket_path}, cleaning up");
     }
 
     // Remove stale socket file (safe — we verified the old daemon is dead)

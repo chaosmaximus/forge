@@ -46,7 +46,7 @@ pub fn store_diagnostic(conn: &Connection, d: &Diagnostic) -> rusqlite::Result<(
 pub fn get_diagnostics(conn: &Connection, file_path: &str) -> rusqlite::Result<Vec<Diagnostic>> {
     // Escape LIKE wildcards in the file path to prevent overmatch
     let escaped = file_path.replace('%', "\\%").replace('_', "\\_");
-    let like_pattern = format!("%{}", escaped);
+    let like_pattern = format!("%{escaped}");
     let mut stmt = conn.prepare(
         "SELECT id, file_path, severity, message, source, line, col, created_at, expires_at
          FROM diagnostic WHERE (file_path = ?1 OR file_path LIKE ?2 ESCAPE '\\') AND expires_at > datetime('now')
@@ -72,7 +72,7 @@ pub fn get_diagnostics(conn: &Connection, file_path: &str) -> rusqlite::Result<V
 /// Escapes LIKE wildcards to prevent cross-file deletion (Codex fix).
 pub fn clear_diagnostics(conn: &Connection, file_path: &str) -> rusqlite::Result<usize> {
     let escaped = file_path.replace('%', "\\%").replace('_', "\\_");
-    let like_pattern = format!("%{}", escaped);
+    let like_pattern = format!("%{escaped}");
     conn.execute(
         "DELETE FROM diagnostic WHERE file_path = ?1 OR file_path LIKE ?2 ESCAPE '\\'",
         params![file_path, like_pattern],
@@ -271,7 +271,7 @@ mod tests {
                 id: id.to_string(),
                 file_path: "src/test.rs".into(),
                 severity: sev.to_string(),
-                message: format!("{} msg", sev),
+                message: format!("{sev} msg"),
                 source: "test".into(),
                 line: None,
                 column: None,

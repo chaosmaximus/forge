@@ -29,11 +29,11 @@ pub async fn doctor() {
                 uptime_secs
             );
             println!("  DB size:     {:.1} MB", db_size_bytes as f64 / (1024.0 * 1024.0));
-            println!("  Memories:    {}", memory_count);
-            println!("  Embeddings:  {}", embedding_count);
-            println!("  Files:       {}", file_count);
-            println!("  Symbols:     {}", symbol_count);
-            println!("  Edges:       {}", edge_count);
+            println!("  Memories:    {memory_count}");
+            println!("  Embeddings:  {embedding_count}");
+            println!("  Files:       {file_count}");
+            println!("  Symbols:     {symbol_count}");
+            println!("  Edges:       {edge_count}");
             println!("  Workers:     {}", workers.join(", "));
 
             if !checks.is_empty() {
@@ -50,9 +50,9 @@ pub async fn doctor() {
                 }
             }
         }
-        Ok(Response::Error { message }) => eprintln!("error: {}", message),
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
-        Err(e) => eprintln!("error: {}", e),
+        Err(e) => eprintln!("error: {e}"),
     }
 }
 
@@ -72,7 +72,7 @@ pub async fn health_by_project() {
                 sorted.sort_by_key(|(k, _)| (*k).clone());
                 for (project, data) in sorted {
                     let total = data.decisions + data.lessons + data.patterns + data.preferences;
-                    println!("  {}:", project);
+                    println!("  {project}:");
                     println!("    decisions: {}, lessons: {}, patterns: {}, preferences: {}, total: {}",
                         data.decisions, data.lessons, data.patterns, data.preferences, total);
                 }
@@ -155,7 +155,7 @@ pub async fn migrate(state_dir: String) {
     let content = match std::fs::read_to_string(&cache_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: cannot read {}: {}", cache_str, e);
+            eprintln!("error: cannot read {cache_str}: {e}");
             std::process::exit(1);
         }
     };
@@ -163,7 +163,7 @@ pub async fn migrate(state_dir: String) {
     let cache: V1Cache = match serde_json::from_str(&content) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: cannot parse {}: {}", cache_str, e);
+            eprintln!("error: cannot parse {cache_str}: {e}");
             std::process::exit(1);
         }
     };
@@ -207,17 +207,17 @@ pub async fn migrate(state_dir: String) {
         match client::send(&req).await {
             Ok(Response::Ok { .. }) => imported += 1,
             Ok(Response::Error { message }) => {
-                eprintln!("  skip: {}", message);
+                eprintln!("  skip: {message}");
                 skipped += 1;
             }
             Err(e) => {
-                eprintln!("  skip: {}", e);
+                eprintln!("  skip: {e}");
                 skipped += 1;
             }
         }
     }
 
-    println!("Migration complete: {} imported, {} skipped", imported, skipped);
+    println!("Migration complete: {imported} imported, {skipped} skipped");
 }
 
 /// Export all data as JSON.
@@ -240,9 +240,9 @@ pub async fn export(format: &str) {
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         }
-        Ok(Response::Error { message }) => eprintln!("error: {}", message),
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
-        Err(e) => eprintln!("error: {}", e),
+        Err(e) => eprintln!("error: {e}"),
     }
 }
 
@@ -252,7 +252,7 @@ pub async fn import(file: Option<String>) {
         Some(path) => match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(e) => {
-                eprintln!("error: cannot read {}: {}", path, e);
+                eprintln!("error: cannot read {path}: {e}");
                 std::process::exit(1);
             }
         },
@@ -260,7 +260,7 @@ pub async fn import(file: Option<String>) {
             use std::io::Read;
             let mut buf = String::new();
             if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-                eprintln!("error: cannot read stdin: {}", e);
+                eprintln!("error: cannot read stdin: {e}");
                 std::process::exit(1);
             }
             buf
@@ -271,14 +271,14 @@ pub async fn import(file: Option<String>) {
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::Import { memories_imported, files_imported, symbols_imported, skipped } }) => {
             println!("Import complete:");
-            println!("  memories: {}", memories_imported);
-            println!("  files:    {}", files_imported);
-            println!("  symbols:  {}", symbols_imported);
-            println!("  skipped:  {}", skipped);
+            println!("  memories: {memories_imported}");
+            println!("  files:    {files_imported}");
+            println!("  symbols:  {symbols_imported}");
+            println!("  skipped:  {skipped}");
         }
-        Ok(Response::Error { message }) => eprintln!("error: {}", message),
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
-        Err(e) => eprintln!("error: {}", e),
+        Err(e) => eprintln!("error: {e}"),
     }
 }
 
@@ -289,12 +289,12 @@ pub async fn ingest_claude() {
             data: ResponseData::IngestClaude { imported, skipped },
         }) => {
             println!("Claude memory ingestion complete:");
-            println!("  imported: {}", imported);
-            println!("  skipped:  {}", skipped);
+            println!("  imported: {imported}");
+            println!("  skipped:  {skipped}");
         }
-        Ok(Response::Error { message }) => eprintln!("error: {}", message),
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
-        Err(e) => eprintln!("error: {}", e),
+        Err(e) => eprintln!("error: {e}"),
     }
 }
 
@@ -302,7 +302,7 @@ pub async fn ingest_claude() {
 pub async fn backfill(path: String) {
     // Verify file exists before sending to daemon
     if !std::path::Path::new(&path).exists() {
-        eprintln!("error: file not found: {}", path);
+        eprintln!("error: file not found: {path}");
         std::process::exit(1);
     }
 
@@ -312,12 +312,12 @@ pub async fn backfill(path: String) {
             data: ResponseData::Backfill { chunks_processed, memories_stored },
         }) => {
             println!("Backfill complete:");
-            println!("  chunks processed: {}", chunks_processed);
-            println!("  memories stored:  {}", memories_stored);
+            println!("  chunks processed: {chunks_processed}");
+            println!("  memories stored:  {memories_stored}");
         }
-        Ok(Response::Error { message }) => eprintln!("error: {}", message),
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
-        Err(e) => eprintln!("error: {}", e),
+        Err(e) => eprintln!("error: {e}"),
     }
 }
 
@@ -386,7 +386,7 @@ pub async fn post_edit_check(file: String) {
                 println!("{diag}");
             }
             if callers_count > 0 {
-                println!("callers: {} file(s) call symbols in {file}", callers_count);
+                println!("callers: {callers_count} file(s) call symbols in {file}");
                 for cf in &calling_files {
                     println!("  - {cf}");
                 }
@@ -607,7 +607,7 @@ pub async fn end_session(id: String) {
                     println!("  memories created: {}", kpis.memories_created);
                     if !kpis.hooks_fired.is_empty() {
                         let hooks: Vec<String> = kpis.hooks_fired.iter()
-                            .map(|(k, v)| format!("{}={}", k, v))
+                            .map(|(k, v)| format!("{k}={v}"))
                             .collect();
                         println!("  hooks: {}", hooks.join(", "));
                     }
@@ -706,14 +706,14 @@ pub async fn message_read(id: String) {
                     println!("Topic:   {}", m.topic);
                     println!("Status:  {}", m.status);
                     if let Some(ref reply) = m.in_reply_to {
-                        println!("Reply-to:{}", reply);
+                        println!("Reply-to:{reply}");
                     }
                     if let Some(ref proj) = m.project {
-                        println!("Project: {}", proj);
+                        println!("Project: {proj}");
                     }
                     println!("Created: {}", m.created_at);
                     if let Some(ref delivered) = m.delivered_at {
-                        println!("Delivered:{}", delivered);
+                        println!("Delivered:{delivered}");
                     }
                     println!("---");
                     let full_text: String = m.parts.iter()
@@ -971,20 +971,20 @@ pub async fn bootstrap(project: Option<String>) {
             },
         }) => {
             println!("Bootstrap complete:");
-            println!("  Files processed:  {}", files_processed);
-            println!("  Files skipped:    {}", files_skipped);
-            println!("  Memories created: {}", memories_extracted);
+            println!("  Files processed:  {files_processed}");
+            println!("  Files skipped:    {files_skipped}");
+            println!("  Memories created: {memories_extracted}");
             if errors > 0 {
-                println!("  Errors:           {}", errors);
+                println!("  Errors:           {errors}");
             }
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => eprintln!("unexpected response"),
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -1000,21 +1000,21 @@ pub async fn backfill_project() {
             if updated == 0 && skipped == 0 {
                 println!("All memories already have a project set.");
             } else if updated == 0 {
-                println!("No memories could be backfilled. {} still have no project.", skipped);
+                println!("No memories could be backfilled. {skipped} still have no project.");
             } else {
-                println!("Backfilled project on {} memories.", updated);
+                println!("Backfilled project on {updated} memories.");
                 if skipped > 0 {
-                    println!("  {} memories still have no project (no session/transcript match).", skipped);
+                    println!("  {skipped} memories still have no project (no session/transcript match).");
                 }
             }
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => eprintln!("unexpected response"),
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -1039,23 +1039,23 @@ pub async fn consolidate() {
                 },
         }) => {
             println!("Consolidation complete:");
-            println!("  Exact dedup:     {}", exact_dedup);
-            println!("  Semantic dedup:  {}", semantic_dedup);
-            println!("  Linked:          {}", linked);
-            println!("  Faded:           {}", faded);
-            println!("  Promoted:        {}", promoted);
-            println!("  Reconsolidated:  {}", reconsolidated);
-            println!("  Embedding merge: {}", embedding_merged);
-            println!("  Strengthened:    {}", strengthened);
-            println!("  Contradictions:  {}", contradictions);
+            println!("  Exact dedup:     {exact_dedup}");
+            println!("  Semantic dedup:  {semantic_dedup}");
+            println!("  Linked:          {linked}");
+            println!("  Faded:           {faded}");
+            println!("  Promoted:        {promoted}");
+            println!("  Reconsolidated:  {reconsolidated}");
+            println!("  Embedding merge: {embedding_merged}");
+            println!("  Strengthened:    {strengthened}");
+            println!("  Contradictions:  {contradictions}");
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => eprintln!("unexpected response"),
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -1071,7 +1071,7 @@ pub async fn extract(force: bool) {
         Ok(Response::Ok {
             data: ResponseData::ExtractionTriggered { files_queued },
         }) => {
-            println!("Extraction triggered: {} transcript file(s) need processing", files_queued);
+            println!("Extraction triggered: {files_queued} transcript file(s) need processing");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -1373,7 +1373,7 @@ pub async fn resolve_contradiction(contradiction_id: String, pick: String) {
         Ok(Response::Ok {
             data: ResponseData::ContradictionResolved { .. },
         }) => {
-            println!("Resolved: {} (winner: memory {})", contradiction_id, pick);
+            println!("Resolved: {contradiction_id} (winner: memory {pick})");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -1403,12 +1403,12 @@ pub async fn stats(hours: u64) {
                 memories_created,
             },
         }) => {
-            println!("Forge Stats (last {}h):", period_hours);
-            println!("  Extractions:      {} ({} errors)", extractions, extraction_errors);
-            println!("  Tokens:           {} in / {} out", tokens_in, tokens_out);
-            println!("  Cost:             ${:.4}", total_cost_usd);
-            println!("  Avg latency:      {}ms", avg_latency_ms);
-            println!("  Memories created: {}", memories_created);
+            println!("Forge Stats (last {period_hours}h):");
+            println!("  Extractions:      {extractions} ({extraction_errors} errors)");
+            println!("  Tokens:           {tokens_in} in / {tokens_out} out");
+            println!("  Cost:             ${total_cost_usd:.4}");
+            println!("  Avg latency:      {avg_latency_ms}ms");
+            println!("  Memories created: {memories_created}");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -1520,10 +1520,10 @@ WantedBy=default.target
 </plist>"#
         );
 
-        let plist_path = format!("{}/Library/LaunchAgents/com.forge.daemon.plist", home);
+        let plist_path = format!("{home}/Library/LaunchAgents/com.forge.daemon.plist");
         match std::fs::write(&plist_path, plist_content) {
             Ok(()) => {
-                println!("LaunchAgent installed: {}", plist_path);
+                println!("LaunchAgent installed: {plist_path}");
                 println!("Start with: forge-next service start");
                 println!("View logs: tail -f /tmp/forge-daemon.err.log");
             }
@@ -1560,13 +1560,13 @@ fn service_start() {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var("HOME").unwrap_or_default();
-        let plist = format!("{}/Library/LaunchAgents/com.forge.daemon.plist", home);
+        let plist = format!("{home}/Library/LaunchAgents/com.forge.daemon.plist");
         let status = std::process::Command::new("launchctl")
             .args(["load", &plist])
             .status();
         match status {
             Ok(s) if s.success() => println!("Forge daemon started."),
-            Ok(s) => eprintln!("launchctl load failed (exit {})", s),
+            Ok(s) => eprintln!("launchctl load failed (exit {s})"),
             Err(e) => eprintln!("error: {e}"),
         }
     }
@@ -1587,7 +1587,7 @@ fn service_stop() {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var("HOME").unwrap_or_default();
-        let plist = format!("{}/Library/LaunchAgents/com.forge.daemon.plist", home);
+        let plist = format!("{home}/Library/LaunchAgents/com.forge.daemon.plist");
         let _ = std::process::Command::new("launchctl")
             .args(["unload", &plist])
             .status();
@@ -1613,7 +1613,7 @@ fn service_status() {
     // Also check if the daemon socket exists
     let socket = forge_core::default_socket_path();
     if std::path::Path::new(&socket).exists() {
-        println!("\nDaemon socket exists at: {}", socket);
+        println!("\nDaemon socket exists at: {socket}");
         println!("Run 'forge-next health' to verify it's responding.");
     } else {
         println!("\nDaemon socket NOT found. Service may not be running.");
@@ -1640,7 +1640,7 @@ fn service_uninstall() {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var("HOME").unwrap_or_default();
-        let plist = format!("{}/Library/LaunchAgents/com.forge.daemon.plist", home);
+        let plist = format!("{home}/Library/LaunchAgents/com.forge.daemon.plist");
         let _ = std::fs::remove_file(&plist);
         println!("LaunchAgent uninstalled.");
     }
@@ -1705,7 +1705,7 @@ pub async fn list_realities(organization: Option<String>) {
                 let path = r.project_path.as_deref().unwrap_or("(no path)");
                 println!("  {} ({}) — {} [{}]", r.name, r.reality_type, domain, r.engine_status);
                 println!("    ID:   {}", r.id);
-                println!("    Path: {}", path);
+                println!("    Path: {path}");
                 println!("    Last: {}", r.last_active);
             }
         }
@@ -1766,18 +1766,18 @@ pub async fn session_heartbeat(session_id: String) {
     let req = Request::SessionHeartbeat { session_id: session_id.clone() };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::Heartbeat { status, .. } }) => {
-            println!("{}", status);
+            println!("{status}");
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(other) => {
-            eprintln!("unexpected response: {:?}", other);
+            eprintln!("unexpected response: {other:?}");
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -1790,7 +1790,7 @@ pub async fn subscribe(
     team_id: Option<String>,
 ) {
     if let Err(e) = crate::transport::subscribe_stream(events, session_id, team_id).await {
-        eprintln!("subscribe error: {}", e);
+        eprintln!("subscribe error: {e}");
         std::process::exit(1);
     }
 }
@@ -1812,28 +1812,28 @@ pub async fn context_refresh(session_id: String, since: Option<String>) {
                 },
         }) => {
             for n in &notifications {
-                println!("notification: {}", n);
+                println!("notification: {n}");
             }
             for w in &warnings {
-                println!("warning: {}", w);
+                println!("warning: {w}");
             }
             for a in &anti_patterns {
-                println!("anti-pattern: {}", a);
+                println!("anti-pattern: {a}");
             }
             if messages_pending > 0 {
-                println!("messages-pending: {}", messages_pending);
+                println!("messages-pending: {messages_pending}");
             }
             for summary in &message_summaries {
-                println!("a2a-message: {}", summary);
+                println!("a2a-message: {summary}");
             }
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => {}
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -1855,19 +1855,19 @@ pub async fn completion_check(session_id: String, claimed_done: bool) {
                 },
         }) => {
             if has_completion_signal && !relevant_lessons.is_empty() {
-                println!("severity: {}", severity);
+                println!("severity: {severity}");
                 for l in &relevant_lessons {
-                    println!("lesson: {}", l);
+                    println!("lesson: {l}");
                 }
             }
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => {}
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -1889,19 +1889,19 @@ pub async fn task_completion_check(
             data: ResponseData::TaskCompletionCheckResult { warnings, checklists },
         }) => {
             for w in &warnings {
-                println!("warning: {}", w);
+                println!("warning: {w}");
             }
             for c in &checklists {
-                println!("checklist: {}", c);
+                println!("checklist: {c}");
             }
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => {}
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -1913,12 +1913,12 @@ pub async fn context_stats(session_id: Option<String>) {
         Ok(Response::Ok { data: ResponseData::ContextStatsResult {
             total_injections, total_chars, estimated_tokens, acknowledged, effectiveness_rate, per_hook,
         } }) => {
-            println!("Context Injection Stats{}", session_id.as_deref().map(|s| format!(" (session: {})", s)).unwrap_or_default());
+            println!("Context Injection Stats{}", session_id.as_deref().map(|s| format!(" (session: {s})")).unwrap_or_default());
             println!("─────────────────────────");
-            println!("  Injections:      {}", total_injections);
-            println!("  Total chars:     {}", total_chars);
-            println!("  Est. tokens:     {}", estimated_tokens);
-            println!("  Acknowledged:    {}", acknowledged);
+            println!("  Injections:      {total_injections}");
+            println!("  Total chars:     {total_chars}");
+            println!("  Est. tokens:     {estimated_tokens}");
+            println!("  Acknowledged:    {acknowledged}");
             println!("  Effectiveness:   {:.1}%", effectiveness_rate * 100.0);
             if !per_hook.is_empty() {
                 println!("  ─────────────────────────");
@@ -1928,9 +1928,9 @@ pub async fn context_stats(session_id: Option<String>) {
                 }
             }
         }
-        Ok(Response::Error { message }) => { eprintln!("error: {}", message); std::process::exit(1); }
+        Ok(Response::Error { message }) => { eprintln!("error: {message}"); std::process::exit(1); }
         Ok(_) => {}
-        Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+        Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
     }
 }
 
@@ -1940,10 +1940,10 @@ pub async fn org_create(name: String, description: Option<String>) {
     let req = Request::CreateOrganization { name, description };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::OrganizationCreated { id } }) => {
-            println!("Organization created: {}", id);
+            println!("Organization created: {id}");
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => {
@@ -1951,7 +1951,7 @@ pub async fn org_create(name: String, description: Option<String>) {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -1969,13 +1969,13 @@ pub async fn org_list() {
                     o["name"].as_str().unwrap_or("?"),
                     o["description"]
                         .as_str()
-                        .map(|d| format!("({})", d))
+                        .map(|d| format!("({d})"))
                         .unwrap_or_default()
                 );
             }
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => {
@@ -1983,7 +1983,7 @@ pub async fn org_list() {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -1999,12 +1999,11 @@ pub async fn org_from_template(template: String, name: String) {
             data: ResponseData::OrgFromTemplateCreated { org_id, teams_created },
         }) => {
             println!(
-                "Organization created: {} ({} teams from template)",
-                org_id, teams_created
+                "Organization created: {org_id} ({teams_created} teams from template)"
             );
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => {
@@ -2012,7 +2011,7 @@ pub async fn org_from_template(template: String, name: String) {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -2127,11 +2126,11 @@ pub async fn org_init(name: String, template: Option<String>) {
     let req = Request::WorkspaceInit { org_name: name, template };
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::WorkspaceInitialized { path, teams_created } }) => {
-            println!("Workspace initialized at: {}", path);
-            println!("Teams created: {}", teams_created);
+            println!("Workspace initialized at: {path}");
+            println!("Teams created: {teams_created}");
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => {
@@ -2139,7 +2138,7 @@ pub async fn org_init(name: String, template: Option<String>) {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -2149,24 +2148,24 @@ pub async fn workspace_status() {
     let req = Request::WorkspaceStatus;
     match client::send(&req).await {
         Ok(Response::Ok { data: ResponseData::WorkspaceStatusData { mode, org, root, teams } }) => {
-            println!("Workspace Mode: {}", mode);
+            println!("Workspace Mode: {mode}");
             if !org.is_empty() {
-                println!("Organization:   {}", org);
+                println!("Organization:   {org}");
             }
             if !root.is_empty() {
-                println!("Root:           {}", root);
+                println!("Root:           {root}");
             }
             if teams.is_empty() {
                 println!("Teams:          (none)");
             } else {
                 println!("Teams ({}):", teams.len());
                 for t in &teams {
-                    println!("  - {}", t);
+                    println!("  - {t}");
                 }
             }
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => {
@@ -2174,7 +2173,7 @@ pub async fn workspace_status() {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -2187,10 +2186,10 @@ pub async fn set_current_task(session_id: String, task: String) {
         task: task.clone(),
     }).await {
         Ok(Response::Ok { data: ResponseData::CurrentTaskSet { .. } }) => {
-            println!("Task set on session {}: {}", session_id, task);
+            println!("Task set on session {session_id}: {task}");
         }
         Ok(Response::Error { message }) => {
-            eprintln!("error: {}", message);
+            eprintln!("error: {message}");
             std::process::exit(1);
         }
         Ok(_) => {
@@ -2198,7 +2197,7 @@ pub async fn set_current_task(session_id: String, task: String) {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }

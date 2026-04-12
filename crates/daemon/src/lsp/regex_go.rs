@@ -55,7 +55,7 @@ pub fn extract_symbols_go(file_path: &str, content: &str) -> Vec<CodeSymbol> {
         if let Some(cap) = RE_FUNCTION.captures(trimmed) {
             let name = cap[1].to_string();
             symbols.push(CodeSymbol {
-                id: format!("{}:{}:{}", file_path, name, line_num),
+                id: format!("{file_path}:{name}:{line_num}"),
                 name,
                 kind: "function".into(),
                 file_path: file_path.to_string(),
@@ -70,7 +70,7 @@ pub fn extract_symbols_go(file_path: &str, content: &str) -> Vec<CodeSymbol> {
         if let Some(cap) = RE_METHOD.captures(trimmed) {
             let name = cap[1].to_string();
             symbols.push(CodeSymbol {
-                id: format!("{}:{}:{}", file_path, name, line_num),
+                id: format!("{file_path}:{name}:{line_num}"),
                 name,
                 kind: "function".into(),
                 file_path: file_path.to_string(),
@@ -85,7 +85,7 @@ pub fn extract_symbols_go(file_path: &str, content: &str) -> Vec<CodeSymbol> {
         if let Some(cap) = RE_STRUCT.captures(trimmed) {
             let name = cap[1].to_string();
             symbols.push(CodeSymbol {
-                id: format!("{}:{}:{}", file_path, name, line_num),
+                id: format!("{file_path}:{name}:{line_num}"),
                 name,
                 kind: "class".into(),
                 file_path: file_path.to_string(),
@@ -100,7 +100,7 @@ pub fn extract_symbols_go(file_path: &str, content: &str) -> Vec<CodeSymbol> {
         if let Some(cap) = RE_INTERFACE.captures(trimmed) {
             let name = cap[1].to_string();
             symbols.push(CodeSymbol {
-                id: format!("{}:{}:{}", file_path, name, line_num),
+                id: format!("{file_path}:{name}:{line_num}"),
                 name,
                 kind: "interface".into(),
                 file_path: file_path.to_string(),

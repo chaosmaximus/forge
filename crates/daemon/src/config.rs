@@ -1198,7 +1198,7 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         ["license", "tier"] => {
             let valid = ["free", "pro", "team", "enterprise"];
             if !valid.contains(&value) {
-                return Err(format!("license.tier must be one of {:?}, got '{value}'", valid));
+                return Err(format!("license.tier must be one of {valid:?}, got '{value}'"));
             }
             config.license.tier = value.to_string();
         }

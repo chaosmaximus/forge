@@ -72,10 +72,10 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Ok(removed) => {
             stats.exact_dedup = removed;
             if removed > 0 {
-                eprintln!("[consolidator] dedup removed {} duplicate memories", removed);
+                eprintln!("[consolidator] dedup removed {removed} duplicate memories");
             }
         }
-        Err(e) => eprintln!("[consolidator] dedup error: {}", e),
+        Err(e) => eprintln!("[consolidator] dedup error: {e}"),
     }
 
     // Phase 2: Semantic dedup (slow O(n^2), bounded by batch_limit)
@@ -83,10 +83,10 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Ok(merged) => {
             stats.semantic_dedup = merged;
             if merged > 0 {
-                eprintln!("[consolidator] semantic dedup merged {} near-duplicates", merged);
+                eprintln!("[consolidator] semantic dedup merged {merged} near-duplicates");
             }
         }
-        Err(e) => eprintln!("[consolidator] semantic dedup error: {}", e),
+        Err(e) => eprintln!("[consolidator] semantic dedup error: {e}"),
     }
 
     // Phase 3: Link related memories (bounded by batch_limit)
@@ -94,10 +94,10 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Ok(linked) => {
             stats.linked = linked;
             if linked > 0 {
-                eprintln!("[consolidator] linked {} related memory pairs", linked);
+                eprintln!("[consolidator] linked {linked} related memory pairs");
             }
         }
-        Err(e) => eprintln!("[consolidator] link error: {}", e),
+        Err(e) => eprintln!("[consolidator] link error: {e}"),
     }
 
     // Phase 4: Decay (bounded by batch_limit)
@@ -105,10 +105,10 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Ok((_decayed, faded)) => {
             stats.faded = faded;
             if faded > 0 {
-                eprintln!("[consolidator] faded {}", faded);
+                eprintln!("[consolidator] faded {faded}");
             }
         }
-        Err(e) => eprintln!("[consolidator] decay error: {}", e),
+        Err(e) => eprintln!("[consolidator] decay error: {e}"),
     }
 
     // Phase 5: Episodic -> Semantic promotion (bounded by batch_limit)
@@ -116,10 +116,10 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Ok(promoted) => {
             stats.promoted = promoted;
             if promoted > 0 {
-                eprintln!("[consolidator] promoted {} recurring lessons to patterns", promoted);
+                eprintln!("[consolidator] promoted {promoted} recurring lessons to patterns");
             }
         }
-        Err(e) => eprintln!("[consolidator] promotion error: {}", e),
+        Err(e) => eprintln!("[consolidator] promotion error: {e}"),
     }
 
     // Phase 6: Reconsolidation — boost confidence of heavily-accessed memories
@@ -139,7 +139,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
                 eprintln!("[consolidator] reconsolidated {} memories", candidates.len());
             }
         }
-        Err(e) => eprintln!("[consolidator] reconsolidation error: {}", e),
+        Err(e) => eprintln!("[consolidator] reconsolidation error: {e}"),
     }
 
     // Phase 7: Embedding-based merge (sleep cycle — deep structural cleanup)
@@ -147,10 +147,10 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Ok(merged) => {
             stats.embedding_merged = merged;
             if merged > 0 {
-                eprintln!("[consolidator] embedding merge: {} similar memories merged", merged);
+                eprintln!("[consolidator] embedding merge: {merged} similar memories merged");
             }
         }
-        Err(e) => eprintln!("[consolidator] embedding merge error: {}", e),
+        Err(e) => eprintln!("[consolidator] embedding merge error: {e}"),
     }
 
     // Phase 8: Strengthen active edges
@@ -158,10 +158,10 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Ok(strengthened) => {
             stats.strengthened = strengthened;
             if strengthened > 0 {
-                eprintln!("[consolidator] strengthened {} active edges", strengthened);
+                eprintln!("[consolidator] strengthened {strengthened} active edges");
             }
         }
-        Err(e) => eprintln!("[consolidator] edge strengthening error: {}", e),
+        Err(e) => eprintln!("[consolidator] edge strengthening error: {e}"),
     }
 
     // Phase 9: Contradiction detection (two strategies)
@@ -170,7 +170,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Ok(found) => {
             stats.contradictions = found;
             if found > 0 {
-                eprintln!("[consolidator] detected {} valence-based contradictions", found);
+                eprintln!("[consolidator] detected {found} valence-based contradictions");
             } else {
                 // Log why valence-based detection found nothing — most memories are neutral
                 let valence_counts: Vec<(String, i64)> = conn
@@ -183,7 +183,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
                     })
                     .unwrap_or_default();
                 let summary: Vec<String> = valence_counts.iter()
-                    .map(|(v, c)| format!("{}={}", v, c))
+                    .map(|(v, c)| format!("{v}={c}"))
                     .collect();
                 eprintln!(
                     "[consolidator] valence-based contradiction: 0 found (valence distribution: {})",
@@ -191,21 +191,21 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
                 );
             }
         }
-        Err(e) => eprintln!("[consolidator] contradiction detection error: {}", e),
+        Err(e) => eprintln!("[consolidator] contradiction detection error: {e}"),
     }
 
     // 9b: Content-based (same type + high title overlap + low content overlap)
     let content_contradictions = detect_content_contradictions(conn);
     stats.contradictions += content_contradictions;
     if content_contradictions > 0 {
-        eprintln!("[consolidator] detected {} content-based contradictions", content_contradictions);
+        eprintln!("[consolidator] detected {content_contradictions} content-based contradictions");
     }
 
     // Phase 10: Decay activation levels (fast — single UPDATE)
     match ops::decay_activation_levels(conn) {
         Ok(n) => {
             if n > 0 {
-                eprintln!("[consolidator] decayed {} activation levels", n);
+                eprintln!("[consolidator] decayed {n} activation levels");
             }
         }
         Err(e) => eprintln!("[consolidator] activation decay error: {e}"),
@@ -216,7 +216,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         Ok(detected) => {
             stats.entities_detected = detected;
             if detected > 0 {
-                eprintln!("[consolidator] detected/updated {} entities from memory titles", detected);
+                eprintln!("[consolidator] detected/updated {detected} entities from memory titles");
             }
         }
         Err(e) => eprintln!("[consolidator] entity detection error: {e}"),
@@ -226,35 +226,35 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
     let synthesized = synthesize_contradictions(conn, config.batch_limit);
     stats.synthesized = synthesized;
     if synthesized > 0 {
-        eprintln!("[consolidator] synthesized {} contradiction resolutions", synthesized);
+        eprintln!("[consolidator] synthesized {synthesized} contradiction resolutions");
     }
 
     // Phase 13: Knowledge gap detection — surface concepts without entities
     let gaps = detect_and_surface_gaps(conn);
     stats.gaps_detected = gaps;
     if gaps > 0 {
-        eprintln!("[consolidator] detected {} knowledge gaps", gaps);
+        eprintln!("[consolidator] detected {gaps} knowledge gaps");
     }
 
     // Phase 14: Memory reweave — enrich older memories with newer context sharing tags
     let reweaved = reweave_memories(conn, config.batch_limit, config.reweave_limit);
     stats.reweaved = reweaved;
     if reweaved > 0 {
-        eprintln!("[consolidator] reweaved {} memory pairs", reweaved);
+        eprintln!("[consolidator] reweaved {reweaved} memory pairs");
     }
 
     // Phase 15: Quality scoring — compute quality scores for active memories
     let scored = score_memory_quality(conn, config.batch_limit);
     stats.scored = scored;
     if scored > 0 {
-        eprintln!("[consolidator] scored {} memories", scored);
+        eprintln!("[consolidator] scored {scored} memories");
     }
 
     // Phase 16: Portability classification — classify unknown memories
     match ops::classify_portability(conn, config.batch_limit) {
         Ok(classified) => {
             if classified > 0 {
-                eprintln!("[consolidator] classified portability for {} memories", classified);
+                eprintln!("[consolidator] classified portability for {classified} memories");
             }
         }
         Err(e) => eprintln!("[consolidator] portability classification failed: {e}"),
@@ -264,14 +264,14 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
     let protocols = extract_protocols(conn, config.batch_limit);
     stats.protocols_extracted = protocols;
     if protocols > 0 {
-        eprintln!("[consolidator] extracted {} protocols from behavior patterns", protocols);
+        eprintln!("[consolidator] extracted {protocols} protocols from behavior patterns");
     }
 
     // Phase 18: Anti-pattern tagging — tag lessons with negative signals
     let antipatterns = tag_antipatterns(conn, config.batch_limit);
     stats.antipatterns_tagged = antipatterns;
     if antipatterns > 0 {
-        eprintln!("[consolidator] tagged {} anti-patterns from lessons", antipatterns);
+        eprintln!("[consolidator] tagged {antipatterns} anti-patterns from lessons");
     }
 
     // Phase 19: Generate notifications from consolidation findings
@@ -284,7 +284,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
     {
             if let Err(e) = crate::notifications::NotificationBuilder::new(
                 "confirmation", "medium",
-                &format!("Forge extracted {} new protocol(s) from behavior patterns", protocols),
+                &format!("Forge extracted {protocols} new protocol(s) from behavior patterns"),
                 "Review the new protocols with: forge-next recall --type protocol. Approve or dismiss.",
                 "consolidator",
             )
@@ -327,7 +327,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             if let Err(e) = crate::notifications::NotificationBuilder::new(
                 "insight", "medium",
                 "Memory quality declining",
-                &format!("Average quality score for recent memories is {:.2}. Consider reviewing and cleaning up low-quality entries.", avg_quality),
+                &format!("Average quality score for recent memories is {avg_quality:.2}. Consider reviewing and cleaning up low-quality entries."),
                 "consolidator",
             )
             .topic("quality_decline")
@@ -346,7 +346,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
     // 19d: Meeting timeout detection
     {
         let timeout_secs = crate::config::load_config().meeting.timeout_secs;
-        let timeout_modifier = format!("-{} seconds", timeout_secs);
+        let timeout_modifier = format!("-{timeout_secs} seconds");
         let timed_out: Vec<(String, String)> = conn
             .prepare(
                 "SELECT id, topic FROM meeting
@@ -373,7 +373,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
 
             // Auto-synthesize from partial responses
             let synthesis = if responses.is_empty() {
-                format!("Meeting '{}' timed out with no responses.", topic)
+                format!("Meeting '{topic}' timed out with no responses.")
             } else {
                 let parts: Vec<String> = responses.iter()
                     .map(|(sid, resp)| format!("- {}: {}", sid, resp.chars().take(200).collect::<String>()))
@@ -384,7 +384,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             // Store synthesis as a decision memory
             let decision_mem = Memory::new(
                 MemoryType::Decision,
-                format!("Meeting timed out: {}", topic),
+                format!("Meeting timed out: {topic}"),
                 synthesis.clone(),
             ).with_confidence(0.6);
             if let Err(e) = ops::remember(conn, &decision_mem) {
@@ -401,7 +401,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
 
             if let Err(e) = crate::notifications::NotificationBuilder::new(
                 "alert", "high",
-                &format!("Meeting '{}' timed out — auto-synthesized", topic),
+                &format!("Meeting '{topic}' timed out — auto-synthesized"),
                 &format!("Meeting {} timed out with {} response(s). Auto-synthesis stored as decision. Review: forge-next meeting transcript {}",
                     meeting_id, responses.len(), meeting_id),
                 "meeting_engine",
@@ -414,7 +414,7 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
     }
 
     if notifs_generated > 0 {
-        eprintln!("[consolidator] generated {} notifications", notifs_generated);
+        eprintln!("[consolidator] generated {notifs_generated} notifications");
     }
 
     // ── Memory Self-Healing (Phases 20-22) ──
@@ -432,14 +432,14 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
     let healed_faded = heal_session_staleness(conn, &healing_config);
     stats.healed_faded = healed_faded;
     if healed_faded > 0 {
-        eprintln!("[consolidator] healing: auto-faded {} stale memories", healed_faded);
+        eprintln!("[consolidator] healing: auto-faded {healed_faded} stale memories");
     }
 
     // Phase 22: Quality pressure (natural selection)
     let quality_adjusted = apply_quality_pressure(conn, &healing_config);
     stats.healed_quality_adjusted = quality_adjusted;
     if quality_adjusted > 0 {
-        eprintln!("[consolidator] healing: adjusted quality for {} memories", quality_adjusted);
+        eprintln!("[consolidator] healing: adjusted quality for {quality_adjusted} memories");
     }
 
     // Healing notification (throttled: max once per hour)
@@ -827,7 +827,7 @@ pub fn detect_and_surface_gaps(conn: &Connection) -> usize {
         let p = Perception {
             id: perception_id,
             kind: PerceptionKind::KnowledgeGap,
-            data: format!("Knowledge gap: no entity for '{}' despite {} references", word, freq),
+            data: format!("Knowledge gap: no entity for '{word}' despite {freq} references"),
             severity: Severity::Info,
             project: None,
             created_at: forge_core::time::now_iso(),
@@ -1115,7 +1115,7 @@ pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
     let mut promoted = 0;
     for (source_id, title, content, _memory_type) in &candidates {
         // Check if a protocol with this exact source title already exists
-        let protocol_title = format!("Protocol: {}", title);
+        let protocol_title = format!("Protocol: {title}");
         let exists: bool = conn
             .query_row(
                 "SELECT COUNT(*) FROM memory WHERE memory_type = 'protocol' AND status = 'active'
@@ -1382,7 +1382,7 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
 
             // Compute word overlap on combined title+content
             let cand_text = format!("{} {}", candidate.title, candidate.content);
-            let neigh_text = format!("{} {}", n_title, n_content);
+            let neigh_text = format!("{n_title} {n_content}");
             let cand_words = ops::meaningful_words_pub(&cand_text);
             let neigh_words = ops::meaningful_words_pub(&neigh_text);
 
@@ -1565,7 +1565,7 @@ pub async fn run_consolidator(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    eprintln!("[consolidator] started, interval = {:?}", interval);
+    eprintln!("[consolidator] started, interval = {interval:?}");
 
     loop {
         tokio::select! {
@@ -1737,7 +1737,7 @@ mod tests {
         // completeness: 200/200 = 1.0
         // activation: 0.5
         // expected = 1.0*0.3 + 0.5*0.3 + 1.0*0.2 + 0.5*0.2 = 0.3 + 0.15 + 0.2 + 0.1 = 0.75
-        assert!((score - 0.75).abs() < 0.05, "score should be ~0.75, got {}", score);
+        assert!((score - 0.75).abs() < 0.05, "score should be ~0.75, got {score}");
     }
 
     #[test]
@@ -1777,7 +1777,7 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
 
-        assert!(fresh_score > old_score, "fresh memory score ({}) should be higher than old ({})", fresh_score, old_score);
+        assert!(fresh_score > old_score, "fresh memory score ({fresh_score}) should be higher than old ({old_score})");
     }
 
     /// Simple deterministic text embedding for tests.
@@ -2257,7 +2257,7 @@ mod tests {
         for i in 0..3 {
             let m = Memory::new(
                 MemoryType::Lesson,
-                &format!("consolidator tuning attempt {}", i),
+                format!("consolidator tuning attempt {i}"),
                 "some content",
             );
             ops::remember(&conn, &m).unwrap();
@@ -2319,7 +2319,7 @@ mod tests {
 
         // Create memories with GOOD quality scores (avg >= 0.3)
         for i in 0..5 {
-            let m = Memory::new(MemoryType::Decision, &format!("Good decision {i}"), "High quality");
+            let m = Memory::new(MemoryType::Decision, format!("Good decision {i}"), "High quality");
             ops::remember(&conn, &m).unwrap();
             conn.execute(
                 "UPDATE memory SET quality_score = 0.8 WHERE id = ?1",
