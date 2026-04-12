@@ -4,76 +4,63 @@
 
 Forge gives AI agents persistent memory, proactive context, and self-healing intelligence. One Rust daemon, one SQLite file, zero cloud dependency.
 
-**Stack:** Rust daemon (`crates/`) + SolidJS app (`app/forge/`) + Tauri desktop shell
+**Stack:** Rust daemon (4 crates in `crates/`) — open-source Apache-2.0
 **Port:** Daemon HTTP API on `8430` — `POST /api` with `{method, params}` JSON
-**Tests:** `cargo test -p forge-daemon` (990+) · `cd app/forge && npx playwright test --config e2e/playwright/playwright.config.ts` (28 files)
-**Lint:** `cargo clippy -p forge-daemon -p forge-core -p forge-cli -- -W clippy::all` (0 warnings required)
-
-## Forge Powers This Project
-
-Forge runs as an always-on daemon alongside Claude. It handles context automatically — you don't explain the project from scratch each session.
-
-### What happens automatically
-- **Memory injection**: Hooks inject relevant decisions, lessons, and patterns at session start
-- **Blast radius**: Before editing files, Forge shows what depends on them
-- **Extraction**: Transcripts are auto-extracted into structured memories after each session
-- **Healing**: Stale, contradictory, or low-quality memories are auto-repaired
-
-### What you do
-- **Recall before planning**: `forge-next recall "<topic>" --limit 10`
-- **Remember after deciding**: `forge-next remember --type decision --title "..." --content "..."`
-- **Use forge:forge for all dev work**: It routes to the right workflow and tracks context
-- **Check health**: `forge-next health` · `forge-next doctor` · `forge-next manas-health`
-
-### Forge skills (invoke via `forge:forge` — it auto-routes)
-
-| Skill | When |
-|-------|------|
-| `forge:forge` | **Start here** — auto-detects task type |
-| `forge:forge-feature` | Modify existing code (explore → plan → build → review) |
-| `forge:forge-think` | Requirements discovery, BDD specs |
-| `forge:forge-tdd` | Test-first development |
-| `forge:forge-debug` | Root cause analysis before fix |
-| `forge:forge-review` | Code review (standard or adversarial) |
-| `forge:forge-verify` | Evidence before assertions |
-| `forge:forge-ship` | Final verification + PR |
-
-### Agent team (for multi-file tasks)
-
-| Agent | Role |
-|-------|------|
-| **forge-planner** | Architecture, exploration, planning — never writes code |
-| **forge-generator** | Implementation in isolated worktrees — atomic commits |
-| **forge-evaluator** | Spec compliance + code quality — adversarial skeptic |
-
-### Do NOT use these directly — Forge supersedes them
-
-`superpowers:brainstorming`, `superpowers:writing-plans`, `superpowers:subagent-driven-development`, `superpowers:test-driven-development`, `superpowers:systematic-debugging`, `superpowers:requesting-code-review`, `superpowers:verification-before-completion`, `superpowers:finishing-a-development-branch`, `superpowers:dispatching-parallel-agents`, `episodic-memory:*`, `feature-dev:feature-dev`
+**Tests:** `cargo test --workspace` (1,245+ passing)
+**Lint:** `cargo clippy --workspace -- -W clippy::all -D warnings` (0 warnings required)
 
 ## Architecture
 
 ```
-crates/daemon/     — Rust daemon (actor model, SQLite FTS5 + sqlite-vec, 8-layer Manas memory)
-crates/cli/        — forge-next CLI client
-crates/core/       — Protocol types (Request/Response enums)
+crates/daemon/     — HTTP server, 8-layer Manas memory, 8 background workers, guardrails
+crates/cli/        — forge-next CLI client (talks to daemon via HTTP)
+crates/core/       — Protocol types (Request/Response enums shared between daemon and cli)
 crates/hud/        — StatusLine rendering
-app/forge/src/     — SolidJS app (48 components, PixiJS canvas, 4-tier feature gating)
-app/forge/e2e/     — Playwright E2E tests (28 files, live daemon, no mocks)
-skills/            — Forge skill definitions (15 skills)
-agents/            — Agent definitions (planner, generator, evaluator)
-product/           — Product org (engineering, business, marketing, operations)
+config/            — Sample daemon configuration
+deploy/            — Docker, Docker Compose, Helm charts, Litestream, Grafana dashboards
+docs/              — User-facing documentation (getting-started, api-reference, cli-reference, security, operations)
+scripts/           — Install scripts, systemd/launchd unit files
+tests/             — Integration test scripts
+.github/workflows/ — CI (fmt + clippy + tests on macOS + Linux), release (multi-arch binaries)
 ```
 
 ## Conventions
 
-- **Daemon protocol**: Some endpoints are unit variants (no params: `health`, `healing_status`, `healing_run`, `doctor`, `license_status`, `sync_conflicts`, `list_team_templates`). Others require `params: {}` even if empty.
-- **App**: SolidJS (not React) — `createSignal`, `Show`, `For`, `createResource`. BEM CSS naming.
-- **Feature gating**: 4 tiers (free/pro/team/enterprise) via `canAccess(feature, tier)` in `lib/featureGate.ts`.
-- **Plugin sync**: After changing skills/agents, run: `rsync -av --delete skills/ ~/.claude/plugins/marketplaces/forge-marketplace/skills/ && rsync -av --delete agents/ ~/.claude/plugins/marketplaces/forge-marketplace/agents/` — then restart session.
+- **Protocol**: Some endpoints are unit variants (no params: `health`, `healing_status`, `healing_run`, `doctor`, `license_status`, `sync_conflicts`, `list_team_templates`). Others require `params: {}` even if empty.
+- **Error handling**: `anyhow::Result` in application code. Typed errors in library code. Never `unwrap()` outside tests.
+- **Format strings**: Inlined args (`format!("{x}")`, not `format!("{}", x)`) — enforced by clippy.
+- **Tracing**: Use `tracing::info!` / `tracing::warn!` / `tracing::error!`. Never `println!` in non-test code.
+- **Tests**: `#[cfg(test)] mod tests` in the same file. `tempfile::TempDir` for filesystem tests. In-memory SQLite for unit tests, real file for integration.
 
-## Remaining Work
+## Development Workflow
 
-Track in `product/engineering/daemon-team/SESSION-GAPS.md`. Current state in `product/cross-team/HANDOFF.md`.
+```bash
+# Build + test everything
+cargo build --workspace
+cargo test --workspace
 
-**Code (P2):** WASM Task Runner, Raft leader election
-**Founder:** Dodo Payments KYC, ToS, Privacy Policy, Apple Developer ID, Firebase docs deploy, license key replacement (`app/forge/src/lib/licensePublicKey.ts`)
+# Lint (must be 0 warnings)
+cargo fmt --all
+cargo clippy --workspace -- -W clippy::all -D warnings
+
+# Run daemon locally
+cargo run --release -p forge-daemon
+
+# Use the CLI against a running daemon
+cargo run --release -p forge-cli -- health
+cargo run --release -p forge-cli -- recall "architecture"
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. In short:
+
+- Fork, branch, PR
+- One logical change per PR
+- Every PR must pass fmt + clippy + tests
+- Add tests for new behavior
+- Update docs in `docs/` when relevant
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -85,19 +85,13 @@ jobs:
           generate_release_notes: true
           files: release/*.tar.gz
           body: |
-            ## Install
+            ## Install from source
 
-            **One command:**
             ```bash
-            curl -fsSL https://forge.bhairavi.tech/install | sh
+            cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
             ```
 
-            **Or via Claude Code plugin:**
-            ```bash
-            claude plugin marketplace add chaosmaximus/forge
-            ```
-
-            ## Binaries
+            ## Or download binaries below
 
             | Platform | Architecture |
             |----------|-------------|

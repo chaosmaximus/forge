@@ -5,9 +5,6 @@ members = [
     "crates/daemon",
     "crates/cli",
 ]
-exclude = [
-    "app/forge/src-tauri",
-]
 resolver = "2"
 
 [profile.release]

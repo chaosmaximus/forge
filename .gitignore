@@ -8,14 +8,12 @@ Thumbs.db
 *.swp
 *.swo
 
-# ── Languages ────────────────────────────────────────────────────────
-# Node
-node_modules/
-
-# Rust
+# ── Rust ─────────────────────────────────────────────────────────────
 target/
+**/*.rs.bk
+Cargo.lock.bak
 
-# Python
+# ── Python (for optional tooling) ────────────────────────────────────
 __pycache__/
 *.pyc
 .venv/
@@ -23,43 +21,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
-# Build outputs
-dist/
-
 # ── Forge runtime (not in repo) ─────────────────────────────────────
 .forge/
-.claude/worktrees/
-.codex
+.claude/
 .serena/
-.superpowers/
-servers/forge-core
-
-# ── App test artifacts ───────────────────────────────────────────────
-app/forge/test-results/
-app/forge/uat-screenshots/
-app/forge/e2e/screenshots/
-app/forge/e2e/playwright-report/
-app/forge/e2e/playwright/playwright-report/
-app/forge/e2e/playwright/uat-screenshots/
-app/forge/e2e/robot/*.html
-app/forge/e2e/robot/*.xml
-.playwright-mcp/
-
-# ── Screenshots (prevent accidental commits) ────────────────────────
-*.png
-uat-*.png
-
-# ── Archive ──────────────────────────────────────────────────────────
-archive/
-
-# ── Product / site artifacts ─────────────────────────────────────────
-product/claude-skills/
-product/taste-skill/
-product/site/.astro/
-product/site/.firebase/
-product/site/public/models/
-product/marketing/site/.astro/
-product/engineering/site/
-
-# ── Spikes / experiments ─────────────────────────────────────────────
-spikes/

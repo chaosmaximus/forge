@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/images/creation-of-adam.jpg" alt="The Creation of Adam — Michelangelo, Sistine Chapel, c. 1512" width="720" />
-</p>
-
 <h1 align="center">Forge</h1>
 
 <p align="center">
@@ -14,24 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://forge.bhairavi.tech">Website</a> &middot;
-  <a href="https://github.com/chaosmaximus/forge/discussions">Discussions</a> &middot;
-  <a href="https://github.com/sponsors/chaosmaximus">Sponsor</a>
-</p>
-
-<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License" />
   <img src="https://img.shields.io/badge/tests-1%2C245%2B%20passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/endpoints-98-blue" alt="Endpoints" />
   <img src="https://img.shields.io/badge/workers-8-orange" alt="Workers" />
   <img src="https://img.shields.io/badge/memory%20layers-8-purple" alt="Memory Layers" />
-  <img src="https://img.shields.io/badge/enterprise--ready-Docker%20%7C%20Helm%20%7C%20K8s-teal" alt="Enterprise Ready" />
   <img src="https://img.shields.io/badge/rust-1.88-orange" alt="Rust" />
-</p>
-
----
-
-<p align="center">
-  <em>Demo recording coming soon — <a href="https://forge.bhairavi.tech">visit the website</a> for screenshots and details.</em>
 </p>
 
 ---
@@ -46,23 +30,26 @@ Your agent has the reasoning power of a senior engineer and the memory of a gold
 
 Forge is an always-on daemon that gives AI agents persistent memory, intelligent guardrails, and a self-healing knowledge graph. Install it, bootstrap from your existing transcripts, and your agent remembers everything — across sessions, across projects, across machines.
 
-**Install. Bootstrap. 100 memories in 60 seconds.**
+**Install. Bootstrap. 100 memories in 60 seconds. All local. All yours.**
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Install
-curl -fsSL https://forge.bhairavi.tech/install.sh | sh
+# 1. Install from source
+cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
 
-# 2. Bootstrap from your existing Claude Code / Codex / Cursor transcripts
+# 2. Start the daemon (runs on port 8430)
+forge-daemon &
+
+# 3. Bootstrap from your existing Claude Code / Codex / Cursor transcripts
 forge-next bootstrap
 
 #    ███████████████████████████░░░  Processing 47 sessions...
 #    ✓ 143 memories extracted in 58s
 
-# 3. Search your memory
+# 4. Search your memory
 forge-next recall "auth"
 
 #    ╭──────────────────────────────────────────────────╮
@@ -71,45 +58,32 @@ forge-next recall "auth"
 #    │ Rotating keys stored in Vault, 24h expiry.       │
 #    │ 3 linked files · 2 related decisions             │
 #    ╰──────────────────────────────────────────────────╯
-
-# 4. Your agent gets this context automatically on next session start
 ```
 
-The daemon runs in the background. You never start it manually. It extracts memories from every agent session, builds a knowledge graph, and injects relevant context when your agent needs it.
+The daemon runs in the background. It extracts memories from every agent session, builds a knowledge graph, and serves context via HTTP at `localhost:8430/api` when agents need it.
 
 ---
 
-## How It Works
+## Architecture
 
-```mermaid
-graph TB
-    subgraph App["Forge App — Tauri v2"]
-        UI["SolidJS Frontend"]
-        Cortex["Cortex 3D Visualization"]
-        Terminal["xterm.js Terminal"]
-        IPC["Rust IPC Layer"]
-    end
-
-    subgraph Daemon["Forge Daemon — Rust"]
-        Socket["Unix Socket API · 98 endpoints"]
-        Manas["8-Layer Manas Memory · org_id scoped"]
-        Workers["9 Background Workers"]
-        Guards["Guardrails Engine"]
-        Identity["Identity · Disposition · Skills"]
-    end
-
-    UI --> IPC
-    Cortex --> IPC
-    Terminal --> IPC
-    IPC -->|NDJSON| Socket
-    Socket --> Manas
-    Socket --> Workers
-    Socket --> Guards
-    Socket --> Identity
-
-    Claude["Claude Code"] -->|Adapter| Socket
-    Codex["Codex CLI"] -->|Adapter| Socket
-    Gemini["Gemini CLI"] -->|Adapter| Socket
+```
+┌──────────────────────┐
+│ Your Agent           │
+│ (Claude, Codex, etc.)│
+└──────────┬───────────┘
+           │ HTTP /api
+           ▼
+┌──────────────────────────────────────────┐
+│ forge-daemon  (Rust · port 8430)         │
+│                                          │
+│  • 98 protocol endpoints                 │
+│  • 8-layer Manas memory engine           │
+│  • 8 background workers                  │
+│  • Guardrails engine (blast radius)      │
+│  • Identity · Disposition · Skills       │
+│  • SQLite FTS5 + sqlite-vec              │
+│  • Self-healing sleep-cycle consolidation│
+└──────────────────────────────────────────┘
 ```
 
 **The agent never writes to memory.** Extraction happens silently in the background. The agent only needs to recall. The graph grows automatically.
@@ -129,7 +103,7 @@ graph TB
 - **Bootstrap** — 100+ memories from existing transcripts in 60s
 - **Cross-session** — decisions persist across sessions and projects
 - **Semantic search** — BM25 + vector + graph traversal via RRF
-- **Multi-tenant isolation** — organization_id scoping on all memory queries
+- **Multi-tenant isolation** — organization_id scoping on all queries
 
 </td>
 <td width="50%" valign="top">
@@ -165,8 +139,8 @@ graph TB
 - **Predictive prefetch** — zero cold-start context injection
 - **Memory sync** — encrypted peer-to-peer with cross-tier sync policies
 - **Event stream** — 12 real-time event types for UI integration
-- **Session KPIs** — per-session observability (duration, context injections, A2A messages, hooks fired)
-- **A2A message notifications** — pending messages injected into agent context automatically
+- **Session KPIs** — per-session observability
+- **A2A message notifications** — pending messages injected into context
 
 </td>
 </tr>
@@ -180,7 +154,7 @@ graph TB
 |---|-------|---------------|-------------|
 | 1 | **Platform** | OS, CPU, shell, hostname | Auto-detected at startup |
 | 2 | **Tool** | Available tools, APIs, CLIs | Auto-detected, 50+ tools |
-| 3 | **Skill** | Workflows + behavioral patterns | Extracted from sessions (procedural + behavioral) |
+| 3 | **Skill** | Workflows + behavioral patterns | Extracted from sessions |
 | 4 | **Domain DNA** | Project conventions | Detected from codebase structure |
 | 5 | **Experience** | Decisions, lessons, patterns | LLM extraction from transcripts |
 | 6 | **Perception** | Git state, file changes | Perception worker (30s cycle) |
@@ -223,10 +197,6 @@ forge-next identity list
 forge-next sync-push workstation --project myproject
 forge-next sync-pull laptop --project myproject
 
-# Configuration
-forge-next config set extraction.provider claude
-forge-next config set extraction.model claude-3-haiku
-
 # System
 forge-next sessions                  # active agent sessions
 forge-next perceptions               # current git state
@@ -234,11 +204,13 @@ forge-next platform                  # system info
 forge-next tools                     # detected tools
 ```
 
+See [docs/cli-reference.md](docs/cli-reference.md) for the complete command reference.
+
 ---
 
 ## Works With Any Agent
 
-Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to recall. The daemon extracts from all of them simultaneously.
+Forge is infrastructure, not a plugin. Thin adapters teach each agent to recall. The daemon extracts from all of them simultaneously.
 
 | Agent | Extraction | Recall | Status |
 |-------|-----------|--------|--------|
@@ -252,21 +224,66 @@ Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to re
 
 ---
 
-## Comparison
+## Build From Source
 
-| | **Forge** | Mem0 | Claude Code | Cursor | Warp |
-|--|----------|------|-------------|--------|------|
-| Persistent memory | 8-layer graph | Key-value (cloud) | MEMORY.md (flat file) | None | None |
-| Auto-extraction | From transcripts | Manual SDK calls | Manual | None | None |
-| Guardrails | Blast radius + decisions | None | None | None | None |
-| Knowledge graph | SQLite + vectors + edges | Cloud graph ($249/mo) | None | None | None |
-| Self-healing | Sleep-cycle consolidation | None | None | None | None |
-| Multi-agent | Any agent, shared graph | API-only | Claude only | Cursor only | None |
-| Enterprise deploy | Docker + Helm + K8s | Cloud-only | N/A | Cloud-only | Cloud |
-| Auth + RBAC + Audit | JWT/OIDC + 3-role RBAC + audit | API key | N/A | N/A | OAuth |
-| Observability | Prometheus + Grafana + OTLP | None | None | None | None |
-| Local-first | Everything local (or self-hosted cloud) | Cloud-first | Local file | Cloud sync | Cloud |
-| Price | **Free / $9/mo** | $249/mo | $20/mo (Max) | $20/mo | $18/mo |
+```bash
+git clone https://github.com/chaosmaximus/forge.git
+cd forge
+
+# Build workspace (release mode)
+cargo build --release --workspace
+
+# Run the full test suite (990+ daemon tests)
+cargo test --workspace
+
+# Check for warnings (required: 0)
+cargo clippy --workspace -- -W clippy::all -D warnings
+
+# Install binaries to ~/.cargo/bin
+cargo install --path crates/daemon
+cargo install --path crates/cli
+```
+
+### Requirements
+- Rust 1.88+
+- SQLite 3.40+ (bundled via `rusqlite`)
+- macOS, Linux, or WSL
+
+---
+
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| [Getting Started](docs/getting-started.md) | Install, bootstrap, first queries |
+| [API Reference](docs/api-reference.md) | All 98 HTTP endpoints |
+| [CLI Reference](docs/cli-reference.md) | `forge-next` commands |
+| [Security](docs/security.md) | Threat model, secret handling, audit log |
+| [Operations](docs/operations.md) | Daemon ops, diagnostics, healing |
+| [Cloud Deployment](docs/cloud-deployment.md) | Docker, Helm, K8s |
+| [Agent Development](docs/agent-development.md) | Building agents on Forge |
+
+---
+
+## Deploy
+
+### Docker
+```bash
+docker build -t forge-daemon .
+docker run -d -p 8430:8430 -v forge-data:/data forge-daemon
+```
+
+### Docker Compose
+```bash
+cd deploy && docker-compose up -d
+```
+
+### Kubernetes (Helm)
+```bash
+helm install forge deploy/helm/
+```
+
+See [docs/cloud-deployment.md](docs/cloud-deployment.md) for production deployment including TLS, JWT/OIDC, RBAC, Prometheus/Grafana observability, and Litestream replication.
 
 ---
 
@@ -274,7 +291,7 @@ Forge is not a plugin. It's infrastructure. Thin adapters teach each agent to re
 
 ```
 98 protocol endpoints · 8 background workers · 8 memory layers
-1,245+ Rust tests · 15 adversarial security reviews · 0 warnings (clippy)
+1,245+ Rust tests · 0 warnings (clippy) · Apache-2.0 licensed
 Enterprise: Docker · Helm · JWT/OIDC · RBAC · Audit · Prometheus · Multi-tenant
 ```
 
@@ -286,29 +303,6 @@ Enterprise: Docker · Helm · JWT/OIDC · RBAC · Audit · Prometheus · Multi-t
 | forge-cli | 76 | Rust |
 | **Total (Rust)** | **1,245** | |
 
-```bash
-cargo test --workspace              # full suite
-cargo clippy --workspace -- -W clippy::all   # zero warnings
-```
-
----
-
-## Pricing
-
-| | Free | Pro | Team | Enterprise |
-|--|------|-----|------|-----------|
-| **Price** | $0 | **$9/mo** | $19/seat/mo | Custom |
-| Memories | Unlimited | Unlimited | Unlimited | Unlimited |
-| Extraction | Ollama only | All providers | All providers | All + custom |
-| Search | Basic BM25 | Hybrid (BM25 + vector + graph) | Hybrid + team search | Full |
-| Guardrails | Basic | Full 4-layer + blast radius | Full + org policies | Full + audit |
-| Agents | 1 adapter | All adapters | All + custom | All |
-| Sync | -- | 3 devices | Unlimited + team | Unlimited |
-| Brain Map | Preview | Interactive | Full + team view | Full |
-| Identity/Disposition | View only | Full management | Full + team profiles | Full |
-
-**Zero marginal cost per user.** Everything runs on your machine — or deploy on your Kubernetes cluster with Docker, Helm, JWT/OIDC, RBAC, and Prometheus. Your data never leaves your network unless you choose to sync.
-
 ---
 
 ## The Architecture is Domain-Agnostic
@@ -319,31 +313,29 @@ The 8-layer memory, identity system, disposition engine, perception pipeline, an
 
 ## Contributing
 
-We welcome contributions. Forge is proprietary software — see [LICENSE](LICENSE) for terms.
+We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
-# Clone and build
-git clone https://github.com/chaosmaximus/forge.git
-cd forge
-cargo build --workspace
-
-# Run tests
+# Before submitting a PR
+cargo fmt --all
+cargo clippy --workspace -- -W clippy::all -D warnings
 cargo test --workspace
-
-# Check for warnings
-cargo clippy --workspace -- -W clippy::all
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Join the [discussion](https://github.com/chaosmaximus/forge/discussions).
+Join the discussion: [GitHub Discussions](https://github.com/chaosmaximus/forge/discussions)
 
 ---
 
 ## License
 
-Proprietary. See [LICENSE](LICENSE) for details.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
 
----
+```
+Copyright 2026 Bhairavi Tech
 
-<p align="center">
-  <sub>Built by <a href="https://bhairavi.tech">Bhairavi Tech</a> &middot; <a href="https://forge.bhairavi.tech">forge.bhairavi.tech</a></sub>
-</p>
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+```
