@@ -196,7 +196,7 @@ fn render_memory_project(state: &HudState, project: &str) -> String {
         return render_memory_fallback(proj_stats);
     }
     // Suffix match: find project names ending with the basename
-    let suffix = format!("-{}", project);
+    let suffix = format!("-{project}");
     for (name, stats) in &state.projects {
         if name.ends_with(&suffix) || name.ends_with(project) {
             return render_memory_fallback(stats);

@@ -191,8 +191,8 @@ pub fn format_time_remaining(resets_at: f64) -> String {
     let hours = (remaining_secs % 86400) / 3600;
     let minutes = (remaining_secs % 3600) / 60;
     if days > 0 {
-        format!("{}d {}h", days, hours)
+        format!("{days}d {hours}h")
     } else {
-        format!("{}h {}m", hours, minutes)
+        format!("{hours}h {minutes}m")
     }
 }

@@ -22,7 +22,7 @@ fn render_context_bar(pct: f64) -> String {
         "\u{2588}".repeat(filled),
         "\u{2591}".repeat(empty),
     );
-    format!("{DIM}Context{RESET} {color}{bar_str}{RESET} {color}{:.0}%{RESET}", p)
+    format!("{DIM}Context{RESET} {color}{bar_str}{RESET} {color}{p:.0}%{RESET}")
 }
 
 fn render_usage_bar(pct: f64, resets_at: Option<f64>, window: &str) -> String {
@@ -42,7 +42,7 @@ fn render_usage_bar(pct: f64, resets_at: Option<f64>, window: &str) -> String {
         }
         _ => format!(" (- / {window})"),
     };
-    format!("{color}{bar_str}{RESET} {color}{:.0}%{RESET}{DIM}{time_str}{RESET}", p)
+    format!("{color}{bar_str}{RESET} {color}{p:.0}%{RESET}{DIM}{time_str}{RESET}")
 }
 
 fn context_color(pct: f64) -> &'static str {
