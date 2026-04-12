@@ -77,7 +77,7 @@ crates/
 └── hud/     — Status line rendering
 ```
 
-The daemon exposes a JSON-over-HTTP API at `localhost:8430/api`. The CLI and all integrations talk to this API. There is no shared state beyond the SQLite database.
+The daemon exposes a JSON-over-HTTP API at `localhost:8420/api`. The CLI and all integrations talk to this API. There is no shared state beyond the SQLite database.
 
 See [docs/api-reference.md](docs/api-reference.md) for the full protocol.
 

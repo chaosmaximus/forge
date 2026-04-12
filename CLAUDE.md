@@ -5,7 +5,7 @@
 Forge gives AI agents persistent memory, proactive context, and self-healing intelligence. One Rust daemon, one SQLite file, zero cloud dependency.
 
 **Stack:** Rust daemon (4 crates in `crates/`) — open-source Apache-2.0
-**Port:** Daemon HTTP API on `8430` — `POST /api` with `{method, params}` JSON
+**Port:** Daemon HTTP API on `8420` — `POST /api` with `{method, params}` JSON
 **Tests:** `cargo test --workspace` (1,245+ passing)
 **Lint:** `cargo clippy --workspace -- -W clippy::all -D warnings` (0 warnings required)
 

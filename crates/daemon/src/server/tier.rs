@@ -41,15 +41,6 @@ impl Tier {
         }
     }
 
-    /// Pricing info for upgrade messages.
-    pub fn pricing(&self) -> &'static str {
-        match self {
-            Tier::Free => "free",
-            Tier::Pro => "$12/mo",
-            Tier::Team => "$19/seat",
-            Tier::Enterprise => "contact sales",
-        }
-    }
 }
 
 /// Features that may be tier-gated.
@@ -312,10 +303,9 @@ pub fn check_tier(tier_str: &str, request: &Request) -> Result<(), String> {
     } else {
         let required = feature.required_tier();
         Err(format!(
-            "This feature ({}) requires {} tier ({}). Upgrade at https://forge.bhairavi.tech/pricing",
+            "This feature ({}) requires {} tier or higher.",
             feature.name(),
             required.name(),
-            required.pricing(),
         ))
     }
 }
@@ -426,8 +416,6 @@ mod tests {
             assert!(result.is_err(), "Free tier should block {op:?}");
             let msg = result.unwrap_err();
             assert!(msg.contains("Team tier"), "Error should mention Team tier: {msg}");
-            assert!(msg.contains("$19/seat"), "Error should mention pricing: {msg}");
-            assert!(msg.contains("https://forge.bhairavi.tech/pricing"), "Error should contain upgrade URL: {msg}");
         }
     }
 
@@ -447,7 +435,6 @@ mod tests {
             assert!(result.is_err(), "Free tier should block {op:?}");
             let msg = result.unwrap_err();
             assert!(msg.contains("Pro tier"), "Error should mention Pro tier: {msg}");
-            assert!(msg.contains("$12/mo"), "Error should mention pricing: {msg}");
         }
     }
 
@@ -518,6 +505,6 @@ mod tests {
             description: None,
         });
         let msg = result.unwrap_err();
-        assert!(msg.starts_with("This feature (organization management) requires Team tier ($19/seat)."));
+        assert_eq!(msg, "This feature (organization management) requires Team tier or higher.");
     }
 }

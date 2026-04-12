@@ -40,7 +40,7 @@ Forge is an always-on daemon that gives AI agents persistent memory, intelligent
 # 1. Install from source
 cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
 
-# 2. Start the daemon (runs on port 8430)
+# 2. Start the daemon (runs on port 8420)
 forge-daemon &
 
 # 3. Bootstrap from your existing Claude Code / Codex / Cursor transcripts
@@ -60,7 +60,7 @@ forge-next recall "auth"
 #    ╰──────────────────────────────────────────────────╯
 ```
 
-The daemon runs in the background. It extracts memories from every agent session, builds a knowledge graph, and serves context via HTTP at `localhost:8430/api` when agents need it.
+The daemon runs in the background. It extracts memories from every agent session, builds a knowledge graph, and serves context via HTTP at `localhost:8420/api` when agents need it.
 
 ---
 
@@ -74,7 +74,7 @@ The daemon runs in the background. It extracts memories from every agent session
            │ HTTP /api
            ▼
 ┌──────────────────────────────────────────┐
-│ forge-daemon  (Rust · port 8430)         │
+│ forge-daemon  (Rust · port 8420)         │
 │                                          │
 │  • 98 protocol endpoints                 │
 │  • 8-layer Manas memory engine           │
@@ -270,7 +270,7 @@ cargo install --path crates/cli
 ### Docker
 ```bash
 docker build -t forge-daemon .
-docker run -d -p 8430:8430 -v forge-data:/data forge-daemon
+docker run -d -p 8420:8420 -v forge-data:/data forge-daemon
 ```
 
 ### Docker Compose
@@ -331,7 +331,7 @@ Join the discussion: [GitHub Discussions](https://github.com/chaosmaximus/forge/
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
 
 ```
-Copyright 2026 Bhairavi Tech
+Copyright 2026 Forge Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

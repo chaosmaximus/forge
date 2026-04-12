@@ -1,29 +1,21 @@
 # Getting Started with Forge
 
-Forge is cognitive infrastructure for AI agents. It provides persistent, multi-layered memory that compounds across sessions, machines, and projects. This guide walks through installation, first use, and integration with Claude Code.
+Forge is cognitive infrastructure for AI agents. It provides persistent, multi-layered memory that compounds across sessions, machines, and projects. This guide walks through installation and first use.
 
 ## Prerequisites
 
 - **OS:** Linux (x86_64, aarch64) or macOS (Apple Silicon, Intel)
-- **Rust toolchain:** Only required if building from source. Install via [rustup](https://rustup.rs/).
-- **Claude Code** (optional): Forge hooks auto-inject context into Claude Code sessions.
+- **Rust toolchain:** Required to build from source. Install via [rustup](https://rustup.rs/).
 
 ## Install
 
-### Option A: Pre-built binary (recommended)
+### Option A: Cargo install from git (recommended)
 
 ```bash
-curl -fsSL https://forge.bhairavi.tech/install.sh | bash
+cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
 ```
 
-The installer will:
-
-1. Download the correct binary for your platform
-2. Place `forge-daemon` and `forge-next` in `~/.local/bin/`
-3. Install a systemd (Linux) or launchd (macOS) service
-4. Create the default config at `~/.forge/config.toml`
-5. Set up Claude Code hooks if Claude Code is installed
-6. Verify the daemon is healthy
+This builds `forge-daemon` and `forge-next` and installs them to `~/.cargo/bin`.
 
 ### Option B: Build from source
 
@@ -40,12 +32,6 @@ cp target/release/forge-daemon ~/.local/bin/
 cp target/release/forge-next ~/.local/bin/
 ```
 
-Start the daemon:
-
-```bash
-forge-daemon &
-```
-
 ### Option C: Docker
 
 ```bash
@@ -55,6 +41,14 @@ docker run -d \
   -v forge-data:/var/lib/forge \
   ghcr.io/chaosmaximus/forge-daemon:latest
 ```
+
+## Start the Daemon
+
+```bash
+forge-daemon &
+```
+
+The daemon listens on `localhost:8420` by default and stores state in `~/.forge/`.
 
 ## Verify Installation
 
@@ -153,27 +147,16 @@ Scope to a specific project:
 forge-next compile-context --agent claude-code --project my-web-app
 ```
 
-## Claude Code Integration
+## Agent Integration
 
-If Claude Code is installed, Forge hooks activate automatically. The integration works through Claude Code's hook system:
-
-- **session-start hook:** Injects compiled context (decisions, lessons, patterns, identity) into the conversation at the start of each session
-- **post-edit hook:** Scans each edited file for accidentally exposed secrets
-- **session-end hook:** Updates the HUD state
-
-No manual configuration is required. Start Claude Code as usual:
+Forge exposes all its capabilities via HTTP at `localhost:8420/api`. Any agent can integrate by making `POST` requests with JSON:
 
 ```bash
-claude
+curl -s http://localhost:8420/api \
+  -d '{"method":"recall","params":{"query":"database"}}'
 ```
 
-Forge context appears in the conversation automatically. To verify the hooks are working:
-
-```bash
-forge-next sessions
-```
-
-This shows active sessions, including any Claude Code session that connected via hooks.
+See [api-reference.md](api-reference.md) for the full protocol, and [agent-development.md](agent-development.md) for how to build agents on top of Forge.
 
 ## Configuration
 
