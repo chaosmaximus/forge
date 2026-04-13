@@ -34,6 +34,11 @@ use crate::raw::{ingest_text, search, IngestParams};
 
 /// One LongMemEval question entry. Field names match the on-disk schema
 /// exactly so `serde_json::from_reader` works without any rename glue.
+///
+/// `answer` is `serde_json::Value` because the upstream data is mixed: most
+/// answers are strings, but "how many" questions store integers (e.g.
+/// `"answer": 3`). The retrieval scoring path doesn't read `answer` at all —
+/// only `answer_session_ids` matters — so we just pass it through.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LongMemEvalEntry {
     pub question_id: String,
@@ -41,7 +46,8 @@ pub struct LongMemEvalEntry {
     pub question: String,
     #[serde(default)]
     pub question_date: String,
-    pub answer: String,
+    #[serde(default)]
+    pub answer: serde_json::Value,
     /// Ground-truth session IDs (plural — note the trailing `s`).
     pub answer_session_ids: Vec<String>,
     #[serde(default)]
@@ -188,20 +194,34 @@ pub fn run_raw(
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     create_schema(&conn)?;
 
-    // One raw_documents row per haystack session. Concatenate user + assistant
-    // turns into a single body — MemPalace's bench script joins user turns
-    // only, but indexing assistant turns lets us answer the
-    // `single-session-assistant` category (which is one of the six types).
+    // One raw_documents row per haystack session. Match MemPalace's reference
+    // bench exactly so the comparison to their 96.6% is apples-to-apples:
+    // index ONLY user turns, joined with a single newline, no role prefix.
+    // (See longmemeval_bench.py lines 188–192.)
+    //
+    // Sessions whose haystack has zero user turns are skipped — same
+    // behaviour as the reference. This affects ~0 sessions in practice but
+    // keeps the corpus-build logic identical.
+    //
+    // Variant ideas (all out of scope for the baseline run):
+    //   - Index assistant turns too → may improve `single-session-assistant`
+    //   - Add role markers → may improve `single-session-preference`
+    //   - Swap embedder to bge-large → known to add ~3 points
+    // Each of these deserves its own published row.
     for (sid, session) in entry
         .haystack_session_ids
         .iter()
         .zip(entry.haystack_sessions.iter())
     {
-        let body = session
+        let user_turns: Vec<&str> = session
             .iter()
-            .map(|t| format!("[{}] {}", t.role, t.content))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .filter(|t| t.role == "user")
+            .map(|t| t.content.as_str())
+            .collect();
+        if user_turns.is_empty() {
+            continue;
+        }
+        let body = user_turns.join("\n");
         ingest_text(
             &conn,
             embedder,
@@ -314,7 +334,7 @@ mod tests {
             question_type: "single-session-user".to_string(),
             question: "What is the answer?".to_string(),
             question_date: "2026-04-13".to_string(),
-            answer: "42".to_string(),
+            answer: serde_json::json!("42"),
             answer_session_ids: answer_sids.iter().map(|s| s.to_string()).collect(),
             haystack_dates: vec!["2026-04-13".to_string(); 3],
             haystack_session_ids: vec![

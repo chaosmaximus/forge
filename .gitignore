@@ -25,3 +25,8 @@ __pycache__/
 .forge/
 .claude/
 .serena/
+
+# ── Bench artifacts (per-run; raw artifacts are not checked in,
+#    only the curated Markdown summaries under docs/benchmarks/results/) ──
+bench_results/
+.fastembed_cache/

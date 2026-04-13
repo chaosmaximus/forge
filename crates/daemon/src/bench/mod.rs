@@ -9,5 +9,6 @@
 //   - Embedder is loaded once and shared across all questions in a run.
 //   - Output: per-question JSONL + summary stats.
 
+pub mod locomo;
 pub mod longmemeval;
 pub mod scoring;
