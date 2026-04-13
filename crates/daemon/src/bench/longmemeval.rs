@@ -6,27 +6,36 @@
 // the ground-truth `answer_session_ids`.
 //
 // We support four modes (see docs/benchmarks/plan.md §3):
-//   - Raw: chunk + embed + KNN (the MemPalace 96.6% recipe).
-//   - Extract: TODO (out of scope for the foundations commit).
-//   - Consolidate: TODO.
-//   - Hybrid: TODO.
+//   - Raw:         chunk + embed + KNN (the MemPalace 96.6% recipe). LLM-free.
+//   - Extract:     run the Forge LLM extraction pipeline (Claude Haiku via the
+//                  local `claude` CLI), store memories with session_id, query
+//                  via BM25.
+//   - Consolidate: TODO — extract + run consolidation phases before query.
+//   - Hybrid:      TODO — RRF-merge raw chunks + extracted memories.
 //
-// Only `raw` is implemented in this commit. Adding the other modes is
-// straightforward once we have a runner trait — captured as follow-up work.
+// Raw + Extract are implemented in this commit. Consolidate + Hybrid are the
+// next targets; both reuse the run_extract corpus build.
 
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rusqlite::Connection;
+use futures_util::stream::{self, StreamExt};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::bench::scoring::{ndcg_at_k, recall_all_at_k, recall_any_at_k};
+use crate::config::ConsolidationConfig;
+use crate::db::ops;
 use crate::db::schema::create_schema;
 use crate::db::vec::init_sqlite_vec;
 use crate::embed::Embedder;
+use crate::extraction::backend::ExtractionResult;
+use crate::extraction::gemini;
 use crate::raw::{ingest_text, search, IngestParams};
+use crate::workers::consolidator;
+use forge_core::types::{Memory, MemoryType};
 
 // ────────────────────────────────────────────────────────
 // Input data model — matches longmemeval_s_cleaned.json
@@ -278,6 +287,399 @@ pub fn run_raw(
         ndcg_at_10: ndcg10,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+/// Run one entry through the extract mode pipeline.
+///
+/// For each haystack session: invoke the Forge LLM extraction backend
+/// (`extraction::gemini::extract`) with the configured model — defaults to
+/// `"gemini-2.0-flash"`, which matches the production Forge default. The
+/// bench uses Gemini rather than the local `claude` CLI for three reasons:
+///
+///   1. Every `claude -p` subprocess leaks sync-cli child processes on the
+///      user's system — unacceptable at bench scale.
+///   2. Gemini Flash is faster (~2–4 s/call vs ~16 s for the CLI), so even
+///      a 20-question run stays under 10 minutes.
+///   3. `GEMINI_API_KEY` is typically present in the Forge developer
+///      environment already (the project ships with a Gemini default); the
+///      Anthropic API key is not.
+///
+/// Extracted memories are stored in a fresh in-memory `memory` table with
+/// `session_id` set to the source haystack session ID. Retrieval uses BM25
+/// over `memory_fts` (no vector search, since `memory_vec` is 768-dim and
+/// would require a separate Ollama embedder that we don't want to make the
+/// bench depend on).
+///
+/// Concurrency: extractions for a single question's haystack run in parallel
+/// with bounded `concurrency` (default 8 — see `forge-bench`'s
+/// `--extract-concurrency` flag). Wall time is roughly
+/// `(haystack_size / concurrency) * per_call_seconds`.
+pub async fn run_extract(
+    entry: &LongMemEvalEntry,
+    api_key: &str,
+    model: &str,
+    concurrency: usize,
+) -> Result<QuestionResult, BenchError> {
+    let started = Instant::now();
+    let conn = open_bench_conn()?;
+    build_extract_corpus(&conn, entry, api_key, model, concurrency).await?;
+    let retrieved_session_ids = bm25_query_session_ids(&conn, &entry.question)?;
+    Ok(score_question(
+        entry,
+        "extract",
+        retrieved_session_ids,
+        started,
+    ))
+}
+
+/// Run one entry through the `extract + consolidate` mode pipeline.
+///
+/// Identical to `run_extract` but runs `consolidator::run_all_phases` after
+/// the memories are stored and before the BM25 query. The consolidator
+/// performs exact dedup, semantic dedup, linking, decay, episodic→semantic
+/// promotion, and reconsolidation — all the operations Forge runs
+/// periodically in production. The bench question is: does running
+/// consolidation on extracted memories recover any retrieval recall that
+/// extraction alone lost?
+pub async fn run_consolidate(
+    entry: &LongMemEvalEntry,
+    api_key: &str,
+    model: &str,
+    concurrency: usize,
+) -> Result<QuestionResult, BenchError> {
+    let started = Instant::now();
+    let conn = open_bench_conn()?;
+    build_extract_corpus(&conn, entry, api_key, model, concurrency).await?;
+    consolidator::run_all_phases(&conn, &ConsolidationConfig::default());
+    let retrieved_session_ids = bm25_query_session_ids(&conn, &entry.question)?;
+    Ok(score_question(
+        entry,
+        "consolidate",
+        retrieved_session_ids,
+        started,
+    ))
+}
+
+/// Run one entry through the `hybrid` mode pipeline.
+///
+/// Populates BOTH the raw layer (chunks + embeddings in `raw_chunks_vec`)
+/// AND the extraction memory table from the same haystack sessions, then
+/// queries both paths and RRF-merges the two ranked session-id lists.
+/// Scores the merged list against ground truth.
+///
+/// This is the headline number in the benchmark plan: "does Forge's
+/// extraction add value on top of raw storage for retrieval tasks?" If
+/// hybrid > raw, extraction helps. If hybrid ≈ raw, extraction is
+/// architectural weight that must be justified by non-retrieval axes
+/// (tools, identity, behavioral learning).
+pub async fn run_hybrid(
+    entry: &LongMemEvalEntry,
+    embedder: &Arc<dyn Embedder>,
+    api_key: &str,
+    model: &str,
+    concurrency: usize,
+) -> Result<QuestionResult, BenchError> {
+    let started = Instant::now();
+    let conn = open_bench_conn()?;
+
+    // Build raw corpus.
+    build_raw_corpus(&conn, embedder, entry)?;
+
+    // Build extract corpus (same `memory` table as extract mode, with
+    // session_id set). Runs in parallel over haystack sessions via the
+    // same helper.
+    build_extract_corpus(&conn, entry, api_key, model, concurrency).await?;
+
+    // Query both paths independently, then RRF-merge.
+    let raw_hits = search(
+        &conn,
+        embedder,
+        &entry.question,
+        Some("longmemeval"),
+        None,
+        Some(50),
+        Some(2.0),
+    )?;
+    let raw_session_ids: Vec<String> = {
+        let mut seen: HashSet<String> = HashSet::new();
+        raw_hits
+            .into_iter()
+            .filter_map(|h| h.session_id)
+            .filter(|sid| seen.insert(sid.clone()))
+            .collect()
+    };
+
+    let extract_session_ids = bm25_query_session_ids(&conn, &entry.question)?;
+
+    let retrieved_session_ids = rrf_merge(&[&raw_session_ids, &extract_session_ids], 60);
+
+    Ok(score_question(
+        entry,
+        "hybrid",
+        retrieved_session_ids,
+        started,
+    ))
+}
+
+// ────────────────────────────────────────────────────────
+// Shared helpers
+// ────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory SQLite with the Forge schema installed and
+/// sqlite-vec ready for both the raw layer's 384-dim vec table and the
+/// extraction layer's BM25 index.
+fn open_bench_conn() -> Result<Connection, BenchError> {
+    init_sqlite_vec();
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    create_schema(&conn)?;
+    Ok(conn)
+}
+
+/// Ingest every haystack session into the raw layer. Matches `run_raw`'s
+/// corpus-build exactly (user turns only, joined with `\n`).
+fn build_raw_corpus(
+    conn: &Connection,
+    embedder: &Arc<dyn Embedder>,
+    entry: &LongMemEvalEntry,
+) -> Result<(), BenchError> {
+    for (sid, session) in entry
+        .haystack_session_ids
+        .iter()
+        .zip(entry.haystack_sessions.iter())
+    {
+        let user_turns: Vec<&str> = session
+            .iter()
+            .filter(|t| t.role == "user")
+            .map(|t| t.content.as_str())
+            .collect();
+        if user_turns.is_empty() {
+            continue;
+        }
+        let body = user_turns.join("\n");
+        ingest_text(
+            conn,
+            embedder,
+            IngestParams {
+                text: &body,
+                source: "longmemeval",
+                project: Some("longmemeval"),
+                session_id: Some(sid),
+                ..Default::default()
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Ingest every haystack session through the Forge LLM extraction pipeline
+/// (Gemini HTTP API, bounded concurrency), storing the produced memories in
+/// the `memory` table with `session_id` set. Shared by extract / consolidate
+/// / hybrid modes.
+async fn build_extract_corpus(
+    conn: &Connection,
+    entry: &LongMemEvalEntry,
+    api_key: &str,
+    model: &str,
+    concurrency: usize,
+) -> Result<(), BenchError> {
+    let session_bodies: Vec<(String, String)> = entry
+        .haystack_session_ids
+        .iter()
+        .zip(entry.haystack_sessions.iter())
+        .filter_map(|(sid, session)| {
+            let user_turns: Vec<&str> = session
+                .iter()
+                .filter(|t| t.role == "user")
+                .map(|t| t.content.as_str())
+                .collect();
+            if user_turns.is_empty() {
+                None
+            } else {
+                Some((sid.clone(), user_turns.join("\n")))
+            }
+        })
+        .collect();
+
+    // Parallel extraction with bounded concurrency via Gemini's HTTP API.
+    // ~2–4 s per call dominated by network + model inference. No subprocess
+    // spawning, no child-process leaks.
+    let model_owned = model.to_string();
+    let api_key_owned = api_key.to_string();
+    let extraction_results: Vec<(String, ExtractionResult)> =
+        stream::iter(session_bodies.into_iter().map(|(sid, body)| {
+            let model_for_call = model_owned.clone();
+            let key_for_call = api_key_owned.clone();
+            async move {
+                let result = gemini::extract(&key_for_call, &model_for_call, &body).await;
+                (sid, result)
+            }
+        }))
+        .buffer_unordered(concurrency.max(1))
+        .collect()
+        .await;
+
+    let mut total_extracted = 0usize;
+    let mut sample_error: Option<String> = None;
+    for (sid, result) in extraction_results {
+        match result {
+            ExtractionResult::Success(memories) if !memories.is_empty() => {
+                for em in memories {
+                    if !em.is_valid_type() {
+                        continue;
+                    }
+                    let Some(memory_type) = parse_memory_type(&em.memory_type) else {
+                        continue;
+                    };
+                    let mut memory = Memory::new(memory_type, &em.title, &em.content)
+                        .with_confidence(em.confidence)
+                        .with_tags(em.tags.clone())
+                        .with_project("longmemeval");
+                    memory.session_id = sid.clone();
+                    if !em.valence.is_empty() {
+                        memory.valence = em.valence.clone();
+                    }
+                    memory.intensity = em.intensity;
+                    memory.alternatives = em.alternatives.clone();
+                    memory.participants = em.participants.clone();
+                    ops::remember(conn, &memory)?;
+                    total_extracted += 1;
+                }
+            }
+            ExtractionResult::Success(_) => {}
+            ExtractionResult::Error(msg) | ExtractionResult::Unavailable(msg) => {
+                if sample_error.is_none() {
+                    sample_error = Some(msg);
+                }
+            }
+        }
+    }
+
+    if total_extracted == 0 && sample_error.is_some() {
+        eprintln!(
+            "[bench][{}] WARN: 0 memories stored — sample error: {}",
+            entry.question_id,
+            sample_error
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(160)
+                .collect::<String>(),
+        );
+    }
+    Ok(())
+}
+
+/// Run a BM25 query against the `memory` table and return deduped session IDs
+/// in BM25-rank order. Used by extract / consolidate / hybrid modes.
+fn bm25_query_session_ids(conn: &Connection, query: &str) -> Result<Vec<String>, BenchError> {
+    let safe_query = sanitize_for_fts(query);
+    if safe_query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = "SELECT m.session_id, bm25(memory_fts) AS score
+               FROM memory_fts
+               JOIN memory m ON memory_fts.rowid = m.rowid
+               WHERE memory_fts MATCH ?1
+                 AND m.status = 'active'
+               ORDER BY score
+               LIMIT 50";
+    let mut stmt = conn.prepare(sql)?;
+    let rows: Vec<String> = stmt
+        .query_map(params![safe_query], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut seen: HashSet<String> = HashSet::new();
+    Ok(rows
+        .into_iter()
+        .filter(|sid| !sid.is_empty() && seen.insert(sid.clone()))
+        .collect())
+}
+
+/// Reciprocal Rank Fusion — merges multiple ranked lists into one.
+/// `score(doc) = Σ 1 / (k + rank_in_list_i(doc))` where k = 60 by convention.
+/// Ties broken by insertion order. Returns a deduped ranked list.
+fn rrf_merge(lists: &[&[String]], k: usize) -> Vec<String> {
+    let k = k as f64;
+    let mut scores: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for list in lists {
+        for (rank, sid) in list.iter().enumerate() {
+            *scores.entry(sid.clone()).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+        }
+    }
+    let mut sorted: Vec<(String, f64)> = scores.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.into_iter().map(|(sid, _)| sid).collect()
+}
+
+/// Common scoring path — computes R@5, R@10, R_all@10, NDCG@10 from a
+/// retrieved-session-id list and wraps everything in a `QuestionResult`.
+fn score_question(
+    entry: &LongMemEvalEntry,
+    mode: &str,
+    retrieved_session_ids: Vec<String>,
+    started: Instant,
+) -> QuestionResult {
+    let r5 = recall_any_at_k(&retrieved_session_ids, &entry.answer_session_ids, 5);
+    let r10 = recall_any_at_k(&retrieved_session_ids, &entry.answer_session_ids, 10);
+    let r_all_10 = recall_all_at_k(&retrieved_session_ids, &entry.answer_session_ids, 10);
+    let ndcg10 = ndcg_at_k(&retrieved_session_ids, &entry.answer_session_ids, 10);
+
+    QuestionResult {
+        question_id: entry.question_id.clone(),
+        question_type: entry.question_type.clone(),
+        mode: mode.to_string(),
+        n_haystack_sessions: entry.haystack_sessions.len(),
+        retrieved_session_ids,
+        answer_session_ids: entry.answer_session_ids.clone(),
+        recall_at_5: r5,
+        recall_at_10: r10,
+        recall_all_at_10: r_all_10,
+        ndcg_at_10: ndcg10,
+        elapsed_ms: started.elapsed().as_millis(),
+    }
+}
+
+/// Map an `ExtractedMemory.memory_type` string to a typed `MemoryType` enum.
+/// Returns `None` for skill / identity (which extract mode does not yet
+/// surface in the bench retrieval scorer — we treat them as out-of-scope).
+fn parse_memory_type(s: &str) -> Option<MemoryType> {
+    match s {
+        "decision" => Some(MemoryType::Decision),
+        "lesson" => Some(MemoryType::Lesson),
+        "pattern" => Some(MemoryType::Pattern),
+        "preference" => Some(MemoryType::Preference),
+        // Skills and identity facets aren't first-class memories in the
+        // simplified Memory enum — drop them here. A future commit can add
+        // dedicated tables for both.
+        "skill" | "identity" | "protocol" => None,
+        _ => None,
+    }
+}
+
+/// Reimplementation of `db::ops::sanitize_fts5_query` (which is private in
+/// that module). Splits on whitespace, strips every non-alphanumeric char,
+/// double-quotes each term to disable FTS5 operator parsing, and joins with
+/// `OR` so each term contributes to the BM25 score. Matches the production
+/// sanitizer's behaviour byte-for-byte.
+fn sanitize_for_fts(query: &str) -> String {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .filter_map(|word| {
+            let cleaned: String = word
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if cleaned.is_empty() {
+                return None;
+            }
+            let escaped = cleaned.replace('"', "\"\"");
+            Some(format!("\"{escaped}\""))
+        })
+        .collect();
+    if terms.is_empty() {
+        return String::new();
+    }
+    terms.join(" OR ")
 }
 
 /// Aggregate per-question results into a `RunSummary`.

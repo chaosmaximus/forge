@@ -15,14 +15,19 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rusqlite::Connection;
+use futures_util::stream::{self, StreamExt};
+use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use crate::bench::scoring::{ndcg_at_k, recall_any_at_k};
+use crate::db::ops;
 use crate::db::schema::create_schema;
 use crate::db::vec::init_sqlite_vec;
 use crate::embed::Embedder;
+use crate::extraction::backend::ExtractionResult;
+use crate::extraction::gemini;
 use crate::raw::{ingest_text, search, IngestParams};
+use forge_core::types::{Memory, MemoryType};
 
 // ────────────────────────────────────────────────────────
 // Input data model
@@ -344,6 +349,196 @@ pub fn run_sample_raw(
         });
     }
     Ok(results)
+}
+
+/// Run one LoCoMo sample through extract mode.
+///
+/// Same shape as `run_sample_raw` but instead of chunk+embed, each session
+/// is sent through the Forge Gemini extraction backend and the resulting
+/// memories are stored in the `memory` table with `session_id = "session_N"`.
+/// Queries use BM25 over `memory_fts`.
+pub async fn run_sample_extract(
+    sample: &LocomoSample,
+    api_key: &str,
+    model: &str,
+    concurrency: usize,
+) -> Result<Vec<QaResult>, BenchError> {
+    init_sqlite_vec();
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    create_schema(&conn)?;
+
+    // Build (session_id, body) pairs — include both speakers so questions
+    // about either can be answered. Mirrors `run_sample_raw`.
+    let session_bodies: Vec<(String, String)> = sample
+        .sessions
+        .iter()
+        .filter_map(|session| {
+            let body = session
+                .turns
+                .iter()
+                .map(|t| format!("{}: {}", t.speaker, t.text))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if body.is_empty() {
+                None
+            } else {
+                Some((format!("session_{}", session.idx), body))
+            }
+        })
+        .collect();
+
+    let model_owned = model.to_string();
+    let api_key_owned = api_key.to_string();
+    let extraction_results: Vec<(String, ExtractionResult)> =
+        stream::iter(session_bodies.into_iter().map(|(sid, body)| {
+            let m = model_owned.clone();
+            let k = api_key_owned.clone();
+            async move {
+                let result = gemini::extract(&k, &m, &body).await;
+                (sid, result)
+            }
+        }))
+        .buffer_unordered(concurrency.max(1))
+        .collect()
+        .await;
+
+    let mut total_extracted = 0usize;
+    let mut sample_error: Option<String> = None;
+    for (sid, result) in extraction_results {
+        match result {
+            ExtractionResult::Success(memories) if !memories.is_empty() => {
+                for em in memories {
+                    if !em.is_valid_type() {
+                        continue;
+                    }
+                    let Some(memory_type) = parse_memory_type(&em.memory_type) else {
+                        continue;
+                    };
+                    let mut memory = Memory::new(memory_type, &em.title, &em.content)
+                        .with_confidence(em.confidence)
+                        .with_tags(em.tags.clone())
+                        .with_project("locomo");
+                    memory.session_id = sid.clone();
+                    if !em.valence.is_empty() {
+                        memory.valence = em.valence.clone();
+                    }
+                    memory.intensity = em.intensity;
+                    memory.alternatives = em.alternatives.clone();
+                    memory.participants = em.participants.clone();
+                    ops::remember(&conn, &memory)?;
+                    total_extracted += 1;
+                }
+            }
+            ExtractionResult::Success(_) => {}
+            ExtractionResult::Error(msg) | ExtractionResult::Unavailable(msg) => {
+                if sample_error.is_none() {
+                    sample_error = Some(msg);
+                }
+            }
+        }
+    }
+    if total_extracted == 0 && sample_error.is_some() {
+        eprintln!(
+            "[bench][{}] WARN: 0 memories stored — sample error: {}",
+            sample.sample_id,
+            sample_error
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(160)
+                .collect::<String>(),
+        );
+    }
+    let _ = ops::recall_bm25; // suppress dead-code lint if any
+
+    // Run every QA through BM25 and score against evidence session IDs.
+    let mut results = Vec::with_capacity(sample.qa.len());
+    for qa in &sample.qa {
+        let started = Instant::now();
+        let evidence_session_ids: Vec<String> = qa
+            .evidence
+            .iter()
+            .filter_map(|d| dia_id_to_session(d))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let safe_query = sanitize_for_fts(&qa.question);
+        let retrieved_session_ids: Vec<String> = if safe_query.is_empty() {
+            Vec::new()
+        } else {
+            let sql = "SELECT m.session_id, bm25(memory_fts) AS score
+                       FROM memory_fts
+                       JOIN memory m ON memory_fts.rowid = m.rowid
+                       WHERE memory_fts MATCH ?1
+                         AND m.status = 'active'
+                       ORDER BY score
+                       LIMIT 50";
+            let mut stmt = conn.prepare(sql)?;
+            let rows: Vec<String> = stmt
+                .query_map(params![safe_query], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut seen: HashSet<String> = HashSet::new();
+            rows.into_iter()
+                .filter(|sid| !sid.is_empty() && seen.insert(sid.clone()))
+                .collect()
+        };
+
+        let r5 = recall_any_at_k(&retrieved_session_ids, &evidence_session_ids, 5);
+        let r10 = recall_any_at_k(&retrieved_session_ids, &evidence_session_ids, 10);
+        let ndcg10 = ndcg_at_k(&retrieved_session_ids, &evidence_session_ids, 10);
+
+        results.push(QaResult {
+            sample_id: sample.sample_id.clone(),
+            question: qa.question.clone(),
+            category: qa.category,
+            mode: "extract".to_string(),
+            n_sessions: sample.sessions.len(),
+            retrieved_session_ids,
+            evidence_session_ids,
+            recall_at_5: r5,
+            recall_at_10: r10,
+            ndcg_at_10: ndcg10,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+    }
+    Ok(results)
+}
+
+/// Same FTS5 sanitizer as `longmemeval::sanitize_for_fts`. Duplicated locally
+/// to avoid cross-module dependency; both mirror `db::ops::sanitize_fts5_query`.
+fn sanitize_for_fts(query: &str) -> String {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .filter_map(|word| {
+            let cleaned: String = word
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if cleaned.is_empty() {
+                return None;
+            }
+            let escaped = cleaned.replace('"', "\"\"");
+            Some(format!("\"{escaped}\""))
+        })
+        .collect();
+    if terms.is_empty() {
+        return String::new();
+    }
+    terms.join(" OR ")
+}
+
+/// Map a valid Forge extraction type string to the typed enum.
+/// Non-valid types (skill / identity / etc.) return None and are dropped.
+fn parse_memory_type(s: &str) -> Option<MemoryType> {
+    match s {
+        "decision" => Some(MemoryType::Decision),
+        "lesson" => Some(MemoryType::Lesson),
+        "pattern" => Some(MemoryType::Pattern),
+        "preference" => Some(MemoryType::Preference),
+        _ => None,
+    }
 }
 
 /// Aggregate per-question results into a `LocomoSummary`.
