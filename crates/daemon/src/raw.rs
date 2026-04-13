@@ -137,7 +137,8 @@ pub fn ingest_text(
     }
 
     let document_id = ulid::Ulid::new().to_string();
-    let total_chars: usize = chunks.iter().map(|c| c.chars().count()).sum();
+    // Input character count — chunk overlaps would otherwise double-count.
+    let total_chars: usize = text.chars().count();
     let ts = timestamp
         .map(String::from)
         .unwrap_or_else(forge_core::time::now_iso);

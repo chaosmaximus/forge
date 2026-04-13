@@ -5578,7 +5578,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             timestamp,
             metadata,
         } => {
-            let Some(embedder) = state.raw_embedder.as_ref() else {
+            let Some(embedder) = state
+                .raw_embedder
+                .clone()
+                .or_else(crate::embed::global_embedder)
+            else {
                 return Response::Error {
                     message: "raw_ingest: embedder not initialized — daemon must load the MiniLM model before raw layer requests can be served".to_string(),
                 };
@@ -5586,7 +5590,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let metadata_string = metadata.map(|v| v.to_string());
             match crate::raw::ingest_text(
                 &state.conn,
-                embedder,
+                &embedder,
                 crate::raw::IngestParams {
                     text: &text,
                     source: &source,
@@ -5616,7 +5620,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             k,
             max_distance,
         } => {
-            let Some(embedder) = state.raw_embedder.as_ref() else {
+            let Some(embedder) = state
+                .raw_embedder
+                .clone()
+                .or_else(crate::embed::global_embedder)
+            else {
                 return Response::Error {
                     message: "raw_search: embedder not initialized — daemon must load the MiniLM model before raw layer requests can be served".to_string(),
                 };
@@ -5624,7 +5632,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let dim = embedder.dim();
             match crate::raw::search(
                 &state.conn,
-                embedder,
+                &embedder,
                 &query,
                 project.as_deref(),
                 session_id.as_deref(),

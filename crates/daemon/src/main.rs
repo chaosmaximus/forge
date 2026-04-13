@@ -252,6 +252,28 @@ async fn main() {
 
     let state = Arc::new(Mutex::new(worker_state));
 
+    // Raw layer embedder: load MiniLM in the background so daemon startup is
+    // not blocked by the ~90 MB ONNX download / ~1–2 s cached load. Installs
+    // into the process-wide `embed::GLOBAL_EMBEDDER` once ready; until then
+    // RawIngest / RawSearch handler arms return a clear "not initialized"
+    // error. See docs/benchmarks/plan.md §4.3.
+    tokio::task::spawn_blocking(|| {
+        match forge_daemon::embed::minilm::MiniLMEmbedder::new() {
+            Ok(emb) => {
+                let arc: Arc<dyn forge_daemon::embed::Embedder> = Arc::new(emb);
+                match forge_daemon::embed::install_global_embedder(arc) {
+                    Ok(()) => tracing::info!("raw layer embedder ready (all-MiniLM-L6-v2, 384-dim)"),
+                    Err(_) => tracing::debug!(
+                        "raw layer embedder already installed (re-init skipped)"
+                    ),
+                }
+            }
+            Err(e) => tracing::warn!(
+                "raw layer embedder init failed: {e} — RawIngest/RawSearch will return errors until resolved"
+            ),
+        }
+    });
+
     // C1: Create shutdown watch channel
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);
 

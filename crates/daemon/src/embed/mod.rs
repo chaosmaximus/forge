@@ -4,12 +4,17 @@
 // Implementations are pluggable (for tests we use a deterministic fake; in
 // production we use `minilm::MiniLMEmbedder` backed by fastembed-rs).
 //
-// Shared `Arc<dyn Embedder>` lives on `DaemonState` so workers and handlers
-// all use the same model instance (expensive to load, cheap to share).
+// **Shared instance.** Production runs install a single `Arc<dyn Embedder>`
+// into `GLOBAL_EMBEDDER` at daemon startup. Every `DaemonState` (worker,
+// writer, per-connection readers) reads from that global, so the model is
+// loaded exactly once. Tests bypass the global entirely by setting
+// `DaemonState::raw_embedder` to a `FakeEmbedder` per-instance — no global
+// mutation, no parallel-test races.
 
 pub mod minilm;
 
 use std::fmt;
+use std::sync::{Arc, OnceLock};
 
 /// A pluggable text embedder. Implementations must be thread-safe.
 pub trait Embedder: Send + Sync {
@@ -46,24 +51,50 @@ impl fmt::Display for EmbedError {
 
 impl std::error::Error for EmbedError {}
 
-/// Deterministic fake embedder for unit tests. Produces a fixed-dim vector
-/// derived from a rolling hash of the input bytes — different texts yield
-/// different vectors, and identical texts yield identical vectors.
+/// Process-wide embedder, set once at daemon startup.
 ///
-/// Never use in production. Quality is unrelated to any real embedding space.
-#[cfg(test)]
+/// Use [`install_global_embedder`] to populate it and [`global_embedder`] to
+/// read it. Handlers and workers should prefer this over loading their own
+/// model — fastembed's MiniLM weights are ~90 MB and we want to amortize the
+/// initial load across the whole process.
+static GLOBAL_EMBEDDER: OnceLock<Arc<dyn Embedder>> = OnceLock::new();
+
+/// Install the process-wide embedder. Returns `Err` if an embedder was already
+/// installed (this happens in test runs that share a binary, which is fine —
+/// callers should treat the error as a no-op).
+pub fn install_global_embedder(emb: Arc<dyn Embedder>) -> Result<(), Arc<dyn Embedder>> {
+    GLOBAL_EMBEDDER.set(emb)
+}
+
+/// Read the process-wide embedder, if one was installed via
+/// [`install_global_embedder`]. Returns `None` before the daemon has loaded
+/// MiniLM (e.g. on cold start or when the model download failed).
+pub fn global_embedder() -> Option<Arc<dyn Embedder>> {
+    GLOBAL_EMBEDDER.get().cloned()
+}
+
+/// Deterministic fake embedder for unit and integration tests.
+///
+/// Produces a fixed-dim vector derived from a rolling hash of the input
+/// bytes — different texts yield different vectors, and identical texts
+/// yield identical vectors. Output is L2-normalized so cosine distance is
+/// meaningful.
+///
+/// **Never use in production.** Quality is unrelated to any real embedding
+/// space. This type is intentionally `pub` (not `cfg(test)`) so that
+/// integration tests living in `crates/daemon/tests/*.rs` can construct one
+/// without depending on a real model download. The cost of shipping the type
+/// in the public API is ~50 lines of trivially auditable code.
 pub struct FakeEmbedder {
     dim: usize,
 }
 
-#[cfg(test)]
 impl FakeEmbedder {
     pub fn new(dim: usize) -> Self {
         Self { dim }
     }
 }
 
-#[cfg(test)]
 impl Embedder for FakeEmbedder {
     fn dim(&self) -> usize {
         self.dim
