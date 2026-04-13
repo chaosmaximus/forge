@@ -1,4 +1,5 @@
 pub mod adapters;
+pub mod bench;
 pub mod bootstrap;
 pub mod chunk;
 pub mod chunk_raw;

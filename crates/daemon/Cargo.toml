@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "forge-daemon"
 path = "src/main.rs"
 
+[[bin]]
+name = "forge-bench"
+path = "src/bin/forge-bench.rs"
+
 [dependencies]
 forge-core = { path = "../core" }
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -72,6 +76,9 @@ regex = "1"
 # all-MiniLM-L6-v2 (384-dim) so raw ingest is LLM-free and reproducible.
 # See docs/benchmarks/plan.md §4.3.
 fastembed = "5"
+
+# CLI parsing for the forge-bench binary (not used by forge-daemon itself).
+clap = { version = "4", features = ["derive"] }
 
 [build-dependencies]
 tonic-build = "0.12"
