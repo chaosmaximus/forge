@@ -94,12 +94,18 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
                 eprintln!("[perception] anti-pattern store error: {e}");
             }
             // Emit event for real-time UI notification
-            crate::events::emit(&locked.events, "anti_pattern_detected", serde_json::json!({
-                "anti_pattern": ap_title,
-                "action": action_summary,
-                "confidence": confidence,
-            }));
-            eprintln!("[perception] anti-pattern detected: {ap_title} (confidence: {confidence:.2})");
+            crate::events::emit(
+                &locked.events,
+                "anti_pattern_detected",
+                serde_json::json!({
+                    "anti_pattern": ap_title,
+                    "action": action_summary,
+                    "confidence": confidence,
+                }),
+            );
+            eprintln!(
+                "[perception] anti-pattern detected: {ap_title} (confidence: {confidence:.2})"
+            );
         }
     } // lock released
 }
@@ -117,13 +123,14 @@ fn detect_anti_patterns(conn: &rusqlite::Connection, threshold: f64) -> Vec<(Str
         let mut stmt = conn.prepare(
             "SELECT title, content FROM memory
              WHERE tags LIKE '%anti-pattern%' AND status = 'active'
-             ORDER BY quality_score DESC LIMIT 10"
+             ORDER BY quality_score DESC LIMIT 10",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
-    })().unwrap_or_default();
+    })()
+    .unwrap_or_default();
 
     if anti_patterns.is_empty() {
         return vec![];
@@ -142,7 +149,8 @@ fn detect_anti_patterns(conn: &rusqlite::Connection, threshold: f64) -> Vec<(Str
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
-    })().unwrap_or_default();
+    })()
+    .unwrap_or_default();
 
     if recent_actions.is_empty() {
         return vec![];
@@ -150,27 +158,40 @@ fn detect_anti_patterns(conn: &rusqlite::Connection, threshold: f64) -> Vec<(Str
 
     // 3. Keyword overlap similarity (Jaccard index on significant words)
     let mut detections = Vec::new();
-    let stop_words: HashSet<String> = crate::common::STOP_WORDS.iter().map(|s| s.to_string()).collect();
+    let stop_words: HashSet<String> = crate::common::STOP_WORDS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
     for (ap_title, ap_content) in &anti_patterns {
         let ap_text = format!("{ap_title} {ap_content}").to_lowercase();
-        let ap_words: HashSet<String> = ap_text.split_whitespace()
+        let ap_words: HashSet<String> = ap_text
+            .split_whitespace()
             .filter(|w| w.len() > 3 && !stop_words.contains(*w))
             .map(|s| s.to_string())
             .collect();
-        if ap_words.len() < 3 { continue; }
+        if ap_words.len() < 3 {
+            continue;
+        }
 
         for (action_type, action_summary) in &recent_actions {
             let action_text = format!("{action_type} {action_summary}").to_lowercase();
-            let action_words: HashSet<String> = action_text.split_whitespace()
+            let action_words: HashSet<String> = action_text
+                .split_whitespace()
                 .filter(|w| w.len() > 3 && !stop_words.contains(*w))
                 .map(|s| s.to_string())
                 .collect();
-            if action_words.len() < 2 { continue; }
+            if action_words.len() < 2 {
+                continue;
+            }
 
             let intersection = ap_words.intersection(&action_words).count();
             let union = ap_words.union(&action_words).count();
-            let similarity = if union > 0 { intersection as f64 / union as f64 } else { 0.0 };
+            let similarity = if union > 0 {
+                intersection as f64 / union as f64
+            } else {
+                0.0
+            };
 
             if similarity >= threshold {
                 detections.push((
@@ -333,7 +354,10 @@ mod tests {
     fn test_detect_anti_patterns_no_patterns() {
         let conn = open_db();
         let results = detect_anti_patterns(&conn, 0.85);
-        assert!(results.is_empty(), "no anti-patterns stored → no detections");
+        assert!(
+            results.is_empty(),
+            "no anti-patterns stored → no detections"
+        );
     }
 
     #[test]
@@ -373,8 +397,14 @@ mod tests {
 
         // Low threshold so keyword overlap matches
         let results = detect_anti_patterns(&conn, 0.3);
-        assert!(!results.is_empty(), "should detect matching anti-pattern, got empty");
-        assert!(results[0].0.contains("Browser"), "should be the browser testing anti-pattern");
+        assert!(
+            !results.is_empty(),
+            "should detect matching anti-pattern, got empty"
+        );
+        assert!(
+            results[0].0.contains("Browser"),
+            "should be the browser testing anti-pattern"
+        );
         assert!(results[0].2 >= 0.3, "confidence should be above threshold");
     }
 
@@ -399,6 +429,9 @@ mod tests {
         ).unwrap();
 
         let results = detect_anti_patterns(&conn, 0.3);
-        assert!(results.is_empty(), "unrelated action should NOT match anti-pattern");
+        assert!(
+            results.is_empty(),
+            "unrelated action should NOT match anti-pattern"
+        );
     }
 }

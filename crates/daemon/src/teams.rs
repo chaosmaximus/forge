@@ -11,9 +11,18 @@ pub fn create_agent_template(conn: &Connection, t: &AgentTemplate) -> rusqlite::
          created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
-            t.id, t.name, t.description, t.agent_type, t.organization_id,
-            t.system_context, t.identity_facets, t.config_overrides,
-            t.knowledge_domains, t.decision_style, t.created_at, t.updated_at,
+            t.id,
+            t.name,
+            t.description,
+            t.agent_type,
+            t.organization_id,
+            t.system_context,
+            t.identity_facets,
+            t.config_overrides,
+            t.knowledge_domains,
+            t.decision_style,
+            t.created_at,
+            t.updated_at,
         ],
     )?;
     Ok(())
@@ -24,7 +33,7 @@ pub fn get_agent_template(conn: &Connection, id: &str) -> rusqlite::Result<Optio
         "SELECT id, name, description, agent_type, organization_id,
          system_context, identity_facets, config_overrides, knowledge_domains,
          decision_style, created_at, updated_at
-         FROM agent_template WHERE id = ?1"
+         FROM agent_template WHERE id = ?1",
     )?;
     let result = stmt.query_row(params![id], row_to_template).ok();
     Ok(result)
@@ -39,7 +48,7 @@ pub fn get_agent_template_by_name(
         "SELECT id, name, description, agent_type, organization_id,
          system_context, identity_facets, config_overrides, knowledge_domains,
          decision_style, created_at, updated_at
-         FROM agent_template WHERE name = ?1 AND organization_id = ?2"
+         FROM agent_template WHERE name = ?1 AND organization_id = ?2",
     )?;
     let result = stmt.query_row(params![name, org_id], row_to_template).ok();
     Ok(result)
@@ -139,8 +148,7 @@ pub fn update_agent_template(
     );
     values.push(Box::new(id.to_string()));
 
-    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-        values.iter().map(|p| p.as_ref()).collect();
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|p| p.as_ref()).collect();
     let count = conn.execute(&sql, params_ref.as_slice())?;
     Ok(count > 0)
 }
@@ -174,9 +182,7 @@ pub fn spawn_agent(
 ) -> rusqlite::Result<()> {
     // Look up template by name (org_id="default")
     let template = get_agent_template_by_name(conn, template_name, "default")?
-        .ok_or_else(|| {
-            rusqlite::Error::QueryReturnedNoRows
-        })?;
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
 
     let now = forge_core::time::now_iso();
 
@@ -200,13 +206,16 @@ pub fn spawn_agent(
     // Parse identity_facets JSON array and store each facet
     if let Ok(facets) = serde_json::from_str::<Vec<serde_json::Value>>(&template.identity_facets) {
         for facet_val in facets {
-            let facet_name = facet_val.get("facet")
+            let facet_name = facet_val
+                .get("facet")
                 .and_then(|v| v.as_str())
                 .unwrap_or("role");
-            let description = facet_val.get("description")
+            let description = facet_val
+                .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let strength = facet_val.get("strength")
+            let strength = facet_val
+                .get("strength")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.8);
 
@@ -228,11 +237,13 @@ pub fn spawn_agent(
     // If team specified: add session to team
     if let Some(team_name) = team {
         // Look up team by name
-        let team_id: Option<String> = conn.query_row(
-            "SELECT id FROM team WHERE name = ?1",
-            params![team_name],
-            |row| row.get(0),
-        ).ok();
+        let team_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM team WHERE name = ?1",
+                params![team_name],
+                |row| row.get(0),
+            )
+            .ok();
 
         if let Some(tid) = team_id {
             conn.execute(
@@ -360,10 +371,7 @@ pub fn create_team(
 }
 
 /// List members of a team (including agent sessions).
-pub fn list_team_members(
-    conn: &Connection,
-    team_name: &str,
-) -> rusqlite::Result<Vec<Value>> {
+pub fn list_team_members(conn: &Connection, team_name: &str) -> rusqlite::Result<Vec<Value>> {
     let mut members = Vec::new();
     let mut stmt = conn.prepare(
         "SELECT tm.user_id, tm.role, tm.joined_at, tm.session_id,
@@ -372,7 +380,7 @@ pub fn list_team_members(
          JOIN team t ON t.id = tm.team_id
          LEFT JOIN session s ON s.id = tm.session_id
          WHERE t.name = ?1
-         ORDER BY tm.joined_at"
+         ORDER BY tm.joined_at",
     )?;
     let rows = stmt.query_map(params![team_name], |row| {
         Ok(serde_json::json!({
@@ -419,20 +427,34 @@ pub fn get_team_topology(
 }
 
 /// Get full team status (members, active agents, meeting count).
-pub fn team_status(
-    conn: &Connection,
-    team_name: &str,
-) -> rusqlite::Result<Value> {
+pub fn team_status(conn: &Connection, team_name: &str) -> rusqlite::Result<Value> {
     // Get team info
-    struct TeamRow { id: String, name: String, status: String, team_type: Option<String>, purpose: Option<String>, goal: Option<String>, topology: Option<String> }
-    let team_row: Option<TeamRow> = conn.query_row(
-        "SELECT id, name, status, team_type, purpose, goal, topology FROM team WHERE name = ?1",
-        params![team_name],
-        |row| Ok(TeamRow {
-            id: row.get(0)?, name: row.get(1)?, status: row.get(2)?,
-            team_type: row.get(3)?, purpose: row.get(4)?, goal: row.get(5)?, topology: row.get(6)?,
-        }),
-    ).ok();
+    struct TeamRow {
+        id: String,
+        name: String,
+        status: String,
+        team_type: Option<String>,
+        purpose: Option<String>,
+        goal: Option<String>,
+        topology: Option<String>,
+    }
+    let team_row: Option<TeamRow> = conn
+        .query_row(
+            "SELECT id, name, status, team_type, purpose, goal, topology FROM team WHERE name = ?1",
+            params![team_name],
+            |row| {
+                Ok(TeamRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    status: row.get(2)?,
+                    team_type: row.get(3)?,
+                    purpose: row.get(4)?,
+                    goal: row.get(5)?,
+                    topology: row.get(6)?,
+                })
+            },
+        )
+        .ok();
 
     let tr = match team_row {
         Some(r) => r,
@@ -448,34 +470,42 @@ pub fn team_status(
     let topology = tr.topology;
 
     // Count members
-    let member_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM team_member WHERE team_id = ?1",
-        params![team_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+    let member_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM team_member WHERE team_id = ?1",
+            params![team_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // Count active agents in team
-    let active_agents: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM team_member tm
+    let active_agents: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM team_member tm
          JOIN session s ON s.id = tm.session_id
          WHERE tm.team_id = ?1 AND s.status = 'active' AND s.template_id IS NOT NULL",
-        params![team_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+            params![team_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // Count meetings for this team (if meeting table exists)
-    let meeting_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM meeting WHERE team_id = ?1",
-        params![team_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+    let meeting_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM meeting WHERE team_id = ?1",
+            params![team_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // Get orchestrator
-    let orchestrator: Option<String> = conn.query_row(
-        "SELECT orchestrator_session_id FROM team WHERE id = ?1",
-        params![team_id],
-        |row| row.get(0),
-    ).unwrap_or(None);
+    let orchestrator: Option<String> = conn
+        .query_row(
+            "SELECT orchestrator_session_id FROM team WHERE id = ?1",
+            params![team_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
 
     Ok(serde_json::json!({
         "id": team_id,
@@ -511,9 +541,10 @@ pub fn run_team(
 
     // Enforce team size cap
     if template_names.len() > MAX_TEAM_SIZE {
-        return Err(rusqlite::Error::InvalidParameterName(
-            format!("team size {} exceeds maximum of {MAX_TEAM_SIZE}", template_names.len()),
-        ));
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "team size {} exceeds maximum of {MAX_TEAM_SIZE}",
+            template_names.len()
+        )));
     }
 
     // Validate all templates exist before creating anything
@@ -544,11 +575,13 @@ pub fn run_team(
             Ok(()) => {
                 // Apply budget_limit from template to the session
                 if let Ok(Some(tpl)) = get_agent_template_by_name(conn, tpl_name, "default") {
-                    let budget_limit: Option<f64> = conn.query_row(
-                        "SELECT budget_limit FROM agent_template WHERE id = ?1",
-                        params![tpl.id],
-                        |row| row.get(0),
-                    ).unwrap_or(None);
+                    let budget_limit: Option<f64> = conn
+                        .query_row(
+                            "SELECT budget_limit FROM agent_template WHERE id = ?1",
+                            params![tpl.id],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(None);
                     if budget_limit.is_some() {
                         let _ = conn.execute(
                             "UPDATE session SET budget_spent = 0 WHERE id = ?1",
@@ -587,11 +620,12 @@ pub fn stop_team(conn: &Connection, team_name: &str) -> rusqlite::Result<usize> 
     let mut stmt = conn.prepare(
         "SELECT tm.session_id FROM team_member tm
          JOIN session s ON s.id = tm.session_id
-         WHERE tm.team_id = ?1 AND s.status = 'active'"
+         WHERE tm.team_id = ?1 AND s.status = 'active'",
     )?;
-    let session_ids: Vec<String> = stmt.query_map(params![team_id], |row| {
-        row.get(0)
-    })?.filter_map(|r| r.ok()).collect();
+    let session_ids: Vec<String> = stmt
+        .query_map(params![team_id], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
 
     let mut retired_count = 0;
     for sid in &session_ids {
@@ -635,13 +669,15 @@ pub fn record_agent_cost(
     )?;
 
     // Look up budget_limit from the agent's template (read-only, no race concern)
-    let budget_limit: Option<f64> = conn.query_row(
-        "SELECT at.budget_limit FROM session s
+    let budget_limit: Option<f64> = conn
+        .query_row(
+            "SELECT at.budget_limit FROM session s
          JOIN agent_template at ON at.id = s.template_id
          WHERE s.id = ?1",
-        params![session_id],
-        |row| row.get(0),
-    ).unwrap_or(None);
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
 
     let exceeded = match budget_limit {
         Some(limit) => total_spent > limit,
@@ -665,18 +701,23 @@ pub fn budget_status(
              LEFT JOIN agent_template at ON at.id = s.template_id
              WHERE s.id = ?1",
         )?;
-        let rows = stmt.query_map(params![sid], |row| {
-            let spent: f64 = row.get(2)?;
-            let limit: Option<f64> = row.get(3)?;
-            let exceeded = match limit { Some(l) => spent > l, None => false };
-            Ok(serde_json::json!({
-                "session_id": row.get::<_, String>(0)?,
-                "agent": row.get::<_, String>(1)?,
-                "budget_spent": spent, "budget_limit": limit,
-                "template_name": row.get::<_, Option<String>>(4)?,
-                "exceeded": exceeded,
-            }))
-        })?.collect::<rusqlite::Result<Vec<serde_json::Value>>>()?;
+        let rows = stmt
+            .query_map(params![sid], |row| {
+                let spent: f64 = row.get(2)?;
+                let limit: Option<f64> = row.get(3)?;
+                let exceeded = match limit {
+                    Some(l) => spent > l,
+                    None => false,
+                };
+                Ok(serde_json::json!({
+                    "session_id": row.get::<_, String>(0)?,
+                    "agent": row.get::<_, String>(1)?,
+                    "budget_spent": spent, "budget_limit": limit,
+                    "template_name": row.get::<_, Option<String>>(4)?,
+                    "exceeded": exceeded,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<serde_json::Value>>>()?;
         rows
     } else {
         let mut stmt = conn.prepare(
@@ -686,18 +727,23 @@ pub fn budget_status(
              WHERE s.status = 'active' AND s.template_id IS NOT NULL
              ORDER BY s.started_at DESC LIMIT 50",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let spent: f64 = row.get(2)?;
-            let limit: Option<f64> = row.get(3)?;
-            let exceeded = match limit { Some(l) => spent > l, None => false };
-            Ok(serde_json::json!({
-                "session_id": row.get::<_, String>(0)?,
-                "agent": row.get::<_, String>(1)?,
-                "budget_spent": spent, "budget_limit": limit,
-                "template_name": row.get::<_, Option<String>>(4)?,
-                "exceeded": exceeded,
-            }))
-        })?.collect::<rusqlite::Result<Vec<serde_json::Value>>>()?;
+        let rows = stmt
+            .query_map([], |row| {
+                let spent: f64 = row.get(2)?;
+                let limit: Option<f64> = row.get(3)?;
+                let exceeded = match limit {
+                    Some(l) => spent > l,
+                    None => false,
+                };
+                Ok(serde_json::json!({
+                    "session_id": row.get::<_, String>(0)?,
+                    "agent": row.get::<_, String>(1)?,
+                    "budget_spent": spent, "budget_limit": limit,
+                    "template_name": row.get::<_, Option<String>>(4)?,
+                    "exceeded": exceeded,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<serde_json::Value>>>()?;
         rows
     };
 
@@ -718,14 +764,10 @@ pub fn seed_team_templates(conn: &Connection) -> rusqlite::Result<()> {
             roles TEXT NOT NULL DEFAULT '[]',
             topology TEXT NOT NULL DEFAULT 'mesh',
             created_at TEXT NOT NULL DEFAULT ''
-         );"
+         );",
     )?;
 
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM team_template",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM team_template", [], |row| row.get(0))?;
     if count > 0 {
         return Ok(());
     }
@@ -799,8 +841,8 @@ pub fn list_team_templates(conn: &Connection) -> rusqlite::Result<Vec<serde_json
     )?;
     let rows = stmt.query_map([], |row| {
         let roles_str: String = row.get(3)?;
-        let roles: serde_json::Value = serde_json::from_str(&roles_str)
-            .unwrap_or(serde_json::Value::Array(vec![]));
+        let roles: serde_json::Value =
+            serde_json::from_str(&roles_str).unwrap_or(serde_json::Value::Array(vec![]));
         Ok(serde_json::json!({
             "id": row.get::<_, String>(0)?,
             "name": row.get::<_, String>(1)?,
@@ -820,20 +862,30 @@ pub fn list_team_templates(conn: &Connection) -> rusqlite::Result<Vec<serde_json
 /// Seed default agent templates if none exist.
 /// Provides claude-code, codex, and gemini-cli templates for the web app.
 pub fn seed_agent_templates(conn: &Connection) -> rusqlite::Result<()> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM agent_template",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(0);
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM agent_template", [], |row| row.get(0))
+        .unwrap_or(0);
     if count > 0 {
         return Ok(());
     }
 
     let now = forge_core::time::now_iso();
     let templates: &[(&str, &str, &str)] = &[
-        ("claude-code", "Claude Code agent — primary AI coding agent with full tool access", "claude-code"),
-        ("codex", "OpenAI Codex agent — adversarial review and second opinions", "codex"),
-        ("gemini-cli", "Gemini CLI agent — alternative AI agent for diversity of thought", "gemini-cli"),
+        (
+            "claude-code",
+            "Claude Code agent — primary AI coding agent with full tool access",
+            "claude-code",
+        ),
+        (
+            "codex",
+            "OpenAI Codex agent — adversarial review and second opinions",
+            "codex",
+        ),
+        (
+            "gemini-cli",
+            "Gemini CLI agent — alternative AI agent for diversity of thought",
+            "gemini-cli",
+        ),
     ];
 
     for (name, desc, agent_type) in templates {
@@ -872,14 +924,16 @@ pub fn create_meeting(
 
     for session_id in participant_session_ids {
         // Look up template_name from session.template_id -> agent_template.name
-        let template_name: String = conn.query_row(
-            "SELECT COALESCE(at.name, s.id)
+        let template_name: String = conn
+            .query_row(
+                "SELECT COALESCE(at.name, s.id)
              FROM session s
              LEFT JOIN agent_template at ON at.id = s.template_id
              WHERE s.id = ?1",
-            params![session_id],
-            |row| row.get(0),
-        ).unwrap_or_else(|_| session_id.clone());
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| session_id.clone());
 
         let participant_id = ulid::Ulid::new().to_string();
         conn.execute(
@@ -962,14 +1016,11 @@ pub fn get_meeting_status(
 }
 
 /// Get all participant responses for a meeting (only those who responded).
-pub fn get_meeting_responses(
-    conn: &Connection,
-    meeting_id: &str,
-) -> rusqlite::Result<Vec<Value>> {
+pub fn get_meeting_responses(conn: &Connection, meeting_id: &str) -> rusqlite::Result<Vec<Value>> {
     let mut stmt = conn.prepare(
         "SELECT id, session_id, template_name, response, responded_at, confidence
          FROM meeting_participant
-         WHERE meeting_id = ?1 AND status = 'responded'"
+         WHERE meeting_id = ?1 AND status = 'responded'",
     )?;
     let rows = stmt.query_map(params![meeting_id], |row| {
         Ok(serde_json::json!({
@@ -1092,14 +1143,16 @@ pub fn create_meeting_with_voting(
     )?;
 
     for session_id in participants {
-        let template_name: String = conn.query_row(
-            "SELECT COALESCE(at.name, s.id)
+        let template_name: String = conn
+            .query_row(
+                "SELECT COALESCE(at.name, s.id)
              FROM session s
              LEFT JOIN agent_template at ON at.id = s.template_id
              WHERE s.id = ?1",
-            params![session_id],
-            |row| row.get(0),
-        ).unwrap_or_else(|_| session_id.clone());
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| session_id.clone());
 
         let participant_id = ulid::Ulid::new().to_string();
         conn.execute(
@@ -1130,9 +1183,9 @@ pub fn record_vote(
 
     let options: Vec<String> = serde_json::from_str(&options_json).unwrap_or_default();
     if !options.is_empty() && !options.contains(&choice.to_string()) {
-        return Err(rusqlite::Error::InvalidParameterName(
-            format!("invalid choice '{choice}'; valid options: {options:?}"),
-        ));
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "invalid choice '{choice}'; valid options: {options:?}"
+        )));
     }
 
     // Validate session is a participant
@@ -1142,9 +1195,9 @@ pub fn record_vote(
         |row| row.get(0),
     )?;
     if !is_participant {
-        return Err(rusqlite::Error::InvalidParameterName(
-            format!("session '{session_id}' is not a participant of meeting '{meeting_id}'"),
-        ));
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "session '{session_id}' is not a participant of meeting '{meeting_id}'"
+        )));
     }
 
     let now = forge_core::time::now_iso();
@@ -1172,10 +1225,7 @@ pub struct VoteResults {
 }
 
 /// Get vote results for a meeting: counts per option, quorum status.
-pub fn get_vote_results(
-    conn: &Connection,
-    meeting_id: &str,
-) -> rusqlite::Result<VoteResults> {
+pub fn get_vote_results(conn: &Connection, meeting_id: &str) -> rusqlite::Result<VoteResults> {
     // Get threshold and current outcome
     let (threshold, existing_outcome): (String, Option<String>) = conn.query_row(
         "SELECT COALESCE(threshold, 'majority'), outcome FROM meeting WHERE id = ?1",
@@ -1258,7 +1308,9 @@ pub fn check_and_resolve_vote(
     }
 
     // Find the winning option (highest vote count that meets threshold)
-    let winner = results.votes.iter()
+    let winner = results
+        .votes
+        .iter()
         .filter(|(_, &count)| count >= results.required_votes)
         .max_by_key(|(_, &count)| count)
         .map(|(choice, _)| choice.clone());
@@ -1314,15 +1366,17 @@ pub fn get_active_meetings_for_session(
         WHERE mp.session_id = ?1 AND m.status IN ('open', 'collecting', 'synthesizing')
         ORDER BY m.created_at DESC LIMIT 5";
     let mut stmt = conn.prepare(sql)?;
-    let rows: Vec<Value> = stmt.query_map(params![session_id], |row| {
-        Ok(serde_json::json!({
-            "id": row.get::<_, String>(0)?,
-            "topic": row.get::<_, String>(1)?,
-            "status": row.get::<_, String>(2)?,
-            "responded": row.get::<_, i64>(3)?,
-            "total": row.get::<_, i64>(4)?,
-        }))
-    })?.collect::<rusqlite::Result<Vec<Value>>>()?;
+    let rows: Vec<Value> = stmt
+        .query_map(params![session_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "topic": row.get::<_, String>(1)?,
+                "status": row.get::<_, String>(2)?,
+                "responded": row.get::<_, i64>(3)?,
+                "total": row.get::<_, i64>(4)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<Value>>>()?;
     Ok(rows)
 }
 
@@ -1356,8 +1410,7 @@ pub fn list_meetings(
     values.push(Box::new(limit as i64));
 
     let mut stmt = conn.prepare(&sql)?;
-    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-        values.iter().map(|p| p.as_ref()).collect();
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(params_ref.as_slice(), |row| {
         Ok(serde_json::json!({
             "id": row.get::<_, String>(0)?,
@@ -1379,10 +1432,7 @@ pub fn list_meetings(
 }
 
 /// Get full meeting transcript including all responses and FISP messages.
-pub fn get_meeting_transcript(
-    conn: &Connection,
-    meeting_id: &str,
-) -> rusqlite::Result<Value> {
+pub fn get_meeting_transcript(conn: &Connection, meeting_id: &str) -> rusqlite::Result<Value> {
     // Get meeting details
     let meeting = conn.query_row(
         "SELECT id, team_id, topic, context, status, orchestrator_session_id, synthesis, decision, decision_memory_id, created_at, decided_at
@@ -1409,7 +1459,7 @@ pub fn get_meeting_transcript(
     let mut stmt = conn.prepare(
         "SELECT session_id, template_name, status, response, responded_at, confidence
          FROM meeting_participant WHERE meeting_id = ?1
-         ORDER BY responded_at"
+         ORDER BY responded_at",
     )?;
     let rows = stmt.query_map(params![meeting_id], |row| {
         Ok(serde_json::json!({
@@ -1430,7 +1480,7 @@ pub fn get_meeting_transcript(
     let mut msg_stmt = conn.prepare(
         "SELECT id, from_session, to_session, kind, topic, parts, status, created_at
          FROM session_message WHERE meeting_id = ?1
-         ORDER BY created_at"
+         ORDER BY created_at",
     )?;
     let msg_rows = msg_stmt.query_map(params![meeting_id], |row| {
         Ok(serde_json::json!({
@@ -1504,7 +1554,9 @@ mod tests {
         let t = make_template("CMO");
         create_agent_template(&conn, &t).unwrap();
 
-        let fetched = get_agent_template_by_name(&conn, "CMO", "default").unwrap().unwrap();
+        let fetched = get_agent_template_by_name(&conn, "CMO", "default")
+            .unwrap()
+            .unwrap();
         assert_eq!(fetched.id, t.id);
     }
 
@@ -1567,15 +1619,19 @@ mod tests {
         create_agent_template(&conn, &t).unwrap();
 
         let updated = update_agent_template(
-            &conn, &t.id,
+            &conn,
+            &t.id,
             &TemplateUpdate {
                 name: Some("Chief Tech Officer"),
                 description: Some("Updated description"),
-                system_context: None, identity_facets: None,
-                config_overrides: None, knowledge_domains: None,
+                system_context: None,
+                identity_facets: None,
+                config_overrides: None,
+                knowledge_domains: None,
                 decision_style: Some("conservative"),
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert!(updated);
 
         let fetched = get_agent_template(&conn, &t.id).unwrap().unwrap();
@@ -1620,19 +1676,23 @@ mod tests {
         spawn_agent(&conn, "CTO", "s-cto-1", Some("forge"), None).unwrap();
 
         // Verify session exists with template_id set
-        let template_id: Option<String> = conn.query_row(
-            "SELECT template_id FROM session WHERE id = 's-cto-1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let template_id: Option<String> = conn
+            .query_row(
+                "SELECT template_id FROM session WHERE id = 's-cto-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(template_id, Some(t.id));
 
         // Verify agent_status is 'idle'
-        let status: String = conn.query_row(
-            "SELECT agent_status FROM session WHERE id = 's-cto-1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT agent_status FROM session WHERE id = 's-cto-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "idle");
     }
 
@@ -1646,19 +1706,27 @@ mod tests {
 
         // The template has identity_facets: [{"facet":"role","description":"test"}]
         // Verify at least one identity facet was stored
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM identity WHERE source LIKE 'template:%'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
-        assert!(count >= 1, "expected at least 1 identity facet, got {count}");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM identity WHERE source LIKE 'template:%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            count >= 1,
+            "expected at least 1 identity facet, got {count}"
+        );
     }
 
     #[test]
     fn test_spawn_invalid_template() {
         let conn = setup();
         let result = spawn_agent(&conn, "NonExistent", "s-bad", None, None);
-        assert!(result.is_err(), "spawning from nonexistent template should fail");
+        assert!(
+            result.is_err(),
+            "spawning from nonexistent template should fail"
+        );
     }
 
     #[test]
@@ -1687,7 +1755,14 @@ mod tests {
         assert!(!team_id.is_empty());
 
         // Spawn agent into team
-        spawn_agent(&conn, "CTO", "s-cto-team", Some("forge"), Some("leadership")).unwrap();
+        spawn_agent(
+            &conn,
+            "CTO",
+            "s-cto-team",
+            Some("forge"),
+            Some("leadership"),
+        )
+        .unwrap();
 
         // Spawn another agent NOT in team
         let t2 = make_template("CFO");
@@ -1711,21 +1786,27 @@ mod tests {
         create_agent_template(&conn, &t).unwrap();
         spawn_agent(&conn, "CTO", "s-cto-4", None, None).unwrap();
 
-        let updated = update_agent_status(&conn, "s-cto-4", "thinking", Some("reviewing architecture")).unwrap();
+        let updated =
+            update_agent_status(&conn, "s-cto-4", "thinking", Some("reviewing architecture"))
+                .unwrap();
         assert!(updated);
 
-        let status: String = conn.query_row(
-            "SELECT agent_status FROM session WHERE id = 's-cto-4'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT agent_status FROM session WHERE id = 's-cto-4'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "thinking");
 
-        let task: String = conn.query_row(
-            "SELECT current_task FROM session WHERE id = 's-cto-4'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let task: String = conn
+            .query_row(
+                "SELECT current_task FROM session WHERE id = 's-cto-4'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(task, "reviewing architecture");
     }
 
@@ -1739,18 +1820,22 @@ mod tests {
         let retired = retire_agent(&conn, "s-cto-5").unwrap();
         assert!(retired);
 
-        let status: String = conn.query_row(
-            "SELECT agent_status FROM session WHERE id = 's-cto-5'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT agent_status FROM session WHERE id = 's-cto-5'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "retired");
 
-        let session_status: String = conn.query_row(
-            "SELECT status FROM session WHERE id = 's-cto-5'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let session_status: String = conn
+            .query_row(
+                "SELECT status FROM session WHERE id = 's-cto-5'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(session_status, "ended");
 
         // Retired agents should not appear in list_agents (status != 'active')
@@ -1763,21 +1848,33 @@ mod tests {
     #[test]
     fn test_create_team_agent_type() {
         let conn = setup();
-        let id = create_team(&conn, "ai-team", Some("agent"), Some("AI research"), None, None).unwrap();
+        let id = create_team(
+            &conn,
+            "ai-team",
+            Some("agent"),
+            Some("AI research"),
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!id.is_empty());
 
-        let tt: String = conn.query_row(
-            "SELECT team_type FROM team WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        ).unwrap();
+        let tt: String = conn
+            .query_row(
+                "SELECT team_type FROM team WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(tt, "agent");
 
-        let purpose: Option<String> = conn.query_row(
-            "SELECT purpose FROM team WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        ).unwrap();
+        let purpose: Option<String> = conn
+            .query_row(
+                "SELECT purpose FROM team WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(purpose, Some("AI research".to_string()));
     }
 
@@ -1794,18 +1891,28 @@ mod tests {
         let set = set_team_orchestrator(&conn, "orch-team", "s-orch").unwrap();
         assert!(set);
 
-        let orch: Option<String> = conn.query_row(
-            "SELECT orchestrator_session_id FROM team WHERE name = 'orch-team'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let orch: Option<String> = conn
+            .query_row(
+                "SELECT orchestrator_session_id FROM team WHERE name = 'orch-team'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(orch, Some("s-orch".to_string()));
     }
 
     #[test]
     fn test_team_status() {
         let conn = setup();
-        create_team(&conn, "status-team", Some("mixed"), Some("testing"), None, None).unwrap();
+        create_team(
+            &conn,
+            "status-team",
+            Some("mixed"),
+            Some("testing"),
+            None,
+            None,
+        )
+        .unwrap();
 
         let t = make_template("CTO");
         create_agent_template(&conn, &t).unwrap();
@@ -1836,9 +1943,23 @@ mod tests {
         spawn_agent(conn, "CMO", "s-cmo-m", Some("forge"), Some("leadership")).unwrap();
 
         // Create orchestrator session
-        crate::sessions::register_session(conn, "s-orch-m", "orchestrator", Some("forge"), None, None, None).unwrap();
+        crate::sessions::register_session(
+            conn,
+            "s-orch-m",
+            "orchestrator",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
-        (team_id, "s-orch-m".into(), "s-cto-m".into(), "s-cmo-m".into())
+        (
+            team_id,
+            "s-orch-m".into(),
+            "s-cto-m".into(),
+            "s-cmo-m".into(),
+        )
     }
 
     #[test]
@@ -1847,10 +1968,15 @@ mod tests {
         let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
 
         let (meeting_id, count) = create_meeting(
-            &conn, &team_id, "Architecture review", Some("Q2 planning"),
-            &orch, &[cto, cmo],
+            &conn,
+            &team_id,
+            "Architecture review",
+            Some("Q2 planning"),
+            &orch,
+            &[cto, cmo],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(!meeting_id.is_empty());
         assert_eq!(count, 2);
@@ -1864,11 +1990,13 @@ mod tests {
         assert_eq!(pending, 2);
 
         // Verify meeting status is 'collecting'
-        let status: String = conn.query_row(
-            "SELECT status FROM meeting WHERE id = ?1",
-            params![meeting_id],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM meeting WHERE id = ?1",
+                params![meeting_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "collecting");
     }
 
@@ -1878,9 +2006,15 @@ mod tests {
         let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
 
         let (meeting_id, _) = create_meeting(
-            &conn, &team_id, "Status check", None, &orch, &[cto, cmo],
+            &conn,
+            &team_id,
+            "Status check",
             None,
-        ).unwrap();
+            &orch,
+            &[cto, cmo],
+            None,
+        )
+        .unwrap();
 
         let (meeting, participants) = get_meeting_status(&conn, &meeting_id).unwrap();
         assert_eq!(meeting["topic"], "Status check");
@@ -1896,24 +2030,37 @@ mod tests {
         let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
 
         let (meeting_id, _) = create_meeting(
-            &conn, &team_id, "Response test", None, &orch, &[cto.clone()],
+            &conn,
+            &team_id,
+            "Response test",
             None,
-        ).unwrap();
+            &orch,
+            &[cto.clone()],
+            None,
+        )
+        .unwrap();
 
         // Record response
         let all_responded = record_meeting_response(
-            &conn, &meeting_id, &cto, "I think we should use Rust", Some(0.95),
-        ).unwrap();
+            &conn,
+            &meeting_id,
+            &cto,
+            "I think we should use Rust",
+            Some(0.95),
+        )
+        .unwrap();
 
         // Only one participant, so all responded
         assert!(all_responded);
 
         // Verify participant status changed
-        let status: String = conn.query_row(
-            "SELECT status FROM meeting_participant WHERE meeting_id = ?1 AND session_id = ?2",
-            params![meeting_id, cto],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM meeting_participant WHERE meeting_id = ?1 AND session_id = ?2",
+                params![meeting_id, cto],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "responded");
     }
 
@@ -1923,9 +2070,15 @@ mod tests {
         let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
 
         let (meeting_id, _) = create_meeting(
-            &conn, &team_id, "All respond test", None, &orch, &[cto.clone(), cmo.clone()],
+            &conn,
+            &team_id,
+            "All respond test",
             None,
-        ).unwrap();
+            &orch,
+            &[cto.clone(), cmo.clone()],
+            None,
+        )
+        .unwrap();
 
         // First response — not all responded yet
         let all = record_meeting_response(&conn, &meeting_id, &cto, "Yes", Some(0.9)).unwrap();
@@ -1942,9 +2095,15 @@ mod tests {
         let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
 
         let (meeting_id, _) = create_meeting(
-            &conn, &team_id, "Partial test", None, &orch, &[cto.clone(), cmo],
+            &conn,
+            &team_id,
+            "Partial test",
             None,
-        ).unwrap();
+            &orch,
+            &[cto.clone(), cmo],
+            None,
+        )
+        .unwrap();
 
         // Only CTO responds
         let all = record_meeting_response(&conn, &meeting_id, &cto, "Agree", None).unwrap();
@@ -1960,28 +2119,30 @@ mod tests {
         let conn = setup();
         let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
 
-        let (meeting_id, _) = create_meeting(
-            &conn, &team_id, "Synthesis test", None, &orch, &[cto],
-            None,
-        ).unwrap();
+        let (meeting_id, _) =
+            create_meeting(&conn, &team_id, "Synthesis test", None, &orch, &[cto], None).unwrap();
 
         let updated = synthesize_meeting(&conn, &meeting_id, "Everyone agrees on Rust").unwrap();
         assert!(updated);
 
         // Verify status changed
-        let status: String = conn.query_row(
-            "SELECT status FROM meeting WHERE id = ?1",
-            params![meeting_id],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM meeting WHERE id = ?1",
+                params![meeting_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "synthesizing");
 
         // Verify synthesis stored
-        let synthesis: String = conn.query_row(
-            "SELECT synthesis FROM meeting WHERE id = ?1",
-            params![meeting_id],
-            |row| row.get(0),
-        ).unwrap();
+        let synthesis: String = conn
+            .query_row(
+                "SELECT synthesis FROM meeting WHERE id = ?1",
+                params![meeting_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(synthesis, "Everyone agrees on Rust");
     }
 
@@ -1990,29 +2151,31 @@ mod tests {
         let conn = setup();
         let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
 
-        let (meeting_id, _) = create_meeting(
-            &conn, &team_id, "Decision test", None, &orch, &[cto],
-            None,
-        ).unwrap();
+        let (meeting_id, _) =
+            create_meeting(&conn, &team_id, "Decision test", None, &orch, &[cto], None).unwrap();
 
         let (updated, memory_id) = decide_meeting(&conn, &meeting_id, "We will use Rust").unwrap();
         assert!(updated);
         assert!(!memory_id.is_empty());
 
         // Verify status changed
-        let status: String = conn.query_row(
-            "SELECT status FROM meeting WHERE id = ?1",
-            params![meeting_id],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM meeting WHERE id = ?1",
+                params![meeting_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "decided");
 
         // Verify decision_memory_id is set
-        let stored_mid: String = conn.query_row(
-            "SELECT decision_memory_id FROM meeting WHERE id = ?1",
-            params![meeting_id],
-            |row| row.get(0),
-        ).unwrap();
+        let stored_mid: String = conn
+            .query_row(
+                "SELECT decision_memory_id FROM meeting WHERE id = ?1",
+                params![meeting_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(stored_mid, memory_id);
     }
 
@@ -2021,33 +2184,37 @@ mod tests {
         let conn = setup();
         let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
 
-        let (meeting_id, _) = create_meeting(
-            &conn, &team_id, "Memory check", None, &orch, &[cto],
-            None,
-        ).unwrap();
+        let (meeting_id, _) =
+            create_meeting(&conn, &team_id, "Memory check", None, &orch, &[cto], None).unwrap();
 
         let (_, memory_id) = decide_meeting(&conn, &meeting_id, "Rust is the way").unwrap();
 
         // Verify memory record exists
-        let title: String = conn.query_row(
-            "SELECT title FROM memory WHERE id = ?1",
-            params![memory_id],
-            |row| row.get(0),
-        ).unwrap();
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM memory WHERE id = ?1",
+                params![memory_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(title, "Memory check");
 
-        let content: String = conn.query_row(
-            "SELECT content FROM memory WHERE id = ?1",
-            params![memory_id],
-            |row| row.get(0),
-        ).unwrap();
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM memory WHERE id = ?1",
+                params![memory_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(content, "Rust is the way");
 
-        let mem_type: String = conn.query_row(
-            "SELECT memory_type FROM memory WHERE id = ?1",
-            params![memory_id],
-            |row| row.get(0),
-        ).unwrap();
+        let mem_type: String = conn
+            .query_row(
+                "SELECT memory_type FROM memory WHERE id = ?1",
+                params![memory_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(mem_type, "decision");
     }
 
@@ -2056,8 +2223,26 @@ mod tests {
         let conn = setup();
         let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
 
-        create_meeting(&conn, &team_id, "Meeting 1", None, &orch, &[cto.clone()], None).unwrap();
-        create_meeting(&conn, &team_id, "Meeting 2", None, &orch, &[cmo.clone()], None).unwrap();
+        create_meeting(
+            &conn,
+            &team_id,
+            "Meeting 1",
+            None,
+            &orch,
+            &[cto.clone()],
+            None,
+        )
+        .unwrap();
+        create_meeting(
+            &conn,
+            &team_id,
+            "Meeting 2",
+            None,
+            &orch,
+            &[cmo.clone()],
+            None,
+        )
+        .unwrap();
 
         // List all meetings for team
         let meetings = list_meetings(&conn, Some(&team_id), None, 50).unwrap();
@@ -2077,9 +2262,15 @@ mod tests {
         let (team_id, orch, cto, cmo) = setup_meeting_env(&conn);
 
         let (meeting_id, _) = create_meeting(
-            &conn, &team_id, "Transcript test", Some("Full context"), &orch, &[cto.clone(), cmo.clone()],
+            &conn,
+            &team_id,
+            "Transcript test",
+            Some("Full context"),
+            &orch,
+            &[cto.clone(), cmo.clone()],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Record responses
         record_meeting_response(&conn, &meeting_id, &cto, "CTO says yes", Some(0.9)).unwrap();
@@ -2105,17 +2296,18 @@ mod tests {
         let conn = setup();
         let (team_id, orch, cto, _cmo) = setup_meeting_env(&conn);
 
-        let (meeting_id, _) = create_meeting(
-            &conn, &team_id, "Guard test", None, &orch, &[cto],
-            None,
-        ).unwrap();
+        let (meeting_id, _) =
+            create_meeting(&conn, &team_id, "Guard test", None, &orch, &[cto], None).unwrap();
 
         // Decide (changes status to 'decided')
         decide_meeting(&conn, &meeting_id, "Done").unwrap();
 
         // Cannot synthesize a decided meeting (status must be 'collecting' or 'timed_out')
         let updated = synthesize_meeting(&conn, &meeting_id, "Late synthesis").unwrap();
-        assert!(!updated, "should not be able to synthesize a decided meeting");
+        assert!(
+            !updated,
+            "should not be able to synthesize a decided meeting"
+        );
     }
 
     // ── run_team / stop_team Tests ──
@@ -2128,20 +2320,21 @@ mod tests {
         create_agent_template(&conn, &t1).unwrap();
         create_agent_template(&conn, &t2).unwrap();
 
-        let (name, count, session_ids) = run_team(
-            &conn, "sprint-1", &["CTO".into(), "CMO".into()], None, None,
-        ).unwrap();
+        let (name, count, session_ids) =
+            run_team(&conn, "sprint-1", &["CTO".into(), "CMO".into()], None, None).unwrap();
 
         assert_eq!(name, "sprint-1");
         assert_eq!(count, 2);
         assert_eq!(session_ids.len(), 2);
 
         // Verify team was created
-        let team_status_val: String = conn.query_row(
-            "SELECT status FROM team WHERE name = 'sprint-1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let team_status_val: String = conn
+            .query_row(
+                "SELECT status FROM team WHERE name = 'sprint-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(team_status_val, "active");
 
         // Verify agents are in the DB with correct status
@@ -2150,12 +2343,17 @@ mod tests {
 
         // Verify each session exists and has template_id set
         for sid in &session_ids {
-            let template_id: Option<String> = conn.query_row(
-                "SELECT template_id FROM session WHERE id = ?1",
-                params![sid],
-                |row| row.get(0),
-            ).unwrap();
-            assert!(template_id.is_some(), "session {sid} should have template_id");
+            let template_id: Option<String> = conn
+                .query_row(
+                    "SELECT template_id FROM session WHERE id = ?1",
+                    params![sid],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(
+                template_id.is_some(),
+                "session {sid} should have template_id"
+            );
         }
     }
 
@@ -2168,8 +2366,13 @@ mod tests {
         create_agent_template(&conn, &t2).unwrap();
 
         let (_name, _count, session_ids) = run_team(
-            &conn, "stop-team-1", &["CTO".into(), "CMO".into()], None, None,
-        ).unwrap();
+            &conn,
+            "stop-team-1",
+            &["CTO".into(), "CMO".into()],
+            None,
+            None,
+        )
+        .unwrap();
 
         // Verify agents are active before stopping
         let agents_before = list_agents(&conn, Some("stop-team-1"), 50).unwrap();
@@ -2181,30 +2384,40 @@ mod tests {
 
         // Verify agents are retired (list_agents only returns active sessions)
         let agents_after = list_agents(&conn, Some("stop-team-1"), 50).unwrap();
-        assert_eq!(agents_after.len(), 0, "retired agents should not appear in list_agents");
+        assert_eq!(
+            agents_after.len(),
+            0,
+            "retired agents should not appear in list_agents"
+        );
 
         // Verify team status is stopped
-        let team_status_val: String = conn.query_row(
-            "SELECT status FROM team WHERE name = 'stop-team-1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let team_status_val: String = conn
+            .query_row(
+                "SELECT status FROM team WHERE name = 'stop-team-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(team_status_val, "stopped");
 
         // Verify each session is ended and agent_status is retired
         for sid in &session_ids {
-            let status: String = conn.query_row(
-                "SELECT status FROM session WHERE id = ?1",
-                params![sid],
-                |row| row.get(0),
-            ).unwrap();
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM session WHERE id = ?1",
+                    params![sid],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert_eq!(status, "ended", "session {sid} should be ended");
 
-            let agent_status: String = conn.query_row(
-                "SELECT agent_status FROM session WHERE id = ?1",
-                params![sid],
-                |row| row.get(0),
-            ).unwrap();
+            let agent_status: String = conn
+                .query_row(
+                    "SELECT agent_status FROM session WHERE id = ?1",
+                    params![sid],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert_eq!(agent_status, "retired", "agent {sid} should be retired");
         }
     }
@@ -2217,18 +2430,27 @@ mod tests {
         create_agent_template(&conn, &t1).unwrap();
 
         let result = run_team(
-            &conn, "bad-team", &["CTO".into(), "NonExistent".into()], None, None,
+            &conn,
+            "bad-team",
+            &["CTO".into(), "NonExistent".into()],
+            None,
+            None,
         );
 
         // run_team validates all templates before creating anything, so it should fail
-        assert!(result.is_err(), "run_team should fail when a template doesn't exist");
+        assert!(
+            result.is_err(),
+            "run_team should fail when a template doesn't exist"
+        );
 
         // Verify no team was created (validation happens before team creation)
-        let team_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM team WHERE name = 'bad-team'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let team_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM team WHERE name = 'bad-team'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(team_count, 0, "team should not exist after failed run_team");
     }
 
@@ -2242,7 +2464,10 @@ mod tests {
         let oversized: Vec<String> = (0..=MAX_TEAM_SIZE).map(|_| "CTO".into()).collect();
         let result = run_team(&conn, "huge-team", &oversized, None, None);
 
-        assert!(result.is_err(), "run_team should reject team size > MAX_TEAM_SIZE");
+        assert!(
+            result.is_err(),
+            "run_team should reject team size > MAX_TEAM_SIZE"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("exceeds maximum"),
@@ -2263,24 +2488,49 @@ mod tests {
         create_agent_template(&conn, &t1).unwrap();
         create_agent_template(&conn, &t2).unwrap();
 
-        spawn_agent(&conn, "CTO", "s-alpha-cto", Some("forge"), Some("team-alpha")).unwrap();
+        spawn_agent(
+            &conn,
+            "CTO",
+            "s-alpha-cto",
+            Some("forge"),
+            Some("team-alpha"),
+        )
+        .unwrap();
         spawn_agent(&conn, "CMO", "s-beta-cmo", Some("forge"), Some("team-beta")).unwrap();
 
         // Create orchestrator
-        crate::sessions::register_session(&conn, "s-cross-orch", "orchestrator", Some("forge"), None, None, None).unwrap();
+        crate::sessions::register_session(
+            &conn,
+            "s-cross-orch",
+            "orchestrator",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         // Create meeting under team1 but with participant from team2
         let (meeting_id, count) = create_meeting(
-            &conn, &team1_id, "Cross-team sync", None,
-            "s-cross-orch", &["s-alpha-cto".into(), "s-beta-cmo".into()],
+            &conn,
+            &team1_id,
+            "Cross-team sync",
             None,
-        ).unwrap();
+            "s-cross-orch",
+            &["s-alpha-cto".into(), "s-beta-cmo".into()],
+            None,
+        )
+        .unwrap();
 
         assert_eq!(count, 2);
 
         // Both can respond
-        let _ = record_meeting_response(&conn, &meeting_id, "s-alpha-cto", "Alpha input", Some(0.9)).unwrap();
-        let all = record_meeting_response(&conn, &meeting_id, "s-beta-cmo", "Beta input", Some(0.85)).unwrap();
+        let _ =
+            record_meeting_response(&conn, &meeting_id, "s-alpha-cto", "Alpha input", Some(0.9))
+                .unwrap();
+        let all =
+            record_meeting_response(&conn, &meeting_id, "s-beta-cmo", "Beta input", Some(0.85))
+                .unwrap();
         assert!(all, "both participants responded");
 
         // Responses from both teams

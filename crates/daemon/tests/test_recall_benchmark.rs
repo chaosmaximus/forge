@@ -197,7 +197,12 @@ fn seed_state() -> (DaemonState, std::collections::HashMap<&'static str, String>
     let mut title_to_id: std::collections::HashMap<&'static str, String> =
         std::collections::HashMap::new();
     for seed in &seeds {
-        let id = do_remember(&mut state, seed.memory_type.clone(), seed.title, seed.content);
+        let id = do_remember(
+            &mut state,
+            seed.memory_type.clone(),
+            seed.title,
+            seed.content,
+        );
         title_to_id.insert(seed.title, id);
     }
     assert_eq!(title_to_id.len(), 20, "expected 20 seeded memories");
@@ -257,9 +262,7 @@ fn benchmark_queries() -> Vec<BenchmarkQuery> {
         // This query strongly targets one memory — tests precision.
         BenchmarkQuery {
             query: "Docker image Alpine",
-            expected_titles: vec![
-                "Distroless Docker image",
-            ],
+            expected_titles: vec!["Distroless Docker image"],
             min_expected_in_top5: 1,
             min_results: 1,
         },
@@ -311,7 +314,10 @@ fn test_recall_quality_benchmark() {
             bq.query,
             bq.min_results,
             results.len(),
-            results.iter().map(|r| r.memory.title.as_str()).collect::<Vec<_>>()
+            results
+                .iter()
+                .map(|r| r.memory.title.as_str())
+                .collect::<Vec<_>>()
         );
 
         // Assertion 2: expected titles appear in top-5
@@ -375,10 +381,17 @@ fn test_recall_benchmark_sqlite_query() {
         results.len() >= 3,
         "SQLite query: expected >= 3 results, got {}. Titles: {:?}",
         results.len(),
-        results.iter().map(|r| r.memory.title.as_str()).collect::<Vec<_>>()
+        results
+            .iter()
+            .map(|r| r.memory.title.as_str())
+            .collect::<Vec<_>>()
     );
 
-    let top5: Vec<&str> = results.iter().take(5).map(|r| r.memory.title.as_str()).collect();
+    let top5: Vec<&str> = results
+        .iter()
+        .take(5)
+        .map(|r| r.memory.title.as_str())
+        .collect();
     let has_wal = top5.contains(&"Use SQLite with WAL mode");
     let has_readonly = top5.contains(&"Read-only connections cannot write in SQLite");
     assert!(
@@ -397,10 +410,17 @@ fn test_recall_benchmark_session_query() {
         results.len() >= 3,
         "session query: expected >= 3 results, got {}. Titles: {:?}",
         results.len(),
-        results.iter().map(|r| r.memory.title.as_str()).collect::<Vec<_>>()
+        results
+            .iter()
+            .map(|r| r.memory.title.as_str())
+            .collect::<Vec<_>>()
     );
 
-    let top5: Vec<&str> = results.iter().take(5).map(|r| r.memory.title.as_str()).collect();
+    let top5: Vec<&str> = results
+        .iter()
+        .take(5)
+        .map(|r| r.memory.title.as_str())
+        .collect();
     let has_fisp = top5.contains(&"FISP inter-session messaging protocol");
     assert!(
         has_fisp,
@@ -419,7 +439,11 @@ fn test_recall_benchmark_docker_query() {
         "Docker query: expected at least 1 result, got 0"
     );
 
-    let top5: Vec<&str> = results.iter().take(5).map(|r| r.memory.title.as_str()).collect();
+    let top5: Vec<&str> = results
+        .iter()
+        .take(5)
+        .map(|r| r.memory.title.as_str())
+        .collect();
     let has_distroless = top5.contains(&"Distroless Docker image");
     assert!(
         has_distroless,
@@ -437,10 +461,17 @@ fn test_recall_benchmark_manas_query() {
         results.len() >= 2,
         "Manas query: expected >= 2 results, got {}. Titles: {:?}",
         results.len(),
-        results.iter().map(|r| r.memory.title.as_str()).collect::<Vec<_>>()
+        results
+            .iter()
+            .map(|r| r.memory.title.as_str())
+            .collect::<Vec<_>>()
     );
 
-    let top5: Vec<&str> = results.iter().take(5).map(|r| r.memory.title.as_str()).collect();
+    let top5: Vec<&str> = results
+        .iter()
+        .take(5)
+        .map(|r| r.memory.title.as_str())
+        .collect();
     let has_architecture = top5.contains(&"8-layer Manas memory architecture");
     let has_proactive = top5.contains(&"Proactive context from 8 Manas layers");
     assert!(
@@ -459,10 +490,17 @@ fn test_recall_benchmark_toml_query() {
         results.len() >= 2,
         "TOML query: expected >= 2 results, got {}. Titles: {:?}",
         results.len(),
-        results.iter().map(|r| r.memory.title.as_str()).collect::<Vec<_>>()
+        results
+            .iter()
+            .map(|r| r.memory.title.as_str())
+            .collect::<Vec<_>>()
     );
 
-    let top5: Vec<&str> = results.iter().take(5).map(|r| r.memory.title.as_str()).collect();
+    let top5: Vec<&str> = results
+        .iter()
+        .take(5)
+        .map(|r| r.memory.title.as_str())
+        .collect();
     let has_surgical = top5.contains(&"Surgical TOML config writes via toml::Value");
     let has_config = top5.contains(&"Config writes must be surgical not full-serialize");
     assert!(
@@ -480,10 +518,7 @@ fn test_recall_benchmark_score_discrimination() {
 
     // Use queries that are guaranteed to return 3+ results for ratio testing.
     // (TOML query only returns 2 results, so it is excluded here.)
-    let queries = [
-        "SQLite connection handler",
-        "session daemon protocol",
-    ];
+    let queries = ["SQLite connection handler", "session daemon protocol"];
 
     for query in &queries {
         let results = do_recall(&mut state, query, Some(10));
@@ -492,7 +527,10 @@ fn test_recall_benchmark_score_discrimination() {
             "query '{}': expected at least 3 results, got {}. Titles: {:?}",
             query,
             results.len(),
-            results.iter().map(|r| r.memory.title.as_str()).collect::<Vec<_>>()
+            results
+                .iter()
+                .map(|r| r.memory.title.as_str())
+                .collect::<Vec<_>>()
         );
 
         let scores: Vec<f64> = results.iter().map(|r| r.score).collect();

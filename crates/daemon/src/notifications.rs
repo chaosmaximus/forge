@@ -146,7 +146,10 @@ pub fn list_notifications(
     }
 
     params.push(Box::new(limit as i64));
-    sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ?{}", params.len()));
+    sql.push_str(&format!(
+        " ORDER BY created_at DESC LIMIT ?{}",
+        params.len()
+    ));
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(&sql)?;
@@ -193,11 +196,13 @@ pub fn ack_notification(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 /// Returns true if the notification was found and updated.
 pub fn dismiss_notification(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     // Look up the notification topic first
-    let topic: Option<String> = conn.query_row(
-        "SELECT topic FROM notification WHERE id = ?1",
-        rusqlite::params![id],
-        |row| row.get(0),
-    ).ok();
+    let topic: Option<String> = conn
+        .query_row(
+            "SELECT topic FROM notification WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .ok();
 
     let updated = conn.execute(
         "UPDATE notification SET status = 'dismissed' WHERE id = ?1 AND status = 'pending'",
@@ -231,7 +236,11 @@ pub fn dismiss_notification(conn: &Connection, id: &str) -> rusqlite::Result<boo
 
 /// Act on a confirmation notification. If approved, store the action_result.
 /// Returns the action_result if approved, None if rejected.
-pub fn act_on_notification(conn: &Connection, id: &str, approved: bool) -> rusqlite::Result<Option<String>> {
+pub fn act_on_notification(
+    conn: &Connection,
+    id: &str,
+    approved: bool,
+) -> rusqlite::Result<Option<String>> {
     let result_str = if approved { "approved" } else { "rejected" };
     let status_str = if approved { "acted" } else { "dismissed" };
 
@@ -283,7 +292,12 @@ pub fn expire_old(conn: &Connection) -> rusqlite::Result<usize> {
 
 /// Check if a notification with the given topic was created within cooldown_secs.
 /// Returns true if throttled (should NOT send a new notification).
-pub fn check_throttle(conn: &Connection, topic: &str, _user_id: &str, cooldown_secs: i64) -> rusqlite::Result<bool> {
+pub fn check_throttle(
+    conn: &Connection,
+    topic: &str,
+    _user_id: &str,
+    cooldown_secs: i64,
+) -> rusqlite::Result<bool> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM notification
          WHERE topic = ?1 AND created_at > datetime('now', '-' || ?2 || ' seconds')",
@@ -308,22 +322,29 @@ mod tests {
     #[test]
     fn test_create_notification() {
         let conn = setup();
-        let id = NotificationBuilder::new("alert", "high", "Build failed", "CI pipeline failed", "ci")
-            .source_id("run-123")
-            .topic("build_failure")
-            .build(&conn)
-            .unwrap();
+        let id =
+            NotificationBuilder::new("alert", "high", "Build failed", "CI pipeline failed", "ci")
+                .source_id("run-123")
+                .topic("build_failure")
+                .build(&conn)
+                .unwrap();
 
         assert!(!id.is_empty());
 
         // Verify it's in the DB
         let title: String = conn
-            .query_row("SELECT title FROM notification WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row("SELECT title FROM notification WHERE id = ?1", [&id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(title, "Build failed");
 
         let status: String = conn
-            .query_row("SELECT status FROM notification WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM notification WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "pending");
     }
@@ -371,12 +392,20 @@ mod tests {
         assert!(acked);
 
         let status: String = conn
-            .query_row("SELECT status FROM notification WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM notification WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "acknowledged");
 
         let ack_at: Option<String> = conn
-            .query_row("SELECT acknowledged_at FROM notification WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT acknowledged_at FROM notification WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(ack_at.is_some());
     }
@@ -393,7 +422,11 @@ mod tests {
         assert!(dismissed);
 
         let status: String = conn
-            .query_row("SELECT status FROM notification WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM notification WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "dismissed");
 
@@ -434,21 +467,35 @@ mod tests {
     #[test]
     fn test_act_confirmation_approve() {
         let conn = setup();
-        let id = NotificationBuilder::new("confirmation", "high", "Deploy?", "Approve deploy", "deploy")
-            .action("deploy", r#"{"target":"production"}"#)
-            .build(&conn)
-            .unwrap();
+        let id = NotificationBuilder::new(
+            "confirmation",
+            "high",
+            "Deploy?",
+            "Approve deploy",
+            "deploy",
+        )
+        .action("deploy", r#"{"target":"production"}"#)
+        .build(&conn)
+        .unwrap();
 
         let result = act_on_notification(&conn, &id, true).unwrap();
         assert_eq!(result, Some("approved".to_string()));
 
         let status: String = conn
-            .query_row("SELECT status FROM notification WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM notification WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "acted");
 
         let action_result: Option<String> = conn
-            .query_row("SELECT action_result FROM notification WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT action_result FROM notification WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(action_result, Some("approved".to_string()));
     }
@@ -456,16 +503,26 @@ mod tests {
     #[test]
     fn test_act_confirmation_reject() {
         let conn = setup();
-        let id = NotificationBuilder::new("confirmation", "high", "Deploy?", "Approve deploy", "deploy")
-            .action("deploy", r#"{"target":"production"}"#)
-            .build(&conn)
-            .unwrap();
+        let id = NotificationBuilder::new(
+            "confirmation",
+            "high",
+            "Deploy?",
+            "Approve deploy",
+            "deploy",
+        )
+        .action("deploy", r#"{"target":"production"}"#)
+        .build(&conn)
+        .unwrap();
 
         let result = act_on_notification(&conn, &id, false).unwrap();
         assert!(result.is_none());
 
         let status: String = conn
-            .query_row("SELECT status FROM notification WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM notification WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "dismissed");
     }
@@ -520,7 +577,11 @@ mod tests {
         assert_eq!(expired, 1);
 
         let status: String = conn
-            .query_row("SELECT status FROM notification WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM notification WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "expired");
     }
@@ -558,40 +619,58 @@ mod tests {
     #[test]
     fn test_builder_with_action() {
         let conn = setup();
-        let id = NotificationBuilder::new("confirmation", "medium", "Approve protocol?", "New pattern detected", "consolidator")
-            .action("approve_protocol", r#"{"memory_id":"mem-123"}"#)
-            .topic("protocol_suggestion")
-            .build(&conn)
+        let id = NotificationBuilder::new(
+            "confirmation",
+            "medium",
+            "Approve protocol?",
+            "New pattern detected",
+            "consolidator",
+        )
+        .action("approve_protocol", r#"{"memory_id":"mem-123"}"#)
+        .topic("protocol_suggestion")
+        .build(&conn)
+        .unwrap();
+
+        let (action_type, action_payload): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT action_type, action_payload FROM notification WHERE id = ?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
 
-        let (action_type, action_payload): (Option<String>, Option<String>) = conn.query_row(
-            "SELECT action_type, action_payload FROM notification WHERE id = ?1",
-            [&id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
-
         assert_eq!(action_type, Some("approve_protocol".to_string()));
-        assert_eq!(action_payload, Some(r#"{"memory_id":"mem-123"}"#.to_string()));
+        assert_eq!(
+            action_payload,
+            Some(r#"{"memory_id":"mem-123"}"#.to_string())
+        );
 
-        let category: String = conn.query_row(
-            "SELECT category FROM notification WHERE id = ?1", [&id], |r| r.get(0),
-        ).unwrap();
+        let category: String = conn
+            .query_row(
+                "SELECT category FROM notification WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(category, "confirmation");
     }
 
     #[test]
     fn test_builder_with_target() {
         let conn = setup();
-        let id = NotificationBuilder::new("alert", "high", "Session alert", "Your build failed", "ci")
-            .target_session("session-abc")
-            .build(&conn)
-            .unwrap();
+        let id =
+            NotificationBuilder::new("alert", "high", "Session alert", "Your build failed", "ci")
+                .target_session("session-abc")
+                .build(&conn)
+                .unwrap();
 
-        let (target_type, target_id): (String, Option<String>) = conn.query_row(
-            "SELECT target_type, target_id FROM notification WHERE id = ?1",
-            [&id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (target_type, target_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT target_type, target_id FROM notification WHERE id = ?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
 
         assert_eq!(target_type, "session");
         assert_eq!(target_id, Some("session-abc".to_string()));
@@ -602,11 +681,13 @@ mod tests {
             .build(&conn)
             .unwrap();
 
-        let (target_type2, target_id2): (String, Option<String>) = conn.query_row(
-            "SELECT target_type, target_id FROM notification WHERE id = ?1",
-            [&id2],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (target_type2, target_id2): (String, Option<String>) = conn
+            .query_row(
+                "SELECT target_type, target_id FROM notification WHERE id = ?1",
+                [&id2],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
 
         assert_eq!(target_type2, "team");
         assert_eq!(target_id2, Some("team-xyz".to_string()));

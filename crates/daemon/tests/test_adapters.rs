@@ -24,7 +24,10 @@ fn test_adapter_for_path_routes_correctly() {
 
     // Unknown path should return None
     let unknown = adapters::adapter_for_path(&adapters, std::path::Path::new("/tmp/random.txt"));
-    assert!(unknown.is_none(), "should not find adapter for unknown path");
+    assert!(
+        unknown.is_none(),
+        "should not find adapter for unknown path"
+    );
 }
 
 #[test]
@@ -50,9 +53,7 @@ fn test_adapter_for_path_codex() {
     let home = std::env::var("HOME").unwrap_or_default();
     let adapters = adapters::detect_adapters();
 
-    let codex_path = format!(
-        "{home}/.codex/sessions/2026/04/03/rollout-abc.jsonl"
-    );
+    let codex_path = format!("{home}/.codex/sessions/2026/04/03/rollout-abc.jsonl");
     let adapter = adapters::adapter_for_path(&adapters, std::path::Path::new(&codex_path));
     if std::path::Path::new(&format!("{home}/.codex/sessions")).exists() {
         assert!(adapter.is_some());

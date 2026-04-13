@@ -47,12 +47,16 @@ pub fn ensure_certs_in(base_dir: PathBuf) -> Result<(PathBuf, PathBuf), String> 
     }
 
     // Create directory if needed.
-    fs::create_dir_all(&tls_dir)
-        .map_err(|e| format!("failed to create TLS directory {}: {}", tls_dir.display(), e))?;
+    fs::create_dir_all(&tls_dir).map_err(|e| {
+        format!(
+            "failed to create TLS directory {}: {}",
+            tls_dir.display(),
+            e
+        )
+    })?;
 
     // Generate a new key pair and self-signed cert.
-    let key_pair = KeyPair::generate()
-        .map_err(|e| format!("failed to generate key pair: {e}"))?;
+    let key_pair = KeyPair::generate().map_err(|e| format!("failed to generate key pair: {e}"))?;
 
     let mut params = CertificateParams::default();
     params.distinguished_name.push(
@@ -64,7 +68,11 @@ pub fn ensure_certs_in(base_dir: PathBuf) -> Result<(PathBuf, PathBuf), String> 
         rcgen::DnValue::Utf8String("Forge".into()),
     );
     params.subject_alt_names = vec![
-        SanType::DnsName("localhost".try_into().map_err(|e| format!("SAN DNS error: {e}"))?),
+        SanType::DnsName(
+            "localhost"
+                .try_into()
+                .map_err(|e| format!("SAN DNS error: {e}"))?,
+        ),
         SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         SanType::IpAddress(IpAddr::V6(Ipv6Addr::LOCALHOST)),
     ];
@@ -163,8 +171,7 @@ mod tests {
         let base = tmp.path().to_path_buf();
 
         // Generate certs.
-        let (cert_path, key_path) =
-            ensure_certs_in(base.clone()).expect("ensure_certs_in failed");
+        let (cert_path, key_path) = ensure_certs_in(base.clone()).expect("ensure_certs_in failed");
 
         // Verify files exist.
         assert!(cert_path.exists(), "cert file should exist");
@@ -174,11 +181,14 @@ mod tests {
 
         // Verify rustls can load them.
         let config = build_rustls_config(cert_path.clone(), key_path.clone());
-        assert!(config.is_ok(), "rustls config should build successfully: {:?}", config.err());
+        assert!(
+            config.is_ok(),
+            "rustls config should build successfully: {:?}",
+            config.err()
+        );
 
         // Calling ensure_certs_in again should return the same paths (idempotent).
-        let (cert2, key2) =
-            ensure_certs_in(base).expect("second ensure_certs_in failed");
+        let (cert2, key2) = ensure_certs_in(base).expect("second ensure_certs_in failed");
         assert_eq!(cert_path, cert2);
         assert_eq!(key_path, key2);
     }
@@ -191,8 +201,7 @@ mod tests {
         let base = tmp.path().to_path_buf();
 
         // Generate self-signed certs.
-        let (cert_path, key_path) =
-            ensure_certs_in(base).expect("ensure_certs_in failed");
+        let (cert_path, key_path) = ensure_certs_in(base).expect("ensure_certs_in failed");
 
         // Build the low-level rustls ServerConfig.
         let server_config = build_rustls_config(cert_path.clone(), key_path.clone())
@@ -200,15 +209,11 @@ mod tests {
 
         // Build axum-server's RustlsConfig from the ServerConfig — this is the
         // exact call used in the TLS code path of main.rs.
-        let axum_rustls_config =
-            axum_server::tls_rustls::RustlsConfig::from_config(server_config);
+        let axum_rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
 
         // Verify we can also build it from the PEM files directly (alternate path).
-        let axum_rustls_from_pem = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-            &cert_path,
-            &key_path,
-        )
-        .await;
+        let axum_rustls_from_pem =
+            axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await;
         assert!(
             axum_rustls_from_pem.is_ok(),
             "axum-server should load certs from PEM files: {:?}",
@@ -230,8 +235,7 @@ mod tests {
         let tmp = TempDir::new().expect("failed to create temp dir");
         let base = tmp.path().to_path_buf();
 
-        let (_cert_path, key_path) =
-            ensure_certs_in(base).expect("ensure_certs_in failed");
+        let (_cert_path, key_path) = ensure_certs_in(base).expect("ensure_certs_in failed");
 
         let perms = fs::metadata(&key_path)
             .expect("failed to read key metadata")

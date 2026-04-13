@@ -81,8 +81,7 @@ pub async fn detect_backend(config: &ForgeConfig) -> BackendChoice {
             if is_ollama_available(endpoint).await {
                 return BackendChoice::Ollama;
             }
-            if resolve_api_key(&config.extraction.claude_api.api_key, "ANTHROPIC_API_KEY")
-                .is_some()
+            if resolve_api_key(&config.extraction.claude_api.api_key, "ANTHROPIC_API_KEY").is_some()
             {
                 return BackendChoice::ClaudeApi;
             }
@@ -181,7 +180,10 @@ mod tests {
         let result = detect_backend(&cfg).await;
         match result {
             BackendChoice::None(reason) => {
-                assert!(reason.contains("ANTHROPIC_API_KEY"), "reason should mention ANTHROPIC_API_KEY: {reason}");
+                assert!(
+                    reason.contains("ANTHROPIC_API_KEY"),
+                    "reason should mention ANTHROPIC_API_KEY: {reason}"
+                );
             }
             _ => panic!("should return None when API key is missing"),
         }
@@ -205,7 +207,10 @@ mod tests {
         let result = detect_backend(&cfg).await;
         match result {
             BackendChoice::None(reason) => {
-                assert!(reason.contains("OPENAI_API_KEY"), "reason should mention OPENAI_API_KEY: {reason}");
+                assert!(
+                    reason.contains("OPENAI_API_KEY"),
+                    "reason should mention OPENAI_API_KEY: {reason}"
+                );
             }
             _ => panic!("should return None when API key is missing"),
         }
@@ -225,7 +230,9 @@ mod tests {
     async fn test_detect_backend_gemini_without_key() {
         // Temporarily clear GEMINI_API_KEY to ensure the test checks config-only path
         let saved = std::env::var("GEMINI_API_KEY").ok();
-        unsafe { std::env::remove_var("GEMINI_API_KEY"); }
+        unsafe {
+            std::env::remove_var("GEMINI_API_KEY");
+        }
 
         let mut cfg = ForgeConfig::default();
         cfg.extraction.backend = "gemini".to_string();
@@ -234,12 +241,17 @@ mod tests {
 
         // Restore env var
         if let Some(val) = saved {
-            unsafe { std::env::set_var("GEMINI_API_KEY", val); }
+            unsafe {
+                std::env::set_var("GEMINI_API_KEY", val);
+            }
         }
 
         match result {
             BackendChoice::None(reason) => {
-                assert!(reason.contains("GEMINI_API_KEY"), "reason should mention GEMINI_API_KEY: {reason}");
+                assert!(
+                    reason.contains("GEMINI_API_KEY"),
+                    "reason should mention GEMINI_API_KEY: {reason}"
+                );
             }
             BackendChoice::Gemini => {
                 // If GEMINI_API_KEY was somehow still available (race), accept

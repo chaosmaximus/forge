@@ -72,15 +72,19 @@ async fn api_handler(
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|ci| ci.0.ip().to_string());
-    let header_ip = http_req.headers()
+    let header_ip = http_req
+        .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(',').next())
         .map(|s| s.trim().to_string())
-        .or_else(|| http_req.headers()
-            .get("x-real-ip")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string()));
+        .or_else(|| {
+            http_req
+                .headers()
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        });
     // Rate limiting uses the real TCP peer address (unspoofable).
     // Audit logging uses header IP when available (more useful behind reverse proxy).
     let rate_limit_ip = connect_ip.clone().unwrap_or_else(|| "unknown".to_string());
@@ -102,7 +106,8 @@ async fn api_handler(
                     Json(Response::Error {
                         message: format!("rate limited — retry after {retry_after}s"),
                     }),
-                ).into_response();
+                )
+                    .into_response();
             }
         }
     }
@@ -202,31 +207,29 @@ async fn api_handler(
             }
         };
         match tokio::time::timeout(Duration::from_secs(30), state.write_tx.send(cmd)).await {
-            Ok(Ok(())) => {
-                match tokio::time::timeout(Duration::from_secs(30), reply_rx).await {
-                    Ok(Ok(resp)) => resp,
-                    Ok(Err(_)) => {
-                        tracing::error!("writer actor closed unexpectedly");
-                        return (
-                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                            Json(Response::Error {
-                                message: "writer unavailable".to_string(),
-                            }),
-                        )
-                            .into_response();
-                    }
-                    Err(_) => {
-                        tracing::error!("write request timed out after 30s");
-                        return (
-                            axum::http::StatusCode::GATEWAY_TIMEOUT,
-                            Json(Response::Error {
-                                message: "write request timed out".to_string(),
-                            }),
-                        )
-                            .into_response();
-                    }
+            Ok(Ok(())) => match tokio::time::timeout(Duration::from_secs(30), reply_rx).await {
+                Ok(Ok(resp)) => resp,
+                Ok(Err(_)) => {
+                    tracing::error!("writer actor closed unexpectedly");
+                    return (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        Json(Response::Error {
+                            message: "writer unavailable".to_string(),
+                        }),
+                    )
+                        .into_response();
                 }
-            }
+                Err(_) => {
+                    tracing::error!("write request timed out after 30s");
+                    return (
+                        axum::http::StatusCode::GATEWAY_TIMEOUT,
+                        Json(Response::Error {
+                            message: "write request timed out".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
             Ok(Err(_)) => {
                 tracing::error!("daemon writer channel closed");
                 return (
@@ -322,7 +325,8 @@ struct SubscribeParams {
 const MAX_SSE_CONNECTIONS: usize = 64;
 
 /// Global SSE connection counter.
-static SSE_CONNECTION_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SSE_CONNECTION_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// Maximum lifetime for a single SSE connection (1 hour).
 const SSE_MAX_LIFETIME: Duration = Duration::from_secs(3600);
@@ -344,7 +348,8 @@ async fn subscribe_handler(
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "too many SSE connections",
-        ).into_response();
+        )
+            .into_response();
     }
     SSE_CONNECTION_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -408,11 +413,13 @@ async fn subscribe_handler(
         SSE_CONNECTION_COUNT.fetch_sub(1, Ordering::Relaxed);
     };
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("ping"),
-    ).into_response()
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response()
 }
 
 /// Build the CORS layer from config.
@@ -447,7 +454,8 @@ fn build_cors_layer(config: &ForgeConfig) -> CorsLayer {
                             // to prevent matching non-numeric ports like "http://localhost:abc".
                             if let Some(rest) = origin_str.strip_prefix(prefix) {
                                 if let Some(port_str) = rest.strip_prefix(':') {
-                                    !port_str.is_empty() && port_str.chars().all(|c| c.is_ascii_digit())
+                                    !port_str.is_empty()
+                                        && port_str.chars().all(|c| c.is_ascii_digit())
                                 } else {
                                     false
                                 }
@@ -461,10 +469,8 @@ fn build_cors_layer(config: &ForgeConfig) -> CorsLayer {
                 },
             ))
         } else {
-            let origins: Vec<axum::http::HeaderValue> = patterns
-                .iter()
-                .filter_map(|o| o.parse().ok())
-                .collect();
+            let origins: Vec<axum::http::HeaderValue> =
+                patterns.iter().filter_map(|o| o.parse().ok()).collect();
             CorsLayer::new().allow_origin(origins)
         }
     };
@@ -572,8 +578,16 @@ pub fn build_router(config: &ForgeConfig, state: AppState) -> Router {
     let terminal_state = super::ws::TerminalState {
         pty_mgr: pty_manager,
         auth_enabled: config.auth.enabled,
-        auth_config: if config.auth.enabled { Some(config.auth.clone()) } else { None },
-        jwks_cache: if config.auth.enabled { Some(super::auth::new_jwks_cache()) } else { None },
+        auth_config: if config.auth.enabled {
+            Some(config.auth.clone())
+        } else {
+            None
+        },
+        jwks_cache: if config.auth.enabled {
+            Some(super::auth::new_jwks_cache())
+        } else {
+            None
+        },
         db_path: Some(state.db_path.clone()),
         rate_limiter: state.rate_limiter.clone(),
     };
@@ -640,7 +654,9 @@ pub async fn run_http_server_with_listener(
         viewer_emails: config.auth.viewer_emails.clone(),
         auth_enabled: config.auth.enabled,
         metrics,
-        rate_limiter: Some(super::rate_limit::RateLimiter::new(super::rate_limit::RateLimitConfig::default())),
+        rate_limiter: Some(super::rate_limit::RateLimiter::new(
+            super::rate_limit::RateLimitConfig::default(),
+        )),
     };
 
     let app = build_router(config, state);
@@ -649,7 +665,11 @@ pub async fn run_http_server_with_listener(
         // Pre-generate TLS certs so they're ready when tokio-rustls is wired
         match super::tls::ensure_certs() {
             Ok((cert_path, key_path)) => {
-                tracing::info!(?cert_path, ?key_path, "TLS certs generated — HTTPS requires tokio-rustls dep (coming soon)");
+                tracing::info!(
+                    ?cert_path,
+                    ?key_path,
+                    "TLS certs generated — HTTPS requires tokio-rustls dep (coming soon)"
+                );
             }
             Err(e) => {
                 tracing::warn!("TLS cert generation failed: {e}");
@@ -663,11 +683,11 @@ pub async fn run_http_server_with_listener(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.changed().await;
-            tracing::info!("HTTP server shutting down gracefully");
-        })
-        .await?;
+    .with_graceful_shutdown(async move {
+        let _ = shutdown_rx.changed().await;
+        tracing::info!("HTTP server shutting down gracefully");
+    })
+    .await?;
     Ok(())
 }
 
@@ -1026,14 +1046,12 @@ Pfkte+2kAeYPMK9Sa+apqqE=
         let (write_tx, write_rx) = mpsc::channel(16);
 
         // Create writer actor with its own connection
-        let writer_state = DaemonState::new_writer(
-            &db_path,
-            events.clone(),
-            Arc::clone(&hlc),
-            started_at,
-        )
-        .unwrap();
-        let actor = crate::server::writer::WriterActor { state: writer_state };
+        let writer_state =
+            DaemonState::new_writer(&db_path, events.clone(), Arc::clone(&hlc), started_at)
+                .unwrap();
+        let actor = crate::server::writer::WriterActor {
+            state: writer_state,
+        };
         let handle = tokio::spawn(async move { actor.run(write_rx).await });
 
         // Keep temp file alive
@@ -1362,14 +1380,12 @@ Pfkte+2kAeYPMK9Sa+apqqE=
         let hlc = Arc::new(crate::sync::Hlc::new("test"));
         let started_at = Instant::now();
 
-        let writer_state = DaemonState::new_writer(
-            &db_path,
-            events.clone(),
-            Arc::clone(&hlc),
-            started_at,
-        )
-        .unwrap();
-        let actor = crate::server::writer::WriterActor { state: writer_state };
+        let writer_state =
+            DaemonState::new_writer(&db_path, events.clone(), Arc::clone(&hlc), started_at)
+                .unwrap();
+        let actor = crate::server::writer::WriterActor {
+            state: writer_state,
+        };
         let (tx, rx) = mpsc::channel(16);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
@@ -1383,7 +1399,7 @@ Pfkte+2kAeYPMK9Sa+apqqE=
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             },
             reply: reply_tx,
         })
@@ -1414,7 +1430,12 @@ Pfkte+2kAeYPMK9Sa+apqqE=
     #[tokio::test]
     async fn test_get_api_skills_returns_all() {
         let state = test_app_state();
-        insert_test_skill(&state.db_path, "forge-build", "procedural", "Build projects");
+        insert_test_skill(
+            &state.db_path,
+            "forge-build",
+            "procedural",
+            "Build projects",
+        );
         insert_test_skill(&state.db_path, "forge-review", "procedural", "Review code");
         let app = test_router(state);
 
@@ -1439,8 +1460,18 @@ Pfkte+2kAeYPMK9Sa+apqqE=
     #[tokio::test]
     async fn test_get_api_skills_with_search() {
         let state = test_app_state();
-        insert_test_skill(&state.db_path, "forge-build", "procedural", "Build projects");
-        insert_test_skill(&state.db_path, "forge-review", "procedural", "Review code changes");
+        insert_test_skill(
+            &state.db_path,
+            "forge-build",
+            "procedural",
+            "Build projects",
+        );
+        insert_test_skill(
+            &state.db_path,
+            "forge-review",
+            "procedural",
+            "Review code changes",
+        );
         let app = test_router(state);
 
         let response = app
@@ -1465,7 +1496,12 @@ Pfkte+2kAeYPMK9Sa+apqqE=
     #[tokio::test]
     async fn test_get_api_skills_with_category() {
         let state = test_app_state();
-        insert_test_skill(&state.db_path, "forge-build", "procedural", "Build projects");
+        insert_test_skill(
+            &state.db_path,
+            "forge-build",
+            "procedural",
+            "Build projects",
+        );
         insert_test_skill(&state.db_path, "debug-tool", "diagnostic", "Debug things");
         let app = test_router(state);
 

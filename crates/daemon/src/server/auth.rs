@@ -71,7 +71,10 @@ pub fn new_jwks_cache() -> SharedJwksCache {
 /// 3. GET jwks_uri -> parse as JwkSet
 async fn fetch_jwks_from_oidc(issuer_url: &str) -> Result<JwkSet, String> {
     // Security: require HTTPS for issuer URL (except localhost for dev)
-    if !issuer_url.starts_with("https://") && !issuer_url.starts_with("http://localhost") && !issuer_url.starts_with("http://127.0.0.1") {
+    if !issuer_url.starts_with("https://")
+        && !issuer_url.starts_with("http://localhost")
+        && !issuer_url.starts_with("http://127.0.0.1")
+    {
         return Err(format!("issuer_url must use HTTPS (got: {issuer_url})"));
     }
 
@@ -111,7 +114,10 @@ async fn fetch_jwks_from_oidc(issuer_url: &str) -> Result<JwkSet, String> {
         .ok_or_else(|| "OIDC discovery response missing jwks_uri".to_string())?;
 
     // Security: jwks_uri must also use HTTPS (except localhost for dev)
-    if !jwks_uri.starts_with("https://") && !jwks_uri.starts_with("http://localhost") && !jwks_uri.starts_with("http://127.0.0.1") {
+    if !jwks_uri.starts_with("https://")
+        && !jwks_uri.starts_with("http://localhost")
+        && !jwks_uri.starts_with("http://127.0.0.1")
+    {
         return Err(format!("jwks_uri must use HTTPS (got: {jwks_uri})"));
     }
 
@@ -135,10 +141,7 @@ fn load_offline_jwks(path: &str) -> Result<JwkSet, String> {
 }
 
 /// Fetch JWKS: try OIDC discovery first, fall back to offline file.
-pub async fn fetch_jwks(
-    issuer_url: &str,
-    offline_path: Option<&str>,
-) -> Result<JwkSet, String> {
+pub async fn fetch_jwks(issuer_url: &str, offline_path: Option<&str>) -> Result<JwkSet, String> {
     // Try OIDC discovery first (only if issuer_url is non-empty)
     if !issuer_url.is_empty() {
         match fetch_jwks_from_oidc(issuer_url).await {
@@ -154,17 +157,16 @@ pub async fn fetch_jwks(
         return load_offline_jwks(path);
     }
 
-    Err("no JWKS source available: OIDC discovery failed and no offline_jwks_path configured"
-        .to_string())
+    Err(
+        "no JWKS source available: OIDC discovery failed and no offline_jwks_path configured"
+            .to_string(),
+    )
 }
 
 /// Refresh the JWKS cache if expired or empty.
 /// Performs network I/O OUTSIDE the write lock to prevent head-of-line blocking.
 /// On fetch failure, serves stale keys for up to 2x TTL (stale-on-error).
-async fn ensure_jwks_cache(
-    cache: &SharedJwksCache,
-    config: &AuthConfig,
-) -> Result<(), String> {
+async fn ensure_jwks_cache(cache: &SharedJwksCache, config: &AuthConfig) -> Result<(), String> {
     // Fast path: read lock to check if cache is valid
     let needs_refresh = {
         let read_guard = cache.read().await;
@@ -176,11 +178,7 @@ async fn ensure_jwks_cache(
     }
 
     // Fetch OUTSIDE any lock to prevent head-of-line blocking
-    let fetch_result = fetch_jwks(
-        &config.issuer_url,
-        config.offline_jwks_path.as_deref(),
-    )
-    .await;
+    let fetch_result = fetch_jwks(&config.issuer_url, config.offline_jwks_path.as_deref()).await;
 
     match fetch_result {
         Ok(jwks) => {
@@ -224,8 +222,7 @@ pub async fn validate_token(
     ensure_jwks_cache(jwks_cache, config).await?;
 
     // Decode JWT header to get kid
-    let header =
-        decode_header(token).map_err(|e| format!("invalid JWT header: {e}"))?;
+    let header = decode_header(token).map_err(|e| format!("invalid JWT header: {e}"))?;
 
     // Read the cached JWKS
     let cache_guard = jwks_cache.read().await;
@@ -239,8 +236,7 @@ pub async fn validate_token(
             .keys
             .find(kid)
             .ok_or_else(|| "invalid token".to_string())?;
-        DecodingKey::from_jwk(jwk)
-            .map_err(|_| "invalid token".to_string())?
+        DecodingKey::from_jwk(jwk).map_err(|_| "invalid token".to_string())?
     } else if cache_entry.keys.keys.len() == 1 {
         // No kid in header — only accept if JWKS has exactly one key
         let jwk = cache_entry
@@ -248,8 +244,7 @@ pub async fn validate_token(
             .keys
             .first()
             .ok_or_else(|| "invalid token".to_string())?;
-        DecodingKey::from_jwk(jwk)
-            .map_err(|_| "invalid token".to_string())?
+        DecodingKey::from_jwk(jwk).map_err(|_| "invalid token".to_string())?
     } else {
         // Multiple keys but no kid — reject as ambiguous
         return Err("invalid token".to_string());
@@ -655,7 +650,10 @@ JQIDAQAB
         let token = make_test_jwt(&claims);
 
         let result = validate_token(&token, &cache, &config).await;
-        assert!(result.is_ok(), "empty audience config should skip aud check");
+        assert!(
+            result.is_ok(),
+            "empty audience config should skip aud check"
+        );
     }
 
     // ── JWKS cache tests ─────────────────────────────────────────────────
@@ -761,10 +759,7 @@ JQIDAQAB
     /// Helper: build a minimal axum app with auth middleware for testing.
     fn build_authed_test_app(cache: SharedJwksCache, config: AuthConfig) -> axum::Router {
         axum::Router::new()
-            .route(
-                "/api",
-                axum::routing::post(|| async { "ok" }),
-            )
+            .route("/api", axum::routing::post(|| async { "ok" }))
             .layer(axum::middleware::from_fn(move |req, next| {
                 let c = cache.clone();
                 let cfg = config.clone();
@@ -884,10 +879,7 @@ JQIDAQAB
     fn test_jwks_json_parses_correctly() {
         let jwks: JwkSet = serde_json::from_str(TEST_JWKS_JSON).unwrap();
         assert_eq!(jwks.keys.len(), 1);
-        assert_eq!(
-            jwks.keys[0].common.key_id,
-            Some("test-key-1".to_string())
-        );
+        assert_eq!(jwks.keys[0].common.key_id, Some("test-key-1".to_string()));
     }
 
     #[test]
@@ -895,7 +887,11 @@ JQIDAQAB
         let jwks: JwkSet = serde_json::from_str(TEST_JWKS_JSON).unwrap();
         let jwk = jwks.find("test-key-1").unwrap();
         let key = DecodingKey::from_jwk(jwk);
-        assert!(key.is_ok(), "DecodingKey::from_jwk failed: {}", key.err().map(|e| e.to_string()).unwrap_or_default());
+        assert!(
+            key.is_ok(),
+            "DecodingKey::from_jwk failed: {}",
+            key.err().map(|e| e.to_string()).unwrap_or_default()
+        );
     }
 
     // ── Round-trip: encode with PEM, decode with JWKS ────────────────────

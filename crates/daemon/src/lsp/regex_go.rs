@@ -10,36 +10,29 @@ use std::sync::LazyLock;
 // ─── Compiled regex patterns ─────────────────────────────────────────────────
 
 /// Function: `func FooBar(args) returnType {`
-static RE_FUNCTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^func\s+(\w+)\s*\(").unwrap()
-});
+static RE_FUNCTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^func\s+(\w+)\s*\(").unwrap());
 
 /// Method: `func (r *Receiver) Method(args) returnType {`
-static RE_METHOD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^func\s+\([^)]+\)\s+(\w+)\s*\(").unwrap()
-});
+static RE_METHOD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^func\s+\([^)]+\)\s+(\w+)\s*\(").unwrap());
 
 /// Struct: `type FooBar struct {`
-static RE_STRUCT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^type\s+(\w+)\s+struct\b").unwrap()
-});
+static RE_STRUCT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^type\s+(\w+)\s+struct\b").unwrap());
 
 /// Interface: `type FooBar interface {`
-static RE_INTERFACE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^type\s+(\w+)\s+interface\b").unwrap()
-});
+static RE_INTERFACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^type\s+(\w+)\s+interface\b").unwrap());
 
 // Type alias and constant patterns are defined but reserved for future use
 // when the indexer is extended to extract these symbols.
 
 /// Import: `import "package"` or entries in `import (...)` block
-static RE_IMPORT_SINGLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^import\s+"([^"]+)""#).unwrap()
-});
+static RE_IMPORT_SINGLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^import\s+"([^"]+)""#).unwrap());
 
-static RE_IMPORT_ENTRY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^\s+(?:\w+\s+)?"([^"]+)""#).unwrap()
-});
+static RE_IMPORT_ENTRY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^\s+(?:\w+\s+)?"([^"]+)""#).unwrap());
 
 // ─── Symbol extraction ───────────────────────────────────────────────────────
 
@@ -188,7 +181,8 @@ mod tests {
 
     #[test]
     fn test_extract_go_imports() {
-        let content = "import (\n\t\"fmt\"\n\t\"net/http\"\n\tlog \"github.com/sirupsen/logrus\"\n)";
+        let content =
+            "import (\n\t\"fmt\"\n\t\"net/http\"\n\tlog \"github.com/sirupsen/logrus\"\n)";
         let imports = extract_imports_go("main.go", content);
         assert_eq!(imports.len(), 3);
         assert_eq!(imports[0].1, "fmt");

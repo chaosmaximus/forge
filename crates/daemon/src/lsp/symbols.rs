@@ -80,21 +80,26 @@ pub fn extract_imports(content: &str, language: &str, file_path: &str) -> Vec<(S
     use std::sync::LazyLock;
 
     // Compile regexes once (static) to avoid recompilation on every call
-    static RUST_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
-        Regex::new(r"use\s+((?:(?:crate|super|self)::)?[\w:]+)").unwrap(),
-        Regex::new(r"mod\s+(\w+);").unwrap(),
-    ]);
-    static PYTHON_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
-        Regex::new(r"^\s*import\s+(\S+)").unwrap(),
-        Regex::new(r"^\s*from\s+(\S+)\s+import").unwrap(),
-    ]);
-    static TS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
-        Regex::new(r#"import\s+.*?from\s+['"](.*?)['"]"#).unwrap(),
-        Regex::new(r#"require\(\s*['"](.*?)['"]"#).unwrap(),
-    ]);
-    static GO_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
-        Regex::new(r#"import\s+"([\w./]+)""#).unwrap(),
-    ]);
+    static RUST_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+        vec![
+            Regex::new(r"use\s+((?:(?:crate|super|self)::)?[\w:]+)").unwrap(),
+            Regex::new(r"mod\s+(\w+);").unwrap(),
+        ]
+    });
+    static PYTHON_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+        vec![
+            Regex::new(r"^\s*import\s+(\S+)").unwrap(),
+            Regex::new(r"^\s*from\s+(\S+)\s+import").unwrap(),
+        ]
+    });
+    static TS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+        vec![
+            Regex::new(r#"import\s+.*?from\s+['"](.*?)['"]"#).unwrap(),
+            Regex::new(r#"require\(\s*['"](.*?)['"]"#).unwrap(),
+        ]
+    });
+    static GO_PATTERNS: LazyLock<Vec<Regex>> =
+        LazyLock::new(|| vec![Regex::new(r#"import\s+"([\w./]+)""#).unwrap()]);
 
     let patterns: &[Regex] = match language {
         "rust" => &RUST_PATTERNS,
@@ -108,7 +113,11 @@ pub fn extract_imports(content: &str, language: &str, file_path: &str) -> Vec<(S
     for line in content.lines() {
         let trimmed = line.trim();
         // Skip comment lines (best effort — doesn't handle block comments)
-        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+        if trimmed.starts_with("//")
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+        {
             continue;
         }
         for pat in patterns {
@@ -145,12 +154,24 @@ mod tests {
             tags: None,
             deprecated: None,
             range: Range {
-                start: Position { line: start_line, character: 0 },
-                end: Position { line: end_line, character: 0 },
+                start: Position {
+                    line: start_line,
+                    character: 0,
+                },
+                end: Position {
+                    line: end_line,
+                    character: 0,
+                },
             },
             selection_range: Range {
-                start: Position { line: start_line, character: 0 },
-                end: Position { line: start_line, character: name.len() as u32 },
+                start: Position {
+                    line: start_line,
+                    character: 0,
+                },
+                end: Position {
+                    line: start_line,
+                    character: name.len() as u32,
+                },
             },
             children,
         }
@@ -181,8 +202,22 @@ mod tests {
     #[test]
     fn test_convert_nested_symbols() {
         let methods = vec![
-            make_symbol("new", SymbolKind::METHOD, 2, 5, Some("fn new() -> Self"), None),
-            make_symbol("run", SymbolKind::METHOD, 7, 15, Some("fn run(&self)"), None),
+            make_symbol(
+                "new",
+                SymbolKind::METHOD,
+                2,
+                5,
+                Some("fn new() -> Self"),
+                None,
+            ),
+            make_symbol(
+                "run",
+                SymbolKind::METHOD,
+                7,
+                15,
+                Some("fn run(&self)"),
+                None,
+            ),
         ];
         let class = make_symbol("MyClass", SymbolKind::CLASS, 0, 16, None, Some(methods));
 
@@ -199,9 +234,14 @@ mod tests {
 
     #[test]
     fn test_symbol_id_format() {
-        let symbols = vec![
-            make_symbol("process", SymbolKind::FUNCTION, 42, 60, None, None),
-        ];
+        let symbols = vec![make_symbol(
+            "process",
+            SymbolKind::FUNCTION,
+            42,
+            60,
+            None,
+            None,
+        )];
 
         let result = convert_symbols("src/worker.rs", &symbols);
 
@@ -222,11 +262,11 @@ mod tests {
 
         let result = convert_symbols("test.rs", &symbols);
 
-        assert_eq!(result[0].kind, "class");      // STRUCT -> "class"
+        assert_eq!(result[0].kind, "class"); // STRUCT -> "class"
         assert_eq!(result[1].kind, "interface");
         assert_eq!(result[2].kind, "module");
         assert_eq!(result[3].kind, "enum");
-        assert_eq!(result[4].kind, "variable");    // CONSTANT -> "variable"
+        assert_eq!(result[4].kind, "variable"); // CONSTANT -> "variable"
         assert_eq!(result[5].kind, "variable");
         assert_eq!(result[6].kind, "field");
     }
@@ -239,14 +279,15 @@ mod tests {
 
     /// Helper to create an lsp_types::Location for testing build_call_edges.
     fn make_location(path: &str, line: u32) -> lsp_types::Location {
-        let uri: lsp_types::Uri = format!("file://{path}")
-            .parse()
-            .expect("valid URI");
+        let uri: lsp_types::Uri = format!("file://{path}").parse().expect("valid URI");
         lsp_types::Location {
             uri,
             range: Range {
                 start: Position { line, character: 0 },
-                end: Position { line, character: 10 },
+                end: Position {
+                    line,
+                    character: 10,
+                },
             },
         }
     }
@@ -260,15 +301,23 @@ mod tests {
             make_location("/src/caller_a.rs", 30), // duplicate file
         ];
 
-        let edges = super::build_call_edges(
-            "/src/lib.rs:process:5",
-            "/src/lib.rs",
-            &refs,
-        );
+        let edges = super::build_call_edges("/src/lib.rs:process:5", "/src/lib.rs", &refs);
 
         assert_eq!(edges.len(), 2, "should deduplicate same-file refs");
-        assert_eq!(edges[0], ("file:/src/caller_a.rs".to_string(), "/src/lib.rs:process:5".to_string()));
-        assert_eq!(edges[1], ("file:/src/caller_b.rs".to_string(), "/src/lib.rs:process:5".to_string()));
+        assert_eq!(
+            edges[0],
+            (
+                "file:/src/caller_a.rs".to_string(),
+                "/src/lib.rs:process:5".to_string()
+            )
+        );
+        assert_eq!(
+            edges[1],
+            (
+                "file:/src/caller_b.rs".to_string(),
+                "/src/lib.rs:process:5".to_string()
+            )
+        );
     }
 
     #[test]
@@ -279,11 +328,7 @@ mod tests {
             make_location("/src/lib.rs", 25),
         ];
 
-        let edges = super::build_call_edges(
-            "/src/lib.rs:process:5",
-            "/src/lib.rs",
-            &refs,
-        );
+        let edges = super::build_call_edges("/src/lib.rs:process:5", "/src/lib.rs", &refs);
 
         assert!(edges.is_empty(), "self-file references should be excluded");
     }
@@ -297,8 +342,17 @@ mod tests {
         let content = "use crate::db::ops;\nuse std::collections::HashMap;";
         let result = extract_imports(content, "rust", "test.rs");
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], ("test.rs".to_string(), "crate::db::ops".to_string()));
-        assert_eq!(result[1], ("test.rs".to_string(), "std::collections::HashMap".to_string()));
+        assert_eq!(
+            result[0],
+            ("test.rs".to_string(), "crate::db::ops".to_string())
+        );
+        assert_eq!(
+            result[1],
+            (
+                "test.rs".to_string(),
+                "std::collections::HashMap".to_string()
+            )
+        );
     }
 
     #[test]

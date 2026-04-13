@@ -26,7 +26,9 @@ pub async fn create_agent_template(
         decision_style,
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::AgentTemplateCreated { id, name } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::AgentTemplateCreated { id, name },
+        }) => {
             println!("Template created: {} ({})", &id[..13.min(id.len())], name);
         }
         Ok(Response::Error { message }) => {
@@ -50,14 +52,19 @@ pub async fn list_agent_templates(org: Option<String>) {
         limit: None,
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::AgentTemplateList { templates, count } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::AgentTemplateList { templates, count },
+        }) => {
             if count == 0 {
                 println!("No agent templates.");
                 return;
             }
             println!("{count} template(s):");
             for t in &templates {
-                println!("  {}: {} ({}) [{}]", t.name, t.description, t.agent_type, t.decision_style);
+                println!(
+                    "  {}: {} ({}) [{}]",
+                    t.name, t.description, t.agent_type, t.decision_style
+                );
             }
         }
         Ok(Response::Error { message }) => {
@@ -82,7 +89,9 @@ pub async fn get_agent_template(id: Option<String>, name: Option<String>) {
     }
     let req = Request::GetAgentTemplate { id, name };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::AgentTemplateData { template } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::AgentTemplateData { template },
+        }) => {
             println!("Template: {}", template.name);
             println!("  ID:          {}", template.id);
             println!("  Description: {}", template.description);
@@ -118,7 +127,9 @@ pub async fn get_agent_template(id: Option<String>, name: Option<String>) {
 pub async fn delete_agent_template(id: String) {
     let req = Request::DeleteAgentTemplate { id: id.clone() };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::AgentTemplateDeleted { id, found } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::AgentTemplateDeleted { id, found },
+        }) => {
             if found {
                 println!("Template deleted: {}", &id[..13.min(id.len())]);
             } else {
@@ -155,7 +166,14 @@ pub async fn spawn_agent(
         team: team.clone(),
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::AgentSpawned { session_id, template_name, team } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::AgentSpawned {
+                    session_id,
+                    template_name,
+                    team,
+                },
+        }) => {
             let team_str = match &team {
                 Some(t) => format!(", team={t}"),
                 None => String::new(),
@@ -180,19 +198,37 @@ pub async fn spawn_agent(
 pub async fn list_agents(team: Option<String>) {
     let req = Request::ListAgents { team, limit: None };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::AgentList { agents, count } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::AgentList { agents, count },
+        }) => {
             if count == 0 {
                 println!("No active agents.");
                 return;
             }
             println!("{count} agent(s):");
             for agent in &agents {
-                let session_id = agent.get("session_id").and_then(|v| v.as_str()).unwrap_or("?");
-                let template = agent.get("template_name").and_then(|v| v.as_str()).unwrap_or("?");
-                let agent_type = agent.get("agent_type").and_then(|v| v.as_str()).unwrap_or("?");
-                let status = agent.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
+                let session_id = agent
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let template = agent
+                    .get("template_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let agent_type = agent
+                    .get("agent_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let status = agent
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("idle");
                 let team = agent.get("team").and_then(|v| v.as_str()).unwrap_or("");
-                let team_str = if team.is_empty() { String::new() } else { format!(" team={team}") };
+                let team_str = if team.is_empty() {
+                    String::new()
+                } else {
+                    format!(" team={team}")
+                };
                 println!("  {session_id}: {template} ({agent_type}) [{status}]{team_str}");
             }
         }
@@ -218,7 +254,9 @@ pub async fn update_agent_status(session_id: String, status: String, task: Optio
         current_task: task,
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::AgentStatusUpdated { session_id, status } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::AgentStatusUpdated { session_id, status },
+        }) => {
             println!("Agent status updated: {session_id} -> {status}");
         }
         Ok(Response::Error { message }) => {
@@ -237,9 +275,13 @@ pub async fn update_agent_status(session_id: String, status: String, task: Optio
 }
 
 pub async fn retire_agent(session_id: String) {
-    let req = Request::RetireAgent { session_id: session_id.clone() };
+    let req = Request::RetireAgent {
+        session_id: session_id.clone(),
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::AgentRetired { session_id } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::AgentRetired { session_id },
+        }) => {
             println!("Agent retired: {session_id}");
         }
         Ok(Response::Error { message }) => {
@@ -259,7 +301,12 @@ pub async fn retire_agent(session_id: String) {
 
 // ── Teams ──
 
-pub async fn create_team(name: String, team_type: Option<String>, purpose: Option<String>, parent: Option<String>) {
+pub async fn create_team(
+    name: String,
+    team_type: Option<String>,
+    purpose: Option<String>,
+    parent: Option<String>,
+) {
     // TODO: pass `parent` as parent_team_id once Request::CreateTeam adds the field
     let _ = &parent;
     let req = Request::CreateTeam {
@@ -269,7 +316,9 @@ pub async fn create_team(name: String, team_type: Option<String>, purpose: Optio
         organization_id: None,
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::TeamCreated { id, name } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::TeamCreated { id, name },
+        }) => {
             println!("Team created: {} ({})", &id[..13.min(id.len())], name);
         }
         Ok(Response::Error { message }) => {
@@ -288,9 +337,13 @@ pub async fn create_team(name: String, team_type: Option<String>, purpose: Optio
 }
 
 pub async fn list_team_members(team_name: String) {
-    let req = Request::ListTeamMembers { team_name: team_name.clone() };
+    let req = Request::ListTeamMembers {
+        team_name: team_name.clone(),
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::TeamMemberList { members, count } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::TeamMemberList { members, count },
+        }) => {
             if count == 0 {
                 println!("No members in team '{team_name}'.");
                 return;
@@ -298,7 +351,10 @@ pub async fn list_team_members(team_name: String) {
             println!("{count} member(s) in team '{team_name}':");
             for m in &members {
                 let session_id = m.get("session_id").and_then(|v| v.as_str()).unwrap_or("?");
-                let template = m.get("template_name").and_then(|v| v.as_str()).unwrap_or("?");
+                let template = m
+                    .get("template_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 let status = m.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
                 println!("  {session_id}: {template} [{status}]");
             }
@@ -324,7 +380,13 @@ pub async fn set_team_orchestrator(team_name: String, session_id: String) {
         session_id: session_id.clone(),
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::TeamOrchestratorSet { team_name, session_id } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::TeamOrchestratorSet {
+                    team_name,
+                    session_id,
+                },
+        }) => {
             println!("Orchestrator set: {session_id} for team '{team_name}'");
         }
         Ok(Response::Error { message }) => {
@@ -343,15 +405,32 @@ pub async fn set_team_orchestrator(team_name: String, session_id: String) {
 }
 
 pub async fn team_status(team_name: String, team_id: Option<String>) {
-    let req = Request::TeamStatus { team_name: team_name.clone(), team_id };
+    let req = Request::TeamStatus {
+        team_name: team_name.clone(),
+        team_id,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::TeamStatusData { team } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::TeamStatusData { team },
+        }) => {
             // team is a JSON value — print human-readable summary
-            let name = team.get("name").and_then(|v| v.as_str()).unwrap_or(&team_name);
-            let team_type = team.get("team_type").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = team
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&team_name);
+            let team_type = team
+                .get("team_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let purpose = team.get("purpose").and_then(|v| v.as_str()).unwrap_or("");
-            let member_count = team.get("member_count").and_then(|v| v.as_u64()).unwrap_or(0);
-            let orchestrator = team.get("orchestrator").and_then(|v| v.as_str()).unwrap_or("none");
+            let member_count = team
+                .get("member_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let orchestrator = team
+                .get("orchestrator")
+                .and_then(|v| v.as_str())
+                .unwrap_or("none");
             println!("Team: {name}");
             println!("  Type:         {team_type}");
             if !purpose.is_empty() {
@@ -480,7 +559,14 @@ pub async fn run_team(
         goal: None,
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::RunTeamResult { team_name, agents_spawned, session_ids } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::RunTeamResult {
+                    team_name,
+                    agents_spawned,
+                    session_ids,
+                },
+        }) => {
             println!("Team '{team_name}' started: {agents_spawned} agent(s) spawned");
             for sid in &session_ids {
                 println!("  {sid}");
@@ -507,9 +593,17 @@ pub async fn stop_team(name: String) {
         eprintln!("error: team name must not be empty or whitespace-only");
         std::process::exit(1);
     }
-    let req = Request::StopTeam { team_name: name.clone() };
+    let req = Request::StopTeam {
+        team_name: name.clone(),
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::TeamStopped { team_name, agents_retired } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::TeamStopped {
+                    team_name,
+                    agents_retired,
+                },
+        }) => {
             println!("Team '{team_name}' stopped: {agents_retired} agent(s) retired");
         }
         Ok(Response::Error { message }) => {
@@ -546,9 +640,19 @@ pub async fn create_meeting(
         goal: None,
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MeetingCreated { meeting_id, participant_count: count } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::MeetingCreated {
+                    meeting_id,
+                    participant_count: count,
+                },
+        }) => {
             let display_count = if count > 0 { count } else { participant_count };
-            println!("Meeting created: {} ({} participants)", &meeting_id[..13.min(meeting_id.len())], display_count);
+            println!(
+                "Meeting created: {} ({} participants)",
+                &meeting_id[..13.min(meeting_id.len())],
+                display_count
+            );
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -568,23 +672,42 @@ pub async fn create_meeting(
 pub async fn meeting_status(meeting_id: String) {
     let req = Request::MeetingStatus { meeting_id };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MeetingStatusData { meeting, participants } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::MeetingStatusData {
+                    meeting,
+                    participants,
+                },
+        }) => {
             let topic = meeting.get("topic").and_then(|v| v.as_str()).unwrap_or("?");
-            let status = meeting.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            let status = meeting
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let mid = meeting.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             println!("Meeting: {} [{}]", &mid[..13.min(mid.len())], status);
             println!("  Topic: {topic}");
             if let Some(ctx) = meeting.get("context").and_then(|v| v.as_str()) {
                 if !ctx.is_empty() {
-                    let preview = if ctx.len() > 80 { format!("{}...", &ctx[..80]) } else { ctx.to_string() };
+                    let preview = if ctx.len() > 80 {
+                        format!("{}...", &ctx[..80])
+                    } else {
+                        ctx.to_string()
+                    };
                     println!("  Context: {preview}");
                 }
             }
             println!("  Participants ({}):", participants.len());
             for p in &participants {
                 let sid = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("?");
-                let tpl = p.get("template_name").and_then(|v| v.as_str()).unwrap_or("?");
-                let pstatus = p.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+                let tpl = p
+                    .get("template_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let pstatus = p
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("pending");
                 println!("    {sid}: {tpl} [{pstatus}]");
             }
         }
@@ -606,7 +729,9 @@ pub async fn meeting_status(meeting_id: String) {
 pub async fn meeting_responses(meeting_id: String) {
     let req = Request::MeetingResponses { meeting_id };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MeetingResponseList { responses, count } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::MeetingResponseList { responses, count },
+        }) => {
             if count == 0 {
                 println!("No responses yet.");
                 return;
@@ -614,7 +739,10 @@ pub async fn meeting_responses(meeting_id: String) {
             println!("{count} response(s):");
             for r in &responses {
                 let sid = r.get("session_id").and_then(|v| v.as_str()).unwrap_or("?");
-                let tpl = r.get("template_name").and_then(|v| v.as_str()).unwrap_or("?");
+                let tpl = r
+                    .get("template_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                 let response_text = r.get("response").and_then(|v| v.as_str()).unwrap_or("");
                 let confidence = r.get("confidence").and_then(|v| v.as_f64());
@@ -647,10 +775,18 @@ pub async fn meeting_responses(meeting_id: String) {
 }
 
 pub async fn meeting_synthesize(meeting_id: String, synthesis: String) {
-    let req = Request::MeetingSynthesize { meeting_id: meeting_id.clone(), synthesis };
+    let req = Request::MeetingSynthesize {
+        meeting_id: meeting_id.clone(),
+        synthesis,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MeetingSynthesized { meeting_id } }) => {
-            println!("Synthesis stored for meeting: {}", &meeting_id[..13.min(meeting_id.len())]);
+        Ok(Response::Ok {
+            data: ResponseData::MeetingSynthesized { meeting_id },
+        }) => {
+            println!(
+                "Synthesis stored for meeting: {}",
+                &meeting_id[..13.min(meeting_id.len())]
+            );
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -668,11 +804,26 @@ pub async fn meeting_synthesize(meeting_id: String, synthesis: String) {
 }
 
 pub async fn meeting_decide(meeting_id: String, decision: String) {
-    let req = Request::MeetingDecide { meeting_id: meeting_id.clone(), decision };
+    let req = Request::MeetingDecide {
+        meeting_id: meeting_id.clone(),
+        decision,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MeetingDecided { meeting_id, decision_memory_id } }) => {
-            println!("Decision recorded for meeting: {}", &meeting_id[..13.min(meeting_id.len())]);
-            println!("  Decision memory: {}", &decision_memory_id[..13.min(decision_memory_id.len())]);
+        Ok(Response::Ok {
+            data:
+                ResponseData::MeetingDecided {
+                    meeting_id,
+                    decision_memory_id,
+                },
+        }) => {
+            println!(
+                "Decision recorded for meeting: {}",
+                &meeting_id[..13.min(meeting_id.len())]
+            );
+            println!(
+                "  Decision memory: {}",
+                &decision_memory_id[..13.min(decision_memory_id.len())]
+            );
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -690,9 +841,15 @@ pub async fn meeting_decide(meeting_id: String, decision: String) {
 }
 
 pub async fn list_meetings(team_id: Option<String>, status: Option<String>) {
-    let req = Request::ListMeetings { team_id, status, limit: None };
+    let req = Request::ListMeetings {
+        team_id,
+        status,
+        limit: None,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MeetingList { meetings, count } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::MeetingList { meetings, count },
+        }) => {
             if count == 0 {
                 println!("No meetings.");
                 return;
@@ -703,7 +860,13 @@ pub async fn list_meetings(team_id: Option<String>, status: Option<String>) {
                 let topic = m.get("topic").and_then(|v| v.as_str()).unwrap_or("?");
                 let status = m.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                 let team = m.get("team_id").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("  {} [{}] team={}: {}", &mid[..13.min(mid.len())], status, team, topic);
+                println!(
+                    "  {} [{}] team={}: {}",
+                    &mid[..13.min(mid.len())],
+                    status,
+                    team,
+                    topic
+                );
             }
         }
         Ok(Response::Error { message }) => {
@@ -724,9 +887,17 @@ pub async fn list_meetings(team_id: Option<String>, status: Option<String>) {
 pub async fn meeting_transcript(meeting_id: String) {
     let req = Request::MeetingTranscript { meeting_id };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MeetingTranscriptData { transcript } }) => {
-            let topic = transcript.get("topic").and_then(|v| v.as_str()).unwrap_or("?");
-            let status = transcript.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+        Ok(Response::Ok {
+            data: ResponseData::MeetingTranscriptData { transcript },
+        }) => {
+            let topic = transcript
+                .get("topic")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let status = transcript
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let mid = transcript.get("id").and_then(|v| v.as_str()).unwrap_or("?");
 
             println!("=== Meeting Transcript ===");
@@ -745,8 +916,14 @@ pub async fn meeting_transcript(meeting_id: String) {
                 println!("\n--- Responses ---");
                 for p in participants {
                     let sid = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let tpl = p.get("template_name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let pstatus = p.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+                    let tpl = p
+                        .get("template_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let pstatus = p
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("pending");
                     let response = p.get("response").and_then(|v| v.as_str()).unwrap_or("");
                     println!("\n[{tpl}] ({sid}) [{pstatus}]:");
                     if !response.is_empty() {
@@ -797,7 +974,13 @@ pub async fn list_notifications(status: Option<String>, category: Option<String>
         limit: Some(limit),
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::NotificationList { notifications, count } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::NotificationList {
+                    notifications,
+                    count,
+                },
+        }) => {
             if count == 0 {
                 println!("No notifications.");
                 return;
@@ -831,7 +1014,9 @@ pub async fn list_notifications(status: Option<String>, category: Option<String>
 pub async fn ack_notification(id: String) {
     let req = Request::AckNotification { id: id.clone() };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::NotificationAcked { id } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::NotificationAcked { id },
+        }) => {
             println!("Acknowledged: {}", &id[..13.min(id.len())]);
         }
         Ok(Response::Error { message }) => {
@@ -852,7 +1037,9 @@ pub async fn ack_notification(id: String) {
 pub async fn dismiss_notification(id: String) {
     let req = Request::DismissNotification { id: id.clone() };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::NotificationDismissed { id } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::NotificationDismissed { id },
+        }) => {
             println!("Dismissed: {}", &id[..13.min(id.len())]);
         }
         Ok(Response::Error { message }) => {
@@ -871,9 +1058,14 @@ pub async fn dismiss_notification(id: String) {
 }
 
 pub async fn act_on_notification(id: String, approved: bool) {
-    let req = Request::ActOnNotification { id: id.clone(), approved };
+    let req = Request::ActOnNotification {
+        id: id.clone(),
+        approved,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::NotificationActed { id, result } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::NotificationActed { id, result },
+        }) => {
             let action = if approved { "Approved" } else { "Rejected" };
             let short_id = &id[..13.min(id.len())];
             match result {
@@ -899,9 +1091,13 @@ pub async fn act_on_notification(id: String, approved: bool) {
 // ── Organization Hierarchy ──
 
 pub async fn team_tree(org: Option<String>) {
-    let req = Request::TeamTree { organization_id: org };
+    let req = Request::TeamTree {
+        organization_id: org,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::TeamTreeData { tree } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::TeamTreeData { tree },
+        }) => {
             if tree.is_empty() {
                 println!("No teams.");
                 return;
@@ -969,7 +1165,9 @@ pub async fn team_send(
         recursive,
     };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::TeamSent { messages_sent } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::TeamSent { messages_sent },
+        }) => {
             println!("Sent to {messages_sent} session(s)");
         }
         Ok(Response::Error { message }) => {

@@ -84,10 +84,18 @@ mod tests {
     struct MockEngine;
 
     impl RealityEngine for MockEngine {
-        fn name(&self) -> &str { "mock" }
-        fn version(&self) -> &str { "0.1.0" }
-        fn reality_type(&self) -> &str { "mock" }
-        fn detect(&self, _path: &Path) -> Option<DetectionResult> { None }
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn reality_type(&self) -> &str {
+            "mock"
+        }
+        fn detect(&self, _path: &Path) -> Option<DetectionResult> {
+            None
+        }
         fn capabilities(&self) -> EngineCapabilities {
             EngineCapabilities {
                 graph_node_types: vec![],

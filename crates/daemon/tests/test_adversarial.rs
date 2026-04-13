@@ -3,10 +3,10 @@
 //! These tests verify that the daemon handles malformed, malicious, and edge-case
 //! input safely — no crashes, no SQL injection, no data corruption.
 
-use forge_daemon::db::vec;
-use forge_daemon::server::handler::{handle_request, DaemonState};
 use forge_core::protocol::*;
 use forge_core::types::MemoryType;
+use forge_daemon::db::vec;
+use forge_daemon::server::handler::{handle_request, DaemonState};
 
 /// Helper: create an in-memory DaemonState with sqlite-vec initialized.
 fn make_state() -> DaemonState {
@@ -29,7 +29,7 @@ fn remember(
         confidence: Some(0.9),
         tags,
         project: None,
-            metadata: None,
+        metadata: None,
     };
     let resp = handle_request(state, req);
     match resp {
@@ -124,7 +124,10 @@ fn test_sql_injection_in_recall() {
         Response::Ok {
             data: ResponseData::Health { decisions, .. },
         } => {
-            assert_eq!(decisions, 1, "should still have exactly 1 decision after injection attempts");
+            assert_eq!(
+                decisions, 1,
+                "should still have exactly 1 decision after injection attempts"
+            );
         }
         other => panic!("expected Health response, got: {other:?}"),
     }
@@ -180,14 +183,21 @@ fn test_sql_injection_in_guardrails() {
     );
     match resp {
         Response::Ok {
-            data: ResponseData::BlastRadius {
-                decisions,
-                files_affected,
-                ..
-            },
+            data:
+                ResponseData::BlastRadius {
+                    decisions,
+                    files_affected,
+                    ..
+                },
         } => {
-            assert!(decisions.is_empty(), "path traversal should find no decisions");
-            assert!(files_affected.is_empty(), "path traversal should find no affected files");
+            assert!(
+                decisions.is_empty(),
+                "path traversal should find no decisions"
+            );
+            assert!(
+                files_affected.is_empty(),
+                "path traversal should find no affected files"
+            );
         }
         other => panic!("expected BlastRadius response, got: {other:?}"),
     }
@@ -203,7 +213,10 @@ fn test_sql_injection_in_guardrails() {
         Response::Ok {
             data: ResponseData::BlastRadius { decisions, .. },
         } => {
-            assert!(decisions.is_empty(), "SQL injection in blast radius should find no decisions");
+            assert!(
+                decisions.is_empty(),
+                "SQL injection in blast radius should find no decisions"
+            );
         }
         other => panic!("expected BlastRadius response, got: {other:?}"),
     }
@@ -274,10 +287,7 @@ fn test_unicode_edge_cases() {
     // Recall with emoji-containing query — FTS5 sanitizer will strip the emoji
     // but the alphabetical words should match
     let results = recall(&mut state, "JWT auth");
-    assert!(
-        !results.is_empty(),
-        "should find results for 'JWT auth'"
-    );
+    assert!(!results.is_empty(), "should find results for 'JWT auth'");
 
     // Verify titles are preserved in export
     let resp = handle_request(
@@ -297,7 +307,9 @@ fn test_unicode_edge_cases() {
                 "emoji should be preserved in export, got titles: {titles:?}"
             );
             assert!(
-                memories.iter().any(|m| m.memory.content.contains('\u{8BA4}')),
+                memories
+                    .iter()
+                    .any(|m| m.memory.content.contains('\u{8BA4}')),
                 "CJK content should be preserved in export"
             );
             assert!(
@@ -329,7 +341,10 @@ fn test_extremely_long_strings() {
         "Short content",
         None,
     );
-    assert!(!id_long_title.is_empty(), "should store memory with 10k char title");
+    assert!(
+        !id_long_title.is_empty(),
+        "should store memory with 10k char title"
+    );
 
     // 100,000 character content
     let long_content = "B".repeat(100_000);
@@ -340,16 +355,18 @@ fn test_extremely_long_strings() {
         &long_content,
         None,
     );
-    assert!(!id_long_content.is_empty(), "should store memory with 100k char content");
+    assert!(
+        !id_long_content.is_empty(),
+        "should store memory with 100k char content"
+    );
 
     // Recall should still work
     let results = recall(&mut state, "Long content memory");
+    assert!(!results.is_empty(), "should recall the long content memory");
     assert!(
-        !results.is_empty(),
-        "should recall the long content memory"
-    );
-    assert!(
-        results.iter().any(|r| r.memory.title == "Long content memory"),
+        results
+            .iter()
+            .any(|r| r.memory.title == "Long content memory"),
         "should find the long content memory by title"
     );
 
@@ -366,7 +383,10 @@ fn test_extremely_long_strings() {
             data: ResponseData::Export { memories, .. },
         } => {
             let long_title_mem = memories.iter().find(|m| m.memory.id == id_long_title);
-            assert!(long_title_mem.is_some(), "long title memory should be in export");
+            assert!(
+                long_title_mem.is_some(),
+                "long title memory should be in export"
+            );
             assert_eq!(
                 long_title_mem.unwrap().memory.title.len(),
                 10_000,
@@ -374,7 +394,10 @@ fn test_extremely_long_strings() {
             );
 
             let long_content_mem = memories.iter().find(|m| m.memory.id == id_long_content);
-            assert!(long_content_mem.is_some(), "long content memory should be in export");
+            assert!(
+                long_content_mem.is_some(),
+                "long content memory should be in export"
+            );
             assert_eq!(
                 long_content_mem.unwrap().memory.content.len(),
                 100_000,
@@ -424,7 +447,9 @@ fn test_empty_and_null_inputs() {
         },
     );
     match &resp {
-        Response::Ok { data: ResponseData::Stored { id } } => {
+        Response::Ok {
+            data: ResponseData::Stored { id },
+        } => {
             assert!(!id.is_empty(), "should store even with empty title");
         }
         other => panic!("expected Stored for empty title, got: {other:?}"),
@@ -444,7 +469,9 @@ fn test_empty_and_null_inputs() {
         },
     );
     match &resp {
-        Response::Ok { data: ResponseData::Stored { id } } => {
+        Response::Ok {
+            data: ResponseData::Stored { id },
+        } => {
             assert!(!id.is_empty(), "should store even with empty content");
         }
         other => panic!("expected Stored for empty content, got: {other:?}"),
@@ -456,12 +483,7 @@ fn test_empty_and_null_inputs() {
     assert_eq!(results.len(), 0, "empty query should return 0 results");
 
     // Forget with empty id — should return error (no such memory)
-    let resp = handle_request(
-        &mut state,
-        Request::Forget {
-            id: "".into(),
-        },
-    );
+    let resp = handle_request(&mut state, Request::Forget { id: "".into() });
     match resp {
         Response::Error { message } => {
             assert!(
@@ -490,22 +512,24 @@ fn test_empty_and_null_inputs() {
     }
 
     // BlastRadius with empty file — should return empty result
-    let resp = handle_request(
-        &mut state,
-        Request::BlastRadius {
-            file: "".into(),
-        },
-    );
+    let resp = handle_request(&mut state, Request::BlastRadius { file: "".into() });
     match resp {
         Response::Ok {
-            data: ResponseData::BlastRadius {
-                decisions,
-                files_affected,
-                ..
-            },
+            data:
+                ResponseData::BlastRadius {
+                    decisions,
+                    files_affected,
+                    ..
+                },
         } => {
-            assert!(decisions.is_empty(), "empty file blast radius should have no decisions");
-            assert!(files_affected.is_empty(), "empty file blast radius should have no affected files");
+            assert!(
+                decisions.is_empty(),
+                "empty file blast radius should have no decisions"
+            );
+            assert!(
+                files_affected.is_empty(),
+                "empty file blast radius should have no affected files"
+            );
         }
         other => panic!("expected BlastRadius for empty file, got: {other:?}"),
     }
@@ -526,7 +550,10 @@ fn test_special_characters_in_fields() {
         "Content with\nnewlines\tand\ttabs",
         None,
     );
-    assert!(!id_special.is_empty(), "should store memory with special chars in title");
+    assert!(
+        !id_special.is_empty(),
+        "should store memory with special chars in title"
+    );
 
     // Title with null bytes — Rust strings can't contain \0 in str, but can in content
     // Actually Rust &str cannot have interior null bytes, so we test what we can:
@@ -538,7 +565,10 @@ fn test_special_characters_in_fields() {
         "Content with\x07bell\x08backspace",
         None,
     );
-    assert!(!id_control.is_empty(), "should store memory with control chars");
+    assert!(
+        !id_control.is_empty(),
+        "should store memory with control chars"
+    );
 
     // Tags with special characters
     let id_tags = remember(
@@ -554,7 +584,10 @@ fn test_special_characters_in_fields() {
             "tag with spaces".into(),
         ]),
     );
-    assert!(!id_tags.is_empty(), "should store memory with special-char tags");
+    assert!(
+        !id_tags.is_empty(),
+        "should store memory with special-char tags"
+    );
 
     // Recall with FTS5 operators — should not crash
     let fts5_operator_queries = [
@@ -592,7 +625,9 @@ fn test_special_characters_in_fields() {
             data: ResponseData::Export { memories, .. },
         } => {
             assert!(
-                memories.iter().any(|m| m.memory.title.contains("Line1\nLine2")),
+                memories
+                    .iter()
+                    .any(|m| m.memory.title.contains("Line1\nLine2")),
                 "newline in title should be preserved"
             );
             assert!(
@@ -603,9 +638,18 @@ fn test_special_characters_in_fields() {
             let tagged = memories.iter().find(|m| m.memory.title == "Tagged memory");
             assert!(tagged.is_some(), "tagged memory should be in export");
             let tags = &tagged.unwrap().memory.tags;
-            assert!(tags.contains(&"tag-with-dash".to_string()), "dash tag preserved");
-            assert!(tags.contains(&"tag.with.dots".to_string()), "dots tag preserved");
-            assert!(tags.contains(&"tag/with/slashes".to_string()), "slashes tag preserved");
+            assert!(
+                tags.contains(&"tag-with-dash".to_string()),
+                "dash tag preserved"
+            );
+            assert!(
+                tags.contains(&"tag.with.dots".to_string()),
+                "dots tag preserved"
+            );
+            assert!(
+                tags.contains(&"tag/with/slashes".to_string()),
+                "slashes tag preserved"
+            );
         }
         other => panic!("expected Export response, got: {other:?}"),
     }
@@ -669,7 +713,10 @@ fn test_duplicate_handling() {
             },
         } => {
             assert_eq!(decisions, 1, "should still have 1 decision");
-            assert_eq!(lessons, 1, "should have 1 lesson with same title but different type");
+            assert_eq!(
+                lessons, 1,
+                "should have 1 lesson with same title but different type"
+            );
         }
         other => panic!("expected Health response, got: {other:?}"),
     }
@@ -722,14 +769,21 @@ fn test_import_malformed_data() {
     );
     match resp {
         Response::Ok {
-            data: ResponseData::Import {
-                memories_imported,
-                skipped,
-                ..
-            },
+            data:
+                ResponseData::Import {
+                    memories_imported,
+                    skipped,
+                    ..
+                },
         } => {
-            assert_eq!(memories_imported, 0, "malformed memories should not be imported");
-            assert!(skipped > 0, "malformed memories should be skipped, skipped={skipped}");
+            assert_eq!(
+                memories_imported, 0,
+                "malformed memories should not be imported"
+            );
+            assert!(
+                skipped > 0,
+                "malformed memories should be skipped, skipped={skipped}"
+            );
         }
         other => panic!("expected Import response for partial data, got: {other:?}"),
     }
@@ -788,14 +842,18 @@ fn test_import_malformed_data() {
     );
     match resp {
         Response::Ok {
-            data: ResponseData::Import {
-                memories_imported,
-                files_imported,
-                symbols_imported,
-                skipped,
-            },
+            data:
+                ResponseData::Import {
+                    memories_imported,
+                    files_imported,
+                    symbols_imported,
+                    skipped,
+                },
         } => {
-            assert_eq!(memories_imported, 0, "empty import should import 0 memories");
+            assert_eq!(
+                memories_imported, 0,
+                "empty import should import 0 memories"
+            );
             assert_eq!(files_imported, 0, "empty import should import 0 files");
             assert_eq!(symbols_imported, 0, "empty import should import 0 symbols");
             assert_eq!(skipped, 0, "empty import should skip 0");

@@ -54,8 +54,12 @@ pub fn import_v1_cache(conn: &Connection, cache_path: &str) -> Result<(usize, us
             continue;
         }
 
-        let memory = Memory::new(memory_type, title, entry.content.clone().unwrap_or_default())
-            .with_confidence(entry.confidence.unwrap_or(0.5));
+        let memory = Memory::new(
+            memory_type,
+            title,
+            entry.content.clone().unwrap_or_default(),
+        )
+        .with_confidence(entry.confidence.unwrap_or(0.5));
 
         match ops::remember(conn, &memory) {
             Ok(()) => imported += 1,
@@ -115,8 +119,7 @@ mod tests {
         tmpfile.write_all(cache_json.as_bytes()).unwrap();
         tmpfile.flush().unwrap();
 
-        let (imported, skipped) =
-            import_v1_cache(&conn, tmpfile.path().to_str().unwrap()).unwrap();
+        let (imported, skipped) = import_v1_cache(&conn, tmpfile.path().to_str().unwrap()).unwrap();
 
         assert_eq!(imported, 2);
         assert_eq!(skipped, 1);
@@ -139,8 +142,7 @@ mod tests {
         tmpfile.write_all(cache_json.as_bytes()).unwrap();
         tmpfile.flush().unwrap();
 
-        let (imported, skipped) =
-            import_v1_cache(&conn, tmpfile.path().to_str().unwrap()).unwrap();
+        let (imported, skipped) = import_v1_cache(&conn, tmpfile.path().to_str().unwrap()).unwrap();
 
         assert_eq!(imported, 0);
         assert_eq!(skipped, 0);

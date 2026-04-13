@@ -8,7 +8,12 @@ pub async fn sync_export(project: Option<String>, since: Option<String>) {
 
     match client::send(&request).await {
         Ok(Response::Ok {
-            data: ResponseData::SyncExported { lines, count, node_id },
+            data:
+                ResponseData::SyncExported {
+                    lines,
+                    count,
+                    node_id,
+                },
         }) => {
             // Output NDJSON to stdout (for piping to SSH)
             for line in &lines {
@@ -52,7 +57,12 @@ pub async fn sync_import() {
 
     match client::send(&request).await {
         Ok(Response::Ok {
-            data: ResponseData::SyncImported { imported, conflicts, skipped },
+            data:
+                ResponseData::SyncImported {
+                    imported,
+                    conflicts,
+                    skipped,
+                },
         }) => {
             println!("Sync import complete:");
             println!("  Imported:  {imported}");
@@ -123,7 +133,12 @@ pub async fn sync_pull(host: String, project: Option<String>) {
 
     match client::send(&request).await {
         Ok(Response::Ok {
-            data: ResponseData::SyncImported { imported, conflicts, skipped },
+            data:
+                ResponseData::SyncImported {
+                    imported,
+                    conflicts,
+                    skipped,
+                },
         }) => {
             println!("Sync pull complete:");
             println!("  Imported:  {imported}");
@@ -158,7 +173,12 @@ pub async fn sync_push(host: String, project: Option<String>) {
 
     let lines = match client::send(&request).await {
         Ok(Response::Ok {
-            data: ResponseData::SyncExported { lines, count, node_id: _ },
+            data:
+                ResponseData::SyncExported {
+                    lines,
+                    count,
+                    node_id: _,
+                },
         }) => {
             eprintln!("Exporting {count} entries...");
             lines
@@ -252,24 +272,20 @@ pub async fn sync_conflicts() {
             for (i, pair) in conflicts.iter().enumerate() {
                 println!("\n{}. {} [{}]", i + 1, pair.title, pair.memory_type);
 
-                println!("  LOCAL  (node: {}, hlc: {})",
-                    pair.local.node_id,
-                    pair.local.hlc_timestamp,
+                println!(
+                    "  LOCAL  (node: {}, hlc: {})",
+                    pair.local.node_id, pair.local.hlc_timestamp,
                 );
                 println!("    ID: {}", pair.local.id);
-                println!("    Content: {}",
-                    truncate(&pair.local.content, 80),
-                );
+                println!("    Content: {}", truncate(&pair.local.content, 80),);
 
                 if !pair.remote.id.is_empty() {
-                    println!("  REMOTE (node: {}, hlc: {})",
-                        pair.remote.node_id,
-                        pair.remote.hlc_timestamp,
+                    println!(
+                        "  REMOTE (node: {}, hlc: {})",
+                        pair.remote.node_id, pair.remote.hlc_timestamp,
                     );
                     println!("    ID: {}", pair.remote.id);
-                    println!("    Content: {}",
-                        truncate(&pair.remote.content, 80),
-                    );
+                    println!("    Content: {}", truncate(&pair.remote.content, 80),);
                 }
 
                 println!("\n  Resolve: forge-next sync-resolve <id>");
@@ -298,7 +314,11 @@ pub async fn sync_resolve(id: String) {
 
     match client::send(&request).await {
         Ok(Response::Ok {
-            data: ResponseData::SyncResolved { id: resolved_id, resolved },
+            data:
+                ResponseData::SyncResolved {
+                    id: resolved_id,
+                    resolved,
+                },
         }) => {
             if resolved {
                 println!("Conflict resolved. Kept: {resolved_id}");

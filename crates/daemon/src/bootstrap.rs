@@ -38,14 +38,22 @@ fn fnv1a(data: &[u8]) -> u64 {
 pub fn compute_content_hash(path: &std::path::Path) -> Result<String, String> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let metadata = f.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
+    let metadata = f
+        .metadata()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let size = metadata.len();
-    let mtime = metadata.modified()
-        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+    let mtime = metadata
+        .modified()
+        .map(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        })
         .unwrap_or(0);
     let read_len = 4096.min(size as usize);
     let mut buf = vec![0u8; read_len];
-    f.read_exact(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
+    f.read_exact(&mut buf)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let hash = format!("{:x}-{}-{}", fnv1a(&buf), size, mtime);
     Ok(hash)
 }
@@ -67,10 +75,7 @@ pub fn scan_transcripts(adapters: &[Box<dyn AgentAdapter>]) -> Vec<(PathBuf, Str
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[bootstrap] WARN: failed to walk {}: {e}",
-                        dir.display()
-                    );
+                    eprintln!("[bootstrap] WARN: failed to walk {}: {e}", dir.display());
                 }
             }
         }
@@ -112,7 +117,11 @@ fn walk_dir_inner(dir: &PathBuf, ext: &str, files: &mut Vec<PathBuf>) {
 
 /// Check if a transcript needs processing (new or changed since last time).
 /// Returns (needs_work, last_offset).
-pub fn needs_processing(conn: &Connection, path: &std::path::Path, current_hash: &str) -> (bool, usize) {
+pub fn needs_processing(
+    conn: &Connection,
+    path: &std::path::Path,
+    current_hash: &str,
+) -> (bool, usize) {
     let path_str = path.to_string_lossy();
     match conn.query_row(
         "SELECT content_hash, offset_processed FROM transcript_log WHERE path = ?1",
@@ -218,26 +227,29 @@ pub fn extract_project_from_path(path: &std::path::Path) -> Option<String> {
 /// Returns (content_string, file_offset_of_content_start).
 /// For small files: returns (full_content, 0).
 /// For large files: returns (last 10MB from first complete line, byte_offset).
-const BOOTSTRAP_MAX_FULL_READ: u64 = 10_000_000;     // 10MB — full read
-const BOOTSTRAP_MAX_TAIL_READ: usize = 10_000_000;    // 10MB tail
-const BOOTSTRAP_MAX_FILE_SIZE: u64 = 200_000_000;     // 200MB — skip
+const BOOTSTRAP_MAX_FULL_READ: u64 = 10_000_000; // 10MB — full read
+const BOOTSTRAP_MAX_TAIL_READ: usize = 10_000_000; // 10MB tail
+const BOOTSTRAP_MAX_FILE_SIZE: u64 = 200_000_000; // 200MB — skip
 
-fn read_transcript_content(path: &std::path::Path, file_size: u64) -> Result<(String, usize), String> {
+fn read_transcript_content(
+    path: &std::path::Path,
+    file_size: u64,
+) -> Result<(String, usize), String> {
     if file_size > BOOTSTRAP_MAX_FILE_SIZE {
-        return Err(format!("file too large ({file_size} bytes > 200MB), skipping"));
+        return Err(format!(
+            "file too large ({file_size} bytes > 200MB), skipping"
+        ));
     }
 
     if file_size <= BOOTSTRAP_MAX_FULL_READ {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("read error: {e}"))?;
+        let content = std::fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
         return Ok((content, 0));
     }
 
     // Tail read: last 10MB
     use std::io::{Read, Seek, SeekFrom};
     let tail_start = (file_size as usize).saturating_sub(BOOTSTRAP_MAX_TAIL_READ);
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("open error: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("open error: {e}"))?;
     file.seek(SeekFrom::Start(tail_start as u64))
         .map_err(|e| format!("seek error: {e}"))?;
     let mut buf = Vec::with_capacity(BOOTSTRAP_MAX_TAIL_READ);
@@ -250,7 +262,11 @@ fn read_transcript_content(path: &std::path::Path, file_size: u64) -> Result<(St
     }
 
     // Find first newline for complete JSONL line boundary
-    let mut line_start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+    let mut line_start = buf
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     // Skip UTF-8 continuation bytes
     while line_start < buf.len() && (buf[line_start] & 0xC0) == 0x80 {
         line_start += 1;
@@ -288,9 +304,7 @@ fn create_transcript_summary(
         .ok()
         .and_then(|m| m.modified().ok())
         .map(|t| {
-            let duration = t
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
+            let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
             let secs = duration.as_secs();
             // Simple date: YYYY-MM-DD approximation
             let days = secs / 86400;
@@ -314,7 +328,11 @@ fn create_transcript_summary(
         "Session: {} ({} turns, {})",
         project.unwrap_or("unknown"),
         turns,
-        if has_tools { "with tools" } else { "conversation" }
+        if has_tools {
+            "with tools"
+        } else {
+            "conversation"
+        }
     );
 
     let content = format!(
@@ -364,9 +382,10 @@ pub fn run_bootstrap(
             // Match by: exact name, or last path segment matches.
             // E.g. filter "hive-platform" matches project "hive-finance-hive-production-hive-platform"
             // but "hive" does NOT match "hive-finance-hive-production" (internal segment, not suffix).
-            let matches = project.as_deref().map(|p| {
-                p == filter || p.ends_with(&format!("-{filter}"))
-            }).unwrap_or(false);
+            let matches = project
+                .as_deref()
+                .map(|p| p == filter || p.ends_with(&format!("-{filter}")))
+                .unwrap_or(false);
             if !matches {
                 result.files_skipped += 1;
                 continue;
@@ -551,11 +570,23 @@ mod tests {
         let path = PathBuf::from("/tmp/test-bootstrap-changed.jsonl");
 
         // Insert a log entry with old hash
-        update_log(&conn, &path, "claude-code", Some("test"), 100, 50, "old-hash", 2);
+        update_log(
+            &conn,
+            &path,
+            "claude-code",
+            Some("test"),
+            100,
+            50,
+            "old-hash",
+            2,
+        );
 
         let (needs, offset) = needs_processing(&conn, &path, "new-hash");
         assert!(needs, "changed file should need processing");
-        assert_eq!(offset, 0, "should reset offset to 0 when hash changes (file may be rewritten)");
+        assert_eq!(
+            offset, 0,
+            "should reset offset to 0 when hash changes (file may be rewritten)"
+        );
     }
 
     #[test]
@@ -601,7 +632,16 @@ mod tests {
         let path = PathBuf::from("/tmp/test-log-roundtrip.jsonl");
         let hash = "deadbeef-1024";
 
-        update_log(&conn, &path, "claude-code", Some("forge"), 1024, 512, hash, 5);
+        update_log(
+            &conn,
+            &path,
+            "claude-code",
+            Some("forge"),
+            1024,
+            512,
+            hash,
+            5,
+        );
 
         // Query back
         let (stored_hash, offset): (String, usize) = conn
@@ -636,8 +676,16 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
 
         // Create test transcript files
-        std::fs::write(sub.join("session1.jsonl"), r#"{"type":"human","message":{"role":"user","content":"hello"}}"#).unwrap();
-        std::fs::write(sub.join("session2.jsonl"), r#"{"type":"human","message":{"role":"user","content":"world"}}"#).unwrap();
+        std::fs::write(
+            sub.join("session1.jsonl"),
+            r#"{"type":"human","message":{"role":"user","content":"hello"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sub.join("session2.jsonl"),
+            r#"{"type":"human","message":{"role":"user","content":"world"}}"#,
+        )
+        .unwrap();
         std::fs::write(sub.join("not-a-transcript.txt"), "ignore me").unwrap();
 
         // Create a minimal adapter that watches this dir
@@ -645,19 +693,33 @@ mod tests {
             dir: PathBuf,
         }
         impl AgentAdapter for TestAdapter {
-            fn name(&self) -> &str { "test" }
-            fn watch_dirs(&self) -> Vec<PathBuf> { vec![self.dir.clone()] }
-            fn matches(&self, _path: &std::path::Path) -> bool { true }
-            fn file_extension(&self) -> &str { "jsonl" }
-            fn parse(&self, _content: &str) -> Vec<ConversationChunk> { vec![] }
-            fn parse_incremental(&self, _content: &str, _last_offset: usize) -> (Vec<ConversationChunk>, usize) {
+            fn name(&self) -> &str {
+                "test"
+            }
+            fn watch_dirs(&self) -> Vec<PathBuf> {
+                vec![self.dir.clone()]
+            }
+            fn matches(&self, _path: &std::path::Path) -> bool {
+                true
+            }
+            fn file_extension(&self) -> &str {
+                "jsonl"
+            }
+            fn parse(&self, _content: &str) -> Vec<ConversationChunk> {
+                vec![]
+            }
+            fn parse_incremental(
+                &self,
+                _content: &str,
+                _last_offset: usize,
+            ) -> (Vec<ConversationChunk>, usize) {
                 (vec![], 0)
             }
         }
 
-        let adapters: Vec<Box<dyn AgentAdapter>> = vec![
-            Box::new(TestAdapter { dir: dir.path().to_path_buf() }),
-        ];
+        let adapters: Vec<Box<dyn AgentAdapter>> = vec![Box::new(TestAdapter {
+            dir: dir.path().to_path_buf(),
+        })];
         let files = scan_transcripts(&adapters);
         assert_eq!(files.len(), 2, "should find exactly 2 .jsonl files");
 
@@ -690,12 +752,26 @@ mod tests {
             dir: PathBuf,
         }
         impl AgentAdapter for TestAdapter {
-            fn name(&self) -> &str { "test" }
-            fn watch_dirs(&self) -> Vec<PathBuf> { vec![self.dir.clone()] }
-            fn matches(&self, _path: &std::path::Path) -> bool { true }
-            fn file_extension(&self) -> &str { "jsonl" }
-            fn parse(&self, _content: &str) -> Vec<ConversationChunk> { vec![] }
-            fn parse_incremental(&self, content: &str, last_offset: usize) -> (Vec<ConversationChunk>, usize) {
+            fn name(&self) -> &str {
+                "test"
+            }
+            fn watch_dirs(&self) -> Vec<PathBuf> {
+                vec![self.dir.clone()]
+            }
+            fn matches(&self, _path: &std::path::Path) -> bool {
+                true
+            }
+            fn file_extension(&self) -> &str {
+                "jsonl"
+            }
+            fn parse(&self, _content: &str) -> Vec<ConversationChunk> {
+                vec![]
+            }
+            fn parse_incremental(
+                &self,
+                content: &str,
+                last_offset: usize,
+            ) -> (Vec<ConversationChunk>, usize) {
                 // Simple: return a chunk for each line from last_offset
                 let relevant = &content[last_offset..];
                 let mut chunks = Vec::new();
@@ -704,7 +780,11 @@ mod tests {
                         chunks.push(ConversationChunk {
                             id: format!("chunk-{i}"),
                             session_id: "test-session".to_string(),
-                            role: if i % 2 == 0 { "user".to_string() } else { "assistant".to_string() },
+                            role: if i % 2 == 0 {
+                                "user".to_string()
+                            } else {
+                                "assistant".to_string()
+                            },
                             content: line.to_string(),
                             has_tool_use: false,
                             timestamp: "2026-04-04T12:00:00Z".to_string(),
@@ -716,22 +796,37 @@ mod tests {
             }
         }
 
-        let adapters: Vec<Box<dyn AgentAdapter>> = vec![
-            Box::new(TestAdapter { dir: dir.path().to_path_buf() }),
-        ];
+        let adapters: Vec<Box<dyn AgentAdapter>> = vec![Box::new(TestAdapter {
+            dir: dir.path().to_path_buf(),
+        })];
 
         // First run: should process both files
         let result = run_bootstrap(&conn, &adapters, None);
-        assert_eq!(result.files_processed, 2, "first run should process 2 files");
+        assert_eq!(
+            result.files_processed, 2,
+            "first run should process 2 files"
+        );
         assert_eq!(result.files_skipped, 0, "first run should skip 0 files");
-        assert!(result.memories_extracted >= 2, "should extract at least 2 memories (one per file)");
+        assert!(
+            result.memories_extracted >= 2,
+            "should extract at least 2 memories (one per file)"
+        );
         assert_eq!(result.errors, 0);
 
         // Second run: should skip both (unchanged)
         let result2 = run_bootstrap(&conn, &adapters, None);
-        assert_eq!(result2.files_processed, 0, "second run should process 0 files");
-        assert_eq!(result2.files_skipped, 2, "second run should skip both files");
-        assert_eq!(result2.memories_extracted, 0, "second run should extract 0 memories");
+        assert_eq!(
+            result2.files_processed, 0,
+            "second run should process 0 files"
+        );
+        assert_eq!(
+            result2.files_skipped, 2,
+            "second run should skip both files"
+        );
+        assert_eq!(
+            result2.memories_extracted, 0,
+            "second run should extract 0 memories"
+        );
         assert_eq!(result2.errors, 0);
     }
 
@@ -838,12 +933,21 @@ mod tests {
         assert!(file_size > BOOTSTRAP_MAX_FULL_READ, "file should be >10MB");
 
         let (content, offset) = read_transcript_content(&path, file_size).unwrap();
-        assert!(offset > 1_000_000, "tail read offset should be past the prefix");
-        assert!(content.contains("important decision"), "tail should contain the recent content");
+        assert!(
+            offset > 1_000_000,
+            "tail read offset should be past the prefix"
+        );
+        assert!(
+            content.contains("important decision"),
+            "tail should contain the recent content"
+        );
         assert!(content.len() < 11_000_000, "should not read entire file");
         // Verify offset is approximately tail_start + line boundary
         let expected_min = (file_size as usize).saturating_sub(BOOTSTRAP_MAX_TAIL_READ);
-        assert!(offset >= expected_min, "offset should be >= tail_start ({expected_min})");
+        assert!(
+            offset >= expected_min,
+            "offset should be >= tail_start ({expected_min})"
+        );
     }
 
     #[test]
@@ -858,9 +962,15 @@ mod tests {
 
         // Internal segment should NOT match
         let p = "hive-finance-hive-production";
-        assert!(!p.ends_with("-hive"), "internal 'hive' should not match suffix '-hive'");
+        assert!(
+            !p.ends_with("-hive"),
+            "internal 'hive' should not match suffix '-hive'"
+        );
         // But "production" DOES match as suffix
-        assert!(p.ends_with("-production"), "production is the actual suffix");
+        assert!(
+            p.ends_with("-production"),
+            "production is the actual suffix"
+        );
     }
 
     #[test]

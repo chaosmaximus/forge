@@ -11,13 +11,11 @@ use zerocopy::AsBytes;
 pub fn init_sqlite_vec() {
     use std::sync::Once;
     static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        unsafe {
-            #[allow(clippy::missing_transmute_annotations)]
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+    INIT.call_once(|| unsafe {
+        #[allow(clippy::missing_transmute_annotations)]
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
     });
 }
 
@@ -70,11 +68,7 @@ pub fn has_embedding(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 /// Count total embeddings stored.
 pub fn count_embeddings(conn: &Connection) -> rusqlite::Result<usize> {
     // vec0 tables support count(*) via a shadow table
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM memory_vec",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM memory_vec", [], |row| row.get(0))?;
     Ok(count as usize)
 }
 
@@ -95,18 +89,23 @@ pub fn create_code_vec_table(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE VIRTUAL TABLE IF NOT EXISTS code_vec USING vec0(
             id TEXT PRIMARY KEY,
             embedding float[768] distance_metric=cosine
-        );"
+        );",
     )
 }
 
 /// Store a code embedding for a symbol/file ID.
 /// Idempotent: deletes any existing embedding for this ID first.
 /// Validates embedding dimension is 768.
-pub fn store_code_embedding(conn: &Connection, id: &str, embedding: &[f32]) -> rusqlite::Result<()> {
+pub fn store_code_embedding(
+    conn: &Connection,
+    id: &str,
+    embedding: &[f32],
+) -> rusqlite::Result<()> {
     if embedding.len() != 768 {
-        return Err(rusqlite::Error::InvalidParameterName(
-            format!("code embedding must be 768-dim, got {}", embedding.len()),
-        ));
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "code embedding must be 768-dim, got {}",
+            embedding.len()
+        )));
     }
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM code_vec WHERE id = ?1", params![id])?;
@@ -138,11 +137,7 @@ pub fn search_code_vectors(
 
 /// Count total code embeddings stored.
 pub fn count_code_embeddings(conn: &Connection) -> rusqlite::Result<i64> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM code_vec",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM code_vec", [], |row| row.get(0))?;
     Ok(count)
 }
 
@@ -337,15 +332,19 @@ mod tests {
 
         // Hybrid: vector KNN JOIN to memory table
         let query = make_embedding(768, 1.0);
-        let mut stmt = conn.prepare(
-            "SELECT m.id, m.title, v.distance
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.id, m.title, v.distance
              FROM memory_vec v
              JOIN memory m ON m.id = v.id
              WHERE v.embedding MATCH ?1 AND k = 5
-             AND m.status = 'active'"
-        ).unwrap();
+             AND m.status = 'active'",
+            )
+            .unwrap();
         let results: Vec<(String, String, f64)> = stmt
-            .query_map([query.as_bytes()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .query_map([query.as_bytes()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();

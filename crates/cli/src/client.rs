@@ -1,6 +1,6 @@
 use crate::transport::{self, Transport};
-use forge_core::protocol::{Request, Response};
 use forge_core::default_socket_path;
+use forge_core::protocol::{Request, Response};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::{timeout, Duration};
@@ -93,10 +93,14 @@ pub async fn connect() -> Result<UnixStream, String> {
 
     // Socket not available — check for stale socket and clean up before starting daemon
     if std::path::Path::new(&socket_path).exists() {
-        eprintln!("[cli] WARN: stale socket detected at {socket_path} — removing before daemon start");
+        eprintln!(
+            "[cli] WARN: stale socket detected at {socket_path} — removing before daemon start"
+        );
         if let Err(e) = std::fs::remove_file(&socket_path) {
             eprintln!("[cli] ERROR: failed to remove stale socket {socket_path}: {e}");
-            return Err(format!("stale socket at {socket_path} could not be removed: {e}"));
+            return Err(format!(
+                "stale socket at {socket_path} could not be removed: {e}"
+            ));
         }
     }
 
@@ -107,7 +111,14 @@ pub async fn connect() -> Result<UnixStream, String> {
 
     // Build env vars to forward
     let mut envs: Vec<(String, String)> = Vec::new();
-    for key in &["FORGE_PROJECT", "FORGE_PROJECT_DIR", "FORGE_DB", "FORGE_SOCKET", "HOME", "PATH"] {
+    for key in &[
+        "FORGE_PROJECT",
+        "FORGE_PROJECT_DIR",
+        "FORGE_DB",
+        "FORGE_SOCKET",
+        "HOME",
+        "PATH",
+    ] {
         if let Ok(v) = std::env::var(key) {
             envs.push((key.to_string(), v));
         }
@@ -120,7 +131,8 @@ pub async fn connect() -> Result<UnixStream, String> {
         .append(true)
         .open(&log_path)
         .map_err(|e| format!("failed to open daemon log {log_path}: {e}"))?;
-    let log_err = log_file.try_clone()
+    let log_err = log_file
+        .try_clone()
         .map_err(|e| format!("failed to clone log file: {e}"))?;
 
     let mut cmd = std::process::Command::new(&daemon_path);
@@ -141,7 +153,9 @@ pub async fn connect() -> Result<UnixStream, String> {
             cmd.pre_exec(|| {
                 // Create new session — daemon won't be killed when parent terminal closes
                 // setsid() is a direct libc call, no crate needed
-                extern "C" { fn setsid() -> i32; }
+                extern "C" {
+                    fn setsid() -> i32;
+                }
                 setsid();
                 Ok(())
             });

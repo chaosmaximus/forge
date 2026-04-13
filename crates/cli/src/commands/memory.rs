@@ -17,7 +17,14 @@ fn parse_memory_type(s: &str) -> Result<MemoryType, String> {
 }
 
 /// Search memories (hybrid BM25 + vector + graph).
-pub async fn recall(query: String, type_filter: Option<String>, project: Option<String>, limit: usize, layer: Option<String>, since: Option<String>) {
+pub async fn recall(
+    query: String,
+    type_filter: Option<String>,
+    project: Option<String>,
+    limit: usize,
+    layer: Option<String>,
+    since: Option<String>,
+) {
     let memory_type = match type_filter {
         Some(t) => match parse_memory_type(&t) {
             Ok(mt) => Some(mt),
@@ -46,7 +53,10 @@ pub async fn recall(query: String, type_filter: Option<String>, project: Option<
                 println!("No memories found.");
                 return;
             }
-            println!("{count} memor{} found:\n", if count == 1 { "y" } else { "ies" });
+            println!(
+                "{count} memor{} found:\n",
+                if count == 1 { "y" } else { "ies" }
+            );
             for (i, r) in results.iter().enumerate() {
                 println!(
                     "  [{}] {title} (score: {score:.3}, type: {mtype:?})",

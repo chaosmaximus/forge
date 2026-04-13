@@ -295,7 +295,9 @@ async fn test_pty_session_count_and_limit() {
     // Create sessions up to the limit
     let mut ids = Vec::new();
     for _ in 0..8 {
-        let (id, _rx) = mgr.create(80, 24, None).expect("create should succeed within limit");
+        let (id, _rx) = mgr
+            .create(80, 24, None)
+            .expect("create should succeed within limit");
         ids.push(id);
     }
     assert_eq!(mgr.session_count(), 8);

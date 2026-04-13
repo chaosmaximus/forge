@@ -44,10 +44,7 @@ fn extract_content(content: &serde_json::Value) -> (String, bool) {
             let mut has_tool_use = false;
 
             for block in blocks {
-                let block_type = block
-                    .get("type")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("");
+                let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
                 match block_type {
                     "output_text" | "input_text" | "text" => {
@@ -152,7 +149,11 @@ impl AgentAdapter for CodexAdapter {
         last_offset: usize,
     ) -> (Vec<ConversationChunk>, usize) {
         if last_offset > content.len() {
-            eprintln!("[codex] file truncated (offset {} > len {}), resetting", last_offset, content.len());
+            eprintln!(
+                "[codex] file truncated (offset {} > len {}), resetting",
+                last_offset,
+                content.len()
+            );
             return self.parse_incremental(content, 0);
         }
         if last_offset == content.len() {
@@ -195,9 +196,8 @@ mod tests {
         assert!(adapter.matches(valid));
 
         // Should reject non-jsonl files under sessions dir
-        let wrong_ext = std::path::Path::new(
-            "/home/testuser/.codex/sessions/2026/04/03/rollout-1234-abcd.txt",
-        );
+        let wrong_ext =
+            std::path::Path::new("/home/testuser/.codex/sessions/2026/04/03/rollout-1234-abcd.txt");
         assert!(!adapter.matches(wrong_ext));
 
         // Should reject .jsonl outside sessions dir (e.g. Claude paths)
@@ -264,7 +264,10 @@ mod tests {
 "#;
 
         let chunks = parse_codex_transcript(transcript);
-        assert!(chunks.is_empty(), "session_meta and event_msg should be skipped");
+        assert!(
+            chunks.is_empty(),
+            "session_meta and event_msg should be skipped"
+        );
     }
 
     #[test]

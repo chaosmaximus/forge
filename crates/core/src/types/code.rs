@@ -14,7 +14,7 @@ pub struct CodeFile {
 pub struct CodeSymbol {
     pub id: String,
     pub name: String,
-    pub kind: String,        // "function" | "class" | "method"
+    pub kind: String, // "function" | "class" | "method"
     pub file_path: String,
     pub line_start: usize,
     pub line_end: Option<usize>,
@@ -89,7 +89,8 @@ mod tests {
     fn test_v1_index_symbol_parse_minimal() {
         // V1 symbols may omit optional fields
         let ndjson_line = r#"{"kind":"class","id":"Foo","name":"Foo","file_path":"src/foo.py"}"#;
-        let sym: V1IndexSymbol = serde_json::from_str(ndjson_line).expect("parse minimal V1IndexSymbol");
+        let sym: V1IndexSymbol =
+            serde_json::from_str(ndjson_line).expect("parse minimal V1IndexSymbol");
 
         assert_eq!(sym.kind, "class");
         assert_eq!(sym.name, "Foo");

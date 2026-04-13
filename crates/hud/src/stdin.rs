@@ -65,7 +65,8 @@ pub struct RateLimit {
 
 impl StdinData {
     pub fn model_name(&self) -> String {
-        self.model.as_ref()
+        self.model
+            .as_ref()
             .and_then(|m| m.display_name.as_ref())
             .cloned()
             .unwrap_or_else(|| "Claude".to_string())
@@ -93,14 +94,16 @@ impl StdinData {
     }
 
     pub fn rate_5h(&self) -> f64 {
-        self.rate_limits.as_ref()
+        self.rate_limits
+            .as_ref()
             .and_then(|r| r.five_hour.as_ref())
             .and_then(|r| r.used_percentage)
             .unwrap_or(0.0)
     }
 
     pub fn rate_7d(&self) -> f64 {
-        self.rate_limits.as_ref()
+        self.rate_limits
+            .as_ref()
             .and_then(|r| r.seven_day.as_ref())
             .and_then(|r| r.used_percentage)
             .unwrap_or(0.0)
@@ -124,7 +127,10 @@ impl StdinData {
 
     /// Detect plan name from environment. API key present -> "API", else "Max".
     pub fn plan_name(&self) -> &'static str {
-        if std::env::var("ANTHROPIC_API_KEY").map(|v| !v.is_empty()).unwrap_or(false) {
+        if std::env::var("ANTHROPIC_API_KEY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
             "API"
         } else {
             "Max"
@@ -133,14 +139,16 @@ impl StdinData {
 
     /// Epoch seconds when 5h rate limit resets
     pub fn rate_5h_resets_at(&self) -> Option<f64> {
-        self.rate_limits.as_ref()
+        self.rate_limits
+            .as_ref()
             .and_then(|r| r.five_hour.as_ref())
             .and_then(|r| r.resets_at)
     }
 
     /// Epoch seconds when 7d rate limit resets
     pub fn rate_7d_resets_at(&self) -> Option<f64> {
-        self.rate_limits.as_ref()
+        self.rate_limits
+            .as_ref()
             .and_then(|r| r.seven_day.as_ref())
             .and_then(|r| r.resets_at)
     }
@@ -157,7 +165,9 @@ pub fn read_stdin() -> StdinData {
 
 /// Get short git branch name from cwd
 pub fn git_branch(cwd: &str) -> String {
-    if cwd.is_empty() { return String::new(); }
+    if cwd.is_empty() {
+        return String::new();
+    }
     let output = std::process::Command::new("git")
         .args(["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"])
         .output();
@@ -169,7 +179,9 @@ pub fn git_branch(cwd: &str) -> String {
 
 /// Check if git working tree is dirty (uncommitted changes)
 pub fn git_dirty(cwd: &str) -> bool {
-    if cwd.is_empty() { return false; }
+    if cwd.is_empty() {
+        return false;
+    }
     let output = std::process::Command::new("git")
         .args(["-C", cwd, "status", "--porcelain"])
         .output();

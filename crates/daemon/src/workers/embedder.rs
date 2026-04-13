@@ -76,7 +76,11 @@ pub async fn run_embedder(
                         }
                     }
 
-                    eprintln!("[embedder] embedded {inserted}/{} memories ({}ms)", batch.len(), batch_start.elapsed().as_millis());
+                    eprintln!(
+                        "[embedder] embedded {inserted}/{} memories ({}ms)",
+                        batch.len(),
+                        batch_start.elapsed().as_millis()
+                    );
                 }
                 Err(e) => {
                     eprintln!("[embedder] ollama embed failed: {e}, will retry next interval");
@@ -112,7 +116,9 @@ fn get_unembedded_memories(conn: &rusqlite::Connection) -> Vec<(String, String)>
         // Truncate to 4000 chars to stay within nomic-embed-text 2048-token context
         let text = if text.len() > 4000 {
             let mut end = 4000;
-            while !text.is_char_boundary(end) && end > 0 { end -= 1; }
+            while !text.is_char_boundary(end) && end > 0 {
+                end -= 1;
+            }
             text[..end].to_string()
         } else {
             text

@@ -90,11 +90,11 @@ pub fn parse_claude_memory_file(path: &Path) -> Result<Option<Memory>, String> {
 
     // Map Claude memory types to Forge types
     let memory_type = match mem_type.as_str() {
-        "user" => MemoryType::Preference,  // user info -> preference
-        "feedback" => MemoryType::Lesson,  // feedback -> lesson
-        "project" => MemoryType::Decision, // project info -> decision
+        "user" => MemoryType::Preference,   // user info -> preference
+        "feedback" => MemoryType::Lesson,   // feedback -> lesson
+        "project" => MemoryType::Decision,  // project info -> decision
         "reference" => MemoryType::Pattern, // reference -> pattern
-        _ => MemoryType::Lesson,           // default
+        _ => MemoryType::Lesson,            // default
     };
 
     let full_content = if body.is_empty() {
@@ -172,7 +172,8 @@ type: feedback
 
     #[test]
     fn test_parse_project_type() {
-        let content = "---\nname: Forge plugin project\ndescription: v0.1.5 published\ntype: project\n---\n";
+        let content =
+            "---\nname: Forge plugin project\ndescription: v0.1.5 published\ntype: project\n---\n";
         let mut tmp = NamedTempFile::with_suffix(".md").unwrap();
         write!(tmp, "{content}").unwrap();
 
@@ -192,7 +193,8 @@ type: feedback
 
     #[test]
     fn test_parse_reference_type() {
-        let content = "---\nname: API reference\ndescription: REST API docs\ntype: reference\n---\n";
+        let content =
+            "---\nname: API reference\ndescription: REST API docs\ntype: reference\n---\n";
         let mut tmp = NamedTempFile::with_suffix(".md").unwrap();
         write!(tmp, "{content}").unwrap();
 

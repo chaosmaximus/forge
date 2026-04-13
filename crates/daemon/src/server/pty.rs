@@ -59,14 +59,19 @@ impl PtyManager {
     pub fn reap_idle(&mut self) -> usize {
         let timeout = std::time::Duration::from_secs(IDLE_TIMEOUT_SECS);
         let now = std::time::Instant::now();
-        let idle_ids: Vec<u32> = self.sessions
+        let idle_ids: Vec<u32> = self
+            .sessions
             .iter()
             .filter(|(_, s)| now.duration_since(s.last_activity) > timeout)
             .map(|(id, _)| *id)
             .collect();
         let count = idle_ids.len();
         for id in idle_ids {
-            tracing::info!(pty_id = id, "reaping idle PTY session (exceeded {}s timeout)", IDLE_TIMEOUT_SECS);
+            tracing::info!(
+                pty_id = id,
+                "reaping idle PTY session (exceeded {}s timeout)",
+                IDLE_TIMEOUT_SECS
+            );
             self.close(id);
         }
         count

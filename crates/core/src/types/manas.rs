@@ -262,7 +262,8 @@ mod tests {
             detected_at: "2026-04-03 12:00:00".into(),
         };
         let json = serde_json::to_string(&entry).expect("serialize PlatformEntry");
-        let restored: PlatformEntry = serde_json::from_str(&json).expect("deserialize PlatformEntry");
+        let restored: PlatformEntry =
+            serde_json::from_str(&json).expect("deserialize PlatformEntry");
         assert_eq!(entry, restored);
     }
 
@@ -410,7 +411,8 @@ mod tests {
             user_id: None,
         };
         let json = serde_json::to_string(&f).expect("serialize IdentityFacet");
-        let restored: IdentityFacet = serde_json::from_str(&json).expect("deserialize IdentityFacet");
+        let restored: IdentityFacet =
+            serde_json::from_str(&json).expect("deserialize IdentityFacet");
         assert_eq!(f, restored);
     }
 
@@ -433,7 +435,12 @@ mod tests {
 
     #[test]
     fn test_tool_kind_variants() {
-        let kinds = [ToolKind::Cli, ToolKind::Mcp, ToolKind::Builtin, ToolKind::Plugin];
+        let kinds = [
+            ToolKind::Cli,
+            ToolKind::Mcp,
+            ToolKind::Builtin,
+            ToolKind::Plugin,
+        ];
         for kind in &kinds {
             let json = serde_json::to_string(kind).expect("serialize ToolKind");
             let restored: ToolKind = serde_json::from_str(&json).expect("deserialize ToolKind");
@@ -443,7 +450,13 @@ mod tests {
 
     #[test]
     fn test_severity_variants() {
-        let severities = [Severity::Debug, Severity::Info, Severity::Warning, Severity::Error, Severity::Critical];
+        let severities = [
+            Severity::Debug,
+            Severity::Info,
+            Severity::Warning,
+            Severity::Error,
+            Severity::Critical,
+        ];
         for sev in &severities {
             let json = serde_json::to_string(sev).expect("serialize Severity");
             let restored: Severity = serde_json::from_str(&json).expect("deserialize Severity");

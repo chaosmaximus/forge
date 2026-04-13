@@ -139,8 +139,10 @@ fn find_decisions(conn: &Connection, targets: &[String]) -> Vec<(String, String,
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        targets.iter().map(|t| t as &dyn rusqlite::types::ToSql).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = targets
+        .iter()
+        .map(|t| t as &dyn rusqlite::types::ToSql)
+        .collect();
     let result = match stmt.query_map(params.as_slice(), |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -173,8 +175,10 @@ fn find_importers(conn: &Connection, targets: &[String]) -> Vec<String> {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        targets.iter().map(|t| t as &dyn rusqlite::types::ToSql).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = targets
+        .iter()
+        .map(|t| t as &dyn rusqlite::types::ToSql)
+        .collect();
     let result = match stmt.query_map(params.as_slice(), |row| row.get::<_, String>(0)) {
         Ok(rows) => rows
             .filter_map(|r| r.ok())
@@ -206,9 +210,9 @@ fn find_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
             .trim_end_matches(".go");
         let parts: Vec<&str> = stem.split('/').collect();
         let raw = if parts.len() >= 2 {
-            format!("{}::{}", parts[parts.len()-2], parts[parts.len()-1])
+            format!("{}::{}", parts[parts.len() - 2], parts[parts.len() - 1])
         } else if !parts.is_empty() {
-            parts[parts.len()-1].to_string()
+            parts[parts.len() - 1].to_string()
         } else {
             return (0, Vec::new());
         };
@@ -227,9 +231,10 @@ fn find_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
         Ok(s) => s,
         Err(_) => return (0, Vec::new()),
     };
-    let files: Vec<String> = match stmt.query_map(rusqlite::params![file_pattern, module_pattern], |row| {
-        row.get::<_, String>(0)
-    }) {
+    let files: Vec<String> = match stmt
+        .query_map(rusqlite::params![file_pattern, module_pattern], |row| {
+            row.get::<_, String>(0)
+        }) {
         Ok(rows) => rows
             .filter_map(|r| r.ok())
             .map(|s| s.strip_prefix("file:").unwrap_or(&s).to_string())
@@ -256,16 +261,15 @@ fn find_cluster(conn: &Connection, targets: &[String]) -> (Option<String>, Vec<S
            AND from_id IN ({in_clause})
          LIMIT 1"
     );
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        targets.iter().map(|t| t as &dyn rusqlite::types::ToSql).collect();
-    let cluster_id: Option<String> = conn
-        .prepare(&cluster_sql)
-        .ok()
-        .and_then(|mut stmt| {
-            stmt.query_map(params.as_slice(), |row| row.get::<_, String>(0))
-                .ok()
-                .and_then(|mut rows| rows.next().and_then(|r| r.ok()))
-        });
+    let params: Vec<&dyn rusqlite::types::ToSql> = targets
+        .iter()
+        .map(|t| t as &dyn rusqlite::types::ToSql)
+        .collect();
+    let cluster_id: Option<String> = conn.prepare(&cluster_sql).ok().and_then(|mut stmt| {
+        stmt.query_map(params.as_slice(), |row| row.get::<_, String>(0))
+            .ok()
+            .and_then(|mut rows| rows.next().and_then(|r| r.ok()))
+    });
 
     let cluster_id = match cluster_id {
         Some(id) => id,
@@ -294,15 +298,14 @@ fn find_cluster(conn: &Connection, targets: &[String]) -> (Option<String>, Vec<S
     }
     let member_params_ref: Vec<&dyn rusqlite::types::ToSql> =
         member_params.iter().map(|p| p.as_ref()).collect();
-    let files: Vec<String> = match stmt.query_map(member_params_ref.as_slice(), |row| {
-        row.get::<_, String>(0)
-    }) {
-        Ok(rows) => rows
-            .filter_map(|r| r.ok())
-            .map(|s| s.strip_prefix("file:").unwrap_or(&s).to_string())
-            .collect(),
-        Err(_) => Vec::new(),
-    };
+    let files: Vec<String> =
+        match stmt.query_map(member_params_ref.as_slice(), |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows
+                .filter_map(|r| r.ok())
+                .map(|s| s.strip_prefix("file:").unwrap_or(&s).to_string())
+                .collect(),
+            Err(_) => Vec::new(),
+        };
 
     (Some(cluster_id), files)
 }
@@ -388,7 +391,11 @@ mod tests {
         let conn = setup_db();
 
         let d1 = Memory::new(MemoryType::Decision, "Use JWT auth", "JWT for all APIs");
-        let d2 = Memory::new(MemoryType::Decision, "Rate limit endpoints", "Global rate limiter");
+        let d2 = Memory::new(
+            MemoryType::Decision,
+            "Rate limit endpoints",
+            "Global rate limiter",
+        );
         crate::db::ops::remember(&conn, &d1).unwrap();
         crate::db::ops::remember(&conn, &d2).unwrap();
 
@@ -428,8 +435,22 @@ mod tests {
     fn test_blast_radius_importers() {
         let conn = setup_db();
 
-        store_edge(&conn, "file:src/main.rs", "file:src/auth.rs", "imports", "{}").unwrap();
-        store_edge(&conn, "file:src/routes.rs", "file:src/auth.rs", "imports", "{}").unwrap();
+        store_edge(
+            &conn,
+            "file:src/main.rs",
+            "file:src/auth.rs",
+            "imports",
+            "{}",
+        )
+        .unwrap();
+        store_edge(
+            &conn,
+            "file:src/routes.rs",
+            "file:src/auth.rs",
+            "imports",
+            "{}",
+        )
+        .unwrap();
 
         let br = analyze_blast_radius(&conn, "src/auth.rs");
         assert_eq!(br.importers.len(), 2);
@@ -442,8 +463,22 @@ mod tests {
         let conn = setup_db();
 
         // Create call edges: main.rs and routes.rs call symbols in auth.rs
-        store_edge(&conn, "file:src/main.rs", "sym:src/auth.rs::authenticate", "calls", "{}").unwrap();
-        store_edge(&conn, "file:src/routes.rs", "sym:src/auth.rs::verify_token", "calls", "{}").unwrap();
+        store_edge(
+            &conn,
+            "file:src/main.rs",
+            "sym:src/auth.rs::authenticate",
+            "calls",
+            "{}",
+        )
+        .unwrap();
+        store_edge(
+            &conn,
+            "file:src/routes.rs",
+            "sym:src/auth.rs::verify_token",
+            "calls",
+            "{}",
+        )
+        .unwrap();
 
         let br = analyze_blast_radius(&conn, "src/auth.rs");
         assert_eq!(br.callers, 2, "expected 2 callers, got {}", br.callers);
@@ -456,13 +491,39 @@ mod tests {
         let conn = setup_db();
 
         // Create cluster edges
-        store_edge(&conn, "file:src/auth.rs", "cluster:auth-cluster", "belongs_to_cluster", "{}").unwrap();
-        store_edge(&conn, "file:src/session.rs", "cluster:auth-cluster", "belongs_to_cluster", "{}").unwrap();
-        store_edge(&conn, "file:src/tokens.rs", "cluster:auth-cluster", "belongs_to_cluster", "{}").unwrap();
+        store_edge(
+            &conn,
+            "file:src/auth.rs",
+            "cluster:auth-cluster",
+            "belongs_to_cluster",
+            "{}",
+        )
+        .unwrap();
+        store_edge(
+            &conn,
+            "file:src/session.rs",
+            "cluster:auth-cluster",
+            "belongs_to_cluster",
+            "{}",
+        )
+        .unwrap();
+        store_edge(
+            &conn,
+            "file:src/tokens.rs",
+            "cluster:auth-cluster",
+            "belongs_to_cluster",
+            "{}",
+        )
+        .unwrap();
 
         let br = analyze_blast_radius(&conn, "src/auth.rs");
         assert_eq!(br.cluster_name.as_deref(), Some("cluster:auth-cluster"));
-        assert_eq!(br.cluster_files.len(), 2, "expected 2 cluster files (excluding self), got {:?}", br.cluster_files);
+        assert_eq!(
+            br.cluster_files.len(),
+            2,
+            "expected 2 cluster files (excluding self), got {:?}",
+            br.cluster_files
+        );
         assert!(br.cluster_files.contains(&"src/session.rs".to_string()));
         assert!(br.cluster_files.contains(&"src/tokens.rs".to_string()));
         // The target file itself should not appear in cluster_files
@@ -488,14 +549,46 @@ mod tests {
         let conn = setup_db();
 
         // Multiple callers from different files targeting different symbols in the same file
-        store_edge(&conn, "file:src/api.rs", "sym:src/db.rs::query", "calls", "{}").unwrap();
-        store_edge(&conn, "file:src/service.rs", "sym:src/db.rs::insert", "calls", "{}").unwrap();
-        store_edge(&conn, "file:src/worker.rs", "sym:src/db.rs::delete", "calls", "{}").unwrap();
+        store_edge(
+            &conn,
+            "file:src/api.rs",
+            "sym:src/db.rs::query",
+            "calls",
+            "{}",
+        )
+        .unwrap();
+        store_edge(
+            &conn,
+            "file:src/service.rs",
+            "sym:src/db.rs::insert",
+            "calls",
+            "{}",
+        )
+        .unwrap();
+        store_edge(
+            &conn,
+            "file:src/worker.rs",
+            "sym:src/db.rs::delete",
+            "calls",
+            "{}",
+        )
+        .unwrap();
         // A call within the same file (should still be counted)
-        store_edge(&conn, "file:src/db.rs", "sym:src/db.rs::connect", "calls", "{}").unwrap();
+        store_edge(
+            &conn,
+            "file:src/db.rs",
+            "sym:src/db.rs::connect",
+            "calls",
+            "{}",
+        )
+        .unwrap();
 
         let br = analyze_blast_radius(&conn, "src/db.rs");
-        assert_eq!(br.callers, 4, "expected 4 distinct callers, got {}", br.callers);
+        assert_eq!(
+            br.callers, 4,
+            "expected 4 distinct callers, got {}",
+            br.callers
+        );
         assert!(br.calling_files.contains(&"src/api.rs".to_string()));
         assert!(br.calling_files.contains(&"src/service.rs".to_string()));
         assert!(br.calling_files.contains(&"src/worker.rs".to_string()));
@@ -538,7 +631,8 @@ mod tests {
         );
         // The from_id values (bare abs paths) should appear in calling_files
         assert!(
-            br.calling_files.contains(&"/mnt/project/crates/daemon/src/main.rs".to_string()),
+            br.calling_files
+                .contains(&"/mnt/project/crates/daemon/src/main.rs".to_string()),
             "calling_files should contain main.rs, got: {:?}",
             br.calling_files,
         );
@@ -573,7 +667,8 @@ mod tests {
         let br = analyze_blast_radius(&conn, "src/server/handler.rs");
         // The file:-prefixed edge should match via find_importers
         assert!(
-            br.importers.contains(&"/mnt/project/src/main.rs".to_string()),
+            br.importers
+                .contains(&"/mnt/project/src/main.rs".to_string()),
             "importers should contain main.rs from file:-prefixed edge, got: {:?}",
             br.importers,
         );

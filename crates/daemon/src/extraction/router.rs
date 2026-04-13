@@ -8,8 +8,8 @@
 //   Cheap — Gemini Flash / Claude Haiku: medium analysis, 500-2000 tokens or code blocks
 //   Full  — Claude Sonnet / configured provider: > 2000 tokens or multi-step
 
-use crate::config::ForgeConfig;
 use super::backend::BackendChoice;
+use crate::config::ForgeConfig;
 
 /// Complexity tier for routing extraction requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,10 +51,22 @@ fn has_multi_step_signals(text: &str) -> bool {
     let lower = text.to_lowercase();
     // Multi-step indicators: numbered steps, "then" chains, analysis keywords
     let multi_step_keywords = [
-        "step 1", "step 2", "first,", "then,", "next,", "finally,",
-        "analyze", "compare", "evaluate", "synthesize",
-        "on the other hand", "however,", "in contrast",
-        "pros and cons", "trade-off", "tradeoff",
+        "step 1",
+        "step 2",
+        "first,",
+        "then,",
+        "next,",
+        "finally,",
+        "analyze",
+        "compare",
+        "evaluate",
+        "synthesize",
+        "on the other hand",
+        "however,",
+        "in contrast",
+        "pros and cons",
+        "trade-off",
+        "tradeoff",
     ];
     multi_step_keywords.iter().any(|kw| lower.contains(kw))
 }
@@ -112,25 +124,40 @@ pub async fn route_extraction(
     // Claude CLI is always first — uses the session's own subscription, best quality.
     let backend = match tier {
         ComplexityTier::Free => {
-            try_claude_cli().await
-                .or_async(|| try_claude_api(config)).await
-                .or_async(|| try_gemini(config)).await
-                .or_async(|| try_ollama(config)).await
-                .or_async(|| try_openai(config)).await
+            try_claude_cli()
+                .await
+                .or_async(|| try_claude_api(config))
+                .await
+                .or_async(|| try_gemini(config))
+                .await
+                .or_async(|| try_ollama(config))
+                .await
+                .or_async(|| try_openai(config))
+                .await
         }
         ComplexityTier::Cheap => {
-            try_claude_cli().await
-                .or_async(|| try_claude_api(config)).await
-                .or_async(|| try_gemini(config)).await
-                .or_async(|| try_openai(config)).await
-                .or_async(|| try_ollama(config)).await
+            try_claude_cli()
+                .await
+                .or_async(|| try_claude_api(config))
+                .await
+                .or_async(|| try_gemini(config))
+                .await
+                .or_async(|| try_openai(config))
+                .await
+                .or_async(|| try_ollama(config))
+                .await
         }
         ComplexityTier::Full => {
-            try_claude_cli().await
-                .or_async(|| try_claude_api(config)).await
-                .or_async(|| try_openai(config)).await
-                .or_async(|| try_gemini(config)).await
-                .or_async(|| try_ollama(config)).await
+            try_claude_cli()
+                .await
+                .or_async(|| try_claude_api(config))
+                .await
+                .or_async(|| try_openai(config))
+                .await
+                .or_async(|| try_gemini(config))
+                .await
+                .or_async(|| try_ollama(config))
+                .await
         }
     };
 
@@ -142,7 +169,10 @@ pub async fn route_extraction(
         None => {
             // No backend available at all
             tracing::warn!(tier = %tier, "smart router: no backend available, falling back to None");
-            (BackendChoice::None("smart router: no backend available".to_string()), tier)
+            (
+                BackendChoice::None("smart router: no backend available".to_string()),
+                tier,
+            )
         }
     }
 }
@@ -159,10 +189,8 @@ async fn try_ollama(config: &ForgeConfig) -> Option<BackendChoice> {
 }
 
 async fn try_gemini(config: &ForgeConfig) -> Option<BackendChoice> {
-    if crate::config::resolve_api_key(
-        &config.extraction.gemini.api_key,
-        "GEMINI_API_KEY",
-    ).is_some() {
+    if crate::config::resolve_api_key(&config.extraction.gemini.api_key, "GEMINI_API_KEY").is_some()
+    {
         Some(BackendChoice::Gemini)
     } else {
         None
@@ -170,10 +198,9 @@ async fn try_gemini(config: &ForgeConfig) -> Option<BackendChoice> {
 }
 
 async fn try_claude_api(config: &ForgeConfig) -> Option<BackendChoice> {
-    if crate::config::resolve_api_key(
-        &config.extraction.claude_api.api_key,
-        "ANTHROPIC_API_KEY",
-    ).is_some() {
+    if crate::config::resolve_api_key(&config.extraction.claude_api.api_key, "ANTHROPIC_API_KEY")
+        .is_some()
+    {
         Some(BackendChoice::ClaudeApi)
     } else {
         None
@@ -181,10 +208,8 @@ async fn try_claude_api(config: &ForgeConfig) -> Option<BackendChoice> {
 }
 
 async fn try_openai(config: &ForgeConfig) -> Option<BackendChoice> {
-    if crate::config::resolve_api_key(
-        &config.extraction.openai.api_key,
-        "OPENAI_API_KEY",
-    ).is_some() {
+    if crate::config::resolve_api_key(&config.extraction.openai.api_key, "OPENAI_API_KEY").is_some()
+    {
         Some(BackendChoice::OpenAi)
     } else {
         None
@@ -266,13 +291,15 @@ pub fn check_quality_guard(conn: &rusqlite::Connection) -> Option<ComplexityTier
             }
             if avg_quality < 0.3 {
                 // Determine current dominant tier and escalate
-                let current_tier: Option<String> = conn.query_row(
-                    "SELECT tier FROM routing_stats
+                let current_tier: Option<String> = conn
+                    .query_row(
+                        "SELECT tier FROM routing_stats
                      WHERE created_at > datetime('now', '-24 hours') AND quality_score IS NOT NULL
                      GROUP BY tier ORDER BY COUNT(*) DESC LIMIT 1",
-                    [],
-                    |row| row.get(0),
-                ).ok();
+                        [],
+                        |row| row.get(0),
+                    )
+                    .ok();
 
                 match current_tier.as_deref() {
                     Some("free") => Some(ComplexityTier::Cheap),
@@ -290,11 +317,7 @@ pub fn check_quality_guard(conn: &rusqlite::Connection) -> Option<ComplexityTier
 /// Query aggregated routing stats.
 pub fn query_routing_stats(conn: &rusqlite::Connection) -> Result<RoutingStatsResult, String> {
     let total: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM routing_stats",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM routing_stats", [], |row| row.get(0))
         .map_err(|e| format!("routing stats query failed: {e}"))?;
 
     let mut stmt = conn
@@ -412,7 +435,7 @@ mod tests {
     fn test_estimate_tokens() {
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("hello world"), 2); // 11 chars / 4 = 2
-        // 2000 chars → 500 tokens
+                                                       // 2000 chars → 500 tokens
         let text = "a".repeat(2000);
         assert_eq!(estimate_tokens(&text), 500);
     }
@@ -433,9 +456,15 @@ mod tests {
     fn test_has_multi_step_signals() {
         assert!(!has_multi_step_signals("simple text"));
         assert!(has_multi_step_signals("Step 1: do this. Step 2: do that."));
-        assert!(has_multi_step_signals("First, analyze the code. Then, fix bugs."));
-        assert!(has_multi_step_signals("Compare the trade-off between speed and memory."));
-        assert!(has_multi_step_signals("Evaluate the pros and cons of this approach."));
+        assert!(has_multi_step_signals(
+            "First, analyze the code. Then, fix bugs."
+        ));
+        assert!(has_multi_step_signals(
+            "Compare the trade-off between speed and memory."
+        ));
+        assert!(has_multi_step_signals(
+            "Evaluate the pros and cons of this approach."
+        ));
     }
 
     #[test]
@@ -474,7 +503,8 @@ mod tests {
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 quality_score REAL
             )",
-        ).unwrap();
+        )
+        .unwrap();
 
         record_routing_stat(&conn, &ComplexityTier::Free, "ollama", true, 500, None).unwrap();
         record_routing_stat(&conn, &ComplexityTier::Free, "ollama", true, 300, None).unwrap();

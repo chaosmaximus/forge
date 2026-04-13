@@ -5,22 +5,36 @@ use std::path::Path;
 
 #[derive(Deserialize, Default)]
 pub struct HudState {
-    #[serde(default)] pub version: Option<String>,
-    #[serde(default)] pub graph: GraphStats,
-    #[serde(default)] pub memory: MemoryStats,
-    #[serde(default)] pub session: SessionInfo,
-    #[serde(default)] pub tokens: TokenStats,
-    #[serde(default)] pub skills: SkillStats,
-    #[serde(default)] pub team: HashMap<String, AgentInfo>,
-    #[serde(default)] pub security: SecurityStats,
-    #[serde(default)] pub tasks: Option<TaskStats>,
-    #[serde(default)] pub k8s: Option<K8sContext>,
-    #[serde(default)] pub hud_config: Option<HudConfigState>,
-    #[serde(default)] pub cwd: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub graph: GraphStats,
+    #[serde(default)]
+    pub memory: MemoryStats,
+    #[serde(default)]
+    pub session: SessionInfo,
+    #[serde(default)]
+    pub tokens: TokenStats,
+    #[serde(default)]
+    pub skills: SkillStats,
+    #[serde(default)]
+    pub team: HashMap<String, AgentInfo>,
+    #[serde(default)]
+    pub security: SecurityStats,
+    #[serde(default)]
+    pub tasks: Option<TaskStats>,
+    #[serde(default)]
+    pub k8s: Option<K8sContext>,
+    #[serde(default)]
+    pub hud_config: Option<HudConfigState>,
+    #[serde(default)]
+    pub cwd: Option<String>,
     /// Per-project memory stats keyed by project name
-    #[serde(default)] pub projects: HashMap<String, MemoryStats>,
+    #[serde(default)]
+    pub projects: HashMap<String, MemoryStats>,
     /// Active sessions across all projects
-    #[serde(default)] pub sessions: Vec<SessionEntry>,
+    #[serde(default)]
+    pub sessions: Vec<SessionEntry>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -49,23 +63,43 @@ pub struct HudConfigState {
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-pub struct GraphStats { pub nodes: u64, pub edges: u64 }
+pub struct GraphStats {
+    pub nodes: u64,
+    pub edges: u64,
+}
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-pub struct MemoryStats { pub decisions: u64, pub patterns: u64, pub lessons: u64, pub secrets: u64 }
+pub struct MemoryStats {
+    pub decisions: u64,
+    pub patterns: u64,
+    pub lessons: u64,
+    pub secrets: u64,
+}
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-pub struct SessionInfo { pub mode: Option<String>, pub phase: Option<String>, pub wave: Option<String> }
+pub struct SessionInfo {
+    pub mode: Option<String>,
+    pub phase: Option<String>,
+    pub wave: Option<String>,
+}
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-pub struct TokenStats { pub input: u64, pub output: u64, pub llm_calls: u64, pub deterministic_ratio: f64 }
+pub struct TokenStats {
+    pub input: u64,
+    pub output: u64,
+    pub llm_calls: u64,
+    pub deterministic_ratio: f64,
+}
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-pub struct SkillStats { pub active: u64, pub fix_candidates: u64 }
+pub struct SkillStats {
+    pub active: u64,
+    pub fix_candidates: u64,
+}
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -86,7 +120,11 @@ pub struct AgentInfo {
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-pub struct SecurityStats { pub total: u64, pub stale: u64, pub exposed: u64 }
+pub struct SecurityStats {
+    pub total: u64,
+    pub stale: u64,
+    pub exposed: u64,
+}
 
 #[derive(Deserialize, Default)]
 #[serde(default)]

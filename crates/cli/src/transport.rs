@@ -74,7 +74,9 @@ fn is_localhost(endpoint: &str) -> bool {
 fn validate_endpoint(endpoint: &str) -> Result<String, String> {
     let trimmed = endpoint.trim_end_matches('/');
     if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
-        return Err(format!("endpoint must start with https:// or http:// (got: {trimmed})"));
+        return Err(format!(
+            "endpoint must start with https:// or http:// (got: {trimmed})"
+        ));
     }
     if trimmed.starts_with("http://") && !is_localhost(trimmed) {
         return Err(format!(
@@ -135,9 +137,7 @@ pub async fn subscribe_stream(
     let transport = Transport::global();
 
     match transport {
-        Transport::Unix => {
-            unix_subscribe(events, session_id, team_id).await
-        }
+        Transport::Unix => unix_subscribe(events, session_id, team_id).await,
         Transport::Http { endpoint, token } => {
             http_subscribe(endpoint, token.as_deref(), events, session_id, team_id).await
         }
@@ -151,16 +151,27 @@ async fn unix_subscribe(
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    let stream = crate::client::connect().await
+    let stream = crate::client::connect()
+        .await
         .map_err(|e| format!("connect failed: {e}"))?;
 
-    let req = Request::Subscribe { events, session_id, team_id };
+    let req = Request::Subscribe {
+        events,
+        session_id,
+        team_id,
+    };
     let json = serde_json::to_string(&req).map_err(|e| format!("serialize: {e}"))?;
 
     let (read_half, mut write_half) = tokio::io::split(stream);
 
-    write_half.write_all(json.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
-    write_half.write_all(b"\n").await.map_err(|e| format!("write newline: {e}"))?;
+    write_half
+        .write_all(json.as_bytes())
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+    write_half
+        .write_all(b"\n")
+        .await
+        .map_err(|e| format!("write newline: {e}"))?;
 
     let reader = BufReader::new(read_half);
     let mut lines = reader.lines();
@@ -217,13 +228,19 @@ async fn http_subscribe(
     }
 
     let client = reqwest::Client::new();
-    let resp = client.get(&url)
+    let resp = client
+        .get(&url)
         .header("Accept", "text/event-stream")
-        .send().await
+        .send()
+        .await
         .map_err(|e| format!("HTTP request failed: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default()));
+        return Err(format!(
+            "HTTP {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        ));
     }
 
     let mut stream = resp.bytes_stream();

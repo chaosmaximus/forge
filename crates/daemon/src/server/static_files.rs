@@ -9,12 +9,15 @@ use tower_http::services::{ServeDir, ServeFile};
 pub fn static_file_router(ui_dir: &str) -> Option<Router> {
     let path = PathBuf::from(ui_dir);
     if !path.join("index.html").exists() {
-        tracing::warn!(ui_dir, "UI dir missing index.html — static serving disabled");
+        tracing::warn!(
+            ui_dir,
+            "UI dir missing index.html — static serving disabled"
+        );
         return None;
     }
     tracing::info!(ui_dir, "Serving web UI from static files");
-    let serve_dir = ServeDir::new(ui_dir)
-        .not_found_service(ServeFile::new(path.join("index.html")));
+    let serve_dir =
+        ServeDir::new(ui_dir).not_found_service(ServeFile::new(path.join("index.html")));
     Some(Router::new().fallback_service(serve_dir))
 }
 

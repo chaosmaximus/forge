@@ -50,7 +50,10 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     ) {
         Ok(reader) => {
             // Verify DB is actually responsive with a simple query
-            match reader.conn.query_row("SELECT 1", [], |row| row.get::<_, i32>(0)) {
+            match reader
+                .conn
+                .query_row("SELECT 1", [], |row| row.get::<_, i32>(0))
+            {
                 Ok(_) => {
                     // Check 2: Write path — verify the writer actor channel is open
                     // (if closed, all writes would fail)
@@ -290,7 +293,11 @@ mod tests {
 
         // Must be an object with exactly one key: "status"
         let obj = json.as_object().expect("response should be a JSON object");
-        assert_eq!(obj.len(), 1, "liveness response should have exactly 1 field");
+        assert_eq!(
+            obj.len(),
+            1,
+            "liveness response should have exactly 1 field"
+        );
         assert_eq!(json["status"], "ok");
     }
 
@@ -318,7 +325,11 @@ mod tests {
 
         // Verify structure: { "status": "ok", "workers": N }
         let obj = json.as_object().expect("response should be a JSON object");
-        assert_eq!(obj.len(), 2, "readiness response should have exactly 2 fields");
+        assert_eq!(
+            obj.len(),
+            2,
+            "readiness response should have exactly 2 fields"
+        );
         assert_eq!(json["status"], "ok");
         let workers = json["workers"]
             .as_u64()

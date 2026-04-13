@@ -5,10 +5,10 @@
 //! interactions across remember, recall, forget, health, guardrails,
 //! blast radius, export, import, vector storage, and edge cases.
 
-use forge_daemon::db::{ops, vec};
-use forge_daemon::server::handler::{handle_request, DaemonState};
 use forge_core::protocol::*;
 use forge_core::types::MemoryType;
+use forge_daemon::db::{ops, vec};
+use forge_daemon::server::handler::{handle_request, DaemonState};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -42,7 +42,9 @@ fn do_remember(
         },
     );
     match resp {
-        Response::Ok { data: ResponseData::Stored { id } } => {
+        Response::Ok {
+            data: ResponseData::Stored { id },
+        } => {
             assert!(!id.is_empty());
             id
         }
@@ -70,7 +72,9 @@ fn do_recall(
         },
     );
     match resp {
-        Response::Ok { data: ResponseData::Memories { results, .. } } => results,
+        Response::Ok {
+            data: ResponseData::Memories { results, .. },
+        } => results,
         other => panic!("expected Memories, got: {other:?}"),
     }
 }
@@ -78,7 +82,12 @@ fn do_recall(
 /// Forget a memory by id. Returns true if it was found and forgotten.
 fn do_forget(state: &mut DaemonState, id: &str) -> bool {
     let resp = handle_request(state, Request::Forget { id: id.into() });
-    matches!(resp, Response::Ok { data: ResponseData::Forgotten { .. } })
+    matches!(
+        resp,
+        Response::Ok {
+            data: ResponseData::Forgotten { .. }
+        }
+    )
 }
 
 // ===========================================================================
@@ -165,7 +174,13 @@ fn test_full_memory_lifecycle() {
     );
 
     // -- Recall with no project -> should get ALL --
-    let all_results = do_recall(&mut state, "Rust PostgreSQL tests pattern", None, None, Some(50));
+    let all_results = do_recall(
+        &mut state,
+        "Rust PostgreSQL tests pattern",
+        None,
+        None,
+        Some(50),
+    );
     assert!(
         all_results.len() >= 3,
         "no-project recall should return memories across all projects, got {}",
@@ -202,7 +217,14 @@ fn test_full_memory_lifecycle() {
     let resp = handle_request(&mut state, Request::Health);
     match resp {
         Response::Ok {
-            data: ResponseData::Health { decisions, lessons, patterns, preferences, .. },
+            data:
+                ResponseData::Health {
+                    decisions,
+                    lessons,
+                    patterns,
+                    preferences,
+                    ..
+                },
         } => {
             // forge_id1 was forgotten, so 1 forge decision gone => 1 backend decision remains
             assert_eq!(decisions, 1, "should have 1 active decision after forget");
@@ -216,14 +238,18 @@ fn test_full_memory_lifecycle() {
     // -- HealthByProject -> correct per-project breakdown --
     let resp = handle_request(&mut state, Request::HealthByProject);
     match resp {
-        Response::Ok { data: ResponseData::HealthByProject { projects } } => {
+        Response::Ok {
+            data: ResponseData::HealthByProject { projects },
+        } => {
             // forge project: only the lesson remains (forge_id1 decision was forgotten)
             let forge_data = projects.get("forge").expect("forge project should exist");
             assert_eq!(forge_data.decisions, 0, "forge decisions after forget");
             assert_eq!(forge_data.lessons, 1, "forge lessons");
 
             // backend project: 1 decision + 1 pattern
-            let backend_data = projects.get("backend").expect("backend project should exist");
+            let backend_data = projects
+                .get("backend")
+                .expect("backend project should exist");
             assert_eq!(backend_data.decisions, 1, "backend decisions");
             assert_eq!(backend_data.patterns, 1, "backend patterns");
 
@@ -238,13 +264,14 @@ fn test_full_memory_lifecycle() {
     let resp = handle_request(&mut state, Request::Doctor);
     match resp {
         Response::Ok {
-            data: ResponseData::Doctor {
-                daemon_up,
-                memory_count,
-                workers,
-                uptime_secs,
-                ..
-            },
+            data:
+                ResponseData::Doctor {
+                    daemon_up,
+                    memory_count,
+                    workers,
+                    uptime_secs,
+                    ..
+                },
         } => {
             assert!(daemon_up);
             assert_eq!(memory_count, 4, "4 active memories after 1 forget");
@@ -256,9 +283,17 @@ fn test_full_memory_lifecycle() {
     }
 
     // -- Export -> all active memories present --
-    let resp = handle_request(&mut state, Request::Export { format: None, since: None });
+    let resp = handle_request(
+        &mut state,
+        Request::Export {
+            format: None,
+            since: None,
+        },
+    );
     match resp {
-        Response::Ok { data: ResponseData::Export { memories, .. } } => {
+        Response::Ok {
+            data: ResponseData::Export { memories, .. },
+        } => {
             assert_eq!(memories.len(), 4, "export should contain 4 active memories");
             // The forgotten memory should NOT be in the export
             let export_ids: Vec<&str> = memories.iter().map(|m| m.memory.id.as_str()).collect();
@@ -270,7 +305,9 @@ fn test_full_memory_lifecycle() {
     // -- Shutdown -> returns ok --
     let resp = handle_request(&mut state, Request::Shutdown);
     match resp {
-        Response::Ok { data: ResponseData::Shutdown } => {}
+        Response::Ok {
+            data: ResponseData::Shutdown,
+        } => {}
         other => panic!("expected Shutdown, got: {other:?}"),
     }
 }
@@ -329,7 +366,12 @@ fn test_guardrails_full_lifecycle() {
     );
     match resp {
         Response::Ok {
-            data: ResponseData::GuardrailsCheck { safe, decisions_affected, .. },
+            data:
+                ResponseData::GuardrailsCheck {
+                    safe,
+                    decisions_affected,
+                    ..
+                },
         } => {
             assert!(!safe, "src/auth.rs has 2 linked decisions => not safe");
             assert_eq!(decisions_affected.len(), 2);
@@ -349,7 +391,12 @@ fn test_guardrails_full_lifecycle() {
     );
     match resp {
         Response::Ok {
-            data: ResponseData::GuardrailsCheck { safe, decisions_affected, .. },
+            data:
+                ResponseData::GuardrailsCheck {
+                    safe,
+                    decisions_affected,
+                    ..
+                },
         } => {
             assert!(safe, "src/main.rs has no linked decisions => safe");
             assert!(decisions_affected.is_empty());
@@ -360,13 +407,24 @@ fn test_guardrails_full_lifecycle() {
     // -- BlastRadius on src/auth.rs -> 2 decisions, files_affected includes src/db.rs --
     let resp = handle_request(
         &mut state,
-        Request::BlastRadius { file: "src/auth.rs".into() },
+        Request::BlastRadius {
+            file: "src/auth.rs".into(),
+        },
     );
     match resp {
         Response::Ok {
-            data: ResponseData::BlastRadius { decisions, files_affected, .. },
+            data:
+                ResponseData::BlastRadius {
+                    decisions,
+                    files_affected,
+                    ..
+                },
         } => {
-            assert_eq!(decisions.len(), 2, "blast radius should show 2 decisions for auth.rs");
+            assert_eq!(
+                decisions.len(),
+                2,
+                "blast radius should show 2 decisions for auth.rs"
+            );
             let decision_ids: Vec<&str> = decisions.iter().map(|d| d.id.as_str()).collect();
             assert!(decision_ids.contains(&d1_id.as_str()));
             assert!(decision_ids.contains(&d2_id.as_str()));
@@ -396,7 +454,12 @@ fn test_guardrails_full_lifecycle() {
     );
     match resp {
         Response::Ok {
-            data: ResponseData::GuardrailsCheck { safe, decisions_affected, .. },
+            data:
+                ResponseData::GuardrailsCheck {
+                    safe,
+                    decisions_affected,
+                    ..
+                },
         } => {
             assert!(!safe, "still 1 linked decision after forgetting d1");
             assert_eq!(decisions_affected.len(), 1);
@@ -416,7 +479,12 @@ fn test_guardrails_full_lifecycle() {
     );
     match resp {
         Response::Ok {
-            data: ResponseData::GuardrailsCheck { safe, decisions_affected, .. },
+            data:
+                ResponseData::GuardrailsCheck {
+                    safe,
+                    decisions_affected,
+                    ..
+                },
         } => {
             assert!(safe, "all decisions forgotten => safe");
             assert!(decisions_affected.is_empty());
@@ -462,9 +530,23 @@ fn test_import_export_roundtrip() {
     );
 
     // -- Export -> get JSON --
-    let export_resp = handle_request(&mut state, Request::Export { format: None, since: None });
+    let export_resp = handle_request(
+        &mut state,
+        Request::Export {
+            format: None,
+            since: None,
+        },
+    );
     let export_json = match &export_resp {
-        Response::Ok { data: ResponseData::Export { memories, files, symbols, edges } } => {
+        Response::Ok {
+            data:
+                ResponseData::Export {
+                    memories,
+                    files,
+                    symbols,
+                    edges,
+                },
+        } => {
             assert_eq!(memories.len(), 3);
             assert!(files.is_empty());
             assert!(symbols.is_empty());
@@ -491,7 +573,16 @@ fn test_import_export_roundtrip() {
     // Verify fresh state is empty
     let resp = handle_request(&mut state2, Request::Health);
     match resp {
-        Response::Ok { data: ResponseData::Health { decisions, lessons, patterns, preferences, .. } } => {
+        Response::Ok {
+            data:
+                ResponseData::Health {
+                    decisions,
+                    lessons,
+                    patterns,
+                    preferences,
+                    ..
+                },
+        } => {
             assert_eq!(decisions + lessons + patterns + preferences, 0);
         }
         other => panic!("expected Health, got: {other:?}"),
@@ -501,7 +592,12 @@ fn test_import_export_roundtrip() {
     let resp = handle_request(&mut state2, Request::Import { data: export_json });
     match resp {
         Response::Ok {
-            data: ResponseData::Import { memories_imported, skipped, .. },
+            data:
+                ResponseData::Import {
+                    memories_imported,
+                    skipped,
+                    ..
+                },
         } => {
             assert_eq!(memories_imported, 3, "all 3 memories should be imported");
             assert_eq!(skipped, 0, "no records should be skipped");
@@ -510,7 +606,13 @@ fn test_import_export_roundtrip() {
     }
 
     // -- Recall on the fresh state -> all 3 memories present --
-    let all = do_recall(&mut state2, "NDJSON WAL builder pattern config", None, None, Some(50));
+    let all = do_recall(
+        &mut state2,
+        "NDJSON WAL builder pattern config",
+        None,
+        None,
+        Some(50),
+    );
     assert!(
         all.len() >= 3,
         "imported state should have all 3 memories recallable, got {}",
@@ -518,9 +620,15 @@ fn test_import_export_roundtrip() {
     );
 
     // Verify types are preserved
-    let has_decision = all.iter().any(|r| r.memory.memory_type == MemoryType::Decision);
-    let has_lesson = all.iter().any(|r| r.memory.memory_type == MemoryType::Lesson);
-    let has_pattern = all.iter().any(|r| r.memory.memory_type == MemoryType::Pattern);
+    let has_decision = all
+        .iter()
+        .any(|r| r.memory.memory_type == MemoryType::Decision);
+    let has_lesson = all
+        .iter()
+        .any(|r| r.memory.memory_type == MemoryType::Lesson);
+    let has_pattern = all
+        .iter()
+        .any(|r| r.memory.memory_type == MemoryType::Pattern);
     assert!(has_decision, "imported data should contain a Decision");
     assert!(has_lesson, "imported data should contain a Lesson");
     assert!(has_pattern, "imported data should contain a Pattern");
@@ -528,7 +636,15 @@ fn test_import_export_roundtrip() {
     // Verify health counts match
     let resp = handle_request(&mut state2, Request::Health);
     match resp {
-        Response::Ok { data: ResponseData::Health { decisions, lessons, patterns, .. } } => {
+        Response::Ok {
+            data:
+                ResponseData::Health {
+                    decisions,
+                    lessons,
+                    patterns,
+                    ..
+                },
+        } => {
             assert_eq!(decisions, 1);
             assert_eq!(lessons, 1);
             assert_eq!(patterns, 1);
@@ -567,8 +683,14 @@ fn test_vector_persistence_across_state() {
 
     // -- Verify vec::search_vectors finds it --
     let search_results = vec::search_vectors(&state.conn, &embedding, 5).unwrap();
-    assert!(!search_results.is_empty(), "vector search should find the stored embedding");
-    assert_eq!(search_results[0].0, mem_id, "nearest result should be the stored memory");
+    assert!(
+        !search_results.is_empty(),
+        "vector search should find the stored embedding"
+    );
+    assert_eq!(
+        search_results[0].0, mem_id,
+        "nearest result should be the stored memory"
+    );
     assert!(
         search_results[0].1.abs() < 0.001,
         "self-distance should be ~0, got {}",
@@ -579,7 +701,12 @@ fn test_vector_persistence_across_state() {
     let resp = handle_request(&mut state, Request::Doctor);
     match resp {
         Response::Ok {
-            data: ResponseData::Doctor { memory_count, daemon_up, .. },
+            data:
+                ResponseData::Doctor {
+                    memory_count,
+                    daemon_up,
+                    ..
+                },
         } => {
             assert!(daemon_up);
             assert_eq!(memory_count, 1, "doctor should report 1 memory");
@@ -626,7 +753,14 @@ fn test_concurrent_operations() {
     let resp = handle_request(&mut state, Request::Health);
     match resp {
         Response::Ok {
-            data: ResponseData::Health { decisions, lessons, patterns, preferences, .. },
+            data:
+                ResponseData::Health {
+                    decisions,
+                    lessons,
+                    patterns,
+                    preferences,
+                    ..
+                },
         } => {
             let total = decisions + lessons + patterns + preferences;
             assert_eq!(total, 50, "should have 50 total memories, got {total}");
@@ -657,7 +791,14 @@ fn test_concurrent_operations() {
     let resp = handle_request(&mut state, Request::Health);
     match resp {
         Response::Ok {
-            data: ResponseData::Health { decisions, lessons, patterns, preferences, .. },
+            data:
+                ResponseData::Health {
+                    decisions,
+                    lessons,
+                    patterns,
+                    preferences,
+                    ..
+                },
         } => {
             assert_eq!(decisions, 0);
             assert_eq!(lessons, 0);
@@ -685,7 +826,10 @@ fn test_edge_cases() {
         None,
         None,
     );
-    assert!(!empty_title_id.is_empty(), "empty title should still produce an ID");
+    assert!(
+        !empty_title_id.is_empty(),
+        "empty title should still produce an ID"
+    );
 
     // -- Remember with confidence 0.0 -> should be clamped and stored --
     let low_conf_id = do_remember(
@@ -698,11 +842,22 @@ fn test_edge_cases() {
         None,
     );
     // Verify the stored confidence via export
-    let resp = handle_request(&mut state, Request::Export { format: None, since: None });
+    let resp = handle_request(
+        &mut state,
+        Request::Export {
+            format: None,
+            since: None,
+        },
+    );
     match &resp {
-        Response::Ok { data: ResponseData::Export { memories, .. } } => {
+        Response::Ok {
+            data: ResponseData::Export { memories, .. },
+        } => {
             let low_conf = memories.iter().find(|m| m.memory.id == low_conf_id);
-            assert!(low_conf.is_some(), "low confidence memory should be in export");
+            assert!(
+                low_conf.is_some(),
+                "low confidence memory should be in export"
+            );
             assert!(
                 low_conf.unwrap().memory.confidence >= 0.0,
                 "confidence should be >= 0.0"
@@ -721,11 +876,22 @@ fn test_edge_cases() {
         None,
         None,
     );
-    let resp = handle_request(&mut state, Request::Export { format: None, since: None });
+    let resp = handle_request(
+        &mut state,
+        Request::Export {
+            format: None,
+            since: None,
+        },
+    );
     match &resp {
-        Response::Ok { data: ResponseData::Export { memories, .. } } => {
+        Response::Ok {
+            data: ResponseData::Export { memories, .. },
+        } => {
             let high_conf = memories.iter().find(|m| m.memory.id == high_conf_id);
-            assert!(high_conf.is_some(), "high confidence memory should be in export");
+            assert!(
+                high_conf.is_some(),
+                "high confidence memory should be in export"
+            );
             assert!(
                 high_conf.unwrap().memory.confidence <= 1.0,
                 "confidence should be clamped to <= 1.0, got {}",
@@ -748,7 +914,9 @@ fn test_edge_cases() {
         },
     );
     match resp {
-        Response::Ok { data: ResponseData::Memories { .. } } => {
+        Response::Ok {
+            data: ResponseData::Memories { .. },
+        } => {
             // Success: either empty or non-empty, but no panic
         }
         Response::Error { .. } => {
@@ -767,7 +935,12 @@ fn test_edge_cases() {
     );
     match resp {
         Response::Ok {
-            data: ResponseData::GuardrailsCheck { safe, decisions_affected, .. },
+            data:
+                ResponseData::GuardrailsCheck {
+                    safe,
+                    decisions_affected,
+                    ..
+                },
         } => {
             assert!(safe, "empty file should be safe (no edges)");
             assert!(decisions_affected.is_empty());
@@ -784,11 +957,26 @@ fn test_edge_cases() {
     );
     match resp {
         Response::Ok {
-            data: ResponseData::BlastRadius { decisions, files_affected, importers, .. },
+            data:
+                ResponseData::BlastRadius {
+                    decisions,
+                    files_affected,
+                    importers,
+                    ..
+                },
         } => {
-            assert!(decisions.is_empty(), "nonexistent file should have no decisions");
-            assert!(files_affected.is_empty(), "nonexistent file should have no co-affected files");
-            assert!(importers.is_empty(), "nonexistent file should have no importers");
+            assert!(
+                decisions.is_empty(),
+                "nonexistent file should have no decisions"
+            );
+            assert!(
+                files_affected.is_empty(),
+                "nonexistent file should have no co-affected files"
+            );
+            assert!(
+                importers.is_empty(),
+                "nonexistent file should have no importers"
+            );
         }
         other => panic!("expected BlastRadius, got: {other:?}"),
     }
@@ -814,7 +1002,12 @@ fn test_edge_cases() {
     let resp = handle_request(&mut state, Request::Status);
     match resp {
         Response::Ok {
-            data: ResponseData::Status { memory_count, uptime_secs, .. },
+            data:
+                ResponseData::Status {
+                    memory_count,
+                    uptime_secs,
+                    ..
+                },
         } => {
             assert_eq!(memory_count, 3, "3 active memories in edge-case test");
             assert!(uptime_secs < 60);

@@ -16,8 +16,8 @@
 
 use crate::db::ops;
 use crate::events;
-use forge_core::types::memory::{Memory, MemoryType};
 use forge_core::types::manas::{Perception, PerceptionKind, Severity};
+use forge_core::types::memory::{Memory, MemoryType};
 use rusqlite::Connection;
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,7 +64,10 @@ pub struct HealingStats {
 /// - The periodic consolidator worker (every 30 min)
 /// - The ForceConsolidate handler (on demand)
 /// - Daemon startup (once)
-pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationConfig) -> ConsolidationStats {
+pub fn run_all_phases(
+    conn: &Connection,
+    config: &crate::config::ConsolidationConfig,
+) -> ConsolidationStats {
     let mut stats = ConsolidationStats::default();
 
     // Phase 1: Exact dedup (fast)
@@ -131,12 +134,18 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
                     "UPDATE memory SET confidence = ?1 WHERE id = ?2",
                     rusqlite::params![new_confidence, mem.id],
                 ) {
-                    eprintln!("[consolidator] failed to reconsolidate memory {}: {e}", mem.id);
+                    eprintln!(
+                        "[consolidator] failed to reconsolidate memory {}: {e}",
+                        mem.id
+                    );
                 }
             }
             stats.reconsolidated = candidates.len();
             if !candidates.is_empty() {
-                eprintln!("[consolidator] reconsolidated {} memories", candidates.len());
+                eprintln!(
+                    "[consolidator] reconsolidated {} memories",
+                    candidates.len()
+                );
             }
         }
         Err(e) => eprintln!("[consolidator] reconsolidation error: {e}"),
@@ -182,7 +191,8 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
                             .collect()
                     })
                     .unwrap_or_default();
-                let summary: Vec<String> = valence_counts.iter()
+                let summary: Vec<String> = valence_counts
+                    .iter()
                     .map(|(v, c)| format!("{v}={c}"))
                     .collect();
                 eprintln!(
@@ -282,15 +292,19 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
         && !crate::notifications::check_throttle(conn, "protocol_suggestion", "local", 3600)
             .unwrap_or(true)
     {
-            if let Err(e) = crate::notifications::NotificationBuilder::new(
-                "confirmation", "medium",
-                &format!("Forge extracted {protocols} new protocol(s) from behavior patterns"),
-                "Review the new protocols with: forge-next recall --type protocol. Approve or dismiss.",
-                "consolidator",
-            )
-            .topic("protocol_suggestion")
-            .action("review_protocols", "{}")
-            .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
+        if let Err(e) = crate::notifications::NotificationBuilder::new(
+            "confirmation",
+            "medium",
+            &format!("Forge extracted {protocols} new protocol(s) from behavior patterns"),
+            "Review the new protocols with: forge-next recall --type protocol. Approve or dismiss.",
+            "consolidator",
+        )
+        .topic("protocol_suggestion")
+        .action("review_protocols", "{}")
+        .build(conn)
+        {
+            eprintln!("[consolidator] notification failed: {e}");
+        }
         notifs_generated += 1;
     }
 
@@ -300,8 +314,12 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             .unwrap_or(true)
     {
         let _ = crate::notifications::NotificationBuilder::new(
-            "insight", "high",
-            &format!("{} contradiction(s) detected between active decisions", stats.contradictions),
+            "insight",
+            "high",
+            &format!(
+                "{} contradiction(s) detected between active decisions",
+                stats.contradictions
+            ),
             "Review with: forge-next recall --type decision. Resolve conflicting decisions.",
             "consolidator",
         )
@@ -316,7 +334,8 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             .query_row(
                 "SELECT COALESCE(AVG(quality_score), 0.5) FROM memory
                  WHERE status='active' AND created_at > datetime('now', '-7 days')",
-                [], |row| row.get(0),
+                [],
+                |row| row.get(0),
             )
             .unwrap_or(0.5);
 
@@ -355,9 +374,11 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             )
             .ok()
             .and_then(|mut stmt| {
-                stmt.query_map(rusqlite::params![timeout_modifier], |row| Ok((row.get(0)?, row.get(1)?)))
-                    .ok()
-                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                stmt.query_map(rusqlite::params![timeout_modifier], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
             })
             .unwrap_or_default();
 
@@ -375,10 +396,18 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
             let synthesis = if responses.is_empty() {
                 format!("Meeting '{topic}' timed out with no responses.")
             } else {
-                let parts: Vec<String> = responses.iter()
-                    .map(|(sid, resp)| format!("- {}: {}", sid, resp.chars().take(200).collect::<String>()))
+                let parts: Vec<String> = responses
+                    .iter()
+                    .map(|(sid, resp)| {
+                        format!("- {}: {}", sid, resp.chars().take(200).collect::<String>())
+                    })
                     .collect();
-                format!("Meeting '{}' timed out with {} partial response(s):\n{}", topic, responses.len(), parts.join("\n"))
+                format!(
+                    "Meeting '{}' timed out with {} partial response(s):\n{}",
+                    topic,
+                    responses.len(),
+                    parts.join("\n")
+                )
             };
 
             // Store synthesis as a decision memory
@@ -386,9 +415,12 @@ pub fn run_all_phases(conn: &Connection, config: &crate::config::ConsolidationCo
                 MemoryType::Decision,
                 format!("Meeting timed out: {topic}"),
                 synthesis.clone(),
-            ).with_confidence(0.6);
+            )
+            .with_confidence(0.6);
             if let Err(e) = ops::remember(conn, &decision_mem) {
-                eprintln!("[consolidator] auto-synthesis store failed for meeting {meeting_id}: {e}");
+                eprintln!(
+                    "[consolidator] auto-synthesis store failed for meeting {meeting_id}: {e}"
+                );
             }
 
             // Update meeting status + store synthesis
@@ -477,7 +509,7 @@ pub fn detect_content_contradictions(conn: &Connection) -> usize {
     let mut stmt = match conn.prepare(
         "SELECT id, memory_type, title, content FROM memory
          WHERE status = 'active' AND memory_type IN ('decision', 'pattern', 'protocol')
-         ORDER BY memory_type, created_at DESC"
+         ORDER BY memory_type, created_at DESC",
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -523,7 +555,10 @@ pub fn detect_content_contradictions(conn: &Connection) -> usize {
     }
 
     /// Jaccard overlap between two word sets.
-    fn jaccard(a: &std::collections::HashSet<String>, b: &std::collections::HashSet<String>) -> f64 {
+    fn jaccard(
+        a: &std::collections::HashSet<String>,
+        b: &std::collections::HashSet<String>,
+    ) -> f64 {
         if a.is_empty() || b.is_empty() {
             return 0.0;
         }
@@ -684,7 +719,9 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
             valence: row.get(4)?,
             confidence: row.get(6)?,
             project: row.get(7)?,
-            organization_id: row.get::<_, String>(8).unwrap_or_else(|_| "default".to_string()),
+            organization_id: row
+                .get::<_, String>(8)
+                .unwrap_or_else(|_| "default".to_string()),
         })
     }) {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
@@ -725,8 +762,13 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
             }
 
             // Count shared tags (HashSet for O(n) instead of O(n^2))
-            let tags_i: std::collections::HashSet<&str> = rows[i].tags.iter().map(|s| s.as_str()).collect();
-            let shared: usize = rows[j].tags.iter().filter(|t| tags_i.contains(t.as_str())).count();
+            let tags_i: std::collections::HashSet<&str> =
+                rows[i].tags.iter().map(|s| s.as_str()).collect();
+            let shared: usize = rows[j]
+                .tags
+                .iter()
+                .filter(|t| tags_i.contains(t.as_str()))
+                .count();
             if shared < 2 {
                 continue;
             }
@@ -752,8 +794,9 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
 
             let conf = a.confidence.max(b.confidence);
 
-            let resolution = Memory::new(MemoryType::Decision, &resolution_title, &resolution_content)
-                .with_tags(union_tags);
+            let resolution =
+                Memory::new(MemoryType::Decision, &resolution_title, &resolution_content)
+                    .with_tags(union_tags);
             // Set confidence manually
             let mut resolution = resolution;
             resolution.confidence = conf;
@@ -769,8 +812,18 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
                 let _ = conn.execute_batch("ROLLBACK");
                 continue;
             }
-            if conn.execute("UPDATE memory SET status = 'superseded' WHERE id = ?1", rusqlite::params![a.id]).is_err()
-                || conn.execute("UPDATE memory SET status = 'superseded' WHERE id = ?1", rusqlite::params![b.id]).is_err()
+            if conn
+                .execute(
+                    "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+                    rusqlite::params![a.id],
+                )
+                .is_err()
+                || conn
+                    .execute(
+                        "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+                        rusqlite::params![b.id],
+                    )
+                    .is_err()
             {
                 eprintln!("[consolidator] failed to supersede originals — rolling back");
                 let _ = conn.execute_batch("ROLLBACK");
@@ -884,7 +937,9 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
             memory_type: row.get(4)?,
             project: row.get(5)?,
             created_at: row.get(6)?,
-            organization_id: row.get::<_, String>(7).unwrap_or_else(|_| "default".to_string()),
+            organization_id: row
+                .get::<_, String>(7)
+                .unwrap_or_else(|_| "default".to_string()),
         })
     }) {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
@@ -936,8 +991,13 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
             }
 
             // Count shared tags
-            let tags_i: std::collections::HashSet<&str> = rows[i].tags.iter().map(|s| s.as_str()).collect();
-            let shared: usize = rows[j].tags.iter().filter(|t| tags_i.contains(t.as_str())).count();
+            let tags_i: std::collections::HashSet<&str> =
+                rows[i].tags.iter().map(|s| s.as_str()).collect();
+            let shared: usize = rows[j]
+                .tags
+                .iter()
+                .filter(|t| tags_i.contains(t.as_str()))
+                .count();
             if shared < 2 {
                 continue;
             }
@@ -960,7 +1020,10 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
                 |row| row.get(0),
             ) {
                 Ok(c) => c,
-                Err(_) => { let _ = conn.execute_batch("ROLLBACK"); continue; }
+                Err(_) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    continue;
+                }
             };
             let enriched_content = format!("{}\n\n[Update]: {}", current_content, rows[j].content);
 
@@ -972,8 +1035,10 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
                 "UPDATE memory SET status = 'merged' WHERE id = ?1 AND status = 'active'",
                 rusqlite::params![rows[j].id],
             );
-            if update1.is_err() || update2.is_err()
-                || update1.unwrap_or(0) != 1 || update2.unwrap_or(0) != 1
+            if update1.is_err()
+                || update2.is_err()
+                || update1.unwrap_or(0) != 1
+                || update2.unwrap_or(0) != 1
             {
                 eprintln!("[consolidator] reweave update error — rolling back");
                 let _ = conn.execute_batch("ROLLBACK");
@@ -1056,7 +1121,10 @@ pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
             "UPDATE memory SET quality_score = ?1 WHERE id = ?2",
             rusqlite::params![quality_score, row.id],
         ) {
-            eprintln!("[consolidator] quality score update error for {}: {e}", row.id);
+            eprintln!(
+                "[consolidator] quality score update error for {}: {e}",
+                row.id
+            );
             continue;
         }
         scored += 1;
@@ -1123,7 +1191,8 @@ pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
                 rusqlite::params![protocol_title],
                 |row| row.get::<_, i64>(0),
             )
-            .unwrap_or(0) > 0;
+            .unwrap_or(0)
+            > 0;
 
         if exists {
             continue;
@@ -1222,10 +1291,13 @@ pub fn tag_antipatterns(conn: &Connection, batch_limit: usize) -> usize {
         tags.push("anti-pattern".into());
         let new_tags = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
 
-        if conn.execute(
-            "UPDATE memory SET tags = ?1 WHERE id = ?2",
-            rusqlite::params![new_tags, id],
-        ).is_ok() {
+        if conn
+            .execute(
+                "UPDATE memory SET tags = ?1 WHERE id = ?2",
+                rusqlite::params![new_tags, id],
+            )
+            .is_ok()
+        {
             tagged += 1;
         }
     }
@@ -1245,7 +1317,10 @@ pub fn tag_antipatterns(conn: &Connection, batch_limit: usize) -> usize {
 /// 6. Skip if overlap >= overlap_high (dedup territory) or < overlap_low (false positive)
 /// 7. Skip if old memory confidence >= 0.95 (user explicitly set high)
 /// 8. On supersede: UPDATE status, INSERT edge, INSERT healing_log
-pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingConfig) -> HealingStats {
+pub fn heal_topic_supersedes(
+    conn: &Connection,
+    config: &crate::config::HealingConfig,
+) -> HealingStats {
     let mut stats = HealingStats::default();
 
     if !config.enabled {
@@ -1290,7 +1365,9 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
                 content: row.get(3)?,
                 confidence: row.get(4)?,
                 created_at: row.get(5)?,
-                organization_id: row.get::<_, String>(6).unwrap_or_else(|_| "default".to_string()),
+                organization_id: row
+                    .get::<_, String>(6)
+                    .unwrap_or_else(|_| "default".to_string()),
             })
         })
         .ok()
@@ -1388,7 +1465,11 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
 
             let intersection = cand_words.intersection(&neigh_words).count();
             let union = cand_words.union(&neigh_words).count();
-            let overlap = if union > 0 { intersection as f64 / union as f64 } else { 0.0 };
+            let overlap = if union > 0 {
+                intersection as f64 / union as f64
+            } else {
+                0.0
+            };
 
             // Skip if overlap >= overlap_high (dedup territory)
             if overlap >= config.overlap_high {
@@ -1464,7 +1545,9 @@ pub fn heal_topic_supersedes(conn: &Connection, config: &crate::config::HealingC
 /// Memories with quality_score < threshold AND zero accesses AND older than N days -> faded.
 /// Two tiers: aggressive (quality < 0.1, 3 days) and normal (quality < threshold, N days).
 pub fn heal_session_staleness(conn: &Connection, config: &crate::config::HealingConfig) -> usize {
-    if !config.enabled { return 0; }
+    if !config.enabled {
+        return 0;
+    }
 
     let days = config.staleness_days;
     let min_quality = config.staleness_min_quality;
@@ -1472,24 +1555,28 @@ pub fn heal_session_staleness(conn: &Connection, config: &crate::config::Healing
     // Aggressive tier: near-garbage memories (quality < 0.1) fade after 3 days
     let aggressive_days = 3u64;
     let aggressive_quality = 0.1;
-    let aggressive_faded: usize = conn.execute(
-        "UPDATE memory SET status = 'faded'
+    let aggressive_faded: usize = conn
+        .execute(
+            "UPDATE memory SET status = 'faded'
          WHERE status = 'active'
          AND COALESCE(quality_score, 0.5) < ?1
          AND access_count = 0
          AND created_at < datetime('now', ?2)",
-        rusqlite::params![aggressive_quality, format!("-{aggressive_days} days")],
-    ).unwrap_or(0);
+            rusqlite::params![aggressive_quality, format!("-{aggressive_days} days")],
+        )
+        .unwrap_or(0);
 
     // Normal tier: low-quality memories fade after configured days
-    let normal_faded: usize = conn.execute(
-        "UPDATE memory SET status = 'faded'
+    let normal_faded: usize = conn
+        .execute(
+            "UPDATE memory SET status = 'faded'
          WHERE status = 'active'
          AND COALESCE(quality_score, 0.5) < ?1
          AND access_count = 0
          AND created_at < datetime('now', ?2)",
-        rusqlite::params![min_quality, format!("-{days} days")],
-    ).unwrap_or(0);
+            rusqlite::params![min_quality, format!("-{days} days")],
+        )
+        .unwrap_or(0);
 
     let faded = aggressive_faded + normal_faded;
 
@@ -1497,22 +1584,29 @@ pub fn heal_session_staleness(conn: &Connection, config: &crate::config::Healing
     if faded > 0 {
         let now = forge_core::time::now_iso();
         // Query the just-faded memories to log them
-        let ids: Vec<String> = conn.prepare(
-            "SELECT id FROM memory WHERE status = 'faded'
+        let ids: Vec<String> = conn
+            .prepare(
+                "SELECT id FROM memory WHERE status = 'faded'
              AND COALESCE(quality_score, 0.5) < ?1
-             AND access_count = 0"
-        ).and_then(|mut stmt| {
-            stmt.query_map(rusqlite::params![min_quality], |row| row.get(0))?.collect()
-        }).unwrap_or_default();
+             AND access_count = 0",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![min_quality], |row| row.get(0))?
+                    .collect()
+            })
+            .unwrap_or_default();
 
         for id in ids.iter().take(config.batch_limit) {
             let log_id = ulid::Ulid::new().to_string();
             if let Err(e) = conn.execute(
                 "INSERT INTO healing_log (id, action, old_memory_id, reason, created_at)
                  VALUES (?1, 'auto_faded', ?2, ?3, ?4)",
-                rusqlite::params![log_id, id,
+                rusqlite::params![
+                    log_id,
+                    id,
                     format!("Stale: quality < {min_quality}, 0 accesses, > {days} days old"),
-                    now],
+                    now
+                ],
             ) {
                 eprintln!("[healing] healing_log insert failed: {e}");
             }
@@ -1525,36 +1619,44 @@ pub fn heal_session_staleness(conn: &Connection, config: &crate::config::Healing
 /// Phase 22: Natural selection — decay unused memories' quality, boost accessed ones.
 /// Two-tier decay: accelerated decay (0.15) for quality < 0.3, normal decay for the rest.
 pub fn apply_quality_pressure(conn: &Connection, config: &crate::config::HealingConfig) -> usize {
-    if !config.enabled { return 0; }
+    if !config.enabled {
+        return 0;
+    }
 
     let decay = config.quality_decay_per_cycle;
     let boost = config.quality_boost_per_access;
     let accelerated_decay = 0.15_f64.max(decay); // at least 0.15 for low-quality
 
     // Accelerated decay: faster decay for low-quality memories (quality < 0.3)
-    let accel_decayed: usize = conn.execute(
-        "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
+    let accel_decayed: usize = conn
+        .execute(
+            "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
          WHERE status = 'active' AND access_count = 0
          AND COALESCE(quality_score, 0.5) > 0.0
          AND COALESCE(quality_score, 0.5) < 0.3",
-        rusqlite::params![accelerated_decay],
-    ).unwrap_or(0);
+            rusqlite::params![accelerated_decay],
+        )
+        .unwrap_or(0);
 
     // Normal decay: reduce quality for unaccessed active memories with quality >= 0.3 (floor at 0.0)
-    let normal_decayed: usize = conn.execute(
-        "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
+    let normal_decayed: usize = conn
+        .execute(
+            "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
          WHERE status = 'active' AND access_count = 0
          AND COALESCE(quality_score, 0.5) >= 0.3",
-        rusqlite::params![decay],
-    ).unwrap_or(0);
+            rusqlite::params![decay],
+        )
+        .unwrap_or(0);
 
     // Boost: increase quality for recently accessed active memories (cap at 1.0)
-    let boosted: usize = conn.execute(
-        "UPDATE memory SET quality_score = MIN(1.0, COALESCE(quality_score, 0.5) + ?1)
+    let boosted: usize = conn
+        .execute(
+            "UPDATE memory SET quality_score = MIN(1.0, COALESCE(quality_score, 0.5) + ?1)
          WHERE status = 'active' AND access_count > 0
          AND accessed_at > datetime('now', '-1 day')",
-        rusqlite::params![boost],
-    ).unwrap_or(0);
+            rusqlite::params![boost],
+        )
+        .unwrap_or(0);
 
     accel_decayed + normal_decayed + boosted
 }
@@ -1648,14 +1750,30 @@ mod tests {
         crate::db::schema::create_schema(&conn).unwrap();
 
         // Create an older memory with tags
-        let older = Memory::new(MemoryType::Decision, "Use JWT auth", "We chose JWT for authentication")
-            .with_tags(vec!["auth".to_string(), "security".to_string(), "jwt".to_string()]);
+        let older = Memory::new(
+            MemoryType::Decision,
+            "Use JWT auth",
+            "We chose JWT for authentication",
+        )
+        .with_tags(vec![
+            "auth".to_string(),
+            "security".to_string(),
+            "jwt".to_string(),
+        ]);
         ops::remember(&conn, &older).unwrap();
 
         // Create a newer memory with shared tags (same project, same type)
         // Need a slight delay in created_at to ensure ordering
-        let newer = Memory::new(MemoryType::Decision, "JWT rotation policy", "Rotate JWT tokens every 24h")
-            .with_tags(vec!["auth".to_string(), "security".to_string(), "rotation".to_string()]);
+        let newer = Memory::new(
+            MemoryType::Decision,
+            "JWT rotation policy",
+            "Rotate JWT tokens every 24h",
+        )
+        .with_tags(vec![
+            "auth".to_string(),
+            "security".to_string(),
+            "rotation".to_string(),
+        ]);
         // Manually set a later created_at
         conn.execute(
             "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, project)
@@ -1668,20 +1786,30 @@ mod tests {
         assert_eq!(count, 1, "should reweave 1 pair");
 
         // Verify older memory was enriched
-        let content: String = conn.query_row(
-            "SELECT content FROM memory WHERE id = ?1",
-            rusqlite::params![older.id],
-            |row| row.get(0),
-        ).unwrap();
-        assert!(content.contains("[Update]:"), "older memory should contain [Update] marker");
-        assert!(content.contains("Rotate JWT tokens every 24h"), "older memory should contain newer content");
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM memory WHERE id = ?1",
+                rusqlite::params![older.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            content.contains("[Update]:"),
+            "older memory should contain [Update] marker"
+        );
+        assert!(
+            content.contains("Rotate JWT tokens every 24h"),
+            "older memory should contain newer content"
+        );
 
         // Verify newer memory was marked as merged
-        let status: String = conn.query_row(
-            "SELECT status FROM memory WHERE id = ?1",
-            rusqlite::params![newer.id],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![newer.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "merged", "newer memory should be marked as merged");
     }
 
@@ -1692,8 +1820,12 @@ mod tests {
         crate::db::schema::create_schema(&conn).unwrap();
 
         // Create a decision memory
-        let decision = Memory::new(MemoryType::Decision, "Use JWT auth", "JWT for authentication")
-            .with_tags(vec!["auth".to_string(), "security".to_string()]);
+        let decision = Memory::new(
+            MemoryType::Decision,
+            "Use JWT auth",
+            "JWT for authentication",
+        )
+        .with_tags(vec!["auth".to_string(), "security".to_string()]);
         ops::remember(&conn, &decision).unwrap();
 
         // Create a lesson memory with same tags — different type should NOT reweave
@@ -1721,23 +1853,29 @@ mod tests {
              VALUES ('qs-1', 'decision', 'Test quality', ?1, 0.9, 'active', '[]',
                      datetime('now'), datetime('now'), 5, 0.5, NULL)",
             rusqlite::params!["A".repeat(200)], // content_len = 200 -> completeness = 1.0
-        ).unwrap();
+        )
+        .unwrap();
 
         let count = score_memory_quality(&conn, 200);
         assert_eq!(count, 1, "should score 1 memory");
 
-        let score: f64 = conn.query_row(
-            "SELECT quality_score FROM memory WHERE id = 'qs-1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let score: f64 = conn
+            .query_row(
+                "SELECT quality_score FROM memory WHERE id = 'qs-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         // freshness: created today = 1.0
         // utility: 5/10 = 0.5
         // completeness: 200/200 = 1.0
         // activation: 0.5
         // expected = 1.0*0.3 + 0.5*0.3 + 1.0*0.2 + 0.5*0.2 = 0.3 + 0.15 + 0.2 + 0.1 = 0.75
-        assert!((score - 0.75).abs() < 0.05, "score should be ~0.75, got {score}");
+        assert!(
+            (score - 0.75).abs() < 0.05,
+            "score should be ~0.75, got {score}"
+        );
     }
 
     #[test]
@@ -1762,22 +1900,30 @@ mod tests {
              VALUES ('old-1', 'decision', 'Old memory', 'Some content here', 0.9, 'active', '[]',
                      datetime('now', '-70 days'), datetime('now'), 0, 0.0, NULL)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         score_memory_quality(&conn, 200);
 
-        let fresh_score: f64 = conn.query_row(
-            "SELECT quality_score FROM memory WHERE id = 'fresh-1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
-        let old_score: f64 = conn.query_row(
-            "SELECT quality_score FROM memory WHERE id = 'old-1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let fresh_score: f64 = conn
+            .query_row(
+                "SELECT quality_score FROM memory WHERE id = 'fresh-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let old_score: f64 = conn
+            .query_row(
+                "SELECT quality_score FROM memory WHERE id = 'old-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
-        assert!(fresh_score > old_score, "fresh memory score ({fresh_score}) should be higher than old ({old_score})");
+        assert!(
+            fresh_score > old_score,
+            "fresh memory score ({fresh_score}) should be higher than old ({old_score})"
+        );
     }
 
     /// Simple deterministic text embedding for tests.
@@ -1785,12 +1931,16 @@ mod tests {
     fn simple_text_embedding(text: &str) -> Vec<f32> {
         let mut emb = vec![0.0f32; 768];
         for word in text.to_lowercase().split_whitespace() {
-            let hash = word.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+            let hash = word
+                .bytes()
+                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
             let idx = (hash % 768) as usize;
             emb[idx] += 1.0;
         }
         let norm: f32 = emb.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 { emb.iter_mut().for_each(|x| *x /= norm); }
+        if norm > 0.0 {
+            emb.iter_mut().for_each(|x| *x /= norm);
+        }
         emb
     }
 
@@ -1812,7 +1962,8 @@ mod tests {
         conn.execute(
             "UPDATE memory SET created_at = datetime('now', '-10 days') WHERE id = ?1",
             rusqlite::params![old.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let new_mem = Memory::new(
             MemoryType::Decision,
@@ -1835,22 +1986,29 @@ mod tests {
         let stats = heal_topic_supersedes(&conn, &config);
 
         assert!(stats.candidates_found > 0, "should find candidates");
-        assert_eq!(stats.topic_superseded, 1, "should supersede the old decision");
+        assert_eq!(
+            stats.topic_superseded, 1,
+            "should supersede the old decision"
+        );
 
         // Verify old memory is superseded
-        let status: String = conn.query_row(
-            "SELECT status FROM memory WHERE id = ?1",
-            rusqlite::params![old.id],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![old.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "superseded", "old memory should be superseded");
 
         // Verify healing_log entry
-        let log_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM healing_log WHERE action = 'auto_superseded'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let log_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM healing_log WHERE action = 'auto_superseded'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(log_count, 1, "should have 1 healing log entry");
     }
 
@@ -1871,7 +2029,8 @@ mod tests {
         conn.execute(
             "UPDATE memory SET created_at = datetime('now', '-10 days') WHERE id = ?1",
             rusqlite::params![old.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Insert new directly with raw SQL to bypass title dedup in remember()
         let new_id = ulid::Ulid::new().to_string();
@@ -1889,7 +2048,10 @@ mod tests {
         let config = crate::config::HealingConfig::default();
         let stats = heal_topic_supersedes(&conn, &config);
 
-        assert_eq!(stats.topic_superseded, 0, "should NOT supersede nearly identical memories (dedup handles)");
+        assert_eq!(
+            stats.topic_superseded, 0,
+            "should NOT supersede nearly identical memories (dedup handles)"
+        );
     }
 
     #[test]
@@ -1908,7 +2070,8 @@ mod tests {
         conn.execute(
             "UPDATE memory SET created_at = datetime('now', '-10 days') WHERE id = ?1",
             rusqlite::params![decision.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let lesson = Memory::new(
             MemoryType::Lesson,
@@ -1918,14 +2081,18 @@ mod tests {
         ops::remember(&conn, &lesson).unwrap();
 
         // Use identical embeddings so they are KNN neighbors
-        let emb = simple_text_embedding("SQLite primary storage backend evaluated options simplicity");
+        let emb =
+            simple_text_embedding("SQLite primary storage backend evaluated options simplicity");
         crate::db::vec::store_embedding(&conn, &decision.id, &emb).unwrap();
         crate::db::vec::store_embedding(&conn, &lesson.id, &emb).unwrap();
 
         let config = crate::config::HealingConfig::default();
         let stats = heal_topic_supersedes(&conn, &config);
 
-        assert_eq!(stats.topic_superseded, 0, "should NOT supersede across different types");
+        assert_eq!(
+            stats.topic_superseded, 0,
+            "should NOT supersede across different types"
+        );
     }
 
     #[test]
@@ -1944,7 +2111,8 @@ mod tests {
         conn.execute(
             "UPDATE memory SET created_at = datetime('now', '-30 days') WHERE id = ?1",
             rusqlite::params![old.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         // New decision (now)
         let new_mem = Memory::new(
@@ -1966,30 +2134,43 @@ mod tests {
         let config = crate::config::HealingConfig::default();
         let stats = heal_topic_supersedes(&conn, &config);
 
-        assert!(stats.topic_superseded >= 1, "should supersede at least one memory");
+        assert!(
+            stats.topic_superseded >= 1,
+            "should supersede at least one memory"
+        );
 
         // Verify the OLD one is superseded, not the new one
-        let old_status: String = conn.query_row(
-            "SELECT status FROM memory WHERE id = ?1",
-            rusqlite::params![old.id],
-            |row| row.get(0),
-        ).unwrap();
+        let old_status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![old.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(old_status, "superseded", "OLD memory should be superseded");
 
-        let new_status: String = conn.query_row(
-            "SELECT status FROM memory WHERE id = ?1",
-            rusqlite::params![new_mem.id],
-            |row| row.get(0),
-        ).unwrap();
+        let new_status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![new_mem.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(new_status, "active", "NEW memory should remain active");
 
         // Verify superseded_by points to new memory
-        let superseded_by: Option<String> = conn.query_row(
-            "SELECT superseded_by FROM memory WHERE id = ?1",
-            rusqlite::params![old.id],
-            |row| row.get(0),
-        ).unwrap();
-        assert_eq!(superseded_by, Some(new_mem.id.clone()), "superseded_by should point to new memory");
+        let superseded_by: Option<String> = conn
+            .query_row(
+                "SELECT superseded_by FROM memory WHERE id = ?1",
+                rusqlite::params![old.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            superseded_by,
+            Some(new_mem.id.clone()),
+            "superseded_by should point to new memory"
+        );
     }
 
     #[test]
@@ -2009,18 +2190,32 @@ mod tests {
 
         let config = crate::config::HealingConfig::default();
         let faded = heal_session_staleness(&conn, &config);
-        assert!(faded > 0, "old unaccessed low-quality memory should be faded");
+        assert!(
+            faded > 0,
+            "old unaccessed low-quality memory should be faded"
+        );
 
-        let status: String = conn.query_row(
-            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![m.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "faded");
 
         // Verify healing_log entry
-        let log_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM healing_log WHERE action = 'auto_faded'", [], |row| row.get(0),
-        ).unwrap();
-        assert!(log_count > 0, "should have healing_log entry for faded memory");
+        let log_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM healing_log WHERE action = 'auto_faded'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            log_count > 0,
+            "should have healing_log entry for faded memory"
+        );
     }
 
     #[test]
@@ -2029,8 +2224,12 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::create_schema(&conn).unwrap();
 
-        let m = Memory::new(MemoryType::Decision, "Old but accessed decision", "Still useful")
-            .with_confidence(0.9);
+        let m = Memory::new(
+            MemoryType::Decision,
+            "Old but accessed decision",
+            "Still useful",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &m).unwrap();
         // Backdate but give it access count
         conn.execute(
@@ -2040,11 +2239,18 @@ mod tests {
 
         let config = crate::config::HealingConfig::default();
         let faded = heal_session_staleness(&conn, &config);
-        assert_eq!(faded, 0, "accessed memory should not be faded regardless of age/quality");
+        assert_eq!(
+            faded, 0,
+            "accessed memory should not be faded regardless of age/quality"
+        );
 
-        let status: String = conn.query_row(
-            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![m.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "active");
     }
 
@@ -2054,21 +2260,30 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::create_schema(&conn).unwrap();
 
-        let m = Memory::new(MemoryType::Decision, "Unused decision for decay test", "Never accessed")
-            .with_confidence(0.9);
+        let m = Memory::new(
+            MemoryType::Decision,
+            "Unused decision for decay test",
+            "Never accessed",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &m).unwrap();
         conn.execute(
             "UPDATE memory SET quality_score = 0.5, access_count = 0 WHERE id = ?1",
             rusqlite::params![m.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let config = crate::config::HealingConfig::default();
         let adjusted = apply_quality_pressure(&conn, &config);
         assert!(adjusted > 0, "should adjust at least one memory");
 
-        let quality: f64 = conn.query_row(
-            "SELECT quality_score FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
-        ).unwrap();
+        let quality: f64 = conn
+            .query_row(
+                "SELECT quality_score FROM memory WHERE id = ?1",
+                rusqlite::params![m.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(quality < 0.5, "quality should have decayed from 0.5");
         assert!(quality >= 0.35, "quality should decay by ~0.1, not more");
     }
@@ -2084,8 +2299,12 @@ mod tests {
         // but get low quality from Phase 15 scoring (< staleness_min_quality = 0.2).
         // At 30 days: Phase 4 effective = 0.5 * exp(-0.9) ≈ 0.20 (survives),
         // Phase 15 quality ≈ 0.57 * 0.3 + 0 + 0.015 + 0 ≈ 0.19 (below 0.2 threshold).
-        let m = Memory::new(MemoryType::Decision, "Very stale memory for consolidation test", "Ancient content")
-            .with_confidence(0.5);
+        let m = Memory::new(
+            MemoryType::Decision,
+            "Very stale memory for consolidation test",
+            "Ancient content",
+        )
+        .with_confidence(0.5);
         ops::remember(&conn, &m).unwrap();
         conn.execute(
             "UPDATE memory SET created_at = datetime('now', '-30 days'), quality_score = 0.1, access_count = 0 WHERE id = ?1",
@@ -2096,7 +2315,10 @@ mod tests {
         let stats = run_all_phases(&conn, &config);
 
         // Healing phases should have run
-        assert!(stats.healed_faded > 0, "Phase 21 should have faded the stale memory");
+        assert!(
+            stats.healed_faded > 0,
+            "Phase 21 should have faded the stale memory"
+        );
     }
 
     #[test]
@@ -2108,20 +2330,35 @@ mod tests {
         let config = crate::config::HealingConfig::default();
 
         // A: Old storage decision
-        let a = Memory::new(MemoryType::Decision, "Old storage approach using Redis cluster", "Redis for distributed caching")
-            .with_confidence(0.8);
+        let a = Memory::new(
+            MemoryType::Decision,
+            "Old storage approach using Redis cluster",
+            "Redis for distributed caching",
+        )
+        .with_confidence(0.8);
         ops::remember(&conn, &a).unwrap();
-        conn.execute("UPDATE memory SET created_at = datetime('now', '-30 days') WHERE id = ?1",
-            rusqlite::params![a.id]).unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-30 days') WHERE id = ?1",
+            rusqlite::params![a.id],
+        )
+        .unwrap();
 
         // C: Completely unrelated auth decision (should NOT be affected)
-        let c = Memory::new(MemoryType::Decision, "Use OAuth2 for third-party authentication", "OAuth2 with PKCE flow for security")
-            .with_confidence(0.9);
+        let c = Memory::new(
+            MemoryType::Decision,
+            "Use OAuth2 for third-party authentication",
+            "OAuth2 with PKCE flow for security",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &c).unwrap();
 
         // D: New storage decision that supersedes A
-        let d = Memory::new(MemoryType::Decision, "New storage approach using SQLite cache", "SQLite for local caching instead of Redis")
-            .with_confidence(0.9);
+        let d = Memory::new(
+            MemoryType::Decision,
+            "New storage approach using SQLite cache",
+            "SQLite for local caching instead of Redis",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &d).unwrap();
 
         // Store embeddings for all three
@@ -2135,10 +2372,17 @@ mod tests {
         heal_topic_supersedes(&conn, &config);
 
         // C (unrelated auth) MUST remain active
-        let c_status: String = conn.query_row(
-            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![c.id], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(c_status, "active", "unrelated memory MUST NOT be cascade-superseded");
+        let c_status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![c.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            c_status, "active",
+            "unrelated memory MUST NOT be cascade-superseded"
+        );
     }
 
     #[test]
@@ -2149,14 +2393,25 @@ mod tests {
 
         let config = crate::config::HealingConfig::default();
 
-        let old = Memory::new(MemoryType::Decision, "Old approach to distributed caching", "Use Redis cluster with sentinel")
-            .with_confidence(0.8);
+        let old = Memory::new(
+            MemoryType::Decision,
+            "Old approach to distributed caching",
+            "Use Redis cluster with sentinel",
+        )
+        .with_confidence(0.8);
         ops::remember(&conn, &old).unwrap();
-        conn.execute("UPDATE memory SET created_at = datetime('now', '-30 days') WHERE id = ?1",
-            rusqlite::params![old.id]).unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = datetime('now', '-30 days') WHERE id = ?1",
+            rusqlite::params![old.id],
+        )
+        .unwrap();
 
-        let new_mem = Memory::new(MemoryType::Decision, "New approach to distributed caching strategy", "Use local SQLite cache instead")
-            .with_confidence(0.9);
+        let new_mem = Memory::new(
+            MemoryType::Decision,
+            "New approach to distributed caching strategy",
+            "Use local SQLite cache instead",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &new_mem).unwrap();
 
         let emb_old = simple_text_embedding(&format!("{} {}", old.title, old.content));
@@ -2168,7 +2423,10 @@ mod tests {
         let stats2 = heal_topic_supersedes(&conn, &config);
 
         // Second run should find nothing new (already superseded)
-        assert_eq!(stats2.topic_superseded, 0, "second healing run must be idempotent — nothing new to supersede");
+        assert_eq!(
+            stats2.topic_superseded, 0,
+            "second healing run must be idempotent — nothing new to supersede"
+        );
         // First run may or may not have superseded depending on similarity
         // but second run must always be zero regardless
         let _ = stats1;
@@ -2183,14 +2441,21 @@ mod tests {
         let config = crate::config::HealingConfig::default();
 
         // Memory without embedding — healing should skip gracefully
-        let m = Memory::new(MemoryType::Decision, "Decision without any embedding vector", "No embedding stored for this")
-            .with_confidence(0.9);
+        let m = Memory::new(
+            MemoryType::Decision,
+            "Decision without any embedding vector",
+            "No embedding stored for this",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &m).unwrap();
         // Don't store embedding
 
         let stats = heal_topic_supersedes(&conn, &config);
         assert_eq!(stats.topic_superseded, 0, "no embeddings = no healing");
-        assert_eq!(stats.candidates_found, 0, "no candidates without embeddings");
+        assert_eq!(
+            stats.candidates_found, 0,
+            "no candidates without embeddings"
+        );
     }
 
     #[test]
@@ -2204,7 +2469,8 @@ mod tests {
             "INSERT INTO team (id, name, organization_id, created_by, status, created_at)
              VALUES ('t1', 'eng', 'default', 'system', 'active', datetime('now'))",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create a meeting that's already past timeout (backdate it)
         conn.execute(
@@ -2225,26 +2491,43 @@ mod tests {
         let _stats = run_all_phases(&conn, &config);
 
         // Verify meeting is timed_out
-        let status: String = conn.query_row(
-            "SELECT status FROM meeting WHERE id = 'm1'", [], |row: &rusqlite::Row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM meeting WHERE id = 'm1'",
+                [],
+                |row: &rusqlite::Row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "timed_out");
 
         // Verify synthesis was stored
-        let synthesis: Option<String> = conn.query_row(
-            "SELECT synthesis FROM meeting WHERE id = 'm1'", [], |row: &rusqlite::Row| row.get(0),
-        ).unwrap();
+        let synthesis: Option<String> = conn
+            .query_row(
+                "SELECT synthesis FROM meeting WHERE id = 'm1'",
+                [],
+                |row: &rusqlite::Row| row.get(0),
+            )
+            .unwrap();
         assert!(synthesis.is_some(), "synthesis should be stored on timeout");
         let syn = synthesis.unwrap();
-        assert!(syn.contains("Architecture review"), "synthesis should mention the topic");
-        assert!(syn.contains("microservices"), "synthesis should include partial response");
+        assert!(
+            syn.contains("Architecture review"),
+            "synthesis should mention the topic"
+        );
+        assert!(
+            syn.contains("microservices"),
+            "synthesis should include partial response"
+        );
 
         // Verify a decision memory was created
         let decision_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM memory WHERE title LIKE '%Architecture review%' AND memory_type = 'decision'",
             [], |row: &rusqlite::Row| row.get(0),
         ).unwrap();
-        assert!(decision_count > 0, "auto-synthesis should create a decision memory");
+        assert!(
+            decision_count > 0,
+            "auto-synthesis should create a decision memory"
+        );
     }
 
     #[test]
@@ -2278,7 +2561,10 @@ mod tests {
 
         // Second call should NOT create duplicates
         let second_count = detect_and_surface_gaps(&conn);
-        assert_eq!(second_count, 0, "second call should skip existing gap perceptions");
+        assert_eq!(
+            second_count, 0,
+            "second call should skip existing gap perceptions"
+        );
 
         let perception_count_after_second: i64 = conn
             .query_row(
@@ -2315,16 +2601,24 @@ mod tests {
             "SELECT COUNT(*) FROM notification WHERE status = 'pending' AND title LIKE '%quality%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(pending_count, 1, "should have 1 pending quality notification");
+        assert_eq!(
+            pending_count, 1,
+            "should have 1 pending quality notification"
+        );
 
         // Create memories with GOOD quality scores (avg >= 0.3)
         for i in 0..5 {
-            let m = Memory::new(MemoryType::Decision, format!("Good decision {i}"), "High quality");
+            let m = Memory::new(
+                MemoryType::Decision,
+                format!("Good decision {i}"),
+                "High quality",
+            );
             ops::remember(&conn, &m).unwrap();
             conn.execute(
                 "UPDATE memory SET quality_score = 0.8 WHERE id = ?1",
                 rusqlite::params![m.id],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         // Run all phases — should auto-dismiss the notification since quality is good
@@ -2336,13 +2630,19 @@ mod tests {
             "SELECT COUNT(*) FROM notification WHERE status = 'dismissed' AND title LIKE '%quality%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(dismissed_count, 1, "quality notification should be auto-dismissed when quality improves");
+        assert_eq!(
+            dismissed_count, 1,
+            "quality notification should be auto-dismissed when quality improves"
+        );
 
         let remaining_pending: i64 = conn.query_row(
             "SELECT COUNT(*) FROM notification WHERE status = 'pending' AND title LIKE '%quality%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(remaining_pending, 0, "no pending quality notifications should remain");
+        assert_eq!(
+            remaining_pending, 0,
+            "no pending quality notifications should remain"
+        );
     }
 
     // ── Fix 4: Healing tuning ──
@@ -2354,8 +2654,12 @@ mod tests {
         crate::db::schema::create_schema(&conn).unwrap();
 
         // Create a near-garbage memory (quality 0.05) that is only 4 days old
-        let m = Memory::new(MemoryType::Decision, "Near garbage decision", "Very low quality")
-            .with_confidence(0.5);
+        let m = Memory::new(
+            MemoryType::Decision,
+            "Near garbage decision",
+            "Very low quality",
+        )
+        .with_confidence(0.5);
         ops::remember(&conn, &m).unwrap();
         conn.execute(
             "UPDATE memory SET created_at = datetime('now', '-4 days'), quality_score = 0.05, access_count = 0 WHERE id = ?1",
@@ -2366,11 +2670,18 @@ mod tests {
         // but SHOULD be faded by the aggressive tier (3 days for quality < 0.1)
         let config = crate::config::HealingConfig::default();
         let faded = heal_session_staleness(&conn, &config);
-        assert!(faded > 0, "near-garbage memory (quality 0.05, 4 days old) should be faded by aggressive tier");
+        assert!(
+            faded > 0,
+            "near-garbage memory (quality 0.05, 4 days old) should be faded by aggressive tier"
+        );
 
-        let status: String = conn.query_row(
-            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![m.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "faded");
     }
 
@@ -2392,11 +2703,18 @@ mod tests {
 
         let config = crate::config::HealingConfig::default();
         let faded = heal_session_staleness(&conn, &config);
-        assert!(faded > 0, "low-quality memory (0.15, 10 days old) should be faded by normal tier");
+        assert!(
+            faded > 0,
+            "low-quality memory (0.15, 10 days old) should be faded by normal tier"
+        );
 
-        let status: String = conn.query_row(
-            "SELECT status FROM memory WHERE id = ?1", rusqlite::params![m.id], |row| row.get(0),
-        ).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![m.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "faded");
     }
 
@@ -2407,38 +2725,60 @@ mod tests {
         crate::db::schema::create_schema(&conn).unwrap();
 
         // Create a low-quality memory (quality 0.25, below 0.3 threshold)
-        let m_low = Memory::new(MemoryType::Decision, "Low quality accelerated decay", "Should decay faster");
+        let m_low = Memory::new(
+            MemoryType::Decision,
+            "Low quality accelerated decay",
+            "Should decay faster",
+        );
         ops::remember(&conn, &m_low).unwrap();
         conn.execute(
             "UPDATE memory SET quality_score = 0.25, access_count = 0 WHERE id = ?1",
             rusqlite::params![m_low.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create a normal-quality memory (quality 0.5, above 0.3 threshold)
-        let m_normal = Memory::new(MemoryType::Decision, "Normal quality standard decay", "Should decay normally");
+        let m_normal = Memory::new(
+            MemoryType::Decision,
+            "Normal quality standard decay",
+            "Should decay normally",
+        );
         ops::remember(&conn, &m_normal).unwrap();
         conn.execute(
             "UPDATE memory SET quality_score = 0.5, access_count = 0 WHERE id = ?1",
             rusqlite::params![m_normal.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let config = crate::config::HealingConfig::default();
         apply_quality_pressure(&conn, &config);
 
-        let low_quality: f64 = conn.query_row(
-            "SELECT quality_score FROM memory WHERE id = ?1", rusqlite::params![m_low.id], |row| row.get(0),
-        ).unwrap();
-        let normal_quality: f64 = conn.query_row(
-            "SELECT quality_score FROM memory WHERE id = ?1", rusqlite::params![m_normal.id], |row| row.get(0),
-        ).unwrap();
+        let low_quality: f64 = conn
+            .query_row(
+                "SELECT quality_score FROM memory WHERE id = ?1",
+                rusqlite::params![m_low.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let normal_quality: f64 = conn
+            .query_row(
+                "SELECT quality_score FROM memory WHERE id = ?1",
+                rusqlite::params![m_normal.id],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         // Low-quality should decay by 0.15 (accelerated): 0.25 - 0.15 = 0.10
-        assert!((low_quality - 0.10).abs() < 0.01,
-            "low-quality memory should decay by 0.15 (accelerated), got {low_quality}");
+        assert!(
+            (low_quality - 0.10).abs() < 0.01,
+            "low-quality memory should decay by 0.15 (accelerated), got {low_quality}"
+        );
 
         // Normal-quality should decay by 0.1 (standard): 0.5 - 0.1 = 0.4
-        assert!((normal_quality - 0.4).abs() < 0.01,
-            "normal-quality memory should decay by 0.1 (standard), got {normal_quality}");
+        assert!(
+            (normal_quality - 0.4).abs() < 0.01,
+            "normal-quality memory should decay by 0.1 (standard), got {normal_quality}"
+        );
     }
 
     // ── Content-based contradiction detection tests ──
@@ -2466,15 +2806,23 @@ mod tests {
         ops::remember(&conn, &b).unwrap();
 
         let found = detect_content_contradictions(&conn);
-        assert!(found >= 1, "should detect content contradiction, got {found}");
+        assert!(
+            found >= 1,
+            "should detect content contradiction, got {found}"
+        );
 
         // Verify edge was created
-        let edge_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM edge WHERE edge_type = 'contradicts'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
-        assert!(edge_count >= 1, "should have a contradicts edge, got {edge_count}");
+        let edge_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edge WHERE edge_type = 'contradicts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            edge_count >= 1,
+            "should have a contradicts edge, got {edge_count}"
+        );
 
         // Verify diagnostic was created
         let diag_count: i64 = conn.query_row(
@@ -2482,7 +2830,10 @@ mod tests {
             [],
             |row| row.get(0),
         ).unwrap();
-        assert!(diag_count >= 1, "should have a contradiction diagnostic, got {diag_count}");
+        assert!(
+            diag_count >= 1,
+            "should have a contradiction diagnostic, got {diag_count}"
+        );
     }
 
     #[test]
@@ -2514,7 +2865,10 @@ mod tests {
         ).unwrap();
 
         let found = detect_content_contradictions(&conn);
-        assert_eq!(found, 0, "should not detect contradiction for similar content");
+        assert_eq!(
+            found, 0,
+            "should not detect contradiction for similar content"
+        );
     }
 
     #[test]
@@ -2539,7 +2893,10 @@ mod tests {
         ops::remember(&conn, &b).unwrap();
 
         let found = detect_content_contradictions(&conn);
-        assert_eq!(found, 0, "should not detect contradiction across different types");
+        assert_eq!(
+            found, 0,
+            "should not detect contradiction across different types"
+        );
     }
 
     #[test]
@@ -2566,7 +2923,10 @@ mod tests {
         assert!(found1 >= 1, "first run should find contradictions");
 
         let found2 = detect_content_contradictions(&conn);
-        assert_eq!(found2, 0, "second run should be idempotent — already detected");
+        assert_eq!(
+            found2, 0,
+            "second run should be idempotent — already detected"
+        );
     }
 
     #[test]
@@ -2599,16 +2959,23 @@ mod tests {
         let config = crate::config::ConsolidationConfig::default();
         let stats = run_all_phases(&conn, &config);
 
-        assert!(stats.contradictions >= 1,
+        assert!(
+            stats.contradictions >= 1,
             "run_all_phases should detect content contradictions even with neutral valence, got {}",
-            stats.contradictions);
+            stats.contradictions
+        );
 
         // Verify edge was created
-        let edge_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM edge WHERE edge_type = 'contradicts'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
-        assert!(edge_count >= 1, "should have contradicts edge after full consolidation");
+        let edge_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edge WHERE edge_type = 'contradicts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            edge_count >= 1,
+            "should have contradicts edge after full consolidation"
+        );
     }
 }

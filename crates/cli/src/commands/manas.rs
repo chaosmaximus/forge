@@ -39,7 +39,11 @@ pub async fn manas_health() {
             if trait_names.is_empty() {
                 println!("Disposition:            {disposition_traits} traits");
             } else {
-                println!("Disposition:            {} traits ({})", disposition_traits, trait_names.join(", "));
+                println!(
+                    "Disposition:            {} traits ({})",
+                    disposition_traits,
+                    trait_names.join(", ")
+                );
             }
         }
         Ok(Response::Error { message }) => {
@@ -59,7 +63,9 @@ pub async fn manas_health() {
 
 /// List identity facets for an agent.
 pub async fn identity_list(agent: String) {
-    let request = Request::ListIdentity { agent: agent.clone() };
+    let request = Request::ListIdentity {
+        agent: agent.clone(),
+    };
 
     match client::send(&request).await {
         Ok(Response::Ok {
@@ -95,12 +101,7 @@ pub async fn identity_list(agent: String) {
 }
 
 /// Set an identity facet.
-pub async fn identity_set(
-    facet: String,
-    description: String,
-    agent: String,
-    strength: f64,
-) {
+pub async fn identity_set(facet: String, description: String, agent: String, strength: f64) {
     // Generate a timestamp-based ID
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -120,7 +121,9 @@ pub async fn identity_set(
         user_id: None,
     };
 
-    let request = Request::StoreIdentity { facet: identity_facet };
+    let request = Request::StoreIdentity {
+        facet: identity_facet,
+    };
 
     match client::send(&request).await {
         Ok(Response::Ok {
@@ -149,7 +152,11 @@ pub async fn identity_remove(id: String) {
 
     match client::send(&request).await {
         Ok(Response::Ok {
-            data: ResponseData::IdentityDeactivated { id: deactivated_id, found },
+            data:
+                ResponseData::IdentityDeactivated {
+                    id: deactivated_id,
+                    found,
+                },
         }) => {
             if found {
                 println!("Identity facet deactivated: {deactivated_id}");
@@ -291,7 +298,13 @@ pub async fn perceptions(project: Option<String>, limit: usize, offset: usize) {
 }
 
 /// Compile optimized context from all Manas layers (for session-start injection).
-pub async fn compile_context(agent: String, project: Option<String>, static_only: bool, session_id: Option<String>, focus: Option<String>) {
+pub async fn compile_context(
+    agent: String,
+    project: Option<String>,
+    static_only: bool,
+    session_id: Option<String>,
+    focus: Option<String>,
+) {
     let request = Request::CompileContext {
         agent: Some(agent),
         project,
@@ -303,7 +316,13 @@ pub async fn compile_context(agent: String, project: Option<String>, static_only
 
     match client::send(&request).await {
         Ok(Response::Ok {
-            data: ResponseData::CompiledContext { context, layers_used, chars, .. },
+            data:
+                ResponseData::CompiledContext {
+                    context,
+                    layers_used,
+                    chars,
+                    ..
+                },
         }) => {
             if context.is_empty() {
                 println!("<forge-context version=\"0.7.0\"/>");

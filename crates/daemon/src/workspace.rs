@@ -48,11 +48,14 @@ pub fn team_workspace_path(
         "project" => None,
         "team" => {
             let dir = project_dir?;
-            Some(PathBuf::from(dir).join(".forge").join("teams").join(team_name))
+            Some(
+                PathBuf::from(dir)
+                    .join(".forge")
+                    .join("teams")
+                    .join(team_name),
+            )
         }
-        "distributed" => {
-            config.roots.get(team_name).map(PathBuf::from)
-        }
+        "distributed" => config.roots.get(team_name).map(PathBuf::from),
         "centralized" => {
             if config.root.is_empty() {
                 return None;
@@ -84,7 +87,10 @@ pub fn init_org_workspace(
     let ws_root = match config.mode.as_str() {
         "team" => {
             let dir = project_dir.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "team mode requires project_dir")
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "team mode requires project_dir",
+                )
             })?;
             PathBuf::from(dir).join(".forge")
         }
@@ -101,14 +107,20 @@ pub fn init_org_workspace(
             // In distributed mode, each team has its own root.
             // We create a virtual root under project_dir for org.json/workspace.json.
             let dir = project_dir.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "distributed mode requires project_dir")
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "distributed mode requires project_dir",
+                )
             })?;
             PathBuf::from(dir).join(".forge")
         }
         _ => {
             // project mode — still create .forge/ with workspace.json
             let dir = project_dir.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "project mode requires project_dir")
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "project mode requires project_dir",
+                )
             })?;
             PathBuf::from(dir).join(".forge")
         }
@@ -174,7 +186,10 @@ pub fn write_decision(
     let slug = slugify(title);
     let team_slug = slugify(team);
     let filename = format!("{date}-{slug}.md");
-    let dir = workspace_root.join("teams").join(&team_slug).join("decisions");
+    let dir = workspace_root
+        .join("teams")
+        .join(&team_slug)
+        .join("decisions");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(&filename);
 
@@ -291,16 +306,18 @@ mod tests {
     #[test]
     fn test_team_workspace_path_distributed_mode() {
         let mut config = make_config("distributed");
-        config.roots.insert(
-            "engineering".to_string(),
-            "/data/eng-workspace".to_string(),
-        );
+        config
+            .roots
+            .insert("engineering".to_string(), "/data/eng-workspace".to_string());
         let result = team_workspace_path(&config, "engineering", "MyOrg", None);
         assert_eq!(result.unwrap(), PathBuf::from("/data/eng-workspace"));
 
         // Unknown team returns None
         let result2 = team_workspace_path(&config, "marketing", "MyOrg", None);
-        assert!(result2.is_none(), "unknown team in distributed mode should return None");
+        assert!(
+            result2.is_none(),
+            "unknown team in distributed mode should return None"
+        );
     }
 
     #[test]
@@ -318,7 +335,10 @@ mod tests {
     fn test_team_workspace_path_centralized_no_root() {
         let config = make_config("centralized");
         let result = team_workspace_path(&config, "engineering", "AcmeCorp", None);
-        assert!(result.is_none(), "centralized mode with empty root should return None");
+        assert!(
+            result.is_none(),
+            "centralized mode with empty root should return None"
+        );
     }
 
     #[test]
@@ -383,8 +403,14 @@ mod tests {
 
         // Check filename
         let filename = path.file_name().unwrap().to_str().unwrap();
-        assert!(filename.ends_with("-use-jwt-for-authentication.md"), "filename: {filename}");
-        assert!(filename.starts_with(&today_ymd()), "filename should start with today's date");
+        assert!(
+            filename.ends_with("-use-jwt-for-authentication.md"),
+            "filename: {filename}"
+        );
+        assert!(
+            filename.starts_with(&today_ymd()),
+            "filename should start with today's date"
+        );
 
         // Check content
         let content = std::fs::read_to_string(&path).unwrap();
@@ -406,8 +432,14 @@ mod tests {
 
         let participants = vec!["CTO".to_string(), "CFO".to_string(), "CMO".to_string()];
         let contributions = vec![
-            ("CTO".to_string(), "Recommends per-seat pricing.".to_string()),
-            ("CFO".to_string(), "Usage-based has higher ceiling.".to_string()),
+            (
+                "CTO".to_string(),
+                "Recommends per-seat pricing.".to_string(),
+            ),
+            (
+                "CFO".to_string(),
+                "Usage-based has higher ceiling.".to_string(),
+            ),
         ];
 
         let path = write_meeting_minutes(
@@ -423,7 +455,10 @@ mod tests {
 
         // Check filename
         let filename = path.file_name().unwrap().to_str().unwrap();
-        assert!(filename.ends_with("-licensing-model.md"), "filename: {filename}");
+        assert!(
+            filename.ends_with("-licensing-model.md"),
+            "filename: {filename}"
+        );
 
         // Check content
         let content = std::fs::read_to_string(&path).unwrap();
@@ -449,7 +484,11 @@ mod tests {
         // Create backlog
         let team_dir = ws_root.join("teams/engineering");
         std::fs::create_dir_all(&team_dir).unwrap();
-        std::fs::write(team_dir.join("backlog.md"), "# Backlog\n- Item 1\n- Item 2\n").unwrap();
+        std::fs::write(
+            team_dir.join("backlog.md"),
+            "# Backlog\n- Item 1\n- Item 2\n",
+        )
+        .unwrap();
 
         let backlog = read_team_backlog(ws_root, "engineering").unwrap();
         assert!(backlog.contains("# Backlog"));
@@ -458,7 +497,10 @@ mod tests {
 
     #[test]
     fn test_slugify() {
-        assert_eq!(slugify("Use JWT for Authentication"), "use-jwt-for-authentication");
+        assert_eq!(
+            slugify("Use JWT for Authentication"),
+            "use-jwt-for-authentication"
+        );
         assert_eq!(slugify("Hello, World!"), "hello-world");
         assert_eq!(slugify("  spaces  "), "spaces");
         assert_eq!(slugify("CamelCase123"), "camelcase123");
@@ -505,9 +547,15 @@ mod tests {
         let path = result.unwrap();
         // The path should NOT contain ".." — it should be slugified
         let path_str = path.to_string_lossy();
-        assert!(!path_str.contains(".."), "slugified team path must not contain '..': {path_str}");
+        assert!(
+            !path_str.contains(".."),
+            "slugified team path must not contain '..': {path_str}"
+        );
         // The slugified team name should be something like "etc-passwd"
-        assert!(path_str.contains("etc-passwd"), "team name should be slugified to 'etc-passwd': {path_str}");
+        assert!(
+            path_str.contains("etc-passwd"),
+            "team name should be slugified to 'etc-passwd': {path_str}"
+        );
         // File should actually exist
         assert!(path.exists(), "decision file should have been written");
     }

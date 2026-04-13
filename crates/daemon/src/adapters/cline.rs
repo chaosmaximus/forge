@@ -180,8 +180,7 @@ mod tests {
         assert!(!adapter.matches(wrong_file));
 
         // Should reject api_conversation_history.json outside tasks dir
-        let wrong_dir =
-            std::path::Path::new("/home/testuser/other/api_conversation_history.json");
+        let wrong_dir = std::path::Path::new("/home/testuser/other/api_conversation_history.json");
         assert!(!adapter.matches(wrong_dir));
     }
 

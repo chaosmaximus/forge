@@ -1,6 +1,4 @@
-use forge_core::types::reality_engine::{
-    DetectionResult, EngineCapabilities, RealityEngine,
-};
+use forge_core::types::reality_engine::{DetectionResult, EngineCapabilities, RealityEngine};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -364,7 +362,10 @@ mod tests {
 
         let engine = CodeRealityEngine;
         let result = engine.detect(dir.path());
-        assert!(result.is_none(), "should not detect any project in empty dir");
+        assert!(
+            result.is_none(),
+            "should not detect any project in empty dir"
+        );
     }
 
     #[test]
@@ -380,7 +381,9 @@ mod tests {
 
         assert!(caps.graph_edge_types.contains(&"calls".to_string()));
         assert!(caps.graph_edge_types.contains(&"imports".to_string()));
-        assert!(caps.graph_edge_types.contains(&"belongs_to_cluster".to_string()));
+        assert!(caps
+            .graph_edge_types
+            .contains(&"belongs_to_cluster".to_string()));
 
         assert!(caps.perception_kinds.contains(&"file_change".to_string()));
         assert!(caps.perception_kinds.contains(&"diagnostic".to_string()));
@@ -416,6 +419,9 @@ mod tests {
 
         let engine = CodeRealityEngine;
         let result = engine.detect(dir.path()).unwrap();
-        assert_eq!(result.domain, "rust", "Cargo.toml should take priority over Makefile");
+        assert_eq!(
+            result.domain, "rust",
+            "Cargo.toml should take priority over Makefile"
+        );
     }
 }

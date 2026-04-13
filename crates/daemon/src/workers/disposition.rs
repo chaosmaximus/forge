@@ -36,9 +36,7 @@ pub async fn run_disposition(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    eprintln!(
-        "[disposition] started, interval = {interval:?}"
-    );
+    eprintln!("[disposition] started, interval = {interval:?}");
 
     loop {
         tokio::select! {
@@ -91,14 +89,22 @@ fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
     };
 
     if sessions.is_empty() {
-        eprintln!("[disposition] no sessions found for agent '{agent_name}' — cannot compute traits");
+        eprintln!(
+            "[disposition] no sessions found for agent '{agent_name}' — cannot compute traits"
+        );
         return;
     }
 
     // 2. Compute heuristics
     let total = sessions.len();
-    let short_count = sessions.iter().filter(|s| s.duration_secs < SHORT_SESSION_THRESHOLD_SECS).count();
-    let long_count = sessions.iter().filter(|s| s.duration_secs >= LONG_SESSION_THRESHOLD_SECS).count();
+    let short_count = sessions
+        .iter()
+        .filter(|s| s.duration_secs < SHORT_SESSION_THRESHOLD_SECS)
+        .count();
+    let long_count = sessions
+        .iter()
+        .filter(|s| s.duration_secs >= LONG_SESSION_THRESHOLD_SECS)
+        .count();
     let short_ratio = short_count as f64 / total as f64;
     let long_ratio = long_count as f64 / total as f64;
 
@@ -179,9 +185,9 @@ struct SessionSummary {
 /// Query distinct agent names from sessions in the last 24 hours (active or recently ended).
 fn query_active_agents(conn: &rusqlite::Connection) -> Vec<String> {
     let cutoff = manas::now_offset(-86400);
-    let mut stmt = match conn.prepare(
-        "SELECT DISTINCT agent FROM session WHERE status = 'active' OR started_at > ?1"
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT DISTINCT agent FROM session WHERE status = 'active' OR started_at > ?1")
+    {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[disposition] WARN: failed to prepare agent query: {e}");
@@ -365,7 +371,8 @@ mod tests {
             "initial caution should be {DEFAULT_VALUE}"
         );
 
-        let thoroughness = get_current_value(&conn, DEFAULT_AGENT_NAME, DispositionTrait::Thoroughness);
+        let thoroughness =
+            get_current_value(&conn, DEFAULT_AGENT_NAME, DispositionTrait::Thoroughness);
         assert!(
             (thoroughness - DEFAULT_VALUE).abs() < f64::EPSILON,
             "initial thoroughness should be {DEFAULT_VALUE}"
@@ -441,8 +448,7 @@ mod tests {
 
     #[test]
     fn test_estimate_duration_same_day() {
-        let dur =
-            estimate_duration_secs("2026-04-03 10:00:00", "2026-04-03 10:15:00");
+        let dur = estimate_duration_secs("2026-04-03 10:00:00", "2026-04-03 10:15:00");
         assert_eq!(dur, 900); // 15 minutes
     }
 
@@ -469,19 +475,29 @@ mod tests {
         tick_for_agent(&conn, "claude-code");
 
         // Verify traits were stored
-        let caution: f64 = conn.query_row(
-            "SELECT value FROM disposition WHERE id = 'claude-code-caution'",
-            [],
-            |row| row.get(0),
-        ).expect("caution trait should exist after tick");
-        assert!((0.0..=1.0).contains(&caution), "caution should be in [0,1], got {caution}");
+        let caution: f64 = conn
+            .query_row(
+                "SELECT value FROM disposition WHERE id = 'claude-code-caution'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("caution trait should exist after tick");
+        assert!(
+            (0.0..=1.0).contains(&caution),
+            "caution should be in [0,1], got {caution}"
+        );
 
-        let thoroughness: f64 = conn.query_row(
-            "SELECT value FROM disposition WHERE id = 'claude-code-thoroughness'",
-            [],
-            |row| row.get(0),
-        ).expect("thoroughness trait should exist after tick");
-        assert!((0.0..=1.0).contains(&thoroughness), "thoroughness should be in [0,1], got {thoroughness}");
+        let thoroughness: f64 = conn
+            .query_row(
+                "SELECT value FROM disposition WHERE id = 'claude-code-thoroughness'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("thoroughness trait should exist after tick");
+        assert!(
+            (0.0..=1.0).contains(&thoroughness),
+            "thoroughness should be in [0,1], got {thoroughness}"
+        );
     }
 
     #[test]
@@ -497,12 +513,17 @@ mod tests {
         tick_for_agent(&conn, "claude-code");
 
         // Verify traits were stored (not skipped due to empty sessions)
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM disposition WHERE agent = 'claude-code'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
-        assert!(count >= 2, "should have at least 2 traits (caution + thoroughness), got {count}");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM disposition WHERE agent = 'claude-code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            count >= 2,
+            "should have at least 2 traits (caution + thoroughness), got {count}"
+        );
     }
 
     #[test]
@@ -515,7 +536,10 @@ mod tests {
         ).unwrap();
 
         let agents = query_active_agents(&conn);
-        assert!(agents.contains(&"claude-code".to_string()), "should find claude-code agent");
+        assert!(
+            agents.contains(&"claude-code".to_string()),
+            "should find claude-code agent"
+        );
     }
 
     #[test]
@@ -523,6 +547,10 @@ mod tests {
         let conn = open_db();
         // No sessions at all
         let agents = query_active_agents(&conn);
-        assert_eq!(agents, vec![DEFAULT_AGENT_NAME.to_string()], "should fallback to default agent");
+        assert_eq!(
+            agents,
+            vec![DEFAULT_AGENT_NAME.to_string()],
+            "should fallback to default agent"
+        );
     }
 }

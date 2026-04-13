@@ -1,6 +1,6 @@
-use forge_daemon::server::handler::{handle_request, DaemonState};
 use forge_core::protocol::*;
 use forge_core::types::MemoryType;
+use forge_daemon::server::handler::{handle_request, DaemonState};
 
 /// Helper: create an in-memory DaemonState for testing.
 fn fresh_state() -> DaemonState {
@@ -66,9 +66,7 @@ fn recall(state: &mut DaemonState, query: &str) -> Vec<MemoryResult> {
 
 /// Helper: issue a Forget request and return the response.
 fn forget(state: &mut DaemonState, id: &str) -> Response {
-    let req = Request::Forget {
-        id: id.to_string(),
-    };
+    let req = Request::Forget { id: id.to_string() };
     handle_request(state, req)
 }
 
@@ -146,9 +144,7 @@ fn test_full_memory_lifecycle() {
         !results.is_empty(),
         "recall 'authentication tokens' should return at least 1 result"
     );
-    let has_jwt = results
-        .iter()
-        .any(|r| r.memory.title.contains("JWT"));
+    let has_jwt = results.iter().any(|r| r.memory.title.contains("JWT"));
     assert!(has_jwt, "at least one result should contain 'JWT' in title");
 
     // --- Step 4: Recall "database" — should find PostgreSQL ---
@@ -160,7 +156,10 @@ fn test_full_memory_lifecycle() {
     let has_pg = results
         .iter()
         .any(|r| r.memory.title.contains("PostgreSQL"));
-    assert!(has_pg, "at least one result should contain 'PostgreSQL' in title");
+    assert!(
+        has_pg,
+        "at least one result should contain 'PostgreSQL' in title"
+    );
 
     // --- Step 5: Forget the JWT decision ---
     // First recall "JWT" to confirm it exists and get the ID
@@ -189,9 +188,7 @@ fn test_full_memory_lifecycle() {
 
     // --- Step 6: Recall "JWT authentication" — should be gone ---
     let results = recall(&mut state, "JWT authentication");
-    let has_jwt_after = results
-        .iter()
-        .any(|r| r.memory.title.contains("JWT"));
+    let has_jwt_after = results.iter().any(|r| r.memory.title.contains("JWT"));
     assert!(
         !has_jwt_after,
         "JWT should not appear in recall after forget (got {} results)",
@@ -263,7 +260,10 @@ fn test_remember_different_types() {
 
     // Recall each by relevant keyword and verify the correct type comes back
     let results = recall(&mut state, "microservice monolith");
-    assert!(!results.is_empty(), "recall 'microservice monolith' should find results");
+    assert!(
+        !results.is_empty(),
+        "recall 'microservice monolith' should find results"
+    );
     let decision_result = results
         .iter()
         .find(|r| r.memory.title.contains("Microservice"));
@@ -278,7 +278,10 @@ fn test_remember_different_types() {
     );
 
     let results = recall(&mut state, "tests TDD regressions");
-    assert!(!results.is_empty(), "recall 'tests TDD' should find results");
+    assert!(
+        !results.is_empty(),
+        "recall 'tests TDD' should find results"
+    );
     let lesson_result = results
         .iter()
         .find(|r| r.memory.title.contains("tests first"));
@@ -290,14 +293,14 @@ fn test_remember_different_types() {
     );
 
     let results = recall(&mut state, "builder configuration objects");
-    assert!(!results.is_empty(), "recall 'builder configuration' should find results");
+    assert!(
+        !results.is_empty(),
+        "recall 'builder configuration' should find results"
+    );
     let pattern_result = results
         .iter()
         .find(|r| r.memory.title.contains("Builder pattern"));
-    assert!(
-        pattern_result.is_some(),
-        "should find the builder pattern"
-    );
+    assert!(pattern_result.is_some(), "should find the builder pattern");
     assert_eq!(
         pattern_result.unwrap().memory.memory_type,
         MemoryType::Pattern,
@@ -305,10 +308,11 @@ fn test_remember_different_types() {
     );
 
     let results = recall(&mut state, "Rust CLI tools performance");
-    assert!(!results.is_empty(), "recall 'Rust CLI tools' should find results");
-    let pref_result = results
-        .iter()
-        .find(|r| r.memory.title.contains("Rust"));
+    assert!(
+        !results.is_empty(),
+        "recall 'Rust CLI tools' should find results"
+    );
+    let pref_result = results.iter().find(|r| r.memory.title.contains("Rust"));
     assert!(pref_result.is_some(), "should find the Rust preference");
     assert_eq!(
         pref_result.unwrap().memory.memory_type,
@@ -334,8 +338,6 @@ fn test_forget_nonexistent() {
                 "error message should indicate not found/already deleted, got: {message}"
             );
         }
-        other => panic!(
-            "expected Error response for nonexistent id, got: {other:?}"
-        ),
+        other => panic!("expected Error response for nonexistent id, got: {other:?}"),
     }
 }

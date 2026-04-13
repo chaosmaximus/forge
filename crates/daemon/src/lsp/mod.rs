@@ -26,10 +26,7 @@ impl LspManager {
 
     /// Get or create an LSP client for the given language server config.
     /// If the client doesn't exist or has crashed, spawns a new one.
-    pub async fn get_client(
-        &mut self,
-        config: &LspServerConfig,
-    ) -> Result<&mut LspClient, String> {
+    pub async fn get_client(&mut self, config: &LspServerConfig) -> Result<&mut LspClient, String> {
         let language = config.language.clone();
 
         // Check if existing client needs replacement
@@ -47,10 +44,7 @@ impl LspManager {
 
         if needs_spawn {
             // Use config.root_dir if set (e.g. TS in a subdirectory), else project root
-            let effective_root = config
-                .root_dir
-                .as_deref()
-                .unwrap_or(&self.project_dir);
+            let effective_root = config.root_dir.as_deref().unwrap_or(&self.project_dir);
             let client = tokio::time::timeout(
                 std::time::Duration::from_secs(60),
                 LspClient::spawn(config, effective_root),

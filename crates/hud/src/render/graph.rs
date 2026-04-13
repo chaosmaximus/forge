@@ -7,7 +7,10 @@ pub fn render_line1(stdin: &StdinData, state: &crate::state::HudState, _width: u
     let plan = stdin.plan_name();
     let sep = format!(" {DIM}\u{2502}{RESET} "); // │
 
-    let ver = state.version.as_deref().unwrap_or(env!("CARGO_PKG_VERSION"));
+    let ver = state
+        .version
+        .as_deref()
+        .unwrap_or(env!("CARGO_PKG_VERSION"));
 
     let project = sanitize(&stdin.project_name());
     let branch = crate::stdin::git_branch(stdin.cwd_str());
@@ -35,10 +38,13 @@ pub fn render_line1(stdin: &StdinData, state: &crate::state::HudState, _width: u
         if let Some(name) = &ctx.context {
             if !name.is_empty() {
                 let short = name
-                    .strip_prefix("gke_").or_else(|| name.strip_prefix("arn:aws:eks:"))
+                    .strip_prefix("gke_")
+                    .or_else(|| name.strip_prefix("arn:aws:eks:"))
                     .unwrap_or(name);
                 let short = sanitize(short);
-                let ns = ctx.namespace.as_ref()
+                let ns = ctx
+                    .namespace
+                    .as_ref()
                     .filter(|n| !n.is_empty() && *n != "default")
                     .map(|n| format!("/{}", sanitize(n)))
                     .unwrap_or_default();

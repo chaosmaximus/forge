@@ -10,39 +10,29 @@ use std::sync::LazyLock;
 // ─── Compiled regex patterns ─────────────────────────────────────────────────
 
 /// Top-level function: `def foo_bar(...):`
-static RE_FUNCTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^def\s+(\w+)\s*\(").unwrap()
-});
+static RE_FUNCTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^def\s+(\w+)\s*\(").unwrap());
 
 /// Async function: `async def foo_bar(...):`
-static RE_ASYNC_FUNCTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^async\s+def\s+(\w+)\s*\(").unwrap()
-});
+static RE_ASYNC_FUNCTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^async\s+def\s+(\w+)\s*\(").unwrap());
 
 /// Class: `class FooBar(Base):`
-static RE_CLASS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^class\s+(\w+)").unwrap()
-});
+static RE_CLASS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^class\s+(\w+)").unwrap());
 
 /// Method (indented def): `    def method(self, ...):`
-static RE_METHOD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s+(?:async\s+)?def\s+(\w+)\s*\(").unwrap()
-});
+static RE_METHOD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s+(?:async\s+)?def\s+(\w+)\s*\(").unwrap());
 
 /// Import: `from module import name`
-static RE_FROM_IMPORT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^from\s+([\w.]+)\s+import\s+").unwrap()
-});
+static RE_FROM_IMPORT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^from\s+([\w.]+)\s+import\s+").unwrap());
 
 /// Import: `import module`
-static RE_IMPORT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^import\s+([\w.]+)").unwrap()
-});
+static RE_IMPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^import\s+([\w.]+)").unwrap());
 
 /// Global variable/constant: `FOO_BAR = ...` (all caps)
-static RE_CONSTANT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([A-Z][A-Z0-9_]{2,})\s*=").unwrap()
-});
+static RE_CONSTANT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([A-Z][A-Z0-9_]{2,})\s*=").unwrap());
 
 // ─── Symbol extraction ───────────────────────────────────────────────────────
 

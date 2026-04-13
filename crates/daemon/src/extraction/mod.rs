@@ -9,5 +9,5 @@ pub mod openai;
 pub mod prompt;
 pub mod router;
 
-pub use backend::{BackendChoice, ExtractionResult, detect_backend};
-pub use prompt::{ExtractedMemory, parse_extraction_output};
+pub use backend::{detect_backend, BackendChoice, ExtractionResult};
+pub use prompt::{parse_extraction_output, ExtractedMemory};

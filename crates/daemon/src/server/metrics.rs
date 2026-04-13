@@ -11,9 +11,7 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use prometheus::{
-    Histogram, HistogramOpts, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
-};
+use prometheus::{Histogram, HistogramOpts, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder};
 
 use super::http::AppState;
 
@@ -44,10 +42,13 @@ impl ForgeMetrics {
         let memories_total = IntGauge::new("forge_memories_total", "Total number of memories")
             .expect("memories_total metric");
         let recall_latency = Histogram::with_opts(
-            HistogramOpts::new("forge_recall_latency_seconds", "Recall query latency in seconds")
-                .buckets(vec![
-                    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
-                ]),
+            HistogramOpts::new(
+                "forge_recall_latency_seconds",
+                "Recall query latency in seconds",
+            )
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ]),
         )
         .expect("recall_latency metric");
         let extraction_duration = Histogram::with_opts(
@@ -59,19 +60,23 @@ impl ForgeMetrics {
         )
         .expect("extraction_duration metric");
         let worker_healthy = IntGaugeVec::new(
-            Opts::new("forge_worker_healthy", "Whether a background worker is healthy (1=yes, 0=no)"),
+            Opts::new(
+                "forge_worker_healthy",
+                "Whether a background worker is healthy (1=yes, 0=no)",
+            ),
             &["worker"],
         )
         .expect("worker_healthy metric");
-        let active_sessions =
-            IntGauge::new("forge_active_sessions", "Number of active sessions")
-                .expect("active_sessions metric");
+        let active_sessions = IntGauge::new("forge_active_sessions", "Number of active sessions")
+            .expect("active_sessions metric");
         let edges_total =
             IntGauge::new("forge_edges_total", "Total number of knowledge graph edges")
                 .expect("edges_total metric");
-        let embeddings_total =
-            IntGauge::new("forge_embeddings_total", "Total number of stored embeddings")
-                .expect("embeddings_total metric");
+        let embeddings_total = IntGauge::new(
+            "forge_embeddings_total",
+            "Total number of stored embeddings",
+        )
+        .expect("embeddings_total metric");
 
         registry
             .register(Box::new(memories_total.clone()))
@@ -127,15 +132,26 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
     };
 
     // Memory count
-    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM memory", [], |r| r.get::<_, i64>(0)) {
+    if let Ok(count) = reader
+        .conn
+        .query_row("SELECT COUNT(*) FROM memory", [], |r| r.get::<_, i64>(0))
+    {
         metrics.memories_total.set(count);
     }
     // Edge count
-    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM edge", [], |r| r.get::<_, i64>(0)) {
+    if let Ok(count) = reader
+        .conn
+        .query_row("SELECT COUNT(*) FROM edge", [], |r| r.get::<_, i64>(0))
+    {
         metrics.edges_total.set(count);
     }
     // Embedding count
-    if let Ok(count) = reader.conn.query_row("SELECT COUNT(*) FROM memory_vec", [], |r| r.get::<_, i64>(0)) {
+    if let Ok(count) = reader
+        .conn
+        .query_row("SELECT COUNT(*) FROM memory_vec", [], |r| {
+            r.get::<_, i64>(0)
+        })
+    {
         metrics.embeddings_total.set(count);
     }
     // Active sessions (non-ended)
@@ -147,7 +163,16 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         metrics.active_sessions.set(count);
     }
     // Worker health — set all known workers to 1 (we're alive if we can query)
-    for worker in &["watcher", "extractor", "embedder", "consolidator", "indexer", "perception", "disposition", "diagnostics"] {
+    for worker in &[
+        "watcher",
+        "extractor",
+        "embedder",
+        "consolidator",
+        "indexer",
+        "perception",
+        "disposition",
+        "diagnostics",
+    ] {
         metrics.worker_healthy.with_label_values(&[worker]).set(1);
     }
 }
@@ -156,7 +181,10 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
 /// Refreshes gauges from DB, then returns all metrics in text format.
 pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     // metrics is always Some when this handler is registered (guarded by config check)
-    let metrics = state.metrics.as_ref().expect("metrics must be Some when /metrics is registered");
+    let metrics = state
+        .metrics
+        .as_ref()
+        .expect("metrics must be Some when /metrics is registered");
 
     // Refresh gauges from live DB data on each scrape
     refresh_gauges(metrics, &state);
@@ -222,7 +250,10 @@ mod tests {
         m.worker_healthy.with_label_values(&["extractor"]).set(1);
         let families = m.registry.gather();
         let names: Vec<&str> = families.iter().map(|f| f.get_name()).collect();
-        assert!(names.contains(&"forge_memories_total"), "missing forge_memories_total");
+        assert!(
+            names.contains(&"forge_memories_total"),
+            "missing forge_memories_total"
+        );
         assert!(
             names.contains(&"forge_recall_latency_seconds"),
             "missing forge_recall_latency_seconds"
@@ -231,10 +262,22 @@ mod tests {
             names.contains(&"forge_extraction_duration_seconds"),
             "missing forge_extraction_duration_seconds"
         );
-        assert!(names.contains(&"forge_worker_healthy"), "missing forge_worker_healthy");
-        assert!(names.contains(&"forge_active_sessions"), "missing forge_active_sessions");
-        assert!(names.contains(&"forge_edges_total"), "missing forge_edges_total");
-        assert!(names.contains(&"forge_embeddings_total"), "missing forge_embeddings_total");
+        assert!(
+            names.contains(&"forge_worker_healthy"),
+            "missing forge_worker_healthy"
+        );
+        assert!(
+            names.contains(&"forge_active_sessions"),
+            "missing forge_active_sessions"
+        );
+        assert!(
+            names.contains(&"forge_edges_total"),
+            "missing forge_edges_total"
+        );
+        assert!(
+            names.contains(&"forge_embeddings_total"),
+            "missing forge_embeddings_total"
+        );
         assert_eq!(families.len(), 7, "expected exactly 7 metric families");
     }
 
@@ -286,7 +329,10 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let text = String::from_utf8(body.to_vec()).unwrap();
         // refresh_gauges queries the real test DB — empty DB has 0 memories
-        assert!(text.contains("forge_memories_total 0"), "body should contain memories gauge from DB query");
+        assert!(
+            text.contains("forge_memories_total 0"),
+            "body should contain memories gauge from DB query"
+        );
         assert!(
             text.contains("forge_active_sessions 0"),
             "body should contain active_sessions gauge from DB query"

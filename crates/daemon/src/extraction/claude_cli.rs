@@ -36,7 +36,8 @@ pub async fn extract(model: &str, conversation_text: &str) -> ExtractionResult {
             drop(stdin); // Close stdin so claude reads EOF
         }
         child.wait_with_output().await
-    }).await;
+    })
+    .await;
 
     match result {
         Ok(Ok(output)) if output.status.success() => {

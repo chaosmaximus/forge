@@ -31,10 +31,7 @@ pub enum WriteCommand {
     /// Fire-and-forget: update access_count/accessed_at/activation_level for recalled memories.
     /// Sent from the read-only path (Recall, CompileContext) so that memory usage tracking
     /// doesn't fail silently on read-only connections.
-    TouchMemories {
-        ids: Vec<String>,
-        boost_amount: f64,
-    },
+    TouchMemories { ids: Vec<String>, boost_amount: f64 },
     /// Fire-and-forget: record a context injection in context_effectiveness.
     /// Sent from the read-only CompileContext handler since it can't write directly.
     RecordInjection {
@@ -120,15 +117,14 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::SkillsList { .. }
             | Request::SkillsInfo { .. }
             | Request::GetHudConfig { .. }
-            | Request::ExportHudConfig { .. }
-            // NOTE: SetHudConfig is a write — modifies config_scope table
-            // NOTE: HealingRun is a write — triggers healing cycle
-            // NOTE: AckNotification, DismissNotification, ActOnNotification are writes
-            // NOTE: DetectReality is NOT read-only — it may create a reality record
-            // NOTE: CreateMeeting, MeetingSynthesize, MeetingDecide, MeetingVote are writes
-            // NOTE: ForceIndex is NOT read-only — it triggers indexing
-            // NOTE: SpawnAgent, UpdateAgentStatus, RetireAgent, CreateTeam, SetTeamOrchestrator are writes
-            // NOTE: SkillsInstall, SkillsUninstall, SkillsRefresh are writes
+            | Request::ExportHudConfig { .. } // NOTE: SetHudConfig is a write — modifies config_scope table
+                                              // NOTE: HealingRun is a write — triggers healing cycle
+                                              // NOTE: AckNotification, DismissNotification, ActOnNotification are writes
+                                              // NOTE: DetectReality is NOT read-only — it may create a reality record
+                                              // NOTE: CreateMeeting, MeetingSynthesize, MeetingDecide, MeetingVote are writes
+                                              // NOTE: ForceIndex is NOT read-only — it triggers indexing
+                                              // NOTE: SpawnAgent, UpdateAgentStatus, RetireAgent, CreateTeam, SetTeamOrchestrator are writes
+                                              // NOTE: SkillsInstall, SkillsUninstall, SkillsRefresh are writes
     )
 }
 
@@ -195,15 +191,26 @@ impl WriterActor {
                     let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
                     crate::db::ops::touch(&self.state.conn, &id_refs);
                     for id in &ids {
-                        let _ = crate::db::ops::boost_activation(&self.state.conn, id, boost_amount);
+                        let _ =
+                            crate::db::ops::boost_activation(&self.state.conn, id, boost_amount);
                     }
                 }
-                WriteCommand::RecordInjection { session_id, hook_event, context_type, content_summary, chars_injected } => {
+                WriteCommand::RecordInjection {
+                    session_id,
+                    hook_event,
+                    context_type,
+                    content_summary,
+                    chars_injected,
+                } => {
                     // Fire-and-forget: record context injection on the write connection.
                     // CompileContext is read-only but needs to track effectiveness metrics.
                     let _ = crate::db::effectiveness::record_injection_with_size(
-                        &self.state.conn, &session_id, &hook_event, &context_type,
-                        &content_summary, chars_injected,
+                        &self.state.conn,
+                        &session_id,
+                        &hook_event,
+                        &context_type,
+                        &content_summary,
+                        chars_injected,
                     );
                 }
                 WriteCommand::Raw { request, reply } => {
@@ -217,8 +224,7 @@ impl WriterActor {
                 } => {
                     let req_type = request_type_name(&request);
                     let summary = request_summary(&request);
-                    let response =
-                        super::handler::handle_request(&mut self.state, request);
+                    let response = super::handler::handle_request(&mut self.state, request);
                     let status = response_status(&response);
 
                     // Insert audit log record (best-effort — don't fail the request)
@@ -289,13 +295,9 @@ mod tests {
             focus: None,
         }));
 
-        assert!(is_read_only(&Request::Sessions {
-            active_only: None,
-        }));
+        assert!(is_read_only(&Request::Sessions { active_only: None }));
 
-        assert!(is_read_only(&Request::ManasHealth {
-            project: None,
-        }));
+        assert!(is_read_only(&Request::ManasHealth { project: None }));
 
         assert!(is_read_only(&Request::Export {
             format: None,
@@ -320,9 +322,7 @@ mod tests {
             limit: None,
         }));
 
-        assert!(is_read_only(&Request::BatchRecall {
-            queries: vec![],
-        }));
+        assert!(is_read_only(&Request::BatchRecall { queries: vec![] }));
 
         assert!(is_read_only(&Request::GuardrailsCheck {
             file: "f".into(),
@@ -397,9 +397,7 @@ mod tests {
             key: "k".into(),
             value: "v".into(),
         }));
-        assert!(!is_read_only(&Request::SyncImport {
-            lines: vec![],
-        }));
+        assert!(!is_read_only(&Request::SyncImport { lines: vec![] }));
         assert!(!is_read_only(&Request::SyncResolve {
             keep_id: "x".into(),
         }));
@@ -412,9 +410,7 @@ mod tests {
             older_than_secs: None,
             prune_ended: false,
         }));
-        assert!(!is_read_only(&Request::Bootstrap {
-            project: None,
-        }));
+        assert!(!is_read_only(&Request::Bootstrap { project: None }));
         assert!(!is_read_only(&Request::GrantPermission {
             from_agent: "claude-code".into(),
             to_agent: "cline".into(),
@@ -553,7 +549,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             },
             reply: reply_tx,
         })
@@ -591,7 +587,9 @@ mod tests {
 
         // Writer state (owned, independent connection)
         let writer_state = crate::server::handler::DaemonState::new(":memory:").unwrap();
-        let actor = WriterActor { state: writer_state };
+        let actor = WriterActor {
+            state: writer_state,
+        };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
@@ -615,7 +613,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             },
             reply: reply_tx,
         })
@@ -672,10 +670,12 @@ mod tests {
             hlc = Arc::clone(&locked.hlc);
             started_at = locked.started_at;
         }
-        let writer_state = crate::server::handler::DaemonState::new_writer(
-            db_path, events, hlc, started_at,
-        ).unwrap();
-        let actor = WriterActor { state: writer_state };
+        let writer_state =
+            crate::server::handler::DaemonState::new_writer(db_path, events, hlc, started_at)
+                .unwrap();
+        let actor = WriterActor {
+            state: writer_state,
+        };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
@@ -691,7 +691,7 @@ mod tests {
                     confidence: None,
                     tags: None,
                     project: None,
-            metadata: None,
+                    metadata: None,
                 },
             );
             match resp {
@@ -710,7 +710,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             },
             reply: reply_tx,
         })
@@ -727,7 +727,8 @@ mod tests {
         // committed writes visible to all connections.
         {
             let locked = worker_state.lock().await;
-            let count: i64 = locked.conn
+            let count: i64 = locked
+                .conn
                 .query_row("SELECT COUNT(*) FROM memory", [], |r| r.get(0))
                 .unwrap();
             assert!(
@@ -752,7 +753,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             }),
             "remember"
         );
@@ -790,7 +791,11 @@ mod tests {
         assert_eq!(
             response_status(&Response::Ok {
                 data: forge_core::protocol::ResponseData::Health {
-                    decisions: 0, lessons: 0, patterns: 0, preferences: 0, edges: 0,
+                    decisions: 0,
+                    lessons: 0,
+                    patterns: 0,
+                    preferences: 0,
+                    edges: 0,
                 }
             }),
             "ok"
@@ -827,7 +832,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             },
             reply: reply_tx,
             audit,
@@ -888,7 +893,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             },
             reply: reply_tx,
             audit: AuditContext {
@@ -913,7 +918,11 @@ mod tests {
 
         // Now open a reader connection to verify the audit record
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at, None,
+            db_path_str,
+            events,
+            hlc,
+            started_at,
+            None,
         )
         .unwrap();
 
@@ -977,13 +986,17 @@ mod tests {
             started_at,
         )
         .unwrap();
-        let actor = WriterActor { state: writer_state };
+        let actor = WriterActor {
+            state: writer_state,
+        };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send(WriteCommand::Audited {
-            request: Request::Forget { id: "mem-xyz".into() },
+            request: Request::Forget {
+                id: "mem-xyz".into(),
+            },
             reply: reply_tx,
             audit: AuditContext {
                 user_id: "uid-forget".to_string(),
@@ -1003,7 +1016,11 @@ mod tests {
 
         // Verify audit record
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at, None,
+            db_path_str,
+            events,
+            hlc,
+            started_at,
+            None,
         )
         .unwrap();
 
@@ -1044,7 +1061,9 @@ mod tests {
             started_at,
         )
         .unwrap();
-        let actor = WriterActor { state: writer_state };
+        let actor = WriterActor {
+            state: writer_state,
+        };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
@@ -1058,7 +1077,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             },
             reply: reply_tx,
         })
@@ -1076,7 +1095,11 @@ mod tests {
 
         // Verify NO audit records exist
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at, None,
+            db_path_str,
+            events,
+            hlc,
+            started_at,
+            None,
         )
         .unwrap();
 
@@ -1110,7 +1133,9 @@ mod tests {
             started_at,
         )
         .unwrap();
-        let actor = WriterActor { state: writer_state };
+        let actor = WriterActor {
+            state: writer_state,
+        };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
@@ -1146,7 +1171,11 @@ mod tests {
 
         // Verify 3 audit records exist
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at, None,
+            db_path_str,
+            events,
+            hlc,
+            started_at,
+            None,
         )
         .unwrap();
 
@@ -1180,7 +1209,9 @@ mod tests {
             started_at,
         )
         .unwrap();
-        let actor = WriterActor { state: writer_state };
+        let actor = WriterActor {
+            state: writer_state,
+        };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
@@ -1193,7 +1224,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             },
             reply: reply_tx,
             audit: AuditContext {
@@ -1212,7 +1243,11 @@ mod tests {
         handle.await.unwrap();
 
         let reader = crate::server::handler::DaemonState::new_reader(
-            db_path_str, events, hlc, started_at, None,
+            db_path_str,
+            events,
+            hlc,
+            started_at,
+            None,
         )
         .unwrap();
 
@@ -1227,7 +1262,10 @@ mod tests {
 
         // Summary should contain part of the request
         assert!(!summary.is_empty(), "request_summary should not be empty");
-        assert!(summary.len() <= 200, "request_summary should be truncated to <= 200 chars");
+        assert!(
+            summary.len() <= 200,
+            "request_summary should be truncated to <= 200 chars"
+        );
         assert_eq!(status, "ok");
     }
 }

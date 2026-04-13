@@ -10,12 +10,14 @@ const MAX_TREE_DEPTH: usize = 20;
 fn validate_name(name: &str) -> rusqlite::Result<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err(rusqlite::Error::InvalidParameterName("name cannot be empty".into()));
+        return Err(rusqlite::Error::InvalidParameterName(
+            "name cannot be empty".into(),
+        ));
     }
     if trimmed.len() > MAX_NAME_LEN {
-        return Err(rusqlite::Error::InvalidParameterName(
-            format!("name exceeds {MAX_NAME_LEN} chars"),
-        ));
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "name exceeds {MAX_NAME_LEN} chars"
+        )));
     }
     Ok(())
 }
@@ -23,9 +25,9 @@ fn validate_name(name: &str) -> rusqlite::Result<()> {
 fn validate_description(desc: Option<&str>) -> rusqlite::Result<()> {
     if let Some(d) = desc {
         if d.len() > MAX_DESCRIPTION_LEN {
-            return Err(rusqlite::Error::InvalidParameterName(
-                format!("description exceeds {MAX_DESCRIPTION_LEN} chars"),
-            ));
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "description exceeds {MAX_DESCRIPTION_LEN} chars"
+            )));
         }
     }
     Ok(())
@@ -74,7 +76,9 @@ pub fn resolve_org_id(conn: &Connection, org_ref: &str) -> rusqlite::Result<Stri
         params![org_ref],
         |row| row.get(0),
     )?;
-    if exists { return Ok(org_ref.to_string()); }
+    if exists {
+        return Ok(org_ref.to_string());
+    }
     // Try as name
     conn.query_row(
         "SELECT id FROM organization WHERE name = ?1",
@@ -158,17 +162,36 @@ pub fn create_org_from_template(
 
     let templates: &[TeamDef] = match template_name {
         "startup" => &[
-            TeamDef { name: "engineering", children: &["backend", "frontend", "qa"] },
-            TeamDef { name: "business", children: &["c-suite", "finance", "operations"] },
-            TeamDef { name: "marketing", children: &["content", "community", "growth"] },
+            TeamDef {
+                name: "engineering",
+                children: &["backend", "frontend", "qa"],
+            },
+            TeamDef {
+                name: "business",
+                children: &["c-suite", "finance", "operations"],
+            },
+            TeamDef {
+                name: "marketing",
+                children: &["content", "community", "growth"],
+            },
         ],
-        "devteam" => &[
-            TeamDef { name: "engineering", children: &["backend", "frontend", "devops", "qa"] },
-        ],
+        "devteam" => &[TeamDef {
+            name: "engineering",
+            children: &["backend", "frontend", "devops", "qa"],
+        }],
         "agency" => &[
-            TeamDef { name: "creative", children: &["design", "copywriting"] },
-            TeamDef { name: "production", children: &["video"] },
-            TeamDef { name: "accounts", children: &[] },
+            TeamDef {
+                name: "creative",
+                children: &["design", "copywriting"],
+            },
+            TeamDef {
+                name: "production",
+                children: &["video"],
+            },
+            TeamDef {
+                name: "accounts",
+                children: &[],
+            },
         ],
         _ => {
             return Err(rusqlite::Error::InvalidParameterName(format!(
@@ -193,11 +216,13 @@ pub fn create_org_from_template(
 
     for def in templates {
         // Check if this parent team already exists for this org
-        let existing_parent: Option<String> = conn.query_row(
-            "SELECT id FROM team WHERE name = ?1 AND organization_id = ?2",
-            params![def.name, org_id],
-            |row| row.get(0),
-        ).ok();
+        let existing_parent: Option<String> = conn
+            .query_row(
+                "SELECT id FROM team WHERE name = ?1 AND organization_id = ?2",
+                params![def.name, org_id],
+                |row| row.get(0),
+            )
+            .ok();
 
         let parent_id = match existing_parent {
             Some(id) => id, // reuse existing team
@@ -247,8 +272,8 @@ pub fn team_session_ids(
 ) -> rusqlite::Result<Vec<String>> {
     if recursive {
         // F-004: depth-bounded CTE with UNION (dedup prevents infinite cycles)
-        let mut stmt = conn.prepare(
-            &format!("WITH RECURSIVE team_tree(id, depth) AS (
+        let mut stmt = conn.prepare(&format!(
+            "WITH RECURSIVE team_tree(id, depth) AS (
                 SELECT id, 0 FROM team WHERE name = ?1
                 UNION
                 SELECT t.id, tt.depth + 1 FROM team t JOIN team_tree tt ON t.parent_team_id = tt.id
@@ -256,8 +281,8 @@ pub fn team_session_ids(
             )
             SELECT s.id FROM session s
             WHERE s.team_id IN (SELECT id FROM team_tree)
-              AND s.status = 'active'"),
-        )?;
+              AND s.status = 'active'"
+        ))?;
         let rows = stmt.query_map(params![team_name], |row| row.get(0))?;
         rows.collect()
     } else {
@@ -383,14 +408,53 @@ mod tests {
         .unwrap();
 
         // Register sessions and assign to teams
-        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
-        conn.execute("UPDATE session SET team_id = ?1 WHERE id = 's1'", params![parent_id]).unwrap();
+        crate::sessions::register_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE session SET team_id = ?1 WHERE id = 's1'",
+            params![parent_id],
+        )
+        .unwrap();
 
-        crate::sessions::register_session(&conn, "s2", "claude-code", Some("forge"), None, None, None).unwrap();
-        conn.execute("UPDATE session SET team_id = ?1 WHERE id = 's2'", params![child_id]).unwrap();
+        crate::sessions::register_session(
+            &conn,
+            "s2",
+            "claude-code",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE session SET team_id = ?1 WHERE id = 's2'",
+            params![child_id],
+        )
+        .unwrap();
 
-        crate::sessions::register_session(&conn, "s3", "claude-code", Some("forge"), None, None, None).unwrap();
-        conn.execute("UPDATE session SET team_id = ?1 WHERE id = 's3'", params![child_id]).unwrap();
+        crate::sessions::register_session(
+            &conn,
+            "s3",
+            "claude-code",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE session SET team_id = ?1 WHERE id = 's3'",
+            params![child_id],
+        )
+        .unwrap();
 
         // Non-recursive: only parent team sessions
         let non_rec = team_session_ids(&conn, "eng", false).unwrap();

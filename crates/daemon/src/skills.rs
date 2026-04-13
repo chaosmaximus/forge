@@ -66,7 +66,10 @@ pub fn parse_skill_frontmatter(path: &Path) -> Option<SkillEntry> {
 /// Returns the number of skills indexed.
 pub fn index_skills_directory(conn: &Connection, dir: &Path) -> Result<usize, String> {
     if !dir.exists() || !dir.is_dir() {
-        return Err(format!("skills directory does not exist: {}", dir.display()));
+        return Err(format!(
+            "skills directory does not exist: {}",
+            dir.display()
+        ));
     }
 
     let mut count = 0;
@@ -86,7 +89,10 @@ fn index_recursive(conn: &Connection, dir: &Path, count: &mut usize) -> Result<(
         let path = entry.path();
 
         // Symlink defense: skip symlinks to prevent directory traversal attacks
-        if path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+        if path
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
             continue;
         }
 
@@ -158,7 +164,8 @@ pub fn list_skills(
         }
         (cat_opt, Some(query)) => {
             // FTS5 search; sanitize to prevent FTS5 operator injection
-            let sanitized: String = query.chars()
+            let sanitized: String = query
+                .chars()
                 .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '_')
                 .collect();
             if sanitized.trim().is_empty() {
@@ -379,7 +386,11 @@ mod tests {
     fn test_parse_skill_frontmatter_no_name() {
         let tmp = TempDir::new().unwrap();
         let skill_path = tmp.path().join("SKILL.md");
-        std::fs::write(&skill_path, "---\ndescription: \"no name\"\n---\n\n# No Name\n").unwrap();
+        std::fs::write(
+            &skill_path,
+            "---\ndescription: \"no name\"\n---\n\n# No Name\n",
+        )
+        .unwrap();
 
         assert!(parse_skill_frontmatter(&skill_path).is_none());
     }
@@ -398,7 +409,12 @@ mod tests {
         let conn = setup_db();
         let tmp = TempDir::new().unwrap();
 
-        create_skill_md(tmp.path(), "skill-alpha", "Alpha skill", Some("engineering"));
+        create_skill_md(
+            tmp.path(),
+            "skill-alpha",
+            "Alpha skill",
+            Some("engineering"),
+        );
         create_skill_md(tmp.path(), "skill-beta", "Beta skill", Some("marketing"));
         create_skill_md(tmp.path(), "skill-gamma", "Gamma skill", None);
 
@@ -437,9 +453,24 @@ mod tests {
         let conn = setup_db();
         let tmp = TempDir::new().unwrap();
 
-        create_skill_md(tmp.path(), "seo-optimizer", "Optimize SEO rankings and metadata", Some("marketing"));
-        create_skill_md(tmp.path(), "code-review", "Automated code review and feedback", Some("engineering"));
-        create_skill_md(tmp.path(), "seo-audit", "Audit SEO performance", Some("marketing"));
+        create_skill_md(
+            tmp.path(),
+            "seo-optimizer",
+            "Optimize SEO rankings and metadata",
+            Some("marketing"),
+        );
+        create_skill_md(
+            tmp.path(),
+            "code-review",
+            "Automated code review and feedback",
+            Some("engineering"),
+        );
+        create_skill_md(
+            tmp.path(),
+            "seo-audit",
+            "Audit SEO performance",
+            Some("marketing"),
+        );
 
         index_skills_directory(&conn, tmp.path()).unwrap();
 
@@ -460,7 +491,12 @@ mod tests {
         let conn = setup_db();
         let tmp = TempDir::new().unwrap();
 
-        create_skill_md(tmp.path(), "test-skill", "A test skill", Some("engineering"));
+        create_skill_md(
+            tmp.path(),
+            "test-skill",
+            "A test skill",
+            Some("engineering"),
+        );
         index_skills_directory(&conn, tmp.path()).unwrap();
 
         // Install
@@ -487,7 +523,12 @@ mod tests {
         let conn = setup_db();
         let tmp = TempDir::new().unwrap();
 
-        create_skill_md(tmp.path(), "info-skill", "Detailed skill", Some("engineering"));
+        create_skill_md(
+            tmp.path(),
+            "info-skill",
+            "Detailed skill",
+            Some("engineering"),
+        );
         index_skills_directory(&conn, tmp.path()).unwrap();
 
         let info = skill_info(&conn, "info-skill", None).unwrap();
@@ -520,7 +561,9 @@ mod tests {
 
         // With workspace_root, file_path is stripped to relative
         let ws_root = tmp.path().to_string_lossy().to_string();
-        let info = skill_info(&conn, "path-skill", Some(&ws_root)).unwrap().unwrap();
+        let info = skill_info(&conn, "path-skill", Some(&ws_root))
+            .unwrap()
+            .unwrap();
         assert!(
             !info.file_path.starts_with('/'),
             "file_path should be relative with workspace_root: {}",

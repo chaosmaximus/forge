@@ -1,14 +1,16 @@
-use forge_daemon::server::{DaemonState, WriterActor, run_grpc_server, run_http_server_with_listener, run_server};
-use forge_daemon::server::http::{AppState, build_router};
-use forge_daemon::server::tls;
+use forge_core::{default_db_path, default_pid_path, default_socket_path, forge_dir};
+use forge_daemon::server::http::{build_router, AppState};
 use forge_daemon::server::metrics::ForgeMetrics;
-use forge_core::{forge_dir, default_socket_path, default_db_path, default_pid_path};
+use forge_daemon::server::tls;
+use forge_daemon::server::{
+    run_grpc_server, run_http_server_with_listener, run_server, DaemonState, WriterActor,
+};
 use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 /// Acquire an exclusive PID lock file. If the lock is held by a dead process, clean up
 /// the stale lock and retry. Returns the locked file handle (must be kept alive).
@@ -30,7 +32,8 @@ fn acquire_pid_lock(pid_path: &str) -> std::fs::File {
         f.try_lock_exclusive()
             .map_err(|_| "lock held".to_string())?;
         // Lock acquired — now truncate the file before writing new PID.
-        f.set_len(0).map_err(|e| format!("failed to truncate PID file: {e}"))?;
+        f.set_len(0)
+            .map_err(|e| format!("failed to truncate PID file: {e}"))?;
         let mut f = f;
         f.seek(std::io::SeekFrom::Start(0))
             .map_err(|e| format!("failed to seek PID file: {e}"))?;
@@ -58,7 +61,9 @@ fn acquire_pid_lock(pid_path: &str) -> std::fs::File {
                             match try_open_and_lock() {
                                 Ok(f) => return f,
                                 Err(e2) => {
-                                    tracing::error!("failed to acquire PID lock after stale cleanup: {e2}");
+                                    tracing::error!(
+                                        "failed to acquire PID lock after stale cleanup: {e2}"
+                                    );
                                     std::process::exit(1);
                                 }
                             }
@@ -66,7 +71,9 @@ fn acquire_pid_lock(pid_path: &str) -> std::fs::File {
                     }
                 }
             }
-            tracing::error!("another forge-daemon is already running (PID file locked at {pid_path})");
+            tracing::error!(
+                "another forge-daemon is already running (PID file locked at {pid_path})"
+            );
             std::process::exit(1);
         }
         Err(e) => {
@@ -81,7 +88,10 @@ fn acquire_pid_lock(pid_path: &str) -> std::fs::File {
 fn init_otlp_layer<S>(
     endpoint: &str,
     service_name: &str,
-) -> Result<tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry_sdk::trace::Tracer>, Box<dyn std::error::Error>>
+) -> Result<
+    tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry_sdk::trace::Tracer>,
+    Box<dyn std::error::Error>,
+>
 where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
@@ -94,9 +104,10 @@ where
         .with_endpoint(endpoint)
         .build()?;
 
-    let resource = opentelemetry_sdk::Resource::new(vec![
-        KeyValue::new("service.name", service_name.to_string()),
-    ]);
+    let resource = opentelemetry_sdk::Resource::new(vec![KeyValue::new(
+        "service.name",
+        service_name.to_string(),
+    )]);
 
     let provider = opentelemetry_sdk::trace::TracerProvider::builder()
         .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
@@ -122,8 +133,8 @@ async fn main() {
     // add the OTLP export layer when FORGE_OTLP_ENABLED=true.
     // We read env vars directly (not ForgeConfig) to avoid a chicken-and-egg
     // problem — config loading logs, but the logger isn't initialized yet.
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("forge_daemon=info"));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("forge_daemon=info"));
 
     let json_layer = tracing_subscriber::fmt::layer()
         .json()
@@ -134,8 +145,8 @@ async fn main() {
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or(false);
     let otlp_endpoint = std::env::var("FORGE_OTLP_ENDPOINT").unwrap_or_default();
-    let otlp_service = std::env::var("FORGE_OTLP_SERVICE_NAME")
-        .unwrap_or_else(|_| "forge-daemon".to_string());
+    let otlp_service =
+        std::env::var("FORGE_OTLP_SERVICE_NAME").unwrap_or_else(|_| "forge-daemon".to_string());
 
     // Build registry with json + optional OTLP layer.
     // tracing_subscriber::Option<Layer> is itself a Layer, so we can use .with(Option<L>).
@@ -264,19 +275,17 @@ async fn main() {
     // the Arc<Mutex<DaemonState>> during extraction (10-30s).
     // Both connections open the same db_path; SQLite WAL serializes writes internally.
     let (write_tx, write_rx) = mpsc::channel::<forge_daemon::server::WriteCommand>(256);
-    let writer_state = match DaemonState::new_writer(
-        &db_path,
-        events.clone(),
-        Arc::clone(&hlc),
-        started_at,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("failed to create writer state: {e}");
-            std::process::exit(1);
-        }
+    let writer_state =
+        match DaemonState::new_writer(&db_path, events.clone(), Arc::clone(&hlc), started_at) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("failed to create writer state: {e}");
+                std::process::exit(1);
+            }
+        };
+    let writer = WriterActor {
+        state: writer_state,
     };
-    let writer = WriterActor { state: writer_state };
     tokio::spawn(async move { writer.run(write_rx).await });
 
     // I3: Spawn signal handler that sends on shutdown channel instead of process::exit
@@ -298,9 +307,14 @@ async fn main() {
     tokio::spawn(async move {
         // Phase 1: Consolidation (2-5s with many edges — short lock per phase)
         {
-            let startup_consol_config = forge_daemon::config::load_config().consolidation.validated();
+            let startup_consol_config = forge_daemon::config::load_config()
+                .consolidation
+                .validated();
             let locked = startup_state.lock().await;
-            let cs = forge_daemon::workers::consolidator::run_all_phases(&locked.conn, &startup_consol_config);
+            let cs = forge_daemon::workers::consolidator::run_all_phases(
+                &locked.conn,
+                &startup_consol_config,
+            );
             eprintln!(
                 "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",
                 cs.exact_dedup, cs.semantic_dedup, cs.linked, cs.faded, cs.promoted, cs.reconsolidated
@@ -315,8 +329,10 @@ async fn main() {
             {
                 let locked = startup_state.lock().await;
                 match forge_daemon::db::manas::ingest_project_declared(&locked.conn, &project_dir) {
-                    Ok((ingested, _)) if ingested > 0 => eprintln!("[daemon] ingested {ingested} declared knowledge files"),
-                    Ok(_) => {},
+                    Ok((ingested, _)) if ingested > 0 => {
+                        eprintln!("[daemon] ingested {ingested} declared knowledge files")
+                    }
+                    Ok(_) => {}
                     Err(e) => eprintln!("[daemon] WARN: declared knowledge ingestion failed: {e}"),
                 }
             } // lock released
@@ -325,7 +341,7 @@ async fn main() {
                 let locked = startup_state.lock().await;
                 match forge_daemon::db::manas::detect_domain_dna(&locked.conn, &project_dir) {
                     Ok(n) if n > 0 => eprintln!("[daemon] detected {n} project type markers"),
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(e) => eprintln!("[daemon] WARN: domain DNA detection failed: {e}"),
                 }
             } // lock released
@@ -409,7 +425,9 @@ async fn main() {
                     viewer_emails: tls_config_clone.auth.viewer_emails.clone(),
                     auth_enabled: tls_config_clone.auth.enabled,
                     metrics,
-                    rate_limiter: Some(forge_daemon::server::rate_limit::RateLimiter::new(forge_daemon::server::rate_limit::RateLimitConfig::default())),
+                    rate_limiter: Some(forge_daemon::server::rate_limit::RateLimiter::new(
+                        forge_daemon::server::rate_limit::RateLimitConfig::default(),
+                    )),
                 };
                 let app = build_router(&tls_config_clone, state);
 
@@ -491,7 +509,9 @@ async fn main() {
         started_at,
         write_tx,
         shutdown_tx,
-    ).await {
+    )
+    .await
+    {
         tracing::error!("server failed: {e}");
     }
 

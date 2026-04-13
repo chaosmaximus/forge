@@ -10,53 +10,40 @@ use std::sync::LazyLock;
 
 // ─── Compiled regex patterns (static, compiled once) ──────────────────────────
 
-static RE_EXPORT_FUNCTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^export\s+function\s+(\w+)\s*\(").unwrap()
-});
+static RE_EXPORT_FUNCTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^export\s+function\s+(\w+)\s*\(").unwrap());
 
-static RE_EXPORT_DEFAULT_FUNCTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^export\s+default\s+function\s+(\w+)\s*\(").unwrap()
-});
+static RE_EXPORT_DEFAULT_FUNCTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^export\s+default\s+function\s+(\w+)\s*\(").unwrap());
 
-static RE_EXPORT_CONST: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^export\s+const\s+(\w+)\s*=").unwrap()
-});
+static RE_EXPORT_CONST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^export\s+const\s+(\w+)\s*=").unwrap());
 
-static RE_EXPORT_CLASS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^export\s+(?:default\s+)?class\s+(\w+)").unwrap()
-});
+static RE_EXPORT_CLASS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^export\s+(?:default\s+)?class\s+(\w+)").unwrap());
 
-static RE_EXPORT_INTERFACE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^export\s+(?:default\s+)?interface\s+(\w+)").unwrap()
-});
+static RE_EXPORT_INTERFACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^export\s+(?:default\s+)?interface\s+(\w+)").unwrap());
 
-static RE_EXPORT_TYPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^export\s+type\s+(\w+)\s*=").unwrap()
-});
+static RE_EXPORT_TYPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^export\s+type\s+(\w+)\s*=").unwrap());
 
-static RE_FUNCTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^function\s+(\w+)\s*\(").unwrap()
-});
+static RE_FUNCTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^function\s+(\w+)\s*\(").unwrap());
 
-static RE_CLASS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^class\s+(\w+)").unwrap()
-});
+static RE_CLASS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^class\s+(\w+)").unwrap());
 
-static RE_ARROW_FUNCTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^const\s+(\w+)\s*=\s*(?:async\s+)?\(").unwrap()
-});
+static RE_ARROW_FUNCTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^const\s+(\w+)\s*=\s*(?:async\s+)?\(").unwrap());
 
-static RE_IMPORT_NAMED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^import\s+\{[^}]*\}\s+from\s+['"]([^'"]+)['"]"#).unwrap()
-});
+static RE_IMPORT_NAMED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^import\s+\{[^}]*\}\s+from\s+['"]([^'"]+)['"]"#).unwrap());
 
-static RE_IMPORT_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^import\s+(\w+)\s+from\s+['"]([^'"]+)['"]"#).unwrap()
-});
+static RE_IMPORT_DEFAULT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^import\s+(\w+)\s+from\s+['"]([^'"]+)['"]"#).unwrap());
 
-static RE_IMPORT_STAR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^import\s+\*\s+as\s+\w+\s+from\s+['"]([^'"]+)['"]"#).unwrap()
-});
+static RE_IMPORT_STAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^import\s+\*\s+as\s+\w+\s+from\s+['"]([^'"]+)['"]"#).unwrap());
 
 // ─── Symbol extraction ────────────────────────────────────────────────────────
 
@@ -302,7 +289,10 @@ export type Mode = 'dev' | 'prod';
         let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"Config"), "should find Config interface");
         assert!(names.contains(&"Server"), "should find Server class");
-        assert!(names.contains(&"startServer"), "should find startServer function");
+        assert!(
+            names.contains(&"startServer"),
+            "should find startServer function"
+        );
         assert!(names.contains(&"helper"), "should find helper arrow fn");
         assert!(names.contains(&"Mode"), "should find Mode type");
         assert_eq!(syms.len(), 5);
@@ -320,7 +310,10 @@ export type Mode = 'dev' | 'prod';
     fn test_ignores_non_ts_language() {
         let src = "export function test() {}\n";
         let syms = extract_symbols_regex(src, "file.rs", "rust");
-        assert!(syms.is_empty(), "should not extract from non-TS/JS languages");
+        assert!(
+            syms.is_empty(),
+            "should not extract from non-TS/JS languages"
+        );
     }
 
     #[test]
@@ -391,7 +384,8 @@ import { real } from 'actual';
 
     #[test]
     fn test_line_numbers_correct() {
-        let src = "// header comment\n\nexport function first() {}\n\nexport function second() {}\n";
+        let src =
+            "// header comment\n\nexport function first() {}\n\nexport function second() {}\n";
         let syms = extract_symbols_regex(src, "file.ts", "typescript");
         assert_eq!(syms.len(), 2);
         assert_eq!(syms[0].name, "first");

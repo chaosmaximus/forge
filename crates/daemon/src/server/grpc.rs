@@ -64,7 +64,9 @@ impl ForgeService for ForgeServiceImpl {
         // Check for bearer token in gRPC metadata (defense in depth)
         if let Ok(require) = std::env::var("FORGE_GRPC_REQUIRE_TOKEN") {
             if require == "true" || require == "1" {
-                let token = request.metadata().get("authorization")
+                let token = request
+                    .metadata()
+                    .get("authorization")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.strip_prefix("Bearer "));
                 if token.is_none() {
@@ -78,9 +80,8 @@ impl ForgeService for ForgeServiceImpl {
         let inner = request.into_inner();
 
         // Parse JSON payload into Request
-        let req: Request = serde_json::from_str(&inner.json).map_err(|e| {
-            Status::invalid_argument(format!("invalid JSON request: {e}"))
-        })?;
+        let req: Request = serde_json::from_str(&inner.json)
+            .map_err(|e| Status::invalid_argument(format!("invalid JSON request: {e}")))?;
 
         let response = if is_read_only(&req) {
             // Open per-request read-only connection (same pattern as http.rs / socket.rs)
@@ -106,21 +107,19 @@ impl ForgeService for ForgeServiceImpl {
             };
             match tokio::time::timeout(Duration::from_secs(30), self.state.write_tx.send(cmd)).await
             {
-                Ok(Ok(())) => {
-                    match tokio::time::timeout(Duration::from_secs(30), reply_rx).await {
-                        Ok(Ok(resp)) => resp,
-                        Ok(Err(_)) => {
-                            tracing::error!("writer actor closed unexpectedly");
-                            return Err(Status::unavailable("writer unavailable"));
-                        }
-                        Err(_) => {
-                            tracing::error!("write request timed out after 30s");
-                            return Err(Status::deadline_exceeded(
-                                "write request timed out after 30s",
-                            ));
-                        }
+                Ok(Ok(())) => match tokio::time::timeout(Duration::from_secs(30), reply_rx).await {
+                    Ok(Ok(resp)) => resp,
+                    Ok(Err(_)) => {
+                        tracing::error!("writer actor closed unexpectedly");
+                        return Err(Status::unavailable("writer unavailable"));
                     }
-                }
+                    Err(_) => {
+                        tracing::error!("write request timed out after 30s");
+                        return Err(Status::deadline_exceeded(
+                            "write request timed out after 30s",
+                        ));
+                    }
+                },
                 Ok(Err(_)) => {
                     tracing::error!("daemon writer channel closed");
                     return Err(Status::unavailable("writer channel closed"));
@@ -133,9 +132,8 @@ impl ForgeService for ForgeServiceImpl {
         };
 
         // Serialize Response back to JSON
-        let json = serde_json::to_string(&response).map_err(|e| {
-            Status::internal(format!("failed to serialize response: {e}"))
-        })?;
+        let json = serde_json::to_string(&response)
+            .map_err(|e| Status::internal(format!("failed to serialize response: {e}")))?;
 
         Ok(tonic::Response::new(ForgeResponse { json }))
     }

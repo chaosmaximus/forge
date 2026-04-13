@@ -13,7 +13,11 @@ fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String,
     // We must normalize because downstream code uses fixed fallback scores (e.g. 0.001
     // for graph-expanded items) that would compare incorrectly against raw BM25 scores.
     if lists.len() == 1 {
-        let max_score = lists[0].iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
+        let max_score = lists[0]
+            .iter()
+            .map(|(_, s)| *s)
+            .fold(0.0f64, f64::max)
+            .max(1e-10);
         let mut result: Vec<(String, f64)> = lists[0]
             .iter()
             .map(|(id, score)| (id.clone(), score / max_score))
@@ -40,7 +44,11 @@ fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String,
     // RRF alone flattens differences when k is high or there's only one signal.
     // Formula: 0.4 * rrf_score + 0.6 * normalized_original
     let max_rrf = scores.values().copied().fold(0.0f64, f64::max).max(1e-10);
-    let max_orig = max_original.values().copied().fold(0.0f64, f64::max).max(1e-10);
+    let max_orig = max_original
+        .values()
+        .copied()
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
 
     let mut merged: Vec<(String, f64)> = scores
         .into_iter()
@@ -69,8 +77,12 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
         let status_str: String = row.get(5)?;
         let project: Option<String> = row.get(6)?;
         let tags_json: String = row.get(7)?;
-        let alternatives_json: String = row.get::<_, String>(17).unwrap_or_else(|_| "[]".to_string());
-        let participants_json: String = row.get::<_, String>(18).unwrap_or_else(|_| "[]".to_string());
+        let alternatives_json: String = row
+            .get::<_, String>(17)
+            .unwrap_or_else(|_| "[]".to_string());
+        let participants_json: String = row
+            .get::<_, String>(18)
+            .unwrap_or_else(|_| "[]".to_string());
 
         let memory_type = match type_str.as_str() {
             "decision" => MemoryType::Decision,
@@ -83,8 +95,7 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
 
         let status = ops::status_from_str(&status_str);
 
-        let tags: Vec<String> =
-            serde_json::from_str(&tags_json).unwrap_or_default();
+        let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
         let alternatives: Vec<String> =
             serde_json::from_str(&alternatives_json).unwrap_or_default();
         let participants: Vec<String> =
@@ -141,16 +152,15 @@ fn query_edges_for_memory(conn: &Connection, memory_id: &str) -> Vec<MemoryEdge>
          UNION ALL
          SELECT from_id, edge_type FROM edge WHERE to_id = ?1
          LIMIT 20";
-    let result: Result<Vec<MemoryEdge>, _> = conn.prepare(sql)
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map(params![memory_id], |row| {
-                Ok(MemoryEdge {
-                    target_id: row.get(0)?,
-                    edge_type: row.get(1)?,
-                })
-            })?;
-            Ok(rows.filter_map(|r| r.ok()).collect())
-        });
+    let result: Result<Vec<MemoryEdge>, _> = conn.prepare(sql).and_then(|mut stmt| {
+        let rows = stmt.query_map(params![memory_id], |row| {
+            Ok(MemoryEdge {
+                target_id: row.get(0)?,
+                edge_type: row.get(1)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    });
     match result {
         Ok(edges) => edges,
         Err(e) => {
@@ -182,7 +192,15 @@ pub fn hybrid_recall(
     project: Option<&str>,
     limit: usize,
 ) -> Vec<MemoryResult> {
-    hybrid_recall_scoped(conn, query, query_embedding, memory_type, project, limit, None)
+    hybrid_recall_scoped(
+        conn,
+        query,
+        query_embedding,
+        memory_type,
+        project,
+        limit,
+        None,
+    )
 }
 
 /// Hybrid recall with reality_id scoping.
@@ -199,7 +217,16 @@ pub fn hybrid_recall_scoped(
     limit: usize,
     reality_id: Option<&str>,
 ) -> Vec<MemoryResult> {
-    hybrid_recall_scoped_org(conn, query, query_embedding, memory_type, project, limit, reality_id, None)
+    hybrid_recall_scoped_org(
+        conn,
+        query,
+        query_embedding,
+        memory_type,
+        project,
+        limit,
+        reality_id,
+        None,
+    )
 }
 
 /// Hybrid recall with reality_id + organization_id scoping.
@@ -219,10 +246,8 @@ pub fn hybrid_recall_scoped_org(
     // 1. BM25 search (project-scoped + org-scoped: includes global memories)
     match ops::recall_bm25_project_org(conn, query, project, limit * 3, org_id) {
         Ok(bm25_results) => {
-            let bm25_list: Vec<(String, f64)> = bm25_results
-                .into_iter()
-                .map(|r| (r.id, r.score))
-                .collect();
+            let bm25_list: Vec<(String, f64)> =
+                bm25_results.into_iter().map(|r| (r.id, r.score)).collect();
             if !bm25_list.is_empty() {
                 ranked_lists.push(bm25_list);
             }
@@ -297,14 +322,27 @@ pub fn hybrid_recall_scoped_org(
         if !results.is_empty() {
             // Batch-load reality_id + portability for all result memory IDs in one query
             let ids: Vec<&str> = results.iter().map(|r| r.memory.id.as_str()).collect();
-            let placeholders: String = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
-            let sql = format!("SELECT id, reality_id, portability FROM memory WHERE id IN ({placeholders})");
+            let placeholders: String = ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, reality_id, portability FROM memory WHERE id IN ({placeholders})"
+            );
             let mut stmt = conn.prepare(&sql).unwrap();
-            let reality_port_map: std::collections::HashMap<String, (Option<String>, Option<String>)> = stmt
+            let reality_port_map: std::collections::HashMap<
+                String,
+                (Option<String>, Option<String>),
+            > = stmt
                 .query_map(rusqlite::params_from_iter(ids.iter()), |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        (row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?),
+                        (
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ),
                     ))
                 })
                 .unwrap()
@@ -342,12 +380,20 @@ pub fn hybrid_recall_scoped_org(
                 result.score *= weight;
             }
             // Re-sort after weighting
-            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
     }
 
     // Sort by score descending and truncate
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results.truncate(limit);
 
     // 5b. Populate edges for each result (both outgoing and incoming)
@@ -366,7 +412,11 @@ pub fn hybrid_recall_scoped_org(
         let recency_boost = (-0.1 * days_old).exp();
         result.score *= 1.0 + recency_boost * 0.5;
     }
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // 6. Touch/boost is handled by the caller (handler.rs send_touch) via the writer actor
     // channel. We don't attempt writes here because this may run on a read-only connection.
@@ -491,15 +541,9 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<
     {
         let facets = crate::db::manas::list_identity(conn, agent, true).unwrap_or_default();
         if facets.is_empty() {
-            xml.push_str(&format!(
-                "<identity agent=\"{}\"/>\n",
-                xml_escape(agent)
-            ));
+            xml.push_str(&format!("<identity agent=\"{}\"/>\n", xml_escape(agent)));
         } else {
-            xml.push_str(&format!(
-                "<identity agent=\"{}\">\n",
-                xml_escape(agent)
-            ));
+            xml.push_str(&format!("<identity agent=\"{}\">\n", xml_escape(agent)));
             for f in &facets {
                 xml.push_str(&format!(
                     "  <facet type=\"{}\" strength=\"{:.1}\">{}</facet>\n",
@@ -591,28 +635,30 @@ pub fn compile_prefetch_hints(
 ) -> Vec<String> {
     // Step 1: Find the last 3 ended sessions for this agent+project
     let sessions: Vec<(String, String, String)> = match project {
-        Some(proj) => conn.prepare(
-            "SELECT id, started_at, ended_at FROM session
+        Some(proj) => conn
+            .prepare(
+                "SELECT id, started_at, ended_at FROM session
              WHERE agent = ?1 AND status = 'ended' AND project = ?2
              ORDER BY ended_at DESC LIMIT 3",
-        )
-        .and_then(|mut stmt| {
-            stmt.query_map(params![agent, proj], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-            .collect()
-        }),
-        None => conn.prepare(
-            "SELECT id, started_at, ended_at FROM session
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![agent, proj], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect()
+            }),
+        None => conn
+            .prepare(
+                "SELECT id, started_at, ended_at FROM session
              WHERE agent = ?1 AND status = 'ended'
              ORDER BY ended_at DESC LIMIT 3",
-        )
-        .and_then(|mut stmt| {
-            stmt.query_map(params![agent], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-            .collect()
-        }),
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![agent], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect()
+            }),
     }
     .unwrap_or_else(|e| {
         if e != rusqlite::Error::QueryReturnedNoRows {
@@ -750,7 +796,8 @@ pub fn compile_dynamic_suffix(
     // Uses SQLite rowid join since memory_fts content_rowid maps to the internal rowid, not the text id column.
     let focus_clause = if let Some(focus_topic) = focus {
         // Sanitize: remove quotes and special FTS5 operators to prevent injection
-        let sanitized: String = focus_topic.chars()
+        let sanitized: String = focus_topic
+            .chars()
             .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '_')
             .collect();
         if sanitized.trim().is_empty() {
@@ -758,7 +805,8 @@ pub fn compile_dynamic_suffix(
         } else {
             // Use OR between words so "e2e testing" matches either "e2e" or "testing"
             // Each term is double-quoted to prevent FTS5 special syntax interpretation
-            let terms: Vec<String> = sanitized.split_whitespace()
+            let terms: Vec<String> = sanitized
+                .split_whitespace()
                 .map(|t| format!("\"{t}\""))
                 .collect();
             let fts_query = terms.join(" OR ");
@@ -867,24 +915,31 @@ pub fn compile_dynamic_suffix(
         // Apply Domain DNA boost: multiply SQL rank by domain relevance (1.3x for matches)
         let mut decisions: Vec<(String, String, f64, String, f64, f64)> = raw_decisions
             .into_iter()
-            .map(|(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
-                let mut boost = 1.0_f64;
-                let searchable = format!("{tags} {content} {title}").to_lowercase();
-                if !domain_keywords.is_empty() && domain_keywords.iter().any(|kw| searchable.contains(kw)) {
-                    boost *= 1.3;
-                }
-                // Attention boost: task/goal keywords get 1.5x priority
-                if !attention_keywords.is_empty() {
-                    let matches = attention_keywords.iter().filter(|kw| searchable.contains(kw.as_str())).count();
-                    if matches >= 2 {
-                        boost *= 1.5;
-                    } else if matches == 1 {
-                        boost *= 1.2;
+            .map(
+                |(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
+                    let mut boost = 1.0_f64;
+                    let searchable = format!("{tags} {content} {title}").to_lowercase();
+                    if !domain_keywords.is_empty()
+                        && domain_keywords.iter().any(|kw| searchable.contains(kw))
+                    {
+                        boost *= 1.3;
                     }
-                }
-                let rank_score = sql_rank * boost;
-                (id, title, confidence, valence, intensity, rank_score)
-            })
+                    // Attention boost: task/goal keywords get 1.5x priority
+                    if !attention_keywords.is_empty() {
+                        let matches = attention_keywords
+                            .iter()
+                            .filter(|kw| searchable.contains(kw.as_str()))
+                            .count();
+                        if matches >= 2 {
+                            boost *= 1.5;
+                        } else if matches == 1 {
+                            boost *= 1.2;
+                        }
+                    }
+                    let rank_score = sql_rank * boost;
+                    (id, title, confidence, valence, intensity, rank_score)
+                },
+            )
             .collect();
         decisions.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -953,24 +1008,31 @@ pub fn compile_dynamic_suffix(
         // Apply Domain DNA boost on top of SQL rank (preserves recency/access boosts)
         let mut lessons: Vec<(String, String, f64, String, f64, f64)> = raw_lessons
             .into_iter()
-            .map(|(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
-                let mut boost = 1.0_f64;
-                let searchable = format!("{tags} {content} {title}").to_lowercase();
-                if !domain_keywords.is_empty() && domain_keywords.iter().any(|kw| searchable.contains(kw)) {
-                    boost *= 1.3;
-                }
-                // Attention boost: task/goal keywords get 1.5x priority
-                if !attention_keywords.is_empty() {
-                    let matches = attention_keywords.iter().filter(|kw| searchable.contains(kw.as_str())).count();
-                    if matches >= 2 {
-                        boost *= 1.5;
-                    } else if matches == 1 {
-                        boost *= 1.2;
+            .map(
+                |(id, title, confidence, valence, intensity, tags, content, sql_rank)| {
+                    let mut boost = 1.0_f64;
+                    let searchable = format!("{tags} {content} {title}").to_lowercase();
+                    if !domain_keywords.is_empty()
+                        && domain_keywords.iter().any(|kw| searchable.contains(kw))
+                    {
+                        boost *= 1.3;
                     }
-                }
-                let rank_score = sql_rank * boost;
-                (id, title, confidence, valence, intensity, rank_score)
-            })
+                    // Attention boost: task/goal keywords get 1.5x priority
+                    if !attention_keywords.is_empty() {
+                        let matches = attention_keywords
+                            .iter()
+                            .filter(|kw| searchable.contains(kw.as_str()))
+                            .count();
+                        if matches >= 2 {
+                            boost *= 1.5;
+                        } else if matches == 1 {
+                            boost *= 1.2;
+                        }
+                    }
+                    let rank_score = sql_rank * boost;
+                    (id, title, confidence, valence, intensity, rank_score)
+                },
+            )
             .collect();
         lessons.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -1102,9 +1164,8 @@ pub fn compile_dynamic_suffix(
         if entities.is_empty() {
             xml.push_str("<entities/>\n");
         } else {
-            let mut ent_xml = String::from(
-                "<entities hint=\"recurring concepts in this project\">",
-            );
+            let mut ent_xml =
+                String::from("<entities hint=\"recurring concepts in this project\">");
             for e in &entities {
                 let entry = format!(
                     "\n  <entity name=\"{}\" type=\"{}\" mentions=\"{}\"/>",
@@ -1126,8 +1187,12 @@ pub fn compile_dynamic_suffix(
     if excluded_layers.iter().any(|l| l == "code_structure") {
         xml.push_str("<code-structure/>\n");
     } else {
-        let file_count: usize = conn.query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0)).unwrap_or(0);
-        let symbol_count: usize = conn.query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0)).unwrap_or(0);
+        let file_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0))
+            .unwrap_or(0);
+        let symbol_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
+            .unwrap_or(0);
 
         if file_count == 0 {
             xml.push_str("<code-structure/>\n");
@@ -1167,23 +1232,29 @@ pub fn compile_dynamic_suffix(
             };
 
             // Count total clusters (including beyond top 5)
-            let total_clusters: usize = conn.query_row(
-                "SELECT COUNT(DISTINCT to_id) FROM edge WHERE edge_type = 'belongs_to_cluster'",
-                [],
-                |r| r.get(0),
-            ).unwrap_or(0);
+            let total_clusters: usize = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT to_id) FROM edge WHERE edge_type = 'belongs_to_cluster'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
 
             let mut cs_xml = format!(
                 "<code-structure reality=\"{}\" domain=\"{}\" files=\"{}\" symbols=\"{}\">",
-                xml_escape(&reality_name), xml_escape(&domain), file_count, symbol_count
+                xml_escape(&reality_name),
+                xml_escape(&domain),
+                file_count,
+                symbol_count
             );
 
             if total_clusters > 0 {
                 cs_xml.push_str(&format!("\n  <clusters count=\"{total_clusters}\">"));
                 for (idx, (cid, files)) in cluster_rows.iter().enumerate() {
-                    let file_names: Vec<&str> = files.iter().map(|f| {
-                        f.rsplit('/').next().unwrap_or(f.as_str())
-                    }).collect();
+                    let file_names: Vec<&str> = files
+                        .iter()
+                        .map(|f| f.rsplit('/').next().unwrap_or(f.as_str()))
+                        .collect();
                     let total_in_cluster: usize = conn.query_row(
                         "SELECT COUNT(*) FROM edge WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1",
                         params![cid],
@@ -1191,7 +1262,9 @@ pub fn compile_dynamic_suffix(
                     ).unwrap_or(files.len());
                     cs_xml.push_str(&format!(
                         "\n    <cluster id=\"{}\" files=\"{}\">{}</cluster>",
-                        idx, total_in_cluster, xml_escape(&file_names.join(", "))
+                        idx,
+                        total_in_cluster,
+                        xml_escape(&file_names.join(", "))
                     ));
                 }
                 cs_xml.push_str("\n  </clusters>");
@@ -1249,9 +1322,8 @@ pub fn compile_dynamic_suffix(
         let active = crate::sessions::list_sessions(conn, true).unwrap_or_default();
         // Only show if there are at least 2 active sessions (the current one + others)
         if active.len() >= 2 {
-            let mut sessions_xml = String::from(
-                "<active-sessions hint=\"other sessions sharing this daemon\">"
-            );
+            let mut sessions_xml =
+                String::from("<active-sessions hint=\"other sessions sharing this daemon\">");
             for s in &active {
                 sessions_xml.push_str(&format!(
                     "\n  <session id=\"{}\" project=\"{}\" agent=\"{}\" />",
@@ -1270,25 +1342,29 @@ pub fn compile_dynamic_suffix(
 
     // Available agent templates — surfaces agent capabilities for discoverability
     if !excluded_layers.iter().any(|l| l == "agents") {
-        let agents: Vec<(String, String, String)> = conn.prepare(
-            "SELECT name, COALESCE(description, ''), COALESCE(agent_type, 'general')
-             FROM agent_template ORDER BY name"
-        )
-        .ok()
-        .map(|mut stmt| {
-            stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-            })
+        let agents: Vec<(String, String, String)> = conn
+            .prepare(
+                "SELECT name, COALESCE(description, ''), COALESCE(agent_type, 'general')
+             FROM agent_template ORDER BY name",
+            )
             .ok()
-            .map(|rows| rows.filter_map(|r| r.ok()).collect())
-            .unwrap_or_default()
-        })
-        .unwrap_or_default();
+            .map(|mut stmt| {
+                stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+            })
+            .unwrap_or_default();
 
         if !agents.is_empty() {
-            let mut agents_xml = String::from(
-                "<agents hint=\"available agent templates — use for team dispatch\">"
-            );
+            let mut agents_xml =
+                String::from("<agents hint=\"available agent templates — use for team dispatch\">");
             for (name, desc, agent_type) in &agents {
                 agents_xml.push_str(&format!(
                     "\n  <agent name=\"{}\" type=\"{}\">{}</agent>",
@@ -1307,8 +1383,7 @@ pub fn compile_dynamic_suffix(
     if excluded_layers.iter().any(|l| l == "working_set") {
         xml.push_str("<working-set/>\n");
     } else {
-        let ws = crate::sessions::get_last_working_set(conn, agent, project)
-            .unwrap_or_default();
+        let ws = crate::sessions::get_last_working_set(conn, agent, project).unwrap_or_default();
         let prefetch = compile_prefetch_hints(conn, agent, project, 5);
 
         if ws.is_empty() && prefetch.is_empty() {
@@ -1355,7 +1430,9 @@ pub fn compile_dynamic_suffix(
 
             if !protocols.is_empty() {
                 // Protocols are exempt from budget — they're process-critical
-                xml.push_str("<active-protocols hint=\"process rules for this project — follow these\">\n");
+                xml.push_str(
+                    "<active-protocols hint=\"process rules for this project — follow these\">\n",
+                );
                 for (title, content) in &protocols {
                     xml.push_str(&format!(
                         "  <protocol name=\"{}\">{}</protocol>\n",
@@ -1398,7 +1475,9 @@ pub fn compile_dynamic_suffix(
             let capped = if content.len() > 2000 {
                 // ISSUE-25: ensure we don't slice inside a multi-byte UTF-8 character
                 let mut end = 2000;
-                while !content.is_char_boundary(end) && end > 0 { end -= 1; }
+                while !content.is_char_boundary(end) && end > 0 {
+                    end -= 1;
+                }
                 &content[..end]
             } else {
                 &content
@@ -1470,7 +1549,9 @@ pub fn compile_dynamic_suffix(
                 .unwrap_or_default();
 
             if !deferred.is_empty() {
-                xml.push_str("<deferred-items hint=\"intentionally postponed — don't re-solve\">\n");
+                xml.push_str(
+                    "<deferred-items hint=\"intentionally postponed — don't re-solve\">\n",
+                );
                 for title in &deferred {
                     xml.push_str(&format!("  <deferred>{}</deferred>\n", xml_escape(title)));
                 }
@@ -1485,8 +1566,10 @@ pub fn compile_dynamic_suffix(
         let session_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM session WHERE started_at > datetime('now', '-7 days')",
-                [], |row| row.get(0),
-            ).unwrap_or(0);
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         let recent_memories: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM memory WHERE created_at > datetime('now', '-24 hours') AND status='active'",
@@ -1495,8 +1578,10 @@ pub fn compile_dynamic_suffix(
         let protocol_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM memory WHERE memory_type='protocol' AND status='active'",
-                [], |row| row.get(0),
-            ).unwrap_or(0);
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
 
         xml.push_str(&format!(
             "<project-momentum sessions-7d=\"{session_count}\" memories-24h=\"{recent_memories}\" protocols=\"{protocol_count}\" />\n",
@@ -1567,30 +1652,43 @@ pub fn compile_dynamic_suffix(
     // Pending messages — budget-exempt (agent MUST see inbox)
     if !excluded_layers.iter().any(|l| l == "pending_messages") {
         if let Some(sid) = session_id {
-            let messages = crate::sessions::list_messages(conn, sid, Some("pending"), 10)
-                .unwrap_or_default();
+            let messages =
+                crate::sessions::list_messages(conn, sid, Some("pending"), 10).unwrap_or_default();
             if messages.is_empty() {
                 xml.push_str("<pending-messages/>\n");
             } else {
-                xml.push_str(&format!("<pending-messages count=\"{}\">\n", messages.len()));
+                xml.push_str(&format!(
+                    "<pending-messages count=\"{}\">\n",
+                    messages.len()
+                ));
                 for msg in &messages {
-                    let topic = if msg.topic.is_empty() { "general" } else { &msg.topic };
+                    let topic = if msg.topic.is_empty() {
+                        "general"
+                    } else {
+                        &msg.topic
+                    };
                     let kind = &msg.kind;
                     let from = &msg.from_session;
-                    let text_preview: String = serde_json::from_str::<serde_json::Value>(&msg.parts)
-                        .ok()
-                        .and_then(|v| v.as_str().map(|s| {
-                            if s.chars().count() > 200 {
-                                let truncated: String = s.chars().take(200).collect();
-                                format!("{truncated}...")
-                            } else {
-                                s.to_string()
-                            }
-                        }))
-                        .unwrap_or_default();
+                    let text_preview: String =
+                        serde_json::from_str::<serde_json::Value>(&msg.parts)
+                            .ok()
+                            .and_then(|v| {
+                                v.as_str().map(|s| {
+                                    if s.chars().count() > 200 {
+                                        let truncated: String = s.chars().take(200).collect();
+                                        format!("{truncated}...")
+                                    } else {
+                                        s.to_string()
+                                    }
+                                })
+                            })
+                            .unwrap_or_default();
                     xml.push_str(&format!(
                         "  <message from=\"{}\" topic=\"{}\" kind=\"{}\">{}</message>\n",
-                        xml_escape(from), xml_escape(topic), xml_escape(kind), xml_escape(&text_preview)
+                        xml_escape(from),
+                        xml_escape(topic),
+                        xml_escape(kind),
+                        xml_escape(&text_preview)
                     ));
                 }
                 xml.push_str("</pending-messages>\n");
@@ -1605,8 +1703,8 @@ pub fn compile_dynamic_suffix(
     // Meeting context — budget-aware
     if !excluded_layers.iter().any(|l| l == "meeting_context") {
         if let Some(sid) = session_id {
-            let meetings = crate::teams::get_active_meetings_for_session(conn, sid)
-                .unwrap_or_default();
+            let meetings =
+                crate::teams::get_active_meetings_for_session(conn, sid).unwrap_or_default();
             if meetings.is_empty() {
                 xml.push_str("<meeting-context/>\n");
             } else {
@@ -1643,17 +1741,16 @@ pub fn compile_dynamic_suffix(
     // read the team's backlog.md file and inject it into the context.
     {
         let ws_config = crate::config::load_config();
-        if ws_config.workspace.auto_write.backlog_read
-            && ws_config.workspace.mode != "project"
-        {
+        if ws_config.workspace.auto_write.backlog_read && ws_config.workspace.mode != "project" {
             let org = &ws_config.workspace.org;
-            let team_name = if org.is_empty() { "default" } else { org.as_str() };
-            if let Some(ws_root) = crate::workspace::team_workspace_path(
-                &ws_config.workspace,
-                team_name,
-                org,
-                project,
-            ) {
+            let team_name = if org.is_empty() {
+                "default"
+            } else {
+                org.as_str()
+            };
+            if let Some(ws_root) =
+                crate::workspace::team_workspace_path(&ws_config.workspace, team_name, org, project)
+            {
                 if let Some(backlog) = crate::workspace::read_team_backlog(&ws_root, team_name) {
                     let escaped = xml_escape(&backlog);
                     xml.push_str(&format!(
@@ -1683,18 +1780,13 @@ pub fn compile_dynamic_suffix(
 ///
 /// This is backward compatible: calls compile_static_prefix + compile_dynamic_suffix
 /// and wraps them in a single `<forge-context>` envelope.
-pub fn compile_context(
-    conn: &Connection,
-    agent: &str,
-    project: Option<&str>,
-) -> String {
+pub fn compile_context(conn: &Connection, agent: &str, project: Option<&str>) -> String {
     let config = crate::config::load_config();
     let ctx_config = config.context.validated();
     let prefix = compile_static_prefix(conn, agent, None);
-    let (suffix, _touched) = compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None, None);
-    format!(
-        "<forge-context version=\"0.7.0\">\n{prefix}\n{suffix}\n</forge-context>"
-    )
+    let (suffix, _touched) =
+        compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None, None);
+    format!("<forge-context version=\"0.7.0\">\n{prefix}\n{suffix}\n</forge-context>")
 }
 
 /// Compile context trace: mirrors compile_dynamic_suffix logic but collects
@@ -1915,7 +2007,10 @@ mod tests {
 
         let results = hybrid_recall(&conn, "JWT", Some(&query_emb), None, None, 10);
 
-        assert!(!results.is_empty(), "should find results with both BM25 and vector");
+        assert!(
+            !results.is_empty(),
+            "should find results with both BM25 and vector"
+        );
     }
 
     #[test]
@@ -1993,7 +2088,10 @@ mod tests {
 
         let merged = rrf_merge(&[list1, list2], 60.0, 10);
 
-        assert_eq!(merged[0].0, "b", "b should be ranked #1 (appears in both lists)");
+        assert_eq!(
+            merged[0].0, "b",
+            "b should be ranked #1 (appears in both lists)"
+        );
 
         let ids: Vec<&str> = merged.iter().map(|x| x.0.as_str()).collect();
         assert!(ids.contains(&"a"));
@@ -2030,7 +2128,10 @@ mod tests {
 
         // On empty DB, manas_recall should return empty vec
         let results = manas_recall(&conn, "anything", None, 10);
-        assert!(results.is_empty(), "manas_recall on empty DB should return empty");
+        assert!(
+            results.is_empty(),
+            "manas_recall on empty DB should return empty"
+        );
     }
 
     #[test]
@@ -2075,13 +2176,19 @@ mod tests {
 
         // Search by pattern keyword — should find it
         let results = manas_recall(&conn, "snake_case", Some("forge"), 10);
-        assert!(!results.is_empty(), "should find domain DNA by pattern keyword");
+        assert!(
+            !results.is_empty(),
+            "should find domain DNA by pattern keyword"
+        );
         assert_eq!(results[0].source, "domain_dna");
         assert!(results[0].memory.title.contains("[dna:naming]"));
 
         // Search without project — DNA should not appear (requires project)
         let results = manas_recall(&conn, "snake_case", None, 10);
-        assert!(results.is_empty(), "domain DNA should not appear without project");
+        assert!(
+            results.is_empty(),
+            "domain DNA should not appear without project"
+        );
     }
 
     #[test]
@@ -2101,10 +2208,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -2116,8 +2223,11 @@ mod tests {
         assert!(results[0].score > 0.0);
 
         // Confidence should be boosted by success_count (5 * 0.1 + 0.5 = 1.0)
-        assert!((results[0].memory.confidence - 1.0).abs() < f64::EPSILON,
-            "5 successes should give max confidence, got {}", results[0].memory.confidence);
+        assert!(
+            (results[0].memory.confidence - 1.0).abs() < f64::EPSILON,
+            "5 successes should give max confidence, got {}",
+            results[0].memory.confidence
+        );
     }
 
     #[test]
@@ -2136,10 +2246,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -2181,11 +2291,20 @@ mod tests {
         let conn = setup();
 
         let prefix = compile_static_prefix(&conn, "claude-code", None);
-        assert!(prefix.contains("<forge-static>"), "should contain opening tag");
-        assert!(prefix.contains("</forge-static>"), "should contain closing tag");
+        assert!(
+            prefix.contains("<forge-static>"),
+            "should contain opening tag"
+        );
+        assert!(
+            prefix.contains("</forge-static>"),
+            "should contain closing tag"
+        );
         assert!(prefix.contains("<platform"), "platform always present");
         assert!(prefix.contains("<identity"), "identity always present");
-        assert!(prefix.contains("<disposition"), "disposition always present");
+        assert!(
+            prefix.contains("<disposition"),
+            "disposition always present"
+        );
         assert!(prefix.contains("<tools"), "tools always present");
     }
 
@@ -2219,29 +2338,69 @@ mod tests {
     fn test_compile_dynamic_suffix_all_sections_present_empty_db() {
         let conn = setup();
 
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
-        assert!(suffix.contains("<forge-dynamic>"), "should contain opening tag");
-        assert!(suffix.contains("</forge-dynamic>"), "should contain closing tag");
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
+        assert!(
+            suffix.contains("<forge-dynamic>"),
+            "should contain opening tag"
+        );
+        assert!(
+            suffix.contains("</forge-dynamic>"),
+            "should contain closing tag"
+        );
         assert!(suffix.contains("<decisions"), "decisions always present");
         assert!(suffix.contains("<lessons"), "lessons always present");
         assert!(suffix.contains("<skills"), "skills always present");
-        assert!(suffix.contains("<perceptions"), "perceptions always present");
-        assert!(suffix.contains("<working-set"), "working-set always present");
+        assert!(
+            suffix.contains("<perceptions"),
+            "perceptions always present"
+        );
+        assert!(
+            suffix.contains("<working-set"),
+            "working-set always present"
+        );
     }
 
     #[test]
     fn test_compile_dynamic_suffix_changes_with_new_data() {
         let conn = setup();
 
-        let (suffix1, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix1, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
         assert!(suffix1.contains("<decisions/>"), "no decisions yet");
 
         // Store a decision
-        let mem = Memory::new(MemoryType::Decision, "Use JWT for auth", "Security decision")
-            .with_confidence(0.9);
+        let mem = Memory::new(
+            MemoryType::Decision,
+            "Use JWT for auth",
+            "Security decision",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &mem).unwrap();
 
-        let (suffix2, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix2, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
         assert_ne!(suffix1, suffix2, "suffix should change when data is added");
         assert!(suffix2.contains("JWT"), "should contain the new decision");
     }
@@ -2251,23 +2410,59 @@ mod tests {
         let conn = setup();
 
         // Store two decisions: one about testing, one about pricing
-        let testing_dec = Memory::new(MemoryType::Decision, "Use Playwright for E2E testing", "We chose Playwright over Cypress for E2E tests")
-            .with_confidence(0.9);
+        let testing_dec = Memory::new(
+            MemoryType::Decision,
+            "Use Playwright for E2E testing",
+            "We chose Playwright over Cypress for E2E tests",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &testing_dec).unwrap();
 
-        let pricing_dec = Memory::new(MemoryType::Decision, "Per-seat pricing model for launch", "Three tiers: Free, Pro $12/mo, Team $19/seat/mo")
-            .with_confidence(0.9);
+        let pricing_dec = Memory::new(
+            MemoryType::Decision,
+            "Per-seat pricing model for launch",
+            "Three tiers: Free, Pro $12/mo, Team $19/seat/mo",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &pricing_dec).unwrap();
 
         // Without focus: both decisions appear
-        let (no_focus, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
-        assert!(no_focus.contains("Playwright"), "no focus: should contain testing decision");
-        assert!(no_focus.contains("pricing"), "no focus: should contain pricing decision");
+        let (no_focus, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
+        assert!(
+            no_focus.contains("Playwright"),
+            "no focus: should contain testing decision"
+        );
+        assert!(
+            no_focus.contains("pricing"),
+            "no focus: should contain pricing decision"
+        );
 
         // With focus on "testing": only testing decision should appear
-        let (focused, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, Some("testing"));
-        assert!(focused.contains("Playwright"), "focus=testing: should contain testing decision");
-        assert!(!focused.contains("pricing"), "focus=testing: should NOT contain pricing decision");
+        let (focused, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            Some("testing"),
+        );
+        assert!(
+            focused.contains("Playwright"),
+            "focus=testing: should contain testing decision"
+        );
+        assert!(
+            !focused.contains("pricing"),
+            "focus=testing: should NOT contain pricing decision"
+        );
     }
 
     // ── compile_context tests (backward compat) ──
@@ -2278,7 +2473,10 @@ mod tests {
 
         let ctx = compile_context(&conn, "claude-code", None);
         assert!(ctx.contains("<forge-context"), "should contain opening tag");
-        assert!(ctx.contains("</forge-context>"), "should contain closing tag");
+        assert!(
+            ctx.contains("</forge-context>"),
+            "should contain closing tag"
+        );
         assert!(ctx.contains("<platform"), "should always include platform");
         // All sections always present (masking)
         assert!(ctx.contains("<decisions"), "decisions always present");
@@ -2313,8 +2511,12 @@ mod tests {
         let conn = setup();
 
         // Store a decision
-        let mem = Memory::new(MemoryType::Decision, "Use JWT for auth", "Security decision")
-            .with_confidence(0.9);
+        let mem = Memory::new(
+            MemoryType::Decision,
+            "Use JWT for auth",
+            "Security decision",
+        )
+        .with_confidence(0.9);
         ops::remember(&conn, &mem).unwrap();
 
         // Store an identity facet
@@ -2344,10 +2546,22 @@ mod tests {
         let conn = setup();
 
         let ctx = compile_context(&conn, "claude-code", None);
-        assert!(ctx.contains("<forge-static>"), "should contain static prefix");
-        assert!(ctx.contains("</forge-static>"), "should contain static prefix closing");
-        assert!(ctx.contains("<forge-dynamic>"), "should contain dynamic suffix");
-        assert!(ctx.contains("</forge-dynamic>"), "should contain dynamic suffix closing");
+        assert!(
+            ctx.contains("<forge-static>"),
+            "should contain static prefix"
+        );
+        assert!(
+            ctx.contains("</forge-static>"),
+            "should contain static prefix closing"
+        );
+        assert!(
+            ctx.contains("<forge-dynamic>"),
+            "should contain dynamic suffix"
+        );
+        assert!(
+            ctx.contains("</forge-dynamic>"),
+            "should contain dynamic suffix closing"
+        );
     }
 
     #[test]
@@ -2355,10 +2569,7 @@ mod tests {
         let conn = setup();
 
         let ctx = compile_context(&conn, "claude-code", None);
-        assert!(
-            ctx.contains("version=\"0.7.0\""),
-            "version should be 0.7.0"
-        );
+        assert!(ctx.contains("version=\"0.7.0\""), "version should be 0.7.0");
     }
 
     #[test]
@@ -2401,10 +2612,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -2424,7 +2635,10 @@ mod tests {
 
         let ctx = compile_context(&conn, "claude-code", None);
         // The k8s skill should NOT appear because kubectl is not in the tool table
-        assert!(!ctx.contains("Deploy to k8s"), "skill requiring unavailable tool should be filtered");
+        assert!(
+            !ctx.contains("Deploy to k8s"),
+            "skill requiring unavailable tool should be filtered"
+        );
     }
 
     #[test]
@@ -2444,10 +2658,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -2467,7 +2681,10 @@ mod tests {
 
         let ctx = compile_context(&conn, "claude-code", None);
         // The cargo skill SHOULD appear because cargo is available
-        assert!(ctx.contains("Build Rust project"), "skill with available tool should be kept");
+        assert!(
+            ctx.contains("Build Rust project"),
+            "skill with available tool should be kept"
+        );
     }
 
     #[test]
@@ -2487,16 +2704,19 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
         // No tools stored at all — graceful degradation: show all skills
         let ctx = compile_context(&conn, "claude-code", None);
-        assert!(ctx.contains("Docker deploy"), "with no tools registered, all skills should pass through");
+        assert!(
+            ctx.contains("Docker deploy"),
+            "with no tools registered, all skills should pass through"
+        );
     }
 
     // ── compile_prefetch_hints tests ──
@@ -2854,11 +3074,23 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
 
         // Recent decision (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
-        let micro_pos = suffix.find("Switch to microservices").expect("recent decision should be present");
-        let mono_pos = suffix.find("Use monolith architecture").expect("old decision should be present");
+        let micro_pos = suffix
+            .find("Switch to microservices")
+            .expect("recent decision should be present");
+        let mono_pos = suffix
+            .find("Use monolith architecture")
+            .expect("old decision should be present");
         assert!(
             micro_pos < mono_pos,
             "recent decision (boosted: 0.8*1.5=1.2) should appear before old decision (1.0*1.0=1.0)"
@@ -2889,11 +3121,23 @@ mod tests {
             &forge_core::time::now_offset(-3 * 86400), // 3 days ago
         );
 
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
 
         // 3-day-old (0.9*1.2=1.08) should outrank 30-day-old (1.0*1.0=1.0)
-        let mid_pos = suffix.find("Recent week pattern").expect("mid-age decision should be present");
-        let old_pos = suffix.find("Ancient pattern").expect("old decision should be present");
+        let mid_pos = suffix
+            .find("Recent week pattern")
+            .expect("mid-age decision should be present");
+        let old_pos = suffix
+            .find("Ancient pattern")
+            .expect("old decision should be present");
         assert!(
             mid_pos < old_pos,
             "week-old decision (0.9*1.2=1.08) should rank before month-old (1.0)"
@@ -2923,10 +3167,22 @@ mod tests {
             &forge_core::time::now_offset(-30 * 86400),
         );
 
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
 
-        let high_pos = suffix.find("High confidence old").expect("high confidence should be present");
-        let low_pos = suffix.find("Low confidence old").expect("low confidence should be present");
+        let high_pos = suffix
+            .find("High confidence old")
+            .expect("high confidence should be present");
+        let low_pos = suffix
+            .find("Low confidence old")
+            .expect("low confidence should be present");
         assert!(
             high_pos < low_pos,
             "without recency boost, higher confidence should rank first"
@@ -2957,11 +3213,23 @@ mod tests {
             &forge_core::time::now_offset(-3600), // 1 hour ago
         );
 
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
 
         // Recent lesson (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
-        let fresh_pos = suffix.find("Fresh testing lesson").expect("recent lesson should be present");
-        let old_pos = suffix.find("Old testing lesson").expect("old lesson should be present");
+        let fresh_pos = suffix
+            .find("Fresh testing lesson")
+            .expect("recent lesson should be present");
+        let old_pos = suffix
+            .find("Old testing lesson")
+            .expect("old lesson should be present");
         assert!(
             fresh_pos < old_pos,
             "recent lesson (boosted: 0.8*1.5=1.2) should appear before old lesson (1.0*1.0=1.0)"
@@ -2972,8 +3240,16 @@ mod tests {
     fn test_recall_includes_edges() {
         let conn = setup();
 
-        let m1 = Memory::new(MemoryType::Decision, "Use Rust for daemon", "For performance and safety");
-        let m2 = Memory::new(MemoryType::Lesson, "Rust is fast", "Confirmed in benchmarks");
+        let m1 = Memory::new(
+            MemoryType::Decision,
+            "Use Rust for daemon",
+            "For performance and safety",
+        );
+        let m2 = Memory::new(
+            MemoryType::Lesson,
+            "Rust is fast",
+            "Confirmed in benchmarks",
+        );
         let m1_id = m1.id.clone();
         let m2_id = m2.id.clone();
         ops::remember(&conn, &m1).unwrap();
@@ -2985,7 +3261,10 @@ mod tests {
 
         // Find the result for m1 and check it has edges
         let rust_result = results.iter().find(|r| r.memory.id == m1_id);
-        assert!(rust_result.is_some(), "should find 'Use Rust for daemon' in results");
+        assert!(
+            rust_result.is_some(),
+            "should find 'Use Rust for daemon' in results"
+        );
         let rust_result = rust_result.unwrap();
         assert!(
             !rust_result.edges.is_empty(),
@@ -2999,8 +3278,16 @@ mod tests {
     fn test_recall_edges_bidirectional() {
         let conn = setup();
 
-        let m1 = Memory::new(MemoryType::Decision, "Use SQLite for storage", "Single-file database");
-        let m2 = Memory::new(MemoryType::Lesson, "SQLite supports FTS5", "Full-text search built-in");
+        let m1 = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for storage",
+            "Single-file database",
+        );
+        let m2 = Memory::new(
+            MemoryType::Lesson,
+            "SQLite supports FTS5",
+            "Full-text search built-in",
+        );
         let m1_id = m1.id.clone();
         let m2_id = m2.id.clone();
         ops::remember(&conn, &m1).unwrap();
@@ -3023,7 +3310,11 @@ mod tests {
     fn test_recall_no_edges_empty() {
         let conn = setup();
 
-        let m = Memory::new(MemoryType::Decision, "Use PostgreSQL", "For relational data");
+        let m = Memory::new(
+            MemoryType::Decision,
+            "Use PostgreSQL",
+            "For relational data",
+        );
         ops::remember(&conn, &m).unwrap();
 
         let results = hybrid_recall(&conn, "PostgreSQL", None, None, None, 10);
@@ -3041,9 +3332,26 @@ mod tests {
         let conn = setup();
 
         // Only one session — active-sessions should NOT appear
-        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        crate::sessions::register_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions with only 1 session"
@@ -3055,10 +3363,36 @@ mod tests {
         let conn = setup();
 
         // Two active sessions — active-sessions should appear
-        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
-        crate::sessions::register_session(&conn, "s2", "cline", Some("dashboard"), None, None, None).unwrap();
+        crate::sessions::register_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::sessions::register_session(
+            &conn,
+            "s2",
+            "cline",
+            Some("dashboard"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
         assert!(
             suffix.contains("active-sessions"),
             "should show active-sessions with 2 sessions"
@@ -3067,14 +3401,8 @@ mod tests {
             suffix.contains("claude-code"),
             "should list claude-code session"
         );
-        assert!(
-            suffix.contains("cline"),
-            "should list cline session"
-        );
-        assert!(
-            suffix.contains("forge"),
-            "should show forge project"
-        );
+        assert!(suffix.contains("cline"), "should list cline session");
+        assert!(suffix.contains("forge"), "should show forge project");
         assert!(
             suffix.contains("dashboard"),
             "should show dashboard project"
@@ -3085,13 +3413,30 @@ mod tests {
     fn test_active_sessions_hidden_after_end() {
         let conn = setup();
 
-        crate::sessions::register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        crate::sessions::register_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         crate::sessions::register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
 
         // End one session — should hide active-sessions again
         crate::sessions::end_session(&conn, "s2").unwrap();
 
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
         assert!(
             !suffix.contains("active-sessions"),
             "should not show active-sessions when only 1 remains active"
@@ -3126,12 +3471,35 @@ mod tests {
         crate::db::manas::store_entity(&conn, &entity1).unwrap();
         crate::db::manas::store_entity(&conn, &entity2).unwrap();
 
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &crate::config::ContextConfig::default(), &[], None, None);
-        assert!(suffix.contains("<entities"), "should contain entities section");
-        assert!(suffix.contains("authentication"), "should contain authentication entity");
-        assert!(suffix.contains("React Router"), "should contain React Router entity");
-        assert!(suffix.contains("mentions=\"7\""), "should show mention count for authentication");
-        assert!(suffix.contains("mentions=\"4\""), "should show mention count for React Router");
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+        );
+        assert!(
+            suffix.contains("<entities"),
+            "should contain entities section"
+        );
+        assert!(
+            suffix.contains("authentication"),
+            "should contain authentication entity"
+        );
+        assert!(
+            suffix.contains("React Router"),
+            "should contain React Router entity"
+        );
+        assert!(
+            suffix.contains("mentions=\"7\""),
+            "should show mention count for authentication"
+        );
+        assert!(
+            suffix.contains("mentions=\"4\""),
+            "should show mention count for React Router"
+        );
     }
 
     #[test]
@@ -3153,9 +3521,23 @@ mod tests {
 
         let excluded = vec!["entities".to_string()];
         let ctx_config = crate::config::ContextConfig::default();
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &excluded, None, None);
-        assert!(suffix.contains("<entities/>"), "should contain empty entities tag when excluded");
-        assert!(!suffix.contains("authentication"), "should NOT contain entity data when excluded");
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &excluded,
+            None,
+            None,
+        );
+        assert!(
+            suffix.contains("<entities/>"),
+            "should contain empty entities tag when excluded"
+        );
+        assert!(
+            !suffix.contains("authentication"),
+            "should NOT contain entity data when excluded"
+        );
     }
 
     // ── code-structure context tests ──
@@ -3187,9 +3569,13 @@ mod tests {
         ops::store_symbol(&conn, &sym).unwrap();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
+        let (suffix, _) =
+            compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
 
-        assert!(suffix.contains("<code-structure"), "should contain code-structure tag");
+        assert!(
+            suffix.contains("<code-structure"),
+            "should contain code-structure tag"
+        );
         assert!(suffix.contains("files=\"1\""), "should show file count");
         assert!(suffix.contains("symbols=\"1\""), "should show symbol count");
         assert!(suffix.contains("domain=\"rust\""), "should show domain");
@@ -3200,14 +3586,24 @@ mod tests {
         let conn = setup();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let (suffix, _) = compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
+        let (suffix, _) =
+            compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
 
-        assert!(suffix.contains("<code-structure/>"), "should contain self-closing code-structure tag when no data");
+        assert!(
+            suffix.contains("<code-structure/>"),
+            "should contain self-closing code-structure tag when no data"
+        );
     }
 
     // ── Portability weighting tests ──
 
-    fn insert_memory_with_portability(conn: &Connection, id: &str, title: &str, portability: &str, reality_id: Option<&str>) {
+    fn insert_memory_with_portability(
+        conn: &Connection,
+        id: &str,
+        title: &str,
+        portability: &str,
+        reality_id: Option<&str>,
+    ) {
         conn.execute(
             "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at, portability, reality_id)
              VALUES (?1, 'decision', ?2, ?3, 0.9, 'active', '[]', datetime('now'), datetime('now'), ?4, ?5)",
@@ -3218,23 +3614,57 @@ mod tests {
     #[test]
     fn test_portability_weight_universal() {
         let conn = setup();
-        insert_memory_with_portability(&conn, "pw1", "universal decision", "universal", Some("reality-A"));
+        insert_memory_with_portability(
+            &conn,
+            "pw1",
+            "universal decision",
+            "universal",
+            Some("reality-A"),
+        );
 
-        let results = hybrid_recall_scoped(&conn, "universal decision", None, None, None, 10, Some("reality-A"));
+        let results = hybrid_recall_scoped(
+            &conn,
+            "universal decision",
+            None,
+            None,
+            None,
+            10,
+            Some("reality-A"),
+        );
         assert!(!results.is_empty(), "should find universal memory");
         // Universal weight = 1.0, so score should be unchanged (no reduction)
-        assert!(results[0].score > 0.0, "universal memory should have positive score");
+        assert!(
+            results[0].score > 0.0,
+            "universal memory should have positive score"
+        );
     }
 
     #[test]
     fn test_portability_weight_reality_bound_same() {
         let conn = setup();
-        insert_memory_with_portability(&conn, "pw2", "bound same reality", "reality_bound", Some("reality-A"));
+        insert_memory_with_portability(
+            &conn,
+            "pw2",
+            "bound same reality",
+            "reality_bound",
+            Some("reality-A"),
+        );
 
-        let results = hybrid_recall_scoped(&conn, "bound same reality", None, None, None, 10, Some("reality-A"));
+        let results = hybrid_recall_scoped(
+            &conn,
+            "bound same reality",
+            None,
+            None,
+            None,
+            10,
+            Some("reality-A"),
+        );
         assert!(!results.is_empty(), "should find same-reality memory");
         // Same reality → weight 1.0, score preserved
-        assert!(results[0].score > 0.0, "same-reality memory should have positive score");
+        assert!(
+            results[0].score > 0.0,
+            "same-reality memory should have positive score"
+        );
     }
 
     #[test]
@@ -3242,32 +3672,77 @@ mod tests {
         let conn = setup();
         // reality_bound memory belongs to reality-B, but we query reality-A
         // The retain filter should exclude it because reality_id != rid
-        insert_memory_with_portability(&conn, "pw3", "bound diff reality", "reality_bound", Some("reality-B"));
+        insert_memory_with_portability(
+            &conn,
+            "pw3",
+            "bound diff reality",
+            "reality_bound",
+            Some("reality-B"),
+        );
 
-        let results = hybrid_recall_scoped(&conn, "bound diff reality", None, None, None, 10, Some("reality-A"));
+        let results = hybrid_recall_scoped(
+            &conn,
+            "bound diff reality",
+            None,
+            None,
+            None,
+            10,
+            Some("reality-A"),
+        );
         // Memory has reality_id="reality-B" which doesn't match "reality-A" → filtered out
-        assert!(results.is_empty(), "different-reality bound memory should be filtered out");
+        assert!(
+            results.is_empty(),
+            "different-reality bound memory should be filtered out"
+        );
     }
 
     #[test]
     fn test_portability_weight_domain_transferable() {
         let conn = setup();
         // domain_transferable with no reality_id (global) — should get 0.7 weight
-        insert_memory_with_portability(&conn, "pw4", "transferable pattern", "domain_transferable", None);
+        insert_memory_with_portability(
+            &conn,
+            "pw4",
+            "transferable pattern",
+            "domain_transferable",
+            None,
+        );
         // Also insert a universal memory for comparison
-        insert_memory_with_portability(&conn, "pw5", "transferable pattern universal", "universal", None);
+        insert_memory_with_portability(
+            &conn,
+            "pw5",
+            "transferable pattern universal",
+            "universal",
+            None,
+        );
 
-        let results = hybrid_recall_scoped(&conn, "transferable pattern", None, None, None, 10, Some("reality-A"));
+        let results = hybrid_recall_scoped(
+            &conn,
+            "transferable pattern",
+            None,
+            None,
+            None,
+            10,
+            Some("reality-A"),
+        );
         assert!(results.len() >= 2, "should find both memories");
 
         // Find both results
-        let dt_result = results.iter().find(|r| r.memory.id == "pw4").expect("should find domain_transferable");
-        let univ_result = results.iter().find(|r| r.memory.id == "pw5").expect("should find universal");
+        let dt_result = results
+            .iter()
+            .find(|r| r.memory.id == "pw4")
+            .expect("should find domain_transferable");
+        let univ_result = results
+            .iter()
+            .find(|r| r.memory.id == "pw5")
+            .expect("should find universal");
 
         // domain_transferable gets 0.7 weight, universal gets 1.0
         // So universal should score higher (given similar base scores from BM25)
-        assert!(univ_result.score >= dt_result.score * 0.5,
-            "universal should score at least half of domain_transferable (it has full weight)");
+        assert!(
+            univ_result.score >= dt_result.score * 0.5,
+            "universal should score at least half of domain_transferable (it has full weight)"
+        );
     }
 
     #[test]
@@ -3275,12 +3750,19 @@ mod tests {
         // Default config has workspace.mode = "project", so no team-backlog section should appear.
         let conn = setup();
         let (suffix, _) = compile_dynamic_suffix(
-            &conn, "claude-code", None,
-            &crate::config::ContextConfig::default(), &[], None, None,
+            &conn,
+            "claude-code",
+            None,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
         );
         // In project mode, the team-backlog section should not be rendered at all
-        assert!(!suffix.contains("team-backlog"),
-            "team-backlog should NOT appear in project mode");
+        assert!(
+            !suffix.contains("team-backlog"),
+            "team-backlog should NOT appear in project mode"
+        );
     }
 
     #[test]
@@ -3296,14 +3778,21 @@ mod tests {
         std::fs::write(
             backlog_dir.join("backlog.md"),
             "# Backend Backlog\n\n- [ ] Implement caching layer\n- [ ] Add rate limiting\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify read_team_backlog can read it
         let backlog = crate::workspace::read_team_backlog(ws_root, "backend");
         assert!(backlog.is_some(), "backlog should be readable");
         let content = backlog.unwrap();
-        assert!(content.contains("Implement caching layer"), "backlog should contain tasks");
-        assert!(content.contains("rate limiting"), "backlog should contain all items");
+        assert!(
+            content.contains("Implement caching layer"),
+            "backlog should contain tasks"
+        );
+        assert!(
+            content.contains("rate limiting"),
+            "backlog should contain all items"
+        );
 
         // Verify read_team_backlog returns None for non-existent team
         let no_backlog = crate::workspace::read_team_backlog(ws_root, "nonexistent");
@@ -3335,11 +3824,21 @@ mod tests {
             None,
             10,
         );
-        assert!(!results.is_empty(), "recall --type protocol should find protocol memories");
-        assert_eq!(results[0].memory.memory_type, MemoryType::Protocol,
-            "recalled memory should have Protocol type, got {:?}", results[0].memory.memory_type);
-        assert!(results[0].memory.title.contains("Protocol:"),
-            "recalled memory title should contain 'Protocol:', got {}", results[0].memory.title);
+        assert!(
+            !results.is_empty(),
+            "recall --type protocol should find protocol memories"
+        );
+        assert_eq!(
+            results[0].memory.memory_type,
+            MemoryType::Protocol,
+            "recalled memory should have Protocol type, got {:?}",
+            results[0].memory.memory_type
+        );
+        assert!(
+            results[0].memory.title.contains("Protocol:"),
+            "recalled memory title should contain 'Protocol:', got {}",
+            results[0].memory.title
+        );
     }
 
     #[test]
@@ -3366,8 +3865,11 @@ mod tests {
             10,
         );
         for r in &results {
-            assert_ne!(r.memory.memory_type, MemoryType::Protocol,
-                "protocol memories should not appear when filtering for decisions");
+            assert_ne!(
+                r.memory.memory_type,
+                MemoryType::Protocol,
+                "protocol memories should not appear when filtering for decisions"
+            );
         }
     }
 
@@ -3391,7 +3893,8 @@ mod tests {
                 "test-project",
                 mem_id,
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         let ctx = compile_context(&conn, "claude-code", Some("test-project"));
         assert!(
@@ -3431,15 +3934,24 @@ mod tests {
         // Simulate the truncation logic from compile_context
         let capped = if content.len() > 2000 {
             let mut end = 2000;
-            while !content.is_char_boundary(end) && end > 0 { end -= 1; }
+            while !content.is_char_boundary(end) && end > 0 {
+                end -= 1;
+            }
             &content[..end]
         } else {
             &content
         };
 
         // Should truncate to 1998 (before the em dash), not panic at 2000
-        assert_eq!(capped.len(), 1998, "should truncate to char boundary before em dash");
-        assert!(capped.ends_with('a'), "should end with 'a', not in the middle of em dash");
+        assert_eq!(
+            capped.len(),
+            1998,
+            "should truncate to char boundary before em dash"
+        );
+        assert!(
+            capped.ends_with('a'),
+            "should end with 'a', not in the middle of em dash"
+        );
     }
 
     #[test]
@@ -3462,21 +3974,41 @@ mod tests {
             budget_chars: 10000,
             ..Default::default()
         };
-        let (suffix, _) = compile_dynamic_suffix(
-            &conn, "claude-code", None, &ctx_config, &[], None, None,
-        );
+        let (suffix, _) =
+            compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
 
-        assert!(suffix.contains("<agents"), "should contain <agents> section");
-        assert!(suffix.contains("test-planner"), "should list test-planner agent");
-        assert!(suffix.contains("test-coder"), "should list test-coder agent");
-        assert!(suffix.contains("Plans architecture"), "should include description");
+        assert!(
+            suffix.contains("<agents"),
+            "should contain <agents> section"
+        );
+        assert!(
+            suffix.contains("test-planner"),
+            "should list test-planner agent"
+        );
+        assert!(
+            suffix.contains("test-coder"),
+            "should list test-coder agent"
+        );
+        assert!(
+            suffix.contains("Plans architecture"),
+            "should include description"
+        );
         assert!(suffix.contains("planner"), "should include agent type");
 
         // Verify exclusion works
         let excluded = vec!["agents".to_string()];
         let (suffix_excluded, _) = compile_dynamic_suffix(
-            &conn, "claude-code", None, &ctx_config, &excluded, None, None,
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &excluded,
+            None,
+            None,
         );
-        assert!(!suffix_excluded.contains("<agents"), "agents section should be excluded");
+        assert!(
+            !suffix_excluded.contains("<agents"),
+            "agents section should be excluded"
+        );
     }
 }

@@ -186,7 +186,11 @@ mod tests {
         store_diagnostic(&conn, &d).unwrap();
 
         let results = get_diagnostics(&conn, "src/lib.rs").unwrap();
-        assert_eq!(results.len(), 0, "expired diagnostics should not be returned");
+        assert_eq!(
+            results.len(),
+            0,
+            "expired diagnostics should not be returned"
+        );
     }
 
     #[test]
@@ -266,7 +270,12 @@ mod tests {
     #[test]
     fn test_diagnostic_summary() {
         let conn = setup();
-        for (id, sev) in &[("e1", "error"), ("e2", "error"), ("w1", "warning"), ("h1", "hint")] {
+        for (id, sev) in &[
+            ("e1", "error"),
+            ("e2", "error"),
+            ("w1", "warning"),
+            ("h1", "hint"),
+        ] {
             let d = Diagnostic {
                 id: id.to_string(),
                 file_path: "src/test.rs".into(),

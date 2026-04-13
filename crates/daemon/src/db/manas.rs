@@ -1,11 +1,9 @@
-use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
 use forge_core::types::{
-    PlatformEntry, Tool, ToolKind, ToolHealth,
-    Skill, DomainDna, Perception, PerceptionKind, Severity,
-    Declared, IdentityFacet, Disposition, DispositionTrait, Trend,
-    Entity,
+    Declared, Disposition, DispositionTrait, DomainDna, Entity, IdentityFacet, Perception,
+    PerceptionKind, PlatformEntry, Severity, Skill, Tool, ToolHealth, ToolKind, Trend,
 };
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 // ──────────────────────────────────────────────
 // Shared stop-word list for entity detection and knowledge gap analysis.
@@ -217,49 +215,64 @@ pub fn detect_and_store_platform(conn: &Connection) -> rusqlite::Result<usize> {
 
     // OS
     let os = std::env::consts::OS;
-    store_platform(conn, &PlatformEntry {
-        key: "os".into(),
-        value: os.into(),
-        detected_at: now.clone(),
-    })?;
+    store_platform(
+        conn,
+        &PlatformEntry {
+            key: "os".into(),
+            value: os.into(),
+            detected_at: now.clone(),
+        },
+    )?;
     count += 1;
 
     // Architecture
     let arch = std::env::consts::ARCH;
-    store_platform(conn, &PlatformEntry {
-        key: "arch".into(),
-        value: arch.into(),
-        detected_at: now.clone(),
-    })?;
+    store_platform(
+        conn,
+        &PlatformEntry {
+            key: "arch".into(),
+            value: arch.into(),
+            detected_at: now.clone(),
+        },
+    )?;
     count += 1;
 
     // Shell
     if let Ok(shell) = std::env::var("SHELL") {
-        store_platform(conn, &PlatformEntry {
-            key: "shell".into(),
-            value: shell,
-            detected_at: now.clone(),
-        })?;
+        store_platform(
+            conn,
+            &PlatformEntry {
+                key: "shell".into(),
+                value: shell,
+                detected_at: now.clone(),
+            },
+        )?;
         count += 1;
     }
 
     // Home directory
     if let Ok(home) = std::env::var("HOME") {
-        store_platform(conn, &PlatformEntry {
-            key: "home".into(),
-            value: home,
-            detected_at: now.clone(),
-        })?;
+        store_platform(
+            conn,
+            &PlatformEntry {
+                key: "home".into(),
+                value: home,
+                detected_at: now.clone(),
+            },
+        )?;
         count += 1;
     }
 
     // Hostname
     if let Ok(hostname) = std::fs::read_to_string("/etc/hostname") {
-        store_platform(conn, &PlatformEntry {
-            key: "hostname".into(),
-            value: hostname.trim().to_string(),
-            detected_at: now,
-        })?;
+        store_platform(
+            conn,
+            &PlatformEntry {
+                key: "hostname".into(),
+                value: hostname.trim().to_string(),
+                detected_at: now,
+            },
+        )?;
         count += 1;
     }
 
@@ -300,7 +313,10 @@ pub fn store_tool(conn: &Connection, tool: &Tool) -> rusqlite::Result<()> {
 }
 
 /// List all tools, optionally filtered by kind.
-pub fn list_tools(conn: &Connection, kind_filter: Option<&ToolKind>) -> rusqlite::Result<Vec<Tool>> {
+pub fn list_tools(
+    conn: &Connection,
+    kind_filter: Option<&ToolKind>,
+) -> rusqlite::Result<Vec<Tool>> {
     if let Some(k) = kind_filter {
         let mut stmt = conn.prepare(
             "SELECT id, name, kind, capabilities, config, health, last_used, use_count, discovered_at
@@ -359,82 +375,91 @@ fn command_exists(cmd: &str) -> bool {
 /// Format: (binary_name, category, capabilities)
 const EXTRA_TOOL_PATTERNS: &[(&str, &str, &[&str])] = &[
     // Languages/Runtimes
-    ("python",   "runtime",          &["python-runtime"]),
-    ("ruby",     "runtime",          &["ruby-runtime"]),
-    ("go",       "runtime",          &["go-build", "go-test", "go-modules"]),
-    ("java",     "runtime",          &["java-runtime"]),
-    ("javac",    "compiler",         &["java-compiler"]),
-    ("swift",    "compiler",         &["swift-compiler", "swift-build"]),
-    ("zig",      "compiler",         &["zig-build", "zig-test"]),
-    ("flutter",  "sdk",             &["flutter-build", "flutter-test", "dart-analyze"]),
-    ("dart",     "runtime",          &["dart-runtime", "dart-analyze"]),
-    ("deno",     "runtime",          &["deno-runtime", "deno-test"]),
-    ("bun",      "runtime",          &["bun-runtime", "bun-test"]),
-
+    ("python", "runtime", &["python-runtime"]),
+    ("ruby", "runtime", &["ruby-runtime"]),
+    ("go", "runtime", &["go-build", "go-test", "go-modules"]),
+    ("java", "runtime", &["java-runtime"]),
+    ("javac", "compiler", &["java-compiler"]),
+    ("swift", "compiler", &["swift-compiler", "swift-build"]),
+    ("zig", "compiler", &["zig-build", "zig-test"]),
+    (
+        "flutter",
+        "sdk",
+        &["flutter-build", "flutter-test", "dart-analyze"],
+    ),
+    ("dart", "runtime", &["dart-runtime", "dart-analyze"]),
+    ("deno", "runtime", &["deno-runtime", "deno-test"]),
+    ("bun", "runtime", &["bun-runtime", "bun-test"]),
     // Package managers
-    ("yarn",     "package-manager",  &["yarn-packages", "yarn-scripts"]),
-    ("pnpm",     "package-manager",  &["pnpm-packages", "pnpm-scripts"]),
-    ("pip3",     "package-manager",  &["python-packages"]),
-    ("pipenv",   "package-manager",  &["python-venv"]),
-    ("poetry",   "package-manager",  &["python-build", "python-packages"]),
-    ("bundler",  "package-manager",  &["ruby-packages"]),
-    ("gem",      "package-manager",  &["ruby-gems"]),
-    ("gradle",   "build",           &["gradle-build", "gradle-test"]),
-    ("mvn",      "build",           &["maven-build", "maven-test"]),
-    ("cmake",    "build",           &["cmake-build", "cmake-config"]),
-    ("bazel",    "build",           &["bazel-build", "bazel-test"]),
-
+    (
+        "yarn",
+        "package-manager",
+        &["yarn-packages", "yarn-scripts"],
+    ),
+    (
+        "pnpm",
+        "package-manager",
+        &["pnpm-packages", "pnpm-scripts"],
+    ),
+    ("pip3", "package-manager", &["python-packages"]),
+    ("pipenv", "package-manager", &["python-venv"]),
+    (
+        "poetry",
+        "package-manager",
+        &["python-build", "python-packages"],
+    ),
+    ("bundler", "package-manager", &["ruby-packages"]),
+    ("gem", "package-manager", &["ruby-gems"]),
+    ("gradle", "build", &["gradle-build", "gradle-test"]),
+    ("mvn", "build", &["maven-build", "maven-test"]),
+    ("cmake", "build", &["cmake-build", "cmake-config"]),
+    ("bazel", "build", &["bazel-build", "bazel-test"]),
     // Test frameworks
-    ("pytest",   "test",            &["python-test", "pytest-fixtures"]),
-    ("jest",     "test",            &["js-test", "snapshot-test"]),
-    ("vitest",   "test",            &["js-test", "vite-test"]),
-    ("mocha",    "test",            &["js-test"]),
-    ("rspec",    "test",            &["ruby-test"]),
-
+    ("pytest", "test", &["python-test", "pytest-fixtures"]),
+    ("jest", "test", &["js-test", "snapshot-test"]),
+    ("vitest", "test", &["js-test", "vite-test"]),
+    ("mocha", "test", &["js-test"]),
+    ("rspec", "test", &["ruby-test"]),
     // Linters/Formatters
-    ("eslint",           "lint",    &["js-lint"]),
-    ("prettier",         "format",  &["js-format"]),
-    ("ruff",             "lint",    &["python-lint", "python-format"]),
-    ("flake8",           "lint",    &["python-lint"]),
-    ("black",            "format",  &["python-format"]),
-    ("rubocop",          "lint",    &["ruby-lint"]),
-    ("golangci-lint",    "lint",    &["go-lint"]),
-    ("clippy-driver",    "lint",    &["rust-lint"]),
-    ("rustfmt",          "format",  &["rust-format"]),
-    ("hadolint",         "lint",    &["dockerfile-lint"]),
-    ("shellcheck",       "lint",    &["shell-lint"]),
-    ("tflint",           "lint",    &["terraform-lint"]),
-
+    ("eslint", "lint", &["js-lint"]),
+    ("prettier", "format", &["js-format"]),
+    ("ruff", "lint", &["python-lint", "python-format"]),
+    ("flake8", "lint", &["python-lint"]),
+    ("black", "format", &["python-format"]),
+    ("rubocop", "lint", &["ruby-lint"]),
+    ("golangci-lint", "lint", &["go-lint"]),
+    ("clippy-driver", "lint", &["rust-lint"]),
+    ("rustfmt", "format", &["rust-format"]),
+    ("hadolint", "lint", &["dockerfile-lint"]),
+    ("shellcheck", "lint", &["shell-lint"]),
+    ("tflint", "lint", &["terraform-lint"]),
     // DevOps
-    ("helm",      "deploy",         &["kubernetes-helm", "chart-management"]),
-    ("ansible",   "deploy",         &["infrastructure-automation"]),
-    ("vagrant",   "vm",             &["virtual-machines"]),
-    ("podman",    "container",       &["containers"]),
-    ("kind",      "kubernetes",      &["local-kubernetes"]),
-    ("minikube",  "kubernetes",      &["local-kubernetes"]),
-
+    ("helm", "deploy", &["kubernetes-helm", "chart-management"]),
+    ("ansible", "deploy", &["infrastructure-automation"]),
+    ("vagrant", "vm", &["virtual-machines"]),
+    ("podman", "container", &["containers"]),
+    ("kind", "kubernetes", &["local-kubernetes"]),
+    ("minikube", "kubernetes", &["local-kubernetes"]),
     // Cloud CLIs
-    ("az",        "cloud",           &["azure"]),
-    ("doctl",     "cloud",           &["digitalocean"]),
-    ("flyctl",    "cloud",           &["fly-io"]),
-    ("vercel",    "deploy",          &["vercel-deploy"]),
-    ("netlify",   "deploy",          &["netlify-deploy"]),
-    ("railway",   "deploy",          &["railway-deploy"]),
-
+    ("az", "cloud", &["azure"]),
+    ("doctl", "cloud", &["digitalocean"]),
+    ("flyctl", "cloud", &["fly-io"]),
+    ("vercel", "deploy", &["vercel-deploy"]),
+    ("netlify", "deploy", &["netlify-deploy"]),
+    ("railway", "deploy", &["railway-deploy"]),
     // Editors/Tools
-    ("code",      "editor",          &["vscode"]),
-    ("nvim",      "editor",          &["neovim"]),
-    ("vim",       "editor",          &["vim"]),
-    ("emacs",     "editor",          &["emacs"]),
-    ("screen",    "terminal",        &["terminal-multiplexer"]),
-
+    ("code", "editor", &["vscode"]),
+    ("nvim", "editor", &["neovim"]),
+    ("vim", "editor", &["vim"]),
+    ("emacs", "editor", &["emacs"]),
+    ("screen", "terminal", &["terminal-multiplexer"]),
     // Search/Files
-    ("fzf",       "search",          &["fuzzy-search"]),
-    ("bat",       "viewer",          &["file-viewer"]),
-    ("eza",       "search",          &["ls-replacement"]),
-    ("delta",     "diff",            &["diff-viewer"]),
-    ("tokei",     "analysis",        &["code-stats"]),
-    ("hyperfine", "benchmark",       &["benchmarking"]),
+    ("fzf", "search", &["fuzzy-search"]),
+    ("bat", "viewer", &["file-viewer"]),
+    ("eza", "search", &["ls-replacement"]),
+    ("delta", "diff", &["diff-viewer"]),
+    ("tokei", "analysis", &["code-stats"]),
+    ("hyperfine", "benchmark", &["benchmarking"]),
 ];
 
 /// Scan PATH for common developer tools and store in the tool table.
@@ -444,28 +469,28 @@ const EXTRA_TOOL_PATTERNS: &[(&str, &str, &[&str])] = &[
 pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
     // Phase 1: Known tools — curated with rich capabilities
     let known_tools: &[(&str, &[&str])] = &[
-        ("git",       &["version-control", "diff", "merge", "branch"]),
-        ("cargo",     &["rust-build", "rust-test", "rust-publish"]),
-        ("rustc",     &["rust-compiler"]),
-        ("npm",       &["node-packages", "node-scripts"]),
-        ("node",      &["javascript-runtime", "node-scripts"]),
-        ("python3",   &["python-runtime", "python-scripts"]),
-        ("pip",       &["python-packages"]),
-        ("docker",    &["containers", "images", "compose"]),
-        ("kubectl",   &["kubernetes", "deployments", "pods"]),
-        ("gh",        &["github-api", "issues", "pull-requests"]),
-        ("make",      &["build-automation", "makefiles"]),
-        ("curl",      &["http-client", "api-calls"]),
-        ("jq",        &["json-processing"]),
-        ("rg",        &["fast-search", "ripgrep"]),
-        ("fd",        &["fast-find"]),
+        ("git", &["version-control", "diff", "merge", "branch"]),
+        ("cargo", &["rust-build", "rust-test", "rust-publish"]),
+        ("rustc", &["rust-compiler"]),
+        ("npm", &["node-packages", "node-scripts"]),
+        ("node", &["javascript-runtime", "node-scripts"]),
+        ("python3", &["python-runtime", "python-scripts"]),
+        ("pip", &["python-packages"]),
+        ("docker", &["containers", "images", "compose"]),
+        ("kubectl", &["kubernetes", "deployments", "pods"]),
+        ("gh", &["github-api", "issues", "pull-requests"]),
+        ("make", &["build-automation", "makefiles"]),
+        ("curl", &["http-client", "api-calls"]),
+        ("jq", &["json-processing"]),
+        ("rg", &["fast-search", "ripgrep"]),
+        ("fd", &["fast-find"]),
         ("terraform", &["infrastructure", "iac"]),
-        ("gcloud",    &["gcp", "cloud"]),
-        ("aws",       &["aws", "cloud"]),
-        ("ssh",       &["remote-access", "ssh"]),
-        ("scp",       &["file-transfer", "ssh"]),
-        ("rsync",     &["file-sync"]),
-        ("tmux",      &["terminal-multiplexer"]),
+        ("gcloud", &["gcp", "cloud"]),
+        ("aws", &["aws", "cloud"]),
+        ("ssh", &["remote-access", "ssh"]),
+        ("scp", &["file-transfer", "ssh"]),
+        ("rsync", &["file-sync"]),
+        ("tmux", &["terminal-multiplexer"]),
     ];
 
     let mut found = 0;
@@ -497,9 +522,7 @@ pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
                 name: name.to_string(),
                 kind: ToolKind::Cli,
                 capabilities: caps.iter().map(|s| s.to_string()).collect(),
-                config: Some(
-                    serde_json::json!({"category": category}).to_string(),
-                ),
+                config: Some(serde_json::json!({"category": category}).to_string()),
                 health: ToolHealth::Healthy,
                 last_used: None,
                 use_count: 0,
@@ -515,7 +538,9 @@ pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
 }
 
 /// Get a set of available tool names for skill validation.
-pub fn available_tool_names(conn: &Connection) -> rusqlite::Result<std::collections::HashSet<String>> {
+pub fn available_tool_names(
+    conn: &Connection,
+) -> rusqlite::Result<std::collections::HashSet<String>> {
     let tools = list_tools(conn, None)?;
     Ok(tools.into_iter().map(|t| t.name).collect())
 }
@@ -527,7 +552,8 @@ pub fn available_tool_names(conn: &Connection) -> rusqlite::Result<std::collecti
 /// Store or update a skill.
 pub fn store_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
     let steps_json = serde_json::to_string(&skill.steps).unwrap_or_else(|_| "[]".to_string());
-    let correlation_ids_json = serde_json::to_string(&skill.correlation_ids).unwrap_or_else(|_| "[]".to_string());
+    let correlation_ids_json =
+        serde_json::to_string(&skill.correlation_ids).unwrap_or_else(|_| "[]".to_string());
     conn.execute(
         "INSERT INTO skill (id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
@@ -570,11 +596,13 @@ pub fn store_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
 /// higher confidence rather than a duplicate entry.
 pub fn store_or_observe_skill(conn: &Connection, skill: &Skill) -> rusqlite::Result<()> {
     // Check for existing skill with the same name (exact match)
-    let existing: Option<(String, u32)> = conn.query_row(
-        "SELECT id, observed_count FROM skill WHERE name = ?1 AND skill_type = 'behavioral'",
-        params![skill.name],
-        |row| Ok((row.get(0)?, row.get::<_, i32>(1).unwrap_or(1) as u32)),
-    ).ok();
+    let existing: Option<(String, u32)> = conn
+        .query_row(
+            "SELECT id, observed_count FROM skill WHERE name = ?1 AND skill_type = 'behavioral'",
+            params![skill.name],
+            |row| Ok((row.get(0)?, row.get::<_, i32>(1).unwrap_or(1) as u32)),
+        )
+        .ok();
 
     if let Some((existing_id, count)) = existing {
         // Increment observation count
@@ -582,7 +610,11 @@ pub fn store_or_observe_skill(conn: &Connection, skill: &Skill) -> rusqlite::Res
             "UPDATE skill SET observed_count = ?1, last_used = ?2 WHERE id = ?3",
             params![count as i32 + 1, now_offset(0), existing_id],
         )?;
-        eprintln!("[skill-intelligence] observed pattern '{}' again (count: {})", skill.name, count + 1);
+        eprintln!(
+            "[skill-intelligence] observed pattern '{}' again (count: {})",
+            skill.name,
+            count + 1
+        );
         return Ok(());
     }
 
@@ -601,7 +633,11 @@ pub fn store_or_observe_skill(conn: &Connection, skill: &Skill) -> rusqlite::Res
                 "UPDATE skill SET observed_count = ?1, last_used = ?2 WHERE id = ?3",
                 params![count as i32 + 1, now_offset(0), existing_id],
             )?;
-            eprintln!("[skill-intelligence] observed similar pattern '{}' again (count: {})", skill.name, count + 1);
+            eprintln!(
+                "[skill-intelligence] observed similar pattern '{}' again (count: {})",
+                skill.name,
+                count + 1
+            );
             return Ok(());
         }
     }
@@ -612,23 +648,28 @@ pub fn store_or_observe_skill(conn: &Connection, skill: &Skill) -> rusqlite::Res
 
 /// Find and create correlations between a behavioral skill and related memories.
 /// Returns the number of correlation edges created.
-pub fn correlate_skill(conn: &Connection, skill_id: &str, skill_title: &str, skill_tags: &[String]) -> rusqlite::Result<usize> {
+pub fn correlate_skill(
+    conn: &Connection,
+    skill_id: &str,
+    skill_title: &str,
+    skill_tags: &[String],
+) -> rusqlite::Result<usize> {
     let mut correlated = 0;
 
     // Find identity facets with similar description
     let words: Vec<&str> = skill_title.split_whitespace().take(3).collect();
     if words.len() >= 2 {
         let identity_pattern = format!("%{}%", words.join("%"));
-        let mut stmt = conn.prepare(
-            "SELECT id FROM identity WHERE active = 1 AND description LIKE ?1"
-        )?;
-        let identity_matches: Vec<String> = stmt.query_map(
-            params![identity_pattern],
-            |row| row.get(0),
-        )?.filter_map(|r| r.ok()).collect();
+        let mut stmt =
+            conn.prepare("SELECT id FROM identity WHERE active = 1 AND description LIKE ?1")?;
+        let identity_matches: Vec<String> = stmt
+            .query_map(params![identity_pattern], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
 
         for id in &identity_matches {
-            if let Err(e) = crate::db::ops::store_edge(conn, skill_id, id, "correlates_with", "{}") {
+            if let Err(e) = crate::db::ops::store_edge(conn, skill_id, id, "correlates_with", "{}")
+            {
                 eprintln!("[skill-intelligence] correlation edge error: {e}");
             } else {
                 correlated += 1;
@@ -638,17 +679,20 @@ pub fn correlate_skill(conn: &Connection, skill_id: &str, skill_title: &str, ski
 
     // Find decisions with matching tags
     for tag in skill_tags {
-        if tag == "behavioral" { continue; }
+        if tag == "behavioral" {
+            continue;
+        }
         let mut stmt = conn.prepare(
             "SELECT id FROM memory WHERE memory_type = 'decision' AND status = 'active' AND tags LIKE ?1"
         )?;
-        let decision_matches: Vec<String> = stmt.query_map(
-            params![format!("%{}%", tag)],
-            |row| row.get(0),
-        )?.filter_map(|r| r.ok()).collect();
+        let decision_matches: Vec<String> = stmt
+            .query_map(params![format!("%{}%", tag)], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
 
         for id in &decision_matches {
-            if let Err(e) = crate::db::ops::store_edge(conn, skill_id, id, "correlates_with", "{}") {
+            if let Err(e) = crate::db::ops::store_edge(conn, skill_id, id, "correlates_with", "{}")
+            {
                 eprintln!("[skill-intelligence] correlation edge error: {e}");
             } else {
                 correlated += 1;
@@ -660,7 +704,7 @@ pub fn correlate_skill(conn: &Connection, skill_id: &str, skill_title: &str, ski
     if correlated > 0 {
         let mut edge_ids: Vec<String> = Vec::new();
         let mut stmt = conn.prepare(
-            "SELECT to_id FROM edge WHERE from_id = ?1 AND edge_type = 'correlates_with'"
+            "SELECT to_id FROM edge WHERE from_id = ?1 AND edge_type = 'correlates_with'",
         )?;
         let rows = stmt.query_map(params![skill_id], |row| row.get(0))?;
         for id in rows.flatten() {
@@ -699,8 +743,11 @@ pub fn list_skills(conn: &Connection, domain_filter: Option<&str>) -> rusqlite::
 fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
     let steps_str: String = row.get(4)?;
     let steps: Vec<String> = serde_json::from_str(&steps_str).unwrap_or_default();
-    let correlation_ids_str: String = row.get::<_, String>(14).unwrap_or_else(|_| "[]".to_string());
-    let correlation_ids: Vec<String> = serde_json::from_str(&correlation_ids_str).unwrap_or_default();
+    let correlation_ids_str: String = row
+        .get::<_, String>(14)
+        .unwrap_or_else(|_| "[]".to_string());
+    let correlation_ids: Vec<String> =
+        serde_json::from_str(&correlation_ids_str).unwrap_or_default();
     Ok(Skill {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -713,7 +760,9 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
         source: row.get(8)?,
         version: row.get::<_, i64>(9)? as u64,
         project: row.get(10).ok().unwrap_or(None),
-        skill_type: row.get::<_, String>(11).unwrap_or_else(|_| "procedural".to_string()),
+        skill_type: row
+            .get::<_, String>(11)
+            .unwrap_or_else(|_| "procedural".to_string()),
         user_specific: row.get::<_, i32>(12).unwrap_or(0) != 0,
         observed_count: row.get::<_, i32>(13).unwrap_or(1) as u32,
         correlation_ids,
@@ -722,7 +771,11 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
 
 /// Search skills by name, description, or domain keyword (LIKE search).
 /// Respects project scoping: returns skills for the given project + global skills (project IS NULL).
-pub fn search_skills(conn: &Connection, query: &str, project: Option<&str>) -> rusqlite::Result<Vec<Skill>> {
+pub fn search_skills(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+) -> rusqlite::Result<Vec<Skill>> {
     let search = format!("%{query}%");
     if let Some(proj) = project {
         let mut stmt = conn.prepare(
@@ -748,11 +801,21 @@ pub fn search_skills(conn: &Connection, query: &str, project: Option<&str>) -> r
 ///
 /// The format! for the field name is safe because `field` is a hardcoded
 /// string literal ("success_count" or "fail_count"), not user input.
-pub fn record_skill_result(conn: &Connection, skill_id: &str, success: bool) -> rusqlite::Result<bool> {
+pub fn record_skill_result(
+    conn: &Connection,
+    skill_id: &str,
+    success: bool,
+) -> rusqlite::Result<bool> {
     // Safe: `field` is a compile-time literal, not user input
-    let field = if success { "success_count" } else { "fail_count" };
+    let field = if success {
+        "success_count"
+    } else {
+        "fail_count"
+    };
     let updated = conn.execute(
-        &format!("UPDATE skill SET {field} = {field} + 1, last_used = datetime('now') WHERE id = ?1"),
+        &format!(
+            "UPDATE skill SET {field} = {field} + 1, last_used = datetime('now') WHERE id = ?1"
+        ),
         params![skill_id],
     )?;
     Ok(updated > 0)
@@ -802,18 +865,21 @@ pub fn store_domain_dna(conn: &Connection, dna: &DomainDna) -> rusqlite::Result<
 }
 
 /// List domain DNA entries, optionally filtered by project.
-pub fn list_domain_dna(conn: &Connection, project_filter: Option<&str>) -> rusqlite::Result<Vec<DomainDna>> {
+pub fn list_domain_dna(
+    conn: &Connection,
+    project_filter: Option<&str>,
+) -> rusqlite::Result<Vec<DomainDna>> {
     if let Some(p) = project_filter {
         let mut stmt = conn.prepare(
             "SELECT id, project, aspect, pattern, confidence, evidence, detected_at
-             FROM domain_dna WHERE project = ?1 ORDER BY aspect"
+             FROM domain_dna WHERE project = ?1 ORDER BY aspect",
         )?;
         let rows = stmt.query_map(params![p], row_to_domain_dna)?;
         rows.collect()
     } else {
         let mut stmt = conn.prepare(
             "SELECT id, project, aspect, pattern, confidence, evidence, detected_at
-             FROM domain_dna ORDER BY aspect"
+             FROM domain_dna ORDER BY aspect",
         )?;
         let rows = stmt.query_map([], row_to_domain_dna)?;
         rows.collect()
@@ -877,7 +943,7 @@ pub fn list_unconsumed_perceptions(
         (Some(k), None) => {
             let mut stmt = conn.prepare(
                 "SELECT id, kind, data, severity, project, created_at, expires_at, consumed
-                 FROM perception WHERE consumed = 0 AND kind = ?1 ORDER BY created_at DESC"
+                 FROM perception WHERE consumed = 0 AND kind = ?1 ORDER BY created_at DESC",
             )?;
             let rows = stmt.query_map(params![perception_kind_str(k)], row_to_perception)?;
             rows.collect()
@@ -893,7 +959,7 @@ pub fn list_unconsumed_perceptions(
         (None, None) => {
             let mut stmt = conn.prepare(
                 "SELECT id, kind, data, severity, project, created_at, expires_at, consumed
-                 FROM perception WHERE consumed = 0 ORDER BY created_at DESC"
+                 FROM perception WHERE consumed = 0 ORDER BY created_at DESC",
             )?;
             let rows = stmt.query_map([], row_to_perception)?;
             rows.collect()
@@ -940,8 +1006,7 @@ fn epoch_to_iso(secs: u64) -> String {
         year += 1;
     }
 
-    let is_leap =
-        year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let is_leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
     let month_days: [u64; 12] = if is_leap {
         [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     } else {
@@ -962,9 +1027,7 @@ fn epoch_to_iso(secs: u64) -> String {
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
 
-    format!(
-        "{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}"
-    )
+    format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}")
 }
 
 /// Mark a perception as consumed.
@@ -1072,24 +1135,35 @@ pub fn store_declared(conn: &Connection, d: &Declared) -> rusqlite::Result<()> {
             hash = excluded.hash,
             project = excluded.project,
             ingested_at = excluded.ingested_at",
-        params![d.id, d.source, d.path, d.content, d.hash, d.project, d.ingested_at],
+        params![
+            d.id,
+            d.source,
+            d.path,
+            d.content,
+            d.hash,
+            d.project,
+            d.ingested_at
+        ],
     )?;
     Ok(())
 }
 
 /// List declared entries, optionally filtered by project.
-pub fn list_declared(conn: &Connection, project_filter: Option<&str>) -> rusqlite::Result<Vec<Declared>> {
+pub fn list_declared(
+    conn: &Connection,
+    project_filter: Option<&str>,
+) -> rusqlite::Result<Vec<Declared>> {
     if let Some(p) = project_filter {
         let mut stmt = conn.prepare(
             "SELECT id, source, path, content, hash, project, ingested_at
-             FROM declared WHERE project = ?1 ORDER BY ingested_at DESC"
+             FROM declared WHERE project = ?1 ORDER BY ingested_at DESC",
         )?;
         let rows = stmt.query_map(params![p], row_to_declared)?;
         rows.collect()
     } else {
         let mut stmt = conn.prepare(
             "SELECT id, source, path, content, hash, project, ingested_at
-             FROM declared ORDER BY ingested_at DESC"
+             FROM declared ORDER BY ingested_at DESC",
         )?;
         let rows = stmt.query_map([], row_to_declared)?;
         rows.collect()
@@ -1108,7 +1182,11 @@ pub fn get_declared_by_hash(conn: &Connection, hash: &str) -> rusqlite::Result<O
 }
 
 /// Search declared knowledge entries by content or source using LIKE.
-pub fn search_declared(conn: &Connection, query: &str, project: Option<&str>) -> rusqlite::Result<Vec<Declared>> {
+pub fn search_declared(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+) -> rusqlite::Result<Vec<Declared>> {
     let search = format!("%{query}%");
     match project {
         Some(p) => {
@@ -1133,7 +1211,12 @@ pub fn search_declared(conn: &Connection, query: &str, project: Option<&str>) ->
 }
 
 /// Ingest a file (e.g. CLAUDE.md) as declared knowledge with content-hash dedup.
-pub fn ingest_declared_file(conn: &Connection, path: &str, source: &str, project: Option<&str>) -> rusqlite::Result<bool> {
+pub fn ingest_declared_file(
+    conn: &Connection,
+    path: &str,
+    source: &str,
+    project: Option<&str>,
+) -> rusqlite::Result<bool> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -1194,8 +1277,17 @@ fn row_to_declared(row: &rusqlite::Row) -> rusqlite::Result<Declared> {
 /// Ingest project documentation files into Declared Knowledge (Layer 5).
 /// Scans for CLAUDE.md, README.md, AGENTS.md, .cursorrules, GEMINI.md in the project root.
 /// Uses content hash for idempotency — skips unchanged files.
-pub fn ingest_project_declared(conn: &Connection, project_dir: &str) -> rusqlite::Result<(usize, usize)> {
-    let doc_files = ["CLAUDE.md", "README.md", "AGENTS.md", ".cursorrules", "GEMINI.md"];
+pub fn ingest_project_declared(
+    conn: &Connection,
+    project_dir: &str,
+) -> rusqlite::Result<(usize, usize)> {
+    let doc_files = [
+        "CLAUDE.md",
+        "README.md",
+        "AGENTS.md",
+        ".cursorrules",
+        "GEMINI.md",
+    ];
     let mut ingested = 0usize;
     let mut skipped = 0usize;
 
@@ -1285,17 +1377,57 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
         .to_string();
 
     let markers: &[(&str, &str, &[&str])] = &[
-        ("Cargo.toml", "rust", &["cargo test", "cargo clippy", "cargo build"]),
-        ("package.json", "javascript/typescript", &["npm test", "npm run lint", "npm run build"]),
-        ("pubspec.yaml", "flutter/dart", &["flutter test", "dart analyze", "flutter build"]),
-        ("pyproject.toml", "python", &["pytest", "ruff check", "python -m build"]),
-        ("setup.py", "python", &["pytest", "flake8", "python setup.py build"]),
-        ("go.mod", "go", &["go test ./...", "golangci-lint run", "go build"]),
-        ("build.gradle", "java/kotlin", &["gradle test", "gradle check", "gradle build"]),
-        ("Gemfile", "ruby", &["rspec", "rubocop", "bundle exec rake build"]),
-        ("CMakeLists.txt", "c/cpp", &["ctest", "clang-tidy", "cmake --build"]),
+        (
+            "Cargo.toml",
+            "rust",
+            &["cargo test", "cargo clippy", "cargo build"],
+        ),
+        (
+            "package.json",
+            "javascript/typescript",
+            &["npm test", "npm run lint", "npm run build"],
+        ),
+        (
+            "pubspec.yaml",
+            "flutter/dart",
+            &["flutter test", "dart analyze", "flutter build"],
+        ),
+        (
+            "pyproject.toml",
+            "python",
+            &["pytest", "ruff check", "python -m build"],
+        ),
+        (
+            "setup.py",
+            "python",
+            &["pytest", "flake8", "python setup.py build"],
+        ),
+        (
+            "go.mod",
+            "go",
+            &["go test ./...", "golangci-lint run", "go build"],
+        ),
+        (
+            "build.gradle",
+            "java/kotlin",
+            &["gradle test", "gradle check", "gradle build"],
+        ),
+        (
+            "Gemfile",
+            "ruby",
+            &["rspec", "rubocop", "bundle exec rake build"],
+        ),
+        (
+            "CMakeLists.txt",
+            "c/cpp",
+            &["ctest", "clang-tidy", "cmake --build"],
+        ),
         ("Makefile", "make", &["make test", "make lint", "make"]),
-        ("Dockerfile", "container", &["docker build", "hadolint", "docker compose"]),
+        (
+            "Dockerfile",
+            "container",
+            &["docker build", "hadolint", "docker compose"],
+        ),
     ];
 
     let mut detected = 0usize;
@@ -1361,9 +1493,9 @@ pub fn detect_domain_dna(conn: &Connection, project_dir: &str) -> rusqlite::Resu
 fn source_priority(source: &str) -> u8 {
     match source {
         "cli" | "user_defined" | "manual" => 3, // Explicit user intent — highest
-        "correction" => 2, // User corrected an extracted facet
-        "extracted" => 1,  // Auto-extracted from transcripts
-        _ => 0,            // Unknown
+        "correction" => 2,                      // User corrected an extracted facet
+        "extracted" => 1,                       // Auto-extracted from transcripts
+        _ => 0,                                 // Unknown
     }
 }
 
@@ -1562,7 +1694,7 @@ pub fn store_disposition(conn: &Connection, d: &Disposition) -> rusqlite::Result
 pub fn list_dispositions(conn: &Connection, agent: &str) -> rusqlite::Result<Vec<Disposition>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent, trait_name, domain, value, trend, updated_at, evidence
-         FROM disposition WHERE agent = ?1 ORDER BY trait_name"
+         FROM disposition WHERE agent = ?1 ORDER BY trait_name",
     )?;
     let rows = stmt.query_map(params![agent], row_to_disposition)?;
     rows.collect()
@@ -1614,11 +1746,10 @@ pub fn manas_health(conn: &Connection) -> rusqlite::Result<ManasHealth> {
     };
 
     // Trait names for disposition display
-    let trait_names: Vec<String> = conn.prepare(
-        "SELECT DISTINCT trait_name FROM disposition"
-    ).and_then(|mut stmt| {
-        stmt.query_map([], |row| row.get(0))?.collect()
-    }).unwrap_or_default();
+    let trait_names: Vec<String> = conn
+        .prepare("SELECT DISTINCT trait_name FROM disposition")
+        .and_then(|mut stmt| stmt.query_map([], |row| row.get(0))?.collect())
+        .unwrap_or_default();
 
     Ok(ManasHealth {
         platform_entries: count_table("platform", "")?,
@@ -1712,13 +1843,15 @@ pub fn increment_entity_mention(
             "SELECT id FROM entity WHERE name = ?1 AND project = ?2",
             params![name, proj],
             |row| row.get(0),
-        ).optional()?
+        )
+        .optional()?
     } else {
         conn.query_row(
             "SELECT id FROM entity WHERE name = ?1 AND project IS NULL",
             params![name],
             |row| row.get(0),
-        ).optional()?
+        )
+        .optional()?
     };
 
     if let Some(id) = existing_id {
@@ -1756,9 +1889,7 @@ fn row_to_entity(row: &rusqlite::Row) -> rusqlite::Result<Entity> {
 /// Returns the number of entities created or updated.
 pub fn detect_entities(conn: &Connection) -> rusqlite::Result<usize> {
     // Collect all active memory titles
-    let mut stmt = conn.prepare(
-        "SELECT id, title, project FROM memory WHERE status = 'active'"
-    )?;
+    let mut stmt = conn.prepare("SELECT id, title, project FROM memory WHERE status = 'active'")?;
 
     struct MemRow {
         id: String,
@@ -1766,13 +1897,16 @@ pub fn detect_entities(conn: &Connection) -> rusqlite::Result<usize> {
         project: Option<String>,
     }
 
-    let rows: Vec<MemRow> = stmt.query_map([], |row| {
-        Ok(MemRow {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            project: row.get(2)?,
-        })
-    })?.filter_map(|r| r.ok()).collect();
+    let rows: Vec<MemRow> = stmt
+        .query_map([], |row| {
+            Ok(MemRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                project: row.get(2)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     // Count word frequency across memory titles (per project)
     // Key: (lowercase_word, project), Value: (count, Vec<memory_id>)
@@ -1784,13 +1918,22 @@ pub fn detect_entities(conn: &Connection) -> rusqlite::Result<usize> {
 
     for mem in &rows {
         // Normalize: lowercase, replace non-alphanumeric with space, split
-        let normalized: String = mem.title.to_lowercase()
+        let normalized: String = mem
+            .title
+            .to_lowercase()
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { ' ' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    ' '
+                }
+            })
             .collect();
 
         // Track which words we've already counted for this memory (dedup within one title)
-        let mut seen_in_this_title: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_in_this_title: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for word in normalized.split_whitespace() {
             // Skip short words, stop words, and pure numbers
@@ -1871,7 +2014,10 @@ fn increment_entity_mention_with_count(
 
 /// Find knowledge gaps: words that appear in 3+ memory titles but have no entity.
 /// Returns the list of gap words (lowercase).
-pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqlite::Result<Vec<String>> {
+pub fn detect_knowledge_gaps(
+    conn: &Connection,
+    project: Option<&str>,
+) -> rusqlite::Result<Vec<String>> {
     let stop_words: std::collections::HashSet<&str> = ENTITY_STOP_WORDS.iter().copied().collect();
 
     // 1. Get all active memory titles for the project
@@ -1882,9 +2028,8 @@ pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqli
         let mapped = stmt.query_map(params![proj], |row| row.get::<_, String>(0))?;
         mapped.filter_map(|r| r.ok()).collect()
     } else {
-        let mut stmt = conn.prepare(
-            "SELECT title FROM memory WHERE status = 'active' LIMIT 1000"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT title FROM memory WHERE status = 'active' LIMIT 1000")?;
         let mapped = stmt.query_map([], |row| row.get::<_, String>(0))?;
         mapped.filter_map(|r| r.ok()).collect()
     };
@@ -1892,9 +2037,16 @@ pub fn detect_knowledge_gaps(conn: &Connection, project: Option<&str>) -> rusqli
     // 2. Tokenize into words (split whitespace, lowercase, skip stop words)
     let mut word_freq: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for title in &rows {
-        let normalized: String = title.to_lowercase()
+        let normalized: String = title
+            .to_lowercase()
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { ' ' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    ' '
+                }
+            })
             .collect();
 
         // Dedup within one title
@@ -2067,10 +2219,10 @@ mod tests {
             source: "learned".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         let skill2 = Skill {
             id: "s2".into(),
@@ -2084,10 +2236,10 @@ mod tests {
             source: "declared".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         store_skill(&conn, &skill1).unwrap();
         store_skill(&conn, &skill2).unwrap();
@@ -2125,10 +2277,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -2163,10 +2315,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -2201,10 +2353,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         store_skill(&conn, &junk).unwrap();
 
@@ -2213,7 +2365,9 @@ mod tests {
             id: "good".into(),
             name: "Deploy Rust".into(),
             domain: "devops".into(),
-            description: "1) cargo build --release 2) scp binary to server 3) systemctl restart the-service".into(),
+            description:
+                "1) cargo build --release 2) scp binary to server 3) systemctl restart the-service"
+                    .into(),
             steps: vec!["cargo build".into(), "scp".into(), "restart".into()],
             success_count: 3,
             fail_count: 0,
@@ -2221,10 +2375,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         store_skill(&conn, &good).unwrap();
 
@@ -2254,10 +2408,10 @@ mod tests {
             source: "extracted".into(),
             version: 1,
             project: None,
-        skill_type: "procedural".to_string(),
-        user_specific: false,
-        observed_count: 1,
-        correlation_ids: vec![],
+            skill_type: "procedural".to_string(),
+            user_specific: false,
+            observed_count: 1,
+            correlation_ids: vec![],
         };
         store_skill(&conn, &proven).unwrap();
 
@@ -2302,7 +2456,11 @@ mod tests {
             aspect: "naming".into(),
             pattern: "snake_case everywhere".into(),
             confidence: 0.95,
-            evidence: vec!["src/main.rs".into(), "src/lib.rs".into(), "src/db.rs".into()],
+            evidence: vec![
+                "src/main.rs".into(),
+                "src/lib.rs".into(),
+                "src/db.rs".into(),
+            ],
             detected_at: "2026-04-03 13:00:00".into(),
         };
         store_domain_dna(&conn, &updated).unwrap();
@@ -2343,7 +2501,8 @@ mod tests {
         assert_eq!(unconsumed.len(), 2);
 
         // Filter by kind
-        let errors = list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), None).unwrap();
+        let errors =
+            list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), None).unwrap();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].data, "compilation failed");
 
@@ -2388,7 +2547,9 @@ mod tests {
         assert!(other.is_empty());
 
         // Get by hash
-        let found = get_declared_by_hash(&conn, "abc123").unwrap().expect("should find by hash");
+        let found = get_declared_by_hash(&conn, "abc123")
+            .unwrap()
+            .expect("should find by hash");
         assert_eq!(found.id, "dk1");
         assert_eq!(found.content, "Use snake_case");
 
@@ -2470,7 +2631,10 @@ mod tests {
             value: 0.8,
             trend: Trend::Stable,
             updated_at: "2026-04-03 13:00:00".into(),
-            evidence: vec!["always runs clippy".into(), "uses parameterized queries".into()],
+            evidence: vec![
+                "always runs clippy".into(),
+                "uses parameterized queries".into(),
+            ],
         };
         store_disposition(&conn, &updated).unwrap();
         let list = list_dispositions(&conn, "forge").unwrap();
@@ -2499,46 +2663,62 @@ mod tests {
         assert_eq!(h.dispositions, 0);
 
         // Add some data
-        store_platform(&conn, &PlatformEntry {
-            key: "os".into(),
-            value: "linux".into(),
-            detected_at: "2026-04-03 12:00:00".into(),
-        }).unwrap();
+        store_platform(
+            &conn,
+            &PlatformEntry {
+                key: "os".into(),
+                value: "linux".into(),
+                detected_at: "2026-04-03 12:00:00".into(),
+            },
+        )
+        .unwrap();
 
-        store_tool(&conn, &Tool {
-            id: "t1".into(),
-            name: "cargo".into(),
-            kind: ToolKind::Cli,
-            capabilities: vec![],
-            config: None,
-            health: ToolHealth::Healthy,
-            last_used: None,
-            use_count: 0,
-            discovered_at: "2026-04-03 12:00:00".into(),
-        }).unwrap();
+        store_tool(
+            &conn,
+            &Tool {
+                id: "t1".into(),
+                name: "cargo".into(),
+                kind: ToolKind::Cli,
+                capabilities: vec![],
+                config: None,
+                health: ToolHealth::Healthy,
+                last_used: None,
+                use_count: 0,
+                discovered_at: "2026-04-03 12:00:00".into(),
+            },
+        )
+        .unwrap();
 
-        store_perception(&conn, &Perception {
-            id: "p1".into(),
-            kind: PerceptionKind::Error,
-            data: "err".into(),
-            severity: Severity::Error,
-            project: None,
-            created_at: "2026-04-03 12:00:00".into(),
-            expires_at: None,
-            consumed: false,
-        }).unwrap();
+        store_perception(
+            &conn,
+            &Perception {
+                id: "p1".into(),
+                kind: PerceptionKind::Error,
+                data: "err".into(),
+                severity: Severity::Error,
+                project: None,
+                created_at: "2026-04-03 12:00:00".into(),
+                expires_at: None,
+                consumed: false,
+            },
+        )
+        .unwrap();
 
-        store_identity(&conn, &IdentityFacet {
-            id: "if1".into(),
-            agent: "forge".into(),
-            facet: "role".into(),
-            description: "memory".into(),
-            strength: 0.9,
-            source: "declared".into(),
-            active: true,
-            created_at: "2026-04-03 12:00:00".into(),
-            user_id: None,
-        }).unwrap();
+        store_identity(
+            &conn,
+            &IdentityFacet {
+                id: "if1".into(),
+                agent: "forge".into(),
+                facet: "role".into(),
+                description: "memory".into(),
+                strength: 0.9,
+                source: "declared".into(),
+                active: true,
+                created_at: "2026-04-03 12:00:00".into(),
+                user_id: None,
+            },
+        )
+        .unwrap();
 
         let h = manas_health(&conn).unwrap();
         assert_eq!(h.platform_entries, 1);
@@ -2631,7 +2811,11 @@ mod tests {
         let dir = std::env::temp_dir().join("forge_test_ingest");
         let _ = std::fs::create_dir_all(&dir);
         let file_path = dir.join("test_claude.md");
-        std::fs::write(&file_path, "# Forge Rules\nAlways run tests before committing.").unwrap();
+        std::fs::write(
+            &file_path,
+            "# Forge Rules\nAlways run tests before committing.",
+        )
+        .unwrap();
 
         let path_str = file_path.to_str().unwrap();
         let ingested = ingest_declared_file(&conn, path_str, "CLAUDE.md", Some("forge")).unwrap();
@@ -2703,17 +2887,21 @@ mod tests {
         assert!(names.is_empty());
 
         // Store a tool
-        store_tool(&conn, &Tool {
-            id: "cli:git".into(),
-            name: "git".into(),
-            kind: ToolKind::Cli,
-            capabilities: vec!["version-control".into()],
-            config: None,
-            health: ToolHealth::Healthy,
-            last_used: None,
-            use_count: 0,
-            discovered_at: "2026-04-03 12:00:00".into(),
-        }).unwrap();
+        store_tool(
+            &conn,
+            &Tool {
+                id: "cli:git".into(),
+                name: "git".into(),
+                kind: ToolKind::Cli,
+                capabilities: vec!["version-control".into()],
+                config: None,
+                health: ToolHealth::Healthy,
+                last_used: None,
+                use_count: 0,
+                discovered_at: "2026-04-03 12:00:00".into(),
+            },
+        )
+        .unwrap();
 
         let names = available_tool_names(&conn).unwrap();
         assert_eq!(names.len(), 1);
@@ -2755,7 +2943,10 @@ mod tests {
 
         // One should be claude_md source, one readme
         let sources: Vec<&str> = all.iter().map(|d| d.source.as_str()).collect();
-        assert!(sources.contains(&"claude_md"), "should have claude_md source");
+        assert!(
+            sources.contains(&"claude_md"),
+            "should have claude_md source"
+        );
         assert!(sources.contains(&"readme"), "should have readme source");
 
         // Cleanup
@@ -2810,9 +3001,18 @@ mod tests {
         // Should have language, test_command, lint_command, build_command
         let aspects: Vec<&str> = dna_list.iter().map(|d| d.aspect.as_str()).collect();
         assert!(aspects.contains(&"language"), "should detect language");
-        assert!(aspects.contains(&"test_command"), "should detect test command");
-        assert!(aspects.contains(&"lint_command"), "should detect lint command");
-        assert!(aspects.contains(&"build_command"), "should detect build command");
+        assert!(
+            aspects.contains(&"test_command"),
+            "should detect test command"
+        );
+        assert!(
+            aspects.contains(&"lint_command"),
+            "should detect lint command"
+        );
+        assert!(
+            aspects.contains(&"build_command"),
+            "should detect build command"
+        );
 
         // Verify language is rust
         let lang = dna_list.iter().find(|d| d.aspect == "language").unwrap();
@@ -2820,7 +3020,10 @@ mod tests {
         assert!((lang.confidence - 0.95).abs() < f64::EPSILON);
 
         // Verify test command
-        let test = dna_list.iter().find(|d| d.aspect == "test_command").unwrap();
+        let test = dna_list
+            .iter()
+            .find(|d| d.aspect == "test_command")
+            .unwrap();
         assert_eq!(test.pattern, "cargo test");
 
         // Cleanup
@@ -2838,7 +3041,10 @@ mod tests {
 
         let dir_str = dir.to_str().unwrap();
         let detected = detect_domain_dna(&conn, dir_str).unwrap();
-        assert_eq!(detected, 2, "should detect both Cargo.toml and Dockerfile markers");
+        assert_eq!(
+            detected, 2,
+            "should detect both Cargo.toml and Dockerfile markers"
+        );
 
         // The language should be set by the last matching marker (Dockerfile overrides Cargo.toml
         // since both write to the same dna-{project}-language ID). But since markers are iterated
@@ -2849,7 +3055,11 @@ mod tests {
 
         // We should have entries for language, test_command, lint_command, build_command
         // (4 entries, with the latest values from Dockerfile)
-        assert!(dna_list.len() >= 4, "should have at least 4 DNA entries, got {}", dna_list.len());
+        assert!(
+            dna_list.len() >= 4,
+            "should have at least 4 DNA entries, got {}",
+            dna_list.len()
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -2887,7 +3097,12 @@ mod tests {
         store_identity(&conn, &f2).unwrap();
 
         let all = list_identity(&conn, "claude-code", true).unwrap();
-        assert_eq!(all.len(), 1, "duplicate facets should be merged, got {}", all.len());
+        assert_eq!(
+            all.len(),
+            1,
+            "duplicate facets should be merged, got {}",
+            all.len()
+        );
         assert!(
             (all[0].strength - 0.9).abs() < 0.01,
             "should keep higher strength (0.9), got {}",
@@ -2998,8 +3213,15 @@ mod tests {
 
         // Should only have 1 entry (the latest), not 3
         let all = list_declared(&conn, None).unwrap();
-        assert_eq!(all.len(), 1, "old versions should be cleaned up, only latest remains");
-        assert!(all[0].content.contains("Version 3"), "remaining entry should be the latest version");
+        assert_eq!(
+            all.len(),
+            1,
+            "old versions should be cleaned up, only latest remains"
+        );
+        assert!(
+            all[0].content.contains("Version 3"),
+            "remaining entry should be the latest version"
+        );
 
         // Cleanup
         let _ = std::fs::remove_file(&file_path);
@@ -3023,7 +3245,11 @@ mod tests {
 
         // Both should exist since they have different source+path
         let all = list_declared(&conn, None).unwrap();
-        assert_eq!(all.len(), 2, "different source+path entries should both remain");
+        assert_eq!(
+            all.len(),
+            2,
+            "different source+path entries should both remain"
+        );
 
         // Cleanup
         let _ = std::fs::remove_file(&file_a);
@@ -3097,7 +3323,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(kept_id, "dup-2", "should keep the newest (MAX id) duplicate");
+        assert_eq!(
+            kept_id, "dup-2",
+            "should keep the newest (MAX id) duplicate"
+        );
     }
 
     #[test]
@@ -3145,26 +3374,43 @@ mod tests {
 
         // Filter by project "forge": returns forge perception + global (project IS NULL)
         let forge_only = list_unconsumed_perceptions(&conn, None, Some("forge")).unwrap();
-        assert_eq!(forge_only.len(), 2, "forge filter should return forge + global");
+        assert_eq!(
+            forge_only.len(),
+            2,
+            "forge filter should return forge + global"
+        );
         let ids: Vec<&str> = forge_only.iter().map(|p| p.id.as_str()).collect();
         assert!(ids.contains(&"pf1"), "should contain forge perception");
         assert!(ids.contains(&"pg1"), "should contain global perception");
-        assert!(!ids.contains(&"po1"), "should NOT contain other-project perception");
+        assert!(
+            !ids.contains(&"po1"),
+            "should NOT contain other-project perception"
+        );
 
         // Filter by project "other-project": returns other + global
         let other_only = list_unconsumed_perceptions(&conn, None, Some("other-project")).unwrap();
-        assert_eq!(other_only.len(), 2, "other-project filter should return other + global");
+        assert_eq!(
+            other_only.len(),
+            2,
+            "other-project filter should return other + global"
+        );
         let ids: Vec<&str> = other_only.iter().map(|p| p.id.as_str()).collect();
-        assert!(ids.contains(&"po1"), "should contain other-project perception");
+        assert!(
+            ids.contains(&"po1"),
+            "should contain other-project perception"
+        );
         assert!(ids.contains(&"pg1"), "should contain global perception");
 
         // Filter by kind + project: only errors from "forge" (+ global errors, but pg1 is Warning)
-        let forge_errors = list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), Some("forge")).unwrap();
+        let forge_errors =
+            list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), Some("forge"))
+                .unwrap();
         assert_eq!(forge_errors.len(), 1, "only forge Error perception matches");
         assert_eq!(forge_errors[0].id, "pf1");
 
         // Filter by kind + no project: all errors regardless of project
-        let all_errors = list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), None).unwrap();
+        let all_errors =
+            list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), None).unwrap();
         assert_eq!(all_errors.len(), 2, "should return both error perceptions");
     }
 }

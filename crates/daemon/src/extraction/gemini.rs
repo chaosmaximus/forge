@@ -69,9 +69,7 @@ pub async fn extract(api_key: &str, model: &str, conversation_text: &str) -> Ext
             let json: serde_json::Value = match r.json().await {
                 Ok(v) => v,
                 Err(e) => {
-                    return ExtractionResult::Error(format!(
-                        "failed to parse Gemini response: {e}"
-                    ))
+                    return ExtractionResult::Error(format!("failed to parse Gemini response: {e}"))
                 }
             };
             let text = json["candidates"][0]["content"]["parts"][0]["text"]

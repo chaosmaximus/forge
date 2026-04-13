@@ -65,22 +65,34 @@ pub fn register_session(
 /// Looks for marker files (.git, Cargo.toml, package.json, pyproject.toml, go.mod).
 /// Returns the name of the directory containing the marker, or CWD basename as fallback.
 fn detect_project_name(cwd: &str) -> String {
-    let markers = [".git", "Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
+    let markers = [
+        ".git",
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+    ];
     let mut dir = std::path::Path::new(cwd);
 
     // Walk up from CWD looking for project root markers (capped at 20 levels)
     let mut depth = 0;
     loop {
-        if depth > 20 { break; }
+        if depth > 20 {
+            break;
+        }
         for marker in &markers {
             if dir.join(marker).exists() {
-                return dir.file_name()
+                return dir
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "unknown".into());
             }
         }
         match dir.parent() {
-            Some(parent) if parent != dir => { dir = parent; depth += 1; }
+            Some(parent) if parent != dir => {
+                dir = parent;
+                depth += 1;
+            }
             _ => break,
         }
     }
@@ -138,39 +150,48 @@ pub fn get_active_session_id(conn: &Connection, agent: &str) -> rusqlite::Result
 /// Called at session-end to enable working set continuity.
 pub fn save_working_set(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
     // Get session start time
-    let started_at: String = conn.query_row(
-        "SELECT started_at FROM session WHERE id = ?1",
-        params![session_id],
-        |row| row.get(0),
-    ).unwrap_or_default();
+    let started_at: String = conn
+        .query_row(
+            "SELECT started_at FROM session WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
 
     if started_at.is_empty() {
         return Ok(());
     }
 
     // Get files from perceptions created during this session
-    let files: Vec<String> = conn.prepare(
-        "SELECT DISTINCT data FROM perception WHERE kind = 'file_change'
-         AND created_at >= ?1 ORDER BY created_at DESC LIMIT 10"
-    ).and_then(|mut stmt| {
-        stmt.query_map(params![started_at], |r| r.get(0))?.collect()
-    }).unwrap_or_default();
+    let files: Vec<String> = conn
+        .prepare(
+            "SELECT DISTINCT data FROM perception WHERE kind = 'file_change'
+         AND created_at >= ?1 ORDER BY created_at DESC LIMIT 10",
+        )
+        .and_then(|mut stmt| stmt.query_map(params![started_at], |r| r.get(0))?.collect())
+        .unwrap_or_default();
 
     // Get memories created during this session
-    let memories: Vec<String> = conn.prepare(
-        "SELECT title FROM memory WHERE session_id = ?1 AND status = 'active' LIMIT 5"
-    ).and_then(|mut stmt| {
-        stmt.query_map(params![session_id], |r| r.get(0))?.collect()
-    }).unwrap_or_default();
+    let memories: Vec<String> = conn
+        .prepare("SELECT title FROM memory WHERE session_id = ?1 AND status = 'active' LIMIT 5")
+        .and_then(|mut stmt| stmt.query_map(params![session_id], |r| r.get(0))?.collect())
+        .unwrap_or_default();
 
     // Truncate individual items to prevent bloat (Codex fix: byte-bound working set)
-    let files: Vec<String> = files.into_iter().map(|f| f.chars().take(200).collect()).collect();
-    let memories: Vec<String> = memories.into_iter().map(|m| m.chars().take(100).collect()).collect();
+    let files: Vec<String> = files
+        .into_iter()
+        .map(|f| f.chars().take(200).collect())
+        .collect();
+    let memories: Vec<String> = memories
+        .into_iter()
+        .map(|m| m.chars().take(100).collect())
+        .collect();
 
     let mut working_set = serde_json::json!({
         "files": files,
         "memories": memories,
-    }).to_string();
+    })
+    .to_string();
 
     // Hard cap at 4KB to prevent storage bloat
     if working_set.len() > 4096 {
@@ -186,7 +207,11 @@ pub fn save_working_set(conn: &Connection, session_id: &str) -> rusqlite::Result
 
 /// Get the working set from the last ended session for the same agent+project.
 /// Used at session-start to restore context from the previous session.
-pub fn get_last_working_set(conn: &Connection, agent: &str, project: Option<&str>) -> rusqlite::Result<String> {
+pub fn get_last_working_set(
+    conn: &Connection,
+    agent: &str,
+    project: Option<&str>,
+) -> rusqlite::Result<String> {
     match project {
         Some(proj) => conn.query_row(
             "SELECT working_set FROM session WHERE agent = ?1 AND project = ?2 AND status = 'ended' AND working_set != ''
@@ -228,7 +253,11 @@ pub fn get_session(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sessi
 
 /// Increment tool_use_count for a session by a given delta.
 /// Used by the extractor to track how many tool_use chunks were detected.
-pub fn increment_tool_use_count(conn: &Connection, session_id: &str, delta: usize) -> rusqlite::Result<()> {
+pub fn increment_tool_use_count(
+    conn: &Connection,
+    session_id: &str,
+    delta: usize,
+) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE session SET tool_use_count = tool_use_count + ?1 WHERE id = ?2",
         params![delta as i64, session_id],
@@ -318,15 +347,15 @@ pub fn send_message(
         let sessions = match project {
             Some(proj) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id FROM session WHERE status = 'active' AND project = ?1 AND id != ?2"
+                    "SELECT id FROM session WHERE status = 'active' AND project = ?1 AND id != ?2",
                 )?;
-                let rows = stmt.query_map(params![proj, from_session], |row| row.get::<_, String>(0))?;
+                let rows =
+                    stmt.query_map(params![proj, from_session], |row| row.get::<_, String>(0))?;
                 rows.collect::<rusqlite::Result<Vec<String>>>()?
             }
             None => {
-                let mut stmt = conn.prepare(
-                    "SELECT id FROM session WHERE status = 'active' AND id != ?1"
-                )?;
+                let mut stmt =
+                    conn.prepare("SELECT id FROM session WHERE status = 'active' AND id != ?1")?;
                 let rows = stmt.query_map(params![from_session], |row| row.get::<_, String>(0))?;
                 rows.collect::<rusqlite::Result<Vec<String>>>()?
             }
@@ -443,9 +472,14 @@ pub fn list_messages(
         })
     };
     let rows: Vec<rusqlite::Result<SessionMessageRow>> = if use_status {
-        stmt.query_map(params![session_id, status_filter.unwrap_or(""), limit], map_row)?.collect()
+        stmt.query_map(
+            params![session_id, status_filter.unwrap_or(""), limit],
+            map_row,
+        )?
+        .collect()
     } else {
-        stmt.query_map(params![session_id, limit], map_row)?.collect()
+        stmt.query_map(params![session_id, limit], map_row)?
+            .collect()
     };
     rows.into_iter().collect()
 }
@@ -472,10 +506,7 @@ pub fn ack_messages(
 
 /// Admin/CLI ack: mark messages as read regardless of to_session.
 /// Used when the CLI doesn't have a session context.
-pub fn ack_messages_admin(
-    conn: &Connection,
-    message_ids: &[String],
-) -> rusqlite::Result<usize> {
+pub fn ack_messages_admin(conn: &Connection, message_ids: &[String]) -> rusqlite::Result<usize> {
     let mut count = 0;
     for id in message_ids {
         let updated = conn.execute(
@@ -554,18 +585,17 @@ pub fn grant_a2a_permission(
 
 /// Revoke an A2A permission by ID. Returns true if the permission existed.
 pub fn revoke_a2a_permission(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    let deleted = conn.execute(
-        "DELETE FROM a2a_permission WHERE id = ?1",
-        params![id],
-    )?;
+    let deleted = conn.execute("DELETE FROM a2a_permission WHERE id = ?1", params![id])?;
     Ok(deleted > 0)
 }
 
 /// List all A2A permissions.
-pub fn list_a2a_permissions(conn: &Connection) -> rusqlite::Result<Vec<forge_core::protocol::response::A2aPermission>> {
+pub fn list_a2a_permissions(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<forge_core::protocol::response::A2aPermission>> {
     let mut stmt = conn.prepare(
         "SELECT id, from_agent, to_agent, from_project, to_project, allowed, created_by, created_at
-         FROM a2a_permission ORDER BY created_at DESC"
+         FROM a2a_permission ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(forge_core::protocol::response::A2aPermission {
@@ -605,26 +635,35 @@ pub fn compile_session_kpis(
     ).unwrap_or((0, 0));
 
     // A2A messages sent/received
-    let msgs_sent: usize = conn.query_row(
-        "SELECT COUNT(*) FROM session_message WHERE from_session = ?1",
-        params![session_id],
-        |row| row.get::<_, i64>(0),
-    ).unwrap_or(0) as usize;
+    let msgs_sent: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM session_message WHERE from_session = ?1",
+            params![session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize;
 
-    let msgs_received: usize = conn.query_row(
-        "SELECT COUNT(*) FROM session_message WHERE to_session = ?1",
-        params![session_id],
-        |row| row.get::<_, i64>(0),
-    ).unwrap_or(0) as usize;
+    let msgs_received: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM session_message WHERE to_session = ?1",
+            params![session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize;
 
     // Memories created during this session (via metadata containing session_id)
     // Escape LIKE metacharacters in session_id to prevent wildcard injection
-    let escaped_sid = session_id.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-    let memories_created: usize = conn.query_row(
-        "SELECT COUNT(*) FROM memory WHERE metadata LIKE ?1 ESCAPE '\\'",
-        params![format!("%{}%", escaped_sid)],
-        |row| row.get::<_, i64>(0),
-    ).unwrap_or(0) as usize;
+    let escaped_sid = session_id
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let memories_created: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory WHERE metadata LIKE ?1 ESCAPE '\\'",
+            params![format!("%{}%", escaped_sid)],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize;
 
     // Hooks fired by type (from effectiveness table)
     let mut hooks_fired: HashMap<String, usize> = HashMap::new();
@@ -666,7 +705,16 @@ mod tests {
     #[test]
     fn test_register_and_list() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), Some("/project"), None, None).unwrap();
+        register_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            Some("/project"),
+            None,
+            None,
+        )
+        .unwrap();
         register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
 
         let active = list_sessions(&conn, true).unwrap();
@@ -719,11 +767,13 @@ mod tests {
         ).unwrap();
 
         // Verify memory has no project
-        let project: String = conn.query_row(
-            "SELECT COALESCE(project, '') FROM memory WHERE id = 'm1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let project: String = conn
+            .query_row(
+                "SELECT COALESCE(project, '') FROM memory WHERE id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(project, "");
 
         // Run backfill
@@ -731,11 +781,11 @@ mod tests {
         assert_eq!(updated, 1);
 
         // Verify memory now has the session's project
-        let project: String = conn.query_row(
-            "SELECT project FROM memory WHERE id = 'm1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let project: String = conn
+            .query_row("SELECT project FROM memory WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(project, "forge");
     }
 
@@ -766,7 +816,16 @@ mod tests {
         ).unwrap();
 
         // Create a recent active session (should NOT be cleaned up)
-        register_session(&conn, "recent1", "claude-code", Some("proj"), None, None, None).unwrap();
+        register_session(
+            &conn,
+            "recent1",
+            "claude-code",
+            Some("proj"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         // Create an already-ended old session (should NOT be touched)
         conn.execute(
@@ -815,7 +874,16 @@ mod tests {
     #[test]
     fn test_get_session() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), Some("/cwd"), None, None).unwrap();
+        register_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            Some("/cwd"),
+            None,
+            None,
+        )
+        .unwrap();
 
         let s = get_session(&conn, "s1").unwrap().unwrap();
         assert_eq!(s.agent, "claude-code");
@@ -831,31 +899,37 @@ mod tests {
         register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
 
         // Initial count should be 0
-        let count: i64 = conn.query_row(
-            "SELECT tool_use_count FROM session WHERE id = 's1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT tool_use_count FROM session WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0, "initial tool_use_count should be 0");
 
         // Increment by 3
         increment_tool_use_count(&conn, "s1", 3).unwrap();
 
-        let count: i64 = conn.query_row(
-            "SELECT tool_use_count FROM session WHERE id = 's1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT tool_use_count FROM session WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 3, "tool_use_count should be 3 after increment");
 
         // Increment again by 2
         increment_tool_use_count(&conn, "s1", 2).unwrap();
 
-        let count: i64 = conn.query_row(
-            "SELECT tool_use_count FROM session WHERE id = 's1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT tool_use_count FROM session WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 5, "tool_use_count should accumulate to 5");
     }
 
@@ -895,10 +969,13 @@ mod tests {
 
         // Verify perception was stored
         let perceptions = crate::db::manas::list_unconsumed_perceptions(&conn, None, None).unwrap();
-        let cross_session = perceptions.iter().find(|p| {
-            p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision
-        });
-        assert!(cross_session.is_some(), "cross-session perception should be stored");
+        let cross_session = perceptions
+            .iter()
+            .find(|p| p.kind == forge_core::types::manas::PerceptionKind::CrossSessionDecision);
+        assert!(
+            cross_session.is_some(),
+            "cross-session perception should be stored"
+        );
         assert!(
             cross_session.unwrap().data.contains("JWT"),
             "perception should contain the decision title"
@@ -908,9 +985,36 @@ mod tests {
     #[test]
     fn test_cleanup_sessions_with_prefix() {
         let conn = setup();
-        register_session(&conn, "hook-test-1", "claude-code", Some("forge"), None, None, None).unwrap();
-        register_session(&conn, "hook-test-2", "claude-code", Some("forge"), None, None, None).unwrap();
-        register_session(&conn, "real-session-1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(
+            &conn,
+            "hook-test-1",
+            "claude-code",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        register_session(
+            &conn,
+            "hook-test-2",
+            "claude-code",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        register_session(
+            &conn,
+            "real-session-1",
+            "claude-code",
+            Some("forge"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         // Cleanup only hook-test sessions
         let ended = cleanup_sessions(&conn, Some("hook-test")).unwrap();
@@ -955,7 +1059,18 @@ mod tests {
         register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
         register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
 
-        let msg_id = send_message(&conn, "s1", "s2", "notification", "file_changed", "[]", Some("forge"), None, None).unwrap();
+        let msg_id = send_message(
+            &conn,
+            "s1",
+            "s2",
+            "notification",
+            "file_changed",
+            "[]",
+            Some("forge"),
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!msg_id.is_empty());
 
         let messages = list_messages(&conn, "s2", None, 10).unwrap();
@@ -974,7 +1089,18 @@ mod tests {
         register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
         register_session(&conn, "s3", "codex", Some("forge"), None, None, None).unwrap();
 
-        send_message(&conn, "s1", "*", "notification", "schema_changed", "[]", Some("forge"), None, None).unwrap();
+        send_message(
+            &conn,
+            "s1",
+            "*",
+            "notification",
+            "schema_changed",
+            "[]",
+            Some("forge"),
+            None,
+            None,
+        )
+        .unwrap();
 
         // s2 and s3 should each get a message, s1 (sender) should not
         let s2_msgs = list_messages(&conn, "s2", None, 10).unwrap();
@@ -991,9 +1117,27 @@ mod tests {
         register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
         register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
 
-        let msg_id = send_message(&conn, "s1", "s2", "request", "review_code", "[]", None, None, None).unwrap();
+        let msg_id = send_message(
+            &conn,
+            "s1",
+            "s2",
+            "request",
+            "review_code",
+            "[]",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
-        let found = respond_to_message(&conn, &msg_id, "s2", "completed", r#"[{"kind":"text","text":"LGTM"}]"#).unwrap();
+        let found = respond_to_message(
+            &conn,
+            &msg_id,
+            "s2",
+            "completed",
+            r#"[{"kind":"text","text":"LGTM"}]"#,
+        )
+        .unwrap();
         assert!(found, "should find and respond to original message");
 
         // Original message status should be updated
@@ -1007,8 +1151,30 @@ mod tests {
         let conn = setup();
         register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
 
-        let id1 = send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None, None).unwrap();
-        let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None, None).unwrap();
+        let id1 = send_message(
+            &conn,
+            "api",
+            "s1",
+            "notification",
+            "t1",
+            "[]",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let id2 = send_message(
+            &conn,
+            "api",
+            "s1",
+            "notification",
+            "t2",
+            "[]",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let acked = ack_messages(&conn, &[id1.clone(), id2.clone()], "s1").unwrap();
         assert_eq!(acked, 2);
@@ -1030,8 +1196,16 @@ mod tests {
     #[test]
     fn test_register_session_with_capabilities() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), None,
-            Some(r#"["code_edit","bash"]"#), Some("Building A2A")).unwrap();
+        register_session(
+            &conn,
+            "s1",
+            "claude-code",
+            Some("forge"),
+            None,
+            Some(r#"["code_edit","bash"]"#),
+            Some("Building A2A"),
+        )
+        .unwrap();
 
         let sessions = list_sessions(&conn, true).unwrap();
         assert_eq!(sessions.len(), 1);
@@ -1044,8 +1218,30 @@ mod tests {
         let conn = setup();
         register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
 
-        send_message(&conn, "api", "s1", "notification", "t1", "[]", None, None, None).unwrap();
-        let id2 = send_message(&conn, "api", "s1", "notification", "t2", "[]", None, None, None).unwrap();
+        send_message(
+            &conn,
+            "api",
+            "s1",
+            "notification",
+            "t1",
+            "[]",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let id2 = send_message(
+            &conn,
+            "api",
+            "s1",
+            "notification",
+            "t2",
+            "[]",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         ack_messages(&conn, &[id2], "s1").unwrap();
 
         let pending = list_messages(&conn, "s1", Some("pending"), 10).unwrap();
@@ -1062,16 +1258,44 @@ mod tests {
     fn test_open_mode_allows_all() {
         let conn = setup();
         // In open mode, any message should be allowed regardless of agents/projects
-        assert!(check_a2a_permission(&conn, "open", "claude-code", "cline", None, None));
-        assert!(check_a2a_permission(&conn, "open", "unknown-agent", "another-agent", Some("proj"), Some("proj2")));
+        assert!(check_a2a_permission(
+            &conn,
+            "open",
+            "claude-code",
+            "cline",
+            None,
+            None
+        ));
+        assert!(check_a2a_permission(
+            &conn,
+            "open",
+            "unknown-agent",
+            "another-agent",
+            Some("proj"),
+            Some("proj2")
+        ));
     }
 
     #[test]
     fn test_controlled_mode_denies_without_permission() {
         let conn = setup();
         // In controlled mode with no permissions, all messages should be denied
-        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
-        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "cline", Some("forge"), Some("forge")));
+        assert!(!check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            None,
+            None
+        ));
+        assert!(!check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            Some("forge"),
+            Some("forge")
+        ));
     }
 
     #[test]
@@ -1082,10 +1306,24 @@ mod tests {
         assert!(!id.is_empty());
 
         // Should now be allowed
-        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            None,
+            None
+        ));
 
         // Reverse direction should still be denied (permission is directional)
-        assert!(!check_a2a_permission(&conn, "controlled", "cline", "claude-code", None, None));
+        assert!(!check_a2a_permission(
+            &conn,
+            "controlled",
+            "cline",
+            "claude-code",
+            None,
+            None
+        ));
     }
 
     #[test]
@@ -1094,12 +1332,40 @@ mod tests {
         // Grant wildcard: any agent can message cline
         grant_a2a_permission(&conn, "*", "cline", None, None).unwrap();
 
-        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
-        assert!(check_a2a_permission(&conn, "controlled", "codex", "cline", None, None));
-        assert!(check_a2a_permission(&conn, "controlled", "unknown", "cline", None, None));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            None,
+            None
+        ));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "codex",
+            "cline",
+            None,
+            None
+        ));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "unknown",
+            "cline",
+            None,
+            None
+        ));
 
         // But messages TO other agents should still be denied
-        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "codex", None, None));
+        assert!(!check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "codex",
+            None,
+            None
+        ));
     }
 
     #[test]
@@ -1108,12 +1374,40 @@ mod tests {
         // Grant: claude-code can message ANY agent
         grant_a2a_permission(&conn, "claude-code", "*", None, None).unwrap();
 
-        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
-        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "codex", None, None));
-        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "anything", None, None));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            None,
+            None
+        ));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "codex",
+            None,
+            None
+        ));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "anything",
+            None,
+            None
+        ));
 
         // Other agents still denied
-        assert!(!check_a2a_permission(&conn, "controlled", "cline", "codex", None, None));
+        assert!(!check_a2a_permission(
+            &conn,
+            "controlled",
+            "cline",
+            "codex",
+            None,
+            None
+        ));
     }
 
     #[test]
@@ -1121,14 +1415,28 @@ mod tests {
         let conn = setup();
         // Grant permission
         let id = grant_a2a_permission(&conn, "claude-code", "cline", None, None).unwrap();
-        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            None,
+            None
+        ));
 
         // Revoke it
         let found = revoke_a2a_permission(&conn, &id).unwrap();
         assert!(found, "should find and revoke the permission");
 
         // Should now be denied again
-        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+        assert!(!check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            None,
+            None
+        ));
 
         // Revoking again should return false
         let found = revoke_a2a_permission(&conn, &id).unwrap();
@@ -1157,15 +1465,36 @@ mod tests {
         grant_a2a_permission(&conn, "claude-code", "cline", Some("forge"), Some("forge")).unwrap();
 
         // Should be allowed for forge project
-        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", Some("forge"), Some("forge")));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            Some("forge"),
+            Some("forge")
+        ));
 
         // Should be allowed when project is NULL (NULL matches anything in the query)
-        assert!(check_a2a_permission(&conn, "controlled", "claude-code", "cline", None, None));
+        assert!(check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            None,
+            None
+        ));
 
         // Exact project mismatch should be denied
         // The permission has from_project="forge", but caller says from_project="other"
         // Query: (from_project IS NULL OR from_project = ?3 OR ?3 IS NULL)
         // from_project="forge", ?3="other" -> false OR false OR false -> denied
-        assert!(!check_a2a_permission(&conn, "controlled", "claude-code", "cline", Some("other"), Some("forge")));
+        assert!(!check_a2a_permission(
+            &conn,
+            "controlled",
+            "claude-code",
+            "cline",
+            Some("other"),
+            Some("forge")
+        ));
     }
 }

@@ -7,39 +7,98 @@ use std::collections::HashMap;
 // Default value helpers (for serde(default = "fn"))
 // ---------------------------------------------------------------------------
 
-fn default_3() -> u64 { 3 }
-fn default_5_usize() -> usize { 5 }
-fn default_3_usize() -> usize { 3 }
-fn default_10_usize() -> usize { 10 }
-fn default_15() -> u64 { 15 }
-fn default_30() -> u64 { 30 }
-fn default_50_usize() -> usize { 50 }
-fn default_60() -> u64 { 60 }
-fn default_200_usize() -> usize { 200 }
-fn default_300() -> u64 { 300 }
-fn default_900() -> u64 { 900 }
-fn default_1800() -> u64 { 1800 }
-fn default_3000_usize() -> usize { 3000 }
-fn default_5000_usize() -> usize { 5000 }
-fn default_300_usize() -> usize { 300 }
-fn default_500_usize() -> usize { 500 }
-fn default_anti_pattern_threshold() -> f64 { 0.85 }
+fn default_3() -> u64 {
+    3
+}
+fn default_5_usize() -> usize {
+    5
+}
+fn default_3_usize() -> usize {
+    3
+}
+fn default_10_usize() -> usize {
+    10
+}
+fn default_15() -> u64 {
+    15
+}
+fn default_30() -> u64 {
+    30
+}
+fn default_50_usize() -> usize {
+    50
+}
+fn default_60() -> u64 {
+    60
+}
+fn default_200_usize() -> usize {
+    200
+}
+fn default_300() -> u64 {
+    300
+}
+fn default_900() -> u64 {
+    900
+}
+fn default_1800() -> u64 {
+    1800
+}
+fn default_3000_usize() -> usize {
+    3000
+}
+fn default_5000_usize() -> usize {
+    5000
+}
+fn default_300_usize() -> usize {
+    300
+}
+fn default_500_usize() -> usize {
+    500
+}
+fn default_anti_pattern_threshold() -> f64 {
+    0.85
+}
 fn default_completion_keywords() -> Vec<String> {
     vec![
-        "complete".into(), "completed".into(), "done".into(), "finished".into(),
-        "shipped".into(), "all tests pass".into(), "100%".into(), "no gaps".into(),
-        "zero issues".into(), "pushed".into(),
+        "complete".into(),
+        "completed".into(),
+        "done".into(),
+        "finished".into(),
+        "shipped".into(),
+        "all tests pass".into(),
+        "100%".into(),
+        "no gaps".into(),
+        "zero issues".into(),
+        "pushed".into(),
     ]
 }
-fn default_true() -> bool { true }
-fn default_false() -> bool { false }
-fn default_300_u64() -> u64 { 300 }
-fn default_10_u64() -> u64 { 10 }
-fn default_3600_u64() -> u64 { 3600 }
-fn default_8420_u16() -> u16 { 8420 }
-fn default_8421_u16() -> u16 { 8421 }
-fn default_bind() -> String { "127.0.0.1".to_string() }
-fn default_grpc_bind() -> String { "127.0.0.1".to_string() }
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
+fn default_300_u64() -> u64 {
+    300
+}
+fn default_10_u64() -> u64 {
+    10
+}
+fn default_3600_u64() -> u64 {
+    3600
+}
+fn default_8420_u16() -> u16 {
+    8420
+}
+fn default_8421_u16() -> u16 {
+    8421
+}
+fn default_bind() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_grpc_bind() -> String {
+    "127.0.0.1".to_string()
+}
 fn default_cors_origins() -> Vec<String> {
     vec![
         "http://localhost:*".to_string(),
@@ -48,15 +107,33 @@ fn default_cors_origins() -> Vec<String> {
         "https://127.0.0.1:*".to_string(),
     ]
 }
-fn default_service_name() -> String { "forge-daemon".to_string() }
-fn default_healing_cosine() -> f64 { 0.65 }
-fn default_healing_overlap_low() -> f64 { 0.3 }
-fn default_healing_overlap_high() -> f64 { 0.7 }
-fn default_healing_staleness_days() -> u64 { 7 }
-fn default_healing_staleness_min_quality() -> f64 { 0.2 }
-fn default_healing_quality_decay() -> f64 { 0.1 }
-fn default_healing_quality_boost() -> f64 { 0.05 }
-fn default_workspace_mode() -> String { "project".to_string() }
+fn default_service_name() -> String {
+    "forge-daemon".to_string()
+}
+fn default_healing_cosine() -> f64 {
+    0.65
+}
+fn default_healing_overlap_low() -> f64 {
+    0.3
+}
+fn default_healing_overlap_high() -> f64 {
+    0.7
+}
+fn default_healing_staleness_days() -> u64 {
+    7
+}
+fn default_healing_staleness_min_quality() -> f64 {
+    0.2
+}
+fn default_healing_quality_decay() -> f64 {
+    0.1
+}
+fn default_healing_quality_boost() -> f64 {
+    0.05
+}
+fn default_workspace_mode() -> String {
+    "project".to_string()
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -481,7 +558,10 @@ pub struct MeetingConfig {
 
 impl Default for MeetingConfig {
     fn default() -> Self {
-        Self { timeout_secs: 300, max_participants: 10 }
+        Self {
+            timeout_secs: 300,
+            max_participants: 10,
+        }
     }
 }
 
@@ -946,7 +1026,10 @@ impl ForgeConfig {
             return Err("extraction.ollama.endpoint must not be empty".into());
         }
         if !["open", "controlled"].contains(&self.a2a.trust.as_str()) {
-            return Err(format!("a2a.trust must be 'open' or 'controlled', got '{}'", self.a2a.trust));
+            return Err(format!(
+                "a2a.trust must be 'open' or 'controlled', got '{}'",
+                self.a2a.trust
+            ));
         }
         // HTTP validation
         if self.http.port == 0 {
@@ -974,15 +1057,20 @@ impl ForgeConfig {
             ));
         }
         // ISS-D11: Security warning emitted only once (not on every config reload).
-        if self.http.enabled && !self.auth.enabled && self.http.bind != "127.0.0.1" && self.http.bind != "localhost" {
+        if self.http.enabled
+            && !self.auth.enabled
+            && self.http.bind != "127.0.0.1"
+            && self.http.bind != "localhost"
+        {
             use std::sync::Once;
             static WARN_ONCE: Once = Once::new();
             WARN_ONCE.call_once(|| {
                 eprintln!(
                     "[config] SECURITY WARNING: HTTP is bound to {} without auth enabled. \
                      The API is accessible to any network client without authentication. \
-                     Set auth.enabled=true or bind to 127.0.0.1 for production."
-                , self.http.bind);
+                     Set auth.enabled=true or bind to 127.0.0.1 for production.",
+                    self.http.bind
+                );
             });
         }
         Ok(())
@@ -1052,122 +1140,165 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
     let content = std::fs::read_to_string(path).unwrap_or_default();
     // Parse into toml::Value to preserve existing keys without injecting defaults.
     // Then validate by applying the change to a typed ForgeConfig.
-    let mut table: toml::Value = toml::from_str(&content).unwrap_or(toml::Value::Table(toml::map::Map::new()));
+    let mut table: toml::Value =
+        toml::from_str(&content).unwrap_or(toml::Value::Table(toml::map::Map::new()));
     let mut config: ForgeConfig = toml::from_str(&content).unwrap_or_default();
 
     match key.split('.').collect::<Vec<_>>().as_slice() {
         ["extraction", "backend"] => config.extraction.backend = value.to_string(),
         ["extraction", "claude", "model"] => config.extraction.claude.model = value.to_string(),
-        ["extraction", "claude_api", "api_key"] => config.extraction.claude_api.api_key = value.to_string(),
-        ["extraction", "claude_api", "model"] => config.extraction.claude_api.model = value.to_string(),
+        ["extraction", "claude_api", "api_key"] => {
+            config.extraction.claude_api.api_key = value.to_string()
+        }
+        ["extraction", "claude_api", "model"] => {
+            config.extraction.claude_api.model = value.to_string()
+        }
         ["extraction", "openai", "api_key"] => config.extraction.openai.api_key = value.to_string(),
         ["extraction", "openai", "model"] => config.extraction.openai.model = value.to_string(),
-        ["extraction", "openai", "endpoint"] => config.extraction.openai.endpoint = value.to_string(),
+        ["extraction", "openai", "endpoint"] => {
+            config.extraction.openai.endpoint = value.to_string()
+        }
         ["extraction", "gemini", "api_key"] => config.extraction.gemini.api_key = value.to_string(),
         ["extraction", "gemini", "model"] => config.extraction.gemini.model = value.to_string(),
         ["extraction", "ollama", "model"] => config.extraction.ollama.model = value.to_string(),
-        ["extraction", "ollama", "endpoint"] => config.extraction.ollama.endpoint = value.to_string(),
+        ["extraction", "ollama", "endpoint"] => {
+            config.extraction.ollama.endpoint = value.to_string()
+        }
         ["embedding", "model"] => config.embedding.model = value.to_string(),
         ["embedding", "dimensions"] => {
-            config.embedding.dimensions = value.parse().map_err(|e| format!("invalid dimensions: {e}"))?;
+            config.embedding.dimensions = value
+                .parse()
+                .map_err(|e| format!("invalid dimensions: {e}"))?;
         }
         ["a2a", "enabled"] => {
-            config.a2a.enabled = value.parse().map_err(|e| format!("invalid a2a.enabled: {e}"))?;
+            config.a2a.enabled = value
+                .parse()
+                .map_err(|e| format!("invalid a2a.enabled: {e}"))?;
         }
         ["a2a", "trust"] => {
             if !["open", "controlled"].contains(&value) {
-                return Err(format!("a2a.trust must be 'open' or 'controlled', got '{value}'"));
+                return Err(format!(
+                    "a2a.trust must be 'open' or 'controlled', got '{value}'"
+                ));
             }
             config.a2a.trust = value.to_string();
         }
         // Worker intervals
         ["workers", "extraction_debounce_secs"] => {
-            config.workers.extraction_debounce_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.workers.extraction_debounce_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["workers", "consolidation_interval_secs"] => {
-            config.workers.consolidation_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.workers.consolidation_interval_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["workers", "embedding_interval_secs"] => {
-            config.workers.embedding_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.workers.embedding_interval_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["workers", "perception_interval_secs"] => {
-            config.workers.perception_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.workers.perception_interval_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["workers", "disposition_interval_secs"] => {
-            config.workers.disposition_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.workers.disposition_interval_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["workers", "indexer_interval_secs"] => {
-            config.workers.indexer_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.workers.indexer_interval_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["workers", "diagnostics_debounce_secs"] => {
-            config.workers.diagnostics_debounce_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.workers.diagnostics_debounce_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["workers", "session_reaper_interval_secs"] => {
-            config.workers.session_reaper_interval_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.workers.session_reaper_interval_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["workers", "heartbeat_timeout_secs"] => {
-            config.workers.heartbeat_timeout_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.workers.heartbeat_timeout_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         // Context assembly
         ["context", "budget_chars"] => {
-            config.context.budget_chars = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.context.budget_chars =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["context", "decisions_limit"] => {
-            config.context.decisions_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.context.decisions_limit =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["context", "lessons_limit"] => {
-            config.context.lessons_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.context.lessons_limit =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["context", "entities_limit"] => {
-            config.context.entities_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.context.entities_limit =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["context", "entities_min_mentions"] => {
-            config.context.entities_min_mentions = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.context.entities_min_mentions =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         // Consolidation
         ["consolidation", "batch_limit"] => {
-            config.consolidation.batch_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.consolidation.batch_limit =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["consolidation", "reweave_limit"] => {
-            config.consolidation.reweave_limit = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.consolidation.reweave_limit =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         // Recall boost factors
         ["recall", "recency_24h_boost"] => {
-            config.recall.recency_24h_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.recall.recency_24h_boost =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["recall", "recency_7d_boost"] => {
-            config.recall.recency_7d_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.recall.recency_7d_boost =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["recall", "access_high_threshold"] => {
-            config.recall.access_high_threshold = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.recall.access_high_threshold =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["recall", "access_high_boost"] => {
-            config.recall.access_high_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.recall.access_high_boost =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["recall", "access_medium_threshold"] => {
-            config.recall.access_medium_threshold = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.recall.access_medium_threshold =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["recall", "access_medium_boost"] => {
-            config.recall.access_medium_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.recall.access_medium_boost =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["recall", "domain_dna_boost"] => {
-            config.recall.domain_dna_boost = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.recall.domain_dna_boost =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["recall", "activation_on_recall"] => {
-            config.recall.activation_on_recall = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.recall.activation_on_recall =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["recall", "activation_on_context"] => {
-            config.recall.activation_on_context = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.recall.activation_on_context =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         // Reality Engine
         ["reality", "auto_detect"] => {
-            config.reality.auto_detect = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.reality.auto_detect =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["reality", "code_embeddings"] => {
-            config.reality.code_embeddings = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.reality.code_embeddings =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["reality", "community_detection"] => {
-            config.reality.community_detection = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.reality.community_detection =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["reality", "max_index_files"] => {
             let v: usize = value.parse().map_err(|e| format!("invalid value: {e}"))?;
@@ -1175,10 +1306,12 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         }
         // Meeting
         ["meeting", "timeout_secs"] => {
-            config.meeting.timeout_secs = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.meeting.timeout_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         ["meeting", "max_participants"] => {
-            config.meeting.max_participants = value.parse().map_err(|e| format!("invalid value: {e}"))?;
+            config.meeting.max_participants =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         // Agent
         ["agent", "auto_status"] => {
@@ -1198,7 +1331,9 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         ["license", "tier"] => {
             let valid = ["free", "pro", "team", "enterprise"];
             if !valid.contains(&value) {
-                return Err(format!("license.tier must be one of {valid:?}, got '{value}'"));
+                return Err(format!(
+                    "license.tier must be one of {valid:?}, got '{value}'"
+                ));
             }
             config.license.tier = value.to_string();
         }
@@ -1415,7 +1550,10 @@ model = "gemini-1.5-pro"
         assert_eq!(cfg.extraction.claude_api.model, "claude-sonnet-4-20250514");
         assert_eq!(cfg.extraction.openai.api_key, "sk-openai-test");
         assert_eq!(cfg.extraction.openai.model, "gpt-4o");
-        assert_eq!(cfg.extraction.openai.endpoint, "https://custom.openai.com/v1");
+        assert_eq!(
+            cfg.extraction.openai.endpoint,
+            "https://custom.openai.com/v1"
+        );
         assert_eq!(cfg.extraction.gemini.api_key, "gemini-test-key");
         assert_eq!(cfg.extraction.gemini.model, "gemini-1.5-pro");
     }
@@ -1485,8 +1623,14 @@ model = "llama3:70b"
 
         // Reload — should see new values without restart
         let cfg2 = load_config_from(path_str);
-        assert_eq!(cfg2.extraction.backend, "claude_api", "backend should reflect disk change");
-        assert_eq!(cfg2.extraction.ollama.model, "llama3:70b", "model should reflect disk change");
+        assert_eq!(
+            cfg2.extraction.backend, "claude_api",
+            "backend should reflect disk change"
+        );
+        assert_eq!(
+            cfg2.extraction.ollama.model, "llama3:70b",
+            "model should reflect disk change"
+        );
     }
 
     #[test]
@@ -1496,23 +1640,47 @@ model = "llama3:70b"
         let cfg = ForgeConfig::default();
 
         // Worker intervals
-        assert_eq!(cfg.workers.extraction_debounce_secs, 15, "extraction debounce was 15s");
-        assert_eq!(cfg.workers.consolidation_interval_secs, 1800, "consolidation was 30*60=1800s");
+        assert_eq!(
+            cfg.workers.extraction_debounce_secs, 15,
+            "extraction debounce was 15s"
+        );
+        assert_eq!(
+            cfg.workers.consolidation_interval_secs, 1800,
+            "consolidation was 30*60=1800s"
+        );
         assert_eq!(cfg.workers.embedding_interval_secs, 60, "embedder was 60s");
-        assert_eq!(cfg.workers.perception_interval_secs, 30, "perception was 30s");
-        assert_eq!(cfg.workers.disposition_interval_secs, 900, "disposition was 15*60=900s");
-        assert_eq!(cfg.workers.indexer_interval_secs, 300, "indexer was 5*60=300s");
-        assert_eq!(cfg.workers.diagnostics_debounce_secs, 3, "diagnostics debounce was 3s");
+        assert_eq!(
+            cfg.workers.perception_interval_secs, 30,
+            "perception was 30s"
+        );
+        assert_eq!(
+            cfg.workers.disposition_interval_secs, 900,
+            "disposition was 15*60=900s"
+        );
+        assert_eq!(
+            cfg.workers.indexer_interval_secs, 300,
+            "indexer was 5*60=300s"
+        );
+        assert_eq!(
+            cfg.workers.diagnostics_debounce_secs, 3,
+            "diagnostics debounce was 3s"
+        );
 
         // Context assembly
         assert_eq!(cfg.context.budget_chars, 3000, "budget was hardcoded 3000");
         assert_eq!(cfg.context.decisions_limit, 10, "decisions LIMIT was 10");
         assert_eq!(cfg.context.lessons_limit, 5, "lessons LIMIT was 5");
         assert_eq!(cfg.context.entities_limit, 5, "entities limit was 5");
-        assert_eq!(cfg.context.entities_min_mentions, 3, "entities min mentions was >= 3");
+        assert_eq!(
+            cfg.context.entities_min_mentions, 3,
+            "entities min mentions was >= 3"
+        );
 
         // Consolidation
-        assert_eq!(cfg.consolidation.batch_limit, 200, "consolidation LIMIT was 200");
+        assert_eq!(
+            cfg.consolidation.batch_limit, 200,
+            "consolidation LIMIT was 200"
+        );
         assert_eq!(cfg.consolidation.reweave_limit, 50, "reweave limit was 50");
     }
 
@@ -1613,7 +1781,11 @@ backend = "ollama"
         assert_eq!(cfg.consolidation.reweave_limit, 25);
 
         // Invalid value should error
-        let err = update_config_at(path_str, "workers.consolidation_interval_secs", "not_a_number");
+        let err = update_config_at(
+            path_str,
+            "workers.consolidation_interval_secs",
+            "not_a_number",
+        );
         assert!(err.is_err());
     }
 
@@ -1625,12 +1797,16 @@ backend = "ollama"
         let path_str = path.to_str().unwrap();
 
         // Write a config with skills_directory set (top-level field)
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 skills_directory = "product/claude-skills"
 
 [extraction]
 backend = "gemini"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         // Now update license — this MUST NOT clear skills_directory
         update_config_at(path_str, "license.tier", "pro").unwrap();
@@ -1656,10 +1832,22 @@ backend = "gemini"
     #[test]
     fn test_reality_config_defaults() {
         let cfg = ForgeConfig::default();
-        assert!(cfg.reality.auto_detect, "auto_detect default should be true");
-        assert!(!cfg.reality.code_embeddings, "code_embeddings default should be false");
-        assert!(cfg.reality.community_detection, "community_detection default should be true");
-        assert_eq!(cfg.reality.max_index_files, 5000, "max_index_files default should be 5000");
+        assert!(
+            cfg.reality.auto_detect,
+            "auto_detect default should be true"
+        );
+        assert!(
+            !cfg.reality.code_embeddings,
+            "code_embeddings default should be false"
+        );
+        assert!(
+            cfg.reality.community_detection,
+            "community_detection default should be true"
+        );
+        assert_eq!(
+            cfg.reality.max_index_files, 5000,
+            "max_index_files default should be 5000"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1670,7 +1858,10 @@ backend = "gemini"
     fn test_http_config_defaults() {
         let cfg = HttpConfig::default();
         assert!(!cfg.enabled, "http.enabled default should be false");
-        assert_eq!(cfg.bind, "127.0.0.1", "http.bind default should be 127.0.0.1");
+        assert_eq!(
+            cfg.bind, "127.0.0.1",
+            "http.bind default should be 127.0.0.1"
+        );
         assert_eq!(cfg.port, 8420, "http.port default should be 8420");
     }
 
@@ -1683,20 +1874,44 @@ backend = "gemini"
             "http://127.0.0.1:*".to_string(),
             "https://127.0.0.1:*".to_string(),
         ];
-        assert_eq!(cfg.allowed_origins, expected_origins, "cors.allowed_origins default should be localhost-only");
-        assert_eq!(cfg.max_age_secs, 3600, "cors.max_age_secs default should be 3600");
+        assert_eq!(
+            cfg.allowed_origins, expected_origins,
+            "cors.allowed_origins default should be localhost-only"
+        );
+        assert_eq!(
+            cfg.max_age_secs, 3600,
+            "cors.max_age_secs default should be 3600"
+        );
     }
 
     #[test]
     fn test_auth_config_defaults() {
         let cfg = AuthConfig::default();
         assert!(!cfg.enabled, "auth.enabled default should be false");
-        assert!(cfg.issuer_url.is_empty(), "auth.issuer_url default should be empty");
-        assert!(cfg.audience.is_empty(), "auth.audience default should be empty");
-        assert!(cfg.required_claims.is_empty(), "auth.required_claims default should be empty");
-        assert!(cfg.admin_emails.is_empty(), "auth.admin_emails default should be empty");
-        assert_eq!(cfg.jwks_cache_secs, 3600, "auth.jwks_cache_secs default should be 3600");
-        assert!(cfg.offline_jwks_path.is_none(), "auth.offline_jwks_path default should be None");
+        assert!(
+            cfg.issuer_url.is_empty(),
+            "auth.issuer_url default should be empty"
+        );
+        assert!(
+            cfg.audience.is_empty(),
+            "auth.audience default should be empty"
+        );
+        assert!(
+            cfg.required_claims.is_empty(),
+            "auth.required_claims default should be empty"
+        );
+        assert!(
+            cfg.admin_emails.is_empty(),
+            "auth.admin_emails default should be empty"
+        );
+        assert_eq!(
+            cfg.jwks_cache_secs, 3600,
+            "auth.jwks_cache_secs default should be 3600"
+        );
+        assert!(
+            cfg.offline_jwks_path.is_none(),
+            "auth.offline_jwks_path default should be None"
+        );
     }
 
     #[test]
@@ -1706,8 +1921,15 @@ backend = "gemini"
         assert!(!cfg.http.enabled);
         assert_eq!(cfg.http.port, 8420);
         assert!(!cfg.auth.enabled);
-        assert_eq!(cfg.cors.allowed_origins.len(), 4, "CORS should have 4 localhost origins");
-        assert!(cfg.cors.allowed_origins[0].starts_with("http://localhost"), "first origin should be http://localhost");
+        assert_eq!(
+            cfg.cors.allowed_origins.len(),
+            4,
+            "CORS should have 4 localhost origins"
+        );
+        assert!(
+            cfg.cors.allowed_origins[0].starts_with("http://localhost"),
+            "first origin should be http://localhost"
+        );
     }
 
     #[test]
@@ -1732,7 +1954,10 @@ backend = "gemini"
         assert!(parsed.http.enabled);
         assert_eq!(parsed.http.port, 9090);
         assert_eq!(parsed.http.bind, "0.0.0.0");
-        assert_eq!(parsed.cors.allowed_origins, vec!["https://app.example.com".to_string()]);
+        assert_eq!(
+            parsed.cors.allowed_origins,
+            vec!["https://app.example.com".to_string()]
+        );
         assert_eq!(parsed.cors.max_age_secs, 7200);
         assert!(parsed.auth.enabled);
         assert_eq!(parsed.auth.issuer_url, "https://accounts.google.com");
@@ -1740,7 +1965,10 @@ backend = "gemini"
         assert_eq!(parsed.auth.required_claims, vec!["email", "sub"]);
         assert_eq!(parsed.auth.admin_emails, vec!["admin@example.com"]);
         assert_eq!(parsed.auth.jwks_cache_secs, 1800);
-        assert_eq!(parsed.auth.offline_jwks_path, Some("/path/to/jwks.json".to_string()));
+        assert_eq!(
+            parsed.auth.offline_jwks_path,
+            Some("/path/to/jwks.json".to_string())
+        );
     }
 
     #[test]
@@ -1754,7 +1982,11 @@ backend = "ollama"
         assert!(!cfg.http.enabled);
         assert_eq!(cfg.http.port, 8420);
         assert!(!cfg.auth.enabled);
-        assert_eq!(cfg.cors.allowed_origins.len(), 4, "CORS should default to localhost-only origins");
+        assert_eq!(
+            cfg.cors.allowed_origins.len(),
+            4,
+            "CORS should default to localhost-only origins"
+        );
     }
 
     #[test]
@@ -1782,7 +2014,10 @@ offline_jwks_path = "/etc/forge/jwks.json"
         assert!(cfg.http.enabled);
         assert_eq!(cfg.http.bind, "0.0.0.0");
         assert_eq!(cfg.http.port, 9090);
-        assert_eq!(cfg.cors.allowed_origins, vec!["https://app.example.com", "https://admin.example.com"]);
+        assert_eq!(
+            cfg.cors.allowed_origins,
+            vec!["https://app.example.com", "https://admin.example.com"]
+        );
         assert_eq!(cfg.cors.max_age_secs, 7200);
         assert!(cfg.auth.enabled);
         assert_eq!(cfg.auth.issuer_url, "https://accounts.google.com");
@@ -1790,7 +2025,10 @@ offline_jwks_path = "/etc/forge/jwks.json"
         assert_eq!(cfg.auth.required_claims, vec!["email"]);
         assert_eq!(cfg.auth.admin_emails, vec!["admin@example.com"]);
         assert_eq!(cfg.auth.jwks_cache_secs, 1800);
-        assert_eq!(cfg.auth.offline_jwks_path, Some("/etc/forge/jwks.json".to_string()));
+        assert_eq!(
+            cfg.auth.offline_jwks_path,
+            Some("/etc/forge/jwks.json".to_string())
+        );
     }
 
     #[test]
@@ -1806,7 +2044,10 @@ offline_jwks_path = "/etc/forge/jwks.json"
         cfg.auth.enabled = true;
         cfg.auth.audience = "test".to_string();
         // issuer_url is empty - should fail
-        assert!(cfg.validate().is_err(), "auth.enabled without issuer_url should fail");
+        assert!(
+            cfg.validate().is_err(),
+            "auth.enabled without issuer_url should fail"
+        );
     }
 
     #[test]
@@ -1815,7 +2056,10 @@ offline_jwks_path = "/etc/forge/jwks.json"
         cfg.auth.enabled = true;
         cfg.auth.issuer_url = "https://issuer.example.com".to_string();
         // audience is empty - should fail
-        assert!(cfg.validate().is_err(), "auth.enabled without audience should fail");
+        assert!(
+            cfg.validate().is_err(),
+            "auth.enabled without audience should fail"
+        );
     }
 
     #[test]
@@ -1853,7 +2097,10 @@ offline_jwks_path = "/etc/forge/jwks.json"
 
         cfg.apply_env_overrides();
 
-        assert_eq!(cfg.cors.allowed_origins, vec!["https://a.com", "https://b.com"]);
+        assert_eq!(
+            cfg.cors.allowed_origins,
+            vec!["https://a.com", "https://b.com"]
+        );
         assert_eq!(cfg.cors.max_age_secs, 7200);
 
         std::env::remove_var("FORGE_CORS_ALLOWED_ORIGINS");
@@ -1878,9 +2125,15 @@ offline_jwks_path = "/etc/forge/jwks.json"
         assert_eq!(cfg.auth.issuer_url, "https://issuer.example.com");
         assert_eq!(cfg.auth.audience, "my-app");
         assert_eq!(cfg.auth.required_claims, vec!["email", "sub"]);
-        assert_eq!(cfg.auth.admin_emails, vec!["admin@test.com", "boss@test.com"]);
+        assert_eq!(
+            cfg.auth.admin_emails,
+            vec!["admin@test.com", "boss@test.com"]
+        );
         assert_eq!(cfg.auth.jwks_cache_secs, 1800);
-        assert_eq!(cfg.auth.offline_jwks_path, Some("/tmp/jwks.json".to_string()));
+        assert_eq!(
+            cfg.auth.offline_jwks_path,
+            Some("/tmp/jwks.json".to_string())
+        );
 
         std::env::remove_var("FORGE_AUTH_ENABLED");
         std::env::remove_var("FORGE_AUTH_ISSUER_URL");
@@ -1954,8 +2207,14 @@ offline_jwks_path = "/etc/forge/jwks.json"
     fn test_otlp_config_defaults() {
         let cfg = OtlpConfig::default();
         assert!(!cfg.enabled, "otlp.enabled default should be false");
-        assert!(cfg.endpoint.is_empty(), "otlp.endpoint default should be empty");
-        assert_eq!(cfg.service_name, "forge-daemon", "otlp.service_name default should be forge-daemon");
+        assert!(
+            cfg.endpoint.is_empty(),
+            "otlp.endpoint default should be empty"
+        );
+        assert_eq!(
+            cfg.service_name, "forge-daemon",
+            "otlp.service_name default should be forge-daemon"
+        );
 
         // Also verify it shows up in ForgeConfig
         let forge_cfg = ForgeConfig::default();
@@ -2004,15 +2263,19 @@ service_name = "my-forge"
     #[test]
     fn test_default_reaper_config() {
         let config = ForgeConfig::default();
-        assert_eq!(config.workers.session_reaper_interval_secs, 60,
-            "session_reaper_interval_secs default should be 60");
+        assert_eq!(
+            config.workers.session_reaper_interval_secs, 60,
+            "session_reaper_interval_secs default should be 60"
+        );
     }
 
     #[test]
     fn test_default_heartbeat_timeout() {
         let config = ForgeConfig::default();
-        assert_eq!(config.workers.heartbeat_timeout_secs, 60,
-            "heartbeat_timeout_secs default should be 60");
+        assert_eq!(
+            config.workers.heartbeat_timeout_secs, 60,
+            "heartbeat_timeout_secs default should be 60"
+        );
     }
 
     #[test]

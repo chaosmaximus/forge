@@ -1,7 +1,7 @@
 use forge_core::protocol::*;
 use forge_core::types::MemoryType;
 use forge_daemon::db::{ops, vec};
-use forge_daemon::server::handler::{DaemonState, handle_request};
+use forge_daemon::server::handler::{handle_request, DaemonState};
 
 fn make_state() -> DaemonState {
     vec::init_sqlite_vec();

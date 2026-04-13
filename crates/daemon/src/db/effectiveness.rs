@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Record that a context injection was delivered to a session.
 /// Returns the ULID of the new row.
@@ -9,7 +9,14 @@ pub fn record_injection(
     context_type: &str,
     content_summary: &str,
 ) -> rusqlite::Result<String> {
-    record_injection_with_size(conn, session_id, hook_event, context_type, content_summary, 0)
+    record_injection_with_size(
+        conn,
+        session_id,
+        hook_event,
+        context_type,
+        content_summary,
+        0,
+    )
 }
 
 /// Record a context injection with its character count for observability.
@@ -31,7 +38,10 @@ pub fn record_injection_with_size(
 }
 
 /// Get injection stats for a session: total injections, total chars, per-hook breakdown.
-pub fn session_injection_stats(conn: &Connection, session_id: &str) -> rusqlite::Result<InjectionStats> {
+pub fn session_injection_stats(
+    conn: &Connection,
+    session_id: &str,
+) -> rusqlite::Result<InjectionStats> {
     let total_chars: i64 = conn.query_row(
         "SELECT COALESCE(SUM(chars_injected), 0) FROM context_effectiveness WHERE session_id = ?1",
         params![session_id],
@@ -51,15 +61,18 @@ pub fn session_injection_stats(conn: &Connection, session_id: &str) -> rusqlite:
     let mut stmt = conn.prepare(
         "SELECT hook_event, COUNT(*), COALESCE(SUM(chars_injected), 0)
          FROM context_effectiveness WHERE session_id = ?1
-         GROUP BY hook_event ORDER BY SUM(chars_injected) DESC"
+         GROUP BY hook_event ORDER BY SUM(chars_injected) DESC",
     )?;
-    let per_hook: Vec<HookStats> = stmt.query_map(params![session_id], |row| {
-        Ok(HookStats {
-            hook_event: row.get(0)?,
-            injections: row.get::<_, i64>(1)? as usize,
-            chars: row.get::<_, i64>(2)? as usize,
-        })
-    })?.filter_map(|r| r.ok()).collect();
+    let per_hook: Vec<HookStats> = stmt
+        .query_map(params![session_id], |row| {
+            Ok(HookStats {
+                hook_event: row.get(0)?,
+                injections: row.get::<_, i64>(1)? as usize,
+                chars: row.get::<_, i64>(2)? as usize,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     Ok(InjectionStats {
         session_id: session_id.to_string(),
@@ -67,7 +80,11 @@ pub fn session_injection_stats(conn: &Connection, session_id: &str) -> rusqlite:
         total_chars: total_chars as usize,
         estimated_tokens: total_chars as usize / 4,
         acknowledged: acknowledged as usize,
-        effectiveness_rate: if total_injections > 0 { acknowledged as f64 / total_injections as f64 } else { 0.0 },
+        effectiveness_rate: if total_injections > 0 {
+            acknowledged as f64 / total_injections as f64
+        } else {
+            0.0
+        },
         per_hook,
     })
 }
@@ -79,11 +96,10 @@ pub fn global_injection_stats(conn: &Connection) -> rusqlite::Result<GlobalStats
         [],
         |row| row.get(0),
     )?;
-    let total_injections: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM context_effectiveness",
-        [],
-        |row| row.get(0),
-    )?;
+    let total_injections: i64 =
+        conn.query_row("SELECT COUNT(*) FROM context_effectiveness", [], |row| {
+            row.get(0)
+        })?;
     let total_sessions: i64 = conn.query_row(
         "SELECT COUNT(DISTINCT session_id) FROM context_effectiveness",
         [],
@@ -101,8 +117,16 @@ pub fn global_injection_stats(conn: &Connection) -> rusqlite::Result<GlobalStats
         total_chars: total_chars as usize,
         estimated_tokens: total_chars as usize / 4,
         acknowledged: acknowledged as usize,
-        effectiveness_rate: if total_injections > 0 { acknowledged as f64 / total_injections as f64 } else { 0.0 },
-        avg_chars_per_session: if total_sessions > 0 { total_chars as usize / total_sessions as usize } else { 0 },
+        effectiveness_rate: if total_injections > 0 {
+            acknowledged as f64 / total_injections as f64
+        } else {
+            0.0
+        },
+        avg_chars_per_session: if total_sessions > 0 {
+            total_chars as usize / total_sessions as usize
+        } else {
+            0
+        },
     })
 }
 

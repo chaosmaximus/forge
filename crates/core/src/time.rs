@@ -49,7 +49,8 @@ fn epoch_to_iso(secs: u64) -> String {
     let mut year = 1970u64;
     let mut remaining_days = days_since_epoch;
     loop {
-        let is_leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+        let is_leap =
+            year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
         let days_in_year = if is_leap { 366 } else { 365 };
         if remaining_days < days_in_year {
             break;
@@ -79,9 +80,7 @@ fn epoch_to_iso(secs: u64) -> String {
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
 
-    format!(
-        "{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}"
-    )
+    format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}")
 }
 
 #[cfg(test)]

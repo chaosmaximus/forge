@@ -30,9 +30,7 @@ pub async fn run_diagnostics_worker(
     debounce_secs: u64,
 ) {
     let mut pending_files: HashSet<String> = HashSet::new();
-    eprintln!(
-        "[diagnostics] ready, waiting for files ({debounce_secs}s debounce)..."
-    );
+    eprintln!("[diagnostics] ready, waiting for files ({debounce_secs}s debounce)...");
 
     loop {
         // Wait for the first file event or shutdown
@@ -195,14 +193,10 @@ fn collect_consistency_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnos
 
     // Find symbols defined in this file
     let symbols: Vec<(String, String)> = conn
-        .prepare(
-            "SELECT id, name FROM code_symbol WHERE file_path LIKE ?1",
-        )
+        .prepare("SELECT id, name FROM code_symbol WHERE file_path LIKE ?1")
         .and_then(|mut stmt| {
-            stmt.query_map(params![like_pattern], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
-            .collect()
+            stmt.query_map(params![like_pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
         })
         .unwrap_or_default();
 
@@ -216,9 +210,7 @@ fn collect_consistency_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnos
                  WHERE e.to_id = ?1 AND e.edge_type = 'calls'
                  AND cs2.file_path NOT LIKE ?2",
             )
-            .and_then(|mut stmt| {
-                stmt.query_row(params![sym_id, like_pattern], |row| row.get(0))
-            })
+            .and_then(|mut stmt| stmt.query_row(params![sym_id, like_pattern], |row| row.get(0)))
             .unwrap_or(0);
 
         if caller_count > 0 {
@@ -274,10 +266,8 @@ fn collect_repeat_bug_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnost
                  ORDER BY intensity DESC LIMIT 2",
             )
             .and_then(|mut stmt| {
-                stmt.query_map(params![search], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })?
-                .collect()
+                stmt.query_map(params![search], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
             })
             .unwrap_or_default();
 
@@ -285,12 +275,7 @@ fn collect_repeat_bug_diagnostics(conn: &Connection, file: &str) -> Vec<Diagnost
             result.push(Diagnostic {
                 id: format!("repeat-bug-{}-{}", file_stem, title.len()),
                 file_path: file.to_string(),
-                severity: if *intensity > 0.8 {
-                    "error"
-                } else {
-                    "warning"
-                }
-                .into(),
+                severity: if *intensity > 0.8 { "error" } else { "warning" }.into(),
                 message: format!("Past issue: {title} (intensity: {intensity:.1})"),
                 source: "forge-memory".into(),
                 line: None,
@@ -470,7 +455,14 @@ mod tests {
         // Spawn the worker
         let worker_state = Arc::clone(&state);
         let handle = tokio::spawn(async move {
-            run_diagnostics_worker(worker_state, file_rx, shutdown_rx, ":memory:".to_string(), 3).await;
+            run_diagnostics_worker(
+                worker_state,
+                file_rx,
+                shutdown_rx,
+                ":memory:".to_string(),
+                3,
+            )
+            .await;
         });
 
         // Send some file paths
@@ -553,7 +545,14 @@ mod tests {
 
         let worker_state = Arc::clone(&state);
         let handle = tokio::spawn(async move {
-            run_diagnostics_worker(worker_state, file_rx, shutdown_rx, ":memory:".to_string(), 3).await;
+            run_diagnostics_worker(
+                worker_state,
+                file_rx,
+                shutdown_rx,
+                ":memory:".to_string(),
+                3,
+            )
+            .await;
         });
 
         // Send the file that has callers

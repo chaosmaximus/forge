@@ -85,17 +85,21 @@ impl RateLimiter {
 
         // Check auth failure lockout
         if bucket.auth_failures >= self.config.max_auth_failures {
-            let remaining = self.config.window.as_secs().saturating_sub(
-                bucket.window_start.elapsed().as_secs(),
-            );
+            let remaining = self
+                .config
+                .window
+                .as_secs()
+                .saturating_sub(bucket.window_start.elapsed().as_secs());
             return Err(remaining.max(1));
         }
 
         // Check request count
         if bucket.count >= self.config.max_requests {
-            let remaining = self.config.window.as_secs().saturating_sub(
-                bucket.window_start.elapsed().as_secs(),
-            );
+            let remaining = self
+                .config
+                .window
+                .as_secs()
+                .saturating_sub(bucket.window_start.elapsed().as_secs());
             return Err(remaining.max(1));
         }
 

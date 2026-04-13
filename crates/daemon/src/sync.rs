@@ -9,8 +9,8 @@
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use forge_core::types::{Memory, MemoryType, MemoryStatus};
-use rusqlite::{Connection, OptionalExtension, params};
+use forge_core::types::{Memory, MemoryStatus, MemoryType};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Hybrid Logical Clock for causal ordering across machines.
 pub struct Hlc {
@@ -48,7 +48,10 @@ impl Hlc {
         } else {
             state.counter += 1;
         }
-        format!("{}-{:010}-{}", state.last_wall_ms, state.counter, self.node_id)
+        format!(
+            "{}-{:010}-{}",
+            state.last_wall_ms, state.counter, self.node_id
+        )
     }
 
     /// Merge with a remote HLC timestamp to maintain causal ordering.
@@ -105,10 +108,10 @@ pub fn generate_node_id() -> String {
 /// Backfill HLC timestamps on existing memories that have empty hlc_timestamp.
 /// Returns the number of memories updated.
 pub fn backfill_hlc(conn: &Connection, hlc: &Hlc) -> rusqlite::Result<usize> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM memory WHERE hlc_timestamp = '' OR hlc_timestamp IS NULL"
-    )?;
-    let ids: Vec<String> = stmt.query_map([], |row| row.get(0))?
+    let mut stmt =
+        conn.prepare("SELECT id FROM memory WHERE hlc_timestamp = '' OR hlc_timestamp IS NULL")?;
+    let ids: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -258,8 +261,12 @@ fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
     let status_s: String = row.get(5)?;
     let project: Option<String> = row.get(6)?;
     let tags_json: String = row.get(7)?;
-    let alternatives_json: String = row.get::<_, String>(17).unwrap_or_else(|_| "[]".to_string());
-    let participants_json: String = row.get::<_, String>(18).unwrap_or_else(|_| "[]".to_string());
+    let alternatives_json: String = row
+        .get::<_, String>(17)
+        .unwrap_or_else(|_| "[]".to_string());
+    let participants_json: String = row
+        .get::<_, String>(18)
+        .unwrap_or_else(|_| "[]".to_string());
 
     let memory_type = type_from_str(&type_s);
     let status = crate::db::ops::status_from_str(&status_s);
@@ -319,10 +326,9 @@ pub fn is_sync_allowed(direction: &SyncDirection, memory_type: &MemoryType) -> b
         // Team → Local: everything propagates down (team shares with members)
         SyncDirection::TeamToLocal => true,
         // Team → Org: only decisions and protocols propagate to org level
-        SyncDirection::TeamToOrg => matches!(
-            memory_type,
-            MemoryType::Decision | MemoryType::Protocol
-        ),
+        SyncDirection::TeamToOrg => {
+            matches!(memory_type, MemoryType::Decision | MemoryType::Protocol)
+        }
         // Org → Team: everything propagates down (org-wide policies)
         SyncDirection::OrgToTeam => true,
     }
@@ -355,7 +361,10 @@ pub fn sync_export_with_policy(
         if let Ok(memory) = serde_json::from_str::<Memory>(line) {
             // Check org_id match if specified
             let org_ok = match org_id {
-                Some(oid) => memory.organization_id.as_deref() == Some(oid) || memory.organization_id.is_none(),
+                Some(oid) => {
+                    memory.organization_id.as_deref() == Some(oid)
+                        || memory.organization_id.is_none()
+                }
                 None => true,
             };
             if org_ok && is_sync_allowed(direction, &memory.memory_type) {
@@ -395,9 +404,11 @@ pub fn sync_import(
     // SECURITY: limit total import size to prevent OOM
     const MAX_LINES: usize = 10_000;
     if lines.len() > MAX_LINES {
-        return Err(rusqlite::Error::InvalidParameterName(
-            format!("sync import exceeds {} line limit ({} lines)", MAX_LINES, lines.len()),
-        ));
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "sync import exceeds {} line limit ({} lines)",
+            MAX_LINES,
+            lines.len()
+        )));
     }
 
     // Wrap in transaction for atomicity — all-or-nothing (Codex fix: partial writes on failure)
@@ -525,10 +536,7 @@ pub fn sync_import(
 
 /// Import an identity facet from a sync NDJSON line.
 /// Uses highest-strength-wins conflict resolution.
-fn import_identity_facet(
-    conn: &Connection,
-    val: &serde_json::Value,
-) -> rusqlite::Result<()> {
+fn import_identity_facet(conn: &Connection, val: &serde_json::Value) -> rusqlite::Result<()> {
     // Extract required fields
     let agent = val
         .get("agent")
@@ -542,18 +550,9 @@ fn import_identity_facet(
         .get("description")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let strength = val
-        .get("strength")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.5);
-    let source = val
-        .get("source")
-        .and_then(|v| v.as_str())
-        .unwrap_or("sync");
-    let id = val
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let strength = val.get("strength").and_then(|v| v.as_f64()).unwrap_or(0.5);
+    let source = val.get("source").and_then(|v| v.as_str()).unwrap_or("sync");
+    let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
     // Check for existing facet with same agent + facet name
     let existing_strength: Option<f64> = conn
@@ -753,13 +752,25 @@ mod tests {
 
         // Verify they now have HLC timestamps
         let hlc_ts: String = conn
-            .query_row("SELECT hlc_timestamp FROM memory WHERE id = 'm-old1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT hlc_timestamp FROM memory WHERE id = 'm-old1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert!(!hlc_ts.is_empty(), "backfilled memory should have HLC timestamp");
-        assert!(hlc_ts.contains("backfill_node"), "backfilled HLC should contain node_id");
+        assert!(
+            !hlc_ts.is_empty(),
+            "backfilled memory should have HLC timestamp"
+        );
+        assert!(
+            hlc_ts.contains("backfill_node"),
+            "backfilled HLC should contain node_id"
+        );
 
         let node: String = conn
-            .query_row("SELECT node_id FROM memory WHERE id = 'm-old2'", [], |r| r.get(0))
+            .query_row("SELECT node_id FROM memory WHERE id = 'm-old2'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(node, "backfill_node");
 
@@ -808,7 +819,7 @@ mod tests {
     fn test_generate_node_id() {
         let id = generate_node_id();
         assert_eq!(id.len(), 8); // 8-char hex
-        // Same machine should produce same ID
+                                 // Same machine should produce same ID
         let id2 = generate_node_id();
         assert_eq!(id, id2);
     }
@@ -862,13 +873,13 @@ mod tests {
     fn test_sync_export_project_filter() {
         let conn = test_conn();
 
-        let mut mem1 = Memory::new(MemoryType::Decision, "Project A", "Content A")
-            .with_project("proj_a");
+        let mut mem1 =
+            Memory::new(MemoryType::Decision, "Project A", "Content A").with_project("proj_a");
         mem1.set_hlc("1712345678000-0-node1".into(), "node1".into());
         ops::remember(&conn, &mem1).unwrap();
 
-        let mut mem2 = Memory::new(MemoryType::Decision, "Project B", "Content B")
-            .with_project("proj_b");
+        let mut mem2 =
+            Memory::new(MemoryType::Decision, "Project B", "Content B").with_project("proj_b");
         mem2.set_hlc("1712345679000-0-node1".into(), "node1".into());
         ops::remember(&conn, &mem2).unwrap();
 
@@ -962,9 +973,9 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
-        alternatives: Vec::new(),
-        participants: Vec::new(),
-        organization_id: None,
+            alternatives: Vec::new(),
+            participants: Vec::new(),
+            organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1003,9 +1014,9 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
-        alternatives: Vec::new(),
-        participants: Vec::new(),
-        organization_id: None,
+            alternatives: Vec::new(),
+            participants: Vec::new(),
+            organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1053,9 +1064,9 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
-        alternatives: Vec::new(),
-        participants: Vec::new(),
-        organization_id: None,
+            alternatives: Vec::new(),
+            participants: Vec::new(),
+            organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1113,9 +1124,9 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
-        alternatives: Vec::new(),
-        participants: Vec::new(),
-        organization_id: None,
+            alternatives: Vec::new(),
+            participants: Vec::new(),
+            organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1155,9 +1166,9 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
-        alternatives: Vec::new(),
-        participants: Vec::new(),
-        organization_id: None,
+            alternatives: Vec::new(),
+            participants: Vec::new(),
+            organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1248,7 +1259,9 @@ mod tests {
         ops::remember(&conn, &mem).unwrap();
 
         let exported = sync_export(&conn, None, None).unwrap();
-        let has_identity = exported.iter().any(|l| l.contains("\"_type\":\"identity\""));
+        let has_identity = exported
+            .iter()
+            .any(|l| l.contains("\"_type\":\"identity\""));
         assert!(
             has_identity,
             "export should include identity facets with _type marker"
@@ -1290,15 +1303,21 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
-        alternatives: Vec::new(),
-        participants: Vec::new(),
-        organization_id: None,
+            alternatives: Vec::new(),
+            participants: Vec::new(),
+            organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
         let result = sync_import(&conn, &[line], "local123").unwrap();
-        assert_eq!(result.conflicts, 1, "empty local HLC should create conflict, not silent overwrite");
-        assert_eq!(result.imported, 0, "should NOT import when local HLC is empty");
+        assert_eq!(
+            result.conflicts, 1,
+            "empty local HLC should create conflict, not silent overwrite"
+        );
+        assert_eq!(
+            result.imported, 0,
+            "should NOT import when local HLC is empty"
+        );
 
         // Verify both are marked as conflicts
         let conflict_count: i64 = conn
@@ -1308,7 +1327,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(conflict_count, 2, "both local and remote should be conflict");
+        assert_eq!(
+            conflict_count, 2,
+            "both local and remote should be conflict"
+        );
     }
 
     #[test]
@@ -1344,14 +1366,17 @@ mod tests {
             session_id: String::new(),
             access_count: 0,
             activation_level: 0.0,
-        alternatives: Vec::new(),
-        participants: Vec::new(),
-        organization_id: None,
+            alternatives: Vec::new(),
+            participants: Vec::new(),
+            organization_id: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
         let result = sync_import(&conn, &[line], "local123").unwrap();
-        assert_eq!(result.skipped, 1, "same content should skip even with empty local HLC");
+        assert_eq!(
+            result.skipped, 1,
+            "same content should skip even with empty local HLC"
+        );
         assert_eq!(result.conflicts, 0);
     }
 
@@ -1370,9 +1395,15 @@ mod tests {
 
         // Export should fail because of empty HLC
         let result = sync_export(&conn, None, None);
-        assert!(result.is_err(), "sync_export should reject memories with empty HLC");
+        assert!(
+            result.is_err(),
+            "sync_export should reject memories with empty HLC"
+        );
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("empty HLC"), "error should mention empty HLC: {err_msg}");
+        assert!(
+            err_msg.contains("empty HLC"),
+            "error should mention empty HLC: {err_msg}"
+        );
     }
 
     #[test]
@@ -1385,32 +1416,68 @@ mod tests {
         ops::remember(&conn, &mem).unwrap();
 
         let result = sync_export(&conn, None, None);
-        assert!(result.is_ok(), "sync_export should succeed when all memories have HLC");
+        assert!(
+            result.is_ok(),
+            "sync_export should succeed when all memories have HLC"
+        );
     }
 
     #[test]
     fn test_sync_policy_local_to_team() {
         // Decisions propagate, preferences don't
-        assert!(is_sync_allowed(&SyncDirection::LocalToTeam, &MemoryType::Decision));
-        assert!(is_sync_allowed(&SyncDirection::LocalToTeam, &MemoryType::Lesson));
-        assert!(is_sync_allowed(&SyncDirection::LocalToTeam, &MemoryType::Protocol));
-        assert!(!is_sync_allowed(&SyncDirection::LocalToTeam, &MemoryType::Preference));
+        assert!(is_sync_allowed(
+            &SyncDirection::LocalToTeam,
+            &MemoryType::Decision
+        ));
+        assert!(is_sync_allowed(
+            &SyncDirection::LocalToTeam,
+            &MemoryType::Lesson
+        ));
+        assert!(is_sync_allowed(
+            &SyncDirection::LocalToTeam,
+            &MemoryType::Protocol
+        ));
+        assert!(!is_sync_allowed(
+            &SyncDirection::LocalToTeam,
+            &MemoryType::Preference
+        ));
     }
 
     #[test]
     fn test_sync_policy_team_to_org() {
         // Only decisions and protocols propagate to org level
-        assert!(is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Decision));
-        assert!(is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Protocol));
-        assert!(!is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Lesson));
-        assert!(!is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Pattern));
-        assert!(!is_sync_allowed(&SyncDirection::TeamToOrg, &MemoryType::Preference));
+        assert!(is_sync_allowed(
+            &SyncDirection::TeamToOrg,
+            &MemoryType::Decision
+        ));
+        assert!(is_sync_allowed(
+            &SyncDirection::TeamToOrg,
+            &MemoryType::Protocol
+        ));
+        assert!(!is_sync_allowed(
+            &SyncDirection::TeamToOrg,
+            &MemoryType::Lesson
+        ));
+        assert!(!is_sync_allowed(
+            &SyncDirection::TeamToOrg,
+            &MemoryType::Pattern
+        ));
+        assert!(!is_sync_allowed(
+            &SyncDirection::TeamToOrg,
+            &MemoryType::Preference
+        ));
     }
 
     #[test]
     fn test_sync_policy_downward_allows_all() {
         // Team→Local and Org→Team allow everything
-        for mt in [MemoryType::Decision, MemoryType::Lesson, MemoryType::Pattern, MemoryType::Preference, MemoryType::Protocol] {
+        for mt in [
+            MemoryType::Decision,
+            MemoryType::Lesson,
+            MemoryType::Pattern,
+            MemoryType::Preference,
+            MemoryType::Protocol,
+        ] {
             assert!(is_sync_allowed(&SyncDirection::TeamToLocal, &mt));
             assert!(is_sync_allowed(&SyncDirection::OrgToTeam, &mt));
         }

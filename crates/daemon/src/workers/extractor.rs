@@ -86,9 +86,21 @@ pub async fn run_extractor(
         // Process all accumulated files
         let files_to_process: Vec<PathBuf> = pending.drain().collect();
         if !files_to_process.is_empty() {
-            eprintln!("[extractor] processing {} files after activity gap", files_to_process.len());
+            eprintln!(
+                "[extractor] processing {} files after activity gap",
+                files_to_process.len()
+            );
             for path in &files_to_process {
-                if let Err(e) = process_file(path, &mut offsets, &state, &config, &agent_adapters, &db_path).await {
+                if let Err(e) = process_file(
+                    path,
+                    &mut offsets,
+                    &state,
+                    &config,
+                    &agent_adapters,
+                    &db_path,
+                )
+                .await
+                {
                     eprintln!("[extractor] error processing {}: {e}", path.display());
                 }
             }
@@ -119,16 +131,20 @@ async fn process_file(
     let adapter = match adapters::adapter_for_path(agent_adapters, &canonical) {
         Some(a) => a,
         None => {
-            return Err(format!("no adapter for {} (canonical: {})", path.display(), canonical.display()));
+            return Err(format!(
+                "no adapter for {} (canonical: {})",
+                path.display(),
+                canonical.display()
+            ));
         }
     };
 
     // ISS-D8: For files over 50MB, read only the last 10MB (tail) instead of skipping.
     // This ensures long conversations (120MB+) still get their most recent decisions extracted.
     // Files over 200MB are truly skipped to prevent OOM.
-    const MAX_FULL_READ: u64 = 50_000_000;     // 50MB — read entire file
-    const MAX_TAIL_READ: usize = 10_000_000;    // 10MB — tail read for oversized files
-    const MAX_SKIP_SIZE: u64 = 200_000_000;     // 200MB — skip entirely (OOM protection)
+    const MAX_FULL_READ: u64 = 50_000_000; // 50MB — read entire file
+    const MAX_TAIL_READ: usize = 10_000_000; // 10MB — tail read for oversized files
+    const MAX_SKIP_SIZE: u64 = 200_000_000; // 200MB — skip entirely (OOM protection)
 
     let metadata = tokio::fs::metadata(&canonical)
         .await
@@ -139,7 +155,8 @@ async fn process_file(
         offsets.insert(path.clone(), file_size as usize);
         eprintln!(
             "[extractor] file too large ({} bytes > 200MB), skipping: {}",
-            file_size, canonical.display()
+            file_size,
+            canonical.display()
         );
         return Ok(());
     }
@@ -174,7 +191,11 @@ async fn process_file(
         }
 
         // Find first newline to start at a complete line boundary (JSONL safety)
-        let mut line_start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+        let mut line_start = buf
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
         // M2: Skip any UTF-8 continuation bytes (0x80..=0xBF) after the newline.
         // Prevents mojibake if seek landed mid-codepoint in CJK/emoji transcripts.
         while line_start < buf.len() && (buf[line_start] & 0xC0) == 0x80 {
@@ -228,11 +249,15 @@ async fn process_file(
         } else {
             "waiting"
         };
-        crate::events::emit(&event_tx_for_status, "agent_status", serde_json::json!({
-            "agent": adapter.name(),
-            "status": status,
-            "transcript": path.to_string_lossy(),
-        }));
+        crate::events::emit(
+            &event_tx_for_status,
+            "agent_status",
+            serde_json::json!({
+                "agent": adapter.name(),
+                "status": status,
+                "transcript": path.to_string_lossy(),
+            }),
+        );
     }
 
     // Action tracking: count tool_use chunks and increment session counter.
@@ -243,19 +268,25 @@ async fn process_file(
         if tool_use_count > 0 {
             // Read session ID using read-only connection (no mutex contention)
             let session_id = if let Some(rc) = super::open_read_conn(db_path) {
-                let sid = crate::sessions::get_active_session_id(&rc, adapter.name()).unwrap_or_default();
+                let sid =
+                    crate::sessions::get_active_session_id(&rc, adapter.name()).unwrap_or_default();
                 drop(rc);
                 sid
             } else {
                 let locked = state.lock().await;
-                let sid = crate::sessions::get_active_session_id(&locked.conn, adapter.name()).unwrap_or_default();
+                let sid = crate::sessions::get_active_session_id(&locked.conn, adapter.name())
+                    .unwrap_or_default();
                 drop(locked);
                 sid
             };
             if !session_id.is_empty() {
                 // Write: brief lock for the UPDATE
                 let locked = state.lock().await;
-                if let Err(e) = crate::sessions::increment_tool_use_count(&locked.conn, &session_id, tool_use_count) {
+                if let Err(e) = crate::sessions::increment_tool_use_count(
+                    &locked.conn,
+                    &session_id,
+                    tool_use_count,
+                ) {
                     eprintln!("[extractor] failed to increment tool_use_count: {e}");
                 }
                 drop(locked);
@@ -264,7 +295,14 @@ async fn process_file(
     }
 
     // Combine chunk texts for extraction (limit to last 20 chunks / ~50KB to avoid oversized prompts)
-    let recent_chunks: Vec<&_> = chunks.iter().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect();
+    let recent_chunks: Vec<&_> = chunks
+        .iter()
+        .rev()
+        .take(20)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     let combined_text: String = recent_chunks
         .iter()
         .map(|c| format!("[{}] {}", c.role, c.content))
@@ -317,11 +355,9 @@ async fn process_file(
             .await
         }
         BackendChoice::OpenAi => {
-            let api_key = crate::config::resolve_api_key(
-                &config.extraction.openai.api_key,
-                "OPENAI_API_KEY",
-            )
-            .unwrap_or_default();
+            let api_key =
+                crate::config::resolve_api_key(&config.extraction.openai.api_key, "OPENAI_API_KEY")
+                    .unwrap_or_default();
             extraction::openai::extract(
                 &api_key,
                 &config.extraction.openai.model,
@@ -331,17 +367,11 @@ async fn process_file(
             .await
         }
         BackendChoice::Gemini => {
-            let api_key = crate::config::resolve_api_key(
-                &config.extraction.gemini.api_key,
-                "GEMINI_API_KEY",
-            )
-            .unwrap_or_default();
-            extraction::gemini::extract(
-                &api_key,
-                &config.extraction.gemini.model,
-                &combined_text,
-            )
-            .await
+            let api_key =
+                crate::config::resolve_api_key(&config.extraction.gemini.api_key, "GEMINI_API_KEY")
+                    .unwrap_or_default();
+            extraction::gemini::extract(&api_key, &config.extraction.gemini.model, &combined_text)
+                .await
         }
         BackendChoice::Ollama => {
             extraction::ollama::extract(
@@ -373,7 +403,8 @@ async fn process_file(
                 crate::sessions::get_active_session_id(&rc, adapter.name()).unwrap_or_default()
             } else {
                 let locked = state.lock().await;
-                crate::sessions::get_active_session_id(&locked.conn, adapter.name()).unwrap_or_default()
+                crate::sessions::get_active_session_id(&locked.conn, adapter.name())
+                    .unwrap_or_default()
             };
 
             for em in &extracted {
@@ -402,7 +433,12 @@ async fn process_file(
                             let skill = forge_core::types::Skill {
                                 id: format!("skill-{}", ulid::Ulid::new()),
                                 name: em.title.clone(),
-                                domain: em.tags.iter().find(|t| *t != "behavioral").cloned().unwrap_or_else(|| "general".to_string()),
+                                domain: em
+                                    .tags
+                                    .iter()
+                                    .find(|t| *t != "behavioral")
+                                    .cloned()
+                                    .unwrap_or_else(|| "general".to_string()),
                                 description: em.content.clone(),
                                 steps: vec![], // behavioral skills don't have steps
                                 success_count: 1,
@@ -419,8 +455,13 @@ async fn process_file(
 
                             // Check for existing behavioral skill with similar name (observation counting)
                             // If found, increment observed_count instead of creating duplicate
-                            if let Err(e) = crate::db::manas::store_or_observe_skill(&locked.conn, &skill) {
-                                eprintln!("[extractor] failed to store behavioral skill '{}': {e}", em.title);
+                            if let Err(e) =
+                                crate::db::manas::store_or_observe_skill(&locked.conn, &skill)
+                            {
+                                eprintln!(
+                                    "[extractor] failed to store behavioral skill '{}': {e}",
+                                    em.title
+                                );
                             } else {
                                 stored += 1;
                                 // Run correlation engine to link to related identity/decisions
@@ -430,12 +471,16 @@ async fn process_file(
                                     &skill.name,
                                     &em.tags,
                                 );
-                                events::emit(&event_tx, "skill_extracted", serde_json::json!({
-                                    "skill_id": skill.id,
-                                    "name": skill.name,
-                                    "domain": skill.domain,
-                                    "skill_type": "behavioral",
-                                }));
+                                events::emit(
+                                    &event_tx,
+                                    "skill_extracted",
+                                    serde_json::json!({
+                                        "skill_id": skill.id,
+                                        "name": skill.name,
+                                        "domain": skill.domain,
+                                        "skill_type": "behavioral",
+                                    }),
+                                );
                             }
                             continue; // Don't also store as memory
                         }
@@ -471,7 +516,9 @@ async fn process_file(
                         } else {
                             // Extract steps: try numbered/bulleted lines first, fall back to
                             // sentence splitting for prose-style procedures
-                            let mut steps: Vec<String> = em.content.lines()
+                            let mut steps: Vec<String> = em
+                                .content
+                                .lines()
                                 .filter(|l| {
                                     let trimmed = l.trim();
                                     trimmed.starts_with(|c: char| c.is_ascii_digit())
@@ -483,7 +530,9 @@ async fn process_file(
                                 .collect();
                             // Fallback: if no structured steps found, split on sentences
                             if steps.is_empty() && em.content.len() >= 50 {
-                                steps = em.content.split('.')
+                                steps = em
+                                    .content
+                                    .split('.')
                                     .map(|s| s.trim().to_string())
                                     .filter(|s| s.len() >= 10)
                                     .collect();
@@ -491,7 +540,11 @@ async fn process_file(
                             let skill = forge_core::types::Skill {
                                 id: format!("skill-{}", ulid::Ulid::new()),
                                 name: em.title.clone(),
-                                domain: em.tags.first().cloned().unwrap_or_else(|| "general".to_string()),
+                                domain: em
+                                    .tags
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or_else(|| "general".to_string()),
                                 description: em.content.clone(),
                                 steps,
                                 success_count: 1, // Extracted from a successful execution
@@ -510,12 +563,16 @@ async fn process_file(
                                 eprintln!("[extractor] failed to store skill '{}': {e}", em.title);
                             } else {
                                 stored += 1;
-                                events::emit(&event_tx, "skill_extracted", serde_json::json!({
-                                    "skill_id": skill.id,
-                                    "name": skill.name,
-                                    "domain": skill.domain,
-                                    "skill_type": "procedural",
-                                }));
+                                events::emit(
+                                    &event_tx,
+                                    "skill_extracted",
+                                    serde_json::json!({
+                                        "skill_id": skill.id,
+                                        "name": skill.name,
+                                        "domain": skill.domain,
+                                        "skill_type": "procedural",
+                                    }),
+                                );
                             }
                             continue; // Don't also store as memory
                         }
@@ -527,18 +584,36 @@ async fn process_file(
                 if em.memory_type == "identity" {
                     let title_lower = em.title.to_lowercase();
                     let agent_role_keywords = [
-                        "advisor", "assistant", "agent", "claude", "gpt", "copilot",
-                        "cto advisor", "cfo advisor", "cmo advisor", "cpo advisor",
-                        "board member", "ai ", "llm ", "model ",
+                        "advisor",
+                        "assistant",
+                        "agent",
+                        "claude",
+                        "gpt",
+                        "copilot",
+                        "cto advisor",
+                        "cfo advisor",
+                        "cmo advisor",
+                        "cpo advisor",
+                        "board member",
+                        "ai ",
+                        "llm ",
+                        "model ",
                     ];
-                    if agent_role_keywords.iter().any(|kw| title_lower.contains(kw)) {
+                    if agent_role_keywords
+                        .iter()
+                        .any(|kw| title_lower.contains(kw))
+                    {
                         eprintln!(
                             "[extractor] filtered AI agent identity '{}' — only human user identity accepted",
                             em.title
                         );
                         continue;
                     }
-                    let facet_type = em.tags.first().cloned().unwrap_or_else(|| "expertise".to_string());
+                    let facet_type = em
+                        .tags
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "expertise".to_string());
                     let facet = forge_core::types::manas::IdentityFacet {
                         id: format!("identity-{}", ulid::Ulid::new()),
                         agent: adapter.name().to_string(),
@@ -554,12 +629,16 @@ async fn process_file(
                         eprintln!("[extractor] failed to store identity '{}': {e}", em.title);
                     } else {
                         stored += 1;
-                        events::emit(&event_tx, "identity_updated", serde_json::json!({
-                            "id": facet.id,
-                            "facet": facet.facet,
-                            "agent": facet.agent,
-                            "source": "extracted",
-                        }));
+                        events::emit(
+                            &event_tx,
+                            "identity_updated",
+                            serde_json::json!({
+                                "id": facet.id,
+                                "facet": facet.facet,
+                                "agent": facet.agent,
+                                "source": "extracted",
+                            }),
+                        );
                     }
                     continue; // Don't also store as memory
                 }
@@ -608,11 +687,19 @@ async fn process_file(
                 // Only create edge AFTER successful memory store (below)
                 if let Some(ref motivation) = em.motivated_by {
                     let project_scope = memory.project.as_deref();
-                    if let Ok(results) = ops::recall_bm25_project(&locked.conn, motivation, project_scope, 1) {
+                    if let Ok(results) =
+                        ops::recall_bm25_project(&locked.conn, motivation, project_scope, 1)
+                    {
                         if let Some(match_result) = results.first() {
                             // Only link if match score is strong enough (prevent weak false links)
                             if match_result.score.abs() > 0.001 {
-                                if let Err(e) = ops::store_edge(&locked.conn, &memory.id, &match_result.id, "motivated_by", "{}") {
+                                if let Err(e) = ops::store_edge(
+                                    &locked.conn,
+                                    &memory.id,
+                                    &match_result.id,
+                                    "motivated_by",
+                                    "{}",
+                                ) {
                                     eprintln!("[extractor] failed to store motivated_by edge: {e}");
                                 }
                             }
@@ -624,7 +711,9 @@ async fn process_file(
                 // of the same type, then compute word overlap to skip near-dupes.
                 {
                     let mt_str = em.memory_type.as_str();
-                    if let Ok(candidates) = ops::find_similar_by_title(&locked.conn, &em.title, mt_str, 10) {
+                    if let Ok(candidates) =
+                        ops::find_similar_by_title(&locked.conn, &em.title, mt_str, 10)
+                    {
                         let new_words = ops::meaningful_words_pub(&em.title);
                         if !new_words.is_empty() {
                             let mut skip = false;
@@ -658,12 +747,16 @@ async fn process_file(
                     stored += 1;
 
                     // Emit extraction event for subscribers
-                    events::emit(&event_tx, "extraction", serde_json::json!({
-                        "memory_id": memory.id,
-                        "title": memory.title,
-                        "memory_type": format!("{:?}", memory.memory_type),
-                        "project": memory.project,
-                    }));
+                    events::emit(
+                        &event_tx,
+                        "extraction",
+                        serde_json::json!({
+                            "memory_id": memory.id,
+                            "title": memory.title,
+                            "memory_type": format!("{:?}", memory.memory_type),
+                            "project": memory.project,
+                        }),
+                    );
 
                     // Wire affects field to graph edges (SQL edge table)
                     if !em.affects.is_empty() {
@@ -691,11 +784,17 @@ async fn process_file(
             Ok(())
         }
         ExtractionResult::Unavailable(reason) => {
-            eprintln!("[extractor] backend unavailable: {reason} ({}ms)", total_start.elapsed().as_millis());
+            eprintln!(
+                "[extractor] backend unavailable: {reason} ({}ms)",
+                total_start.elapsed().as_millis()
+            );
             Ok(())
         }
         ExtractionResult::Error(err) => {
-            eprintln!("[extractor] extraction error: {err} ({}ms)", total_start.elapsed().as_millis());
+            eprintln!(
+                "[extractor] extraction error: {err} ({}ms)",
+                total_start.elapsed().as_millis()
+            );
             Ok(())
         }
     }
@@ -712,7 +811,10 @@ mod tests {
         });
         assert_eq!(event["status"], "working");
         assert_eq!(event["agent"], "claude-code");
-        assert!(event["transcript"].as_str().unwrap().contains("session.jsonl"));
+        assert!(event["transcript"]
+            .as_str()
+            .unwrap()
+            .contains("session.jsonl"));
     }
 
     #[test]
@@ -826,7 +928,8 @@ mod tests {
     #[test]
     fn test_skill_quality_gate_accepts_good_skill() {
         let title = "Deploy Rust Service";
-        let content = "1) cargo build --release 2) scp binary to server 3) systemctl restart forge-daemon";
+        let content =
+            "1) cargo build --release 2) scp binary to server 3) systemctl restart forge-daemon";
 
         let has_steps = content.contains("1)")
             || content.contains("1.")
@@ -872,11 +975,16 @@ mod tests {
             || content.lines().count() >= 3
             || (content.matches('.').count() >= 2 && {
                 let lower = content.to_lowercase();
-                lower.contains("first") || lower.contains("then")
-                    || lower.contains("next") || lower.contains("after")
+                lower.contains("first")
+                    || lower.contains("then")
+                    || lower.contains("next")
+                    || lower.contains("after")
                     || lower.contains("finally")
             });
-        assert!(has_steps, "paragraph-style procedure should pass quality gate");
+        assert!(
+            has_steps,
+            "paragraph-style procedure should pass quality gate"
+        );
     }
 
     #[test]
@@ -895,22 +1003,35 @@ mod tests {
         // Case 1: first time seeing this file (raw_last_offset = 0)
         let raw_last_offset = 0usize;
         let last_offset = raw_last_offset.saturating_sub(content_file_offset);
-        assert_eq!(last_offset, 0, "first time: should start at beginning of tail content");
+        assert_eq!(
+            last_offset, 0,
+            "first time: should start at beginning of tail content"
+        );
 
         // Case 2: previously processed up to byte 115_000_000 (within our tail window)
         let raw_last_offset = 115_000_000usize;
         let last_offset = raw_last_offset.saturating_sub(content_file_offset);
-        assert_eq!(last_offset, 115_000_000 - 110_000_042, "should resume within tail");
+        assert_eq!(
+            last_offset,
+            115_000_000 - 110_000_042,
+            "should resume within tail"
+        );
 
         // Case 3: after parse, new_offset is relative to tail content
         let new_relative_offset = 5_000_000usize;
         let stored_offset = content_file_offset + new_relative_offset;
-        assert_eq!(stored_offset, 115_000_042, "stored offset should be in full-file coordinates");
+        assert_eq!(
+            stored_offset, 115_000_042,
+            "stored offset should be in full-file coordinates"
+        );
 
         // Case 4: next cycle, raw_last_offset = stored_offset from case 3
         let raw_last_offset = stored_offset;
         let last_offset = raw_last_offset.saturating_sub(content_file_offset);
-        assert_eq!(last_offset, new_relative_offset, "should resume from where we left off");
+        assert_eq!(
+            last_offset, new_relative_offset,
+            "should resume from where we left off"
+        );
     }
 
     #[test]
@@ -920,7 +1041,11 @@ mod tests {
 
         // Case 1: Normal ASCII — no continuation bytes after newline
         let buf = b"partial line\nfull line here\n";
-        let nl = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+        let nl = buf
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
         let mut start = nl;
         while start < buf.len() && (buf[start] & 0xC0) == 0x80 {
             start += 1;

@@ -44,16 +44,11 @@ pub async fn extract(endpoint: &str, model: &str, conversation_text: &str) -> Ex
             let json: serde_json::Value = match r.json().await {
                 Ok(v) => v,
                 Err(e) => {
-                    return ExtractionResult::Error(format!(
-                        "failed to parse ollama response: {e}"
-                    ))
+                    return ExtractionResult::Error(format!("failed to parse ollama response: {e}"))
                 }
             };
 
-            let response_text = json
-                .get("response")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let response_text = json.get("response").and_then(|v| v.as_str()).unwrap_or("");
 
             let memories = prompt::parse_extraction_output(response_text);
             ExtractionResult::Success(memories)
@@ -62,11 +57,7 @@ pub async fn extract(endpoint: &str, model: &str, conversation_text: &str) -> Ex
 }
 
 /// Generate embeddings via Ollama's `/api/embed` endpoint.
-pub async fn embed(
-    endpoint: &str,
-    model: &str,
-    texts: &[String],
-) -> Result<Vec<Vec<f32>>, String> {
+pub async fn embed(endpoint: &str, model: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
     let client = reqwest::Client::new();
     let url = format!("{endpoint}/api/embed");
 

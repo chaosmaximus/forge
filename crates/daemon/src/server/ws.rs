@@ -96,7 +96,8 @@ pub async fn terminal_ws_handler(
                     "error": "rate limited",
                     "retry_after_secs": retry_after
                 })),
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
@@ -122,7 +123,8 @@ pub async fn terminal_ws_handler(
                         return (
                             axum::http::StatusCode::UNAUTHORIZED,
                             axum::Json(serde_json::json!({"error": "invalid or expired token"})),
-                        ).into_response();
+                        )
+                            .into_response();
                     }
                 }
             }
@@ -132,7 +134,8 @@ pub async fn terminal_ws_handler(
                 return (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     axum::Json(serde_json::json!({"error": "server auth misconfiguration"})),
-                ).into_response();
+                )
+                    .into_response();
             }
         }
     }
@@ -150,7 +153,8 @@ pub async fn terminal_ws_handler(
             return (
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
                 axum::Json(serde_json::json!({"error": "maximum terminal sessions reached"})),
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
@@ -219,9 +223,7 @@ async fn handle_terminal_socket(
             Err(e) => {
                 tracing::error!("failed to create PTY: {e}");
                 let _ = ws_tx
-                    .send(Message::Text(
-                        serde_json::json!({"error": e}).to_string(),
-                    ))
+                    .send(Message::Text(serde_json::json!({"error": e}).to_string()))
                     .await;
                 let _ = ws_tx.close().await;
                 return;
@@ -238,9 +240,7 @@ async fn handle_terminal_socket(
 
     // Send session ID as first message.
     if ws_tx
-        .send(Message::Text(
-            serde_json::json!({"id": pty_id}).to_string(),
-        ))
+        .send(Message::Text(serde_json::json!({"id": pty_id}).to_string()))
         .await
         .is_err()
     {
@@ -267,9 +267,7 @@ async fn handle_terminal_socket(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         // PTY reader thread ended — shell exited.
                         let _ = ws_tx_clone
-                            .send(Message::Text(
-                                serde_json::json!({"exit": true}).to_string(),
-                            ))
+                            .send(Message::Text(serde_json::json!({"exit": true}).to_string()))
                             .await;
                         break;
                     }

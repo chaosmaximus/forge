@@ -174,7 +174,10 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "run_watcher with empty configs should return immediately");
+        assert!(
+            result.is_ok(),
+            "run_watcher with empty configs should return immediately"
+        );
     }
 
     #[tokio::test]
@@ -184,9 +187,10 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         // Use a non-existent directory so the watcher has nothing to watch initially
-        let configs: Vec<WatchConfig> = vec![
-            (PathBuf::from("/tmp/nonexistent_forge_test_dir_12345"), "jsonl".to_string()),
-        ];
+        let configs: Vec<WatchConfig> = vec![(
+            PathBuf::from("/tmp/nonexistent_forge_test_dir_12345"),
+            "jsonl".to_string(),
+        )];
 
         let handle = tokio::spawn(async move {
             run_watcher(tx, configs, shutdown_rx).await;

@@ -11,13 +11,13 @@ pub mod socket;
 pub mod static_files;
 pub mod tier;
 pub mod tls;
-pub mod ws;
 pub mod writer;
+pub mod ws;
 
-pub use handler::{DaemonState, handle_request};
 pub use grpc::run_grpc_server;
+pub use handler::{handle_request, DaemonState};
 pub use http::run_http_server_with_listener;
-pub use socket::run_server;
 #[cfg(unix)]
 pub use socket::is_daemon_alive;
+pub use socket::run_server;
 pub use writer::{AuditContext, WriteCommand, WriterActor};

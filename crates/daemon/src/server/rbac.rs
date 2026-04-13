@@ -35,13 +35,20 @@ impl Role {
 /// - If the user's email is in `admin_emails`, they get Admin.
 /// - If the user's email is in `viewer_emails`, they get Viewer (read-only).
 /// - Otherwise, authenticated users default to Member.
-pub fn resolve_role(claims: &AuthClaims, admin_emails: &[String], viewer_emails: &[String]) -> Role {
+pub fn resolve_role(
+    claims: &AuthClaims,
+    admin_emails: &[String],
+    viewer_emails: &[String],
+) -> Role {
     if let Some(ref email) = claims.email {
         let email_lower = email.to_lowercase();
         if admin_emails.iter().any(|e| e.to_lowercase() == email_lower) {
             return Role::Admin;
         }
-        if viewer_emails.iter().any(|e| e.to_lowercase() == email_lower) {
+        if viewer_emails
+            .iter()
+            .any(|e| e.to_lowercase() == email_lower)
+        {
             return Role::Viewer;
         }
     }
@@ -120,10 +127,7 @@ mod tests {
     #[test]
     fn test_resolve_role_admin_multiple_emails() {
         let claims = make_claims(Some("boss@co.com"));
-        let admin_emails = vec![
-            "admin@example.com".to_string(),
-            "boss@co.com".to_string(),
-        ];
+        let admin_emails = vec!["admin@example.com".to_string(), "boss@co.com".to_string()];
         assert_eq!(resolve_role(&claims, &admin_emails, &[]), Role::Admin);
     }
 
@@ -153,7 +157,10 @@ mod tests {
         let claims = make_claims(Some("readonly@example.com"));
         let admin_emails: Vec<String> = vec![];
         let viewer_emails = vec!["readonly@example.com".to_string()];
-        assert_eq!(resolve_role(&claims, &admin_emails, &viewer_emails), Role::Viewer);
+        assert_eq!(
+            resolve_role(&claims, &admin_emails, &viewer_emails),
+            Role::Viewer
+        );
     }
 
     #[test]
@@ -162,7 +169,10 @@ mod tests {
         let admin_emails = vec!["admin@example.com".to_string()];
         let viewer_emails = vec!["admin@example.com".to_string()];
         // Admin wins when email is in both lists
-        assert_eq!(resolve_role(&claims, &admin_emails, &viewer_emails), Role::Admin);
+        assert_eq!(
+            resolve_role(&claims, &admin_emails, &viewer_emails),
+            Role::Admin
+        );
     }
 
     // ── Admin permission tests ──
@@ -180,7 +190,7 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             }
         )
         .is_ok());
@@ -194,7 +204,11 @@ mod tests {
         .is_ok());
         assert!(check_permission(
             &Role::Admin,
-            &Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false }
+            &Request::CleanupSessions {
+                prefix: None,
+                older_than_secs: None,
+                prune_ended: false
+            }
         )
         .is_ok());
     }
@@ -233,13 +247,11 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             },
         );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("insufficient permissions"));
+        assert!(result.unwrap_err().contains("insufficient permissions"));
     }
 
     #[test]
@@ -255,7 +267,11 @@ mod tests {
         .is_err());
         assert!(check_permission(
             &Role::Viewer,
-            &Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false }
+            &Request::CleanupSessions {
+                prefix: None,
+                older_than_secs: None,
+                prune_ended: false
+            }
         )
         .is_err());
     }
@@ -291,15 +307,11 @@ mod tests {
                 confidence: None,
                 tags: None,
                 project: None,
-            metadata: None,
+                metadata: None,
             }
         )
         .is_ok());
-        assert!(check_permission(
-            &Role::Member,
-            &Request::Forget { id: "x".into() }
-        )
-        .is_ok());
+        assert!(check_permission(&Role::Member, &Request::Forget { id: "x".into() }).is_ok());
         assert!(check_permission(
             &Role::Member,
             &Request::RegisterSession {
@@ -318,9 +330,7 @@ mod tests {
     fn test_member_blocked_from_shutdown() {
         let result = check_permission(&Role::Member, &Request::Shutdown);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("insufficient permissions"));
+        assert!(result.unwrap_err().contains("insufficient permissions"));
     }
 
     #[test]
@@ -366,8 +376,14 @@ mod tests {
 
     #[test]
     fn test_member_blocked_from_cleanup_sessions() {
-        let result =
-            check_permission(&Role::Member, &Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false });
+        let result = check_permission(
+            &Role::Member,
+            &Request::CleanupSessions {
+                prefix: None,
+                older_than_secs: None,
+                prune_ended: false,
+            },
+        );
         assert!(result.is_err());
     }
 
@@ -404,7 +420,11 @@ mod tests {
                 scope_id: "default".into(),
                 key: "k".into(),
             },
-            Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false },
+            Request::CleanupSessions {
+                prefix: None,
+                older_than_secs: None,
+                prune_ended: false,
+            },
         ];
 
         for op in &admin_ops {
@@ -446,10 +466,7 @@ mod tests {
 
         for op in &admin_ops {
             let result = check_permission(&Role::Member, op);
-            assert!(
-                result.is_err(),
-                "Member should be blocked from {op:?}"
-            );
+            assert!(result.is_err(), "Member should be blocked from {op:?}");
             assert!(
                 result.unwrap_err().contains("insufficient permissions"),
                 "Error message should indicate insufficient permissions"
@@ -479,7 +496,11 @@ mod tests {
                 scope_id: "default".into(),
                 key: "k".into(),
             },
-            Request::CleanupSessions { prefix: None, older_than_secs: None, prune_ended: false },
+            Request::CleanupSessions {
+                prefix: None,
+                older_than_secs: None,
+                prune_ended: false,
+            },
         ];
 
         for op in &admin_ops {
@@ -496,7 +517,11 @@ mod tests {
         let claims = make_claims(Some("Admin@Example.COM"));
         let admin_emails = vec!["admin@example.com".to_string()];
         let role = resolve_role(&claims, &admin_emails, &[]);
-        assert_eq!(role, Role::Admin, "Email comparison must be case-insensitive");
+        assert_eq!(
+            role,
+            Role::Admin,
+            "Email comparison must be case-insensitive"
+        );
     }
 
     #[test]
@@ -504,7 +529,11 @@ mod tests {
         let claims = make_claims(Some("Viewer@EXAMPLE.com"));
         let viewer_emails = vec!["viewer@example.com".to_string()];
         let role = resolve_role(&claims, &[], &viewer_emails);
-        assert_eq!(role, Role::Viewer, "Viewer email comparison must be case-insensitive");
+        assert_eq!(
+            role,
+            Role::Viewer,
+            "Viewer email comparison must be case-insensitive"
+        );
     }
 
     /// Edge case: Viewer blocked from Forget (a write operation).
@@ -512,7 +541,9 @@ mod tests {
     fn test_viewer_blocked_from_forget() {
         let result = check_permission(
             &Role::Viewer,
-            &Request::Forget { id: "mem-123".into() },
+            &Request::Forget {
+                id: "mem-123".into(),
+            },
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("insufficient permissions"));
@@ -540,7 +571,9 @@ mod tests {
     fn test_member_can_forget() {
         assert!(check_permission(
             &Role::Member,
-            &Request::Forget { id: "mem-123".into() }
+            &Request::Forget {
+                id: "mem-123".into()
+            }
         )
         .is_ok());
     }

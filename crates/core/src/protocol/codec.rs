@@ -6,9 +6,8 @@ use super::response::Response;
 /// Encode a Response to a JSON string.
 /// NEW-3: Returns a JSON error object on serialization failure instead of panicking.
 pub fn encode_response(response: &Response) -> String {
-    serde_json::to_string(response).unwrap_or_else(|e| {
-        format!(r#"{{"status":"error","message":"serialize error: {e}"}}"#)
-    })
+    serde_json::to_string(response)
+        .unwrap_or_else(|e| format!(r#"{{"status":"error","message":"serialize error: {e}"}}"#))
 }
 
 /// Decode a JSON line into a Request.
@@ -44,8 +43,8 @@ pub fn read_request<R: BufRead>(r: &mut R) -> Result<Option<Request>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::response::{Response, ResponseData};
     use crate::protocol::request::Request;
+    use crate::protocol::response::{Response, ResponseData};
     use crate::types::memory::MemoryType;
 
     #[test]
@@ -66,7 +65,14 @@ mod tests {
         assert_eq!(req, decoded);
 
         // Verify specific fields via destructuring
-        if let Request::Remember { title, confidence, project, tags, .. } = decoded {
+        if let Request::Remember {
+            title,
+            confidence,
+            project,
+            tags,
+            ..
+        } = decoded
+        {
             assert_eq!(title, "Use NDJSON");
             assert_eq!(confidence, Some(0.95));
             assert_eq!(project, Some("forge".to_string()));
@@ -93,7 +99,16 @@ mod tests {
 
         assert_eq!(resp, decoded);
 
-        if let Response::Ok { data: ResponseData::Health { decisions, lessons, edges, .. } } = decoded {
+        if let Response::Ok {
+            data:
+                ResponseData::Health {
+                    decisions,
+                    lessons,
+                    edges,
+                    ..
+                },
+        } = decoded
+        {
             assert_eq!(decisions, 10);
             assert_eq!(lessons, 5);
             assert_eq!(edges, 42);
@@ -105,7 +120,9 @@ mod tests {
     #[test]
     fn test_codec_write_read() {
         // Test write_response: write a Shutdown response to a buffer
-        let resp = Response::Ok { data: ResponseData::Shutdown };
+        let resp = Response::Ok {
+            data: ResponseData::Shutdown,
+        };
         let mut buf: Vec<u8> = Vec::new();
         write_response(&mut buf, &resp).expect("write_response");
 
@@ -120,7 +137,9 @@ mod tests {
         // Test read_request: decode a Health request from a string buffer
         let health_json = r#"{"method":"health"}"#;
         let mut cursor = std::io::Cursor::new(health_json.as_bytes());
-        let req = read_request(&mut cursor).expect("read_request ok").expect("Some");
+        let req = read_request(&mut cursor)
+            .expect("read_request ok")
+            .expect("Some");
         assert_eq!(req, Request::Health);
     }
 
@@ -129,10 +148,14 @@ mod tests {
         // This test verifies that Stored and Forgotten are distinguishable
         // after the fix from untagged to internally tagged ResponseData.
         let stored = Response::Ok {
-            data: ResponseData::Stored { id: "abc".to_string() },
+            data: ResponseData::Stored {
+                id: "abc".to_string(),
+            },
         };
         let forgotten = Response::Ok {
-            data: ResponseData::Forgotten { id: "abc".to_string() },
+            data: ResponseData::Forgotten {
+                id: "abc".to_string(),
+            },
         };
 
         let stored_json = encode_response(&stored);

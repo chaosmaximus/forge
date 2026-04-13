@@ -33,7 +33,12 @@ pub fn check_action(conn: &Connection, file: &str, action: &str) -> GuardrailRes
 }
 
 /// Check action with optional organization_id filtering (multi-tenant isolation).
-pub fn check_action_with_org(conn: &Connection, file: &str, action: &str, _org_id: Option<&str>) -> GuardrailResult {
+pub fn check_action_with_org(
+    conn: &Connection,
+    file: &str,
+    action: &str,
+    _org_id: Option<&str>,
+) -> GuardrailResult {
     let file_target = format!("file:{file}");
 
     // Check 1: Linked decisions (existing)
@@ -135,7 +140,8 @@ pub fn post_edit_check(conn: &Connection, file: &str) -> PostEditResult {
 
     // Query cached diagnostics from the diagnostic table
     let cached = crate::db::diagnostics::get_diagnostics(conn, file).unwrap_or_default();
-    let cached_diagnostics: Vec<String> = cached.iter()
+    let cached_diagnostics: Vec<String> = cached
+        .iter()
         .map(|d| format!("[{}:{}] {}", d.source, d.severity, d.message))
         .collect();
 
@@ -208,9 +214,7 @@ fn count_callers(conn: &Connection, file: &str) -> (usize, Vec<String>) {
         Err(_) => return (0, vec![]),
     };
 
-    let rows = match stmt.query_map(params![like_pattern], |row| {
-        row.get::<_, String>(0)
-    }) {
+    let rows = match stmt.query_map(params![like_pattern], |row| row.get::<_, String>(0)) {
         Ok(r) => r,
         Err(_) => return (0, vec![]),
     };
@@ -235,9 +239,7 @@ fn find_relevant_lessons(conn: &Connection, file_target: &str) -> Vec<String> {
         Err(_) => return vec![],
     };
 
-    let rows = match stmt.query_map(params![file_target], |row| {
-        row.get::<_, String>(0)
-    }) {
+    let rows = match stmt.query_map(params![file_target], |row| row.get::<_, String>(0)) {
         Ok(r) => r,
         Err(_) => return vec![],
     };
@@ -259,9 +261,7 @@ fn find_dangerous_patterns(conn: &Connection) -> Vec<String> {
         Err(_) => return vec![],
     };
 
-    let rows = match stmt.query_map([], |row| {
-        row.get::<_, String>(0)
-    }) {
+    let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
         Ok(r) => r,
         Err(_) => return vec![],
     };
@@ -289,9 +289,15 @@ pub fn pre_bash_check(conn: &Connection, command: &str) -> PreBashResult {
 
     // Check 1: Destructive command patterns
     let destructive_patterns: &[(&str, &str)] = &[
-        ("rm -rf", "Recursive force delete -- verify path before running"),
+        (
+            "rm -rf",
+            "Recursive force delete -- verify path before running",
+        ),
         ("git reset --hard", "Discards all uncommitted changes"),
-        ("git push --force", "Force push can overwrite remote history"),
+        (
+            "git push --force",
+            "Force push can overwrite remote history",
+        ),
         ("git push -f", "Force push can overwrite remote history"),
         ("drop table", "SQL table deletion -- irreversible"),
         ("drop database", "SQL database deletion -- irreversible"),
@@ -454,7 +460,9 @@ fn find_applicable_skills(conn: &Connection, file: &str) -> Vec<String> {
     }
 
     // Add parent directory components (skip the filename itself and common dirs like "src")
-    let skip_dirs = ["src", "lib", "test", "tests", "spec", "pkg", "cmd", "internal"];
+    let skip_dirs = [
+        "src", "lib", "test", "tests", "spec", "pkg", "cmd", "internal",
+    ];
     for segment in file.split('/').rev().skip(1) {
         if !segment.is_empty() && !skip_dirs.contains(&segment) {
             search_terms.push(segment.to_string());
@@ -489,10 +497,7 @@ fn find_applicable_skills(conn: &Connection, file: &str) -> Vec<String> {
         Err(_) => return vec![],
     };
 
-    let like_params: Vec<String> = search_terms
-        .iter()
-        .map(|t| format!("%{t}%"))
-        .collect();
+    let like_params: Vec<String> = search_terms.iter().map(|t| format!("%{t}%")).collect();
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = like_params
         .iter()
@@ -500,10 +505,7 @@ fn find_applicable_skills(conn: &Connection, file: &str) -> Vec<String> {
         .collect();
 
     let rows = match stmt.query_map(param_refs.as_slice(), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     }) {
         Ok(r) => r,
         Err(_) => return vec![],
@@ -517,8 +519,8 @@ fn find_applicable_skills(conn: &Connection, file: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::ops::{forget, remember, store_edge, store_symbol};
     use crate::db::manas::store_skill;
+    use crate::db::ops::{forget, remember, store_edge, store_symbol};
     use crate::db::schema::create_schema;
     use forge_core::types::code::CodeSymbol;
     use forge_core::types::manas::Skill;
@@ -537,7 +539,11 @@ mod tests {
     fn test_guardrail_no_decisions() {
         let conn = setup();
 
-        let mem = Memory::new(MemoryType::Decision, "Use JWT for auth", "We chose JWT tokens");
+        let mem = Memory::new(
+            MemoryType::Decision,
+            "Use JWT for auth",
+            "We chose JWT tokens",
+        );
         remember(&conn, &mem).unwrap();
 
         let result = check_action(&conn, "src/auth.rs", "modify");
@@ -551,7 +557,11 @@ mod tests {
     fn test_guardrail_with_decisions() {
         let conn = setup();
 
-        let mem1 = Memory::new(MemoryType::Decision, "Use JWT for auth", "We chose JWT tokens");
+        let mem1 = Memory::new(
+            MemoryType::Decision,
+            "Use JWT for auth",
+            "We chose JWT tokens",
+        );
         remember(&conn, &mem1).unwrap();
         store_edge(&conn, &mem1.id, "file:src/auth.rs", "affects", "{}").unwrap();
 
@@ -574,7 +584,11 @@ mod tests {
     fn test_guardrail_superseded_decision_excluded() {
         let conn = setup();
 
-        let mem = Memory::new(MemoryType::Decision, "Old auth approach", "Deprecated approach");
+        let mem = Memory::new(
+            MemoryType::Decision,
+            "Old auth approach",
+            "Deprecated approach",
+        );
         remember(&conn, &mem).unwrap();
         store_edge(&conn, &mem.id, "file:src/auth.rs", "affects", "{}").unwrap();
         forget(&conn, &mem.id).unwrap();
@@ -587,7 +601,11 @@ mod tests {
     fn test_guardrail_different_files_independent() {
         let conn = setup();
 
-        let mem = Memory::new(MemoryType::Decision, "Use JWT for auth", "We chose JWT tokens");
+        let mem = Memory::new(
+            MemoryType::Decision,
+            "Use JWT for auth",
+            "We chose JWT tokens",
+        );
         remember(&conn, &mem).unwrap();
         store_edge(&conn, &mem.id, "file:src/auth.rs", "affects", "{}").unwrap();
 
@@ -606,9 +624,15 @@ mod tests {
         store_edge(&conn, &lesson.id, "file:src/auth.rs", "affects", "{}").unwrap();
 
         let result = check_action(&conn, "src/auth.rs", "edit");
-        assert!(result.safe, "lessons should not trigger guardrails, only decisions");
+        assert!(
+            result.safe,
+            "lessons should not trigger guardrails, only decisions"
+        );
         // But the lesson should be surfaced
-        assert!(!result.relevant_lessons.is_empty(), "lesson should be surfaced in relevant_lessons");
+        assert!(
+            !result.relevant_lessons.is_empty(),
+            "lesson should be surfaced in relevant_lessons"
+        );
     }
 
     // ── New tests for Check 2: Blast Radius ──
@@ -618,33 +642,51 @@ mod tests {
         let conn = setup();
 
         // Store a symbol in src/auth.rs
-        store_symbol(&conn, &CodeSymbol {
-            id: "sym:auth:validate".into(),
-            name: "validate_token".into(),
-            kind: "function".into(),
-            file_path: "src/auth.rs".into(),
-            line_start: 10,
-            line_end: Some(20),
-            signature: Some("fn validate_token()".into()),
-        }).unwrap();
+        store_symbol(
+            &conn,
+            &CodeSymbol {
+                id: "sym:auth:validate".into(),
+                name: "validate_token".into(),
+                kind: "function".into(),
+                file_path: "src/auth.rs".into(),
+                line_start: 10,
+                line_end: Some(20),
+                signature: Some("fn validate_token()".into()),
+            },
+        )
+        .unwrap();
 
         // Store a caller symbol in a different file
-        store_symbol(&conn, &CodeSymbol {
-            id: "sym:routes:handler".into(),
-            name: "handle_request".into(),
-            kind: "function".into(),
-            file_path: "src/routes.rs".into(),
-            line_start: 5,
-            line_end: Some(15),
-            signature: Some("fn handle_request()".into()),
-        }).unwrap();
+        store_symbol(
+            &conn,
+            &CodeSymbol {
+                id: "sym:routes:handler".into(),
+                name: "handle_request".into(),
+                kind: "function".into(),
+                file_path: "src/routes.rs".into(),
+                line_start: 5,
+                line_end: Some(15),
+                signature: Some("fn handle_request()".into()),
+            },
+        )
+        .unwrap();
 
         // Store a "calls" edge from routes to auth
-        store_edge(&conn, "sym:routes:handler", "sym:auth:validate", "calls", "{}").unwrap();
+        store_edge(
+            &conn,
+            "sym:routes:handler",
+            "sym:auth:validate",
+            "calls",
+            "{}",
+        )
+        .unwrap();
 
         let result = check_action(&conn, "src/auth.rs", "edit");
         assert!(result.callers_count > 0, "should detect callers");
-        assert!(!result.calling_files.is_empty(), "should list calling files");
+        assert!(
+            !result.calling_files.is_empty(),
+            "should list calling files"
+        );
         assert!(result.calling_files.contains(&"src/routes.rs".to_string()));
         assert!(result.warnings.iter().any(|w| w.contains("Blast radius")));
     }
@@ -654,31 +696,42 @@ mod tests {
         let conn = setup();
 
         // Two symbols in the same file
-        store_symbol(&conn, &CodeSymbol {
-            id: "sym:auth:validate".into(),
-            name: "validate_token".into(),
-            kind: "function".into(),
-            file_path: "src/auth.rs".into(),
-            line_start: 10,
-            line_end: Some(20),
-            signature: None,
-        }).unwrap();
+        store_symbol(
+            &conn,
+            &CodeSymbol {
+                id: "sym:auth:validate".into(),
+                name: "validate_token".into(),
+                kind: "function".into(),
+                file_path: "src/auth.rs".into(),
+                line_start: 10,
+                line_end: Some(20),
+                signature: None,
+            },
+        )
+        .unwrap();
 
-        store_symbol(&conn, &CodeSymbol {
-            id: "sym:auth:helper".into(),
-            name: "auth_helper".into(),
-            kind: "function".into(),
-            file_path: "src/auth.rs".into(),
-            line_start: 25,
-            line_end: Some(35),
-            signature: None,
-        }).unwrap();
+        store_symbol(
+            &conn,
+            &CodeSymbol {
+                id: "sym:auth:helper".into(),
+                name: "auth_helper".into(),
+                kind: "function".into(),
+                file_path: "src/auth.rs".into(),
+                line_start: 25,
+                line_end: Some(35),
+                signature: None,
+            },
+        )
+        .unwrap();
 
         // Call edge within the same file — should NOT count
         store_edge(&conn, "sym:auth:helper", "sym:auth:validate", "calls", "{}").unwrap();
 
         let result = check_action(&conn, "src/auth.rs", "edit");
-        assert_eq!(result.callers_count, 0, "same-file callers should not count");
+        assert_eq!(
+            result.callers_count, 0,
+            "same-file callers should not count"
+        );
         assert!(result.calling_files.is_empty());
     }
 
@@ -687,29 +740,37 @@ mod tests {
         let conn = setup();
 
         // Target symbol
-        store_symbol(&conn, &CodeSymbol {
-            id: "sym:core:process".into(),
-            name: "process".into(),
-            kind: "function".into(),
-            file_path: "src/core.rs".into(),
-            line_start: 1,
-            line_end: Some(10),
-            signature: None,
-        }).unwrap();
+        store_symbol(
+            &conn,
+            &CodeSymbol {
+                id: "sym:core:process".into(),
+                name: "process".into(),
+                kind: "function".into(),
+                file_path: "src/core.rs".into(),
+                line_start: 1,
+                line_end: Some(10),
+                signature: None,
+            },
+        )
+        .unwrap();
 
         // Create 6 callers from different files => HIGH severity
         for i in 0..6 {
             let caller_id = format!("sym:caller{i}:fn");
             let caller_file = format!("src/caller{i}.rs");
-            store_symbol(&conn, &CodeSymbol {
-                id: caller_id.clone(),
-                name: format!("caller_{i}"),
-                kind: "function".into(),
-                file_path: caller_file,
-                line_start: 1,
-                line_end: Some(5),
-                signature: None,
-            }).unwrap();
+            store_symbol(
+                &conn,
+                &CodeSymbol {
+                    id: caller_id.clone(),
+                    name: format!("caller_{i}"),
+                    kind: "function".into(),
+                    file_path: caller_file,
+                    line_start: 1,
+                    line_end: Some(5),
+                    signature: None,
+                },
+            )
+            .unwrap();
             store_edge(&conn, &caller_id, "sym:core:process", "calls", "{}").unwrap();
         }
 
@@ -724,14 +785,24 @@ mod tests {
     fn test_relevant_lessons_surfaced() {
         let conn = setup();
 
-        let lesson = Memory::new(MemoryType::Lesson, "Always test auth changes", "Auth is critical");
+        let lesson = Memory::new(
+            MemoryType::Lesson,
+            "Always test auth changes",
+            "Auth is critical",
+        );
         remember(&conn, &lesson).unwrap();
         store_edge(&conn, &lesson.id, "file:src/auth.rs", "affects", "{}").unwrap();
 
         let result = check_action(&conn, "src/auth.rs", "edit");
-        assert!(!result.relevant_lessons.is_empty(), "should surface relevant lesson");
+        assert!(
+            !result.relevant_lessons.is_empty(),
+            "should surface relevant lesson"
+        );
         assert!(result.relevant_lessons[0].contains("Always test auth"));
-        assert!(result.warnings.iter().any(|w| w.contains("Lesson: Always test auth")));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("Lesson: Always test auth")));
         // Lessons alone don't make it unsafe
         assert!(result.safe);
     }
@@ -740,12 +811,19 @@ mod tests {
     fn test_relevant_patterns_surfaced() {
         let conn = setup();
 
-        let pattern = Memory::new(MemoryType::Pattern, "Auth middleware pattern", "Check token first");
+        let pattern = Memory::new(
+            MemoryType::Pattern,
+            "Auth middleware pattern",
+            "Check token first",
+        );
         remember(&conn, &pattern).unwrap();
         store_edge(&conn, &pattern.id, "file:src/auth.rs", "affects", "{}").unwrap();
 
         let result = check_action(&conn, "src/auth.rs", "edit");
-        assert!(!result.relevant_lessons.is_empty(), "patterns should also surface as lessons");
+        assert!(
+            !result.relevant_lessons.is_empty(),
+            "patterns should also surface as lessons"
+        );
         assert!(result.relevant_lessons[0].contains("Auth middleware pattern"));
     }
 
@@ -753,16 +831,29 @@ mod tests {
     fn test_dangerous_patterns_flagged() {
         let conn = setup();
 
-        let danger = Memory::new(MemoryType::Lesson, "send_raw bypasses type safety", "Use typed Request")
-            .with_valence("negative", 0.9);
+        let danger = Memory::new(
+            MemoryType::Lesson,
+            "send_raw bypasses type safety",
+            "Use typed Request",
+        )
+        .with_valence("negative", 0.9);
         remember(&conn, &danger).unwrap();
 
         let result = check_action(&conn, "src/any_file.rs", "edit");
-        assert!(!result.dangerous_patterns.is_empty(), "should flag dangerous pattern");
+        assert!(
+            !result.dangerous_patterns.is_empty(),
+            "should flag dangerous pattern"
+        );
         assert!(result.dangerous_patterns[0].contains("send_raw"));
         // Dangerous patterns are advisory, not safety gates (Codex fix)
-        assert!(result.safe, "dangerous patterns alone should NOT flip safe — only decisions do");
-        assert!(result.warnings.iter().any(|w| w.contains("Dangerous pattern")));
+        assert!(
+            result.safe,
+            "dangerous patterns alone should NOT flip safe — only decisions do"
+        );
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("Dangerous pattern")));
     }
 
     #[test]
@@ -775,7 +866,10 @@ mod tests {
         remember(&conn, &mild).unwrap();
 
         let result = check_action(&conn, "src/any_file.rs", "edit");
-        assert!(result.dangerous_patterns.is_empty(), "low intensity should not be flagged");
+        assert!(
+            result.dangerous_patterns.is_empty(),
+            "low intensity should not be flagged"
+        );
         assert!(result.safe);
     }
 
@@ -789,7 +883,10 @@ mod tests {
         forget(&conn, &danger.id).unwrap(); // superseded
 
         let result = check_action(&conn, "src/any_file.rs", "edit");
-        assert!(result.dangerous_patterns.is_empty(), "superseded patterns should not be flagged");
+        assert!(
+            result.dangerous_patterns.is_empty(),
+            "superseded patterns should not be flagged"
+        );
         assert!(result.safe);
     }
 
@@ -819,7 +916,10 @@ mod tests {
         store_skill(&conn, &skill).unwrap();
 
         let result = check_action(&conn, "src/auth/middleware.rs", "edit");
-        assert!(!result.applicable_skills.is_empty(), "should find applicable skill");
+        assert!(
+            !result.applicable_skills.is_empty(),
+            "should find applicable skill"
+        );
         assert!(result.applicable_skills[0].contains("Auth update workflow"));
         assert!(result.applicable_skills[0].contains("auth"));
     }
@@ -848,7 +948,10 @@ mod tests {
         store_skill(&conn, &skill).unwrap();
 
         let result = check_action(&conn, "src/auth/middleware.rs", "edit");
-        assert!(result.applicable_skills.is_empty(), "skills with 0 success should be excluded");
+        assert!(
+            result.applicable_skills.is_empty(),
+            "skills with 0 success should be excluded"
+        );
     }
 
     // ── Clean file test ──
@@ -874,29 +977,44 @@ mod tests {
         let conn = setup();
 
         // Store a symbol in src/auth.rs
-        store_symbol(&conn, &CodeSymbol {
-            id: "sym:auth:validate".into(),
-            name: "validate_token".into(),
-            kind: "function".into(),
-            file_path: "src/auth.rs".into(),
-            line_start: 10,
-            line_end: Some(20),
-            signature: Some("fn validate_token()".into()),
-        }).unwrap();
+        store_symbol(
+            &conn,
+            &CodeSymbol {
+                id: "sym:auth:validate".into(),
+                name: "validate_token".into(),
+                kind: "function".into(),
+                file_path: "src/auth.rs".into(),
+                line_start: 10,
+                line_end: Some(20),
+                signature: Some("fn validate_token()".into()),
+            },
+        )
+        .unwrap();
 
         // Store a caller symbol in a different file
-        store_symbol(&conn, &CodeSymbol {
-            id: "sym:routes:handler".into(),
-            name: "handle_request".into(),
-            kind: "function".into(),
-            file_path: "src/routes.rs".into(),
-            line_start: 5,
-            line_end: Some(15),
-            signature: Some("fn handle_request()".into()),
-        }).unwrap();
+        store_symbol(
+            &conn,
+            &CodeSymbol {
+                id: "sym:routes:handler".into(),
+                name: "handle_request".into(),
+                kind: "function".into(),
+                file_path: "src/routes.rs".into(),
+                line_start: 5,
+                line_end: Some(15),
+                signature: Some("fn handle_request()".into()),
+            },
+        )
+        .unwrap();
 
         // "calls" edge from routes to auth
-        store_edge(&conn, "sym:routes:handler", "sym:auth:validate", "calls", "{}").unwrap();
+        store_edge(
+            &conn,
+            "sym:routes:handler",
+            "sym:auth:validate",
+            "calls",
+            "{}",
+        )
+        .unwrap();
 
         let result = post_edit_check(&conn, "src/auth.rs");
         assert_eq!(result.file, "src/auth.rs");
@@ -908,12 +1026,19 @@ mod tests {
     fn test_post_edit_check_surfaces_lessons() {
         let conn = setup();
 
-        let lesson = Memory::new(MemoryType::Lesson, "Always test auth changes", "Auth is critical");
+        let lesson = Memory::new(
+            MemoryType::Lesson,
+            "Always test auth changes",
+            "Auth is critical",
+        );
         remember(&conn, &lesson).unwrap();
         store_edge(&conn, &lesson.id, "file:src/auth.rs", "affects", "{}").unwrap();
 
         let result = post_edit_check(&conn, "src/auth.rs");
-        assert!(!result.relevant_lessons.is_empty(), "should surface relevant lesson");
+        assert!(
+            !result.relevant_lessons.is_empty(),
+            "should surface relevant lesson"
+        );
         assert!(result.relevant_lessons[0].contains("Always test auth"));
     }
 
@@ -921,12 +1046,19 @@ mod tests {
     fn test_post_edit_check_surfaces_dangerous_patterns() {
         let conn = setup();
 
-        let danger = Memory::new(MemoryType::Lesson, "send_raw bypasses type safety", "Use typed Request")
-            .with_valence("negative", 0.9);
+        let danger = Memory::new(
+            MemoryType::Lesson,
+            "send_raw bypasses type safety",
+            "Use typed Request",
+        )
+        .with_valence("negative", 0.9);
         remember(&conn, &danger).unwrap();
 
         let result = post_edit_check(&conn, "src/any_file.rs");
-        assert!(!result.dangerous_patterns.is_empty(), "should flag dangerous pattern");
+        assert!(
+            !result.dangerous_patterns.is_empty(),
+            "should flag dangerous pattern"
+        );
         assert!(result.dangerous_patterns[0].contains("send_raw"));
     }
 
@@ -934,12 +1066,19 @@ mod tests {
     fn test_post_edit_check_surfaces_decisions_to_review() {
         let conn = setup();
 
-        let decision = Memory::new(MemoryType::Decision, "Use JWT for auth", "JWT tokens chosen");
+        let decision = Memory::new(
+            MemoryType::Decision,
+            "Use JWT for auth",
+            "JWT tokens chosen",
+        );
         remember(&conn, &decision).unwrap();
         store_edge(&conn, &decision.id, "file:src/auth.rs", "affects", "{}").unwrap();
 
         let result = post_edit_check(&conn, "src/auth.rs");
-        assert!(!result.decisions_to_review.is_empty(), "should surface decisions for review");
+        assert!(
+            !result.decisions_to_review.is_empty(),
+            "should surface decisions for review"
+        );
         assert!(result.decisions_to_review[0].contains("Use JWT"));
     }
 
@@ -1002,8 +1141,12 @@ mod tests {
     fn test_pre_bash_surfaces_lessons() {
         let conn = setup();
 
-        let lesson = Memory::new(MemoryType::Lesson, "rm needs careful path check", "Deleted wrong dir once")
-            .with_valence("negative", 0.8);
+        let lesson = Memory::new(
+            MemoryType::Lesson,
+            "rm needs careful path check",
+            "Deleted wrong dir once",
+        )
+        .with_valence("negative", 0.8);
         remember(&conn, &lesson).unwrap();
 
         let result = pre_bash_check(&conn, "rm some-file.txt");
@@ -1051,7 +1194,11 @@ mod tests {
     fn test_post_bash_failure_surfaces_lessons() {
         let conn = setup();
 
-        let lesson = Memory::new(MemoryType::Lesson, "cargo test needs --workspace flag", "Found missing tests");
+        let lesson = Memory::new(
+            MemoryType::Lesson,
+            "cargo test needs --workspace flag",
+            "Found missing tests",
+        );
         remember(&conn, &lesson).unwrap();
 
         let result = post_bash_check(&conn, "cargo test", 1);
@@ -1115,24 +1262,32 @@ mod tests {
         remember(&conn, &danger).unwrap();
 
         // Symbol + caller
-        store_symbol(&conn, &CodeSymbol {
-            id: "sym:auth:check".into(),
-            name: "check".into(),
-            kind: "function".into(),
-            file_path: "src/auth.rs".into(),
-            line_start: 1,
-            line_end: Some(10),
-            signature: None,
-        }).unwrap();
-        store_symbol(&conn, &CodeSymbol {
-            id: "sym:routes:index".into(),
-            name: "index".into(),
-            kind: "function".into(),
-            file_path: "src/routes.rs".into(),
-            line_start: 1,
-            line_end: Some(10),
-            signature: None,
-        }).unwrap();
+        store_symbol(
+            &conn,
+            &CodeSymbol {
+                id: "sym:auth:check".into(),
+                name: "check".into(),
+                kind: "function".into(),
+                file_path: "src/auth.rs".into(),
+                line_start: 1,
+                line_end: Some(10),
+                signature: None,
+            },
+        )
+        .unwrap();
+        store_symbol(
+            &conn,
+            &CodeSymbol {
+                id: "sym:routes:index".into(),
+                name: "index".into(),
+                kind: "function".into(),
+                file_path: "src/routes.rs".into(),
+                line_start: 1,
+                line_end: Some(10),
+                signature: None,
+            },
+        )
+        .unwrap();
         store_edge(&conn, "sym:routes:index", "sym:auth:check", "calls", "{}").unwrap();
 
         // Skill

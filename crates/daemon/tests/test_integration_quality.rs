@@ -65,11 +65,7 @@ fn do_remember(
 }
 
 /// Recall memories through the handler and return the results.
-fn do_recall(
-    state: &mut DaemonState,
-    query: &str,
-    limit: Option<usize>,
-) -> Vec<MemoryResult> {
+fn do_recall(state: &mut DaemonState, query: &str, limit: Option<usize>) -> Vec<MemoryResult> {
     let resp = handle_request(
         state,
         Request::Recall {
@@ -357,9 +353,9 @@ fn test_recall_score_discrimination() {
         .take(2)
         .map(|r| r.memory.title.as_str())
         .collect();
-    let has_relevant_at_top = top_2_titles.iter().any(|t| {
-        t.contains("async runtime") || t.contains("Tokio runtime")
-    });
+    let has_relevant_at_top = top_2_titles
+        .iter()
+        .any(|t| t.contains("async runtime") || t.contains("Tokio runtime"));
     assert!(
         has_relevant_at_top,
         "expected a highly relevant memory in top 2, got titles: {top_2_titles:?}"
@@ -441,14 +437,9 @@ fn test_notification_ack_via_handler() {
         Response::Ok {
             data: ResponseData::NotificationAcked { id },
         } => {
-            assert_eq!(
-                id, notification_id,
-                "acked notification ID should match"
-            );
+            assert_eq!(id, notification_id, "acked notification ID should match");
         }
-        other => panic!(
-            "expected NotificationAcked, got: {other:?}"
-        ),
+        other => panic!("expected NotificationAcked, got: {other:?}"),
     }
 
     // Verify the DB state changed to 'acknowledged'.
@@ -474,10 +465,7 @@ fn test_notification_ack_via_handler() {
             |r| r.get(0),
         )
         .expect("query acknowledged_at");
-    assert!(
-        ack_at.is_some(),
-        "acknowledged_at should be set after ack"
-    );
+    assert!(ack_at.is_some(), "acknowledged_at should be set after ack");
 }
 
 // ===========================================================================
@@ -749,10 +737,7 @@ fn test_full_memory_lifecycle_quality() {
         "recalled memory score should be > 0.0, got {}",
         found.score
     );
-    assert_eq!(
-        found.memory.title,
-        "Use ULID for all primary keys in Forge"
-    );
+    assert_eq!(found.memory.title, "Use ULID for all primary keys in Forge");
 
     // Step 3: Forget the memory.
     let forget_resp = handle_request(
@@ -772,9 +757,7 @@ fn test_full_memory_lifecycle_quality() {
 
     // Step 4: Recall again — the forgotten memory should not appear.
     let results_after = do_recall(&mut state, "ULID primary keys", Some(5));
-    let still_found = results_after
-        .iter()
-        .any(|r| r.memory.id == memory_id);
+    let still_found = results_after.iter().any(|r| r.memory.id == memory_id);
     assert!(
         !still_found,
         "forgotten memory (id={}) should NOT appear in recall results. \
@@ -810,12 +793,17 @@ fn test_find_symbol_via_handler() {
     ops::store_symbol(&state.conn, &sym).unwrap();
 
     // Find by name
-    let resp = handle_request(&mut state, Request::FindSymbol {
-        name: "process_data".into(),
-        file: None,
-    });
+    let resp = handle_request(
+        &mut state,
+        Request::FindSymbol {
+            name: "process_data".into(),
+            file: None,
+        },
+    );
     match resp {
-        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+        Response::Ok {
+            data: ResponseData::SymbolResults { symbols },
+        } => {
             assert_eq!(symbols.len(), 1, "should find 1 symbol");
             assert_eq!(symbols[0].name, "process_data");
             assert_eq!(symbols[0].line, 10);
@@ -824,24 +812,34 @@ fn test_find_symbol_via_handler() {
     }
 
     // Find with file filter
-    let resp = handle_request(&mut state, Request::FindSymbol {
-        name: "process_data".into(),
-        file: Some("/tmp/test.rs".into()),
-    });
+    let resp = handle_request(
+        &mut state,
+        Request::FindSymbol {
+            name: "process_data".into(),
+            file: Some("/tmp/test.rs".into()),
+        },
+    );
     match resp {
-        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+        Response::Ok {
+            data: ResponseData::SymbolResults { symbols },
+        } => {
             assert_eq!(symbols.len(), 1);
         }
         other => panic!("expected SymbolResults, got {other:?}"),
     }
 
     // Find with wrong file filter
-    let resp = handle_request(&mut state, Request::FindSymbol {
-        name: "process_data".into(),
-        file: Some("nonexistent.rs".into()),
-    });
+    let resp = handle_request(
+        &mut state,
+        Request::FindSymbol {
+            name: "process_data".into(),
+            file: Some("nonexistent.rs".into()),
+        },
+    );
     match resp {
-        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+        Response::Ok {
+            data: ResponseData::SymbolResults { symbols },
+        } => {
             assert_eq!(symbols.len(), 0, "wrong file filter should return 0");
         }
         other => panic!("expected SymbolResults, got {other:?}"),
@@ -867,11 +865,16 @@ fn test_symbols_overview_via_handler() {
         ops::store_symbol(&state.conn, &sym).unwrap();
     }
 
-    let resp = handle_request(&mut state, Request::GetSymbolsOverview {
-        file: "mod.rs".into(),
-    });
+    let resp = handle_request(
+        &mut state,
+        Request::GetSymbolsOverview {
+            file: "mod.rs".into(),
+        },
+    );
     match resp {
-        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+        Response::Ok {
+            data: ResponseData::SymbolResults { symbols },
+        } => {
             assert_eq!(symbols.len(), 3, "should find 3 symbols");
             // Should be ordered by line number
             assert_eq!(symbols[0].name, "init");
@@ -887,12 +890,17 @@ fn test_symbols_overview_via_handler() {
 fn test_find_symbol_empty_name() {
     let mut state = fresh_state();
 
-    let resp = handle_request(&mut state, Request::FindSymbol {
-        name: "".into(),
-        file: None,
-    });
+    let resp = handle_request(
+        &mut state,
+        Request::FindSymbol {
+            name: "".into(),
+            file: None,
+        },
+    );
     match resp {
-        Response::Ok { data: ResponseData::SymbolResults { symbols } } => {
+        Response::Ok {
+            data: ResponseData::SymbolResults { symbols },
+        } => {
             assert_eq!(symbols.len(), 0, "empty name should return empty");
         }
         other => panic!("expected SymbolResults, got {other:?}"),
@@ -906,7 +914,16 @@ fn test_vacuum_via_handler() {
 
     let resp = handle_request(&mut state, Request::VacuumDb);
     match resp {
-        Response::Ok { data: ResponseData::Vacuumed { faded_purged, orphan_files_removed, orphan_symbols_removed, orphan_edges_removed, freed_bytes: _ } } => {
+        Response::Ok {
+            data:
+                ResponseData::Vacuumed {
+                    faded_purged,
+                    orphan_files_removed,
+                    orphan_symbols_removed,
+                    orphan_edges_removed,
+                    freed_bytes: _,
+                },
+        } => {
             // Fresh DB has nothing to purge
             assert_eq!(faded_purged, 0);
             assert_eq!(orphan_files_removed, 0);
@@ -934,19 +951,34 @@ fn test_backfill_affects_via_handler() {
     );
 
     // Verify the remember handler already created affects edges
-    let edge_count: i64 = state.conn.query_row(
-        "SELECT COUNT(*) FROM edge WHERE from_id = ?1 AND edge_type = 'affects'",
-        rusqlite::params![mem_id],
-        |row| row.get(0),
-    ).unwrap();
-    assert!(edge_count >= 2, "remember handler should create affects edges for handler.rs and ops.rs, got {edge_count}");
+    let edge_count: i64 = state
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM edge WHERE from_id = ?1 AND edge_type = 'affects'",
+            rusqlite::params![mem_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        edge_count >= 2,
+        "remember handler should create affects edges for handler.rs and ops.rs, got {edge_count}"
+    );
 
     // Run backfill — should find 0 new edges (already created by remember handler)
     let resp = handle_request(&mut state, Request::BackfillAffects);
     match resp {
-        Response::Ok { data: ResponseData::BackfillAffectsResult { memories_scanned, edges_created } } => {
+        Response::Ok {
+            data:
+                ResponseData::BackfillAffectsResult {
+                    memories_scanned,
+                    edges_created,
+                },
+        } => {
             assert!(memories_scanned >= 1, "should scan at least 1 memory");
-            assert_eq!(edges_created, 0, "backfill should find 0 new edges (remember handler already created them)");
+            assert_eq!(
+                edges_created, 0,
+                "backfill should find 0 new edges (remember handler already created them)"
+            );
         }
         other => panic!("expected BackfillAffectsResult, got {other:?}"),
     }
@@ -959,37 +991,52 @@ fn test_unified_ack_falls_back_to_notification() {
     let mut state = fresh_state();
 
     // Create a notification directly in the DB
-    let notif_id = NotificationBuilder::new("alert", "high", "Build failed", "CI pipeline broke", "ci")
-        .build(&state.conn)
-        .expect("create notification");
+    let notif_id =
+        NotificationBuilder::new("alert", "high", "Build failed", "CI pipeline broke", "ci")
+            .build(&state.conn)
+            .expect("create notification");
 
     // Verify notification is pending
-    let status: String = state.conn.query_row(
-        "SELECT status FROM notification WHERE id = ?1",
-        rusqlite::params![&notif_id],
-        |r| r.get(0),
-    ).unwrap();
+    let status: String = state
+        .conn
+        .query_row(
+            "SELECT status FROM notification WHERE id = ?1",
+            rusqlite::params![&notif_id],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(status, "pending", "notification should start as pending");
 
     // Call SessionAck with the notification ID — should fall back to notification table
-    let resp = handle_request(&mut state, Request::SessionAck {
-        message_ids: vec![notif_id.clone()],
-        session_id: None,
-    });
+    let resp = handle_request(
+        &mut state,
+        Request::SessionAck {
+            message_ids: vec![notif_id.clone()],
+            session_id: None,
+        },
+    );
     match resp {
-        Response::Ok { data: ResponseData::MessagesAcked { count } } => {
+        Response::Ok {
+            data: ResponseData::MessagesAcked { count },
+        } => {
             assert_eq!(count, 1, "unified ack should have acked 1 notification");
         }
         other => panic!("expected MessagesAcked, got {other:?}"),
     }
 
     // Verify notification is now acknowledged
-    let status: String = state.conn.query_row(
-        "SELECT status FROM notification WHERE id = ?1",
-        rusqlite::params![&notif_id],
-        |r| r.get(0),
-    ).unwrap();
-    assert_eq!(status, "acknowledged", "notification should be acknowledged after unified ack");
+    let status: String = state
+        .conn
+        .query_row(
+            "SELECT status FROM notification WHERE id = ?1",
+            rusqlite::params![&notif_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "acknowledged",
+        "notification should be acknowledged after unified ack"
+    );
 }
 
 /// L2: Test unified ack with garbage IDs returns 0, not inflated count.
@@ -997,12 +1044,17 @@ fn test_unified_ack_falls_back_to_notification() {
 fn test_unified_ack_garbage_ids_returns_zero() {
     let mut state = fresh_state();
 
-    let resp = handle_request(&mut state, Request::SessionAck {
-        message_ids: vec!["garbage-1".into(), "garbage-2".into(), "garbage-3".into()],
-        session_id: None,
-    });
+    let resp = handle_request(
+        &mut state,
+        Request::SessionAck {
+            message_ids: vec!["garbage-1".into(), "garbage-2".into(), "garbage-3".into()],
+            session_id: None,
+        },
+    );
     match resp {
-        Response::Ok { data: ResponseData::MessagesAcked { count } } => {
+        Response::Ok {
+            data: ResponseData::MessagesAcked { count },
+        } => {
             assert_eq!(count, 0, "garbage IDs should return 0 acked (not inflated)");
         }
         other => panic!("expected MessagesAcked, got {other:?}"),

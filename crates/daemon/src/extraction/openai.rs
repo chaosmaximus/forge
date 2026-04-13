@@ -54,9 +54,7 @@ pub async fn extract(
             let json: serde_json::Value = match r.json().await {
                 Ok(v) => v,
                 Err(e) => {
-                    return ExtractionResult::Error(format!(
-                        "failed to parse OpenAI response: {e}"
-                    ))
+                    return ExtractionResult::Error(format!("failed to parse OpenAI response: {e}"))
                 }
             };
             let text = json["choices"][0]["message"]["content"]

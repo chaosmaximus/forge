@@ -1,9 +1,9 @@
+use forge_core::types::{Memory, MemoryType};
 use forge_daemon::chunk::parse_transcript;
 use forge_daemon::config::ForgeConfig;
-use forge_daemon::extraction::prompt::{parse_extraction_output, EXTRACTION_SYSTEM_PROMPT};
 use forge_daemon::db::ops;
+use forge_daemon::extraction::prompt::{parse_extraction_output, EXTRACTION_SYSTEM_PROMPT};
 use forge_daemon::server::handler::DaemonState;
-use forge_core::types::{Memory, MemoryType};
 
 #[test]
 fn test_full_extraction_pipeline_simulated() {

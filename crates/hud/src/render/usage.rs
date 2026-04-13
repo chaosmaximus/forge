@@ -17,11 +17,7 @@ fn render_context_bar(pct: f64) -> String {
     let filled = (p / 10.0).round() as usize;
     let empty = 10_usize.saturating_sub(filled);
     let color = context_color(p);
-    let bar_str = format!(
-        "{}{}",
-        "\u{2588}".repeat(filled),
-        "\u{2591}".repeat(empty),
-    );
+    let bar_str = format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty),);
     format!("{DIM}Context{RESET} {color}{bar_str}{RESET} {color}{p:.0}%{RESET}")
 }
 
@@ -30,11 +26,7 @@ fn render_usage_bar(pct: f64, resets_at: Option<f64>, window: &str) -> String {
     let filled = (p / 10.0).round() as usize;
     let empty = 10_usize.saturating_sub(filled);
     let color = usage_color(p);
-    let bar_str = format!(
-        "{}{}",
-        "\u{2588}".repeat(filled),
-        "\u{2591}".repeat(empty),
-    );
+    let bar_str = format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty),);
     let time_str = match resets_at {
         Some(ts) if ts > 0.0 => {
             let remaining = crate::stdin::format_time_remaining(ts);
@@ -46,9 +38,21 @@ fn render_usage_bar(pct: f64, resets_at: Option<f64>, window: &str) -> String {
 }
 
 fn context_color(pct: f64) -> &'static str {
-    if pct >= 85.0 { RED } else if pct >= 70.0 { YELLOW } else { GREEN }
+    if pct >= 85.0 {
+        RED
+    } else if pct >= 70.0 {
+        YELLOW
+    } else {
+        GREEN
+    }
 }
 
 fn usage_color(pct: f64) -> &'static str {
-    if pct >= 90.0 { RED } else if pct >= 75.0 { BRIGHT_MAGENTA } else { BRIGHT_BLUE }
+    if pct >= 90.0 {
+        RED
+    } else if pct >= 75.0 {
+        BRIGHT_MAGENTA
+    } else {
+        BRIGHT_BLUE
+    }
 }

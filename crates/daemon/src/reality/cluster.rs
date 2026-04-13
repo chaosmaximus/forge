@@ -22,12 +22,15 @@ pub fn run_label_propagation(
     let mut stmt = conn.prepare(
         "SELECT DISTINCT from_id, to_id FROM edge \
          WHERE edge_type IN ('calls', 'imports') \
-         AND (reality_id = ?1 OR reality_id IS NULL)"
+         AND (reality_id = ?1 OR reality_id IS NULL)",
     )?;
 
-    let edges: Vec<(String, String)> = stmt.query_map(params![reality_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?.filter_map(|r| r.ok()).collect();
+    let edges: Vec<(String, String)> = stmt
+        .query_map(params![reality_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     if edges.is_empty() {
         // No edges: delete any old cluster edges and return 0
@@ -53,14 +56,17 @@ pub fn run_label_propagation(
     }
 
     let nodes: Vec<String> = node_set.into_iter().collect();
-    let node_index: HashMap<&str, usize> = nodes.iter().enumerate()
+    let node_index: HashMap<&str, usize> = nodes
+        .iter()
+        .enumerate()
         .map(|(i, n)| (n.as_str(), i))
         .collect();
 
     // Build adjacency list (undirected for label propagation)
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for (from, to) in &edges {
-        if let (Some(&fi), Some(&ti)) = (node_index.get(from.as_str()), node_index.get(to.as_str())) {
+        if let (Some(&fi), Some(&ti)) = (node_index.get(from.as_str()), node_index.get(to.as_str()))
+        {
             adjacency[fi].push(ti);
             adjacency[ti].push(fi);
         }
@@ -83,7 +89,8 @@ pub fn run_label_propagation(
             for &neighbor in neighbors {
                 *freq.entry(labels[neighbor]).or_insert(0) += 1;
             }
-            let best_label = freq.into_iter()
+            let best_label = freq
+                .into_iter()
                 .max_by_key(|&(_, count)| count)
                 .map(|(label, _)| label)
                 .unwrap_or(labels[node]);
@@ -105,7 +112,8 @@ pub fn run_label_propagation(
     }
 
     // Filter out singleton clusters (isolated nodes)
-    let cluster_groups: Vec<Vec<&str>> = clusters.into_values()
+    let cluster_groups: Vec<Vec<&str>> = clusters
+        .into_values()
         .filter(|group| group.len() > 1)
         .collect();
 
@@ -174,7 +182,10 @@ mod tests {
         insert_edge(&conn, "D", "F", "imports", rid);
 
         let clusters = run_label_propagation(&conn, rid, 20).unwrap();
-        assert_eq!(clusters, 2, "two connected components should yield 2 clusters");
+        assert_eq!(
+            clusters, 2,
+            "two connected components should yield 2 clusters"
+        );
     }
 
     #[test]
@@ -188,7 +199,10 @@ mod tests {
         insert_edge(&conn, "C", "A", "imports", rid);
 
         let clusters = run_label_propagation(&conn, rid, 20).unwrap();
-        assert_eq!(clusters, 1, "single connected component should yield 1 cluster");
+        assert_eq!(
+            clusters, 1,
+            "single connected component should yield 1 cluster"
+        );
     }
 
     #[test]
@@ -212,7 +226,10 @@ mod tests {
         let clusters = run_label_propagation(&conn, rid, 1).unwrap();
         // With only 1 iteration, result depends on convergence speed
         // but for a chain, it should produce at least 1 cluster
-        assert!(clusters >= 1, "should produce at least 1 cluster, got {clusters}");
+        assert!(
+            clusters >= 1,
+            "should produce at least 1 cluster, got {clusters}"
+        );
     }
 
     #[test]
@@ -234,7 +251,10 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
 
-        assert!(count >= 3, "at least 3 cluster edges for 3 nodes in 1 cluster, got {count}");
+        assert!(
+            count >= 3,
+            "at least 3 cluster edges for 3 nodes in 1 cluster, got {count}"
+        );
 
         // Verify the to_id follows the cluster:{reality_id}:{index} format
         let sample_to: String = conn.query_row(
@@ -242,7 +262,9 @@ mod tests {
             params![rid],
             |row| row.get(0),
         ).unwrap();
-        assert!(sample_to.starts_with(&format!("cluster:{rid}:")),
-            "cluster edge to_id should start with 'cluster:{rid}:', got: {sample_to}");
+        assert!(
+            sample_to.starts_with(&format!("cluster:{rid}:")),
+            "cluster edge to_id should start with 'cluster:{rid}:', got: {sample_to}"
+        );
     }
 }

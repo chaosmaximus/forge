@@ -11,7 +11,11 @@ pub trait AgentAdapter: Send + Sync {
     fn matches(&self, path: &std::path::Path) -> bool;
     fn file_extension(&self) -> &str;
     fn parse(&self, content: &str) -> Vec<ConversationChunk>;
-    fn parse_incremental(&self, content: &str, last_offset: usize) -> (Vec<ConversationChunk>, usize);
+    fn parse_incremental(
+        &self,
+        content: &str,
+        last_offset: usize,
+    ) -> (Vec<ConversationChunk>, usize);
 }
 
 /// Return ALL known adapters regardless of whether their directories exist yet.
@@ -30,5 +34,8 @@ pub fn adapter_for_path<'a>(
     adapters: &'a [Box<dyn AgentAdapter>],
     path: &std::path::Path,
 ) -> Option<&'a dyn AgentAdapter> {
-    adapters.iter().find(|a| a.matches(path)).map(|a| a.as_ref())
+    adapters
+        .iter()
+        .find(|a| a.matches(path))
+        .map(|a| a.as_ref())
 }

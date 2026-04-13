@@ -18,7 +18,8 @@ pub const VALID_DENSITIES: &[&str] = &["compact", "normal", "verbose"];
 pub const VALID_THEMES: &[&str] = &["dark", "light", "high-contrast"];
 
 /// Default HUD config (applied when no scoped config exists).
-pub const DEFAULT_SECTIONS: &str = r#"["memory","health","agents","k8s","pwd","git","security","tasks"]"#;
+pub const DEFAULT_SECTIONS: &str =
+    r#"["memory","health","agents","k8s","pwd","git","security","tasks"]"#;
 pub const DEFAULT_DENSITY: &str = "normal";
 pub const DEFAULT_THEME: &str = "dark";
 pub const DEFAULT_REFRESH_SECS: &str = "10";
@@ -70,7 +71,7 @@ pub fn get_merged_hud_config(
     for (stype, sid) in &scopes {
         let mut stmt = conn.prepare(
             "SELECT key, value, locked FROM config_scope
-             WHERE scope_type = ?1 AND scope_id = ?2 AND key LIKE 'hud.%'"
+             WHERE scope_type = ?1 AND scope_id = ?2 AND key LIKE 'hud.%'",
         )?;
         let rows = stmt.query_map(params![stype, sid], |row| {
             Ok((
@@ -85,7 +86,8 @@ pub fn get_merged_hud_config(
     }
 
     // Merge: per key, most-specific scope wins UNLESS a higher scope has locked=true
-    let mut merged: std::collections::HashMap<String, MergedEntry> = std::collections::HashMap::new();
+    let mut merged: std::collections::HashMap<String, MergedEntry> =
+        std::collections::HashMap::new();
     // Track locked keys — once locked at a scope, lower scopes can't override
     let mut locked_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -101,13 +103,16 @@ pub fn get_merged_hud_config(
         if locked {
             locked_keys.insert(key.clone());
         }
-        merged.insert(key.clone(), MergedEntry {
-            key,
-            value,
-            scope_type: stype,
-            scope_id: sid,
-            locked,
-        });
+        merged.insert(
+            key.clone(),
+            MergedEntry {
+                key,
+                value,
+                scope_type: stype,
+                scope_id: sid,
+                locked,
+            },
+        );
     }
 
     // Fill in defaults for missing keys
@@ -120,13 +125,16 @@ pub fn get_merged_hud_config(
     ];
     for (key, default_val) in defaults {
         if !merged.contains_key(key) {
-            merged.insert(key.to_string(), MergedEntry {
-                key: key.to_string(),
-                value: default_val.to_string(),
-                scope_type: "default".to_string(),
-                scope_id: "system".to_string(),
-                locked: false,
-            });
+            merged.insert(
+                key.to_string(),
+                MergedEntry {
+                    key: key.to_string(),
+                    value: default_val.to_string(),
+                    scope_type: "default".to_string(),
+                    scope_id: "system".to_string(),
+                    locked: false,
+                },
+            );
         }
     }
 
@@ -139,7 +147,9 @@ pub fn get_merged_hud_config(
 /// Returns Ok(()) if valid, Err(message) if invalid.
 pub fn validate_hud_config(key: &str, value: &str) -> Result<(), String> {
     if !key.starts_with("hud.") {
-        return Err(format!("HUD config keys must start with 'hud.', got '{key}'"));
+        return Err(format!(
+            "HUD config keys must start with 'hud.', got '{key}'"
+        ));
     }
 
     match key {
@@ -154,16 +164,21 @@ pub fn validate_hud_config(key: &str, value: &str) -> Result<(), String> {
         }
         "hud.density" => {
             if !VALID_DENSITIES.contains(&value) {
-                return Err(format!("hud.density must be one of {VALID_DENSITIES:?}, got '{value}'"));
+                return Err(format!(
+                    "hud.density must be one of {VALID_DENSITIES:?}, got '{value}'"
+                ));
             }
         }
         "hud.theme" => {
             if !VALID_THEMES.contains(&value) {
-                return Err(format!("hud.theme must be one of {VALID_THEMES:?}, got '{value}'"));
+                return Err(format!(
+                    "hud.theme must be one of {VALID_THEMES:?}, got '{value}'"
+                ));
             }
         }
         "hud.refresh_secs" => {
-            let secs: u64 = value.parse()
+            let secs: u64 = value
+                .parse()
                 .map_err(|_| format!("hud.refresh_secs must be a number, got '{value}'"))?;
             if !(5..=60).contains(&secs) {
                 return Err(format!("hud.refresh_secs must be 5-60, got {secs}"));
@@ -171,7 +186,9 @@ pub fn validate_hud_config(key: &str, value: &str) -> Result<(), String> {
         }
         "hud.show_notifications" => {
             if !["all", "high-only", "none"].contains(&value) {
-                return Err(format!("hud.show_notifications must be all|high-only|none, got '{value}'"));
+                return Err(format!(
+                    "hud.show_notifications must be all|high-only|none, got '{value}'"
+                ));
             }
         }
         _ => {
@@ -229,17 +246,21 @@ pub fn export_as_toml(
     let mut stmt = conn.prepare(
         "SELECT key, value FROM config_scope
          WHERE scope_type = ?1 AND scope_id = ?2 AND key LIKE 'hud.%'
-         ORDER BY key"
+         ORDER BY key",
     )?;
-    let rows: Vec<(String, String)> = stmt.query_map(params![scope_type, scope_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?.flatten().collect();
+    let rows: Vec<(String, String)> = stmt
+        .query_map(params![scope_type, scope_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .flatten()
+        .collect();
 
     if rows.is_empty() {
         return Ok("# No HUD configuration set for this scope\n".to_string());
     }
 
-    let mut toml = String::from("# Forge HUD Configuration\n# Commit this as .forge/hud.toml\n\n[hud]\n");
+    let mut toml =
+        String::from("# Forge HUD Configuration\n# Commit this as .forge/hud.toml\n\n[hud]\n");
     for (key, value) in &rows {
         let short_key = key.strip_prefix("hud.").unwrap_or(key);
         // Detect if value is JSON array/object or plain string
@@ -259,8 +280,7 @@ pub fn export_as_toml(
 /// No kubectl subprocess — direct YAML parse.
 pub fn read_k8s_context() -> Option<(String, Option<String>)> {
     let home = std::env::var("HOME").ok()?;
-    let kubeconfig = std::env::var("KUBECONFIG")
-        .unwrap_or_else(|_| format!("{home}/.kube/config"));
+    let kubeconfig = std::env::var("KUBECONFIG").unwrap_or_else(|_| format!("{home}/.kube/config"));
 
     let content = std::fs::read_to_string(&kubeconfig).ok()?;
 
@@ -302,7 +322,9 @@ pub fn read_k8s_context() -> Option<(String, Option<String>)> {
         }
     }
 
-    target_context.or(Some(ctx_name.clone())).map(|ctx| (ctx, namespace))
+    target_context
+        .or(Some(ctx_name.clone()))
+        .map(|ctx| (ctx, namespace))
 }
 
 #[cfg(test)]
@@ -317,7 +339,14 @@ mod tests {
         conn
     }
 
-    fn set_config(conn: &Connection, scope_type: &str, scope_id: &str, key: &str, value: &str, locked: bool) {
+    fn set_config(
+        conn: &Connection,
+        scope_type: &str,
+        scope_id: &str,
+        key: &str,
+        value: &str,
+        locked: bool,
+    ) {
         let id = ulid::Ulid::new().to_string();
         let now = forge_core::time::now_iso();
         conn.execute(
@@ -331,10 +360,18 @@ mod tests {
     fn test_merge_cascade_most_specific_wins() {
         let conn = open_db();
 
-        set_config(&conn, "organization", "default", "hud.density", "compact", false);
+        set_config(
+            &conn,
+            "organization",
+            "default",
+            "hud.density",
+            "compact",
+            false,
+        );
         set_config(&conn, "user", "durga", "hud.density", "verbose", false);
 
-        let merged = get_merged_hud_config(&conn, Some("default"), None, None, Some("durga")).unwrap();
+        let merged =
+            get_merged_hud_config(&conn, Some("default"), None, None, Some("durga")).unwrap();
         let density = merged.iter().find(|e| e.key == "hud.density").unwrap();
         assert_eq!(density.value, "verbose", "user scope should override org");
         assert_eq!(density.scope_type, "user");
@@ -344,12 +381,30 @@ mod tests {
     fn test_merge_locked_key_blocks_override() {
         let conn = open_db();
 
-        set_config(&conn, "team", "backend", "hud.sections", r#"["memory","health"]"#, true);
-        set_config(&conn, "user", "durga", "hud.sections", r#"["memory"]"#, false);
+        set_config(
+            &conn,
+            "team",
+            "backend",
+            "hud.sections",
+            r#"["memory","health"]"#,
+            true,
+        );
+        set_config(
+            &conn,
+            "user",
+            "durga",
+            "hud.sections",
+            r#"["memory"]"#,
+            false,
+        );
 
-        let merged = get_merged_hud_config(&conn, None, Some("backend"), None, Some("durga")).unwrap();
+        let merged =
+            get_merged_hud_config(&conn, None, Some("backend"), None, Some("durga")).unwrap();
         let sections = merged.iter().find(|e| e.key == "hud.sections").unwrap();
-        assert_eq!(sections.value, r#"["memory","health"]"#, "locked team config should NOT be overridden by user");
+        assert_eq!(
+            sections.value, r#"["memory","health"]"#,
+            "locked team config should NOT be overridden by user"
+        );
         assert_eq!(sections.scope_type, "team");
     }
 
@@ -403,7 +458,14 @@ mod tests {
     fn test_export_toml() {
         let conn = open_db();
         set_config(&conn, "project", "forge", "hud.density", "compact", false);
-        set_config(&conn, "project", "forge", "hud.sections", r#"["memory","health"]"#, false);
+        set_config(
+            &conn,
+            "project",
+            "forge",
+            "hud.sections",
+            r#"["memory","health"]"#,
+            false,
+        );
 
         let toml = export_as_toml(&conn, "project", "forge").unwrap();
         assert!(toml.contains("[hud]"));
@@ -421,7 +483,14 @@ mod tests {
     #[test]
     fn test_check_lock_blocks_user() {
         let conn = open_db();
-        set_config(&conn, "team", "backend", "hud.sections", r#"["memory"]"#, true);
+        set_config(
+            &conn,
+            "team",
+            "backend",
+            "hud.sections",
+            r#"["memory"]"#,
+            true,
+        );
 
         let lock = check_lock(&conn, "hud.sections", "user", None, Some("backend"), None).unwrap();
         assert!(lock.is_some(), "should detect locked key at team scope");
@@ -432,7 +501,14 @@ mod tests {
     #[test]
     fn test_check_lock_allows_when_not_locked() {
         let conn = open_db();
-        set_config(&conn, "team", "backend", "hud.sections", r#"["memory"]"#, false);
+        set_config(
+            &conn,
+            "team",
+            "backend",
+            "hud.sections",
+            r#"["memory"]"#,
+            false,
+        );
 
         let lock = check_lock(&conn, "hud.sections", "user", None, Some("backend"), None).unwrap();
         assert!(lock.is_none(), "unlocked key should allow override");
@@ -445,7 +521,10 @@ mod tests {
         let result = read_k8s_context();
         // Reset
         std::env::remove_var("KUBECONFIG");
-        assert!(result.is_none(), "should return None for missing kubeconfig");
+        assert!(
+            result.is_none(),
+            "should return None for missing kubeconfig"
+        );
     }
 
     #[test]

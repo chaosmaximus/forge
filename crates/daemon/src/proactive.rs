@@ -205,42 +205,64 @@ pub fn build_proactive_context_with_org(
 }
 
 /// Fetch recent memories by type, optionally scoped to project and organization.
-fn fetch_recent_by_type(conn: &Connection, memory_type: &str, project: Option<&str>, org_id: Option<&str>, limit: usize) -> String {
+fn fetch_recent_by_type(
+    conn: &Connection,
+    memory_type: &str,
+    project: Option<&str>,
+    org_id: Option<&str>,
+    limit: usize,
+) -> String {
     let result: Vec<String> = match (project, org_id) {
         (Some(proj), Some(org)) => {
             let mut stmt = match conn.prepare(
                 "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' AND project = ?2 AND organization_id = ?3 ORDER BY accessed_at DESC LIMIT ?4"
             ) { Ok(s) => s, Err(_) => return String::new() };
-            stmt.query_map(rusqlite::params![memory_type, proj, org, limit], |r| r.get(0))
-                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+            stmt.query_map(rusqlite::params![memory_type, proj, org, limit], |r| {
+                r.get(0)
+            })
+            .ok()
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
         }
         (Some(proj), None) => {
             let mut stmt = match conn.prepare(
                 "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' AND project = ?2 ORDER BY accessed_at DESC LIMIT ?3"
             ) { Ok(s) => s, Err(_) => return String::new() };
             stmt.query_map(rusqlite::params![memory_type, proj, limit], |r| r.get(0))
-                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+                .ok()
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default()
         }
         (None, Some(org)) => {
             let mut stmt = match conn.prepare(
                 "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' AND organization_id = ?2 ORDER BY accessed_at DESC LIMIT ?3"
             ) { Ok(s) => s, Err(_) => return String::new() };
             stmt.query_map(rusqlite::params![memory_type, org, limit], |r| r.get(0))
-                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+                .ok()
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default()
         }
         (None, None) => {
             let mut stmt = match conn.prepare(
                 "SELECT title FROM memory WHERE memory_type = ?1 AND status = 'active' ORDER BY accessed_at DESC LIMIT ?2"
             ) { Ok(s) => s, Err(_) => return String::new() };
             stmt.query_map(rusqlite::params![memory_type, limit], |r| r.get(0))
-                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+                .ok()
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default()
         }
     };
     result.join("; ")
 }
 
 /// Fetch recent memories by tag, optionally scoped to project and organization.
-fn fetch_recent_by_tag(conn: &Connection, tag: &str, project: Option<&str>, org_id: Option<&str>, limit: usize) -> String {
+fn fetch_recent_by_tag(
+    conn: &Connection,
+    tag: &str,
+    project: Option<&str>,
+    org_id: Option<&str>,
+    limit: usize,
+) -> String {
     let pattern = format!("%{tag}%");
     let result: Vec<String> = match (project, org_id) {
         (Some(proj), Some(org)) => {
@@ -248,28 +270,36 @@ fn fetch_recent_by_tag(conn: &Connection, tag: &str, project: Option<&str>, org_
                 "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' AND project = ?2 AND organization_id = ?3 ORDER BY accessed_at DESC LIMIT ?4"
             ) { Ok(s) => s, Err(_) => return String::new() };
             stmt.query_map(rusqlite::params![pattern, proj, org, limit], |r| r.get(0))
-                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+                .ok()
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default()
         }
         (Some(proj), None) => {
             let mut stmt = match conn.prepare(
                 "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' AND project = ?2 ORDER BY accessed_at DESC LIMIT ?3"
             ) { Ok(s) => s, Err(_) => return String::new() };
             stmt.query_map(rusqlite::params![pattern, proj, limit], |r| r.get(0))
-                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+                .ok()
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default()
         }
         (None, Some(org)) => {
             let mut stmt = match conn.prepare(
                 "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' AND organization_id = ?2 ORDER BY accessed_at DESC LIMIT ?3"
             ) { Ok(s) => s, Err(_) => return String::new() };
             stmt.query_map(rusqlite::params![pattern, org, limit], |r| r.get(0))
-                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+                .ok()
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default()
         }
         (None, None) => {
             let mut stmt = match conn.prepare(
                 "SELECT title FROM memory WHERE tags LIKE ?1 AND status = 'active' ORDER BY accessed_at DESC LIMIT ?2"
             ) { Ok(s) => s, Err(_) => return String::new() };
             stmt.query_map(rusqlite::params![pattern, limit], |r| r.get(0))
-                .ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+                .ok()
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default()
         }
     };
     result.join("; ")
@@ -280,8 +310,11 @@ fn fetch_pending_notifications(conn: &Connection, _project: Option<&str>) -> Str
     let mut stmt = match conn.prepare(
         "SELECT message FROM notification WHERE status = 'pending' AND dismissed = 0 ORDER BY created_at DESC LIMIT 3"
     ) { Ok(s) => s, Err(_) => return String::new() };
-    let result: Vec<String> = stmt.query_map([], |r| r.get(0))
-        .ok().map(|rows| rows.flatten().collect()).unwrap_or_default();
+    let result: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .ok()
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default();
     result.join("; ")
 }
 
@@ -358,10 +391,7 @@ mod tests {
     #[test]
     fn test_bootstrap_unknown_pair_is_low() {
         let score = bootstrap_relevance("UnknownHook", "unknown_type");
-        assert!(
-            score <= 0.2,
-            "unknown pair should be <= 0.2, got {score}"
-        );
+        assert!(score <= 0.2, "unknown pair should be <= 0.2, got {score}");
     }
 
     #[test]
@@ -396,7 +426,10 @@ mod tests {
         // Build proactive context for PreEdit (should include decisions at 0.7 relevance)
         let ctx = build_proactive_context(&conn, HOOK_PRE_EDIT, None);
         let has_decision = ctx.iter().any(|c| c.knowledge_type == "decision");
-        assert!(has_decision, "PreEdit should surface decisions (relevance 0.7 >= 0.3 threshold)");
+        assert!(
+            has_decision,
+            "PreEdit should surface decisions (relevance 0.7 >= 0.3 threshold)"
+        );
     }
 
     #[test]
@@ -414,14 +447,20 @@ mod tests {
         // Build proactive context for PostEdit — uat_lesson has no bootstrap entry (defaults to 0.1)
         let ctx = build_proactive_context(&conn, HOOK_POST_EDIT, None);
         let has_uat = ctx.iter().any(|c| c.knowledge_type == "uat_lesson");
-        assert!(!has_uat, "PostEdit should NOT surface uat_lesson (relevance 0.1 < 0.3 threshold)");
+        assert!(
+            !has_uat,
+            "PostEdit should NOT surface uat_lesson (relevance 0.1 < 0.3 threshold)"
+        );
     }
 
     #[test]
     fn test_build_proactive_context_empty_db() {
         let conn = setup_effectiveness_db();
         let ctx = build_proactive_context(&conn, HOOK_PRE_BASH, None);
-        assert!(ctx.is_empty(), "empty DB should produce no proactive context");
+        assert!(
+            ctx.is_empty(),
+            "empty DB should produce no proactive context"
+        );
     }
 
     #[test]
@@ -437,8 +476,13 @@ mod tests {
         // Insert 10 acknowledged records via the real API -> learned rate = 10/10 = 1.0
         for i in 0..10 {
             let id = crate::db::effectiveness::record_injection(
-                &conn, "test-session", HOOK_POST_EDIT, KT_BLAST_RADIUS, &format!("blast {i}"),
-            ).unwrap();
+                &conn,
+                "test-session",
+                HOOK_POST_EDIT,
+                KT_BLAST_RADIUS,
+                &format!("blast {i}"),
+            )
+            .unwrap();
             crate::db::effectiveness::mark_acknowledged(&conn, &id).unwrap();
         }
 

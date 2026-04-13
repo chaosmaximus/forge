@@ -3,12 +3,12 @@
 // Uses tokio::broadcast for fan-out to multiple subscribers (Mac app, CLI, etc.).
 // Events are best-effort: if a subscriber is slow, it skips (Lagged).
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForgeEvent {
-    pub event: String,     // "extraction" | "consolidation" | "guardrail" | "agent"
+    pub event: String, // "extraction" | "consolidation" | "guardrail" | "agent"
     pub data: serde_json::Value,
     pub timestamp: String,
 }
@@ -40,8 +40,7 @@ fn timestamp_now() -> String {
 /// Also reads K8s context and HUD config for the renderer.
 pub fn spawn_hud_writer(tx: &EventSender) {
     let mut rx = tx.subscribe();
-    let db_path = std::env::var("FORGE_DB")
-        .unwrap_or_else(|_| forge_core::default_db_path());
+    let db_path = std::env::var("FORGE_DB").unwrap_or_else(|_| forge_core::default_db_path());
 
     tokio::spawn(async move {
         // Write to the same path the HUD binary reads from.
@@ -51,30 +50,53 @@ pub fn spawn_hud_writer(tx: &EventSender) {
         let hud_path = hud_dir.join("hud-state.json");
 
         // Track state across events (persists between events)
-        let mut team_state: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+        let mut team_state: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
         let mut session_state: Vec<serde_json::Value> = Vec::new();
 
         loop {
             match rx.recv().await {
                 Ok(event) => {
                     // Track session registrations from events
-                    if event.event == "session_changed" && event.data.get("action").and_then(|v| v.as_str()) == Some("registered") {
+                    if event.event == "session_changed"
+                        && event.data.get("action").and_then(|v| v.as_str()) == Some("registered")
+                    {
                         if let Some(obj) = event.data.as_object() {
-                            let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let agent = obj.get("agent").and_then(|v| v.as_str()).unwrap_or("claude-code").to_string();
-                            let project = obj.get("project").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let cwd = obj.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let id = obj
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let agent = obj
+                                .get("agent")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("claude-code")
+                                .to_string();
+                            let project = obj
+                                .get("project")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let cwd = obj
+                                .get("cwd")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             // Avoid duplicates
-                            session_state.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(&id));
+                            session_state
+                                .retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(&id));
                             session_state.push(serde_json::json!({
                                 "id": id, "agent": agent, "project": project, "cwd": cwd,
                                 "since": &event.timestamp,
                             }));
                         }
                     }
-                    if event.event == "session_changed" && event.data.get("action").and_then(|v| v.as_str()) == Some("ended") {
+                    if event.event == "session_changed"
+                        && event.data.get("action").and_then(|v| v.as_str()) == Some("ended")
+                    {
                         if let Some(id) = event.data.get("id").and_then(|v| v.as_str()) {
-                            session_state.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(id));
+                            session_state
+                                .retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(id));
                         }
                     }
 
@@ -87,7 +109,10 @@ pub fn spawn_hud_writer(tx: &EventSender) {
                             // Skip transcript watcher events (agent_id is a file path)
                             if let Some(id) = agent_id {
                                 if !id.contains('/') && !id.contains(".jsonl") {
-                                    let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    let status = obj
+                                        .get("status")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("unknown");
                                     let last_tool = obj.get("last_tool").and_then(|v| v.as_str());
                                     let agent_type = obj.get("agent").and_then(|v| v.as_str());
 
@@ -163,27 +188,41 @@ fn build_project_stats(conn: &rusqlite::Connection) -> serde_json::Value {
     let mut stmt = match conn.prepare(
         "SELECT COALESCE(project, ''), memory_type, COUNT(*)
          FROM memory WHERE status = 'active' AND project IS NOT NULL AND project != ''
-         GROUP BY project, memory_type"
+         GROUP BY project, memory_type",
     ) {
         Ok(s) => s,
         Err(_) => return serde_json::Value::Object(projects),
     };
 
-    let rows: Vec<(String, String, u64)> = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?))
-    }).ok()
+    let rows: Vec<(String, String, u64)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u64>(2)?,
+            ))
+        })
+        .ok()
         .map(|r| r.flatten().collect())
         .unwrap_or_default();
 
     for (proj, mtype, count) in rows {
-        let entry = projects.entry(proj).or_insert_with(|| serde_json::json!({
-            "decisions": 0, "lessons": 0, "patterns": 0
-        }));
+        let entry = projects.entry(proj).or_insert_with(|| {
+            serde_json::json!({
+                "decisions": 0, "lessons": 0, "patterns": 0
+            })
+        });
         if let Some(obj) = entry.as_object_mut() {
             match mtype.as_str() {
-                "decision" => { obj.insert("decisions".into(), count.into()); }
-                "lesson" => { obj.insert("lessons".into(), count.into()); }
-                "pattern" => { obj.insert("patterns".into(), count.into()); }
+                "decision" => {
+                    obj.insert("decisions".into(), count.into());
+                }
+                "lesson" => {
+                    obj.insert("lessons".into(), count.into());
+                }
+                "pattern" => {
+                    obj.insert("patterns".into(), count.into());
+                }
                 _ => {}
             }
         }
@@ -207,18 +246,27 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
     };
 
     // Memory stats
-    let decisions: u64 = conn.query_row(
-        "SELECT COUNT(*) FROM memory WHERE memory_type = 'decision' AND status = 'active'",
-        [], |r| r.get(0),
-    ).unwrap_or(0);
-    let lessons: u64 = conn.query_row(
-        "SELECT COUNT(*) FROM memory WHERE memory_type = 'lesson' AND status = 'active'",
-        [], |r| r.get(0),
-    ).unwrap_or(0);
-    let patterns: u64 = conn.query_row(
-        "SELECT COUNT(*) FROM memory WHERE memory_type = 'pattern' AND status = 'active'",
-        [], |r| r.get(0),
-    ).unwrap_or(0);
+    let decisions: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory WHERE memory_type = 'decision' AND status = 'active'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let lessons: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory WHERE memory_type = 'lesson' AND status = 'active'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let patterns: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory WHERE memory_type = 'pattern' AND status = 'active'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
 
     // Security stats (secrets)
     let exposed: u64 = conn.query_row(
@@ -227,24 +275,26 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
     ).unwrap_or(0);
 
     // K8s context
-    let k8s = crate::hud_config::read_k8s_context().map(|(ctx, ns)| {
-        serde_json::json!({ "context": ctx, "namespace": ns })
-    });
+    let k8s = crate::hud_config::read_k8s_context()
+        .map(|(ctx, ns)| serde_json::json!({ "context": ctx, "namespace": ns }));
 
     // HUD config (merged for current user)
-    let hud_config = crate::hud_config::get_merged_hud_config(&conn, Some("default"), None, None, None)
-        .ok()
-        .map(|entries| {
-            let sections: Vec<String> = entries.iter()
-                .find(|e| e.key == "hud.sections")
-                .and_then(|e| serde_json::from_str(&e.value).ok())
-                .unwrap_or_default();
-            let density = entries.iter()
-                .find(|e| e.key == "hud.density")
-                .map(|e| e.value.clone())
-                .unwrap_or_else(|| "normal".to_string());
-            serde_json::json!({ "sections": sections, "density": density })
-        });
+    let hud_config =
+        crate::hud_config::get_merged_hud_config(&conn, Some("default"), None, None, None)
+            .ok()
+            .map(|entries| {
+                let sections: Vec<String> = entries
+                    .iter()
+                    .find(|e| e.key == "hud.sections")
+                    .and_then(|e| serde_json::from_str(&e.value).ok())
+                    .unwrap_or_default();
+                let density = entries
+                    .iter()
+                    .find(|e| e.key == "hud.density")
+                    .map(|e| e.value.clone())
+                    .unwrap_or_else(|| "normal".to_string());
+                serde_json::json!({ "sections": sections, "density": density })
+            });
 
     // CWD from active session or daemon process
     let cwd: Option<String> = conn.query_row(

@@ -50,11 +50,7 @@ pub fn path_to_file_uri(path: &str) -> String {
             segment
                 .bytes()
                 .map(|b| {
-                    if b.is_ascii_alphanumeric()
-                        || b == b'-'
-                        || b == b'_'
-                        || b == b'.'
-                        || b == b'~'
+                    if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~'
                     {
                         // Unreserved characters (RFC 3986 §2.3) — pass through
                         String::from(b as char)
@@ -200,9 +196,7 @@ impl LspClient {
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
 
-        let init_result: InitializeResult = client
-            .send_request("initialize", init_params)
-            .await?;
+        let init_result: InitializeResult = client.send_request("initialize", init_params).await?;
         client.server_caps = Some(init_result);
 
         // Send initialized notification.
@@ -241,7 +235,12 @@ impl LspClient {
 
     /// Notify the server that a file has been opened.
     /// Most servers REQUIRE didOpen before responding to symbol requests.
-    pub async fn did_open(&mut self, file_uri: &str, language_id: &str, content: &str) -> Result<(), String> {
+    pub async fn did_open(
+        &mut self,
+        file_uri: &str,
+        language_id: &str,
+        content: &str,
+    ) -> Result<(), String> {
         let uri: Uri = file_uri.parse().map_err(|e| format!("Invalid URI: {e}"))?;
         let params = lsp_types::DidOpenTextDocumentParams {
             text_document: lsp_types::TextDocumentItem {
@@ -260,7 +259,8 @@ impl LspClient {
         let params = lsp_types::DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri },
         };
-        self.send_notification("textDocument/didClose", params).await
+        self.send_notification("textDocument/didClose", params)
+            .await
     }
 
     /// Notify the server that a file's content has changed.
@@ -272,10 +272,7 @@ impl LspClient {
     ) -> Result<(), String> {
         let uri: Uri = file_uri.parse().map_err(|e| format!("Invalid URI: {e}"))?;
         let params = lsp_types::DidChangeTextDocumentParams {
-            text_document: lsp_types::VersionedTextDocumentIdentifier {
-                uri,
-                version,
-            },
+            text_document: lsp_types::VersionedTextDocumentIdentifier { uri, version },
             content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
@@ -319,24 +316,22 @@ impl LspClient {
             .await?;
 
         match response {
-            Some(DocumentSymbolResponse::Flat(sym_infos)) => {
-                Ok(sym_infos
-                    .into_iter()
-                    .map(|si| {
-                        #[allow(deprecated)]
-                        DocumentSymbol {
-                            name: si.name,
-                            detail: None,
-                            kind: si.kind,
-                            tags: si.tags,
-                            deprecated: None,
-                            range: si.location.range,
-                            selection_range: si.location.range,
-                            children: None,
-                        }
-                    })
-                    .collect())
-            }
+            Some(DocumentSymbolResponse::Flat(sym_infos)) => Ok(sym_infos
+                .into_iter()
+                .map(|si| {
+                    #[allow(deprecated)]
+                    DocumentSymbol {
+                        name: si.name,
+                        detail: None,
+                        kind: si.kind,
+                        tags: si.tags,
+                        deprecated: None,
+                        range: si.location.range,
+                        selection_range: si.location.range,
+                        children: None,
+                    }
+                })
+                .collect()),
             Some(DocumentSymbolResponse::Nested(symbols)) => Ok(symbols),
             None => Ok(vec![]),
         }
@@ -363,9 +358,8 @@ impl LspClient {
                 include_declaration: false,
             },
         };
-        let response: Option<Vec<lsp_types::Location>> = self
-            .send_request("textDocument/references", params)
-            .await?;
+        let response: Option<Vec<lsp_types::Location>> =
+            self.send_request("textDocument/references", params).await?;
         Ok(response.unwrap_or_default())
     }
 
@@ -378,11 +372,7 @@ impl LspClient {
         let _ = self.send_notification("exit", ()).await;
 
         // Wait for the child to exit (with a timeout).
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.child.wait(),
-        )
-        .await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.child.wait()).await;
 
         Ok(())
     }
@@ -431,9 +421,7 @@ impl LspClient {
                             return Err(error.to_string());
                         }
                         return resp.result.ok_or_else(|| {
-                            format!(
-                                "Response to {method} (id={id}) has no result and no error"
-                            )
+                            format!("Response to {method} (id={id}) has no result and no error")
                         });
                     }
                 }
@@ -471,8 +459,7 @@ impl LspClient {
 
     /// Write an LSP message with Content-Length framing.
     async fn write_message<T: Serialize>(&mut self, msg: &T) -> Result<(), String> {
-        let body =
-            serde_json::to_string(msg).map_err(|e| format!("Serialize error: {e}"))?;
+        let body = serde_json::to_string(msg).map_err(|e| format!("Serialize error: {e}"))?;
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
 
         self.stdin
@@ -518,8 +505,7 @@ impl LspClient {
             // Ignore other headers (Content-Type, etc.).
         }
 
-        let len =
-            content_length.ok_or_else(|| "Missing Content-Length header".to_string())?;
+        let len = content_length.ok_or_else(|| "Missing Content-Length header".to_string())?;
 
         // Guard against OOM from malicious/buggy language server
         const MAX_LSP_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MB
@@ -553,10 +539,7 @@ fn parse_publish_diagnostics(params: serde_json::Value, buffer: &mut Vec<LspDiag
     };
 
     for diag in diagnostics {
-        let severity_num = diag
-            .get("severity")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(4); // default to hint
+        let severity_num = diag.get("severity").and_then(|v| v.as_u64()).unwrap_or(4); // default to hint
         let severity = match severity_num {
             1 => "error",
             2 => "warning",
@@ -659,10 +642,7 @@ mod tests {
     #[test]
     fn test_client_struct_exists() {
         // Compile-time check that the public API surface is present.
-        fn _assert_spawn_signature(
-            _config: &super::super::detect::LspServerConfig,
-            _root: &str,
-        ) {
+        fn _assert_spawn_signature(_config: &super::super::detect::LspServerConfig, _root: &str) {
             // Just verifying the types compile.
         }
     }

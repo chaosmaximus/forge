@@ -64,7 +64,11 @@ pub fn parse_transcript_incremental(
 ) -> (Vec<ConversationChunk>, usize) {
     if last_offset > content.len() {
         // File was truncated or rotated — reset offset to beginning
-        eprintln!("[chunk] file truncated (offset {} > len {}), resetting", last_offset, content.len());
+        eprintln!(
+            "[chunk] file truncated (offset {} > len {}), resetting",
+            last_offset,
+            content.len()
+        );
         return parse_transcript_incremental(content, 0);
     }
     if last_offset == content.len() {
@@ -77,7 +81,7 @@ pub fn parse_transcript_incremental(
     // Only advance offset to the end of the last complete line so that
     // a partial line being written is not skipped.
     let safe_end = match new_content.rfind('\n') {
-        Some(pos) => pos + 1, // include the newline
+        Some(pos) => pos + 1,                     // include the newline
         None => return (Vec::new(), last_offset), // no complete line yet
     };
 

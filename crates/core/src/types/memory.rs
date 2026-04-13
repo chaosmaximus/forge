@@ -39,23 +39,23 @@ pub struct Memory {
     pub created_at: String,
     pub accessed_at: String,
     #[serde(default = "default_valence")]
-    pub valence: String,      // "positive", "negative", "neutral"
+    pub valence: String, // "positive", "negative", "neutral"
     #[serde(default)]
-    pub intensity: f64,       // 0.0-1.0 how emotionally significant
+    pub intensity: f64, // 0.0-1.0 how emotionally significant
     #[serde(default)]
     pub hlc_timestamp: String, // HLC: "{wall_ms}-{counter}-{node_id}"
     #[serde(default)]
-    pub node_id: String,       // 8-char hex node identifier
+    pub node_id: String, // 8-char hex node identifier
     #[serde(default)]
-    pub session_id: String,    // Session that created this memory
+    pub session_id: String, // Session that created this memory
     #[serde(default)]
-    pub access_count: u64,     // How many times this memory has been accessed
+    pub access_count: u64, // How many times this memory has been accessed
     #[serde(default)]
     pub activation_level: f64, // 0.0-1.0, boosted on recall/context, decayed each consolidation
     #[serde(default)]
-    pub alternatives: Vec<String>,  // What was considered but rejected (counterfactual memory)
+    pub alternatives: Vec<String>, // What was considered but rejected (counterfactual memory)
     #[serde(default)]
-    pub participants: Vec<String>,  // Who was involved (relational memory)
+    pub participants: Vec<String>, // Who was involved (relational memory)
     #[serde(default)]
     pub organization_id: Option<String>, // Multi-tenant isolation: org that owns this memory
 }
@@ -65,7 +65,11 @@ fn default_valence() -> String {
 }
 
 impl Memory {
-    pub fn new(memory_type: MemoryType, title: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn new(
+        memory_type: MemoryType,
+        title: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         let now = now_iso();
         Self {
             id: ulid::Ulid::new().to_string(),
@@ -141,7 +145,11 @@ mod tests {
 
     #[test]
     fn test_memory_new() {
-        let m = Memory::new(MemoryType::Decision, "Use NDJSON", "Newline-delimited JSON for IPC");
+        let m = Memory::new(
+            MemoryType::Decision,
+            "Use NDJSON",
+            "Newline-delimited JSON for IPC",
+        );
         assert_eq!(m.memory_type, MemoryType::Decision);
         assert_eq!(m.title, "Use NDJSON");
         assert_eq!(m.content, "Newline-delimited JSON for IPC");
@@ -185,21 +193,29 @@ mod tests {
 
     #[test]
     fn test_memory_valence_clamped() {
-        let mem = Memory::new(MemoryType::Decision, "test", "test")
-            .with_valence("positive", 1.5);
-        assert!((mem.intensity - 1.0).abs() < f64::EPSILON, "intensity should be clamped to 1.0");
+        let mem = Memory::new(MemoryType::Decision, "test", "test").with_valence("positive", 1.5);
+        assert!(
+            (mem.intensity - 1.0).abs() < f64::EPSILON,
+            "intensity should be clamped to 1.0"
+        );
 
-        let mem2 = Memory::new(MemoryType::Decision, "test", "test")
-            .with_valence("negative", -0.5);
-        assert!((mem2.intensity - 0.0).abs() < f64::EPSILON, "intensity should be clamped to 0.0");
+        let mem2 = Memory::new(MemoryType::Decision, "test", "test").with_valence("negative", -0.5);
+        assert!(
+            (mem2.intensity - 0.0).abs() < f64::EPSILON,
+            "intensity should be clamped to 0.0"
+        );
     }
 
     #[test]
     fn test_memory_serde_roundtrip() {
-        let original = Memory::new(MemoryType::Pattern, "Builder pattern", "Use fluent builders")
-            .with_confidence(0.85)
-            .with_tags(vec!["rust".to_string()])
-            .with_project("core");
+        let original = Memory::new(
+            MemoryType::Pattern,
+            "Builder pattern",
+            "Use fluent builders",
+        )
+        .with_confidence(0.85)
+        .with_tags(vec!["rust".to_string()])
+        .with_project("core");
 
         let json = serde_json::to_string(&original).expect("serialize");
         let restored: Memory = serde_json::from_str(&json).expect("deserialize");

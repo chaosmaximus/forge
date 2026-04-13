@@ -30,7 +30,10 @@ mod tests {
     fn test_forge_dir_uses_home() {
         // This test relies on HOME being set in CI/dev environments
         let dir = forge_dir();
-        assert!(dir.ends_with("/.forge"), "forge_dir should end with /.forge, got: {dir}");
+        assert!(
+            dir.ends_with("/.forge"),
+            "forge_dir should end with /.forge, got: {dir}"
+        );
     }
 
     #[test]

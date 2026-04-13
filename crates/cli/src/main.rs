@@ -251,7 +251,6 @@ enum Commands {
     },
 
     // ── A2A Inter-Session Messaging ──
-
     /// Send a message to another session
     #[command(name = "send")]
     Send {
@@ -305,7 +304,6 @@ enum Commands {
     },
 
     // ── A2A Permission Management ──
-
     /// Grant A2A permission (from agent → to agent)
     #[command(name = "grant-permission")]
     GrantPermission {
@@ -329,7 +327,6 @@ enum Commands {
     ListPermissions,
 
     // ── Knowledge Intelligence ──
-
     /// List detected entities (recurring concepts in project memories)
     #[command(name = "entities")]
     Entities {
@@ -417,7 +414,6 @@ enum Commands {
     },
 
     // ── Sync Commands ──
-
     /// Export memories as NDJSON with HLC metadata (for sync)
     #[command(name = "sync-export")]
     SyncExport {
@@ -543,7 +539,6 @@ enum Commands {
     },
 
     // ── Agent Teams ──
-
     /// Manage agent templates
     #[command(name = "agent-template")]
     AgentTemplate {
@@ -581,7 +576,6 @@ enum Commands {
     },
 
     // ── Teams ──
-
     /// Manage teams
     #[command(name = "team")]
     Team {
@@ -590,7 +584,6 @@ enum Commands {
     },
 
     // ── Meetings ──
-
     /// Manage meetings
     #[command(name = "meeting")]
     Meeting {
@@ -599,7 +592,6 @@ enum Commands {
     },
 
     // ── Notifications ──
-
     /// List notifications
     #[command(name = "notifications")]
     Notifications {
@@ -640,7 +632,6 @@ enum Commands {
     },
 
     // ── Streaming & Heartbeat ──
-
     /// Subscribe to real-time daemon events (streams NDJSON to stdout)
     Subscribe {
         /// Filter event types (comma-separated)
@@ -663,7 +654,6 @@ enum Commands {
     },
 
     // ── Proactive Context (Prajna) ──
-
     /// Per-turn context delta check (used by UserPromptSubmit hook)
     #[command(name = "context-refresh")]
     ContextRefresh {
@@ -702,7 +692,6 @@ enum Commands {
     },
 
     // ── Organization Hierarchy ──
-
     /// Create an organization
     #[command(name = "org-create")]
     OrgCreate {
@@ -751,7 +740,6 @@ enum Commands {
     },
 
     // ── Memory Self-Healing ──
-
     /// Show memory healing status
     #[command(name = "healing-status")]
     HealingStatus,
@@ -770,7 +758,6 @@ enum Commands {
     },
 
     // ── Workspace ──
-
     /// Initialize workspace directories for an organization
     #[command(name = "org-init")]
     OrgInit {
@@ -1262,7 +1249,10 @@ async fn main() {
             metadata,
         } => {
             let meta_value = metadata.and_then(|s| serde_json::from_str(&s).ok());
-            commands::memory::remember(r#type, title, content, confidence, tags, project, meta_value).await;
+            commands::memory::remember(
+                r#type, title, content, confidence, tags, project, meta_value,
+            )
+            .await;
         }
         Commands::Forget { id } => {
             commands::memory::forget(id).await;
@@ -1323,13 +1313,23 @@ async fn main() {
         Commands::LspStatus => {
             commands::system::lsp_status().await;
         }
-        Commands::RegisterSession { id, agent, project, cwd, role } => {
+        Commands::RegisterSession {
+            id,
+            agent,
+            project,
+            cwd,
+            role,
+        } => {
             commands::system::register_session(id, agent, project, cwd, role).await;
         }
         Commands::EndSession { id } => {
             commands::system::end_session(id).await;
         }
-        Commands::CleanupSessions { prefix, older_than, prune } => {
+        Commands::CleanupSessions {
+            prefix,
+            older_than,
+            prune,
+        } => {
             // Parse duration string like "24h", "7d", "3600" into seconds
             let older_than_secs = older_than.map(|s| {
                 let s = s.trim();
@@ -1345,10 +1345,22 @@ async fn main() {
             });
             commands::system::cleanup_sessions(prefix, older_than_secs, prune).await;
         }
-        Commands::Send { to, kind, topic, text, project, timeout } => {
+        Commands::Send {
+            to,
+            kind,
+            topic,
+            text,
+            project,
+            timeout,
+        } => {
             commands::system::send_message(to, kind, topic, text, project, timeout).await;
         }
-        Commands::Messages { session, status, limit, full } => {
+        Commands::Messages {
+            session,
+            status,
+            limit,
+            full,
+        } => {
             commands::system::list_messages(session, status, limit, full).await;
         }
         Commands::MessageRead { id } => {
@@ -1357,7 +1369,12 @@ async fn main() {
         Commands::Ack { ids } => {
             commands::system::ack_messages(ids).await;
         }
-        Commands::GrantPermission { from, to, from_project, to_project } => {
+        Commands::GrantPermission {
+            from,
+            to,
+            from_project,
+            to_project,
+        } => {
             commands::system::grant_permission(from, to, from_project, to_project).await;
         }
         Commands::RevokePermission { id } => {
@@ -1372,7 +1389,13 @@ async fn main() {
         Commands::ContextTrace { agent, project } => {
             commands::system::context_trace(agent, project).await;
         }
-        Commands::CompileContext { agent, project, static_only, session, focus } => {
+        Commands::CompileContext {
+            agent,
+            project,
+            static_only,
+            session,
+            focus,
+        } => {
             commands::manas::compile_context(agent, project, static_only, session, focus).await;
         }
         Commands::ManasHealth => {
@@ -1400,7 +1423,11 @@ async fn main() {
         Commands::Tools => {
             commands::manas::tools().await;
         }
-        Commands::Perceptions { project, limit, offset } => {
+        Commands::Perceptions {
+            project,
+            limit,
+            offset,
+        } => {
             commands::manas::perceptions(project, limit, offset).await;
         }
 
@@ -1459,9 +1486,15 @@ async fn main() {
         }
         Commands::CleanupMemory => {
             match client::send(&forge_core::protocol::Request::CleanupMemory).await {
-                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::CleanupMemoryResult {
-                    garbage_deleted, projects_normalized, perceptions_purged, declared_cleaned,
-                } }) => {
+                Ok(forge_core::protocol::Response::Ok {
+                    data:
+                        forge_core::protocol::ResponseData::CleanupMemoryResult {
+                            garbage_deleted,
+                            projects_normalized,
+                            perceptions_purged,
+                            declared_cleaned,
+                        },
+                }) => {
                     println!("Memory Cleanup Complete");
                     println!("  Garbage memories deleted: {garbage_deleted}");
                     println!("  Project names normalized: {projects_normalized}");
@@ -1482,7 +1515,9 @@ async fn main() {
         Commands::Restart => {
             println!("Sending graceful shutdown to daemon...");
             match client::send(&forge_core::protocol::Request::Shutdown).await {
-                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::Shutdown }) => {
+                Ok(forge_core::protocol::Response::Ok {
+                    data: forge_core::protocol::ResponseData::Shutdown,
+                }) => {
                     println!("Daemon shutting down (draining in-flight requests, max 5s)...");
                     // Wait for daemon to exit
                     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
@@ -1493,7 +1528,9 @@ async fn main() {
                             println!("Daemon restarted successfully.");
                         }
                         _ => {
-                            println!("Daemon restart in progress — next command will auto-start it.");
+                            println!(
+                                "Daemon restart in progress — next command will auto-start it."
+                            );
                         }
                     }
                 }
@@ -1507,32 +1544,47 @@ async fn main() {
                 }
             }
         }
-        Commands::VacuumDb => {
-            match client::send(&forge_core::protocol::Request::VacuumDb).await {
-                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::Vacuumed {
-                    faded_purged, orphan_files_removed, orphan_symbols_removed, orphan_edges_removed, freed_bytes,
-                } }) => {
-                    println!("Database Vacuum Complete");
-                    println!("  Faded memories purged: {faded_purged}");
-                    println!("  Orphan files removed: {orphan_files_removed}");
-                    println!("  Orphan symbols removed: {orphan_symbols_removed}");
-                    println!("  Orphan edges removed: {orphan_edges_removed}");
-                    if freed_bytes > 0 {
-                        println!("  Disk space freed: {:.1} MB", freed_bytes as f64 / 1_048_576.0);
-                    }
+        Commands::VacuumDb => match client::send(&forge_core::protocol::Request::VacuumDb).await {
+            Ok(forge_core::protocol::Response::Ok {
+                data:
+                    forge_core::protocol::ResponseData::Vacuumed {
+                        faded_purged,
+                        orphan_files_removed,
+                        orphan_symbols_removed,
+                        orphan_edges_removed,
+                        freed_bytes,
+                    },
+            }) => {
+                println!("Database Vacuum Complete");
+                println!("  Faded memories purged: {faded_purged}");
+                println!("  Orphan files removed: {orphan_files_removed}");
+                println!("  Orphan symbols removed: {orphan_symbols_removed}");
+                println!("  Orphan edges removed: {orphan_edges_removed}");
+                if freed_bytes > 0 {
+                    println!(
+                        "  Disk space freed: {:.1} MB",
+                        freed_bytes as f64 / 1_048_576.0
+                    );
                 }
-                Ok(forge_core::protocol::Response::Error { message }) => {
-                    eprintln!("vacuum failed: {message}");
-                }
-                Ok(other) => eprintln!("unexpected response: {other:?}"),
-                Err(e) => { eprintln!("vacuum error: {e}"); std::process::exit(1); }
             }
-        }
+            Ok(forge_core::protocol::Response::Error { message }) => {
+                eprintln!("vacuum failed: {message}");
+            }
+            Ok(other) => eprintln!("unexpected response: {other:?}"),
+            Err(e) => {
+                eprintln!("vacuum error: {e}");
+                std::process::exit(1);
+            }
+        },
         Commands::BackfillAffects => {
             match client::send(&forge_core::protocol::Request::BackfillAffects).await {
-                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::BackfillAffectsResult {
-                    memories_scanned, edges_created,
-                } }) => {
+                Ok(forge_core::protocol::Response::Ok {
+                    data:
+                        forge_core::protocol::ResponseData::BackfillAffectsResult {
+                            memories_scanned,
+                            edges_created,
+                        },
+                }) => {
                     println!("Backfill Affects Complete");
                     println!("  Memories scanned: {memories_scanned}");
                     println!("  New affects edges created: {edges_created}");
@@ -1541,19 +1593,31 @@ async fn main() {
                     eprintln!("backfill-affects failed: {message}");
                 }
                 Ok(other) => eprintln!("unexpected response: {other:?}"),
-                Err(e) => { eprintln!("backfill-affects error: {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("backfill-affects error: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Commands::FindSymbol { name, file } => {
             match client::send(&forge_core::protocol::Request::FindSymbol { name, file }).await {
-                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::SymbolResults { symbols } }) => {
+                Ok(forge_core::protocol::Response::Ok {
+                    data: forge_core::protocol::ResponseData::SymbolResults { symbols },
+                }) => {
                     if symbols.is_empty() {
                         println!("No symbols found.");
                     } else {
                         println!("{} symbol(s) found:\n", symbols.len());
                         for s in &symbols {
-                            let parent_str = s.parent.as_deref().map(|p| format!(" (in {p})")).unwrap_or_default();
-                            println!("  {} [{}] {}:{}{}", s.name, s.kind, s.file, s.line, parent_str);
+                            let parent_str = s
+                                .parent
+                                .as_deref()
+                                .map(|p| format!(" (in {p})"))
+                                .unwrap_or_default();
+                            println!(
+                                "  {} [{}] {}:{}{}",
+                                s.name, s.kind, s.file, s.line, parent_str
+                            );
                         }
                     }
                 }
@@ -1561,18 +1625,27 @@ async fn main() {
                     eprintln!("find-symbol failed: {message}");
                 }
                 Ok(other) => eprintln!("unexpected response: {other:?}"),
-                Err(e) => { eprintln!("find-symbol error: {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("find-symbol error: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Commands::GetSymbolsOverview { file } => {
             match client::send(&forge_core::protocol::Request::GetSymbolsOverview { file }).await {
-                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::SymbolResults { symbols } }) => {
+                Ok(forge_core::protocol::Response::Ok {
+                    data: forge_core::protocol::ResponseData::SymbolResults { symbols },
+                }) => {
                     if symbols.is_empty() {
                         println!("No symbols found in file.");
                     } else {
                         println!("{} symbol(s):\n", symbols.len());
                         for s in &symbols {
-                            let parent_str = s.parent.as_deref().map(|p| format!(" (in {p})")).unwrap_or_default();
+                            let parent_str = s
+                                .parent
+                                .as_deref()
+                                .map(|p| format!(" (in {p})"))
+                                .unwrap_or_default();
                             println!("  L{:<5} {} [{}]{}", s.line, s.name, s.kind, parent_str);
                         }
                     }
@@ -1581,7 +1654,10 @@ async fn main() {
                     eprintln!("symbols failed: {message}");
                 }
                 Ok(other) => eprintln!("unexpected response: {other:?}"),
-                Err(e) => { eprintln!("symbols error: {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("symbols error: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Commands::Bootstrap { project } => {
@@ -1603,16 +1679,43 @@ async fn main() {
             ConfigAction::Set { key, value } => {
                 commands::system::config_set(key, value).await;
             }
-            ConfigAction::SetScoped { scope, scope_id, key, value, locked, ceiling } => {
-                commands::system::config_set_scoped(scope, scope_id, key, value, locked, ceiling).await;
+            ConfigAction::SetScoped {
+                scope,
+                scope_id,
+                key,
+                value,
+                locked,
+                ceiling,
+            } => {
+                commands::system::config_set_scoped(scope, scope_id, key, value, locked, ceiling)
+                    .await;
             }
-            ConfigAction::GetEffective { session, agent, reality, user, team, organization } => {
-                commands::system::config_get_effective(session, agent, reality, user, team, organization).await;
+            ConfigAction::GetEffective {
+                session,
+                agent,
+                reality,
+                user,
+                team,
+                organization,
+            } => {
+                commands::system::config_get_effective(
+                    session,
+                    agent,
+                    reality,
+                    user,
+                    team,
+                    organization,
+                )
+                .await;
             }
             ConfigAction::ListScoped { scope, scope_id } => {
                 commands::system::config_list_scoped(scope, scope_id).await;
             }
-            ConfigAction::DeleteScoped { scope, scope_id, key } => {
+            ConfigAction::DeleteScoped {
+                scope,
+                scope_id,
+                key,
+            } => {
                 commands::system::config_delete_scoped(scope, scope_id, key).await;
             }
         },
@@ -1626,13 +1729,26 @@ async fn main() {
         // ── Agent Teams ──
         Commands::AgentTemplate { action } => match action {
             AgentTemplateAction::Create {
-                name, description, agent_type, system_context,
-                identity_facets, config_overrides, knowledge_domains, decision_style,
+                name,
+                description,
+                agent_type,
+                system_context,
+                identity_facets,
+                config_overrides,
+                knowledge_domains,
+                decision_style,
             } => {
                 commands::teams::create_agent_template(
-                    name, description, agent_type, system_context,
-                    identity_facets, config_overrides, knowledge_domains, decision_style,
-                ).await;
+                    name,
+                    description,
+                    agent_type,
+                    system_context,
+                    identity_facets,
+                    config_overrides,
+                    knowledge_domains,
+                    decision_style,
+                )
+                .await;
             }
             AgentTemplateAction::List { org } => {
                 commands::teams::list_agent_templates(org).await;
@@ -1645,7 +1761,12 @@ async fn main() {
             }
         },
         Commands::Agent { action } => match action {
-            AgentAction::Spawn { template, session_id, project, team } => {
+            AgentAction::Spawn {
+                template,
+                session_id,
+                project,
+                team,
+            } => {
                 commands::teams::spawn_agent(template, session_id, project, team).await;
             }
             AgentAction::Retire { session } => {
@@ -1655,11 +1776,20 @@ async fn main() {
         Commands::Agents { team } => {
             commands::teams::list_agents(team).await;
         }
-        Commands::AgentStatus { session, status, task } => {
+        Commands::AgentStatus {
+            session,
+            status,
+            task,
+        } => {
             commands::teams::update_agent_status(session, status, task).await;
         }
         Commands::Team { action } => match action {
-            TeamAction::Create { name, team_type, purpose, parent } => {
+            TeamAction::Create {
+                name,
+                team_type,
+                purpose,
+                parent,
+            } => {
                 commands::teams::create_team(name, team_type, purpose, parent).await;
             }
             TeamAction::Members { name } => {
@@ -1671,7 +1801,12 @@ async fn main() {
             TeamAction::Status { name, team_id } => {
                 commands::teams::team_status(name, team_id).await;
             }
-            TeamAction::Run { name, templates, from_file, topology } => {
+            TeamAction::Run {
+                name,
+                templates,
+                from_file,
+                topology,
+            } => {
                 commands::teams::run_team(name, templates, from_file, topology).await;
             }
             TeamAction::Stop { name } => {
@@ -1679,8 +1814,15 @@ async fn main() {
             }
         },
         Commands::Meeting { action } => match action {
-            MeetingAction::Create { team, topic, context, orchestrator, participants } => {
-                commands::teams::create_meeting(team, topic, context, orchestrator, participants).await;
+            MeetingAction::Create {
+                team,
+                topic,
+                context,
+                orchestrator,
+                participants,
+            } => {
+                commands::teams::create_meeting(team, topic, context, orchestrator, participants)
+                    .await;
             }
             MeetingAction::Status { id } => {
                 commands::teams::meeting_status(id).await;
@@ -1700,11 +1842,21 @@ async fn main() {
             MeetingAction::Transcript { id } => {
                 commands::teams::meeting_transcript(id).await;
             }
-            MeetingAction::Vote { id, choice, session } => {
-                let req = forge_core::protocol::Request::MeetingVote { meeting_id: id, session_id: session, choice };
+            MeetingAction::Vote {
+                id,
+                choice,
+                session,
+            } => {
+                let req = forge_core::protocol::Request::MeetingVote {
+                    meeting_id: id,
+                    session_id: session,
+                    choice,
+                };
                 match client::send(&req).await {
                     Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
-                    Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                    Ok(forge_core::protocol::Response::Error { message }) => {
+                        eprintln!("Error: {message}")
+                    }
                     Err(e) => eprintln!("Connection error: {e}"),
                 }
             }
@@ -1712,14 +1864,20 @@ async fn main() {
                 let req = forge_core::protocol::Request::MeetingResult { meeting_id: id };
                 match client::send(&req).await {
                     Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
-                    Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                    Ok(forge_core::protocol::Response::Error { message }) => {
+                        eprintln!("Error: {message}")
+                    }
                     Err(e) => eprintln!("Connection error: {e}"),
                 }
             }
         },
 
         // ── Notifications ──
-        Commands::Notifications { status, category, limit } => {
+        Commands::Notifications {
+            status,
+            category,
+            limit,
+        } => {
             commands::teams::list_notifications(status, category, limit).await;
         }
         Commands::AckNotification { id } => {
@@ -1728,13 +1886,21 @@ async fn main() {
         Commands::DismissNotification { id } => {
             commands::teams::dismiss_notification(id).await;
         }
-        Commands::ActNotification { id, approve, reject } => {
+        Commands::ActNotification {
+            id,
+            approve,
+            reject,
+        } => {
             let approved = if reject { false } else { approve };
             commands::teams::act_on_notification(id, approved).await;
         }
 
         // ── Streaming & Heartbeat ──
-        Commands::Subscribe { events, session, team } => {
+        Commands::Subscribe {
+            events,
+            session,
+            team,
+        } => {
             commands::system::subscribe(events, session, team).await;
         }
         Commands::SessionHeartbeat { session } => {
@@ -1745,10 +1911,17 @@ async fn main() {
         Commands::ContextRefresh { session_id, since } => {
             commands::system::context_refresh(session_id, since).await;
         }
-        Commands::CompletionCheck { session_id, claimed_done } => {
+        Commands::CompletionCheck {
+            session_id,
+            claimed_done,
+        } => {
             commands::system::completion_check(session_id, claimed_done).await;
         }
-        Commands::TaskCompletionCheck { session_id, subject, description } => {
+        Commands::TaskCompletionCheck {
+            session_id,
+            subject,
+            description,
+        } => {
             commands::system::task_completion_check(session_id, subject, description).await;
         }
         Commands::ContextStats { session_id } => {
@@ -1768,7 +1941,14 @@ async fn main() {
         Commands::TeamTree { org } => {
             commands::teams::team_tree(org).await;
         }
-        Commands::TeamSendCmd { team, kind, topic, text, from, recursive } => {
+        Commands::TeamSendCmd {
+            team,
+            kind,
+            topic,
+            text,
+            from,
+            recursive,
+        } => {
             commands::teams::team_send(team, kind, topic, text, from, recursive).await;
         }
 
@@ -1798,33 +1978,57 @@ async fn main() {
         Commands::LicenseStatus => {
             let req = forge_core::protocol::Request::LicenseStatus;
             match client::send(&req).await {
-                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::LicenseStatusResult { tier, has_key } }) => {
+                Ok(forge_core::protocol::Response::Ok {
+                    data: forge_core::protocol::ResponseData::LicenseStatusResult { tier, has_key },
+                }) => {
                     println!("License Tier: {tier}");
-                    println!("License Key:  {}", if has_key { "configured" } else { "none" });
+                    println!(
+                        "License Key:  {}",
+                        if has_key { "configured" } else { "none" }
+                    );
                 }
-                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("Error: {message}")
+                }
                 Ok(other) => eprintln!("Unexpected: {other:?}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
         Commands::LicenseSet { tier, key } => {
-            let req = forge_core::protocol::Request::SetLicense { tier: tier.clone(), key };
+            let req = forge_core::protocol::Request::SetLicense {
+                tier: tier.clone(),
+                key,
+            };
             match client::send(&req).await {
-                Ok(forge_core::protocol::Response::Ok { data: forge_core::protocol::ResponseData::LicenseSet { tier } }) => {
+                Ok(forge_core::protocol::Response::Ok {
+                    data: forge_core::protocol::ResponseData::LicenseSet { tier },
+                }) => {
                     println!("License tier set to: {tier}");
                 }
-                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("Error: {message}")
+                }
                 Ok(other) => eprintln!("Unexpected: {other:?}"),
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
 
         // ── Skills Registry ──
-        Commands::SkillsList { category, search, limit } => {
-            let req = forge_core::protocol::Request::SkillsList { category, search, limit: Some(limit) };
+        Commands::SkillsList {
+            category,
+            search,
+            limit,
+        } => {
+            let req = forge_core::protocol::Request::SkillsList {
+                category,
+                search,
+                limit: Some(limit),
+            };
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
-                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("Error: {message}")
+                }
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -1832,7 +2036,9 @@ async fn main() {
             let req = forge_core::protocol::Request::SkillsInstall { name, project };
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
-                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("Error: {message}")
+                }
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -1840,7 +2046,9 @@ async fn main() {
             let req = forge_core::protocol::Request::SkillsUninstall { name, project };
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
-                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("Error: {message}")
+                }
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -1848,7 +2056,9 @@ async fn main() {
             let req = forge_core::protocol::Request::SkillsInfo { name };
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
-                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("Error: {message}")
+                }
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -1856,7 +2066,9 @@ async fn main() {
             let req = forge_core::protocol::Request::SkillsRefresh;
             match client::send(&req).await {
                 Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
-                Ok(forge_core::protocol::Response::Error { message }) => eprintln!("Error: {message}"),
+                Ok(forge_core::protocol::Response::Error { message }) => {
+                    eprintln!("Error: {message}")
+                }
                 Err(e) => eprintln!("Connection error: {e}"),
             }
         }
@@ -1899,7 +2111,11 @@ mod tests {
     #[test]
     fn test_detect_reality_command_parse_no_path() {
         let cli = Cli::try_parse_from(["forge-next", "detect-reality"]);
-        assert!(cli.is_ok(), "detect-reality without --path should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "detect-reality without --path should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::DetectReality { path } => {
                 assert!(path.is_none());
@@ -1911,7 +2127,13 @@ mod tests {
     #[test]
     fn test_code_search_command_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "code-search", "authenticate", "--kind", "function", "--limit", "5",
+            "forge-next",
+            "code-search",
+            "authenticate",
+            "--kind",
+            "function",
+            "--limit",
+            "5",
         ]);
         assert!(cli.is_ok(), "code-search should parse: {:?}", cli.err());
         match cli.unwrap().command {
@@ -1927,7 +2149,11 @@ mod tests {
     #[test]
     fn test_code_search_command_parse_defaults() {
         let cli = Cli::try_parse_from(["forge-next", "code-search", "MyClass"]);
-        assert!(cli.is_ok(), "code-search with defaults should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "code-search with defaults should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::CodeSearch { query, kind, limit } => {
                 assert_eq!(query, "MyClass");
@@ -1953,18 +2179,36 @@ mod tests {
     #[test]
     fn test_config_set_scoped_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "config", "set-scoped",
-            "--scope", "organization",
-            "--scope-id", "default",
-            "--key", "context.budget_chars",
-            "--value", "50000",
+            "forge-next",
+            "config",
+            "set-scoped",
+            "--scope",
+            "organization",
+            "--scope-id",
+            "default",
+            "--key",
+            "context.budget_chars",
+            "--value",
+            "50000",
             "--locked",
-            "--ceiling", "100000",
+            "--ceiling",
+            "100000",
         ]);
-        assert!(cli.is_ok(), "config set-scoped should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "config set-scoped should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Config { action } => match action {
-                ConfigAction::SetScoped { scope, scope_id, key, value, locked, ceiling } => {
+                ConfigAction::SetScoped {
+                    scope,
+                    scope_id,
+                    key,
+                    value,
+                    locked,
+                    ceiling,
+                } => {
                     assert_eq!(scope, "organization");
                     assert_eq!(scope_id, "default");
                     assert_eq!(key, "context.budget_chars");
@@ -1981,14 +2225,29 @@ mod tests {
     #[test]
     fn test_config_get_effective_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "config", "get-effective",
-            "--organization", "default",
-            "--agent", "claude-code",
+            "forge-next",
+            "config",
+            "get-effective",
+            "--organization",
+            "default",
+            "--agent",
+            "claude-code",
         ]);
-        assert!(cli.is_ok(), "config get-effective should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "config get-effective should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Config { action } => match action {
-                ConfigAction::GetEffective { session, agent, reality, user, team, organization } => {
+                ConfigAction::GetEffective {
+                    session,
+                    agent,
+                    reality,
+                    user,
+                    team,
+                    organization,
+                } => {
                     assert!(session.is_none());
                     assert_eq!(agent.as_deref(), Some("claude-code"));
                     assert!(reality.is_none());
@@ -2005,11 +2264,19 @@ mod tests {
     #[test]
     fn test_config_list_scoped_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "config", "list-scoped",
-            "--scope", "reality",
-            "--scope-id", "r1",
+            "forge-next",
+            "config",
+            "list-scoped",
+            "--scope",
+            "reality",
+            "--scope-id",
+            "r1",
         ]);
-        assert!(cli.is_ok(), "config list-scoped should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "config list-scoped should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Config { action } => match action {
                 ConfigAction::ListScoped { scope, scope_id } => {
@@ -2025,15 +2292,28 @@ mod tests {
     #[test]
     fn test_config_delete_scoped_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "config", "delete-scoped",
-            "--scope", "organization",
-            "--scope-id", "default",
-            "--key", "max_tokens",
+            "forge-next",
+            "config",
+            "delete-scoped",
+            "--scope",
+            "organization",
+            "--scope-id",
+            "default",
+            "--key",
+            "max_tokens",
         ]);
-        assert!(cli.is_ok(), "config delete-scoped should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "config delete-scoped should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Config { action } => match action {
-                ConfigAction::DeleteScoped { scope, scope_id, key } => {
+                ConfigAction::DeleteScoped {
+                    scope,
+                    scope_id,
+                    key,
+                } => {
                     assert_eq!(scope, "organization");
                     assert_eq!(scope_id, "default");
                     assert_eq!(key, "max_tokens");
@@ -2061,17 +2341,35 @@ mod tests {
     #[test]
     fn test_agent_template_create_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "agent-template", "create",
-            "--name", "CTO",
-            "--description", "Chief Technology Officer",
-            "--agent-type", "claude-code",
-            "--system-context", "You are the CTO",
-            "--decision-style", "analytical",
+            "forge-next",
+            "agent-template",
+            "create",
+            "--name",
+            "CTO",
+            "--description",
+            "Chief Technology Officer",
+            "--agent-type",
+            "claude-code",
+            "--system-context",
+            "You are the CTO",
+            "--decision-style",
+            "analytical",
         ]);
-        assert!(cli.is_ok(), "agent-template create should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "agent-template create should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::AgentTemplate { action } => match action {
-                AgentTemplateAction::Create { name, description, agent_type, system_context, decision_style, .. } => {
+                AgentTemplateAction::Create {
+                    name,
+                    description,
+                    agent_type,
+                    system_context,
+                    decision_style,
+                    ..
+                } => {
                     assert_eq!(name, "CTO");
                     assert_eq!(description, "Chief Technology Officer");
                     assert_eq!(agent_type, "claude-code");
@@ -2087,7 +2385,11 @@ mod tests {
     #[test]
     fn test_agent_template_list_parse() {
         let cli = Cli::try_parse_from(["forge-next", "agent-template", "list"]);
-        assert!(cli.is_ok(), "agent-template list should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "agent-template list should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::AgentTemplate { action } => match action {
                 AgentTemplateAction::List { org } => {
@@ -2102,7 +2404,11 @@ mod tests {
     #[test]
     fn test_agent_template_get_by_name_parse() {
         let cli = Cli::try_parse_from(["forge-next", "agent-template", "get", "--name", "CTO"]);
-        assert!(cli.is_ok(), "agent-template get should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "agent-template get should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::AgentTemplate { action } => match action {
                 AgentTemplateAction::Get { name, id } => {
@@ -2117,8 +2423,13 @@ mod tests {
 
     #[test]
     fn test_agent_template_delete_parse() {
-        let cli = Cli::try_parse_from(["forge-next", "agent-template", "delete", "--id", "01KNF123"]);
-        assert!(cli.is_ok(), "agent-template delete should parse: {:?}", cli.err());
+        let cli =
+            Cli::try_parse_from(["forge-next", "agent-template", "delete", "--id", "01KNF123"]);
+        assert!(
+            cli.is_ok(),
+            "agent-template delete should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::AgentTemplate { action } => match action {
                 AgentTemplateAction::Delete { id } => {
@@ -2135,16 +2446,27 @@ mod tests {
     #[test]
     fn test_agent_spawn_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "agent", "spawn",
-            "--template", "CTO",
-            "--session-id", "cto-board",
-            "--project", "forge",
-            "--team", "board",
+            "forge-next",
+            "agent",
+            "spawn",
+            "--template",
+            "CTO",
+            "--session-id",
+            "cto-board",
+            "--project",
+            "forge",
+            "--team",
+            "board",
         ]);
         assert!(cli.is_ok(), "agent spawn should parse: {:?}", cli.err());
         match cli.unwrap().command {
             Commands::Agent { action } => match action {
-                AgentAction::Spawn { template, session_id, project, team } => {
+                AgentAction::Spawn {
+                    template,
+                    session_id,
+                    project,
+                    team,
+                } => {
                     assert_eq!(template, "CTO");
                     assert_eq!(session_id, "cto-board");
                     assert_eq!(project.as_deref(), Some("forge"));
@@ -2186,7 +2508,11 @@ mod tests {
     #[test]
     fn test_agents_list_no_filter_parse() {
         let cli = Cli::try_parse_from(["forge-next", "agents"]);
-        assert!(cli.is_ok(), "agents without filter should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "agents without filter should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Agents { team } => {
                 assert!(team.is_none());
@@ -2198,14 +2524,22 @@ mod tests {
     #[test]
     fn test_agent_status_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "agent-status",
-            "--session", "cto-board",
-            "--status", "thinking",
-            "--task", "reviewing architecture",
+            "forge-next",
+            "agent-status",
+            "--session",
+            "cto-board",
+            "--status",
+            "thinking",
+            "--task",
+            "reviewing architecture",
         ]);
         assert!(cli.is_ok(), "agent-status should parse: {:?}", cli.err());
         match cli.unwrap().command {
-            Commands::AgentStatus { session, status, task } => {
+            Commands::AgentStatus {
+                session,
+                status,
+                task,
+            } => {
                 assert_eq!(session, "cto-board");
                 assert_eq!(status, "thinking");
                 assert_eq!(task.as_deref(), Some("reviewing architecture"));
@@ -2219,15 +2553,25 @@ mod tests {
     #[test]
     fn test_team_create_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "team", "create",
-            "--name", "board",
-            "--type", "agent",
-            "--purpose", "Strategic decisions",
+            "forge-next",
+            "team",
+            "create",
+            "--name",
+            "board",
+            "--type",
+            "agent",
+            "--purpose",
+            "Strategic decisions",
         ]);
         assert!(cli.is_ok(), "team create should parse: {:?}", cli.err());
         match cli.unwrap().command {
             Commands::Team { action } => match action {
-                TeamAction::Create { name, team_type, purpose, parent } => {
+                TeamAction::Create {
+                    name,
+                    team_type,
+                    purpose,
+                    parent,
+                } => {
                     assert_eq!(name, "board");
                     assert_eq!(team_type.as_deref(), Some("agent"));
                     assert_eq!(purpose.as_deref(), Some("Strategic decisions"));
@@ -2257,11 +2601,19 @@ mod tests {
     #[test]
     fn test_team_set_orchestrator_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "team", "set-orchestrator",
-            "--name", "board",
-            "--session", "cto-board",
+            "forge-next",
+            "team",
+            "set-orchestrator",
+            "--name",
+            "board",
+            "--session",
+            "cto-board",
         ]);
-        assert!(cli.is_ok(), "team set-orchestrator should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "team set-orchestrator should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Team { action } => match action {
                 TeamAction::SetOrchestrator { name, session } => {
@@ -2293,21 +2645,38 @@ mod tests {
     #[test]
     fn test_team_run_with_templates_parses() {
         let cli = Cli::try_parse_from([
-            "forge-next", "team", "run",
-            "--name", "Sprint",
-            "--templates", "tech-lead,frontend-dev,backend-dev",
-            "--topology", "star",
+            "forge-next",
+            "team",
+            "run",
+            "--name",
+            "Sprint",
+            "--templates",
+            "tech-lead,frontend-dev,backend-dev",
+            "--topology",
+            "star",
         ]);
-        assert!(cli.is_ok(), "team run --templates should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "team run --templates should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Team { action } => match action {
-                TeamAction::Run { name, templates, from_file, topology } => {
+                TeamAction::Run {
+                    name,
+                    templates,
+                    from_file,
+                    topology,
+                } => {
                     assert_eq!(name, "Sprint");
-                    assert_eq!(templates, Some(vec![
-                        "tech-lead".to_string(),
-                        "frontend-dev".to_string(),
-                        "backend-dev".to_string(),
-                    ]));
+                    assert_eq!(
+                        templates,
+                        Some(vec![
+                            "tech-lead".to_string(),
+                            "frontend-dev".to_string(),
+                            "backend-dev".to_string(),
+                        ])
+                    );
                     assert!(from_file.is_none());
                     assert_eq!(topology.as_deref(), Some("star"));
                 }
@@ -2320,14 +2689,27 @@ mod tests {
     #[test]
     fn test_team_run_with_from_file_parses() {
         let cli = Cli::try_parse_from([
-            "forge-next", "team", "run",
-            "--name", "Sprint",
-            "--from-file", "team-config.json",
+            "forge-next",
+            "team",
+            "run",
+            "--name",
+            "Sprint",
+            "--from-file",
+            "team-config.json",
         ]);
-        assert!(cli.is_ok(), "team run --from-file should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "team run --from-file should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Team { action } => match action {
-                TeamAction::Run { name, templates, from_file, topology } => {
+                TeamAction::Run {
+                    name,
+                    templates,
+                    from_file,
+                    topology,
+                } => {
                     assert_eq!(name, "Sprint");
                     assert!(templates.is_none());
                     assert_eq!(from_file.as_deref(), Some("team-config.json"));
@@ -2342,13 +2724,22 @@ mod tests {
     #[test]
     fn test_team_run_from_file_without_name_parses() {
         let cli = Cli::try_parse_from([
-            "forge-next", "team", "run",
-            "--from-file", "team-config.json",
+            "forge-next",
+            "team",
+            "run",
+            "--from-file",
+            "team-config.json",
         ]);
-        assert!(cli.is_ok(), "team run --from-file without --name should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "team run --from-file without --name should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Team { action } => match action {
-                TeamAction::Run { name, from_file, .. } => {
+                TeamAction::Run {
+                    name, from_file, ..
+                } => {
                     assert!(name.is_empty(), "name should default to empty");
                     assert_eq!(from_file.as_deref(), Some("team-config.json"));
                 }
@@ -2360,10 +2751,7 @@ mod tests {
 
     #[test]
     fn test_team_stop_parses() {
-        let cli = Cli::try_parse_from([
-            "forge-next", "team", "stop",
-            "--name", "Sprint",
-        ]);
+        let cli = Cli::try_parse_from(["forge-next", "team", "stop", "--name", "Sprint"]);
         assert!(cli.is_ok(), "team stop should parse: {:?}", cli.err());
         match cli.unwrap().command {
             Commands::Team { action } => match action {
@@ -2381,17 +2769,30 @@ mod tests {
     #[test]
     fn test_meeting_create_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "meeting", "create",
-            "--team", "team-01",
-            "--topic", "Architecture review",
-            "--context", "We need to decide on the DB",
-            "--orchestrator", "ceo-session",
-            "--participants", "cto-board,cmo-board,cfo-board",
+            "forge-next",
+            "meeting",
+            "create",
+            "--team",
+            "team-01",
+            "--topic",
+            "Architecture review",
+            "--context",
+            "We need to decide on the DB",
+            "--orchestrator",
+            "ceo-session",
+            "--participants",
+            "cto-board,cmo-board,cfo-board",
         ]);
         assert!(cli.is_ok(), "meeting create should parse: {:?}", cli.err());
         match cli.unwrap().command {
             Commands::Meeting { action } => match action {
-                MeetingAction::Create { team, topic, context, orchestrator, participants } => {
+                MeetingAction::Create {
+                    team,
+                    topic,
+                    context,
+                    orchestrator,
+                    participants,
+                } => {
                     assert_eq!(team, "team-01");
                     assert_eq!(topic, "Architecture review");
                     assert_eq!(context.as_deref(), Some("We need to decide on the DB"));
@@ -2422,7 +2823,11 @@ mod tests {
     #[test]
     fn test_meeting_responses_parse() {
         let cli = Cli::try_parse_from(["forge-next", "meeting", "responses", "--id", "m-01"]);
-        assert!(cli.is_ok(), "meeting responses should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "meeting responses should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Meeting { action } => match action {
                 MeetingAction::Responses { id } => {
@@ -2437,11 +2842,19 @@ mod tests {
     #[test]
     fn test_meeting_synthesize_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "meeting", "synthesize",
-            "--id", "m-01",
-            "--synthesis", "All agreed on PostgreSQL",
+            "forge-next",
+            "meeting",
+            "synthesize",
+            "--id",
+            "m-01",
+            "--synthesis",
+            "All agreed on PostgreSQL",
         ]);
-        assert!(cli.is_ok(), "meeting synthesize should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "meeting synthesize should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Meeting { action } => match action {
                 MeetingAction::Synthesize { id, synthesis } => {
@@ -2457,9 +2870,13 @@ mod tests {
     #[test]
     fn test_meeting_decide_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "meeting", "decide",
-            "--id", "m-01",
-            "--decision", "Use PostgreSQL for prod",
+            "forge-next",
+            "meeting",
+            "decide",
+            "--id",
+            "m-01",
+            "--decision",
+            "Use PostgreSQL for prod",
         ]);
         assert!(cli.is_ok(), "meeting decide should parse: {:?}", cli.err());
         match cli.unwrap().command {
@@ -2477,9 +2894,13 @@ mod tests {
     #[test]
     fn test_meeting_list_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "meeting", "list",
-            "--team", "team-01",
-            "--status", "open",
+            "forge-next",
+            "meeting",
+            "list",
+            "--team",
+            "team-01",
+            "--status",
+            "open",
         ]);
         assert!(cli.is_ok(), "meeting list should parse: {:?}", cli.err());
         match cli.unwrap().command {
@@ -2497,7 +2918,11 @@ mod tests {
     #[test]
     fn test_meeting_list_no_filter_parse() {
         let cli = Cli::try_parse_from(["forge-next", "meeting", "list"]);
-        assert!(cli.is_ok(), "meeting list without filter should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "meeting list without filter should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Meeting { action } => match action {
                 MeetingAction::List { team, status } => {
@@ -2513,7 +2938,11 @@ mod tests {
     #[test]
     fn test_meeting_transcript_parse() {
         let cli = Cli::try_parse_from(["forge-next", "meeting", "transcript", "--id", "m-01"]);
-        assert!(cli.is_ok(), "meeting transcript should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "meeting transcript should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Meeting { action } => match action {
                 MeetingAction::Transcript { id } => {
@@ -2531,11 +2960,17 @@ mod tests {
     fn test_endpoint_flag_before_subcommand() {
         let cli = Cli::try_parse_from([
             "forge-next",
-            "--endpoint", "https://forge.example.com",
-            "--token", "my-jwt",
+            "--endpoint",
+            "https://forge.example.com",
+            "--token",
+            "my-jwt",
             "health",
         ]);
-        assert!(cli.is_ok(), "endpoint+token before subcommand should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "endpoint+token before subcommand should parse: {:?}",
+            cli.err()
+        );
         let cli = cli.unwrap();
         assert_eq!(cli.endpoint.as_deref(), Some("https://forge.example.com"));
         assert_eq!(cli.token.as_deref(), Some("my-jwt"));
@@ -2547,9 +2982,14 @@ mod tests {
         let cli = Cli::try_parse_from([
             "forge-next",
             "health",
-            "--endpoint", "https://forge.example.com",
+            "--endpoint",
+            "https://forge.example.com",
         ]);
-        assert!(cli.is_ok(), "endpoint after subcommand should parse (global flag): {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "endpoint after subcommand should parse (global flag): {:?}",
+            cli.err()
+        );
         let cli = cli.unwrap();
         assert_eq!(cli.endpoint.as_deref(), Some("https://forge.example.com"));
         assert!(cli.token.is_none());
@@ -2568,10 +3008,18 @@ mod tests {
     fn test_endpoint_with_recall_command() {
         let cli = Cli::try_parse_from([
             "forge-next",
-            "--endpoint", "http://localhost:8080",
-            "recall", "test query", "--limit", "5",
+            "--endpoint",
+            "http://localhost:8080",
+            "recall",
+            "test query",
+            "--limit",
+            "5",
         ]);
-        assert!(cli.is_ok(), "endpoint with recall should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "endpoint with recall should parse: {:?}",
+            cli.err()
+        );
         let cli = cli.unwrap();
         assert_eq!(cli.endpoint.as_deref(), Some("http://localhost:8080"));
         match cli.command {
@@ -2588,14 +3036,24 @@ mod tests {
     #[test]
     fn test_subscribe_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "subscribe",
-            "--events", "memory_created,session_changed",
-            "--session", "s1",
+            "forge-next",
+            "subscribe",
+            "--events",
+            "memory_created,session_changed",
+            "--session",
+            "s1",
         ]);
         assert!(cli.is_ok(), "subscribe should parse: {:?}", cli.err());
         match cli.unwrap().command {
-            Commands::Subscribe { events, session, team } => {
-                assert_eq!(events, Some(vec!["memory_created".into(), "session_changed".into()]));
+            Commands::Subscribe {
+                events,
+                session,
+                team,
+            } => {
+                assert_eq!(
+                    events,
+                    Some(vec!["memory_created".into(), "session_changed".into()])
+                );
                 assert_eq!(session, Some("s1".into()));
                 assert!(team.is_none());
             }
@@ -2606,9 +3064,17 @@ mod tests {
     #[test]
     fn test_subscribe_no_args_parse() {
         let cli = Cli::try_parse_from(["forge-next", "subscribe"]);
-        assert!(cli.is_ok(), "subscribe with no args should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "subscribe with no args should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
-            Commands::Subscribe { events, session, team } => {
+            Commands::Subscribe {
+                events,
+                session,
+                team,
+            } => {
                 assert!(events.is_none());
                 assert!(session.is_none());
                 assert!(team.is_none());
@@ -2619,13 +3085,18 @@ mod tests {
 
     #[test]
     fn test_subscribe_with_team_parse() {
-        let cli = Cli::try_parse_from([
-            "forge-next", "subscribe",
-            "--team", "team-alpha",
-        ]);
-        assert!(cli.is_ok(), "subscribe with team should parse: {:?}", cli.err());
+        let cli = Cli::try_parse_from(["forge-next", "subscribe", "--team", "team-alpha"]);
+        assert!(
+            cli.is_ok(),
+            "subscribe with team should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
-            Commands::Subscribe { events, session, team } => {
+            Commands::Subscribe {
+                events,
+                session,
+                team,
+            } => {
                 assert!(events.is_none());
                 assert!(session.is_none());
                 assert_eq!(team, Some("team-alpha".into()));
@@ -2637,7 +3108,11 @@ mod tests {
     #[test]
     fn test_session_heartbeat_parse() {
         let cli = Cli::try_parse_from(["forge-next", "session-heartbeat", "--session", "s1"]);
-        assert!(cli.is_ok(), "session-heartbeat should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "session-heartbeat should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::SessionHeartbeat { session } => {
                 assert_eq!(session, "s1");
@@ -2658,17 +3133,12 @@ mod tests {
             "--since",
             "2026-04-06T12:00:00Z",
         ]);
-        assert!(
-            cli.is_ok(),
-            "context-refresh should parse: {:?}",
-            cli.err()
-        );
+        assert!(cli.is_ok(), "context-refresh should parse: {:?}", cli.err());
     }
 
     #[test]
     fn test_context_refresh_no_since_parse() {
-        let cli =
-            Cli::try_parse_from(["forge-next", "context-refresh", "--session-id", "s1"]);
+        let cli = Cli::try_parse_from(["forge-next", "context-refresh", "--session-id", "s1"]);
         assert!(
             cli.is_ok(),
             "context-refresh without --since should parse: {:?}",
@@ -2694,12 +3164,7 @@ mod tests {
 
     #[test]
     fn test_completion_check_no_flag_parse() {
-        let cli = Cli::try_parse_from([
-            "forge-next",
-            "completion-check",
-            "--session-id",
-            "s1",
-        ]);
+        let cli = Cli::try_parse_from(["forge-next", "completion-check", "--session-id", "s1"]);
         assert!(
             cli.is_ok(),
             "completion-check without --claimed-done should parse: {:?}",
@@ -2747,14 +3212,15 @@ mod tests {
 
     #[test]
     fn test_messages_with_full_flag_parse() {
-        let cli = Cli::try_parse_from([
-            "forge-next", "messages",
-            "--session", "s1",
-            "--full",
-        ]);
+        let cli = Cli::try_parse_from(["forge-next", "messages", "--session", "s1", "--full"]);
         assert!(cli.is_ok(), "messages --full should parse: {:?}", cli.err());
         match cli.unwrap().command {
-            Commands::Messages { session, status, limit, full } => {
+            Commands::Messages {
+                session,
+                status,
+                limit,
+                full,
+            } => {
                 assert_eq!(session, "s1");
                 assert!(status.is_none());
                 assert!(limit.is_none());
@@ -2766,11 +3232,12 @@ mod tests {
 
     #[test]
     fn test_messages_without_full_flag_parse() {
-        let cli = Cli::try_parse_from([
-            "forge-next", "messages",
-            "--session", "s1",
-        ]);
-        assert!(cli.is_ok(), "messages without --full should parse: {:?}", cli.err());
+        let cli = Cli::try_parse_from(["forge-next", "messages", "--session", "s1"]);
+        assert!(
+            cli.is_ok(),
+            "messages without --full should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Messages { session, full, .. } => {
                 assert_eq!(session, "s1");
@@ -2783,15 +3250,28 @@ mod tests {
     #[test]
     fn test_messages_full_with_status_and_limit_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "messages",
-            "--session", "s1",
-            "--status", "pending",
-            "--limit", "5",
+            "forge-next",
+            "messages",
+            "--session",
+            "s1",
+            "--status",
+            "pending",
+            "--limit",
+            "5",
             "--full",
         ]);
-        assert!(cli.is_ok(), "messages --full with status/limit should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "messages --full with status/limit should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
-            Commands::Messages { session, status, limit, full } => {
+            Commands::Messages {
+                session,
+                status,
+                limit,
+                full,
+            } => {
                 assert_eq!(session, "s1");
                 assert_eq!(status.as_deref(), Some("pending"));
                 assert_eq!(limit, Some(5));
@@ -2805,10 +3285,7 @@ mod tests {
 
     #[test]
     fn test_message_read_parse() {
-        let cli = Cli::try_parse_from([
-            "forge-next", "message-read",
-            "--id", "msg-01ABCDEF",
-        ]);
+        let cli = Cli::try_parse_from(["forge-next", "message-read", "--id", "msg-01ABCDEF"]);
         assert!(cli.is_ok(), "message-read should parse: {:?}", cli.err());
         match cli.unwrap().command {
             Commands::MessageRead { id } => {
@@ -2822,11 +3299,12 @@ mod tests {
 
     #[test]
     fn test_config_get_alias_parse() {
-        let cli = Cli::try_parse_from([
-            "forge-next", "config", "get",
-            "--agent", "claude-code",
-        ]);
-        assert!(cli.is_ok(), "config get (alias for get-effective) should parse: {:?}", cli.err());
+        let cli = Cli::try_parse_from(["forge-next", "config", "get", "--agent", "claude-code"]);
+        assert!(
+            cli.is_ok(),
+            "config get (alias for get-effective) should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Config { action } => match action {
                 ConfigAction::GetEffective { agent, .. } => {
@@ -2842,10 +3320,17 @@ mod tests {
     fn test_config_get_effective_still_works_parse() {
         // Ensure the original name still works alongside the alias
         let cli = Cli::try_parse_from([
-            "forge-next", "config", "get-effective",
-            "--agent", "claude-code",
+            "forge-next",
+            "config",
+            "get-effective",
+            "--agent",
+            "claude-code",
         ]);
-        assert!(cli.is_ok(), "config get-effective should still parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "config get-effective should still parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Config { action } => match action {
                 ConfigAction::GetEffective { agent, .. } => {
@@ -2871,7 +3356,15 @@ mod tests {
 
     #[test]
     fn test_org_from_template_parse() {
-        assert!(Cli::try_parse_from(["forge-next", "org-from-template", "--template", "startup", "--name", "MyOrg"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "forge-next",
+            "org-from-template",
+            "--template",
+            "startup",
+            "--name",
+            "MyOrg"
+        ])
+        .is_ok());
     }
 
     #[test]
@@ -2881,35 +3374,83 @@ mod tests {
 
     #[test]
     fn test_team_send_parse() {
-        assert!(Cli::try_parse_from(["forge-next", "team-send", "--team", "eng", "--kind", "notification", "--topic", "test", "--text", "hello"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "forge-next",
+            "team-send",
+            "--team",
+            "eng",
+            "--kind",
+            "notification",
+            "--topic",
+            "test",
+            "--text",
+            "hello"
+        ])
+        .is_ok());
     }
 
     #[test]
     fn test_register_session_with_role_parse() {
-        assert!(Cli::try_parse_from(["forge-next", "register-session", "--id", "s1", "--agent", "claude-code", "--role", "CTO"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "forge-next",
+            "register-session",
+            "--id",
+            "s1",
+            "--agent",
+            "claude-code",
+            "--role",
+            "CTO"
+        ])
+        .is_ok());
     }
 
     #[test]
     fn test_compile_context_with_focus_parse() {
-        assert!(Cli::try_parse_from(["forge-next", "compile-context", "--focus", "e2e-testing"]).is_ok());
-        assert!(Cli::try_parse_from(["forge-next", "compile-context", "--focus", "auth security", "--agent", "claude-code"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["forge-next", "compile-context", "--focus", "e2e-testing"])
+                .is_ok()
+        );
+        assert!(Cli::try_parse_from([
+            "forge-next",
+            "compile-context",
+            "--focus",
+            "auth security",
+            "--agent",
+            "claude-code"
+        ])
+        .is_ok());
     }
 
     // ── Recall --since tests ──
 
     #[test]
     fn test_recall_with_since_parse() {
-        assert!(Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "24h"]).is_ok());
-        assert!(Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "7d"]).is_ok());
-        assert!(Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "30m"]).is_ok());
-        assert!(Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "2026-04-07"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "24h"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "7d"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["forge-next", "recall", "test query", "--since", "30m"]).is_ok()
+        );
+        assert!(Cli::try_parse_from([
+            "forge-next",
+            "recall",
+            "test query",
+            "--since",
+            "2026-04-07"
+        ])
+        .is_ok());
     }
 
     #[test]
     fn test_recall_since_is_optional() {
         let cli = Cli::try_parse_from(["forge-next", "recall", "test query"]).unwrap();
         match cli.command {
-            Commands::Recall { since, .. } => assert!(since.is_none(), "since should default to None"),
+            Commands::Recall { since, .. } => {
+                assert!(since.is_none(), "since should default to None")
+            }
             other => panic!("expected Recall, got {other:?}"),
         }
     }
@@ -2930,10 +3471,25 @@ mod tests {
 
     #[test]
     fn test_perceptions_with_offset_parse() {
-        let cli = Cli::try_parse_from(["forge-next", "perceptions", "--offset", "10", "--limit", "5"]);
-        assert!(cli.is_ok(), "perceptions --offset should parse: {:?}", cli.err());
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "perceptions",
+            "--offset",
+            "10",
+            "--limit",
+            "5",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "perceptions --offset should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
-            Commands::Perceptions { project, limit, offset } => {
+            Commands::Perceptions {
+                project,
+                limit,
+                offset,
+            } => {
                 assert!(project.is_none());
                 assert_eq!(limit, 5);
                 assert_eq!(offset, 10);
@@ -2945,7 +3501,11 @@ mod tests {
     #[test]
     fn test_perceptions_offset_default_zero() {
         let cli = Cli::try_parse_from(["forge-next", "perceptions"]);
-        assert!(cli.is_ok(), "perceptions without --offset should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "perceptions without --offset should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Perceptions { offset, .. } => {
                 assert_eq!(offset, 0, "offset should default to 0");
@@ -2957,11 +3517,19 @@ mod tests {
     #[test]
     fn test_team_status_with_team_id_parse() {
         let cli = Cli::try_parse_from([
-            "forge-next", "team", "status",
-            "--name", "board",
-            "--team-id", "tid-123",
+            "forge-next",
+            "team",
+            "status",
+            "--name",
+            "board",
+            "--team-id",
+            "tid-123",
         ]);
-        assert!(cli.is_ok(), "team status --team-id should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "team status --team-id should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Team { action } => match action {
                 TeamAction::Status { name, team_id } => {
@@ -2977,12 +3545,19 @@ mod tests {
     #[test]
     fn test_team_status_without_team_id_parse() {
         let cli = Cli::try_parse_from(["forge-next", "team", "status", "--name", "board"]);
-        assert!(cli.is_ok(), "team status without --team-id should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "team status without --team-id should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
             Commands::Team { action } => match action {
                 TeamAction::Status { name, team_id } => {
                     assert_eq!(name, "board");
-                    assert!(team_id.is_none(), "team_id should be None when not provided");
+                    assert!(
+                        team_id.is_none(),
+                        "team_id should be None when not provided"
+                    );
                 }
                 other => panic!("expected Status, got {other:?}"),
             },

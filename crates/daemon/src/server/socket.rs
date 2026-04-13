@@ -320,7 +320,9 @@ pub async fn run_server(
         }
         if drain_start.elapsed() > drain_timeout {
             let in_flight = MAX_CONCURRENT_CONNECTIONS - available;
-            eprintln!("[daemon] drain timeout (5s), {in_flight} connections still active — forcing exit");
+            eprintln!(
+                "[daemon] drain timeout (5s), {in_flight} connections still active — forcing exit"
+            );
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -340,7 +342,9 @@ mod tests {
         let cursor = std::io::Cursor::new(data);
         let mut reader = BufReader::new(cursor);
         let mut buf = String::new();
-        let n = read_line_limited(&mut reader, &mut buf, 1024).await.unwrap();
+        let n = read_line_limited(&mut reader, &mut buf, 1024)
+            .await
+            .unwrap();
         assert_eq!(n, 12);
         assert_eq!(buf, "hello world\n");
     }
@@ -363,7 +367,9 @@ mod tests {
         let cursor = std::io::Cursor::new(data);
         let mut reader = BufReader::new(cursor);
         let mut buf = String::new();
-        let n = read_line_limited(&mut reader, &mut buf, 1024).await.unwrap();
+        let n = read_line_limited(&mut reader, &mut buf, 1024)
+            .await
+            .unwrap();
         assert_eq!(n, 0, "EOF should return 0");
         assert_eq!(buf, "");
     }
@@ -375,7 +381,9 @@ mod tests {
         let cursor = std::io::Cursor::new(data);
         let mut reader = BufReader::new(cursor);
         let mut buf = String::new();
-        let n = read_line_limited(&mut reader, &mut buf, 1024).await.unwrap();
+        let n = read_line_limited(&mut reader, &mut buf, 1024)
+            .await
+            .unwrap();
         assert_eq!(n, 15);
         assert_eq!(buf, "no newline here");
     }

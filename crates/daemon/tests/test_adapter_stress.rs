@@ -22,13 +22,21 @@ fn test_claude_malformed_lines() {
     // Line 3: valid JSON but missing required fields
     // Line 4: valid assistant message
     let content = concat!(
-        r#"{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","sessionId":"s1"}"#, "\n",
+        r#"{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","sessionId":"s1"}"#,
+        "\n",
         "this is not json at all\n",
-        r#"{"some":"random","json":"object"}"#, "\n",
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"world"}]},"uuid":"a1","sessionId":"s1"}"#, "\n",
+        r#"{"some":"random","json":"object"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"world"}]},"uuid":"a1","sessionId":"s1"}"#,
+        "\n",
     );
     let chunks = adapter.parse(content);
-    assert_eq!(chunks.len(), 2, "should parse only the 2 valid lines, got {}", chunks.len());
+    assert_eq!(
+        chunks.len(),
+        2,
+        "should parse only the 2 valid lines, got {}",
+        chunks.len()
+    );
     assert_eq!(chunks[0].role, "user");
     assert_eq!(chunks[0].content, "hello");
     assert_eq!(chunks[1].role, "assistant");
@@ -94,7 +102,10 @@ fn test_cline_truncated_json() {
     // Missing closing bracket — malformed JSON array
     let content = r#"[{"role":"user","content":"hello"}"#;
     let chunks = adapter.parse(content);
-    assert!(chunks.is_empty(), "truncated JSON array should produce 0 chunks");
+    assert!(
+        chunks.is_empty(),
+        "truncated JSON array should produce 0 chunks"
+    );
 }
 
 #[test]
@@ -105,9 +116,7 @@ fn test_cline_deeply_nested() {
     for _ in 0..50 {
         inner = format!("[{inner}]");
     }
-    let content = format!(
-        r#"[{{"role":"user","content":{inner}}}]"#
-    );
+    let content = format!(r#"[{{"role":"user","content":{inner}}}]"#);
     // Should either parse (extracting nothing useful from nested arrays) or return empty.
     // Must NOT stack overflow or panic.
     let chunks = adapter.parse(&content);
@@ -149,7 +158,12 @@ fn test_cline_mixed_content_types() {
     // 5. true (bool) → skipped
     // 6. object (not string/array) → skipped
     // 7. "another valid" (string)
-    assert_eq!(chunks.len(), 3, "expected 3 valid chunks, got {}", chunks.len());
+    assert_eq!(
+        chunks.len(),
+        3,
+        "expected 3 valid chunks, got {}",
+        chunks.len()
+    );
     assert_eq!(chunks[0].content, "valid string");
     assert_eq!(chunks[1].content, "valid block");
     assert_eq!(chunks[2].content, "another valid");
@@ -175,7 +189,12 @@ fn test_cline_huge_conversation() {
     }
     let content = format!("[{}]", messages.join(","));
     let chunks = adapter.parse(&content);
-    assert_eq!(chunks.len(), 1000, "all 1000 messages should be parsed, got {}", chunks.len());
+    assert_eq!(
+        chunks.len(),
+        1000,
+        "all 1000 messages should be parsed, got {}",
+        chunks.len()
+    );
     // Verify first and last
     assert_eq!(chunks[0].role, "user");
     assert_eq!(chunks[0].content, "Message number 0");
@@ -198,13 +217,21 @@ fn test_codex_empty_jsonl() {
 fn test_codex_malformed_lines() {
     let adapter = codex::CodexAdapter::new("/tmp/fake");
     let content = concat!(
-        r#"{"type":"response_item","timestamp":"t1","payload":{"role":"user","content":"valid line 1"}}"#, "\n",
+        r#"{"type":"response_item","timestamp":"t1","payload":{"role":"user","content":"valid line 1"}}"#,
+        "\n",
         "complete garbage not json\n",
-        r#"{"broken json"#, "\n",
-        r#"{"type":"response_item","timestamp":"t2","payload":{"role":"assistant","content":"valid line 2"}}"#, "\n",
+        r#"{"broken json"#,
+        "\n",
+        r#"{"type":"response_item","timestamp":"t2","payload":{"role":"assistant","content":"valid line 2"}}"#,
+        "\n",
     );
     let chunks = adapter.parse(content);
-    assert_eq!(chunks.len(), 2, "should parse only the 2 valid lines, got {}", chunks.len());
+    assert_eq!(
+        chunks.len(),
+        2,
+        "should parse only the 2 valid lines, got {}",
+        chunks.len()
+    );
     assert_eq!(chunks[0].role, "user");
     assert_eq!(chunks[0].content, "valid line 1");
     assert_eq!(chunks[1].role, "assistant");
@@ -235,16 +262,23 @@ fn test_codex_missing_role() {
 #[test]
 fn test_codex_incremental_boundary() {
     let adapter = codex::CodexAdapter::new("/tmp/fake");
-    let line1 = r#"{"type":"response_item","timestamp":"t1","payload":{"role":"user","content":"one"}}"#;
+    let line1 =
+        r#"{"type":"response_item","timestamp":"t1","payload":{"role":"user","content":"one"}}"#;
     let line2 = r#"{"type":"response_item","timestamp":"t2","payload":{"role":"assistant","content":"two"}}"#;
-    let line3 = r#"{"type":"response_item","timestamp":"t3","payload":{"role":"user","content":"three"}}"#;
+    let line3 =
+        r#"{"type":"response_item","timestamp":"t3","payload":{"role":"user","content":"three"}}"#;
     let partial = r#"{"type":"response_item","timestamp":"t4","payload":{"role":"assi"#;
 
     // 3 complete lines + partial 4th (no trailing newline)
     let content = format!("{line1}\n{line2}\n{line3}\n{partial}");
 
     let (chunks, offset) = adapter.parse_incremental(&content, 0);
-    assert_eq!(chunks.len(), 3, "should parse only the 3 complete lines, got {}", chunks.len());
+    assert_eq!(
+        chunks.len(),
+        3,
+        "should parse only the 3 complete lines, got {}",
+        chunks.len()
+    );
     assert_eq!(chunks[0].content, "one");
     assert_eq!(chunks[1].content, "two");
     assert_eq!(chunks[2].content, "three");
@@ -252,7 +286,10 @@ fn test_codex_incremental_boundary() {
     // Offset should be at end of line 3 (after the last \n before the partial)
     let expected_offset = line1.len() + 1 + line2.len() + 1 + line3.len() + 1;
     assert_eq!(offset, expected_offset, "offset should be at end of line 3");
-    assert!(offset < content.len(), "offset must not include partial line");
+    assert!(
+        offset < content.len(),
+        "offset must not include partial line"
+    );
 }
 
 #[test]
@@ -279,7 +316,11 @@ fn test_codex_large_content_blocks() {
     }
     // Count the number of blocks by splitting on newline
     let text_parts: Vec<&str> = chunks[0].content.split('\n').collect();
-    assert_eq!(text_parts.len(), 100, "should have 100 text parts joined by newlines");
+    assert_eq!(
+        text_parts.len(),
+        100,
+        "should have 100 text parts joined by newlines"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +335,9 @@ fn test_adapter_parse_does_not_panic_on_any_input() {
 
     // Build a string with 256 copies of each byte value 0-255 (256 * 256 = 65536 bytes)
     // Use lossy conversion since raw bytes may not be valid UTF-8
-    let all_bytes: Vec<u8> = (0..=255u8).flat_map(|b| std::iter::repeat_n(b, 256)).collect();
+    let all_bytes: Vec<u8> = (0..=255u8)
+        .flat_map(|b| std::iter::repeat_n(b, 256))
+        .collect();
     let garbage = String::from_utf8_lossy(&all_bytes).into_owned();
 
     // Must not panic — just return empty (or whatever, as long as no crash)
@@ -309,7 +352,16 @@ fn test_adapter_parse_does_not_panic_on_any_input() {
 
     // If we got here without panicking, the test passes.
     // Verify they returned something (even if empty)
-    assert!(_c1.len() <= all_bytes.len(), "should not produce more chunks than input bytes");
-    assert!(_c2.len() <= all_bytes.len(), "should not produce more chunks than input bytes");
-    assert!(_c3.len() <= all_bytes.len(), "should not produce more chunks than input bytes");
+    assert!(
+        _c1.len() <= all_bytes.len(),
+        "should not produce more chunks than input bytes"
+    );
+    assert!(
+        _c2.len() <= all_bytes.len(),
+        "should not produce more chunks than input bytes"
+    );
+    assert!(
+        _c3.len() <= all_bytes.len(),
+        "should not produce more chunks than input bytes"
+    );
 }

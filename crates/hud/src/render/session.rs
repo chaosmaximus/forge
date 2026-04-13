@@ -8,13 +8,23 @@ pub fn render_line3(stdin: &StdinData, state: &HudState, _width: usize) -> Strin
     let sep = format!(" {DIM}\u{2502}{RESET} "); // │
 
     // Determine which sections to show (from config, or all by default)
-    let show_sections: Vec<String> = state.hud_config.as_ref()
+    let show_sections: Vec<String> = state
+        .hud_config
+        .as_ref()
         .filter(|c| !c.sections.is_empty())
         .map(|c| c.sections.clone())
-        .unwrap_or_else(|| vec![
-            "memory".into(), "health".into(), "agents".into(),
-            "k8s".into(), "pwd".into(), "git".into(), "security".into(), "tasks".into(),
-        ]);
+        .unwrap_or_else(|| {
+            vec![
+                "memory".into(),
+                "health".into(),
+                "agents".into(),
+                "k8s".into(),
+                "pwd".into(),
+                "git".into(),
+                "security".into(),
+                "tasks".into(),
+            ]
+        });
 
     let section_enabled = |name: &str| show_sections.iter().any(|s| s == name);
 
@@ -59,11 +69,17 @@ pub fn render_line3(stdin: &StdinData, state: &HudState, _width: usize) -> Strin
     // Show active sessions count (other projects = interesting, same project = context)
     if !state.sessions.is_empty() {
         let current_project = stdin.project_name();
-        let other_count = state.sessions.iter()
+        let other_count = state
+            .sessions
+            .iter()
             .filter(|s| !s.project.is_empty() && s.project != current_project)
             .count();
-        let same_count = state.sessions.iter()
-            .filter(|s| s.project == current_project || (current_project.is_empty() && s.project.is_empty()))
+        let same_count = state
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.project == current_project || (current_project.is_empty() && s.project.is_empty())
+            })
             .count();
 
         let mut session_parts = Vec::new();
@@ -72,18 +88,32 @@ pub fn render_line3(stdin: &StdinData, state: &HudState, _width: usize) -> Strin
         }
         if other_count > 0 {
             // Show which other projects have active sessions
-            let mut other_projects: Vec<&str> = state.sessions.iter()
+            let mut other_projects: Vec<&str> = state
+                .sessions
+                .iter()
                 .filter(|s| !s.project.is_empty() && s.project != current_project)
                 .map(|s| s.project.as_str())
                 .collect();
             other_projects.sort();
             other_projects.dedup();
-            let names: String = other_projects.iter().take(3).copied().collect::<Vec<_>>().join(", ");
-            let extra = if other_projects.len() > 3 { format!("+{}", other_projects.len() - 3) } else { String::new() };
+            let names: String = other_projects
+                .iter()
+                .take(3)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let extra = if other_projects.len() > 3 {
+                format!("+{}", other_projects.len() - 3)
+            } else {
+                String::new()
+            };
             session_parts.push(format!("{other_count} in {names}{extra}"));
         }
         if !session_parts.is_empty() {
-            parts.push(format!("{DIM}\u{1F4E1} {}{RESET}", session_parts.join(", "))); // 📡
+            parts.push(format!(
+                "{DIM}\u{1F4E1} {}{RESET}",
+                session_parts.join(", ")
+            )); // 📡
         }
     }
 
@@ -111,22 +141,20 @@ fn render_team(team: &std::collections::HashMap<String, crate::state::AgentInfo>
 
     let mut parts = Vec::new();
     for (agent_id, info) in entries {
-        let display_name = info
-            .agent_type
-            .as_deref()
-            .unwrap_or(agent_id);
+        let display_name = info.agent_type.as_deref().unwrap_or(agent_id);
         let short = sanitize(display_name.strip_prefix("forge-").unwrap_or(display_name));
 
         let (icon, color) = match info.status.as_deref() {
-            Some("done") => ("\u{2713}", GREEN),       // ✓
-            Some("running") => ("\u{25d0}", YELLOW),    // ◐
-            Some("pending") => ("\u{23f3}", DIM),       // ⏳
-            Some("blocked") => ("\u{2717}", RED),       // ✗
-            Some("stale") => ("\u{26a0}", RED),         // ⚠
+            Some("done") => ("\u{2713}", GREEN),     // ✓
+            Some("running") => ("\u{25d0}", YELLOW), // ◐
+            Some("pending") => ("\u{23f3}", DIM),    // ⏳
+            Some("blocked") => ("\u{2717}", RED),    // ✗
+            Some("stale") => ("\u{26a0}", RED),      // ⚠
             _ => ("?", DIM),
         };
         let tool_info = if info.status.as_deref() == Some("running") {
-            info.last_tool.as_ref()
+            info.last_tool
+                .as_ref()
                 .map(|t| format!(" {DIM}({t}){RESET}"))
                 .unwrap_or_default()
         } else {
@@ -176,10 +204,13 @@ fn render_k8s(k8s: &Option<crate::state::K8sContext>) -> Option<String> {
     }
     // Shorten common GKE/EKS prefixes for compact display
     let short = name
-        .strip_prefix("gke_").or_else(|| name.strip_prefix("arn:aws:eks:"))
+        .strip_prefix("gke_")
+        .or_else(|| name.strip_prefix("arn:aws:eks:"))
         .unwrap_or(name);
     let short = sanitize(short);
-    let ns = ctx.namespace.as_ref()
+    let ns = ctx
+        .namespace
+        .as_ref()
         .filter(|n| !n.is_empty() && *n != "default")
         .map(|n| format!("/{}", sanitize(n)))
         .unwrap_or_default();
@@ -222,13 +253,25 @@ fn render_memory_project(state: &HudState, project: &str) -> String {
 fn render_memory_fallback(m: &crate::state::MemoryStats) -> String {
     let mut parts = Vec::new();
     if m.decisions > 0 {
-        parts.push(format!("{} decision{}", m.decisions, if m.decisions == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{} decision{}",
+            m.decisions,
+            if m.decisions == 1 { "" } else { "s" }
+        ));
     }
     if m.patterns > 0 {
-        parts.push(format!("{} pattern{}", m.patterns, if m.patterns == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{} pattern{}",
+            m.patterns,
+            if m.patterns == 1 { "" } else { "s" }
+        ));
     }
     if m.lessons > 0 {
-        parts.push(format!("{} lesson{}", m.lessons, if m.lessons == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{} lesson{}",
+            m.lessons,
+            if m.lessons == 1 { "" } else { "s" }
+        ));
     }
     if parts.is_empty() {
         return String::new();

@@ -28,7 +28,10 @@ pub async fn doctor() {
                 if daemon_up { "UP" } else { "DOWN" },
                 uptime_secs
             );
-            println!("  DB size:     {:.1} MB", db_size_bytes as f64 / (1024.0 * 1024.0));
+            println!(
+                "  DB size:     {:.1} MB",
+                db_size_bytes as f64 / (1024.0 * 1024.0)
+            );
             println!("  Memories:    {memory_count}");
             println!("  Embeddings:  {embedding_count}");
             println!("  Files:       {file_count}");
@@ -73,8 +76,10 @@ pub async fn health_by_project() {
                 for (project, data) in sorted {
                     let total = data.decisions + data.lessons + data.patterns + data.preferences;
                     println!("  {project}:");
-                    println!("    decisions: {}, lessons: {}, patterns: {}, preferences: {}, total: {}",
-                        data.decisions, data.lessons, data.patterns, data.preferences, total);
+                    println!(
+                        "    decisions: {}, lessons: {}, patterns: {}, preferences: {}, total: {}",
+                        data.decisions, data.lessons, data.patterns, data.preferences, total
+                    );
                 }
             }
         }
@@ -222,9 +227,20 @@ pub async fn migrate(state_dir: String) {
 
 /// Export all data as JSON.
 pub async fn export(format: &str) {
-    let req = Request::Export { format: Some(format.to_string()), since: None };
+    let req = Request::Export {
+        format: Some(format.to_string()),
+        since: None,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::Export { memories, files, symbols, edges } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::Export {
+                    memories,
+                    files,
+                    symbols,
+                    edges,
+                },
+        }) => {
             let output = serde_json::json!({
                 "memories": memories,
                 "files": files,
@@ -238,7 +254,10 @@ pub async fn export(format: &str) {
                     "edges": edges.len(),
                 }
             });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).unwrap_or_default()
+            );
         }
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
@@ -269,7 +288,15 @@ pub async fn import(file: Option<String>) {
 
     let req = Request::Import { data };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::Import { memories_imported, files_imported, symbols_imported, skipped } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::Import {
+                    memories_imported,
+                    files_imported,
+                    symbols_imported,
+                    skipped,
+                },
+        }) => {
             println!("Import complete:");
             println!("  memories: {memories_imported}");
             println!("  files:    {files_imported}");
@@ -309,7 +336,11 @@ pub async fn backfill(path: String) {
     let req = Request::Backfill { path };
     match client::send(&req).await {
         Ok(Response::Ok {
-            data: ResponseData::Backfill { chunks_processed, memories_stored },
+            data:
+                ResponseData::Backfill {
+                    chunks_processed,
+                    memories_stored,
+                },
         }) => {
             println!("Backfill complete:");
             println!("  chunks processed: {chunks_processed}");
@@ -323,12 +354,24 @@ pub async fn backfill(path: String) {
 
 /// Pre-execution guardrail check on a file.
 pub async fn check(file: String, action: String) {
-    match client::send(&Request::GuardrailsCheck { file: file.clone(), action }).await {
+    match client::send(&Request::GuardrailsCheck {
+        file: file.clone(),
+        action,
+    })
+    .await
+    {
         Ok(Response::Ok {
-            data: ResponseData::GuardrailsCheck {
-                safe, warnings, decisions_affected, callers_count,
-                calling_files, relevant_lessons, dangerous_patterns, applicable_skills,
-            },
+            data:
+                ResponseData::GuardrailsCheck {
+                    safe,
+                    warnings,
+                    decisions_affected,
+                    callers_count,
+                    calling_files,
+                    relevant_lessons,
+                    dangerous_patterns,
+                    applicable_skills,
+                },
         }) => {
             if safe {
                 println!("Safe to proceed — no decisions linked to {file}");
@@ -370,17 +413,18 @@ pub async fn check(file: String, action: String) {
 pub async fn post_edit_check(file: String) {
     match client::send(&Request::PostEditCheck { file: file.clone() }).await {
         Ok(Response::Ok {
-            data: ResponseData::PostEditChecked {
-                file: _,
-                callers_count,
-                calling_files,
-                relevant_lessons,
-                dangerous_patterns,
-                applicable_skills,
-                decisions_to_review,
-                cached_diagnostics,
-                proactive_context,
-            },
+            data:
+                ResponseData::PostEditChecked {
+                    file: _,
+                    callers_count,
+                    calling_files,
+                    relevant_lessons,
+                    dangerous_patterns,
+                    applicable_skills,
+                    decisions_to_review,
+                    cached_diagnostics,
+                    proactive_context,
+                },
         }) => {
             for diag in &cached_diagnostics {
                 println!("{diag}");
@@ -423,10 +467,17 @@ pub async fn post_edit_check(file: String) {
 pub async fn blast_radius(file: String) {
     match client::send(&Request::BlastRadius { file: file.clone() }).await {
         Ok(Response::Ok {
-            data: ResponseData::BlastRadius {
-                decisions, callers, importers, files_affected,
-                cluster_name, cluster_files, calling_files, warnings,
-            },
+            data:
+                ResponseData::BlastRadius {
+                    decisions,
+                    callers,
+                    importers,
+                    files_affected,
+                    cluster_name,
+                    cluster_files,
+                    calling_files,
+                    warnings,
+                },
         }) => {
             for w in &warnings {
                 println!("  ⚠ {w}");
@@ -434,7 +485,10 @@ pub async fn blast_radius(file: String) {
             println!("Blast radius for {file}:");
             println!("  Decisions:         {}", decisions.len());
             for d in &decisions {
-                println!("    - {} (confidence: {:.2}) [{}]", d.title, d.confidence, d.id);
+                println!(
+                    "    - {} (confidence: {:.2}) [{}]",
+                    d.title, d.confidence, d.id
+                );
             }
             println!("  Callers:           {callers}");
             if !calling_files.is_empty() {
@@ -472,11 +526,19 @@ pub async fn blast_radius(file: String) {
 
 /// Pre-bash check -- warn about destructive commands, surface relevant skills/lessons.
 pub async fn pre_bash_check(command: String) {
-    match client::send(&Request::PreBashCheck { command: command.clone() }).await {
+    match client::send(&Request::PreBashCheck {
+        command: command.clone(),
+    })
+    .await
+    {
         Ok(Response::Ok {
-            data: ResponseData::PreBashChecked {
-                safe, warnings, relevant_skills, proactive_context,
-            },
+            data:
+                ResponseData::PreBashChecked {
+                    safe,
+                    warnings,
+                    relevant_skills,
+                    proactive_context,
+                },
         }) => {
             for w in &warnings {
                 println!("{w}");
@@ -487,7 +549,11 @@ pub async fn pre_bash_check(command: String) {
             for pc in &proactive_context {
                 println!("[proactive {}] {}", pc.knowledge_type, pc.content);
             }
-            if safe && warnings.is_empty() && relevant_skills.is_empty() && proactive_context.is_empty() {
+            if safe
+                && warnings.is_empty()
+                && relevant_skills.is_empty()
+                && proactive_context.is_empty()
+            {
                 // Silent on safe -- context budget rule
             }
         }
@@ -505,9 +571,18 @@ pub async fn pre_bash_check(command: String) {
 
 /// Post-bash check -- surface lessons and skills after command failure.
 pub async fn post_bash_check(command: String, exit_code: i32) {
-    match client::send(&Request::PostBashCheck { command: command.clone(), exit_code }).await {
+    match client::send(&Request::PostBashCheck {
+        command: command.clone(),
+        exit_code,
+    })
+    .await
+    {
         Ok(Response::Ok {
-            data: ResponseData::PostBashChecked { suggestions, proactive_context },
+            data:
+                ResponseData::PostBashChecked {
+                    suggestions,
+                    proactive_context,
+                },
         }) => {
             for s in &suggestions {
                 println!("{s}");
@@ -530,7 +605,11 @@ pub async fn post_bash_check(command: String, exit_code: i32) {
 
 /// List active (or all) agent sessions.
 pub async fn sessions(active_only: bool) {
-    match client::send(&Request::Sessions { active_only: Some(active_only) }).await {
+    match client::send(&Request::Sessions {
+        active_only: Some(active_only),
+    })
+    .await
+    {
         Ok(Response::Ok {
             data: ResponseData::Sessions { sessions, count },
         }) => {
@@ -540,8 +619,15 @@ pub async fn sessions(active_only: bool) {
                 println!("{count} session(s):");
                 for s in &sessions {
                     let project = s.project.as_deref().unwrap_or("(none)");
-                    let status_str = if s.status == "active" { "ACTIVE" } else { "ended" };
-                    println!("  [{}] {} — {} (project: {}, since: {})", status_str, s.id, s.agent, project, s.started_at);
+                    let status_str = if s.status == "active" {
+                        "ACTIVE"
+                    } else {
+                        "ended"
+                    };
+                    println!(
+                        "  [{}] {} — {} (project: {}, since: {})",
+                        status_str, s.id, s.agent, project, s.started_at
+                    );
                 }
             }
         }
@@ -563,7 +649,11 @@ pub async fn lsp_status() {
             } else {
                 println!("Language Servers:");
                 for s in &servers {
-                    let status = if s.available { "available" } else { "not found" };
+                    let status = if s.available {
+                        "available"
+                    } else {
+                        "not found"
+                    };
                     println!("  {} — {} ({})", s.language, s.command, status);
                 }
             }
@@ -581,11 +671,28 @@ pub async fn lsp_status() {
 }
 
 /// Register an active agent session.
-pub async fn register_session(id: String, agent: String, project: Option<String>, cwd: Option<String>, role: Option<String>) {
+pub async fn register_session(
+    id: String,
+    agent: String,
+    project: Option<String>,
+    cwd: Option<String>,
+    role: Option<String>,
+) {
     // TODO: pass `role` to Request::RegisterSession once the protocol adds the field
     let _ = &role;
-    match client::send(&Request::RegisterSession { id: id.clone(), agent, project, cwd, capabilities: None, current_task: None }).await {
-        Ok(Response::Ok { data: ResponseData::SessionRegistered { .. } }) => {
+    match client::send(&Request::RegisterSession {
+        id: id.clone(),
+        agent,
+        project,
+        cwd,
+        capabilities: None,
+        current_task: None,
+    })
+    .await
+    {
+        Ok(Response::Ok {
+            data: ResponseData::SessionRegistered { .. },
+        }) => {
             println!("Session registered: {id}");
         }
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
@@ -597,16 +704,31 @@ pub async fn register_session(id: String, agent: String, project: Option<String>
 /// End an active agent session.
 pub async fn end_session(id: String) {
     match client::send(&Request::EndSession { id: id.clone() }).await {
-        Ok(Response::Ok { data: ResponseData::SessionEnded { found, session_kpis, .. } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::SessionEnded {
+                    found,
+                    session_kpis,
+                    ..
+                },
+        }) => {
             if found {
                 println!("Session ended: {id}");
                 if let Some(kpis) = session_kpis {
                     println!("  duration: {}s", kpis.session_duration_secs);
-                    println!("  context injections: {} ({} chars)", kpis.context_injections, kpis.context_chars_injected);
-                    println!("  a2a messages: {} sent, {} received", kpis.a2a_messages_sent, kpis.a2a_messages_received);
+                    println!(
+                        "  context injections: {} ({} chars)",
+                        kpis.context_injections, kpis.context_chars_injected
+                    );
+                    println!(
+                        "  a2a messages: {} sent, {} received",
+                        kpis.a2a_messages_sent, kpis.a2a_messages_received
+                    );
                     println!("  memories created: {}", kpis.memories_created);
                     if !kpis.hooks_fired.is_empty() {
-                        let hooks: Vec<String> = kpis.hooks_fired.iter()
+                        let hooks: Vec<String> = kpis
+                            .hooks_fired
+                            .iter()
                             .map(|(k, v)| format!("{k}={v}"))
                             .collect();
                         println!("  hooks: {}", hooks.join(", "));
@@ -622,13 +744,28 @@ pub async fn end_session(id: String) {
     }
 }
 
-pub async fn cleanup_sessions(prefix: Option<String>, older_than_secs: Option<u64>, prune_ended: bool) {
-    match client::send(&Request::CleanupSessions { prefix: prefix.clone(), older_than_secs, prune_ended }).await {
-        Ok(Response::Ok { data: ResponseData::SessionsCleaned { ended } }) => {
-            println!("Cleaned up {ended} session(s){}", match &prefix {
-                Some(p) => format!(" (prefix: {p})"),
-                None => " (all)".to_string(),
-            });
+pub async fn cleanup_sessions(
+    prefix: Option<String>,
+    older_than_secs: Option<u64>,
+    prune_ended: bool,
+) {
+    match client::send(&Request::CleanupSessions {
+        prefix: prefix.clone(),
+        older_than_secs,
+        prune_ended,
+    })
+    .await
+    {
+        Ok(Response::Ok {
+            data: ResponseData::SessionsCleaned { ended },
+        }) => {
+            println!(
+                "Cleaned up {ended} session(s){}",
+                match &prefix {
+                    Some(p) => format!(" (prefix: {p})"),
+                    None => " (all)".to_string(),
+                }
+            );
         }
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
@@ -638,7 +775,14 @@ pub async fn cleanup_sessions(prefix: Option<String>, older_than_secs: Option<u6
 
 // ── A2A Inter-Session Messaging ──
 
-pub async fn send_message(to: String, kind: String, topic: String, text: String, project: Option<String>, timeout: Option<u64>) {
+pub async fn send_message(
+    to: String,
+    kind: String,
+    topic: String,
+    text: String,
+    project: Option<String>,
+    timeout: Option<u64>,
+) {
     let parts = vec![forge_core::protocol::MessagePart {
         kind: "text".to_string(),
         text: Some(text),
@@ -646,9 +790,20 @@ pub async fn send_message(to: String, kind: String, topic: String, text: String,
         data: None,
         memory_id: None,
     }];
-    let req = Request::SessionSend { to, kind, topic, parts, project, timeout_secs: timeout, meeting_id: None, from_session: None };
+    let req = Request::SessionSend {
+        to,
+        kind,
+        topic,
+        parts,
+        project,
+        timeout_secs: timeout,
+        meeting_id: None,
+        from_session: None,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MessageSent { id, status } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::MessageSent { id, status },
+        }) => {
             println!("Message sent: {id} (status: {status})");
         }
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
@@ -657,31 +812,57 @@ pub async fn send_message(to: String, kind: String, topic: String, text: String,
     }
 }
 
-pub async fn list_messages(session: String, status: Option<String>, limit: Option<usize>, full: bool) {
-    let req = Request::SessionMessages { session_id: session, status, limit };
+pub async fn list_messages(
+    session: String,
+    status: Option<String>,
+    limit: Option<usize>,
+    full: bool,
+) {
+    let req = Request::SessionMessages {
+        session_id: session,
+        status,
+        limit,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::SessionMessageList { messages, count } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::SessionMessageList { messages, count },
+        }) => {
             if count == 0 {
                 println!("No messages.");
                 return;
             }
             println!("{count} message(s):\n");
             for m in &messages {
-                let parts_text: String = m.parts.iter()
+                let parts_text: String = m
+                    .parts
+                    .iter()
                     .filter_map(|p| p.text.as_deref())
                     .collect::<Vec<_>>()
                     .join(" ");
                 if full {
-                    println!("--- [{status}] {id} from {from} --- topic: {topic} ---",
-                        status = m.status, id = &m.id,
-                        from = m.from_session, topic = m.topic);
+                    println!(
+                        "--- [{status}] {id} from {from} --- topic: {topic} ---",
+                        status = m.status,
+                        id = &m.id,
+                        from = m.from_session,
+                        topic = m.topic
+                    );
                     println!("{parts_text}");
                     println!();
                 } else {
-                    let preview = if parts_text.len() > 80 { &parts_text[..80] } else { &parts_text };
-                    println!("  [{status}] {id} from {from} — {topic}: {preview}",
-                        status = m.status, id = &m.id[..8.min(m.id.len())],
-                        from = m.from_session, topic = m.topic, preview = preview);
+                    let preview = if parts_text.len() > 80 {
+                        &parts_text[..80]
+                    } else {
+                        &parts_text
+                    };
+                    println!(
+                        "  [{status}] {id} from {from} — {topic}: {preview}",
+                        status = m.status,
+                        id = &m.id[..8.min(m.id.len())],
+                        from = m.from_session,
+                        topic = m.topic,
+                        preview = preview
+                    );
                 }
             }
         }
@@ -694,40 +875,46 @@ pub async fn list_messages(session: String, status: Option<String>, limit: Optio
 /// Read a single FISP message by ID.
 pub async fn message_read(id: String) {
     // No single-message-by-ID endpoint exists, so fetch a batch and filter client-side.
-    let req = Request::SessionMessages { session_id: String::new(), status: None, limit: Some(100) };
+    let req = Request::SessionMessages {
+        session_id: String::new(),
+        status: None,
+        limit: Some(100),
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::SessionMessageList { messages, .. } }) => {
-            match messages.iter().find(|m| m.id == id) {
-                Some(m) => {
-                    println!("Message: {}", m.id);
-                    println!("From:    {}", m.from_session);
-                    println!("To:      {}", m.to_session);
-                    println!("Kind:    {}", m.kind);
-                    println!("Topic:   {}", m.topic);
-                    println!("Status:  {}", m.status);
-                    if let Some(ref reply) = m.in_reply_to {
-                        println!("Reply-to:{reply}");
-                    }
-                    if let Some(ref proj) = m.project {
-                        println!("Project: {proj}");
-                    }
-                    println!("Created: {}", m.created_at);
-                    if let Some(ref delivered) = m.delivered_at {
-                        println!("Delivered:{delivered}");
-                    }
-                    println!("---");
-                    let full_text: String = m.parts.iter()
-                        .filter_map(|p| p.text.as_deref())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    println!("{full_text}");
+        Ok(Response::Ok {
+            data: ResponseData::SessionMessageList { messages, .. },
+        }) => match messages.iter().find(|m| m.id == id) {
+            Some(m) => {
+                println!("Message: {}", m.id);
+                println!("From:    {}", m.from_session);
+                println!("To:      {}", m.to_session);
+                println!("Kind:    {}", m.kind);
+                println!("Topic:   {}", m.topic);
+                println!("Status:  {}", m.status);
+                if let Some(ref reply) = m.in_reply_to {
+                    println!("Reply-to:{reply}");
                 }
-                None => {
-                    eprintln!("message not found: {id}");
-                    std::process::exit(1);
+                if let Some(ref proj) = m.project {
+                    println!("Project: {proj}");
                 }
+                println!("Created: {}", m.created_at);
+                if let Some(ref delivered) = m.delivered_at {
+                    println!("Delivered:{delivered}");
+                }
+                println!("---");
+                let full_text: String = m
+                    .parts
+                    .iter()
+                    .filter_map(|p| p.text.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                println!("{full_text}");
             }
-        }
+            None => {
+                eprintln!("message not found: {id}");
+                std::process::exit(1);
+            }
+        },
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
         Err(e) => eprintln!("error: {e}"),
@@ -740,9 +927,14 @@ pub async fn ack_messages(ids: Vec<String>) {
         return;
     }
     // Try FISP messages first
-    let req = Request::SessionAck { message_ids: ids.clone(), session_id: None };
+    let req = Request::SessionAck {
+        message_ids: ids.clone(),
+        session_id: None,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::MessagesAcked { count } }) if count > 0 => {
+        Ok(Response::Ok {
+            data: ResponseData::MessagesAcked { count },
+        }) if count > 0 => {
             println!("Acknowledged {count} message(s).");
             return;
         }
@@ -762,7 +954,10 @@ pub async fn ack_messages(ids: Vec<String>) {
     let mut notif_count = 0;
     for id in ids.iter().take(20) {
         let req = Request::AckNotification { id: id.clone() };
-        if let Ok(Response::Ok { data: ResponseData::NotificationAcked { .. } }) = client::send(&req).await {
+        if let Ok(Response::Ok {
+            data: ResponseData::NotificationAcked { .. },
+        }) = client::send(&req).await
+        {
             notif_count += 1;
         }
     }
@@ -775,14 +970,29 @@ pub async fn ack_messages(ids: Vec<String>) {
 
 // ── A2A Permission Management ──
 
-pub async fn grant_permission(from: String, to: String, from_project: Option<String>, to_project: Option<String>) {
-    let req = Request::GrantPermission { from_agent: from.clone(), to_agent: to.clone(), from_project: from_project.clone(), to_project: to_project.clone() };
+pub async fn grant_permission(
+    from: String,
+    to: String,
+    from_project: Option<String>,
+    to_project: Option<String>,
+) {
+    let req = Request::GrantPermission {
+        from_agent: from.clone(),
+        to_agent: to.clone(),
+        from_project: from_project.clone(),
+        to_project: to_project.clone(),
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::PermissionGranted { id } }) => {
-            println!("Permission granted: {id} ({from} → {to}{})", match (&from_project, &to_project) {
-                (Some(fp), Some(tp)) => format!(", {fp} → {tp}"),
-                _ => String::new(),
-            });
+        Ok(Response::Ok {
+            data: ResponseData::PermissionGranted { id },
+        }) => {
+            println!(
+                "Permission granted: {id} ({from} → {to}{})",
+                match (&from_project, &to_project) {
+                    (Some(fp), Some(tp)) => format!(", {fp} → {tp}"),
+                    _ => String::new(),
+                }
+            );
         }
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
@@ -793,9 +1003,14 @@ pub async fn grant_permission(from: String, to: String, from_project: Option<Str
 pub async fn revoke_permission(id: String) {
     let req = Request::RevokePermission { id: id.clone() };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::PermissionRevoked { id: _, found } }) => {
-            if found { println!("Permission revoked: {id}"); }
-            else { println!("Permission not found: {id}"); }
+        Ok(Response::Ok {
+            data: ResponseData::PermissionRevoked { id: _, found },
+        }) => {
+            if found {
+                println!("Permission revoked: {id}");
+            } else {
+                println!("Permission not found: {id}");
+            }
         }
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
         Ok(_) => eprintln!("unexpected response"),
@@ -806,7 +1021,9 @@ pub async fn revoke_permission(id: String) {
 pub async fn list_permissions() {
     let req = Request::ListPermissions;
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::PermissionList { permissions, count } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::PermissionList { permissions, count },
+        }) => {
             if count == 0 {
                 println!("No A2A permissions configured (trust mode: open by default).");
                 return;
@@ -819,9 +1036,14 @@ pub async fn list_permissions() {
                     (None, Some(tp)) => format!(" (to {tp})"),
                     _ => String::new(),
                 };
-                println!("  [{}] {} → {}{} ({})",
+                println!(
+                    "  [{}] {} → {}{} ({})",
                     if p.allowed { "ALLOW" } else { "DENY" },
-                    p.from_agent, p.to_agent, proj, &p.id[..8.min(p.id.len())]);
+                    p.from_agent,
+                    p.to_agent,
+                    proj,
+                    &p.id[..8.min(p.id.len())]
+                );
             }
         }
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
@@ -833,18 +1055,27 @@ pub async fn list_permissions() {
 // ── Knowledge Intelligence ──
 
 pub async fn list_entities(project: Option<String>, limit: usize) {
-    let req = Request::ListEntities { project, limit: Some(limit) };
+    let req = Request::ListEntities {
+        project,
+        limit: Some(limit),
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::EntityList { entities, count } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::EntityList { entities, count },
+        }) => {
             if count == 0 {
                 println!("No entities detected yet. Run forge-next consolidate to detect entities from memory titles.");
                 return;
             }
             println!("{count} entity(ies):\n");
             for e in &entities {
-                println!("  {} ({}) — {} mentions, first seen {}",
-                    e.name, e.entity_type, e.mention_count,
-                    &e.first_seen[..10.min(e.first_seen.len())]);
+                println!(
+                    "  {} ({}) — {} mentions, first seen {}",
+                    e.name,
+                    e.entity_type,
+                    e.mention_count,
+                    &e.first_seen[..10.min(e.first_seen.len())]
+                );
             }
         }
         Ok(Response::Error { message }) => eprintln!("error: {message}"),
@@ -854,24 +1085,44 @@ pub async fn list_entities(project: Option<String>, limit: usize) {
 }
 
 pub async fn context_trace(agent: String, project: Option<String>) {
-    let req = Request::CompileContextTrace { agent: Some(agent), project };
+    let req = Request::CompileContextTrace {
+        agent: Some(agent),
+        project,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::ContextTrace {
-            considered, included, excluded, budget_total, budget_used, ..
-        } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::ContextTrace {
+                    considered,
+                    included,
+                    excluded,
+                    budget_total,
+                    budget_used,
+                    ..
+                },
+        }) => {
             println!("Context Compilation Trace");
             println!("Budget: {budget_used}/{budget_total} chars\n");
             println!("INCLUDED ({}):", included.len());
             for t in &included {
-                println!("  [{}] {} (conf={:.2}, activation={:.2}) — {}",
-                    t.memory_type, &t.title[..60.min(t.title.len())],
-                    t.confidence, t.activation_level, t.reason);
+                println!(
+                    "  [{}] {} (conf={:.2}, activation={:.2}) — {}",
+                    t.memory_type,
+                    &t.title[..60.min(t.title.len())],
+                    t.confidence,
+                    t.activation_level,
+                    t.reason
+                );
             }
             if !excluded.is_empty() {
                 println!("\nEXCLUDED ({}):", excluded.len());
                 for t in &excluded {
-                    println!("  [{}] {} — {}",
-                        t.memory_type, &t.title[..60.min(t.title.len())], t.reason);
+                    println!(
+                        "  [{}] {} — {}",
+                        t.memory_type,
+                        &t.title[..60.min(t.title.len())],
+                        t.reason
+                    );
                 }
             }
             println!("\nTotal considered: {}", considered.len());
@@ -887,9 +1138,13 @@ pub async fn verify(file: Option<String>) {
     let req = Request::Verify { file: file.clone() };
     match client::send(&req).await {
         Ok(Response::Ok {
-            data: ResponseData::VerifyResult {
-                files_checked, errors, warnings, diagnostics,
-            },
+            data:
+                ResponseData::VerifyResult {
+                    files_checked,
+                    errors,
+                    warnings,
+                    diagnostics,
+                },
         }) => {
             let target = file.as_deref().unwrap_or("all files");
             println!("Verify: {target}");
@@ -900,7 +1155,8 @@ pub async fn verify(file: Option<String>) {
                 println!();
                 for d in &diagnostics {
                     let line_str = d.line.map(|l| format!(":{l}")).unwrap_or_default();
-                    println!("  [{severity}] {file_path}{line_str}: {message} ({source})",
+                    println!(
+                        "  [{severity}] {file_path}{line_str}: {message} ({source})",
                         severity = d.severity,
                         file_path = d.file_path,
                         message = d.message,
@@ -937,7 +1193,8 @@ pub async fn diagnostics(file: String) {
                 println!("{count} diagnostic(s) for {file}:");
                 for d in &diagnostics {
                     let line_str = d.line.map(|l| format!(":{l}")).unwrap_or_default();
-                    println!("  [{severity}] {file_path}{line_str}: {message} ({source})",
+                    println!(
+                        "  [{severity}] {file_path}{line_str}: {message} ({source})",
                         severity = d.severity,
                         file_path = d.file_path,
                         message = d.message,
@@ -963,12 +1220,13 @@ pub async fn bootstrap(project: Option<String>) {
     let req = Request::Bootstrap { project };
     match client::send(&req).await {
         Ok(Response::Ok {
-            data: ResponseData::BootstrapComplete {
-                files_processed,
-                files_skipped,
-                memories_extracted,
-                errors,
-            },
+            data:
+                ResponseData::BootstrapComplete {
+                    files_processed,
+                    files_skipped,
+                    memories_extracted,
+                    errors,
+                },
         }) => {
             println!("Bootstrap complete:");
             println!("  Files processed:  {files_processed}");
@@ -1004,7 +1262,9 @@ pub async fn backfill_project() {
             } else {
                 println!("Backfilled project on {updated} memories.");
                 if skipped > 0 {
-                    println!("  {skipped} memories still have no project (no session/transcript match).");
+                    println!(
+                        "  {skipped} memories still have no project (no session/transcript match)."
+                    );
                 }
             }
         }
@@ -1117,16 +1377,29 @@ pub async fn config_show() {
             println!();
             println!("  Claude API (Anthropic):");
             println!("    model:     {claude_api_model}");
-            println!("    API key:   {}", if claude_api_key_set { "****set" } else { "not set" });
+            println!(
+                "    API key:   {}",
+                if claude_api_key_set {
+                    "****set"
+                } else {
+                    "not set"
+                }
+            );
             println!();
             println!("  OpenAI:");
             println!("    model:     {openai_model}");
             println!("    endpoint:  {openai_endpoint}");
-            println!("    API key:   {}", if openai_key_set { "****set" } else { "not set" });
+            println!(
+                "    API key:   {}",
+                if openai_key_set { "****set" } else { "not set" }
+            );
             println!();
             println!("  Gemini (Google):");
             println!("    model:     {gemini_model}");
-            println!("    API key:   {}", if gemini_key_set { "****set" } else { "not set" });
+            println!(
+                "    API key:   {}",
+                if gemini_key_set { "****set" } else { "not set" }
+            );
             println!();
             println!("  Embedding:   {embedding_model}");
         }
@@ -1167,7 +1440,14 @@ pub async fn config_set(key: String, value: String) {
 }
 
 /// Set a scoped configuration value at a specific scope level.
-pub async fn config_set_scoped(scope: String, scope_id: String, key: String, value: String, locked: bool, ceiling: Option<f64>) {
+pub async fn config_set_scoped(
+    scope: String,
+    scope_id: String,
+    key: String,
+    value: String,
+    locked: bool,
+    ceiling: Option<f64>,
+) {
     let req = Request::SetScopedConfig {
         scope_type: scope.clone(),
         scope_id: scope_id.clone(),
@@ -1178,7 +1458,12 @@ pub async fn config_set_scoped(scope: String, scope_id: String, key: String, val
     };
     match client::send(&req).await {
         Ok(Response::Ok {
-            data: ResponseData::ScopedConfigSet { scope_type, scope_id, key },
+            data:
+                ResponseData::ScopedConfigSet {
+                    scope_type,
+                    scope_id,
+                    key,
+                },
         }) => {
             println!("Scoped config set: {key} at {scope_type}/{scope_id}");
             if locked {
@@ -1231,8 +1516,10 @@ pub async fn config_get_effective(
             for key in keys {
                 let resolved = &config[key];
                 println!("  {key} = {}", resolved.value);
-                println!("    from: {}/{} (locked: {})",
-                    resolved.source_scope_type, resolved.source_scope_id, resolved.locked);
+                println!(
+                    "    from: {}/{} (locked: {})",
+                    resolved.source_scope_type, resolved.source_scope_id, resolved.locked
+                );
             }
         }
         Ok(Response::Error { message }) => {
@@ -1261,10 +1548,16 @@ pub async fn config_list_scoped(scope: String, scope_id: String) {
                 println!("No config entries for {scope}/{scope_id}.");
                 return;
             }
-            println!("{} config entry(ies) for {scope}/{scope_id}:\n", entries.len());
+            println!(
+                "{} config entry(ies) for {scope}/{scope_id}:\n",
+                entries.len()
+            );
             for e in &entries {
                 let locked_str = if e.locked { " [LOCKED]" } else { "" };
-                let ceiling_str = e.ceiling.map(|c| format!(" (ceiling: {c})")).unwrap_or_default();
+                let ceiling_str = e
+                    .ceiling
+                    .map(|c| format!(" (ceiling: {c})"))
+                    .unwrap_or_default();
                 println!("  {} = {}{}{}", e.key, e.value, locked_str, ceiling_str);
             }
         }
@@ -1314,7 +1607,11 @@ pub async fn config_delete_scoped(scope: String, scope_id: String, key: String) 
 pub async fn force_index(path: Option<String>) {
     match client::send(&Request::ForceIndex { path: path.clone() }).await {
         Ok(Response::Ok {
-            data: ResponseData::IndexComplete { files_indexed, symbols_indexed },
+            data:
+                ResponseData::IndexComplete {
+                    files_indexed,
+                    symbols_indexed,
+                },
         }) => {
             println!("Index status:");
             println!("  Files indexed:   {files_indexed}");
@@ -1334,9 +1631,18 @@ pub async fn force_index(path: Option<String>) {
 
 /// List detected contradictions between active memories.
 pub async fn contradictions(status: Option<String>, limit: usize) {
-    match client::send(&Request::ListContradictions { status, limit: Some(limit) }).await {
+    match client::send(&Request::ListContradictions {
+        status,
+        limit: Some(limit),
+    })
+    .await
+    {
         Ok(Response::Ok {
-            data: ResponseData::Contradictions { contradictions, count },
+            data:
+                ResponseData::Contradictions {
+                    contradictions,
+                    count,
+                },
         }) => {
             if count == 0 {
                 println!("No contradictions detected.");
@@ -1369,7 +1675,9 @@ pub async fn resolve_contradiction(contradiction_id: String, pick: String) {
     match client::send(&Request::ResolveContradiction {
         contradiction_id: contradiction_id.clone(),
         resolution: pick.clone(),
-    }).await {
+    })
+    .await
+    {
         Ok(Response::Ok {
             data: ResponseData::ContradictionResolved { .. },
         }) => {
@@ -1392,16 +1700,17 @@ pub async fn stats(hours: u64) {
     let req = Request::GetStats { hours: Some(hours) };
     match client::send(&req).await {
         Ok(Response::Ok {
-            data: ResponseData::Stats {
-                period_hours,
-                extractions,
-                extraction_errors,
-                tokens_in,
-                tokens_out,
-                total_cost_usd,
-                avg_latency_ms,
-                memories_created,
-            },
+            data:
+                ResponseData::Stats {
+                    period_hours,
+                    extractions,
+                    extraction_errors,
+                    tokens_in,
+                    tokens_out,
+                    total_cost_usd,
+                    avg_latency_ms,
+                    memories_created,
+                },
         }) => {
             println!("Forge Stats (last {period_hours}h):");
             println!("  Extractions:      {extractions} ({extraction_errors} errors)");
@@ -1550,7 +1859,10 @@ fn service_start() {
         match status {
             Ok(s) if s.success() => println!("Forge daemon started."),
             Ok(s) => {
-                eprintln!("systemctl start failed (exit {}). Is the service installed?", s);
+                eprintln!(
+                    "systemctl start failed (exit {}). Is the service installed?",
+                    s
+                );
                 eprintln!("Run: forge-next service install");
             }
             Err(e) => eprintln!("error: {e}"),
@@ -1691,9 +2003,13 @@ pub async fn detect_reality(path: Option<String>) {
 
 /// List all known realities (projects).
 pub async fn list_realities(organization: Option<String>) {
-    let req = Request::ListRealities { organization_id: organization };
+    let req = Request::ListRealities {
+        organization_id: organization,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::RealitiesList { realities } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::RealitiesList { realities },
+        }) => {
             if realities.is_empty() {
                 println!("No realities registered.");
                 println!("Tip: Use 'forge-next detect-reality --path <dir>' to detect and register a project.");
@@ -1703,7 +2019,10 @@ pub async fn list_realities(organization: Option<String>) {
             for r in &realities {
                 let domain = r.domain.as_deref().unwrap_or("unknown");
                 let path = r.project_path.as_deref().unwrap_or("(no path)");
-                println!("  {} ({}) — {} [{}]", r.name, r.reality_type, domain, r.engine_status);
+                println!(
+                    "  {} ({}) — {} [{}]",
+                    r.name, r.reality_type, domain, r.engine_status
+                );
                 println!("    ID:   {}", r.id);
                 println!("    Path: {path}");
                 println!("    Last: {}", r.last_active);
@@ -1763,9 +2082,13 @@ pub async fn code_search(query: String, kind: Option<String>, limit: usize) {
 
 /// Send a heartbeat to keep a session alive.
 pub async fn session_heartbeat(session_id: String) {
-    let req = Request::SessionHeartbeat { session_id: session_id.clone() };
+    let req = Request::SessionHeartbeat {
+        session_id: session_id.clone(),
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::Heartbeat { status, .. } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::Heartbeat { status, .. },
+        }) => {
             println!("{status}");
         }
         Ok(Response::Error { message }) => {
@@ -1886,7 +2209,11 @@ pub async fn task_completion_check(
     };
     match client::send(&req).await {
         Ok(Response::Ok {
-            data: ResponseData::TaskCompletionCheckResult { warnings, checklists },
+            data:
+                ResponseData::TaskCompletionCheckResult {
+                    warnings,
+                    checklists,
+                },
         }) => {
             for w in &warnings {
                 println!("warning: {w}");
@@ -1908,12 +2235,28 @@ pub async fn task_completion_check(
 }
 
 pub async fn context_stats(session_id: Option<String>) {
-    let req = Request::ContextStats { session_id: session_id.clone() };
+    let req = Request::ContextStats {
+        session_id: session_id.clone(),
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::ContextStatsResult {
-            total_injections, total_chars, estimated_tokens, acknowledged, effectiveness_rate, per_hook,
-        } }) => {
-            println!("Context Injection Stats{}", session_id.as_deref().map(|s| format!(" (session: {s})")).unwrap_or_default());
+        Ok(Response::Ok {
+            data:
+                ResponseData::ContextStatsResult {
+                    total_injections,
+                    total_chars,
+                    estimated_tokens,
+                    acknowledged,
+                    effectiveness_rate,
+                    per_hook,
+                },
+        }) => {
+            println!(
+                "Context Injection Stats{}",
+                session_id
+                    .as_deref()
+                    .map(|s| format!(" (session: {s})"))
+                    .unwrap_or_default()
+            );
             println!("─────────────────────────");
             println!("  Injections:      {total_injections}");
             println!("  Total chars:     {total_chars}");
@@ -1924,13 +2267,25 @@ pub async fn context_stats(session_id: Option<String>) {
                 println!("  ─────────────────────────");
                 println!("  Per-hook breakdown:");
                 for (hook, count, chars) in &per_hook {
-                    println!("    {:<20} {:>3} inj, {:>6} chars (~{} tokens)", hook, count, chars, chars / 4);
+                    println!(
+                        "    {:<20} {:>3} inj, {:>6} chars (~{} tokens)",
+                        hook,
+                        count,
+                        chars,
+                        chars / 4
+                    );
                 }
             }
         }
-        Ok(Response::Error { message }) => { eprintln!("error: {message}"); std::process::exit(1); }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
         Ok(_) => {}
-        Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -1939,7 +2294,9 @@ pub async fn context_stats(session_id: Option<String>) {
 pub async fn org_create(name: String, description: Option<String>) {
     let req = Request::CreateOrganization { name, description };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::OrganizationCreated { id } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::OrganizationCreated { id },
+        }) => {
             println!("Organization created: {id}");
         }
         Ok(Response::Error { message }) => {
@@ -1960,7 +2317,9 @@ pub async fn org_create(name: String, description: Option<String>) {
 pub async fn org_list() {
     let req = Request::ListOrganizations;
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::OrganizationList { organizations } }) => {
+        Ok(Response::Ok {
+            data: ResponseData::OrganizationList { organizations },
+        }) => {
             println!("{} organization(s):", organizations.len());
             for o in &organizations {
                 println!(
@@ -1996,11 +2355,13 @@ pub async fn org_from_template(template: String, name: String) {
     };
     match client::send(&req).await {
         Ok(Response::Ok {
-            data: ResponseData::OrgFromTemplateCreated { org_id, teams_created },
+            data:
+                ResponseData::OrgFromTemplateCreated {
+                    org_id,
+                    teams_created,
+                },
         }) => {
-            println!(
-                "Organization created: {org_id} ({teams_created} teams from template)"
-            );
+            println!("Organization created: {org_id} ({teams_created} teams from template)");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");
@@ -2123,9 +2484,18 @@ pub async fn healing_log(limit: usize, action: Option<String>) {
 }
 
 pub async fn org_init(name: String, template: Option<String>) {
-    let req = Request::WorkspaceInit { org_name: name, template };
+    let req = Request::WorkspaceInit {
+        org_name: name,
+        template,
+    };
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::WorkspaceInitialized { path, teams_created } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::WorkspaceInitialized {
+                    path,
+                    teams_created,
+                },
+        }) => {
             println!("Workspace initialized at: {path}");
             println!("Teams created: {teams_created}");
         }
@@ -2147,7 +2517,15 @@ pub async fn org_init(name: String, template: Option<String>) {
 pub async fn workspace_status() {
     let req = Request::WorkspaceStatus;
     match client::send(&req).await {
-        Ok(Response::Ok { data: ResponseData::WorkspaceStatusData { mode, org, root, teams } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::WorkspaceStatusData {
+                    mode,
+                    org,
+                    root,
+                    teams,
+                },
+        }) => {
             println!("Workspace Mode: {mode}");
             if !org.is_empty() {
                 println!("Organization:   {org}");
@@ -2184,8 +2562,12 @@ pub async fn set_current_task(session_id: String, task: String) {
     match client::send(&Request::SetCurrentTask {
         session_id: session_id.clone(),
         task: task.clone(),
-    }).await {
-        Ok(Response::Ok { data: ResponseData::CurrentTaskSet { .. } }) => {
+    })
+    .await
+    {
+        Ok(Response::Ok {
+            data: ResponseData::CurrentTaskSet { .. },
+        }) => {
             println!("Task set on session {session_id}: {task}");
         }
         Ok(Response::Error { message }) => {
@@ -2221,7 +2603,15 @@ pub async fn init() {
     // 1. Check daemon health
     print!("  [1/3] Daemon health... ");
     match client::send(&Request::Health).await {
-        Ok(Response::Ok { data: ResponseData::Health { decisions, lessons, patterns, .. } }) => {
+        Ok(Response::Ok {
+            data:
+                ResponseData::Health {
+                    decisions,
+                    lessons,
+                    patterns,
+                    ..
+                },
+        }) => {
             let total = decisions + lessons + patterns;
             println!("✓ ({total} memories globally)");
         }
@@ -2247,7 +2637,9 @@ pub async fn init() {
         cwd: Some(cwd.clone()),
         capabilities: None,
         current_task: None,
-    }).await {
+    })
+    .await
+    {
         Ok(Response::Ok { .. }) => println!("✓ session {session_id}"),
         Ok(Response::Error { message }) => println!("⚠ {message}"),
         Err(e) => println!("⚠ {e}"),
@@ -2255,10 +2647,19 @@ pub async fn init() {
 
     // 3. Bootstrap transcripts for this project
     print!("  [3/3] Bootstrapping memories... ");
-    match client::send(&Request::Bootstrap { project: Some(project.clone()) }).await {
-        Ok(Response::Ok { data: ResponseData::BootstrapComplete {
-            files_processed, memories_extracted, ..
-        }}) => {
+    match client::send(&Request::Bootstrap {
+        project: Some(project.clone()),
+    })
+    .await
+    {
+        Ok(Response::Ok {
+            data:
+                ResponseData::BootstrapComplete {
+                    files_processed,
+                    memories_extracted,
+                    ..
+                },
+        }) => {
             if files_processed > 0 {
                 println!("✓ {files_processed} transcripts → {memories_extracted} memories");
             } else {
@@ -2272,20 +2673,28 @@ pub async fn init() {
 
     // Summary: show project-specific recall
     println!();
-    if let Ok(Response::Ok { data: ResponseData::Memories { results, .. } }) = client::send(&Request::Recall {
+    if let Ok(Response::Ok {
+        data: ResponseData::Memories { results, .. },
+    }) = client::send(&Request::Recall {
         query: project.clone(),
         memory_type: None,
         project: Some(project.clone()),
         limit: Some(5),
         layer: None,
         since: None,
-    }).await {
+    })
+    .await
+    {
         if results.is_empty() {
             println!("  No memories for project '{project}' yet. Start working — Forge learns as you go.");
         } else {
             println!("  {project} context ({} memories):", results.len());
             for r in results.iter().take(3) {
-                let title = if r.memory.title.len() > 70 { format!("{}...", &r.memory.title[..67]) } else { r.memory.title.clone() };
+                let title = if r.memory.title.len() > 70 {
+                    format!("{}...", &r.memory.title[..67])
+                } else {
+                    r.memory.title.clone()
+                };
                 println!("    • {title}");
             }
             if results.len() > 3 {

@@ -202,16 +202,28 @@ mod tests {
 
     #[test]
     fn test_agent_status_roundtrip() {
-        for status in [AgentStatus::Idle, AgentStatus::Thinking, AgentStatus::Responding,
-                       AgentStatus::InMeeting, AgentStatus::Error, AgentStatus::Retired] {
+        for status in [
+            AgentStatus::Idle,
+            AgentStatus::Thinking,
+            AgentStatus::Responding,
+            AgentStatus::InMeeting,
+            AgentStatus::Error,
+            AgentStatus::Retired,
+        ] {
             assert_eq!(AgentStatus::from_str_lossy(status.as_str()), status);
         }
     }
 
     #[test]
     fn test_meeting_status_roundtrip() {
-        for status in [MeetingStatus::Open, MeetingStatus::Collecting, MeetingStatus::TimedOut,
-                       MeetingStatus::Synthesizing, MeetingStatus::Decided, MeetingStatus::Closed] {
+        for status in [
+            MeetingStatus::Open,
+            MeetingStatus::Collecting,
+            MeetingStatus::TimedOut,
+            MeetingStatus::Synthesizing,
+            MeetingStatus::Decided,
+            MeetingStatus::Closed,
+        ] {
             assert_eq!(MeetingStatus::from_str_lossy(status.as_str()), status);
         }
     }
@@ -219,12 +231,18 @@ mod tests {
     #[test]
     fn test_agent_template_serde() {
         let t = AgentTemplate {
-            id: "t1".into(), name: "CTO".into(), description: "Tech lead".into(),
-            agent_type: "claude-code".into(), organization_id: "default".into(),
+            id: "t1".into(),
+            name: "CTO".into(),
+            description: "Tech lead".into(),
+            agent_type: "claude-code".into(),
+            organization_id: "default".into(),
             system_context: "You are the CTO".into(),
-            identity_facets: "[]".into(), config_overrides: "{}".into(),
-            knowledge_domains: "[]".into(), decision_style: "analytical".into(),
-            created_at: "2026-04-05".into(), updated_at: "2026-04-05".into(),
+            identity_facets: "[]".into(),
+            config_overrides: "{}".into(),
+            knowledge_domains: "[]".into(),
+            decision_style: "analytical".into(),
+            created_at: "2026-04-05".into(),
+            updated_at: "2026-04-05".into(),
         };
         let json = serde_json::to_string(&t).unwrap();
         let restored: AgentTemplate = serde_json::from_str(&json).unwrap();

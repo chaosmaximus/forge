@@ -12,11 +12,11 @@
 pub mod consolidator;
 pub mod diagnostics;
 pub mod disposition;
-pub mod reaper;
 pub mod embedder;
 pub mod extractor;
 pub mod indexer;
 pub mod perception;
+pub mod reaper;
 pub mod watcher;
 
 use crate::adapters;
@@ -38,7 +38,8 @@ pub fn open_read_conn(db_path: &str) -> Option<rusqlite::Connection> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
         Ok(conn) => {
-            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").ok();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+                .ok();
             Some(conn)
         }
         Err(e) => {
@@ -69,7 +70,9 @@ pub fn spawn_workers(
         .iter()
         .flat_map(|a| {
             let ext = a.file_extension().to_string();
-            a.watch_dirs().into_iter().map(move |dir| (dir, ext.clone()))
+            a.watch_dirs()
+                .into_iter()
+                .map(move |dir| (dir, ext.clone()))
         })
         .collect();
 
@@ -125,12 +128,24 @@ pub fn spawn_workers(
 
     let embedder_interval = worker_intervals.embedding_interval_secs;
     let embedder_handle = tokio::spawn(async move {
-        embedder::run_embedder(embedder_state, embedder_config, embedder_shutdown, embedder_db_path, embedder_interval).await;
+        embedder::run_embedder(
+            embedder_state,
+            embedder_config,
+            embedder_shutdown,
+            embedder_db_path,
+            embedder_interval,
+        )
+        .await;
     });
 
     let consolidator_interval = worker_intervals.consolidation_interval_secs;
     let consolidator_handle = tokio::spawn(async move {
-        consolidator::run_consolidator(consolidator_state, consolidator_shutdown, consolidator_interval).await;
+        consolidator::run_consolidator(
+            consolidator_state,
+            consolidator_shutdown,
+            consolidator_interval,
+        )
+        .await;
     });
 
     let indexer_interval = worker_intervals.indexer_interval_secs;
@@ -140,12 +155,19 @@ pub fn spawn_workers(
 
     let perception_interval = worker_intervals.perception_interval_secs;
     let perception_handle = tokio::spawn(async move {
-        perception::run_perception(perception_state, perception_shutdown, perception_interval).await;
+        perception::run_perception(perception_state, perception_shutdown, perception_interval)
+            .await;
     });
 
     let disposition_interval = worker_intervals.disposition_interval_secs;
     let disposition_handle = tokio::spawn(async move {
-        disposition::run_disposition(disposition_state, disposition_shutdown, disposition_db_path, disposition_interval).await;
+        disposition::run_disposition(
+            disposition_state,
+            disposition_shutdown,
+            disposition_db_path,
+            disposition_interval,
+        )
+        .await;
     });
 
     // Diagnostics worker — debounced batch analysis
@@ -161,7 +183,14 @@ pub fn spawn_workers(
     }
     let diagnostics_debounce = worker_intervals.diagnostics_debounce_secs;
     let diagnostics_handle = tokio::spawn(async move {
-        diagnostics::run_diagnostics_worker(diagnostics_state, diag_rx, diagnostics_shutdown, diagnostics_db_path, diagnostics_debounce).await;
+        diagnostics::run_diagnostics_worker(
+            diagnostics_state,
+            diag_rx,
+            diagnostics_shutdown,
+            diagnostics_db_path,
+            diagnostics_debounce,
+        )
+        .await;
     });
 
     // Session heartbeat reaper

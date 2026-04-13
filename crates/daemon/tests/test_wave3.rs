@@ -1,8 +1,8 @@
-use forge_daemon::db::ops;
-use forge_daemon::server::handler::{handle_request, DaemonState};
-use forge_daemon::migrate::import_v1_cache;
 use forge_core::protocol::*;
-use forge_core::types::{MemoryType, CodeFile, CodeSymbol};
+use forge_core::types::{CodeFile, CodeSymbol, MemoryType};
+use forge_daemon::db::ops;
+use forge_daemon::migrate::import_v1_cache;
+use forge_daemon::server::handler::{handle_request, DaemonState};
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -31,16 +31,42 @@ fn test_confidence_decay_idempotent() {
     assert_eq!(faded, 1, "90-day memory should be faded");
 
     // Stored confidence is never modified — this is the core fix for HIGH-1
-    let conf: f64 = state.conn.query_row("SELECT confidence FROM memory WHERE id = 'd1'", [], |r| r.get(0)).unwrap();
-    assert!((conf - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {conf}");
+    let conf: f64 = state
+        .conn
+        .query_row("SELECT confidence FROM memory WHERE id = 'd1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(
+        (conf - 0.9).abs() < 0.001,
+        "stored confidence must remain 0.9, got {conf}"
+    );
 
-    let conf2: f64 = state.conn.query_row("SELECT confidence FROM memory WHERE id = 'd2'", [], |r| r.get(0)).unwrap();
-    assert!((conf2 - 0.9).abs() < 0.001, "stored confidence must remain 0.9, got {conf2}");
+    let conf2: f64 = state
+        .conn
+        .query_row("SELECT confidence FROM memory WHERE id = 'd2'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(
+        (conf2 - 0.9).abs() < 0.001,
+        "stored confidence must remain 0.9, got {conf2}"
+    );
 
     // Status checks
-    let s1: String = state.conn.query_row("SELECT status FROM memory WHERE id = 'd1'", [], |r| r.get(0)).unwrap();
+    let s1: String = state
+        .conn
+        .query_row("SELECT status FROM memory WHERE id = 'd1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(s1, "faded");
-    let s2: String = state.conn.query_row("SELECT status FROM memory WHERE id = 'd2'", [], |r| r.get(0)).unwrap();
+    let s2: String = state
+        .conn
+        .query_row("SELECT status FROM memory WHERE id = 'd2'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(s2, "active");
 
     // Running decay again should produce the same result (idempotent)
@@ -63,7 +89,10 @@ fn test_migrate_and_recall() {
     assert_eq!(imported, 2);
 
     let results = ops::recall_bm25(&state.conn, "PostgreSQL", 10).unwrap();
-    assert!(!results.is_empty(), "should recall PostgreSQL after migration");
+    assert!(
+        !results.is_empty(),
+        "should recall PostgreSQL after migration"
+    );
 }
 
 #[test]
@@ -72,14 +101,22 @@ fn test_code_storage_and_doctor() {
 
     // Store code files + symbols
     let file = CodeFile {
-        id: "f1".into(), path: "src/main.rs".into(), language: "rust".into(),
-        project: "test".into(), hash: "abc".into(), indexed_at: "now".into(),
+        id: "f1".into(),
+        path: "src/main.rs".into(),
+        language: "rust".into(),
+        project: "test".into(),
+        hash: "abc".into(),
+        indexed_at: "now".into(),
     };
     ops::store_file(&state.conn, &file).unwrap();
 
     let sym = CodeSymbol {
-        id: "s1".into(), name: "main".into(), kind: "function".into(),
-        file_path: "src/main.rs".into(), line_start: 1, line_end: Some(10),
+        id: "s1".into(),
+        name: "main".into(),
+        kind: "function".into(),
+        file_path: "src/main.rs".into(),
+        line_start: 1,
+        line_end: Some(10),
         signature: Some("fn main()".into()),
     };
     ops::store_symbol(&state.conn, &sym).unwrap();
@@ -87,7 +124,15 @@ fn test_code_storage_and_doctor() {
     // Doctor should report the counts
     let resp = handle_request(&mut state, Request::Doctor);
     match resp {
-        Response::Ok { data: ResponseData::Doctor { daemon_up, file_count, symbol_count, .. } } => {
+        Response::Ok {
+            data:
+                ResponseData::Doctor {
+                    daemon_up,
+                    file_count,
+                    symbol_count,
+                    ..
+                },
+        } => {
             assert!(daemon_up);
             assert_eq!(file_count, 1);
             assert_eq!(symbol_count, 1);
@@ -100,20 +145,31 @@ fn test_code_storage_and_doctor() {
 fn test_doctor_via_handler() {
     let mut state = DaemonState::new(":memory:").unwrap();
     // Remember some memories first
-    let resp = handle_request(&mut state, Request::Remember {
-        memory_type: MemoryType::Decision,
-        title: "Test".into(),
-        content: "Content".into(),
-        confidence: None,
-        tags: None,
-        project: None,
+    let resp = handle_request(
+        &mut state,
+        Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Test".into(),
+            content: "Content".into(),
+            confidence: None,
+            tags: None,
+            project: None,
             metadata: None,
-    });
+        },
+    );
     assert!(matches!(resp, Response::Ok { .. }));
 
     let resp = handle_request(&mut state, Request::Doctor);
     match resp {
-        Response::Ok { data: ResponseData::Doctor { memory_count, daemon_up, workers, .. } } => {
+        Response::Ok {
+            data:
+                ResponseData::Doctor {
+                    memory_count,
+                    daemon_up,
+                    workers,
+                    ..
+                },
+        } => {
             assert!(daemon_up);
             assert_eq!(memory_count, 1);
             assert!(!workers.is_empty());

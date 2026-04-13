@@ -81,7 +81,12 @@ pub struct ExtractedMemory {
     pub memory_type: String,
     #[serde(alias = "title", alias = "summary", alias = "name")]
     pub title: String,
-    #[serde(alias = "content", alias = "description", alias = "rationale", alias = "details")]
+    #[serde(
+        alias = "content",
+        alias = "description",
+        alias = "rationale",
+        alias = "details"
+    )]
     pub content: String,
     #[serde(default = "default_confidence", alias = "score")]
     pub confidence: f64,
@@ -162,9 +167,18 @@ pub fn parse_extraction_output(output: &str) -> Vec<ExtractedMemory> {
         let cleaned = json_str.trim_end_matches(',').trim();
         if !cleaned.ends_with(']') {
             // Truncated — try adding closing bracket
-            let fixed = format!("{}]", cleaned.rsplit_once(',').map(|(before, _)| before).unwrap_or(cleaned));
+            let fixed = format!(
+                "{}]",
+                cleaned
+                    .rsplit_once(',')
+                    .map(|(before, _)| before)
+                    .unwrap_or(cleaned)
+            );
             if let Ok(memories) = serde_json::from_str::<Vec<ExtractedMemory>>(&fixed) {
-                eprintln!("[extraction] recovered truncated JSON array ({} memories)", memories.len());
+                eprintln!(
+                    "[extraction] recovered truncated JSON array ({} memories)",
+                    memories.len()
+                );
                 return filter_low_confidence(memories);
             }
         }
@@ -181,7 +195,8 @@ pub fn parse_extraction_output(output: &str) -> Vec<ExtractedMemory> {
     let preview: String = trimmed.chars().take(300).collect();
     eprintln!(
         "[extraction] failed to parse LLM output as JSON array (len={}): {}",
-        trimmed.len(), preview
+        trimmed.len(),
+        preview
     );
     Vec::new()
 }
@@ -369,7 +384,10 @@ mod tests {
     fn test_filter_invalid_type() {
         let output = r#"[{"type":"garbage","title":"Bad","content":"x","confidence":0.9,"tags":[],"affects":[]}]"#;
         let memories = parse_extraction_output(output);
-        assert!(memories.is_empty(), "invalid memory_type should be filtered out");
+        assert!(
+            memories.is_empty(),
+            "invalid memory_type should be filtered out"
+        );
     }
 
     #[test]
@@ -524,7 +542,10 @@ Done. I found 1 memory worth extracting."#;
         let result = extract_code_fence(input);
         assert!(result.is_some(), "should extract content from fence");
         let content = result.unwrap();
-        assert!(content.contains("em—dashes"), "should preserve multi-byte chars");
+        assert!(
+            content.contains("em—dashes"),
+            "should preserve multi-byte chars"
+        );
     }
 
     #[test]

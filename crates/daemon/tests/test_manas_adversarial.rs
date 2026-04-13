@@ -1,10 +1,10 @@
 //! Adversarial tests for Manas 8-layer memory system.
 //! Tests SQL injection, data corruption, boundary conditions, and enum safety.
 
-use forge_daemon::db::manas;
-use forge_daemon::server::handler::{handle_request, DaemonState};
 use forge_core::protocol::*;
 use forge_core::types::manas::*;
+use forge_daemon::db::manas;
+use forge_daemon::server::handler::{handle_request, DaemonState};
 
 /// Helper: create an in-memory DaemonState for testing.
 fn test_state() -> DaemonState {
@@ -30,7 +30,9 @@ fn test_platform_sql_injection_key() {
         },
     );
     match &resp {
-        Response::Ok { data: ResponseData::PlatformStored { key } } => {
+        Response::Ok {
+            data: ResponseData::PlatformStored { key },
+        } => {
             assert_eq!(key, injection_key);
         }
         other => panic!("expected PlatformStored, got: {other:?}"),
@@ -39,9 +41,16 @@ fn test_platform_sql_injection_key() {
     // Verify it's retrievable
     let resp = handle_request(&mut state, Request::ListPlatform);
     match resp {
-        Response::Ok { data: ResponseData::PlatformList { entries } } => {
-            let found = entries.iter().any(|e| e.key == injection_key && e.value == "linux");
-            assert!(found, "injection key should be stored as-is, got: {entries:?}");
+        Response::Ok {
+            data: ResponseData::PlatformList { entries },
+        } => {
+            let found = entries
+                .iter()
+                .any(|e| e.key == injection_key && e.value == "linux");
+            assert!(
+                found,
+                "injection key should be stored as-is, got: {entries:?}"
+            );
         }
         other => panic!("expected PlatformList, got: {other:?}"),
     }
@@ -49,8 +58,13 @@ fn test_platform_sql_injection_key() {
     // Verify the platform table still exists (not DROPped)
     let resp = handle_request(&mut state, Request::ManasHealth { project: None });
     match resp {
-        Response::Ok { data: ResponseData::ManasHealthData { platform_count, .. } } => {
-            assert!(platform_count > 0, "platform table should still exist with entries");
+        Response::Ok {
+            data: ResponseData::ManasHealthData { platform_count, .. },
+        } => {
+            assert!(
+                platform_count > 0,
+                "platform table should still exist with entries"
+            );
         }
         other => panic!("expected ManasHealthData, got: {other:?}"),
     }
@@ -74,7 +88,9 @@ fn test_tool_sql_injection_name() {
     };
     let resp = handle_request(&mut state, Request::StoreTool { tool });
     match &resp {
-        Response::Ok { data: ResponseData::ToolStored { id } } => {
+        Response::Ok {
+            data: ResponseData::ToolStored { id },
+        } => {
             assert_eq!(id, "t-inject-1");
         }
         other => panic!("expected ToolStored, got: {other:?}"),
@@ -83,7 +99,9 @@ fn test_tool_sql_injection_name() {
     // Verify tool is retrievable with the injection name intact
     let resp = handle_request(&mut state, Request::ListTools);
     match resp {
-        Response::Ok { data: ResponseData::ToolList { tools, .. } } => {
+        Response::Ok {
+            data: ResponseData::ToolList { tools, .. },
+        } => {
             let our_tool = tools.iter().find(|t| t.name == injection_name);
             assert!(our_tool.is_some(), "should find tool with injection name");
         }
@@ -109,7 +127,9 @@ fn test_identity_sql_injection_description() {
     };
     let resp = handle_request(&mut state, Request::StoreIdentity { facet });
     match &resp {
-        Response::Ok { data: ResponseData::IdentityStored { id } } => {
+        Response::Ok {
+            data: ResponseData::IdentityStored { id },
+        } => {
             assert_eq!(id, "if-inject-1");
         }
         other => panic!("expected IdentityStored, got: {other:?}"),
@@ -118,10 +138,14 @@ fn test_identity_sql_injection_description() {
     // Verify the identity is stored correctly and strength is NOT 999
     let resp = handle_request(
         &mut state,
-        Request::ListIdentity { agent: "forge-test".into() },
+        Request::ListIdentity {
+            agent: "forge-test".into(),
+        },
     );
     match resp {
-        Response::Ok { data: ResponseData::IdentityList { facets, count } } => {
+        Response::Ok {
+            data: ResponseData::IdentityList { facets, count },
+        } => {
             assert_eq!(count, 1);
             assert_eq!(facets[0].description, injection_desc);
             assert!(
@@ -173,17 +197,27 @@ fn test_identity_strength_clamping() {
     // Verify clamping occurred
     let resp = handle_request(
         &mut state,
-        Request::ListIdentity { agent: "forge-test".into() },
+        Request::ListIdentity {
+            agent: "forge-test".into(),
+        },
     );
     match resp {
-        Response::Ok { data: ResponseData::IdentityList { facets, .. } } => {
-            let high = facets.iter().find(|f| f.id == "if-clamp-high").expect("high facet");
+        Response::Ok {
+            data: ResponseData::IdentityList { facets, .. },
+        } => {
+            let high = facets
+                .iter()
+                .find(|f| f.id == "if-clamp-high")
+                .expect("high facet");
             assert!(
                 (high.strength - 1.0).abs() < f64::EPSILON,
                 "strength > 1.0 should be clamped to 1.0, got: {}",
                 high.strength
             );
-            let neg = facets.iter().find(|f| f.id == "if-clamp-neg").expect("neg facet");
+            let neg = facets
+                .iter()
+                .find(|f| f.id == "if-clamp-neg")
+                .expect("neg facet");
             assert!(
                 (neg.strength - 0.0).abs() < f64::EPSILON,
                 "negative strength should be clamped to 0.0, got: {}",
@@ -214,7 +248,10 @@ fn test_disposition_value_extremes() {
     };
     // Should not panic
     let result = manas::store_disposition(&conn, &d_max);
-    assert!(result.is_ok(), "f64::MAX should store without panic: {result:?}");
+    assert!(
+        result.is_ok(),
+        "f64::MAX should store without panic: {result:?}"
+    );
 
     // Store disposition with NEG_INFINITY
     let d_neg_inf = Disposition {
@@ -228,7 +265,10 @@ fn test_disposition_value_extremes() {
         evidence: vec![],
     };
     let result = manas::store_disposition(&conn, &d_neg_inf);
-    assert!(result.is_ok(), "f64::NEG_INFINITY should store without panic: {result:?}");
+    assert!(
+        result.is_ok(),
+        "f64::NEG_INFINITY should store without panic: {result:?}"
+    );
 
     // Store disposition with NaN — SQLite treats NaN as NULL, which violates NOT NULL constraint.
     // This is expected and correct behavior: the system should reject invalid values cleanly.
@@ -244,11 +284,18 @@ fn test_disposition_value_extremes() {
     };
     let result = manas::store_disposition(&conn, &d_nan);
     // NaN is rejected by SQLite NOT NULL constraint — this is correct, not a panic
-    assert!(result.is_err(), "f64::NAN should be rejected by NOT NULL constraint");
+    assert!(
+        result.is_err(),
+        "f64::NAN should be rejected by NOT NULL constraint"
+    );
 
     // Verify we can list dispositions without panic (only the 2 valid ones)
     let dispositions = manas::list_dispositions(&conn, "forge-test").unwrap();
-    assert_eq!(dispositions.len(), 2, "only MAX and NEG_INFINITY dispositions should be stored");
+    assert_eq!(
+        dispositions.len(),
+        2,
+        "only MAX and NEG_INFINITY dispositions should be stored"
+    );
 }
 
 #[test]
@@ -265,12 +312,17 @@ fn test_platform_empty_key() {
     );
     // Should either store or error, but NOT panic
     match resp {
-        Response::Ok { data: ResponseData::PlatformStored { key } } => {
+        Response::Ok {
+            data: ResponseData::PlatformStored { key },
+        } => {
             assert_eq!(key, "", "empty key should be accepted");
         }
         Response::Error { message } => {
             // An error is also acceptable — no panic is the key requirement
-            assert!(!message.is_empty(), "error message should be non-empty: {message}");
+            assert!(
+                !message.is_empty(),
+                "error message should be non-empty: {message}"
+            );
         }
         other => panic!("unexpected response for empty key: {other:?}"),
     }
@@ -296,10 +348,15 @@ fn test_tool_empty_capabilities() {
     // List tools and verify our tool with empty capabilities is present
     let resp = handle_request(&mut state, Request::ListTools);
     match resp {
-        Response::Ok { data: ResponseData::ToolList { tools, .. } } => {
+        Response::Ok {
+            data: ResponseData::ToolList { tools, .. },
+        } => {
             let our_tool = tools.iter().find(|t| t.id == "t-empty-caps");
             assert!(our_tool.is_some(), "should find our stored tool");
-            assert!(our_tool.unwrap().capabilities.is_empty(), "empty capabilities should round-trip");
+            assert!(
+                our_tool.unwrap().capabilities.is_empty(),
+                "empty capabilities should round-trip"
+            );
         }
         other => panic!("expected ToolList, got: {other:?}"),
     }
@@ -321,12 +378,11 @@ fn test_perception_huge_data_payload() {
         expires_at: None,
         consumed: false,
     };
-    let resp = handle_request(
-        &mut state,
-        Request::StorePerception { perception },
-    );
+    let resp = handle_request(&mut state, Request::StorePerception { perception });
     match &resp {
-        Response::Ok { data: ResponseData::PerceptionStored { id } } => {
+        Response::Ok {
+            data: ResponseData::PerceptionStored { id },
+        } => {
             assert_eq!(id, "p-huge");
         }
         other => panic!("expected PerceptionStored for 100KB data, got: {other:?}"),
@@ -335,12 +391,22 @@ fn test_perception_huge_data_payload() {
     // Verify it retrieves correctly
     let resp = handle_request(
         &mut state,
-        Request::ListPerceptions { project: Some("test".into()), limit: Some(10), offset: None },
+        Request::ListPerceptions {
+            project: Some("test".into()),
+            limit: Some(10),
+            offset: None,
+        },
     );
     match resp {
-        Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {
+        Response::Ok {
+            data: ResponseData::PerceptionList { perceptions, count },
+        } => {
             assert_eq!(count, 1);
-            assert_eq!(perceptions[0].data.len(), 100 * 1024, "100KB data should be preserved");
+            assert_eq!(
+                perceptions[0].data.len(),
+                100 * 1024,
+                "100KB data should be preserved"
+            );
         }
         other => panic!("expected PerceptionList, got: {other:?}"),
     }
@@ -371,10 +437,14 @@ fn test_identity_unicode_description() {
     // Retrieve and verify exact match
     let resp = handle_request(
         &mut state,
-        Request::ListIdentity { agent: "forge-test".into() },
+        Request::ListIdentity {
+            agent: "forge-test".into(),
+        },
     );
     match resp {
-        Response::Ok { data: ResponseData::IdentityList { facets, count } } => {
+        Response::Ok {
+            data: ResponseData::IdentityList { facets, count },
+        } => {
             assert_eq!(count, 1);
             assert_eq!(
                 facets[0].description, unicode_desc,
@@ -407,12 +477,18 @@ fn test_declared_binary_content() {
 
     // Should store without panic
     let result = manas::store_declared(&conn, &d);
-    assert!(result.is_ok(), "control chars in content should store: {result:?}");
+    assert!(
+        result.is_ok(),
+        "control chars in content should store: {result:?}"
+    );
 
     // Should retrieve without panic
     let entries = manas::list_declared(&conn, None).unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].content, content_with_controls, "control chars should round-trip");
+    assert_eq!(
+        entries[0].content, content_with_controls,
+        "control chars should round-trip"
+    );
 }
 
 #[test]
@@ -436,11 +512,16 @@ fn test_tool_name_special_chars() {
     // Verify XSS payload is stored as-is and retrievable
     let resp = handle_request(&mut state, Request::ListTools);
     match resp {
-        Response::Ok { data: ResponseData::ToolList { tools, .. } } => {
+        Response::Ok {
+            data: ResponseData::ToolList { tools, .. },
+        } => {
             let xss_tool = tools.iter().find(|t| t.id == "t-xss");
             assert!(xss_tool.is_some(), "should find XSS tool");
             let xss_tool = xss_tool.unwrap();
-            assert_eq!(xss_tool.name, xss_name, "XSS payload should be stored as-is");
+            assert_eq!(
+                xss_tool.name, xss_name,
+                "XSS payload should be stored as-is"
+            );
             assert_eq!(
                 xss_tool.capabilities[0], "<img onerror=alert(1)>",
                 "XSS in capabilities should be stored as-is"
@@ -587,24 +668,34 @@ fn test_manas_health_after_mass_insert() {
     let resp = handle_request(&mut state, Request::ManasHealth { project: None });
     match resp {
         Response::Ok {
-            data: ResponseData::ManasHealthData {
-                platform_count,
-                tool_count,
-                skill_count,
-                domain_dna_count,
-                perception_unconsumed,
-                declared_count,
-                identity_facets,
-                disposition_traits,
-                ..
-            },
+            data:
+                ResponseData::ManasHealthData {
+                    platform_count,
+                    tool_count,
+                    skill_count,
+                    domain_dna_count,
+                    perception_unconsumed,
+                    declared_count,
+                    identity_facets,
+                    disposition_traits,
+                    ..
+                },
         } => {
             // Platform may have auto-detected entries from DaemonState::new, so >= 10
-            assert!(platform_count >= 10, "platform should have >= 10 entries, got: {platform_count}");
-            assert!(tool_count >= 10, "should have >= 10 tools (includes auto-detected), got: {tool_count}");
+            assert!(
+                platform_count >= 10,
+                "platform should have >= 10 entries, got: {platform_count}"
+            );
+            assert!(
+                tool_count >= 10,
+                "should have >= 10 tools (includes auto-detected), got: {tool_count}"
+            );
             assert_eq!(skill_count, 10, "should have 10 skills");
             assert_eq!(domain_dna_count, 10, "should have 10 domain DNA entries");
-            assert_eq!(perception_unconsumed, 10, "should have 10 unconsumed perceptions");
+            assert_eq!(
+                perception_unconsumed, 10,
+                "should have 10 unconsumed perceptions"
+            );
             assert_eq!(declared_count, 10, "should have 10 declared entries");
             assert_eq!(identity_facets, 10, "should have 10 active identity facets");
             assert_eq!(disposition_traits, 10, "should have 10 dispositions");
@@ -649,12 +740,11 @@ fn test_perception_expire_during_list() {
 
     // Consume the expired ones (simulating expiration via ConsumePerceptions)
     let expired_ids: Vec<String> = (0..5).map(|i| format!("p-expired-{i}")).collect();
-    let resp = handle_request(
-        &mut state,
-        Request::ConsumePerceptions { ids: expired_ids },
-    );
+    let resp = handle_request(&mut state, Request::ConsumePerceptions { ids: expired_ids });
     match &resp {
-        Response::Ok { data: ResponseData::PerceptionsConsumed { count } } => {
+        Response::Ok {
+            data: ResponseData::PerceptionsConsumed { count },
+        } => {
             assert_eq!(*count, 5, "should consume 5 expired perceptions");
         }
         other => panic!("expected PerceptionsConsumed, got: {other:?}"),
@@ -663,11 +753,20 @@ fn test_perception_expire_during_list() {
     // List unconsumed — should only have the 5 live ones
     let resp = handle_request(
         &mut state,
-        Request::ListPerceptions { project: None, limit: Some(20), offset: None },
+        Request::ListPerceptions {
+            project: None,
+            limit: Some(20),
+            offset: None,
+        },
     );
     match resp {
-        Response::Ok { data: ResponseData::PerceptionList { perceptions, count } } => {
-            assert_eq!(count, 5, "should have 5 unconsumed perceptions after consuming expired");
+        Response::Ok {
+            data: ResponseData::PerceptionList { perceptions, count },
+        } => {
+            assert_eq!(
+                count, 5,
+                "should have 5 unconsumed perceptions after consuming expired"
+            );
             for p in &perceptions {
                 assert!(
                     p.id.starts_with("p-live-"),
@@ -691,10 +790,14 @@ fn test_identity_deactivate_nonexistent() {
     // Deactivate an ID that doesn't exist
     let resp = handle_request(
         &mut state,
-        Request::DeactivateIdentity { id: "nonexistent-id-12345".into() },
+        Request::DeactivateIdentity {
+            id: "nonexistent-id-12345".into(),
+        },
     );
     match resp {
-        Response::Ok { data: ResponseData::IdentityDeactivated { id, found } } => {
+        Response::Ok {
+            data: ResponseData::IdentityDeactivated { id, found },
+        } => {
             assert_eq!(id, "nonexistent-id-12345");
             assert!(!found, "should return found=false for nonexistent ID");
         }
@@ -709,22 +812,38 @@ fn test_platform_overwrite() {
     // Store "os" = "linux"
     handle_request(
         &mut state,
-        Request::StorePlatform { key: "test_os".into(), value: "linux".into() },
+        Request::StorePlatform {
+            key: "test_os".into(),
+            value: "linux".into(),
+        },
     );
 
     // Store "os" = "macos" (should overwrite via INSERT OR REPLACE)
     handle_request(
         &mut state,
-        Request::StorePlatform { key: "test_os".into(), value: "macos".into() },
+        Request::StorePlatform {
+            key: "test_os".into(),
+            value: "macos".into(),
+        },
     );
 
     // Verify only "macos" exists
     let resp = handle_request(&mut state, Request::ListPlatform);
     match resp {
-        Response::Ok { data: ResponseData::PlatformList { entries } } => {
-            let os_entries: Vec<&PlatformEntry> = entries.iter().filter(|e| e.key == "test_os").collect();
-            assert_eq!(os_entries.len(), 1, "should have exactly 1 test_os entry after overwrite");
-            assert_eq!(os_entries[0].value, "macos", "value should be 'macos' after overwrite");
+        Response::Ok {
+            data: ResponseData::PlatformList { entries },
+        } => {
+            let os_entries: Vec<&PlatformEntry> =
+                entries.iter().filter(|e| e.key == "test_os").collect();
+            assert_eq!(
+                os_entries.len(),
+                1,
+                "should have exactly 1 test_os entry after overwrite"
+            );
+            assert_eq!(
+                os_entries[0].value, "macos",
+                "value should be 'macos' after overwrite"
+            );
         }
         other => panic!("expected PlatformList, got: {other:?}"),
     }
@@ -750,7 +869,7 @@ fn test_skill_version_tracking() {
         source: "test".into(),
         version: 1,
         project: None,
-            skill_type: "procedural".to_string(),
+        skill_type: "procedural".to_string(),
         user_specific: false,
         observed_count: 1,
         correlation_ids: vec![],
@@ -817,13 +936,21 @@ fn test_domain_dna_multiple_projects() {
 
     // List DNA for project "A" — should NOT include "B" patterns
     let dna_for_a = manas::list_domain_dna(&conn, Some("project_a")).unwrap();
-    assert_eq!(dna_for_a.len(), 1, "project A should have exactly 1 DNA entry");
+    assert_eq!(
+        dna_for_a.len(),
+        1,
+        "project A should have exactly 1 DNA entry"
+    );
     assert_eq!(dna_for_a[0].pattern, "snake_case");
     assert_eq!(dna_for_a[0].project, "project_a");
 
     // List DNA for project "B" — should NOT include "A" patterns
     let dna_for_b = manas::list_domain_dna(&conn, Some("project_b")).unwrap();
-    assert_eq!(dna_for_b.len(), 1, "project B should have exactly 1 DNA entry");
+    assert_eq!(
+        dna_for_b.len(),
+        1,
+        "project B should have exactly 1 DNA entry"
+    );
     assert_eq!(dna_for_b[0].pattern, "camelCase");
 
     // List all DNA — should include both
@@ -869,7 +996,10 @@ fn test_declared_hash_dedup() {
     // Should still be 1 entry (upsert, not duplicate)
     let all = manas::list_declared(&conn, None).unwrap();
     assert_eq!(all.len(), 1, "upsert should not create duplicate");
-    assert_eq!(all[0].content, "Use snake_case — updated", "content should be updated");
+    assert_eq!(
+        all[0].content, "Use snake_case — updated",
+        "content should be updated"
+    );
 
     // Store with a different ID but same hash — this is a new row
     let d3 = Declared {
@@ -900,7 +1030,10 @@ fn test_manas_health_includes_all_layers() {
     // Add a custom one
     handle_request(
         &mut state,
-        Request::StorePlatform { key: "custom".into(), value: "test".into() },
+        Request::StorePlatform {
+            key: "custom".into(),
+            value: "test".into(),
+        },
     );
 
     // Layer 1: Tool
@@ -930,7 +1063,7 @@ fn test_manas_health_includes_all_layers() {
         source: "test".into(),
         version: 1,
         project: None,
-            skill_type: "procedural".to_string(),
+        skill_type: "procedural".to_string(),
         user_specific: false,
         observed_count: 1,
         correlation_ids: vec![],
@@ -1005,26 +1138,51 @@ fn test_manas_health_includes_all_layers() {
     let resp = handle_request(&mut state, Request::ManasHealth { project: None });
     match resp {
         Response::Ok {
-            data: ResponseData::ManasHealthData {
-                platform_count,
-                tool_count,
-                skill_count,
-                domain_dna_count,
-                perception_unconsumed,
-                declared_count,
-                identity_facets,
-                disposition_traits,
-                ..
-            },
+            data:
+                ResponseData::ManasHealthData {
+                    platform_count,
+                    tool_count,
+                    skill_count,
+                    domain_dna_count,
+                    perception_unconsumed,
+                    declared_count,
+                    identity_facets,
+                    disposition_traits,
+                    ..
+                },
         } => {
-            assert!(platform_count > 0, "platform_count should be > 0, got: {platform_count}");
-            assert!(tool_count > 0, "tool_count should be > 0, got: {tool_count}");
-            assert!(skill_count > 0, "skill_count should be > 0, got: {skill_count}");
-            assert!(domain_dna_count > 0, "domain_dna_count should be > 0, got: {domain_dna_count}");
-            assert!(perception_unconsumed > 0, "perception_unconsumed should be > 0, got: {perception_unconsumed}");
-            assert!(declared_count > 0, "declared_count should be > 0, got: {declared_count}");
-            assert!(identity_facets > 0, "identity_facets should be > 0, got: {identity_facets}");
-            assert!(disposition_traits > 0, "disposition_traits should be > 0, got: {disposition_traits}");
+            assert!(
+                platform_count > 0,
+                "platform_count should be > 0, got: {platform_count}"
+            );
+            assert!(
+                tool_count > 0,
+                "tool_count should be > 0, got: {tool_count}"
+            );
+            assert!(
+                skill_count > 0,
+                "skill_count should be > 0, got: {skill_count}"
+            );
+            assert!(
+                domain_dna_count > 0,
+                "domain_dna_count should be > 0, got: {domain_dna_count}"
+            );
+            assert!(
+                perception_unconsumed > 0,
+                "perception_unconsumed should be > 0, got: {perception_unconsumed}"
+            );
+            assert!(
+                declared_count > 0,
+                "declared_count should be > 0, got: {declared_count}"
+            );
+            assert!(
+                identity_facets > 0,
+                "identity_facets should be > 0, got: {identity_facets}"
+            );
+            assert!(
+                disposition_traits > 0,
+                "disposition_traits should be > 0, got: {disposition_traits}"
+            );
         }
         other => panic!("expected ManasHealthData, got: {other:?}"),
     }
@@ -1069,21 +1227,25 @@ fn test_doctor_includes_manas_counts() {
     let resp = handle_request(&mut state, Request::Doctor);
     match resp {
         Response::Ok {
-            data: ResponseData::Doctor {
-                daemon_up,
-                tool_count,
-                identity_count,
-                platform_count,
-                skill_count,
-                domain_dna_count,
-                perception_count,
-                declared_count,
-                disposition_count,
-                ..
-            },
+            data:
+                ResponseData::Doctor {
+                    daemon_up,
+                    tool_count,
+                    identity_count,
+                    platform_count,
+                    skill_count,
+                    domain_dna_count,
+                    perception_count,
+                    declared_count,
+                    disposition_count,
+                    ..
+                },
         } => {
             assert!(daemon_up, "daemon should be up");
-            assert!(tool_count >= 1, "should have >= 1 tool (auto-detected + stored), got: {tool_count}");
+            assert!(
+                tool_count >= 1,
+                "should have >= 1 tool (auto-detected + stored), got: {tool_count}"
+            );
             assert_eq!(identity_count, 1, "should have 1 identity facet");
             // platform_count may be > 0 from auto-detect; just check it exists
             let _ = platform_count;
