@@ -122,3 +122,94 @@ Per [plan.md](../plan.md) §7.1 phase cadence, the next steps are:
 5. **Add ConvoMem and MemBench harnesses.** LoCoMo is already shipped — see `locomo-2026-04-13.md`.
 
 If the hybrid number ≤ raw, we have empirical proof our extraction pipeline is purely architectural cost — and we anchor its value to non-retrieval axes (tools, identity, domain DNA, behavioral learning) rather than retrieval recall. That's a useful diagnostic, even if it's painful to publish.
+
+---
+
+# Four-mode comparison (LongMemEval, 50-question `single-session-user` subset)
+
+**Update:** the original "raw mode baseline" section above is the headline number on the full 500-question benchmark. This section adds the empirical answer to the question the benchmark initiative exists to produce: **does Forge's extraction pipeline add retrieval value on top of raw storage?**
+
+The comparison runs on the **first 50 questions** of `longmemeval_s_cleaned.json` — all of which happen to be `single-session-user` category. All four modes are scored against the same 50 questions on the same hardware with the same seeds. The differences are pure methodology.
+
+## Results
+
+| Mode | R@5 | R@10 | R_all@10 | NDCG@10 | Wall time |
+|---|---:|---:|---:|---:|---:|
+| **Raw** | **0.9400** | **0.9600** | **0.9600** | **0.8780** | 60 s |
+| Extract (Forge 8-layer pipeline via Gemini 2.5 Flash) | 0.7600 | 0.8200 | 0.8200 | 0.6992 | 2307 s |
+| Consolidate (Extract + `consolidator::run_all_phases`) | 0.7600 | 0.8200 | 0.8200 | 0.7106 | 2288 s |
+| Hybrid (Raw chunks + Extract memories, RRF k=60) | 0.8600 | 0.9400 | 0.9400 | 0.7765 | 2367 s |
+
+## Per-mode deltas vs Raw
+
+| Mode | Δ R@5 | Δ R@10 | Δ NDCG@10 | Interpretation |
+|---|---:|---:|---:|---|
+| Extract | **−18.0 pp** | **−14.0 pp** | −17.9 pp | Extraction loses ~18 points of literal recall |
+| Consolidate | −18.0 pp | −14.0 pp | −16.7 pp | Consolidation phases recover **zero** R@K; NDCG gains +1.1 pp over Extract (minor reranking) |
+| Hybrid | **−8.0 pp** | **−2.0 pp** | −10.2 pp | Fusing Raw with Extract recovers most of the gap but still underperforms pure Raw on R@5 |
+
+## Headline finding
+
+**Raw verbatim storage beats every other mode on this sample.** The result is consistent with MemPalace's published "extraction throws away information" thesis, and we now have our own lab measurement of exactly how much is lost:
+
+- Extract mode alone loses ~18 pp R@5 to raw. The Forge extraction prompt is **selective** by design (decisions / lessons / patterns / preferences / skills / identity) but LongMemEval asks literal factual questions ("where did I take yoga classes?") that don't match the summarized structured output.
+- Consolidation does not recover it. The 9-phase consolidator (exact dedup, semantic dedup, linking, decay, promotion, reconsolidation, valence contradictions, entity extraction, portability scoring, protocol extraction) runs to completion on the extracted memories and produces a 1.1 pp NDCG bump over pure extract — not enough to move R@K at all.
+- Hybrid (raw chunks + extracted memories, RRF-merged at query time) **recovers 10 pp** over extract but injects enough noise into the top-5 that it underperforms pure raw. The correct session still lands in the top-10 consistently (hybrid 0.94 vs raw 0.96 at R@10), so the noise is a rank-5-vs-rank-10 issue, not a missed-retrieval issue.
+
+**This is the diagnostic the benchmark plan exists to produce, and the answer is clear.** For retrieval recall at session granularity on LongMemEval, Forge's current extraction pipeline adds zero retrieval value on top of raw storage — and in the R@5 metric, it actively hurts. Extraction's value must come from non-retrieval axes (tool/skill recall, identity persistence, behavioral learning) rather than the primary memory retrieval path.
+
+## Reproducing each mode
+
+```bash
+# Raw (baseline, LLM-free)
+forge-bench longmemeval $LME --limit 50 --mode raw
+
+# Extract (requires GEMINI_API_KEY)
+forge-bench longmemeval $LME --limit 50 --mode extract \
+  --extract-model gemini-2.5-flash --extract-concurrency 8
+
+# Consolidate (extract + full consolidation phases)
+forge-bench longmemeval $LME --limit 50 --mode consolidate \
+  --extract-model gemini-2.5-flash --extract-concurrency 8
+
+# Hybrid (raw + extract RRF-merged, k=60)
+forge-bench longmemeval $LME --limit 50 --mode hybrid \
+  --extract-model gemini-2.5-flash --extract-concurrency 8
+```
+
+Where `LME=/tmp/longmemeval-data/longmemeval_s_cleaned.json`.
+
+## Honest limitations (follow-ups to this result)
+
+1. **Single question category.** The 50-question subset is all `single-session-user`. The delta may behave differently on `multi-session`, `temporal-reasoning`, `knowledge-update`, or `single-session-preference` — especially the knowledge-update category, where consolidation's update-handling logic should in theory help. Full 500-question four-mode comparison is a follow-up (cost ~$50 in Gemini Flash calls, ~4 hours wall time).
+2. **Single extraction backend.** We ran with Gemini 2.5 Flash. Different backends (Claude Sonnet, GPT-5, fine-tuned extractors) would produce differently-shaped memories and could recover some of the gap. Our finding is specifically about **the Forge 8-layer extraction prompt running on Gemini 2.5 Flash**.
+3. **BM25-only retrieval on the extraction layer.** We did not add a 768-dim embedder for `memory_vec` (that would require Ollama or a second fastembed model). Adding vector search on extracted memories would likely improve extract mode by several points but is a separate experiment.
+4. **Extraction prompt is the prime suspect.** The prompt deliberately filters out casual factual content. A "pure recall" variant that captures every user statement verbatim (similar to MemPalace's raw storage) would likely close most of the gap — at which point the distinction between extract and raw dissolves, which is itself an interesting finding.
+5. **LoCoMo shows the same pattern.** See `locomo-2026-04-13.md`. The 18 pp R@5 gap is consistent across both benchmarks — not a LongMemEval quirk.
+6. **Sample size.** 50 questions has ±7 pp confidence intervals at 95%. The ~18 pp delta is well outside that, so the qualitative finding is robust, but the exact number should be taken as "about 15–20 pp" rather than "exactly 18."
+
+## What this means for Forge's extraction architecture
+
+The plan explicitly called out that a finding like this would land us at one of two positions:
+
+> If hybrid > raw: we have proven extraction adds retrieval value. Lead with this number.
+> If hybrid ≈ raw: extraction is justified for other reasons (tools, identity, behavior). Say so clearly.
+
+The data puts us in the second camp — and in the R@5 metric, hybrid is actually **below** raw, not tied. **Forge's extraction pipeline does not pay for itself on retrieval recall metrics.** It must justify its existence on:
+
+- **Tool and skill recall** — extracting reusable procedures from transcripts. Not tested by LongMemEval; captured in the upcoming Forge-Tool custom benchmark.
+- **Identity persistence** — tracking user preferences and role over time, correctly updating when preferences change. Forge-Identity custom benchmark.
+- **Multi-agent coordination** — agents sharing structured memories across sessions via FISP. Forge-Multi custom benchmark.
+- **Behavioral pattern extraction** — capturing *how* a user works (debugging heuristic, architecture style) rather than *what* they said. Not a recall metric.
+
+The next publishing phase must include those custom benchmarks so we can point at the dimensions where extraction DOES pay off, while being honest that it does not pay off on standard memory-recall benchmarks. Shipping raw-vs-extract without the custom benchmarks would be half the story.
+
+## Published JSONL data
+
+- Raw (50-Q): `bench_results/longmemeval_raw_1776097509/`
+- Raw (full 500): `bench_results/longmemeval_raw_1776097632/`
+- Extract: `bench_results/longmemeval_extract_1776103099/`
+- Consolidate: `bench_results/longmemeval_consolidate_1776103408/`
+- Hybrid: `bench_results/longmemeval_hybrid_1776107736/`
+
+Each directory contains the full `results.jsonl`, `summary.json`, and `repro.sh` for the run.

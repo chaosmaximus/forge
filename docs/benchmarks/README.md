@@ -52,10 +52,10 @@ Every benchmark run should also report the LongMemEval paper's Stella V5 referen
 
 ## Status
 
-| Benchmark | Modes implemented | Last run |
+| Benchmark | Modes implemented | Published |
 |---|---|---|
-| LongMemEval | raw | _see results/_ |
-| LoCoMo | raw | _see results/_ |
+| LongMemEval | raw, extract, consolidate, hybrid | [longmemeval-2026-04-13.md](results/longmemeval-2026-04-13.md) |
+| LoCoMo | raw, extract | [locomo-2026-04-13.md](results/locomo-2026-04-13.md) |
 | ConvoMem | (planned) | — |
 | MemBench | (planned) | — |
 | Forge-Persist | (planned) | — |
@@ -63,3 +63,13 @@ Every benchmark run should also report the LongMemEval paper's Stella V5 referen
 | Forge-Transfer | (planned) | — |
 | Forge-Tool | (planned) | — |
 | Forge-Identity | (planned) | — |
+
+## Headline findings
+
+**Raw mode (LongMemEval, full 500 questions):** R@5 = 0.952. Sits 1.4 points below MemPalace's published 0.966 on the same recipe (same embedder, same chunker, same scoring).
+
+**Raw mode (LoCoMo, full 1,986 QAs):** R@10 = 0.875. 27 points above MemPalace's plain session baseline (0.603), within 1.5 points of their tuned hybrid v5 (0.889) without any rerank.
+
+**Four-mode comparison (LongMemEval, 50-Q subset):** raw 0.94 > hybrid 0.86 > extract 0.76 = consolidate 0.76 on R@5. **Extraction loses ~18 pp of retrieval recall to raw storage; consolidation does not recover it; hybrid (raw + extract RRF) still underperforms pure raw on R@5.** Same pattern observed on LoCoMo: extract loses ~17 pp R@5 to raw across every category.
+
+**The benchmark plan's central question — "does Forge's extraction pipeline add retrieval value on top of raw storage?" — has an empirically clear answer on LongMemEval and LoCoMo: no.** Extraction's value must come from non-retrieval axes (tool recall, identity persistence, multi-agent coordination, behavioral pattern extraction) which are captured by the custom Forge-* benchmarks — none of which are published yet.
