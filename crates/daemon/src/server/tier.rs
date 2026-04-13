@@ -40,7 +40,6 @@ impl Tier {
             Tier::Enterprise => "Enterprise",
         }
     }
-
 }
 
 /// Features that may be tier-gated.
@@ -90,9 +89,9 @@ impl Feature {
             | Feature::TeamMessaging => Tier::Team,
 
             // Enterprise
-            Feature::CentralizedWorkspace
-            | Feature::RbacDirectories
-            | Feature::AuditTrail => Tier::Enterprise,
+            Feature::CentralizedWorkspace | Feature::RbacDirectories | Feature::AuditTrail => {
+                Tier::Enterprise
+            }
         }
     }
 
@@ -270,9 +269,9 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         Request::WorkspaceInit { .. } => Some(Feature::TeamWorkspace),
 
         // === Team tier: team orchestration ===
-        Request::RunTeam { .. }
-        | Request::StopTeam { .. }
-        | Request::ListTeamTemplates => Some(Feature::TeamWorkspace),
+        Request::RunTeam { .. } | Request::StopTeam { .. } | Request::ListTeamTemplates => {
+            Some(Feature::TeamWorkspace)
+        }
 
         // === Free tier: skills registry (browsing is free, install is free) ===
         Request::SkillsList { .. }
@@ -283,6 +282,11 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::RoutingStats
         | Request::RecordAgentCost { .. }
         | Request::BudgetStatus { .. } => None,
+
+        // === Free tier: raw layer (benchmark parity + verbatim retrieval) ===
+        // The daemon is free; gating for the raw layer happens (if ever) at
+        // retention/storage limits in the reaper, not at the request boundary.
+        Request::RawIngest { .. } | Request::RawSearch { .. } => None,
     }
 }
 
@@ -389,7 +393,10 @@ mod tests {
             },
         ];
         for op in ops {
-            assert!(check_tier("free", &op).is_ok(), "Free tier should allow {op:?}");
+            assert!(
+                check_tier("free", &op).is_ok(),
+                "Free tier should allow {op:?}"
+            );
         }
     }
 
@@ -415,7 +422,10 @@ mod tests {
             let result = check_tier("free", &op);
             assert!(result.is_err(), "Free tier should block {op:?}");
             let msg = result.unwrap_err();
-            assert!(msg.contains("Team tier"), "Error should mention Team tier: {msg}");
+            assert!(
+                msg.contains("Team tier"),
+                "Error should mention Team tier: {msg}"
+            );
         }
     }
 
@@ -426,15 +436,16 @@ mod tests {
                 project: None,
                 since: None,
             },
-            Request::SyncImport {
-                lines: vec![],
-            },
+            Request::SyncImport { lines: vec![] },
         ];
         for op in blocked {
             let result = check_tier("free", &op);
             assert!(result.is_err(), "Free tier should block {op:?}");
             let msg = result.unwrap_err();
-            assert!(msg.contains("Pro tier"), "Error should mention Pro tier: {msg}");
+            assert!(
+                msg.contains("Pro tier"),
+                "Error should mention Pro tier: {msg}"
+            );
         }
     }
 
@@ -489,22 +500,43 @@ mod tests {
 
         // Team ops blocked on pro
         assert!(check_tier("pro", &Request::ListOrganizations).is_err());
-        assert!(check_tier("pro", &Request::ListMeetings { team_id: None, status: None, limit: None }).is_err());
+        assert!(check_tier(
+            "pro",
+            &Request::ListMeetings {
+                team_id: None,
+                status: None,
+                limit: None
+            }
+        )
+        .is_err());
     }
 
     #[test]
     fn test_pro_tier_allows_sync() {
-        assert!(check_tier("pro", &Request::SyncExport { project: None, since: None }).is_ok());
+        assert!(check_tier(
+            "pro",
+            &Request::SyncExport {
+                project: None,
+                since: None
+            }
+        )
+        .is_ok());
         assert!(check_tier("pro", &Request::SyncConflicts).is_ok());
     }
 
     #[test]
     fn test_upgrade_message_format() {
-        let result = check_tier("free", &Request::CreateOrganization {
-            name: "test".into(),
-            description: None,
-        });
+        let result = check_tier(
+            "free",
+            &Request::CreateOrganization {
+                name: "test".into(),
+                description: None,
+            },
+        );
         let msg = result.unwrap_err();
-        assert_eq!(msg, "This feature (organization management) requires Team tier or higher.");
+        assert_eq!(
+            msg,
+            "This feature (organization management) requires Team tier or higher."
+        );
     }
 }

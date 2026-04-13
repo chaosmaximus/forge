@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use crate::types::code::{CodeFile, CodeSymbol};
 use crate::types::memory::Memory;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A single trace entry from context compilation, showing why a memory was included or excluded.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,10 +68,20 @@ pub struct HealthCheck {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResponseData {
-    Stored { id: String },
-    Memories { results: Vec<MemoryResult>, count: usize },
-    Forgotten { id: String },
-    Superseded { old_id: String, new_id: String },
+    Stored {
+        id: String,
+    },
+    Memories {
+        results: Vec<MemoryResult>,
+        count: usize,
+    },
+    Forgotten {
+        id: String,
+    },
+    Superseded {
+        old_id: String,
+        new_id: String,
+    },
     Health {
         decisions: usize,
         lessons: usize,
@@ -196,7 +206,6 @@ pub enum ResponseData {
     },
 
     // ── Proactive Context (Prajna) ──
-
     /// Delta context since last refresh — only new/changed items.
     ContextDelta {
         notifications: Vec<String>,
@@ -229,7 +238,6 @@ pub enum ResponseData {
     },
 
     // ── Memory Self-Healing ──
-
     HealingStatusResult {
         total_healed: usize,
         auto_superseded: usize,
@@ -247,7 +255,9 @@ pub enum ResponseData {
         count: usize,
     },
 
-    SessionRegistered { id: String },
+    SessionRegistered {
+        id: String,
+    },
     SessionEnded {
         id: String,
         found: bool,
@@ -255,11 +265,21 @@ pub enum ResponseData {
         #[serde(default)]
         session_kpis: Option<SessionKpis>,
     },
-    Sessions { sessions: Vec<SessionInfo>, count: usize },
-    SessionsCleaned { ended: usize },
+    Sessions {
+        sessions: Vec<SessionInfo>,
+        count: usize,
+    },
+    SessionsCleaned {
+        ended: usize,
+    },
     /// Acknowledgment that current_task was updated on a session.
-    CurrentTaskSet { session_id: String, task: String },
-    LspStatus { servers: Vec<LspServerInfo> },
+    CurrentTaskSet {
+        session_id: String,
+        task: String,
+    },
+    LspStatus {
+        servers: Vec<LspServerInfo>,
+    },
 
     VerifyResult {
         files_checked: usize,
@@ -273,18 +293,44 @@ pub enum ResponseData {
     },
 
     // ── Manas Layer Responses ──
-
-    PlatformStored { key: String },
-    PlatformList { entries: Vec<crate::types::manas::PlatformEntry> },
-    ToolStored { id: String },
-    ToolList { tools: Vec<crate::types::manas::Tool>, count: usize },
-    PerceptionStored { id: String },
-    PerceptionList { perceptions: Vec<crate::types::manas::Perception>, count: usize },
-    PerceptionsConsumed { count: usize },
-    IdentityStored { id: String },
-    IdentityList { facets: Vec<crate::types::manas::IdentityFacet>, count: usize },
-    IdentityDeactivated { id: String, found: bool },
-    DispositionList { traits: Vec<crate::types::manas::Disposition>, count: usize },
+    PlatformStored {
+        key: String,
+    },
+    PlatformList {
+        entries: Vec<crate::types::manas::PlatformEntry>,
+    },
+    ToolStored {
+        id: String,
+    },
+    ToolList {
+        tools: Vec<crate::types::manas::Tool>,
+        count: usize,
+    },
+    PerceptionStored {
+        id: String,
+    },
+    PerceptionList {
+        perceptions: Vec<crate::types::manas::Perception>,
+        count: usize,
+    },
+    PerceptionsConsumed {
+        count: usize,
+    },
+    IdentityStored {
+        id: String,
+    },
+    IdentityList {
+        facets: Vec<crate::types::manas::IdentityFacet>,
+        count: usize,
+    },
+    IdentityDeactivated {
+        id: String,
+        found: bool,
+    },
+    DispositionList {
+        traits: Vec<crate::types::manas::Disposition>,
+        count: usize,
+    },
     ManasHealthData {
         platform_count: usize,
         tool_count: usize,
@@ -329,7 +375,6 @@ pub enum ResponseData {
     },
 
     // ── Sync Responses ──
-
     SyncExported {
         lines: Vec<String>,
         count: usize,
@@ -456,27 +501,43 @@ pub enum ResponseData {
     },
 
     // ── A2A Inter-Session Protocol (FISP) ──
-
     /// A message was sent to another session
-    MessageSent { id: String, status: String },
+    MessageSent {
+        id: String,
+        status: String,
+    },
     /// A response was sent to a received message
-    MessageResponded { id: String, status: String },
+    MessageResponded {
+        id: String,
+        status: String,
+    },
     /// List of messages for a session
-    SessionMessageList { messages: Vec<SessionMessage>, count: usize },
+    SessionMessageList {
+        messages: Vec<SessionMessage>,
+        count: usize,
+    },
     /// Messages were acknowledged
-    MessagesAcked { count: usize },
+    MessagesAcked {
+        count: usize,
+    },
 
     // ── A2A Permission Responses ──
-
     /// A permission was granted
-    PermissionGranted { id: String },
+    PermissionGranted {
+        id: String,
+    },
     /// A permission was revoked
-    PermissionRevoked { id: String, found: bool },
+    PermissionRevoked {
+        id: String,
+        found: bool,
+    },
     /// List of all A2A permissions
-    PermissionList { permissions: Vec<A2aPermission>, count: usize },
+    PermissionList {
+        permissions: Vec<A2aPermission>,
+        count: usize,
+    },
 
     // ── Scoped Configuration Responses ──
-
     /// Effective (resolved) configuration for a scope chain
     EffectiveConfig {
         config: std::collections::HashMap<String, crate::types::entity::ResolvedConfigValue>,
@@ -541,7 +602,6 @@ pub enum ResponseData {
     },
 
     // ── Contradictions ──
-
     Contradictions {
         contradictions: Vec<ContradictionInfo>,
         count: usize,
@@ -552,76 +612,156 @@ pub enum ResponseData {
     },
 
     // ── Agent Teams ──
-
     /// Agent template was created
-    AgentTemplateCreated { id: String, name: String },
+    AgentTemplateCreated {
+        id: String,
+        name: String,
+    },
     /// Single agent template
-    AgentTemplateData { template: crate::types::team::AgentTemplate },
+    AgentTemplateData {
+        template: crate::types::team::AgentTemplate,
+    },
     /// List of agent templates
-    AgentTemplateList { templates: Vec<crate::types::team::AgentTemplate>, count: usize },
+    AgentTemplateList {
+        templates: Vec<crate::types::team::AgentTemplate>,
+        count: usize,
+    },
     /// Agent template was deleted
-    AgentTemplateDeleted { id: String, found: bool },
+    AgentTemplateDeleted {
+        id: String,
+        found: bool,
+    },
     /// Agent template was updated
-    AgentTemplateUpdated { id: String, updated: bool },
+    AgentTemplateUpdated {
+        id: String,
+        updated: bool,
+    },
 
     /// Agent was spawned from a template
-    AgentSpawned { session_id: String, template_name: String, team: Option<String> },
+    AgentSpawned {
+        session_id: String,
+        template_name: String,
+        team: Option<String>,
+    },
     /// List of active agents
-    AgentList { agents: Vec<serde_json::Value>, count: usize },
+    AgentList {
+        agents: Vec<serde_json::Value>,
+        count: usize,
+    },
     /// Agent status was updated
-    AgentStatusUpdated { session_id: String, status: String },
+    AgentStatusUpdated {
+        session_id: String,
+        status: String,
+    },
     /// Agent was retired
-    AgentRetired { session_id: String },
+    AgentRetired {
+        session_id: String,
+    },
 
     /// Team was created
-    TeamCreated { id: String, name: String },
+    TeamCreated {
+        id: String,
+        name: String,
+    },
     /// List of team members
-    TeamMemberList { members: Vec<serde_json::Value>, count: usize },
+    TeamMemberList {
+        members: Vec<serde_json::Value>,
+        count: usize,
+    },
     /// Team orchestrator was set
-    TeamOrchestratorSet { team_name: String, session_id: String },
+    TeamOrchestratorSet {
+        team_name: String,
+        session_id: String,
+    },
     /// Full team status data
-    TeamStatusData { team: serde_json::Value },
+    TeamStatusData {
+        team: serde_json::Value,
+    },
     /// A full team was started (run_team)
-    RunTeamResult { team_name: String, agents_spawned: usize, session_ids: Vec<String> },
+    RunTeamResult {
+        team_name: String,
+        agents_spawned: usize,
+        session_ids: Vec<String>,
+    },
     /// A team was stopped (stop_team)
-    TeamStopped { team_name: String, agents_retired: usize },
+    TeamStopped {
+        team_name: String,
+        agents_retired: usize,
+    },
     /// List of pre-built team templates
-    TeamTemplateList { templates: Vec<serde_json::Value>, count: usize },
+    TeamTemplateList {
+        templates: Vec<serde_json::Value>,
+        count: usize,
+    },
 
     // ── Organization Hierarchy ──
-
     /// Organization was created
-    OrganizationCreated { id: String },
+    OrganizationCreated {
+        id: String,
+    },
     /// List of all organizations
-    OrganizationList { organizations: Vec<serde_json::Value> },
+    OrganizationList {
+        organizations: Vec<serde_json::Value>,
+    },
     /// Messages sent to team members
-    TeamSent { messages_sent: usize },
+    TeamSent {
+        messages_sent: usize,
+    },
     /// Team hierarchy tree
-    TeamTreeData { tree: Vec<serde_json::Value> },
+    TeamTreeData {
+        tree: Vec<serde_json::Value>,
+    },
     /// Organization created from template
-    OrgFromTemplateCreated { org_id: String, teams_created: usize },
+    OrgFromTemplateCreated {
+        org_id: String,
+        teams_created: usize,
+    },
 
     // ── Meeting Protocol ──
-
     /// A meeting was created
-    MeetingCreated { meeting_id: String, participant_count: usize },
+    MeetingCreated {
+        meeting_id: String,
+        participant_count: usize,
+    },
     /// Meeting status + participant statuses
-    MeetingStatusData { meeting: serde_json::Value, participants: Vec<serde_json::Value> },
+    MeetingStatusData {
+        meeting: serde_json::Value,
+        participants: Vec<serde_json::Value>,
+    },
     /// List of participant responses for a meeting
-    MeetingResponseList { responses: Vec<serde_json::Value>, count: usize },
+    MeetingResponseList {
+        responses: Vec<serde_json::Value>,
+        count: usize,
+    },
     /// Synthesis was stored
-    MeetingSynthesized { meeting_id: String },
+    MeetingSynthesized {
+        meeting_id: String,
+    },
     /// Decision was recorded and stored as memory
-    MeetingDecided { meeting_id: String, decision_memory_id: String },
+    MeetingDecided {
+        meeting_id: String,
+        decision_memory_id: String,
+    },
     /// List of meetings
-    MeetingList { meetings: Vec<serde_json::Value>, count: usize },
+    MeetingList {
+        meetings: Vec<serde_json::Value>,
+        count: usize,
+    },
     /// Full meeting transcript
-    MeetingTranscriptData { transcript: serde_json::Value },
+    MeetingTranscriptData {
+        transcript: serde_json::Value,
+    },
     /// Meeting response recorded
-    MeetingResponseRecorded { meeting_id: String, all_responded: bool },
+    MeetingResponseRecorded {
+        meeting_id: String,
+        all_responded: bool,
+    },
 
     /// A vote was recorded in a meeting
-    MeetingVoteRecorded { meeting_id: String, choice: String },
+    MeetingVoteRecorded {
+        meeting_id: String,
+        choice: String,
+    },
     /// Vote results for a meeting (counts per option, quorum status, outcome)
     MeetingResultData {
         meeting_id: String,
@@ -633,20 +773,31 @@ pub enum ResponseData {
     },
 
     // ── Notification Engine ──
-
     /// List of notifications
-    NotificationList { notifications: Vec<serde_json::Value>, count: usize },
+    NotificationList {
+        notifications: Vec<serde_json::Value>,
+        count: usize,
+    },
     /// A notification was acknowledged
-    NotificationAcked { id: String },
+    NotificationAcked {
+        id: String,
+    },
     /// A notification was dismissed
-    NotificationDismissed { id: String },
+    NotificationDismissed {
+        id: String,
+    },
     /// A notification action was taken
-    NotificationActed { id: String, result: Option<String> },
+    NotificationActed {
+        id: String,
+        result: Option<String>,
+    },
 
     // ── Workspace ──
-
     /// Workspace was initialized (directories created)
-    WorkspaceInitialized { path: String, teams_created: usize },
+    WorkspaceInitialized {
+        path: String,
+        teams_created: usize,
+    },
     /// Current workspace status
     WorkspaceStatusData {
         mode: String,
@@ -664,7 +815,6 @@ pub enum ResponseData {
     },
 
     // ── Skills Registry ──
-
     /// List of skills from the registry
     SkillsList {
         skills: Vec<serde_json::Value>,
@@ -697,7 +847,6 @@ pub enum ResponseData {
     },
 
     // ── Per-Agent Budget Enforcement ──
-
     /// Cost was recorded against an agent session
     CostRecorded {
         session_id: String,
@@ -747,7 +896,34 @@ pub enum ResponseData {
         toml: String,
     },
 
+    // ── Raw layer responses ──
+    /// Result of a `RawIngest` call.
+    RawIngest {
+        document_id: String,
+        chunk_count: usize,
+        total_chars: usize,
+    },
+    /// Result of a `RawSearch` call.
+    RawSearch {
+        hits: Vec<RawSearchHit>,
+        query_embedding_dim: usize,
+    },
+
     Shutdown,
+}
+
+/// One hit from a raw layer search.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RawSearchHit {
+    pub chunk_id: String,
+    pub document_id: String,
+    pub chunk_index: usize,
+    pub text: String,
+    pub project: Option<String>,
+    pub session_id: Option<String>,
+    pub source: String,
+    pub timestamp: String,
+    pub distance: f64,
 }
 
 /// A single HUD config entry with its provenance (which scope it came from)

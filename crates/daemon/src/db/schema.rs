@@ -7,50 +7,160 @@ fn seed_default_templates(conn: &Connection) -> rusqlite::Result<()> {
 
     // Base agent templates (3 adapters)
     let base_templates = [
-        ("claude-code", "Claude Code Agent", "General-purpose coding agent using Claude Code CLI", "claude-code",
-         r#"["software-engineering","debugging","code-review","testing"]"#, "analytical"),
-        ("codex-cli", "Codex CLI Agent", "OpenAI Codex agent for adversarial review and second opinions", "codex",
-         r#"["code-review","security-analysis","adversarial-testing"]"#, "critical"),
-        ("gemini-cli", "Gemini CLI Agent", "Google Gemini agent for research and alternative perspectives", "gemini",
-         r#"["research","exploration","documentation"]"#, "exploratory"),
+        (
+            "claude-code",
+            "Claude Code Agent",
+            "General-purpose coding agent using Claude Code CLI",
+            "claude-code",
+            r#"["software-engineering","debugging","code-review","testing"]"#,
+            "analytical",
+        ),
+        (
+            "codex-cli",
+            "Codex CLI Agent",
+            "OpenAI Codex agent for adversarial review and second opinions",
+            "codex",
+            r#"["code-review","security-analysis","adversarial-testing"]"#,
+            "critical",
+        ),
+        (
+            "gemini-cli",
+            "Gemini CLI Agent",
+            "Google Gemini agent for research and alternative perspectives",
+            "gemini",
+            r#"["research","exploration","documentation"]"#,
+            "exploratory",
+        ),
     ];
 
     // Role-specific templates for team orchestration (referenced by team templates)
     let role_templates = [
-        ("tech-lead", "Tech Lead", "Technical leadership: architecture decisions, code review, mentoring", "claude-code",
-         r#"["architecture","code-review","mentoring","technical-design"]"#, "analytical"),
-        ("frontend-dev", "Frontend Developer", "Frontend implementation: UI components, state management, UX", "claude-code",
-         r#"["frontend","ui","ux","react","css"]"#, "creative"),
-        ("backend-dev", "Backend Developer", "Backend implementation: APIs, databases, services, infrastructure", "claude-code",
-         r#"["backend","api","database","infrastructure"]"#, "analytical"),
-        ("qa", "QA Engineer", "Quality assurance: test planning, automation, regression, edge cases", "claude-code",
-         r#"["testing","qa","automation","edge-cases"]"#, "critical"),
-        ("devops", "DevOps Engineer", "Infrastructure: CI/CD, deployment, monitoring, scaling", "claude-code",
-         r#"["devops","ci-cd","docker","kubernetes","monitoring"]"#, "analytical"),
-        ("security-lead", "Security Lead", "Security: threat modeling, vulnerability assessment, hardening", "claude-code",
-         r#"["security","threat-modeling","penetration-testing"]"#, "critical"),
-        ("product-manager", "Product Manager", "Product strategy: requirements, prioritization, user stories", "claude-code",
-         r#"["product","requirements","user-stories","prioritization"]"#, "strategic"),
-        ("content-writer", "Content Writer", "Content creation: blog posts, documentation, marketing copy", "claude-code",
-         r#"["content","writing","marketing","seo"]"#, "creative"),
-        ("data-scientist", "Data Scientist", "Data analysis: statistics, ML, visualization, insights", "claude-code",
-         r#"["data-science","statistics","ml","visualization"]"#, "analytical"),
-        ("ux-researcher", "UX Researcher", "User research: interviews, usability testing, personas", "claude-code",
-         r#"["ux-research","usability","personas","user-interviews"]"#, "empathetic"),
-        ("ceo", "CEO", "Executive leadership: vision, strategy, fundraising, culture", "claude-code",
-         r#"["strategy","leadership","fundraising","culture"]"#, "strategic"),
-        ("cto", "CTO", "Technical leadership: architecture, tech stack, engineering culture", "claude-code",
-         r#"["architecture","tech-strategy","engineering-culture"]"#, "analytical"),
-        ("cfo", "CFO", "Financial leadership: budgets, forecasting, unit economics", "claude-code",
-         r#"["finance","budgeting","forecasting","unit-economics"]"#, "analytical"),
-        ("cmo", "CMO", "Marketing leadership: brand, growth, channels, positioning", "claude-code",
-         r#"["marketing","brand","growth","positioning"]"#, "creative"),
-        ("cpo", "CPO", "Product leadership: roadmap, user research, feature prioritization", "claude-code",
-         r#"["product-strategy","roadmap","user-research"]"#, "strategic"),
+        (
+            "tech-lead",
+            "Tech Lead",
+            "Technical leadership: architecture decisions, code review, mentoring",
+            "claude-code",
+            r#"["architecture","code-review","mentoring","technical-design"]"#,
+            "analytical",
+        ),
+        (
+            "frontend-dev",
+            "Frontend Developer",
+            "Frontend implementation: UI components, state management, UX",
+            "claude-code",
+            r#"["frontend","ui","ux","react","css"]"#,
+            "creative",
+        ),
+        (
+            "backend-dev",
+            "Backend Developer",
+            "Backend implementation: APIs, databases, services, infrastructure",
+            "claude-code",
+            r#"["backend","api","database","infrastructure"]"#,
+            "analytical",
+        ),
+        (
+            "qa",
+            "QA Engineer",
+            "Quality assurance: test planning, automation, regression, edge cases",
+            "claude-code",
+            r#"["testing","qa","automation","edge-cases"]"#,
+            "critical",
+        ),
+        (
+            "devops",
+            "DevOps Engineer",
+            "Infrastructure: CI/CD, deployment, monitoring, scaling",
+            "claude-code",
+            r#"["devops","ci-cd","docker","kubernetes","monitoring"]"#,
+            "analytical",
+        ),
+        (
+            "security-lead",
+            "Security Lead",
+            "Security: threat modeling, vulnerability assessment, hardening",
+            "claude-code",
+            r#"["security","threat-modeling","penetration-testing"]"#,
+            "critical",
+        ),
+        (
+            "product-manager",
+            "Product Manager",
+            "Product strategy: requirements, prioritization, user stories",
+            "claude-code",
+            r#"["product","requirements","user-stories","prioritization"]"#,
+            "strategic",
+        ),
+        (
+            "content-writer",
+            "Content Writer",
+            "Content creation: blog posts, documentation, marketing copy",
+            "claude-code",
+            r#"["content","writing","marketing","seo"]"#,
+            "creative",
+        ),
+        (
+            "data-scientist",
+            "Data Scientist",
+            "Data analysis: statistics, ML, visualization, insights",
+            "claude-code",
+            r#"["data-science","statistics","ml","visualization"]"#,
+            "analytical",
+        ),
+        (
+            "ux-researcher",
+            "UX Researcher",
+            "User research: interviews, usability testing, personas",
+            "claude-code",
+            r#"["ux-research","usability","personas","user-interviews"]"#,
+            "empathetic",
+        ),
+        (
+            "ceo",
+            "CEO",
+            "Executive leadership: vision, strategy, fundraising, culture",
+            "claude-code",
+            r#"["strategy","leadership","fundraising","culture"]"#,
+            "strategic",
+        ),
+        (
+            "cto",
+            "CTO",
+            "Technical leadership: architecture, tech stack, engineering culture",
+            "claude-code",
+            r#"["architecture","tech-strategy","engineering-culture"]"#,
+            "analytical",
+        ),
+        (
+            "cfo",
+            "CFO",
+            "Financial leadership: budgets, forecasting, unit economics",
+            "claude-code",
+            r#"["finance","budgeting","forecasting","unit-economics"]"#,
+            "analytical",
+        ),
+        (
+            "cmo",
+            "CMO",
+            "Marketing leadership: brand, growth, channels, positioning",
+            "claude-code",
+            r#"["marketing","brand","growth","positioning"]"#,
+            "creative",
+        ),
+        (
+            "cpo",
+            "CPO",
+            "Product leadership: roadmap, user research, feature prioritization",
+            "claude-code",
+            r#"["product-strategy","roadmap","user-research"]"#,
+            "strategic",
+        ),
     ];
 
     // Idempotent: INSERT OR IGNORE so existing templates are not duplicated
-    for (name, desc, system_ctx, agent_type, domains, style) in base_templates.iter().chain(role_templates.iter()) {
+    for (name, desc, system_ctx, agent_type, domains, style) in
+        base_templates.iter().chain(role_templates.iter())
+    {
         let id = ulid::Ulid::new().to_string();
         conn.execute(
             "INSERT OR IGNORE INTO agent_template (id, name, description, agent_type, system_context, knowledge_domains, decision_style, created_at, updated_at)
@@ -68,7 +178,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
             id TEXT PRIMARY KEY,
             embedding float[768] distance_metric=cosine
-        );"
+        );",
     )?;
 
     // Create code_vec virtual table for code embeddings (sqlite-vec must be loaded before this call)
@@ -76,7 +186,121 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE VIRTUAL TABLE IF NOT EXISTS code_vec USING vec0(
             id TEXT PRIMARY KEY,
             embedding float[768] distance_metric=cosine
-        );"
+        );",
+    )?;
+
+    // Raw layer: verbatim chunk storage for benchmark parity with published retrieval systems.
+    // 384-dim matches all-MiniLM-L6-v2 (fastembed-rs default) — do NOT merge with the
+    // 768-dim memory_vec/code_vec tables above. Raw ingest is LLM-free and fires in parallel
+    // with the extraction pipeline; both paths are independent.
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS raw_chunks_vec USING vec0(
+            id TEXT PRIMARY KEY,
+            embedding float[384] distance_metric=cosine
+        );",
+    )?;
+
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS raw_documents (
+            id TEXT PRIMARY KEY,
+            project TEXT,
+            session_id TEXT,
+            source TEXT NOT NULL,
+            text TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_raw_documents_project ON raw_documents(project);
+        CREATE INDEX IF NOT EXISTS idx_raw_documents_session ON raw_documents(session_id);
+        CREATE INDEX IF NOT EXISTS idx_raw_documents_timestamp ON raw_documents(timestamp);
+
+        CREATE TABLE IF NOT EXISTS raw_chunks (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES raw_documents(id) ON DELETE CASCADE,
+            chunk_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(document_id, chunk_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_raw_chunks_document ON raw_chunks(document_id);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS raw_chunks_fts USING fts5(
+            text,
+            content='raw_chunks', content_rowid='rowid'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS raw_chunks_fts_insert AFTER INSERT ON raw_chunks BEGIN
+            INSERT INTO raw_chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS raw_chunks_fts_delete AFTER DELETE ON raw_chunks BEGIN
+            INSERT INTO raw_chunks_fts(raw_chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS raw_chunks_fts_update AFTER UPDATE ON raw_chunks BEGIN
+            INSERT INTO raw_chunks_fts(raw_chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+            INSERT INTO raw_chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+        END;
+    ")?;
+
+    // KPI observability tables — track retrieval events, hourly snapshots, benchmark runs,
+    // and UAT user-story pass/fail. See docs/benchmarks/plan.md §11-13.
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS kpi_events (
+            id TEXT PRIMARY KEY,
+            timestamp INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            project TEXT,
+            latency_ms INTEGER,
+            result_count INTEGER,
+            success INTEGER NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_kpi_events_timestamp ON kpi_events(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_kpi_events_type ON kpi_events(event_type);
+
+        CREATE TABLE IF NOT EXISTS kpi_snapshots (
+            id TEXT PRIMARY KEY,
+            taken_at INTEGER NOT NULL,
+            kpi_name TEXT NOT NULL,
+            value REAL NOT NULL,
+            window TEXT NOT NULL,
+            project TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_kpi_snapshots_taken_at ON kpi_snapshots(taken_at);
+        CREATE INDEX IF NOT EXISTS idx_kpi_snapshots_name ON kpi_snapshots(kpi_name);
+
+        CREATE TABLE IF NOT EXISTS kpi_benchmarks (
+            id TEXT PRIMARY KEY,
+            run_at INTEGER NOT NULL,
+            benchmark TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            category TEXT,
+            value REAL NOT NULL,
+            n_questions INTEGER NOT NULL,
+            full_run INTEGER NOT NULL,
+            commit_sha TEXT,
+            hardware TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_kpi_benchmarks_run_at ON kpi_benchmarks(run_at);
+        CREATE INDEX IF NOT EXISTS idx_kpi_benchmarks_bm ON kpi_benchmarks(benchmark, mode, metric);
+
+        CREATE TABLE IF NOT EXISTS uat_stories (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            benchmark TEXT NOT NULL,
+            metric_name TEXT NOT NULL,
+            metric_threshold REAL NOT NULL,
+            last_run_at INTEGER,
+            last_value REAL,
+            last_passed INTEGER
+        );
+    ",
     )?;
 
     conn.execute_batch("
@@ -322,7 +546,8 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     ")?;
 
     // v2.0 Entity Model
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS organization (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
@@ -421,10 +646,12 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_audit_scope ON audit_log(scope_path, timestamp);
         CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id, timestamp);
-    ")?;
+    ",
+    )?;
 
     // A2A permission table: controlled inter-session messaging permissions
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS a2a_permission (
             id TEXT PRIMARY KEY,
             from_agent TEXT NOT NULL,
@@ -437,10 +664,12 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_a2a_perm_from ON a2a_permission(from_agent);
         CREATE INDEX IF NOT EXISTS idx_a2a_perm_to ON a2a_permission(to_agent);
-    ")?;
+    ",
+    )?;
 
     // Bootstrap: transcript processing log for efficient skip/resume
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS transcript_log (
             path TEXT PRIMARY KEY,
             adapter TEXT NOT NULL,
@@ -451,10 +680,12 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             processed_at TEXT NOT NULL,
             memories_extracted INTEGER NOT NULL DEFAULT 0
         );
-    ")?;
+    ",
+    )?;
 
     // A2A FISP: inter-session message queue
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS session_message (
             id TEXT PRIMARY KEY,
             from_session TEXT NOT NULL,
@@ -473,63 +704,133 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_msg_to ON session_message(to_session, status);
         CREATE INDEX IF NOT EXISTS idx_msg_from ON session_message(from_session);
         CREATE INDEX IF NOT EXISTS idx_msg_reply ON session_message(in_reply_to);
-    ")?;
+    ",
+    )?;
 
     // Add valence columns (safe to re-run — ignores if already exists)
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN valence TEXT NOT NULL DEFAULT 'neutral'", []);
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN intensity REAL NOT NULL DEFAULT 0.0", []);
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN valence TEXT NOT NULL DEFAULT 'neutral'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN intensity REAL NOT NULL DEFAULT 0.0",
+        [],
+    );
 
     // Add HLC sync columns (safe to re-run — ignores if already exists)
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN hlc_timestamp TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN node_id TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN hlc_timestamp TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN node_id TEXT NOT NULL DEFAULT ''",
+        [],
+    );
 
     // Add session provenance columns (safe to re-run — ignores if already exists)
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN session_id TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
 
     // Add working set column to session table (safe to re-run)
-    let _ = conn.execute("ALTER TABLE session ADD COLUMN working_set TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute(
+        "ALTER TABLE session ADD COLUMN working_set TEXT NOT NULL DEFAULT ''",
+        [],
+    );
 
     // Add activation_level column for activation tracking (safe to re-run)
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN activation_level REAL DEFAULT 0.0", []);
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN activation_level REAL DEFAULT 0.0",
+        [],
+    );
 
     // Skill Intelligence: behavioral skill columns (safe to re-run — ignores if already exists)
-    let _ = conn.execute("ALTER TABLE skill ADD COLUMN skill_type TEXT NOT NULL DEFAULT 'procedural'", []);
-    let _ = conn.execute("ALTER TABLE skill ADD COLUMN user_specific INTEGER NOT NULL DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE skill ADD COLUMN observed_count INTEGER NOT NULL DEFAULT 1", []);
-    let _ = conn.execute("ALTER TABLE skill ADD COLUMN correlation_ids TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute(
+        "ALTER TABLE skill ADD COLUMN skill_type TEXT NOT NULL DEFAULT 'procedural'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE skill ADD COLUMN user_specific INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE skill ADD COLUMN observed_count INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE skill ADD COLUMN correlation_ids TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
 
     // Cross-session awareness: track tool_use count per session (safe to re-run)
-    let _ = conn.execute("ALTER TABLE session ADD COLUMN tool_use_count INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute(
+        "ALTER TABLE session ADD COLUMN tool_use_count INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     // Counterfactual + relational memory columns (safe to re-run — ignores if already exists)
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN alternatives TEXT NOT NULL DEFAULT '[]'", []);
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN participants TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN alternatives TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN participants TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
 
     // A2A FISP: session capabilities and current task (safe to re-run — ignores if already exists)
-    let _ = conn.execute("ALTER TABLE session ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'", []);
-    let _ = conn.execute("ALTER TABLE session ADD COLUMN current_task TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute(
+        "ALTER TABLE session ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE session ADD COLUMN current_task TEXT NOT NULL DEFAULT ''",
+        [],
+    );
 
     // Memory Intelligence: quality score column (safe to re-run — ignores if already exists)
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN quality_score REAL DEFAULT 0.5", []);
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN quality_score REAL DEFAULT 0.5",
+        [],
+    );
 
     // v2.0: Scoping columns on existing tables
     // Session hierarchy + scoping
     let _ = conn.execute("ALTER TABLE session ADD COLUMN user_id TEXT", []);
     let _ = conn.execute("ALTER TABLE session ADD COLUMN team_id TEXT", []);
-    let _ = conn.execute("ALTER TABLE session ADD COLUMN organization_id TEXT DEFAULT 'default'", []);
+    let _ = conn.execute(
+        "ALTER TABLE session ADD COLUMN organization_id TEXT DEFAULT 'default'",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE session ADD COLUMN reality_id TEXT", []);
     let _ = conn.execute("ALTER TABLE session ADD COLUMN parent_session_id TEXT", []);
 
     // Memory scoping + portability
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN user_id TEXT", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN reality_id TEXT", []);
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN portability TEXT DEFAULT 'unknown'", []);
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN visibility TEXT DEFAULT 'inherited'", []);
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN portability TEXT DEFAULT 'unknown'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN visibility TEXT DEFAULT 'inherited'",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN deleted_at TEXT", []);
 
     // Multi-tenant isolation: organization_id on memory (safe to re-run)
-    let _ = conn.execute("ALTER TABLE memory ADD COLUMN organization_id TEXT NOT NULL DEFAULT 'default'", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_org ON memory(organization_id)", []);
+    let _ = conn.execute(
+        "ALTER TABLE memory ADD COLUMN organization_id TEXT NOT NULL DEFAULT 'default'",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_org ON memory(organization_id)",
+        [],
+    );
     // Backfill: derive org_id from the session that created each memory
     let _ = conn.execute(
         "UPDATE memory SET organization_id = COALESCE(
@@ -541,7 +842,10 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 
     // Identity scoping (per-user, not per-agent-type)
     let _ = conn.execute("ALTER TABLE identity ADD COLUMN user_id TEXT", []);
-    let _ = conn.execute("ALTER TABLE identity ADD COLUMN organization_id TEXT DEFAULT 'default'", []);
+    let _ = conn.execute(
+        "ALTER TABLE identity ADD COLUMN organization_id TEXT DEFAULT 'default'",
+        [],
+    );
 
     // Entity scoping
     let _ = conn.execute("ALTER TABLE entity ADD COLUMN reality_id TEXT", []);
@@ -554,23 +858,68 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE code_file ADD COLUMN reality_id TEXT", []);
 
     // v2.0: Composite indexes for scoped queries
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_reality ON memory(reality_id, memory_type, status)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_user ON memory(user_id, memory_type, status)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_portability ON memory(portability)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_reality ON session(reality_id, status)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id, status)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_parent ON session(parent_session_id)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_identity_user ON identity(user_id, active)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_reality ON entity(reality_id)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_edge_reality ON edge(reality_id, edge_type)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_code_file_reality ON code_file(reality_id)", []);
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_reality ON memory(reality_id, memory_type, status)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_user ON memory(user_id, memory_type, status)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_portability ON memory(portability)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_reality ON session(reality_id, status)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id, status)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_parent ON session(parent_session_id)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_identity_user ON identity(user_id, active)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entity_reality ON entity(reality_id)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_edge_reality ON edge(reality_id, edge_type)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_code_file_reality ON code_file(reality_id)",
+        [],
+    );
 
     // v2.0 fix: Missing indexes for cross-org query performance
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_org ON session(organization_id)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_team ON session(team_id)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_identity_org ON identity(organization_id)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_user ON entity(user_id)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_team_member_user ON team_member(user_id)", []);
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_org ON session(organization_id)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_team ON session(team_id)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_identity_org ON identity(organization_id)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entity_user ON entity(user_id)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_team_member_user ON team_member(user_id)",
+        [],
+    );
 
     // v2.0 fix: Unique constraint on reality(project_path) to prevent duplicate path rows.
     // Filtered: only applies to non-NULL project_path values.
@@ -599,7 +948,8 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     ")?;
 
     // Meeting: structured multi-agent deliberation
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS meeting (
             id TEXT PRIMARY KEY,
             team_id TEXT NOT NULL,
@@ -615,10 +965,12 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_meeting_team ON meeting(team_id, status);
         CREATE INDEX IF NOT EXISTS idx_meeting_orchestrator ON meeting(orchestrator_session_id);
-    ")?;
+    ",
+    )?;
 
     // Meeting participant: tracks each agent's response in a meeting
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS meeting_participant (
             id TEXT PRIMARY KEY,
             meeting_id TEXT NOT NULL,
@@ -631,15 +983,20 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_mp_meeting ON meeting_participant(meeting_id, status);
         CREATE INDEX IF NOT EXISTS idx_mp_session ON meeting_participant(session_id);
-    ")?;
+    ",
+    )?;
 
     // FISP Consensus: voting columns on meeting table (idempotent ALTERs)
     let _ = conn.execute("ALTER TABLE meeting ADD COLUMN voting_options TEXT", []);
-    let _ = conn.execute("ALTER TABLE meeting ADD COLUMN threshold TEXT DEFAULT 'majority'", []);
+    let _ = conn.execute(
+        "ALTER TABLE meeting ADD COLUMN threshold TEXT DEFAULT 'majority'",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE meeting ADD COLUMN outcome TEXT", []);
 
     // FISP Consensus: meeting_vote table for structured voting
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS meeting_vote (
             meeting_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
@@ -647,19 +1004,29 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             voted_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (meeting_id, session_id)
         );
-    ")?;
+    ",
+    )?;
 
     // Agent lifecycle: session gains template tracking, agent status, last activity
     let _ = conn.execute("ALTER TABLE session ADD COLUMN template_id TEXT", []);
-    let _ = conn.execute("ALTER TABLE session ADD COLUMN agent_status TEXT DEFAULT 'idle'", []);
+    let _ = conn.execute(
+        "ALTER TABLE session ADD COLUMN agent_status TEXT DEFAULT 'idle'",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE session ADD COLUMN last_activity_at TEXT", []);
 
     // Session heartbeat: lightweight keep-alive separate from semantic last_activity_at
     let _ = conn.execute("ALTER TABLE session ADD COLUMN last_heartbeat_at TEXT", []);
 
     // Team enhancements: type, orchestrator, purpose
-    let _ = conn.execute("ALTER TABLE team ADD COLUMN team_type TEXT DEFAULT 'human'", []);
-    let _ = conn.execute("ALTER TABLE team ADD COLUMN orchestrator_session_id TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE team ADD COLUMN team_type TEXT DEFAULT 'human'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE team ADD COLUMN orchestrator_session_id TEXT",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE team ADD COLUMN purpose TEXT", []);
 
     // Team member: support agent sessions (not just user_id)
@@ -667,26 +1034,45 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 
     // FISP: meeting_id for deterministic response matching
     let _ = conn.execute("ALTER TABLE session_message ADD COLUMN meeting_id TEXT", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_meeting ON session_message(meeting_id)", []);
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_msg_meeting ON session_message(meeting_id)",
+        [],
+    );
 
     // Agent team indexes
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_template ON session(template_id)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_agent_status ON session(agent_status)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_session_heartbeat ON session(status, last_heartbeat_at)", []);
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_template ON session(template_id)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_agent_status ON session(agent_status)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_heartbeat ON session(status, last_heartbeat_at)",
+        [],
+    );
 
     // ── v2.5: Organization Hierarchy ──
     let _ = conn.execute("ALTER TABLE team ADD COLUMN parent_team_id TEXT", []);
     let _ = conn.execute("ALTER TABLE team ADD COLUMN description TEXT", []);
     let _ = conn.execute("ALTER TABLE session ADD COLUMN role TEXT", []);
     let _ = conn.execute("ALTER TABLE organization ADD COLUMN description TEXT", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_team_parent ON team(parent_team_id)", []);
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_team_parent ON team(parent_team_id)",
+        [],
+    );
 
     // Team topology: star, mesh, chain (default: mesh)
-    let _ = conn.execute("ALTER TABLE team ADD COLUMN topology TEXT DEFAULT 'mesh'", []);
+    let _ = conn.execute(
+        "ALTER TABLE team ADD COLUMN topology TEXT DEFAULT 'mesh'",
+        [],
+    );
 
     // ── v2.2: Notification Engine ──
 
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS notification (
             id TEXT PRIMARY KEY,
             category TEXT NOT NULL,
@@ -723,21 +1109,52 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             priority_override TEXT,
             PRIMARY KEY (topic, user_id)
         );
-    ")?;
+    ",
+    )?;
 
     // ── Enterprise: RBAC audit columns on audit_log ──
     // These extend the existing audit_log table (v2.0 entity model) with
     // columns needed for HTTP RBAC audit logging. Existing rows are unaffected.
-    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local'", []);
-    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN email TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN role TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN request_type TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN request_summary TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN source TEXT NOT NULL DEFAULT 'socket'", []);
-    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN response_status TEXT NOT NULL DEFAULT 'ok'", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)", []);
+    let _ = conn.execute(
+        "ALTER TABLE audit_log ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE audit_log ADD COLUMN email TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE audit_log ADD COLUMN role TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE audit_log ADD COLUMN request_type TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE audit_log ADD COLUMN request_summary TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE audit_log ADD COLUMN source TEXT NOT NULL DEFAULT 'socket'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE audit_log ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE audit_log ADD COLUMN response_status TEXT NOT NULL DEFAULT 'ok'",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)",
+        [],
+    );
 
     // ── Proactive Context (Prajna) ──
 
@@ -758,7 +1175,10 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     ")?;
 
     // Migration: add chars_injected to existing context_effectiveness tables
-    let _ = conn.execute("ALTER TABLE context_effectiveness ADD COLUMN chars_injected INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute(
+        "ALTER TABLE context_effectiveness ADD COLUMN chars_injected INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
 
     // Append-only enforcement: block UPDATE and DELETE on audit_log
     let _ = conn.execute_batch(
@@ -771,7 +1191,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
          BEFORE DELETE ON audit_log
          BEGIN
              SELECT RAISE(ABORT, 'audit_log is append-only: DELETE not allowed');
-         END;"
+         END;",
     );
 
     // ── v2.6: Memory Supersede + Structured Metadata ──
@@ -779,7 +1199,8 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN metadata TEXT", []);
 
     // ── v2.7: Memory Self-Healing ──
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS healing_log (
             id TEXT PRIMARY KEY,
             action TEXT NOT NULL,
@@ -792,10 +1213,12 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_healing_log_action ON healing_log(action);
         CREATE INDEX IF NOT EXISTS idx_healing_log_created ON healing_log(created_at);
-    ")?;
+    ",
+    )?;
 
     // ── Skills Registry ──
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS skill_registry (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -807,7 +1230,8 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             UNIQUE(name, category)
         );
         CREATE INDEX IF NOT EXISTS idx_skill_registry_category ON skill_registry(category);
-    ")?;
+    ",
+    )?;
 
     // FTS5 virtual table for skill search
     // Use IF NOT EXISTS to be idempotent; FTS5 tables cannot use CREATE TABLE IF NOT EXISTS
@@ -842,7 +1266,8 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     }
 
     // ── Smart Model Router: routing stats ──
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS routing_stats (
             tier TEXT NOT NULL,
             provider TEXT NOT NULL,
@@ -853,10 +1278,14 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_routing_stats_tier ON routing_stats(tier);
         CREATE INDEX IF NOT EXISTS idx_routing_stats_created ON routing_stats(created_at);
-    ")?;
+    ",
+    )?;
 
     // Quality tracking for smart router quality guard
-    let _ = conn.execute("ALTER TABLE routing_stats ADD COLUMN quality_score REAL", []);
+    let _ = conn.execute(
+        "ALTER TABLE routing_stats ADD COLUMN quality_score REAL",
+        [],
+    );
 
     // ── v2.8: Paperclip-inspired features ──
 
@@ -865,8 +1294,14 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE meeting ADD COLUMN goal TEXT", []);
 
     // Per-agent budget enforcement
-    let _ = conn.execute("ALTER TABLE agent_template ADD COLUMN budget_limit REAL", []);
-    let _ = conn.execute("ALTER TABLE session ADD COLUMN budget_spent REAL DEFAULT 0", []);
+    let _ = conn.execute(
+        "ALTER TABLE agent_template ADD COLUMN budget_limit REAL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE session ADD COLUMN budget_spent REAL DEFAULT 0",
+        [],
+    );
 
     // Seed default agent templates (idempotent)
     if let Err(e) = seed_default_templates(conn) {
@@ -887,14 +1322,17 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Legacy databases have FOREIGN KEY (from_id/to_id) REFERENCES memory(id)
     // on the edge table, but import/call/affects edges use non-memory IDs (file: prefixed).
     // These FKs block all edge creation silently. Recreate without FKs if present.
-    let has_fk: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM pragma_foreign_key_list('edge')",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(false);
+    let has_fk: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_foreign_key_list('edge')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
     if has_fk {
         eprintln!("[schema] migrating edge table: removing legacy FK constraints");
-        let _ = conn.execute_batch("
+        let _ = conn.execute_batch(
+            "
             CREATE TABLE IF NOT EXISTS edge_migrated (
                 id TEXT PRIMARY KEY,
                 from_id TEXT NOT NULL,
@@ -912,29 +1350,38 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_edge_from ON edge(from_id);
             CREATE INDEX IF NOT EXISTS idx_edge_to ON edge(to_id);
             CREATE INDEX IF NOT EXISTS idx_edge_type ON edge(edge_type);
-        ");
+        ",
+        );
     }
 
     // ── Migration: dedup edges THEN create UNIQUE index (ISS-D6) ──
     // MUST dedup before index creation — CREATE UNIQUE INDEX fails on duplicate data.
     // M1 fix: only dedup if UNIQUE index doesn't already exist (avoids full-table scan on every startup).
-    let edge_idx_exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_edge_unique'",
-        [], |r| r.get(0),
-    ).unwrap_or(false);
+    let edge_idx_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_edge_unique'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
     if !edge_idx_exists {
-        let edge_deduped: usize = conn.execute(
-            "DELETE FROM edge WHERE rowid NOT IN (
+        let edge_deduped: usize = conn
+            .execute(
+                "DELETE FROM edge WHERE rowid NOT IN (
                 SELECT MIN(rowid) FROM edge GROUP BY from_id, to_id, edge_type
             )",
-            [],
-        ).unwrap_or_else(|e| { eprintln!("[schema] edge dedup failed: {e}"); 0 });
+                [],
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("[schema] edge dedup failed: {e}");
+                0
+            });
         if edge_deduped > 0 {
             eprintln!("[schema] deduplicated {edge_deduped} duplicate edge rows");
         }
     }
     conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_edge_unique ON edge(from_id, to_id, edge_type);"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_edge_unique ON edge(from_id, to_id, edge_type);",
     )?;
 
     // ── Migration: dedup teams THEN create UNIQUE index (ISS-D6) ──
@@ -943,18 +1390,23 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         [], |r| r.get(0),
     ).unwrap_or(false);
     if !team_idx_exists {
-        let team_deduped: usize = conn.execute(
-            "DELETE FROM team WHERE id NOT IN (
+        let team_deduped: usize = conn
+            .execute(
+                "DELETE FROM team WHERE id NOT IN (
                 SELECT MIN(id) FROM team GROUP BY name, organization_id
             )",
-            [],
-        ).unwrap_or_else(|e| { eprintln!("[schema] team dedup failed: {e}"); 0 });
+                [],
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("[schema] team dedup failed: {e}");
+                0
+            });
         if team_deduped > 0 {
             eprintln!("[schema] deduplicated {team_deduped} duplicate team rows");
         }
     }
     conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_team_name_org ON team(name, organization_id);"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_team_name_org ON team(name, organization_id);",
     )?;
 
     Ok(())
@@ -1011,9 +1463,17 @@ mod tests {
              VALUES ('v1', 'decision', 'test', 'test', 0.9, 'active', '[]', datetime('now'), datetime('now'), 'negative', 0.8)",
             [],
         ).unwrap();
-        let valence: String = conn.query_row("SELECT valence FROM memory WHERE id = 'v1'", [], |r| r.get(0)).unwrap();
+        let valence: String = conn
+            .query_row("SELECT valence FROM memory WHERE id = 'v1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(valence, "negative");
-        let intensity: f64 = conn.query_row("SELECT intensity FROM memory WHERE id = 'v1'", [], |r| r.get(0)).unwrap();
+        let intensity: f64 = conn
+            .query_row("SELECT intensity FROM memory WHERE id = 'v1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert!((intensity - 0.8).abs() < f64::EPSILON);
     }
 
@@ -1027,9 +1487,19 @@ mod tests {
              VALUES ('h1', 'decision', 'test', 'test', 0.9, 'active', '[]', datetime('now'), datetime('now'), 'neutral', 0.0, '1712345678000-0-abc12345', 'abc12345')",
             [],
         ).unwrap();
-        let hlc: String = conn.query_row("SELECT hlc_timestamp FROM memory WHERE id = 'h1'", [], |r| r.get(0)).unwrap();
+        let hlc: String = conn
+            .query_row(
+                "SELECT hlc_timestamp FROM memory WHERE id = 'h1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert!(hlc.contains("abc12345"));
-        let node: String = conn.query_row("SELECT node_id FROM memory WHERE id = 'h1'", [], |r| r.get(0)).unwrap();
+        let node: String = conn
+            .query_row("SELECT node_id FROM memory WHERE id = 'h1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(node, "abc12345");
     }
 
@@ -1043,7 +1513,11 @@ mod tests {
              VALUES ('d1', 'src/main.rs', 'error', 'undefined variable x', 'pyright', 10, datetime('now'), datetime('now', '+5 minutes'))",
             [],
         ).unwrap();
-        let msg: String = conn.query_row("SELECT message FROM diagnostic WHERE id = 'd1'", [], |r| r.get(0)).unwrap();
+        let msg: String = conn
+            .query_row("SELECT message FROM diagnostic WHERE id = 'd1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(msg, "undefined variable x");
     }
 
@@ -1098,25 +1572,23 @@ mod tests {
         conn.execute(
             "UPDATE identity SET user_id = 'u1', organization_id = 'org1' WHERE 0",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify entity scoping columns
         conn.execute(
             "UPDATE entity SET reality_id = 'r1', user_id = 'u1' WHERE 0",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify edge scoping columns
-        conn.execute(
-            "UPDATE edge SET reality_id = 'r1' WHERE 0",
-            [],
-        ).unwrap();
+        conn.execute("UPDATE edge SET reality_id = 'r1' WHERE 0", [])
+            .unwrap();
 
         // Verify code_file scoping columns
-        conn.execute(
-            "UPDATE code_file SET reality_id = 'r1' WHERE 0",
-            [],
-        ).unwrap();
+        conn.execute("UPDATE code_file SET reality_id = 'r1' WHERE 0", [])
+            .unwrap();
     }
 
     #[test]
@@ -1151,11 +1623,11 @@ mod tests {
             [],
         ).unwrap();
 
-        let action: String = conn.query_row(
-            "SELECT action FROM audit_log WHERE id = 'a1'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let action: String = conn
+            .query_row("SELECT action FROM audit_log WHERE id = 'a1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(action, "create");
     }
 
@@ -1222,11 +1694,13 @@ mod tests {
         crate::db::vec::init_sqlite_vec();
         let conn = Connection::open_in_memory().unwrap();
         create_schema(&conn).unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='healing_log'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='healing_log'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "healing_log table should exist");
     }
 
@@ -1236,20 +1710,31 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_schema(&conn).unwrap();
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM agent_template", [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(count, 18, "should seed 18 agent templates (3 base + 15 role)");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_template", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 18,
+            "should seed 18 agent templates (3 base + 15 role)"
+        );
 
         // Verify specific templates exist by name
-        let claude: String = conn.query_row(
-            "SELECT name FROM agent_template WHERE name = 'claude-code'", [], |row| row.get(0),
-        ).unwrap();
+        let claude: String = conn
+            .query_row(
+                "SELECT name FROM agent_template WHERE name = 'claude-code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(claude, "claude-code");
 
-        let codex: String = conn.query_row(
-            "SELECT name FROM agent_template WHERE name = 'codex-cli'", [], |row| row.get(0),
-        ).unwrap();
+        let codex: String = conn
+            .query_row(
+                "SELECT name FROM agent_template WHERE name = 'codex-cli'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(codex, "codex-cli");
     }
 
@@ -1262,10 +1747,13 @@ mod tests {
         // Call seed again — should not duplicate
         seed_default_templates(&conn).unwrap();
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM agent_template", [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(count, 18, "should still be 18 after double-seed (INSERT OR IGNORE)");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_template", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 18,
+            "should still be 18 after double-seed (INSERT OR IGNORE)"
+        );
     }
 
     #[test]
@@ -1279,7 +1767,8 @@ mod tests {
         create_schema(&conn).unwrap();
 
         // Drop the unique index to simulate a pre-Session-13 DB
-        conn.execute("DROP INDEX IF EXISTS idx_edge_unique", []).unwrap();
+        conn.execute("DROP INDEX IF EXISTS idx_edge_unique", [])
+            .unwrap();
 
         // Insert duplicate edges (same from_id, to_id, edge_type)
         let now = forge_core::time::now_iso();
@@ -1306,7 +1795,10 @@ mod tests {
             "SELECT COUNT(*) FROM edge WHERE from_id = 'file:src/main.rs' AND to_id = 'sym:main'",
             [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(count, 1, "dedup should keep only 1 edge per (from_id, to_id, edge_type)");
+        assert_eq!(
+            count, 1,
+            "dedup should keep only 1 edge per (from_id, to_id, edge_type)"
+        );
 
         // Unique index should exist
         let has_idx: bool = conn.query_row(
@@ -1324,7 +1816,8 @@ mod tests {
         create_schema(&conn).unwrap();
 
         // Drop unique index to simulate pre-Session-13 DB
-        conn.execute("DROP INDEX IF EXISTS idx_team_name_org", []).unwrap();
+        conn.execute("DROP INDEX IF EXISTS idx_team_name_org", [])
+            .unwrap();
 
         // Insert duplicate teams
         let now = forge_core::time::now_iso();
@@ -1333,20 +1826,29 @@ mod tests {
                 "INSERT INTO team (id, name, organization_id, created_by, status, created_at)
                  VALUES (?1, 'uat-team', 'default', 'system', 'active', ?2)",
                 rusqlite::params![format!("dup-team-{i}"), &now],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM team WHERE name = 'uat-team'", [], |r| r.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM team WHERE name = 'uat-team'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 3, "should have 3 duplicate teams");
 
         // Re-run create_schema — must not crash
         create_schema(&conn).unwrap();
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM team WHERE name = 'uat-team'", [], |r| r.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM team WHERE name = 'uat-team'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "dedup should keep only 1 team per (name, org)");
     }
 }

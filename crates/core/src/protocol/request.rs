@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::types::memory::MemoryType;
+use serde::{Deserialize, Serialize};
 
 /// A single finding from an evaluator review.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -26,7 +26,7 @@ pub struct RecallQuery {
 /// Supports text, file references, structured data, and memory references.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MessagePart {
-    pub kind: String,              // "text", "file", "data", "memory_ref"
+    pub kind: String, // "text", "file", "data", "memory_ref"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,12 +80,12 @@ pub enum Request {
     Doctor,
     /// Export all data as JSON (for visualization, backup, or sync)
     Export {
-        format: Option<String>,  // "json" (default) | "ndjson"
-        since: Option<String>,   // timestamp filter (optional)
+        format: Option<String>, // "json" (default) | "ndjson"
+        since: Option<String>,  // timestamp filter (optional)
     },
     /// Import data from JSON (stdin or file)
     Import {
-        data: String,  // JSON string of exported data
+        data: String, // JSON string of exported data
     },
     /// Ingest Claude Code's MEMORY.md files from ~/.claude/projects/*/memory/
     IngestClaude,
@@ -151,7 +151,6 @@ pub enum Request {
     },
 
     // ── Proactive Context (Prajna) ──
-
     /// Lightweight per-turn context delta check.
     /// Returns only NEW notifications, anti-pattern warnings, and pending messages since `since`.
     ContextRefresh {
@@ -178,9 +177,13 @@ pub enum Request {
     },
 
     /// Mark a session as ended
-    EndSession { id: String },
+    EndSession {
+        id: String,
+    },
     /// List sessions
-    Sessions { active_only: Option<bool> },
+    Sessions {
+        active_only: Option<bool>,
+    },
     /// Cleanup sessions: end sessions matching optional prefix and/or age filter.
     /// If prefix is None AND older_than_secs is None, ends ALL active sessions (nuclear option).
     CleanupSessions {
@@ -196,34 +199,59 @@ pub enum Request {
     LspStatus,
 
     /// Run proactive checks on a file or show all active diagnostics
-    Verify { file: Option<String> },
+    Verify {
+        file: Option<String>,
+    },
     /// Show cached diagnostics for a file
-    GetDiagnostics { file: String },
+    GetDiagnostics {
+        file: String,
+    },
 
     // ── Manas Layer Operations ──
-
     /// Store a platform key-value pair (Layer 0)
-    StorePlatform { key: String, value: String },
+    StorePlatform {
+        key: String,
+        value: String,
+    },
     /// List all platform entries (Layer 0)
     ListPlatform,
     /// Store a tool (Layer 1)
-    StoreTool { tool: crate::types::manas::Tool },
+    StoreTool {
+        tool: crate::types::manas::Tool,
+    },
     /// List all tools (Layer 1)
     ListTools,
     /// Store a perception (Layer 4)
-    StorePerception { perception: crate::types::manas::Perception },
+    StorePerception {
+        perception: crate::types::manas::Perception,
+    },
     /// List unconsumed perceptions (Layer 4)
-    ListPerceptions { project: Option<String>, limit: Option<usize>, #[serde(default)] offset: Option<usize> },
+    ListPerceptions {
+        project: Option<String>,
+        limit: Option<usize>,
+        #[serde(default)]
+        offset: Option<usize>,
+    },
     /// Consume (mark as read) perceptions by ID (Layer 4)
-    ConsumePerceptions { ids: Vec<String> },
+    ConsumePerceptions {
+        ids: Vec<String>,
+    },
     /// Store an identity facet (Layer 6 — Ahankara)
-    StoreIdentity { facet: crate::types::manas::IdentityFacet },
+    StoreIdentity {
+        facet: crate::types::manas::IdentityFacet,
+    },
     /// List identity facets for an agent (Layer 6)
-    ListIdentity { agent: String },
+    ListIdentity {
+        agent: String,
+    },
     /// Deactivate an identity facet (Layer 6)
-    DeactivateIdentity { id: String },
+    DeactivateIdentity {
+        id: String,
+    },
     /// List disposition traits for an agent (Layer 7)
-    ListDisposition { agent: String },
+    ListDisposition {
+        agent: String,
+    },
     /// Extended health across all 8 Manas layers
     ManasHealth {
         /// Optional project filter for is_new_project check.
@@ -261,7 +289,6 @@ pub enum Request {
     },
 
     // ── Sync Operations ──
-
     /// Export memories as NDJSON lines with HLC metadata for sync
     SyncExport {
         project: Option<String>,
@@ -299,9 +326,9 @@ pub enum Request {
     /// Extract memories using a specific provider (for testing/comparison in app).
     /// Does NOT store memories — returns a preview of what WOULD be extracted.
     ExtractWithProvider {
-        provider: String,         // "ollama", "claude", "claude_api", "openai", "gemini"
-        model: Option<String>,    // override model, or use default for provider
-        text: String,             // conversation text to extract from
+        provider: String,      // "ollama", "claude", "claude_api", "openai", "gemini"
+        model: Option<String>, // override model, or use default for provider
+        text: String,          // conversation text to extract from
     },
 
     /// Get current daemon configuration
@@ -319,8 +346,8 @@ pub enum Request {
 
     /// Get graph data for Cortex 3D visualization — nodes (memories) + edges
     GetGraphData {
-        layer: Option<String>,  // filter by layer name, or None for all
-        limit: Option<usize>,   // max nodes per layer (default 50)
+        layer: Option<String>, // filter by layer name, or None for all
+        limit: Option<usize>,  // max nodes per layer (default 50)
     },
 
     /// Batch recall — multiple queries in single request (eliminates N+1 for sidebar)
@@ -329,12 +356,11 @@ pub enum Request {
     },
 
     // ── A2A Inter-Session Protocol (FISP) ──
-
     /// Send a message to another session (notification or request)
     SessionSend {
         #[serde(alias = "to_session")]
-        to: String,                    // session ID or "*" for broadcast
-        kind: String,                  // "notification" or "request"
+        to: String, // session ID or "*" for broadcast
+        kind: String, // "notification" or "request"
         topic: String,
         parts: Vec<MessagePart>,
         project: Option<String>,
@@ -350,7 +376,7 @@ pub enum Request {
     /// Respond to a received request
     SessionRespond {
         message_id: String,
-        status: String,                // "accepted", "rejected", "completed", "failed"
+        status: String, // "accepted", "rejected", "completed", "failed"
         parts: Vec<MessagePart>,
     },
     /// Get pending messages for a session
@@ -374,7 +400,6 @@ pub enum Request {
     },
 
     // ── A2A Permission Management ──
-
     /// Grant A2A permission for inter-session messaging
     GrantPermission {
         from_agent: String,
@@ -383,12 +408,13 @@ pub enum Request {
         to_project: Option<String>,
     },
     /// Revoke an A2A permission by ID
-    RevokePermission { id: String },
+    RevokePermission {
+        id: String,
+    },
     /// List all A2A permissions
     ListPermissions,
 
     // ── Scoped Configuration ──
-
     /// Get effective (resolved) config for a scope chain
     GetEffectiveConfig {
         session_id: Option<String>,
@@ -440,7 +466,7 @@ pub enum Request {
     /// Code search: find symbols by name pattern with optional kind filter.
     CodeSearch {
         query: String,
-        kind: Option<String>,  // "function", "class", "file"
+        kind: Option<String>, // "function", "class", "file"
         limit: Option<usize>,
     },
 
@@ -459,7 +485,6 @@ pub enum Request {
     },
 
     // ── Contradictions ──
-
     /// List detected contradictions between active memories.
     ListContradictions {
         #[serde(default)]
@@ -477,7 +502,6 @@ pub enum Request {
     },
 
     // ── Agent Teams ──
-
     /// Create a reusable agent template (CTO, CMO, etc.)
     CreateAgentTemplate {
         name: String,
@@ -501,7 +525,9 @@ pub enum Request {
         name: Option<String>,
     },
     /// Delete an agent template
-    DeleteAgentTemplate { id: String },
+    DeleteAgentTemplate {
+        id: String,
+    },
     /// Update fields on an agent template
     UpdateAgentTemplate {
         id: String,
@@ -580,7 +606,6 @@ pub enum Request {
     },
 
     // ── Organization Hierarchy ──
-
     /// Create a new organization
     CreateOrganization {
         name: String,
@@ -612,7 +637,6 @@ pub enum Request {
     },
 
     // ── Meeting Protocol ──
-
     /// Create a meeting — sends FISP messages to all participants
     CreateMeeting {
         team_id: String,
@@ -625,17 +649,33 @@ pub enum Request {
         goal: Option<String>,
     },
     /// Get meeting status + participant response statuses
-    MeetingStatus { meeting_id: String },
+    MeetingStatus {
+        meeting_id: String,
+    },
     /// Get all participant responses for a meeting
-    MeetingResponses { meeting_id: String },
+    MeetingResponses {
+        meeting_id: String,
+    },
     /// Store orchestrator synthesis
-    MeetingSynthesize { meeting_id: String, synthesis: String },
+    MeetingSynthesize {
+        meeting_id: String,
+        synthesis: String,
+    },
     /// Record decision, store as memory, close meeting
-    MeetingDecide { meeting_id: String, decision: String },
+    MeetingDecide {
+        meeting_id: String,
+        decision: String,
+    },
     /// List meetings for a team
-    ListMeetings { team_id: Option<String>, status: Option<String>, limit: Option<usize> },
+    ListMeetings {
+        team_id: Option<String>,
+        status: Option<String>,
+        limit: Option<usize>,
+    },
     /// Full meeting transcript (topic + context + responses + synthesis + decision)
-    MeetingTranscript { meeting_id: String },
+    MeetingTranscript {
+        meeting_id: String,
+    },
     /// Directly record a meeting participant's response (alternative to FISP side-effect)
     RecordMeetingResponse {
         meeting_id: String,
@@ -656,7 +696,6 @@ pub enum Request {
     },
 
     // ── Notification Engine ──
-
     /// List notifications with optional filters
     ListNotifications {
         status: Option<String>,
@@ -664,14 +703,20 @@ pub enum Request {
         limit: Option<usize>,
     },
     /// Acknowledge a notification
-    AckNotification { id: String },
+    AckNotification {
+        id: String,
+    },
     /// Dismiss a notification
-    DismissNotification { id: String },
+    DismissNotification {
+        id: String,
+    },
     /// Act on a confirmation notification (approve or reject)
-    ActOnNotification { id: String, approved: bool },
+    ActOnNotification {
+        id: String,
+        approved: bool,
+    },
 
     // ── Memory Self-Healing ──
-
     /// Get healing status (metrics, last cycle, stale candidates)
     HealingStatus,
     /// Trigger a manual healing cycle
@@ -685,7 +730,6 @@ pub enum Request {
     },
 
     // ── Workspace ──
-
     /// Initialize workspace directories for an organization
     WorkspaceInit {
         org_name: String,
@@ -721,7 +765,6 @@ pub enum Request {
     },
 
     // ── Skills Registry ──
-
     /// List skills from the registry with optional category filter and FTS5 search
     SkillsList {
         category: Option<String>,
@@ -749,7 +792,6 @@ pub enum Request {
     RoutingStats,
 
     // ── Per-Agent Budget Enforcement ──
-
     /// Record a cost against an agent session's budget
     RecordAgentCost {
         session_id: String,
@@ -793,9 +835,9 @@ pub enum Request {
     /// Set a HUD configuration value at a specific scope.
     /// Keys must start with "hud." — validated by handler.
     SetHudConfig {
-        scope_type: String,   // "organization" | "team" | "project" | "user"
+        scope_type: String, // "organization" | "team" | "project" | "user"
         scope_id: String,
-        key: String,          // e.g. "hud.sections", "hud.density", "hud.theme"
+        key: String, // e.g. "hud.sections", "hud.density", "hud.theme"
         value: String,
         locked: bool,
     },
@@ -804,6 +846,47 @@ pub enum Request {
     ExportHudConfig {
         scope_type: String,
         scope_id: String,
+    },
+
+    // ── Raw layer (benchmark parity + verbatim retrieval) ──
+    //
+    // Sit alongside the extraction pipeline; never block on LLMs. See
+    // docs/benchmarks/plan.md §4 for the full design.
+    /// Ingest a block of text into the raw storage layer: chunks it,
+    /// embeds every chunk via the shared MiniLM embedder, and stores both
+    /// the verbatim chunks and their vectors in one SQLite transaction.
+    RawIngest {
+        /// The text to ingest. No preprocessing; stored verbatim.
+        text: String,
+        /// Project scope — mirrors `project` on extracted memories.
+        #[serde(default)]
+        project: Option<String>,
+        /// Session scope — groups chunks from the same conversation.
+        #[serde(default)]
+        session_id: Option<String>,
+        /// Where the text came from (e.g. `"claude-code"`, `"bench:longmemeval"`).
+        source: String,
+        /// Optional ISO-8601 timestamp override. Defaults to `now()`.
+        #[serde(default)]
+        timestamp: Option<String>,
+        /// Arbitrary structured metadata serialized as JSON.
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+    },
+    /// Search the raw storage layer via KNN on MiniLM embeddings.
+    RawSearch {
+        query: String,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
+        /// Top-K to return. Defaults to 50 (the published benchmark default).
+        #[serde(default)]
+        k: Option<usize>,
+        /// Cosine-distance cutoff; results with distance > this are dropped.
+        /// Defaults to 0.6 (MemPalace's empirical LongMemEval threshold).
+        #[serde(default)]
+        max_distance: Option<f64>,
     },
 
     Shutdown,

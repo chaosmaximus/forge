@@ -28,17 +28,37 @@ use tokio::sync::{watch, Mutex};
 /// ISS-D9: Expanded to cover common build/dependency/cache directories
 /// that inflate symbol counts (94K+ symbols from scanning node_modules paths).
 const SKIP_DIRS: &[&str] = &[
-    ".git", ".hg", ".svn",
-    "target", "build", "dist", "out",
-    "node_modules", "bower_components",
-    "__pycache__", ".mypy_cache", ".pytest_cache", ".tox",
-    ".venv", "venv", "env", ".env",
-    ".next", ".nuxt", ".output",
-    "vendor", "third_party",
-    "coverage", ".coverage", "htmlcov",
-    "__generated__", "generated",
-    ".terraform", ".serverless",
-    ".cache", ".parcel-cache",
+    ".git",
+    ".hg",
+    ".svn",
+    "target",
+    "build",
+    "dist",
+    "out",
+    "node_modules",
+    "bower_components",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".tox",
+    ".venv",
+    "venv",
+    "env",
+    ".env",
+    ".next",
+    ".nuxt",
+    ".output",
+    "vendor",
+    "third_party",
+    "coverage",
+    ".coverage",
+    "htmlcov",
+    "__generated__",
+    "generated",
+    ".terraform",
+    ".serverless",
+    ".cache",
+    ".parcel-cache",
 ];
 
 /// ISS-D9: Cap file collection per project to prevent DB bloat.
@@ -203,11 +223,19 @@ fn extensions_for_language(language: &str) -> &'static [&'static str] {
 fn collect_source_files(project_dir: &str, extensions: &[&str]) -> Vec<String> {
     let skip_dirs: HashSet<&str> = SKIP_DIRS.iter().copied().collect();
     let mut files = Vec::new();
-    walk_dir_recursive(Path::new(project_dir), &skip_dirs, extensions, &mut files, 0);
+    walk_dir_recursive(
+        Path::new(project_dir),
+        &skip_dirs,
+        extensions,
+        &mut files,
+        0,
+    );
     if files.len() > MAX_FILES_PER_PROJECT {
         eprintln!(
             "[indexer] capping file collection: {} files found, limiting to {} for {}",
-            files.len(), MAX_FILES_PER_PROJECT, project_dir
+            files.len(),
+            MAX_FILES_PER_PROJECT,
+            project_dir
         );
         // L3: sort by path for deterministic truncation across runs
         files.sort();
@@ -378,10 +406,7 @@ async fn index_with_server(
         for sym in callable_symbols.iter().take(200) {
             let sym_uri = file_uri(&sym.file_path);
             let content = std::fs::read_to_string(&sym.file_path).unwrap_or_default();
-            if let Err(e) = client
-                .did_open(&sym_uri, &config.language, &content)
-                .await
-            {
+            if let Err(e) = client.did_open(&sym_uri, &config.language, &content).await {
                 eprintln!("[indexer] failed to open document for references: {e}");
             }
 
@@ -407,11 +432,8 @@ async fn index_with_server(
             .await
             {
                 Ok(Ok(refs)) if !refs.is_empty() => {
-                    let edges = crate::lsp::symbols::build_call_edges(
-                        &sym.id,
-                        &sym.file_path,
-                        &refs,
-                    );
+                    let edges =
+                        crate::lsp::symbols::build_call_edges(&sym.id, &sym.file_path, &refs);
                     call_edges.extend(edges);
                 }
                 _ => {}
@@ -460,16 +482,14 @@ async fn run_index(
     // Phase 1: LSP-based indexing
     for config in &servers {
         match manager.get_client(config).await {
-            Ok(client) => {
-                match index_with_server(client, config, project_dir, &indexed_at).await {
-                    Ok((files, symbols, edges)) => {
-                        all_files.extend(files);
-                        all_symbols.extend(symbols);
-                        all_call_edges.extend(edges);
-                    }
-                    Err(e) => eprintln!("[indexer] {} failed: {}", config.language, e),
+            Ok(client) => match index_with_server(client, config, project_dir, &indexed_at).await {
+                Ok((files, symbols, edges)) => {
+                    all_files.extend(files);
+                    all_symbols.extend(symbols);
+                    all_call_edges.extend(edges);
                 }
-            }
+                Err(e) => eprintln!("[indexer] {} failed: {}", config.language, e),
+            },
             Err(e) => eprintln!("[indexer] {} spawn failed: {}", config.command, e),
         }
     }
@@ -499,10 +519,7 @@ async fn run_index(
                 };
 
                 let hash = file_hash(path);
-                let language = match Path::new(path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                {
+                let language = match Path::new(path).extension().and_then(|e| e.to_str()) {
                     Some("ts" | "tsx") => "typescript",
                     Some("js" | "jsx") => "javascript",
                     _ => continue,
@@ -526,10 +543,7 @@ async fn run_index(
 
                 let syms = extract_symbols_regex(&content, path, language);
                 if !syms.is_empty() {
-                    HASH_CACHE
-                        .lock()
-                        .unwrap()
-                        .insert(path.to_string(), hash);
+                    HASH_CACHE.lock().unwrap().insert(path.to_string(), hash);
                 }
                 all_symbols.extend(syms);
             }
@@ -541,7 +555,11 @@ async fn run_index(
     let py_files = collect_source_files(project_dir, py_extensions);
     if !py_files.is_empty() {
         let indexed_paths: HashSet<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
-        let unindexed: Vec<&str> = py_files.iter().filter(|p| !indexed_paths.contains(p.as_str())).map(|s| s.as_str()).collect();
+        let unindexed: Vec<&str> = py_files
+            .iter()
+            .filter(|p| !indexed_paths.contains(p.as_str()))
+            .map(|s| s.as_str())
+            .collect();
         for path in unindexed {
             let content = match std::fs::read_to_string(path) {
                 Ok(c) => c,
@@ -549,13 +567,21 @@ async fn run_index(
             };
             let hash = file_hash(path);
             all_files.push(CodeFile {
-                id: format!("file:{path}"), path: path.to_string(), language: "python".into(),
-                project: project_dir.to_string(), hash: hash.clone(), indexed_at: indexed_at.clone(),
+                id: format!("file:{path}"),
+                path: path.to_string(),
+                language: "python".into(),
+                project: project_dir.to_string(),
+                hash: hash.clone(),
+                indexed_at: indexed_at.clone(),
             });
             let cached = HASH_CACHE.lock().unwrap().get(path).cloned();
-            if cached.as_deref() == Some(&hash) { continue; }
+            if cached.as_deref() == Some(&hash) {
+                continue;
+            }
             let syms = extract_symbols_python(path, &content);
-            if !syms.is_empty() { HASH_CACHE.lock().unwrap().insert(path.to_string(), hash); }
+            if !syms.is_empty() {
+                HASH_CACHE.lock().unwrap().insert(path.to_string(), hash);
+            }
             all_symbols.extend(syms);
         }
     }
@@ -565,7 +591,11 @@ async fn run_index(
     let go_files = collect_source_files(project_dir, go_extensions);
     if !go_files.is_empty() {
         let indexed_paths: HashSet<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
-        let unindexed: Vec<&str> = go_files.iter().filter(|p| !indexed_paths.contains(p.as_str())).map(|s| s.as_str()).collect();
+        let unindexed: Vec<&str> = go_files
+            .iter()
+            .filter(|p| !indexed_paths.contains(p.as_str()))
+            .map(|s| s.as_str())
+            .collect();
         for path in unindexed {
             let content = match std::fs::read_to_string(path) {
                 Ok(c) => c,
@@ -573,13 +603,21 @@ async fn run_index(
             };
             let hash = file_hash(path);
             all_files.push(CodeFile {
-                id: format!("file:{path}"), path: path.to_string(), language: "go".into(),
-                project: project_dir.to_string(), hash: hash.clone(), indexed_at: indexed_at.clone(),
+                id: format!("file:{path}"),
+                path: path.to_string(),
+                language: "go".into(),
+                project: project_dir.to_string(),
+                hash: hash.clone(),
+                indexed_at: indexed_at.clone(),
             });
             let cached = HASH_CACHE.lock().unwrap().get(path).cloned();
-            if cached.as_deref() == Some(&hash) { continue; }
+            if cached.as_deref() == Some(&hash) {
+                continue;
+            }
             let syms = extract_symbols_go(path, &content);
-            if !syms.is_empty() { HASH_CACHE.lock().unwrap().insert(path.to_string(), hash); }
+            if !syms.is_empty() {
+                HASH_CACHE.lock().unwrap().insert(path.to_string(), hash);
+            }
             all_symbols.extend(syms);
         }
     }
@@ -614,7 +652,10 @@ async fn run_index(
     }
 
     // Clear old "calls" edges before inserting fresh ones (prevents duplicates across runs)
-    if let Err(e) = locked.conn.execute("DELETE FROM edge WHERE edge_type = 'calls'", []) {
+    if let Err(e) = locked
+        .conn
+        .execute("DELETE FROM edge WHERE edge_type = 'calls'", [])
+    {
         eprintln!("[indexer] failed to clear old calls edges: {e}");
     }
 
@@ -637,7 +678,12 @@ async fn run_index(
         all_symbols.clone()
     };
     let regex_call_edges = extract_call_edges_regex(&locked.conn, &all_files, &symbols_for_calls);
-    eprintln!("[indexer] call edges: {} from LSP, {} from regex (symbols: {})", edges_stored, regex_call_edges, symbols_for_calls.len());
+    eprintln!(
+        "[indexer] call edges: {} from LSP, {} from regex (symbols: {})",
+        edges_stored,
+        regex_call_edges,
+        symbols_for_calls.len()
+    );
 
     // Run community detection on the updated graph
     run_clustering(&locked.conn, project_dir);
@@ -653,9 +699,7 @@ async fn run_index(
     drop(locked); // release lock immediately
 
     if symbols_stored > 0 {
-        eprintln!(
-            "[indexer] indexed {symbols_stored} symbols across {files_stored} file entries"
-        );
+        eprintln!("[indexer] indexed {symbols_stored} symbols across {files_stored} file entries");
     }
     if edges_stored > 0 {
         eprintln!("[indexer] stored {edges_stored} call edges");
@@ -797,7 +841,9 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
             }
             // For Rust imports, also store a file:-prefixed edge so find_importers can match
             if file.language == "rust" {
-                if let Some(resolved) = resolve_rust_import_to_file(imported_module, from_path, &module_to_file) {
+                if let Some(resolved) =
+                    resolve_rust_import_to_file(imported_module, from_path, &module_to_file)
+                {
                     let to_id = format!("file:{resolved}");
                     match ops::store_edge(conn, &from_id, &to_id, "imports", "{}") {
                         Ok(_) => import_edges_stored += 1,
@@ -858,7 +904,9 @@ fn resolve_rust_import_to_file(
         // Relative imports — resolve based on the importing file's directory (go up one)
         let dir = std::path::Path::new(from_path).parent()?;
         let base_dir = dir.parent()?;
-        let module_file = base_dir.join(rel_module.replace("::", "/")).with_extension("rs");
+        let module_file = base_dir
+            .join(rel_module.replace("::", "/"))
+            .with_extension("rs");
         let path_str = module_file.to_string_lossy().to_string();
         if module_lookup.values().any(|v| v == &path_str) {
             return Some(path_str);
@@ -905,22 +953,78 @@ pub fn extract_call_edges_regex(
 
     // Regex: word boundary + identifier + opening paren (Rust function calls)
     // Excludes common keywords that look like calls (if, while, for, match, etc.)
-    static CALL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"\b([a-z_][a-z0-9_]{2,})\s*\(").unwrap()
-    });
+    static CALL_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\b([a-z_][a-z0-9_]{2,})\s*\(").unwrap());
 
     static RUST_KEYWORDS: LazyLock<std::collections::HashSet<&'static str>> = LazyLock::new(|| {
         [
-            "if", "else", "while", "for", "loop", "match", "return", "let", "mut",
-            "pub", "fn", "struct", "enum", "impl", "use", "mod", "type", "trait",
-            "where", "async", "await", "move", "ref", "self", "super", "crate",
-            "const", "static", "unsafe", "extern", "dyn", "box", "macro_rules",
-            "assert", "assert_eq", "assert_ne", "debug_assert", "debug_assert_eq",
-            "panic", "todo", "unimplemented", "unreachable", "println", "eprintln",
-            "format", "write", "writeln", "vec", "cfg", "test", "derive", "allow",
-            "warn", "deny", "forbid", "feature", "include", "include_str",
-            "Some", "None", "Ok", "Err", "true", "false",
-        ].into_iter().collect()
+            "if",
+            "else",
+            "while",
+            "for",
+            "loop",
+            "match",
+            "return",
+            "let",
+            "mut",
+            "pub",
+            "fn",
+            "struct",
+            "enum",
+            "impl",
+            "use",
+            "mod",
+            "type",
+            "trait",
+            "where",
+            "async",
+            "await",
+            "move",
+            "ref",
+            "self",
+            "super",
+            "crate",
+            "const",
+            "static",
+            "unsafe",
+            "extern",
+            "dyn",
+            "box",
+            "macro_rules",
+            "assert",
+            "assert_eq",
+            "assert_ne",
+            "debug_assert",
+            "debug_assert_eq",
+            "panic",
+            "todo",
+            "unimplemented",
+            "unreachable",
+            "println",
+            "eprintln",
+            "format",
+            "write",
+            "writeln",
+            "vec",
+            "cfg",
+            "test",
+            "derive",
+            "allow",
+            "warn",
+            "deny",
+            "forbid",
+            "feature",
+            "include",
+            "include_str",
+            "Some",
+            "None",
+            "Ok",
+            "Err",
+            "true",
+            "false",
+        ]
+        .into_iter()
+        .collect()
     });
 
     // Build lookup: function_name → Vec<(symbol_id, file_path)>
@@ -990,15 +1094,17 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
         .unwrap_or_default();
     let proj_escaped = project_dir.replace('\'', "''");
     let name_escaped = project_name.replace('\'', "''");
-    let exists: bool = conn.query_row(
-        &format!(
-            "SELECT COUNT(*) > 0 FROM memory
+    let exists: bool = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(*) > 0 FROM memory
              WHERE status = 'active' AND metadata LIKE '%project_conventions%'
              AND (project = '{proj_escaped}' OR project = '{name_escaped}')",
-        ),
-        [],
-        |row| row.get(0),
-    ).unwrap_or(false);
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
 
     if exists {
         return; // Conventions already stored
@@ -1026,7 +1132,10 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
     }
 
     // Python
-    if dir.join("pyproject.toml").exists() || dir.join("setup.py").exists() || dir.join("requirements.txt").exists() {
+    if dir.join("pyproject.toml").exists()
+        || dir.join("setup.py").exists()
+        || dir.join("requirements.txt").exists()
+    {
         conventions.push("test_command: pytest".into());
         conventions.push("lint_command: ruff check .".into());
         conventions.push("test_patterns: def test_, class Test".into());
@@ -1065,38 +1174,81 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
     // Rust: analyze Cargo.toml [dependencies]
     if let Some(cargo) = safe_read(dir.join("Cargo.toml")) {
         let cargo_lower = cargo.to_lowercase();
-        if cargo_lower.contains("actix") || cargo_lower.contains("axum") || cargo_lower.contains("warp") || cargo_lower.contains("rocket") {
+        if cargo_lower.contains("actix")
+            || cargo_lower.contains("axum")
+            || cargo_lower.contains("warp")
+            || cargo_lower.contains("rocket")
+        {
             frameworks.push("web framework");
         }
-        if cargo_lower.contains("sqlx") || cargo_lower.contains("diesel") || cargo_lower.contains("rusqlite") || cargo_lower.contains("sea-orm") {
+        if cargo_lower.contains("sqlx")
+            || cargo_lower.contains("diesel")
+            || cargo_lower.contains("rusqlite")
+            || cargo_lower.contains("sea-orm")
+        {
             frameworks.push("database ORM");
         }
-        if cargo_lower.contains("tokio") { frameworks.push("async runtime"); }
-        if cargo_lower.contains("serde") { frameworks.push("serialization"); }
-        if cargo_lower.contains("jsonwebtoken") || cargo_lower.contains("jwt") { domain_signals.push("authentication (JWT)"); }
-        if cargo_lower.contains("tonic") || cargo_lower.contains("prost") { frameworks.push("gRPC"); }
+        if cargo_lower.contains("tokio") {
+            frameworks.push("async runtime");
+        }
+        if cargo_lower.contains("serde") {
+            frameworks.push("serialization");
+        }
+        if cargo_lower.contains("jsonwebtoken") || cargo_lower.contains("jwt") {
+            domain_signals.push("authentication (JWT)");
+        }
+        if cargo_lower.contains("tonic") || cargo_lower.contains("prost") {
+            frameworks.push("gRPC");
+        }
     }
 
     // Python: analyze requirements.txt or pyproject.toml
-    for req_file in &["requirements.txt", "pyproject.toml", "setup.py", "setup.cfg"] {
+    for req_file in &[
+        "requirements.txt",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+    ] {
         if let Some(reqs) = safe_read(dir.join(req_file)) {
             let reqs_lower = reqs.to_lowercase();
-            if reqs_lower.contains("django") || reqs_lower.contains("flask") || reqs_lower.contains("fastapi") || reqs_lower.contains("starlette") {
+            if reqs_lower.contains("django")
+                || reqs_lower.contains("flask")
+                || reqs_lower.contains("fastapi")
+                || reqs_lower.contains("starlette")
+            {
                 frameworks.push("web framework");
             }
-            if reqs_lower.contains("sklearn") || reqs_lower.contains("scikit-learn") || reqs_lower.contains("xgboost") || reqs_lower.contains("lightgbm") || reqs_lower.contains("catboost") {
+            if reqs_lower.contains("sklearn")
+                || reqs_lower.contains("scikit-learn")
+                || reqs_lower.contains("xgboost")
+                || reqs_lower.contains("lightgbm")
+                || reqs_lower.contains("catboost")
+            {
                 domain_signals.push("ML/model training — consider: model governance, data lineage, experiment tracking");
             }
-            if reqs_lower.contains("torch") || reqs_lower.contains("tensorflow") || reqs_lower.contains("keras") {
+            if reqs_lower.contains("torch")
+                || reqs_lower.contains("tensorflow")
+                || reqs_lower.contains("keras")
+            {
                 domain_signals.push("deep learning — consider: GPU management, model versioning, training reproducibility");
             }
-            if reqs_lower.contains("pandas") || reqs_lower.contains("polars") || reqs_lower.contains("pyspark") {
+            if reqs_lower.contains("pandas")
+                || reqs_lower.contains("polars")
+                || reqs_lower.contains("pyspark")
+            {
                 domain_signals.push("data processing — consider: data quality, schema validation, pipeline idempotency");
             }
-            if reqs_lower.contains("stripe") || reqs_lower.contains("payment") || reqs_lower.contains("billing") {
-                domain_signals.push("payments — consider: PCI-DSS, idempotent transactions, audit logging");
+            if reqs_lower.contains("stripe")
+                || reqs_lower.contains("payment")
+                || reqs_lower.contains("billing")
+            {
+                domain_signals
+                    .push("payments — consider: PCI-DSS, idempotent transactions, audit logging");
             }
-            if reqs_lower.contains("celery") || reqs_lower.contains("rq") || reqs_lower.contains("dramatiq") {
+            if reqs_lower.contains("celery")
+                || reqs_lower.contains("rq")
+                || reqs_lower.contains("dramatiq")
+            {
                 frameworks.push("task queue");
             }
             if reqs_lower.contains("sqlalchemy") || reqs_lower.contains("alembic") {
@@ -1109,16 +1261,30 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
     // Node: analyze package.json
     if let Some(pkg) = safe_read(dir.join("package.json")) {
         let pkg_lower = pkg.to_lowercase();
-        if pkg_lower.contains("react") || pkg_lower.contains("vue") || pkg_lower.contains("angular") || pkg_lower.contains("svelte") {
+        if pkg_lower.contains("react")
+            || pkg_lower.contains("vue")
+            || pkg_lower.contains("angular")
+            || pkg_lower.contains("svelte")
+        {
             frameworks.push("frontend SPA");
         }
-        if pkg_lower.contains("express") || pkg_lower.contains("fastify") || pkg_lower.contains("hono") || pkg_lower.contains("next") {
+        if pkg_lower.contains("express")
+            || pkg_lower.contains("fastify")
+            || pkg_lower.contains("hono")
+            || pkg_lower.contains("next")
+        {
             frameworks.push("web framework");
         }
-        if pkg_lower.contains("prisma") || pkg_lower.contains("drizzle") || pkg_lower.contains("typeorm") || pkg_lower.contains("sequelize") {
+        if pkg_lower.contains("prisma")
+            || pkg_lower.contains("drizzle")
+            || pkg_lower.contains("typeorm")
+            || pkg_lower.contains("sequelize")
+        {
             frameworks.push("database ORM");
         }
-        if pkg_lower.contains("stripe") { domain_signals.push("payments — consider: PCI-DSS, idempotent transactions"); }
+        if pkg_lower.contains("stripe") {
+            domain_signals.push("payments — consider: PCI-DSS, idempotent transactions");
+        }
     }
 
     if !frameworks.is_empty() {
@@ -1143,7 +1309,9 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
     );
 
     match result {
-        Ok(_) => eprintln!("[indexer] auto-detected conventions for {project_name}: {language_str}"),
+        Ok(_) => {
+            eprintln!("[indexer] auto-detected conventions for {project_name}: {language_str}")
+        }
         Err(e) => eprintln!("[indexer] failed to store conventions: {e}"),
     }
 }
@@ -1173,7 +1341,10 @@ mod tests {
     fn test_extensions_for_language() {
         assert_eq!(extensions_for_language("rust"), &["rs"]);
         assert_eq!(extensions_for_language("python"), &["py"]);
-        assert_eq!(extensions_for_language("typescript"), &["ts", "tsx", "js", "jsx"]);
+        assert_eq!(
+            extensions_for_language("typescript"),
+            &["ts", "tsx", "js", "jsx"]
+        );
         assert_eq!(extensions_for_language("go"), &["go"]);
         assert!(extensions_for_language("unknown").is_empty());
     }
@@ -1276,10 +1447,18 @@ mod tests {
         // Create temp files with import statements
         let tmp = tempfile::tempdir().expect("create temp dir");
         let rs_path = tmp.path().join("lib.rs");
-        std::fs::write(&rs_path, "use std::collections::HashMap;\nuse crate::db::ops;\nfn main() {}").unwrap();
+        std::fs::write(
+            &rs_path,
+            "use std::collections::HashMap;\nuse crate::db::ops;\nfn main() {}",
+        )
+        .unwrap();
 
         let py_path = tmp.path().join("app.py");
-        std::fs::write(&py_path, "import os\nfrom flask import Flask\ndef main(): pass").unwrap();
+        std::fs::write(
+            &py_path,
+            "import os\nfrom flask import Flask\ndef main(): pass",
+        )
+        .unwrap();
 
         let files = vec![
             CodeFile {
@@ -1301,13 +1480,23 @@ mod tests {
         ];
 
         let stored = extract_and_store_imports(&conn, &files);
-        assert!(stored >= 4, "should store at least 4 import edges (2 rust + 2 python), got {stored}");
+        assert!(
+            stored >= 4,
+            "should store at least 4 import edges (2 rust + 2 python), got {stored}"
+        );
 
         // Verify edges exist in DB
         let edge_count: usize = conn
-            .query_row("SELECT COUNT(*) FROM edge WHERE edge_type = 'imports'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM edge WHERE edge_type = 'imports'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(edge_count, stored, "DB edge count should match returned count");
+        assert_eq!(
+            edge_count, stored,
+            "DB edge count should match returned count"
+        );
     }
 
     #[test]
@@ -1352,7 +1541,10 @@ mod tests {
 
         let stored = extract_and_store_imports(&conn, &files);
         // Should store: 1 raw module-path edge + 1 file:-prefixed resolved edge
-        assert!(stored >= 2, "expected at least 2 edges (raw + resolved), got {stored}");
+        assert!(
+            stored >= 2,
+            "expected at least 2 edges (raw + resolved), got {stored}"
+        );
 
         // Check that a file:-prefixed edge exists for the resolved handler path
         let handler_str = handler_path.to_str().unwrap();
@@ -1417,9 +1609,9 @@ mod tests {
             Some(&"/project/src/db/ops.rs".to_string()),
         );
         // lib.rs is a crate root — should not be in the lookup
-        assert!(lookup.get("lib").is_none());
+        assert!(!lookup.contains_key("lib"));
         // Python files should not be in the lookup
-        assert!(lookup.get("app").is_none());
+        assert!(!lookup.contains_key("app"));
     }
 
     #[test]
@@ -1525,7 +1717,8 @@ mod tests {
     /// Create an in-memory DB with just the edge table (no sqlite-vec needed)
     fn edge_only_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE IF NOT EXISTS edge (
                 id TEXT PRIMARY KEY,
                 from_id TEXT NOT NULL,
@@ -1536,7 +1729,9 @@ mod tests {
                 valid_from TEXT NOT NULL,
                 valid_until TEXT
             );
-        ").unwrap();
+        ",
+        )
+        .unwrap();
         conn
     }
 
@@ -1558,33 +1753,39 @@ mod tests {
 
         // File A defines a function
         let file_a = dir.join("lib.rs");
-        std::fs::write(&file_a, "pub fn process_data(input: &str) -> String { input.to_string() }").unwrap();
+        std::fs::write(
+            &file_a,
+            "pub fn process_data(input: &str) -> String { input.to_string() }",
+        )
+        .unwrap();
 
         // File B calls that function
         let file_b = dir.join("main.rs");
-        std::fs::write(&file_b, "fn main() { let result = process_data(\"hello\"); }").unwrap();
+        std::fs::write(
+            &file_b,
+            "fn main() { let result = process_data(\"hello\"); }",
+        )
+        .unwrap();
 
-        let files = vec![
-            test_code_file(&file_a),
-            test_code_file(&file_b),
-        ];
+        let files = vec![test_code_file(&file_a), test_code_file(&file_b)];
 
-        let symbols = vec![
-            CodeSymbol {
-                id: "lib.rs:process_data:1".into(),
-                name: "process_data".into(),
-                kind: "function".into(),
-                file_path: file_a.to_string_lossy().to_string(),
-                line_start: 1,
-                line_end: Some(1),
-                signature: None,
-            },
-        ];
+        let symbols = vec![CodeSymbol {
+            id: "lib.rs:process_data:1".into(),
+            name: "process_data".into(),
+            kind: "function".into(),
+            file_path: file_a.to_string_lossy().to_string(),
+            line_start: 1,
+            line_end: Some(1),
+            signature: None,
+        }];
 
         let conn = edge_only_db();
 
         let edges = extract_call_edges_regex(&conn, &files, &symbols);
-        assert!(edges >= 1, "should create at least 1 call edge from main.rs → lib.rs:process_data, got {edges}");
+        assert!(
+            edges >= 1,
+            "should create at least 1 call edge from main.rs → lib.rs:process_data, got {edges}"
+        );
     }
 
     #[test]
@@ -1594,12 +1795,14 @@ mod tests {
 
         // File with keyword-like patterns that should NOT be detected as calls
         let file_a = dir.join("test.rs");
-        std::fs::write(&file_a, "fn test() { if (true) { while (true) { for x in items { match (val) { } } } } }").unwrap();
+        std::fs::write(
+            &file_a,
+            "fn test() { if (true) { while (true) { for x in items { match (val) { } } } } }",
+        )
+        .unwrap();
 
-        let files = vec![
-            test_code_file(&file_a),
-        ];
-        let symbols = vec![];  // No symbols to match against
+        let files = vec![test_code_file(&file_a)];
+        let symbols = vec![]; // No symbols to match against
 
         let conn = edge_only_db();
 
@@ -1616,20 +1819,16 @@ mod tests {
         let file_a = dir.join("lib.rs");
         std::fs::write(&file_a, "fn helper() {} fn main() { helper(); }").unwrap();
 
-        let files = vec![
-            test_code_file(&file_a),
-        ];
-        let symbols = vec![
-            CodeSymbol {
-                id: "lib.rs:helper:1".into(),
-                name: "helper".into(),
-                kind: "function".into(),
-                file_path: file_a.to_string_lossy().to_string(),
-                line_start: 1,
-                line_end: Some(1),
-                signature: None,
-            },
-        ];
+        let files = vec![test_code_file(&file_a)];
+        let symbols = vec![CodeSymbol {
+            id: "lib.rs:helper:1".into(),
+            name: "helper".into(),
+            kind: "function".into(),
+            file_path: file_a.to_string_lossy().to_string(),
+            line_start: 1,
+            line_end: Some(1),
+            signature: None,
+        }];
 
         let conn = edge_only_db();
 
@@ -1649,26 +1848,24 @@ mod tests {
         let file_b = dir.join("main.rs");
         std::fs::write(&file_b, "fn main() { do_work(); do_work(); do_work(); }").unwrap();
 
-        let files = vec![
-            test_code_file(&file_a),
-            test_code_file(&file_b),
-        ];
-        let symbols = vec![
-            CodeSymbol {
-                id: "lib.rs:do_work:1".into(),
-                name: "do_work".into(),
-                kind: "function".into(),
-                file_path: file_a.to_string_lossy().to_string(),
-                line_start: 1,
-                line_end: Some(1),
-                signature: None,
-            },
-        ];
+        let files = vec![test_code_file(&file_a), test_code_file(&file_b)];
+        let symbols = vec![CodeSymbol {
+            id: "lib.rs:do_work:1".into(),
+            name: "do_work".into(),
+            kind: "function".into(),
+            file_path: file_a.to_string_lossy().to_string(),
+            line_start: 1,
+            line_end: Some(1),
+            signature: None,
+        }];
 
         let conn = edge_only_db();
 
         let edges = extract_call_edges_regex(&conn, &files, &symbols);
-        assert_eq!(edges, 1, "multiple calls to same function should create only 1 edge");
+        assert_eq!(
+            edges, 1,
+            "multiple calls to same function should create only 1 edge"
+        );
     }
 
     #[test]
@@ -1679,28 +1876,43 @@ mod tests {
 
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         // Minimal schema for memory table
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE memory (
                 id TEXT PRIMARY KEY, memory_type TEXT, title TEXT, content TEXT,
                 confidence REAL, status TEXT, tags TEXT, project TEXT,
                 created_at TEXT, updated_at TEXT, accessed_at TEXT, metadata TEXT
             );
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         auto_detect_conventions(&conn, dir.to_str().unwrap());
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memory WHERE metadata LIKE '%project_conventions%'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE metadata LIKE '%project_conventions%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "should create 1 conventions memory");
 
-        let content: String = conn.query_row(
-            "SELECT content FROM memory WHERE metadata LIKE '%project_conventions%'",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert!(content.contains("cargo test"), "should detect Rust test command");
-        assert!(content.contains("#[test]"), "should include Rust test patterns");
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM memory WHERE metadata LIKE '%project_conventions%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            content.contains("cargo test"),
+            "should detect Rust test command"
+        );
+        assert!(
+            content.contains("#[test]"),
+            "should include Rust test patterns"
+        );
     }
 
     #[test]
@@ -1710,22 +1922,28 @@ mod tests {
         std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
 
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE memory (
                 id TEXT PRIMARY KEY, memory_type TEXT, title TEXT, content TEXT,
                 confidence REAL, status TEXT, tags TEXT, project TEXT,
                 created_at TEXT, updated_at TEXT, accessed_at TEXT, metadata TEXT
             );
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Run twice
         auto_detect_conventions(&conn, dir.to_str().unwrap());
         auto_detect_conventions(&conn, dir.to_str().unwrap());
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memory WHERE metadata LIKE '%project_conventions%'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE metadata LIKE '%project_conventions%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "should not create duplicate conventions");
     }
 
@@ -1743,25 +1961,37 @@ mod tests {
 
         // Create Python files
         std::fs::write(dir.join("app.py"), "import os\n\nclass MyApp:\n    def run(self):\n        pass\n\ndef main():\n    app = MyApp()\n").unwrap();
-        std::fs::write(dir.join("utils.py"), "MAX_RETRIES = 5\n\ndef helper(x):\n    return x * 2\n").unwrap();
+        std::fs::write(
+            dir.join("utils.py"),
+            "MAX_RETRIES = 5\n\ndef helper(x):\n    return x * 2\n",
+        )
+        .unwrap();
 
         let (files, symbols) = index_directory_sync(&conn, dir.to_str().unwrap());
         assert_eq!(files, 2, "should index 2 Python files, got {files}");
-        assert!(symbols >= 4, "should find at least 4 symbols (MyApp, run, main, MAX_RETRIES, helper), got {symbols}");
+        assert!(
+            symbols >= 4,
+            "should find at least 4 symbols (MyApp, run, main, MAX_RETRIES, helper), got {symbols}"
+        );
 
         // Verify files stored in DB
-        let db_files: usize = conn.query_row(
-            "SELECT COUNT(*) FROM code_file WHERE project = ?1",
-            rusqlite::params![dir.to_str().unwrap()],
-            |r| r.get(0),
-        ).unwrap();
+        let db_files: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM code_file WHERE project = ?1",
+                rusqlite::params![dir.to_str().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(db_files, 2, "should store 2 files in DB");
 
         // Verify symbols stored
-        let db_symbols: usize = conn.query_row(
-            "SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0),
-        ).unwrap();
-        assert!(db_symbols >= 4, "should store at least 4 symbols in DB, got {db_symbols}");
+        let db_symbols: usize = conn
+            .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            db_symbols >= 4,
+            "should store at least 4 symbols in DB, got {db_symbols}"
+        );
     }
 
     #[test]
@@ -1781,7 +2011,10 @@ mod tests {
         std::fs::write(dir.join("main.go"), "package main\nfunc main() {}\n").unwrap();
 
         let (files, _symbols) = index_directory_sync(&conn, dir.to_str().unwrap());
-        assert_eq!(files, 3, "should index 3 files across Python/TS/Go, got {files}");
+        assert_eq!(
+            files, 3,
+            "should index 3 files across Python/TS/Go, got {files}"
+        );
     }
 
     #[test]
@@ -1814,7 +2047,9 @@ mod tests {
         let dir = tmp.path();
 
         // Python file with em dashes, smart quotes, and other multi-byte UTF-8
-        std::fs::write(dir.join("utf8_test.py"), r#"
+        std::fs::write(
+            dir.join("utf8_test.py"),
+            r#"
 """This module handles data — including "smart quotes" and em—dashes.
 
 It also has: café, naïve, résumé, and 日本語.
@@ -1825,11 +2060,16 @@ MAX_RETRIES = 5  # Don't change — it's the optimal value
 def process_data(input_data):
     """Process the input — returning cleaned output."""
     return input_data
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let (files, symbols) = index_directory_sync(&conn, dir.to_str().unwrap());
         assert_eq!(files, 1, "should index 1 Python file");
-        assert!(symbols >= 2, "should find at least 2 symbols (MAX_RETRIES, process_data), got {symbols}");
+        assert!(
+            symbols >= 2,
+            "should find at least 2 symbols (MAX_RETRIES, process_data), got {symbols}"
+        );
     }
 
     #[test]
@@ -1839,20 +2079,29 @@ def process_data(input_data):
         std::fs::write(dir.join("pyproject.toml"), "[tool.pytest]").unwrap();
 
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE memory (
                 id TEXT PRIMARY KEY, memory_type TEXT, title TEXT, content TEXT,
                 confidence REAL, status TEXT, tags TEXT, project TEXT,
                 created_at TEXT, updated_at TEXT, accessed_at TEXT, metadata TEXT
             );
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         auto_detect_conventions(&conn, dir.to_str().unwrap());
 
-        let content: String = conn.query_row(
-            "SELECT content FROM memory WHERE metadata LIKE '%project_conventions%'",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert!(content.contains("pytest"), "should detect Python test command");
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM memory WHERE metadata LIKE '%project_conventions%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            content.contains("pytest"),
+            "should detect Python test command"
+        );
     }
 }

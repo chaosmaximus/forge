@@ -81,7 +81,7 @@ mod tests {
                     confidence: Some(0.9),
                     tags: Some(vec!["t".into()]),
                     project: Some("forge".into()),
-            metadata: None,
+                    metadata: None,
                 },
             ),
             (
@@ -174,10 +174,7 @@ mod tests {
                     current_task: None,
                 },
             ),
-            (
-                "end_session",
-                Request::EndSession { id: "s1".into() },
-            ),
+            ("end_session", Request::EndSession { id: "s1".into() }),
             (
                 "sessions",
                 Request::Sessions {
@@ -414,7 +411,9 @@ mod tests {
             ),
             (
                 "revoke_permission",
-                Request::RevokePermission { id: "perm-123".into() },
+                Request::RevokePermission {
+                    id: "perm-123".into(),
+                },
             ),
             (
                 "get_effective_config",
@@ -487,12 +486,7 @@ mod tests {
                     organization_id: Some("default".into()),
                 },
             ),
-            (
-                "get_stats",
-                Request::GetStats {
-                    hours: Some(24),
-                },
-            ),
+            ("get_stats", Request::GetStats { hours: Some(24) }),
             // ── Agent Lifecycle ──
             (
                 "spawn_agent",
@@ -539,10 +533,7 @@ mod tests {
                     team_name: "sprint-1".into(),
                 },
             ),
-            (
-                "list_team_templates",
-                Request::ListTeamTemplates,
-            ),
+            ("list_team_templates", Request::ListTeamTemplates),
             // ── Team Enhancements ──
             (
                 "create_team",
@@ -676,15 +667,11 @@ mod tests {
             ),
             (
                 "ack_notification",
-                Request::AckNotification {
-                    id: "n1".into(),
-                },
+                Request::AckNotification { id: "n1".into() },
             ),
             (
                 "dismiss_notification",
-                Request::DismissNotification {
-                    id: "n1".into(),
-                },
+                Request::DismissNotification { id: "n1".into() },
             ),
             (
                 "act_on_notification",
@@ -731,26 +718,17 @@ mod tests {
                 "remember",
                 r#"{"method":"remember","params":{"memory_type":"decision","title":"t","content":"c"}}"#,
             ),
-            (
-                "recall",
-                r#"{"method":"recall","params":{"query":"test"}}"#,
-            ),
+            ("recall", r#"{"method":"recall","params":{"query":"test"}}"#),
             (
                 "recall with layer",
                 r#"{"method":"recall","params":{"query":"test","layer":"experience","limit":10}}"#,
             ),
-            (
-                "forget",
-                r#"{"method":"forget","params":{"id":"abc"}}"#,
-            ),
+            ("forget", r#"{"method":"forget","params":{"id":"abc"}}"#),
             (
                 "export",
                 r#"{"method":"export","params":{"format":"json"}}"#,
             ),
-            (
-                "import",
-                r#"{"method":"import","params":{"data":"{}"}}"#,
-            ),
+            ("import", r#"{"method":"import","params":{"data":"{}"}}"#),
             (
                 "ingest_declared",
                 r#"{"method":"ingest_declared","params":{"path":"/tmp/f","source":"test"}}"#,
@@ -839,10 +817,7 @@ mod tests {
                 "compile_context_trace",
                 r#"{"method":"compile_context_trace","params":{"agent":"claude-code"}}"#,
             ),
-            (
-                "sync_export",
-                r#"{"method":"sync_export","params":{}}"#,
-            ),
+            ("sync_export", r#"{"method":"sync_export","params":{}}"#),
             (
                 "sync_import",
                 r#"{"method":"sync_import","params":{"lines":[]}}"#,
@@ -976,10 +951,7 @@ mod tests {
                 "spawn_agent with team",
                 r#"{"method":"spawn_agent","params":{"template_name":"CMO","session_id":"s2","project":"forge","team":"leadership"}}"#,
             ),
-            (
-                "list_agents",
-                r#"{"method":"list_agents","params":{}}"#,
-            ),
+            ("list_agents", r#"{"method":"list_agents","params":{}}"#),
             (
                 "list_agents with team",
                 r#"{"method":"list_agents","params":{"team":"leadership","limit":10}}"#,
@@ -1034,10 +1006,7 @@ mod tests {
                 "team_send recursive",
                 r#"{"method":"team_send","params":{"team_name":"leadership","kind":"notification","topic":"deploy","parts":[],"from_session":"s-orch","recursive":true}}"#,
             ),
-            (
-                "team_tree",
-                r#"{"method":"team_tree","params":{}}"#,
-            ),
+            ("team_tree", r#"{"method":"team_tree","params":{}}"#),
             (
                 "team_tree with org",
                 r#"{"method":"team_tree","params":{"organization_id":"default"}}"#,
@@ -1071,10 +1040,7 @@ mod tests {
                 "meeting_decide",
                 r#"{"method":"meeting_decide","params":{"meeting_id":"m1","decision":"Use Rust"}}"#,
             ),
-            (
-                "list_meetings",
-                r#"{"method":"list_meetings","params":{}}"#,
-            ),
+            ("list_meetings", r#"{"method":"list_meetings","params":{}}"#),
             (
                 "list_meetings with filters",
                 r#"{"method":"list_meetings","params":{"team_id":"t1","status":"collecting","limit":10}}"#,
@@ -1183,15 +1149,26 @@ mod tests {
     fn test_force_index_backward_compat() {
         // New format with empty params — should work
         let result = decode_request(r#"{"method":"force_index","params":{}}"#);
-        assert!(result.is_ok(), "force_index with empty params should decode: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "force_index with empty params should decode: {:?}",
+            result.err()
+        );
 
         // New format with path — should work
         let result = decode_request(r#"{"method":"force_index","params":{"path":"/tmp"}}"#);
-        assert!(result.is_ok(), "force_index with path should decode: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "force_index with path should decode: {:?}",
+            result.err()
+        );
 
         // Old bare format — documents the breaking change
         let result = decode_request(r#"{"method":"force_index"}"#);
-        assert!(result.is_err(), "bare force_index without params should fail (breaking change)");
+        assert!(
+            result.is_err(),
+            "bare force_index without params should fail (breaking change)"
+        );
     }
 
     // ────────────────────────────────────────────────────────
@@ -1236,23 +1213,45 @@ mod tests {
                 Request::ForceConsolidate,
                 Request::ForceExtract,
                 Request::ForceIndex { path: None },
-                Request::ListContradictions { status: None, limit: None },
-                Request::ResolveContradiction { contradiction_id: "c1".into(), resolution: "a".into() },
+                Request::ListContradictions {
+                    status: None,
+                    limit: None,
+                },
+                Request::ResolveContradiction {
+                    contradiction_id: "c1".into(),
+                    resolution: "a".into(),
+                },
                 Request::GetConfig,
                 // Agent Teams
                 Request::CreateAgentTemplate {
-                    name: "CTO".into(), description: "tech lead".into(),
-                    agent_type: "claude-code".into(), organization_id: None,
-                    system_context: None, identity_facets: None, config_overrides: None,
-                    knowledge_domains: None, decision_style: None,
+                    name: "CTO".into(),
+                    description: "tech lead".into(),
+                    agent_type: "claude-code".into(),
+                    organization_id: None,
+                    system_context: None,
+                    identity_facets: None,
+                    config_overrides: None,
+                    knowledge_domains: None,
+                    decision_style: None,
                 },
-                Request::ListAgentTemplates { organization_id: None, limit: None },
-                Request::GetAgentTemplate { id: Some("t1".into()), name: None },
+                Request::ListAgentTemplates {
+                    organization_id: None,
+                    limit: None,
+                },
+                Request::GetAgentTemplate {
+                    id: Some("t1".into()),
+                    name: None,
+                },
                 Request::DeleteAgentTemplate { id: "t1".into() },
                 Request::UpdateAgentTemplate {
-                    id: "t1".into(), name: Some("CTO v2".into()),
-                    description: None, system_context: None, identity_facets: None,
-                    config_overrides: None, knowledge_domains: None, decision_style: None,
+                    id: "t1".into(),
+                    name: Some("CTO v2".into()),
+                    description: None,
+                    system_context: None,
+                    identity_facets: None,
+                    config_overrides: None,
+                    knowledge_domains: None,
+                    decision_style: None,
                 },
                 Request::Shutdown,
                 // Parameterized variants
@@ -1263,7 +1262,7 @@ mod tests {
                     confidence: None,
                     tags: None,
                     project: None,
-            metadata: None,
+                    metadata: None,
                 },
                 Request::Recall {
                     query: "q".into(),
@@ -1285,14 +1284,23 @@ mod tests {
                     project: None,
                 },
                 Request::Backfill { path: "p".into() },
-                Request::Subscribe { events: None, session_id: None, team_id: None },
+                Request::Subscribe {
+                    events: None,
+                    session_id: None,
+                    team_id: None,
+                },
                 Request::GuardrailsCheck {
                     file: "f".into(),
                     action: "a".into(),
                 },
                 Request::PostEditCheck { file: "f".into() },
-                Request::PreBashCheck { command: "ls".into() },
-                Request::PostBashCheck { command: "cargo test".into(), exit_code: 1 },
+                Request::PreBashCheck {
+                    command: "ls".into(),
+                },
+                Request::PostBashCheck {
+                    command: "cargo test".into(),
+                    exit_code: 1,
+                },
                 Request::BlastRadius { file: "f".into() },
                 Request::RegisterSession {
                     id: "s".into(),
@@ -1304,7 +1312,11 @@ mod tests {
                 },
                 Request::EndSession { id: "s".into() },
                 Request::Sessions { active_only: None },
-                Request::CleanupSessions { prefix: Some("hook-test".into()), older_than_secs: None, prune_ended: false },
+                Request::CleanupSessions {
+                    prefix: Some("hook-test".into()),
+                    older_than_secs: None,
+                    prune_ended: false,
+                },
                 Request::SessionSend {
                     to: "s2".into(),
                     kind: "notification".into(),
@@ -1377,13 +1389,26 @@ mod tests {
                         user_id: None,
                     },
                 },
-                Request::Supersede { old_id: "old".into(), new_id: "new".into() },
+                Request::Supersede {
+                    old_id: "old".into(),
+                    new_id: "new".into(),
+                },
                 Request::ListIdentity { agent: "a".into() },
                 Request::DeactivateIdentity { id: "i".into() },
                 Request::ListDisposition { agent: "a".into() },
-                Request::ContextRefresh { session_id: "s".into(), since: None },
-                Request::CompletionCheck { session_id: "s".into(), claimed_done: false },
-                Request::TaskCompletionCheck { session_id: "s".into(), task_subject: "t".into(), task_description: None },
+                Request::ContextRefresh {
+                    session_id: "s".into(),
+                    since: None,
+                },
+                Request::CompletionCheck {
+                    session_id: "s".into(),
+                    claimed_done: false,
+                },
+                Request::TaskCompletionCheck {
+                    session_id: "s".into(),
+                    task_subject: "t".into(),
+                    task_description: None,
+                },
                 Request::ContextStats { session_id: None },
                 Request::CompileContext {
                     agent: None,
@@ -1408,9 +1433,7 @@ mod tests {
                 Request::Verify {
                     file: Some("f".into()),
                 },
-                Request::GetDiagnostics {
-                    file: "f".into(),
-                },
+                Request::GetDiagnostics { file: "f".into() },
                 Request::StoreEvaluation {
                     findings: vec![EvaluationFinding {
                         description: "test".into(),
@@ -1421,9 +1444,7 @@ mod tests {
                     project: None,
                     session_id: None,
                 },
-                Request::Bootstrap {
-                    project: None,
-                },
+                Request::Bootstrap { project: None },
                 Request::SetConfig {
                     key: "extraction.backend".into(),
                     value: "claude".into(),
@@ -1454,7 +1475,9 @@ mod tests {
                     from_project: None,
                     to_project: None,
                 },
-                Request::RevokePermission { id: "perm-1".into() },
+                Request::RevokePermission {
+                    id: "perm-1".into(),
+                },
                 Request::ListPermissions,
                 Request::GetEffectiveConfig {
                     session_id: None,
@@ -1500,9 +1523,7 @@ mod tests {
                 Request::ListRealities {
                     organization_id: Some("default".into()),
                 },
-                Request::GetStats {
-                    hours: Some(24),
-                },
+                Request::GetStats { hours: Some(24) },
                 // Agent Lifecycle
                 Request::SpawnAgent {
                     template_name: "CTO".into(),
@@ -1611,7 +1632,10 @@ mod tests {
                 // Memory Self-Healing
                 Request::HealingStatus,
                 Request::HealingRun,
-                Request::HealingLog { limit: None, action: None },
+                Request::HealingLog {
+                    limit: None,
+                    action: None,
+                },
                 // Notification Engine
                 Request::ListNotifications {
                     status: Some("pending".into()),
@@ -1620,7 +1644,10 @@ mod tests {
                 },
                 Request::AckNotification { id: "n1".into() },
                 Request::DismissNotification { id: "n1".into() },
-                Request::ActOnNotification { id: "n1".into(), approved: true },
+                Request::ActOnNotification {
+                    id: "n1".into(),
+                    approved: true,
+                },
             ]
         }
 
@@ -1673,5 +1700,95 @@ mod tests {
     fn test_invalid_json_fails() {
         let result = decode_request("not json at all");
         assert!(result.is_err(), "Invalid JSON should fail to decode");
+    }
+
+    // ────────────────────────────────────────────────────────
+    // Raw layer variants (RawIngest / RawSearch)
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_raw_ingest_round_trip() {
+        let req = Request::RawIngest {
+            text: "Forge remembers.".into(),
+            project: Some("forge".into()),
+            session_id: Some("sess-1".into()),
+            source: "claude-code".into(),
+            timestamp: Some("2026-04-13T00:00:00Z".into()),
+            metadata: Some(serde_json::json!({"bench": "longmemeval"})),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains("\"method\":\"raw_ingest\""),
+            "raw_ingest method name missing: {json}"
+        );
+        assert!(json.contains("\"text\":\"Forge remembers.\""));
+        assert!(json.contains("\"source\":\"claude-code\""));
+        let decoded = decode_request(&json).expect("decode raw_ingest");
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn test_raw_ingest_optional_fields_absent() {
+        // All optional fields omitted — must deserialize cleanly.
+        let json = r#"{"method":"raw_ingest","params":{"text":"x","source":"cli"}}"#;
+        let decoded = decode_request(json).expect("decode minimal raw_ingest");
+        match decoded {
+            Request::RawIngest {
+                text,
+                project,
+                session_id,
+                source,
+                timestamp,
+                metadata,
+            } => {
+                assert_eq!(text, "x");
+                assert_eq!(source, "cli");
+                assert!(project.is_none());
+                assert!(session_id.is_none());
+                assert!(timestamp.is_none());
+                assert!(metadata.is_none());
+            }
+            _ => panic!("expected RawIngest variant"),
+        }
+    }
+
+    #[test]
+    fn test_raw_search_round_trip() {
+        let req = Request::RawSearch {
+            query: "rust daemon".into(),
+            project: Some("forge".into()),
+            session_id: None,
+            k: Some(10),
+            max_distance: Some(0.6),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains("\"method\":\"raw_search\""),
+            "raw_search method name missing: {json}"
+        );
+        let decoded = decode_request(&json).expect("decode raw_search");
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn test_raw_search_minimal() {
+        let json = r#"{"method":"raw_search","params":{"query":"hello"}}"#;
+        let decoded = decode_request(json).expect("decode minimal raw_search");
+        match decoded {
+            Request::RawSearch {
+                query,
+                project,
+                session_id,
+                k,
+                max_distance,
+            } => {
+                assert_eq!(query, "hello");
+                assert!(project.is_none());
+                assert!(session_id.is_none());
+                assert!(k.is_none());
+                assert!(max_distance.is_none());
+            }
+            _ => panic!("expected RawSearch variant"),
+        }
     }
 }

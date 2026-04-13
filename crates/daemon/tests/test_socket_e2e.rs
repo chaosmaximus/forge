@@ -33,7 +33,7 @@ impl TestDaemon {
         let forge_dir = dir.path().join(".forge");
         std::fs::create_dir_all(&forge_dir).expect("create .forge dir");
 
-        let process = Command::new(&daemon_bin)
+        let mut process = Command::new(&daemon_bin)
             .env("HOME", dir.path().to_str().unwrap())
             .env("FORGE_SOCKET", socket_path.to_str().unwrap())
             .env("FORGE_DB", db_path.to_str().unwrap())
@@ -58,13 +58,16 @@ impl TestDaemon {
             std::thread::sleep(Duration::from_millis(100));
         }
 
+        // Socket never appeared — reap the daemon before panicking so clippy's
+        // zombie_processes lint is satisfied and no orphan daemon remains.
+        let _ = process.kill();
+        let _ = process.wait();
         panic!("daemon did not create socket within 5 seconds");
     }
 
     /// Send a JSON request and receive a JSON response.
     fn request(&self, json: &str) -> serde_json::Value {
-        let mut stream =
-            UnixStream::connect(&self.socket_path).expect("connect to daemon socket");
+        let mut stream = UnixStream::connect(&self.socket_path).expect("connect to daemon socket");
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
@@ -139,9 +142,7 @@ fn test_socket_remember_and_recall() {
     assert!(!id.is_empty());
 
     // Recall
-    let resp = daemon.request(
-        r#"{"method":"recall","params":{"query":"JWT authentication"}}"#,
-    );
+    let resp = daemon.request(r#"{"method":"recall","params":{"query":"JWT authentication"}}"#);
     assert_eq!(resp["status"], "ok");
     assert_eq!(resp["data"]["kind"], "memories");
     let count = resp["data"]["count"].as_u64().unwrap();
@@ -203,9 +204,7 @@ fn test_socket_guardrails_check() {
 fn test_socket_blast_radius() {
     let mut daemon = TestDaemon::start();
 
-    let resp = daemon.request(
-        r#"{"method":"blast_radius","params":{"file":"src/auth.rs"}}"#,
-    );
+    let resp = daemon.request(r#"{"method":"blast_radius","params":{"file":"src/auth.rs"}}"#);
     assert_eq!(resp["status"], "ok");
     assert_eq!(resp["data"]["kind"], "blast_radius");
     assert_eq!(resp["data"]["callers"], 0);
@@ -232,7 +231,12 @@ fn test_socket_export_import_roundtrip() {
     // Health by project
     let resp = daemon.request(r#"{"method":"health_by_project"}"#);
     assert_eq!(resp["status"], "ok");
-    assert!(resp["data"]["projects"]["forge"]["decisions"].as_u64().unwrap() >= 1);
+    assert!(
+        resp["data"]["projects"]["forge"]["decisions"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
 
     daemon.shutdown();
 }
@@ -248,9 +252,7 @@ fn test_socket_forget_and_verify() {
     let id = resp["data"]["id"].as_str().unwrap().to_string();
 
     // Verify it exists
-    let resp = daemon.request(
-        r#"{"method":"recall","params":{"query":"forgotten"}}"#,
-    );
+    let resp = daemon.request(r#"{"method":"recall","params":{"query":"forgotten"}}"#);
     assert_eq!(resp["data"]["count"], 1);
 
     // Forget
@@ -260,9 +262,7 @@ fn test_socket_forget_and_verify() {
     assert_eq!(resp["data"]["kind"], "forgotten");
 
     // Verify gone from recall
-    let resp = daemon.request(
-        r#"{"method":"recall","params":{"query":"forgotten"}}"#,
-    );
+    let resp = daemon.request(r#"{"method":"recall","params":{"query":"forgotten"}}"#);
     assert_eq!(resp["data"]["count"], 0);
 
     daemon.shutdown();

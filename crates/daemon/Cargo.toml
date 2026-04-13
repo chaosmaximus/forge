@@ -68,6 +68,11 @@ lsp-types = "0.97"
 # Import extraction
 regex = "1"
 
+# Raw layer embedder — fastembed-rs provides pure-Rust ONNX inference for
+# all-MiniLM-L6-v2 (384-dim) so raw ingest is LLM-free and reproducible.
+# See docs/benchmarks/plan.md §4.3.
+fastembed = "5"
+
 [build-dependencies]
 tonic-build = "0.12"
 

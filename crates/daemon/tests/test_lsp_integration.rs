@@ -1,8 +1,8 @@
-/// Integration tests for the LSP subsystem.
-///
-/// These tests verify the LspManager API surface, language server detection,
-/// and symbol conversion pipeline. Tests that require a real language server
-/// (rust-analyzer) are guarded by a `has_rust_analyzer()` check.
+//! Integration tests for the LSP subsystem.
+//!
+//! These tests verify the LspManager API surface, language server detection,
+//! and symbol conversion pipeline. Tests that require a real language server
+//! (rust-analyzer) are guarded by a `has_rust_analyzer()` check.
 
 fn has_rust_analyzer() -> bool {
     std::process::Command::new("which")
@@ -73,7 +73,11 @@ fn test_build_call_edges_integration() {
     ];
 
     let edges = build_call_edges("src/main.rs:main:0", def_file, &refs);
-    assert_eq!(edges.len(), 2, "should produce edges for both cross-file references");
+    assert_eq!(
+        edges.len(),
+        2,
+        "should produce edges for both cross-file references"
+    );
 }
 
 #[test]
@@ -87,21 +91,37 @@ fn test_build_call_edges_deduplication() {
         Location {
             uri: "file:///src/caller.rs".parse::<Uri>().unwrap(),
             range: Range {
-                start: Position { line: 5, character: 0 },
-                end: Position { line: 5, character: 10 },
+                start: Position {
+                    line: 5,
+                    character: 0,
+                },
+                end: Position {
+                    line: 5,
+                    character: 10,
+                },
             },
         },
         Location {
             uri: "file:///src/caller.rs".parse::<Uri>().unwrap(),
             range: Range {
-                start: Position { line: 15, character: 0 },
-                end: Position { line: 15, character: 10 },
+                start: Position {
+                    line: 15,
+                    character: 0,
+                },
+                end: Position {
+                    line: 15,
+                    character: 10,
+                },
             },
         },
     ];
 
     let edges = build_call_edges("/src/lib.rs:process:0", def_file, &refs);
-    assert_eq!(edges.len(), 1, "duplicate same-file references should be deduplicated");
+    assert_eq!(
+        edges.len(),
+        1,
+        "duplicate same-file references should be deduplicated"
+    );
 }
 
 #[test]
@@ -117,12 +137,24 @@ fn test_convert_symbols_roundtrip() {
         tags: None,
         deprecated: None,
         range: Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 10, character: 1 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 10,
+                character: 1,
+            },
         },
         selection_range: Range {
-            start: Position { line: 0, character: 3 },
-            end: Position { line: 0, character: 14 },
+            start: Position {
+                line: 0,
+                character: 3,
+            },
+            end: Position {
+                line: 0,
+                character: 14,
+            },
         },
         children: None,
     }];
