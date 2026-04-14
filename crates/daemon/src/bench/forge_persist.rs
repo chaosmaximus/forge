@@ -12,6 +12,11 @@ use forge_core::types::memory::MemoryType;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+use tempfile::TempDir;
 
 /// Configuration for a Forge-Persist workload.
 ///
@@ -252,6 +257,246 @@ pub fn op_to_request(op: &Operation) -> Request {
             from_session: Some(from_session.clone()),
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// Error taxonomy
+// ---------------------------------------------------------------------------
+
+/// Errors the Forge-Persist harness can report. Preserves the underlying
+/// `std::io::Error` cause for spawn/kill/IO failures so callers (the
+/// integration test or the `forge-bench forge-persist` CLI) can include
+/// it in diagnostics.
+#[derive(Debug)]
+pub enum HarnessError {
+    /// Failed to bind a free port while preparing the harness.
+    BindFailed(std::io::Error),
+    /// `Command::spawn` for the daemon binary failed.
+    SpawnFailed(std::io::Error),
+    /// Daemon spawned but did not bind its HTTP port within
+    /// `recovery_timeout`. `elapsed` is measured from `Command::spawn`.
+    SpawnTimeout { elapsed: Duration, port: u16 },
+    /// `Child::kill` or `Child::wait` failed during termination.
+    KillFailed(std::io::Error),
+    /// Attempted to spawn a daemon on a harness that already has
+    /// an active child process.
+    AlreadySpawned,
+    /// Miscellaneous IO failure (temp-dir creation, dir setup, etc.).
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for HarnessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HarnessError::BindFailed(e) => write!(f, "failed to bind a free port: {e}"),
+            HarnessError::SpawnFailed(e) => write!(f, "failed to spawn forge-daemon: {e}"),
+            HarnessError::SpawnTimeout { elapsed, port } => write!(
+                f,
+                "forge-daemon did not bind port {port} within {elapsed:?} (spawn timeout)"
+            ),
+            HarnessError::KillFailed(e) => write!(f, "failed to kill forge-daemon child: {e}"),
+            HarnessError::AlreadySpawned => {
+                write!(f, "harness already has an active child process")
+            }
+            HarnessError::Io(e) => write!(f, "harness IO error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for HarnessError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HarnessError::BindFailed(e)
+            | HarnessError::SpawnFailed(e)
+            | HarnessError::KillFailed(e)
+            | HarnessError::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Harness config + handle
+// ---------------------------------------------------------------------------
+
+/// Full Forge-Persist run configuration. Mirrors the CLI flags defined
+/// in `forge-bench forge-persist` (cycle (i)) and the integration test
+/// at `crates/daemon/tests/forge_persist_harness.rs`.
+#[derive(Debug, Clone)]
+pub struct PersistConfig {
+    /// Path to a built `forge-daemon` binary — usually
+    /// `env!("CARGO_BIN_EXE_forge-daemon")` in the integration test or
+    /// `--daemon-bin` in the CLI.
+    pub daemon_bin: PathBuf,
+    /// Number of `Remember` operations in the workload.
+    pub memories: usize,
+    /// Number of `RawIngest` operations in the workload.
+    pub chunks: usize,
+    /// Number of `SessionSend` operations in the workload.
+    pub fisp_messages: usize,
+    /// Seed for the ChaCha20 workload interleaver.
+    pub seed: u64,
+    /// Fraction of total acked operations at which SIGKILL fires.
+    pub kill_after: f64,
+    /// Maximum time to wait for the daemon to bind its HTTP port
+    /// after spawn. Also reused as the post-restart health-poll
+    /// timeout in later cycles.
+    pub recovery_timeout: Duration,
+    /// Time to wait after restart for asynchronous worker writes
+    /// (e.g., embedder) to catch up before scoring. Not exercised
+    /// by cycle (f1) — reserved for cycle (g) ground-truth verification.
+    pub worker_catchup: Duration,
+    /// Optional output directory for results. `None` means "in-memory
+    /// only, don't write files" — used by the integration test.
+    pub output_dir: Option<PathBuf>,
+}
+
+/// Owning handle for a Forge-Persist benchmark run. Owns the TempDir
+/// that holds the daemon's isolated state (via `FORGE_DIR`), the
+/// bench's free port, the daemon's running child process (when
+/// spawned), and the config describing the workload.
+///
+/// Drop kills any live child to prevent orphaned daemon processes.
+pub struct PersistHarness {
+    config: PersistConfig,
+    port: u16,
+    child: Option<Child>,
+    /// Kept last so it is dropped AFTER `child` — removing the
+    /// TempDir before killing the daemon would yank its data
+    /// directory while it is still writing.
+    tempdir: TempDir,
+}
+
+impl PersistHarness {
+    /// Construct a harness. Allocates a fresh TempDir and a free
+    /// port, but does NOT spawn the daemon — call [`Self::spawn`]
+    /// for that.
+    pub fn new(config: PersistConfig) -> Result<Self, HarnessError> {
+        let tempdir = TempDir::new().map_err(HarnessError::Io)?;
+        let port = find_free_port()?;
+        Ok(Self {
+            config,
+            port,
+            child: None,
+            tempdir,
+        })
+    }
+
+    /// The TCP port the daemon will bind (or has bound) for its
+    /// HTTP server.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Spawn the `forge-daemon` subprocess and wait for its HTTP
+    /// port to accept TCP connections. Returns `Ok(())` once the
+    /// daemon is reachable; returns `SpawnTimeout` if the port never
+    /// binds within `config.recovery_timeout`.
+    ///
+    /// The spawned daemon has its state isolated via
+    /// `FORGE_DIR=<tempdir>/.forge` and its HTTP server enabled on
+    /// a random free port on loopback. stdout/stderr are discarded
+    /// to keep test output clean — cycle (f2) may add a log
+    /// capture path if debugging requires it.
+    pub fn spawn(&mut self) -> Result<(), HarnessError> {
+        if self.child.is_some() {
+            return Err(HarnessError::AlreadySpawned);
+        }
+
+        let forge_dir = self.tempdir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).map_err(HarnessError::Io)?;
+
+        let spawn_instant = Instant::now();
+        let child = Command::new(&self.config.daemon_bin)
+            .env("FORGE_DIR", &forge_dir)
+            .env("FORGE_HTTP_ENABLED", "true")
+            .env("FORGE_HTTP_BIND", "127.0.0.1")
+            .env("FORGE_HTTP_PORT", self.port.to_string())
+            .env("RUST_LOG", "forge_daemon=warn")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(HarnessError::SpawnFailed)?;
+
+        self.child = Some(child);
+
+        let deadline = spawn_instant + self.config.recovery_timeout;
+        while Instant::now() < deadline {
+            if self.is_port_bound() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // Timeout — best-effort kill so we don't leak the child, then
+        // report the timeout without shadowing it.
+        let _ = self.kill();
+        Err(HarnessError::SpawnTimeout {
+            elapsed: spawn_instant.elapsed(),
+            port: self.port,
+        })
+    }
+
+    /// Send SIGKILL to the child process (via `Child::kill` which on
+    /// Unix maps to `SIGKILL`), reap the zombie, and wait for the
+    /// port to be released by the kernel. Idempotent: calling on a
+    /// harness with no active child is a no-op.
+    pub fn kill(&mut self) -> Result<(), HarnessError> {
+        if let Some(mut child) = self.child.take() {
+            child.kill().map_err(HarnessError::KillFailed)?;
+            child.wait().map_err(HarnessError::KillFailed)?;
+        }
+
+        // Kernel sometimes takes a moment to release the port
+        // binding after the process exits. Brief wait loop bounded
+        // at 5 s — should resolve in tens of milliseconds in practice.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.is_port_bound() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        Ok(())
+    }
+
+    /// True if something is accepting TCP connections on the harness
+    /// port. Used as a crude liveness check during the spawn wait
+    /// loop and by the integration test after kill. Cycle (f2) will
+    /// upgrade this to a real HTTP Health probe.
+    pub fn is_daemon_alive(&self) -> bool {
+        self.is_port_bound()
+    }
+
+    fn is_port_bound(&self) -> bool {
+        let addr = format!("127.0.0.1:{}", self.port)
+            .parse::<std::net::SocketAddr>()
+            .expect("constructed loopback addr must parse");
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
+    }
+}
+
+impl Drop for PersistHarness {
+    fn drop(&mut self) {
+        // Best-effort cleanup — never panic in Drop. If the child is
+        // still running we SIGKILL it; any errors are swallowed because
+        // there is no sensible recovery from a Drop-time failure.
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Discover a free TCP port on loopback. Binds a listener to port 0,
+/// reads the kernel-assigned port, then drops the listener. The port
+/// is RACE-PRONE between `drop` and the next `bind` call — the
+/// daemon's eventual `bind` may lose the race if another process
+/// grabs the port. In practice this is rare enough to ignore; the
+/// caller can retry spawn if it happens.
+fn find_free_port() -> Result<u16, HarnessError> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(HarnessError::BindFailed)?;
+    let port = listener.local_addr().map_err(HarnessError::Io)?.port();
+    drop(listener);
+    Ok(port)
 }
 
 #[cfg(test)]

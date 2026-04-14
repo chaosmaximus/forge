@@ -20,53 +20,6 @@
 //! a real signal. The return value and `errno` tell us exactly whether
 //! the process exists.
 
-#[cfg(unix)]
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_pid_alive_returns_true_for_self() {
-        let own_pid = std::process::id() as i32;
-        assert!(
-            is_pid_alive(own_pid),
-            "is_pid_alive should return true for the current process (pid {own_pid})"
-        );
-    }
-
-    #[test]
-    fn test_is_pid_alive_returns_false_for_nonexistent_pid() {
-        // i32::MAX is orders of magnitude beyond the maximum allocatable
-        // PID on any Unix system (Linux PID_MAX_LIMIT is 2^22, macOS is
-        // similar), so the kernel will return ESRCH from kill(). This
-        // specifically exposes the pre-fix macOS bug: the old `/proc/{pid}`
-        // check always returned false on macOS, but here we require the
-        // function to ALSO return false via a proper syscall — replacing
-        // the Linux-only filesystem check with a portable signal probe.
-        assert!(
-            !is_pid_alive(i32::MAX),
-            "is_pid_alive should return false for i32::MAX (never a real PID)"
-        );
-    }
-
-    #[test]
-    fn test_is_pid_alive_returns_true_for_init() {
-        // PID 1 is init/launchd on every Unix system and always exists.
-        // As a non-root test process we lack permission to signal it, so
-        // libc::kill returns -1 with errno == EPERM. This test specifically
-        // exercises the EPERM branch of our error handling, which MUST
-        // return true — the process IS alive, we just can't touch it.
-        //
-        // (If the test happens to run as root, kill returns 0 and we
-        // reach the success branch instead. Either way, the result is
-        // still true — both paths lead to the same correct answer.)
-        assert!(
-            is_pid_alive(1),
-            "is_pid_alive should return true for PID 1 (init/launchd)"
-        );
-    }
-}
-
 /// Returns true if a process with the given PID exists, false otherwise.
 ///
 /// Uses `libc::kill(pid, 0)` — the POSIX signal-0 probe — which works on
@@ -111,5 +64,52 @@ pub fn is_pid_alive(pid: i32) -> bool {
         // false-positive stale cleanup that could steal a live daemon's
         // lock. This is the safe failure mode.
         _ => true,
+    }
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_pid_alive_returns_true_for_self() {
+        let own_pid = std::process::id() as i32;
+        assert!(
+            is_pid_alive(own_pid),
+            "is_pid_alive should return true for the current process (pid {own_pid})"
+        );
+    }
+
+    #[test]
+    fn test_is_pid_alive_returns_false_for_nonexistent_pid() {
+        // i32::MAX is orders of magnitude beyond the maximum allocatable
+        // PID on any Unix system (Linux PID_MAX_LIMIT is 2^22, macOS is
+        // similar), so the kernel will return ESRCH from kill(). This
+        // specifically exposes the pre-fix macOS bug: the old `/proc/{pid}`
+        // check always returned false on macOS, but here we require the
+        // function to ALSO return false via a proper syscall — replacing
+        // the Linux-only filesystem check with a portable signal probe.
+        assert!(
+            !is_pid_alive(i32::MAX),
+            "is_pid_alive should return false for i32::MAX (never a real PID)"
+        );
+    }
+
+    #[test]
+    fn test_is_pid_alive_returns_true_for_init() {
+        // PID 1 is init/launchd on every Unix system and always exists.
+        // As a non-root test process we lack permission to signal it, so
+        // libc::kill returns -1 with errno == EPERM. This test specifically
+        // exercises the EPERM branch of our error handling, which MUST
+        // return true — the process IS alive, we just can't touch it.
+        //
+        // (If the test happens to run as root, kill returns 0 and we
+        // reach the success branch instead. Either way, the result is
+        // still true — both paths lead to the same correct answer.)
+        assert!(
+            is_pid_alive(1),
+            "is_pid_alive should return true for PID 1 (init/launchd)"
+        );
     }
 }

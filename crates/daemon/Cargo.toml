@@ -32,6 +32,10 @@ toml = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 notify = "7"
 ulid = "1"
+# Scratch directories for the Forge-Persist bench harness (PersistHarness
+# lives in src/bench/forge_persist.rs, so tempfile must be a regular dep
+# rather than a dev-dep).
+tempfile = "3"
 
 # HTTP transport (opt-in)
 axum = { version = "0.7", features = ["ws"] }
@@ -95,7 +99,6 @@ clap = { version = "4", features = ["derive"] }
 tonic-build = "0.12"
 
 [dev-dependencies]
-tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 serial_test = "3"
