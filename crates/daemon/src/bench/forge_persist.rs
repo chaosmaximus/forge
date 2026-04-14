@@ -7,6 +7,8 @@
 //! See `docs/benchmarks/forge-persist-design.md` for the full design,
 //! scoring rubric, and reproduction contract.
 
+use forge_core::protocol::{MessagePart, Request};
+use forge_core::types::memory::MemoryType;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -35,13 +37,26 @@ pub struct WorkloadConfig {
 pub const SESSION_POOL_SIZE: usize = 5;
 
 /// Fixed `memory_type` vocabulary rotated across `Remember` ops.
-/// Matches the four MemoryType variants accepted by `Request::Remember`
-/// (see `crates/core/src/protocol/request.rs:43`).
-const MEMORY_TYPES: [&str; 4] = ["decision", "lesson", "pattern", "preference"];
+/// Covers every variant of `MemoryType` defined in
+/// `crates/core/src/types/memory.rs:7` so the workload exercises all
+/// five memory kinds the daemon can store. The order mirrors the
+/// enum declaration order.
+const MEMORY_TYPES: [&str; 5] = ["decision", "lesson", "pattern", "preference", "protocol"];
 
 /// Fixed tag vocabulary — each `Remember` op draws 2 tags via a
 /// deterministic rotation keyed on the op index.
 const TAG_POOL: [&str; 5] = ["persist", "bench", "forge", "durability", "harness"];
+
+/// `source` string attached to every `RawIngest` request this harness
+/// issues. Also serves as a filter during post-restart verification
+/// so the ground-truth matcher in cycle (g) can isolate this bench's
+/// documents from any other state that may leak into the daemon.
+pub const HARNESS_SOURCE: &str = "forge-persist";
+
+/// `topic` string on every `SessionSend` (FISP) request. Same role
+/// as `HARNESS_SOURCE` — lets cycle (g) filter message recovery by
+/// bench origin.
+pub const HARNESS_TOPIC: &str = "forge-persist";
 
 /// A single workload operation, fully populated with the payload
 /// the HTTP client will marshal into a daemon API request.
@@ -170,6 +185,73 @@ pub fn generate_workload(config: &WorkloadConfig) -> Vec<Operation> {
     let mut rng = ChaCha20Rng::seed_from_u64(config.seed);
     ops.shuffle(&mut rng);
     ops
+}
+
+/// Translate a `Forge-Persist` [`Operation`] into the wire-level
+/// [`forge_core::protocol::Request`] the daemon accepts.
+///
+/// Used by the HTTP client wrapper in later cycles to marshal a
+/// workload into actual `POST /api` requests. Pure function — no IO,
+/// no error path: the input is under our control (generator-local)
+/// and any unknown `memory_type` string is coerced to
+/// `MemoryType::Decision` as the safe default.
+pub fn op_to_request(op: &Operation) -> Request {
+    match op {
+        Operation::Remember {
+            memory_type,
+            title,
+            content,
+            tags,
+            ..
+        } => Request::Remember {
+            memory_type: match memory_type.as_str() {
+                "decision" => MemoryType::Decision,
+                "lesson" => MemoryType::Lesson,
+                "pattern" => MemoryType::Pattern,
+                "preference" => MemoryType::Preference,
+                "protocol" => MemoryType::Protocol,
+                // Generator-produced ops always hit an explicit arm
+                // above, so the wildcard is a defensive default that
+                // should be unreachable in practice.
+                _ => MemoryType::Decision,
+            },
+            title: title.clone(),
+            content: content.clone(),
+            confidence: None,
+            tags: Some(tags.clone()),
+            project: None,
+            metadata: None,
+        },
+        Operation::IngestRaw { content, .. } => Request::RawIngest {
+            text: content.clone(),
+            project: None,
+            session_id: None,
+            source: HARNESS_SOURCE.to_string(),
+            timestamp: None,
+            metadata: None,
+        },
+        Operation::FispSend {
+            from_session,
+            to_session,
+            content,
+            ..
+        } => Request::SessionSend {
+            to: to_session.clone(),
+            kind: "notification".to_string(),
+            topic: HARNESS_TOPIC.to_string(),
+            parts: vec![MessagePart {
+                kind: "text".to_string(),
+                text: Some(content.clone()),
+                path: None,
+                data: None,
+                memory_id: None,
+            }],
+            project: None,
+            timeout_secs: None,
+            meeting_id: None,
+            from_session: Some(from_session.clone()),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -323,5 +405,132 @@ mod tests {
         let ops_a = generate_workload(&config);
         let ops_b = generate_workload(&config);
         assert_eq!(ops_a, ops_b, "same seed must produce identical workload");
+    }
+
+    #[test]
+    fn test_op_to_request_remember_produces_correct_request() {
+        // Pure helper: translate Operation::Remember into the wire-level
+        // Request::Remember variant. Drives the helper's existence and
+        // the memory_type string → MemoryType enum conversion.
+        let op = Operation::Remember {
+            index: 0,
+            memory_type: "decision".to_string(),
+            title: "t".to_string(),
+            content: "c".to_string(),
+            tags: vec!["a".to_string(), "b".to_string()],
+        };
+        let req = op_to_request(&op);
+        match req {
+            Request::Remember {
+                memory_type,
+                title,
+                content,
+                tags,
+                confidence,
+                project,
+                metadata,
+            } => {
+                assert_eq!(memory_type, MemoryType::Decision);
+                assert_eq!(title, "t");
+                assert_eq!(content, "c");
+                assert_eq!(tags, Some(vec!["a".to_string(), "b".to_string()]));
+                assert!(confidence.is_none());
+                assert!(project.is_none());
+                assert!(metadata.is_none());
+            }
+            other => panic!("expected Request::Remember, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_op_to_request_handles_all_memory_types() {
+        // Guard: every vocab entry in MEMORY_TYPES must map to a real
+        // MemoryType variant (no silent fallback to Decision). Protocol
+        // specifically covers a prior adversarial-review concern where
+        // an expanded MEMORY_TYPES vocab would have silently coerced
+        // unknown strings to Decision.
+        for (i, expected_mt) in [
+            (0usize, MemoryType::Decision),
+            (1, MemoryType::Lesson),
+            (2, MemoryType::Pattern),
+            (3, MemoryType::Preference),
+            (4, MemoryType::Protocol),
+        ] {
+            let op = Operation::Remember {
+                index: i,
+                memory_type: MEMORY_TYPES[i].to_string(),
+                title: "t".to_string(),
+                content: "c".to_string(),
+                tags: vec!["x".to_string()],
+            };
+            match op_to_request(&op) {
+                Request::Remember { memory_type, .. } => {
+                    assert_eq!(
+                        memory_type, expected_mt,
+                        "MEMORY_TYPES[{i}] should map to {expected_mt:?}"
+                    );
+                }
+                other => panic!("expected Remember, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_op_to_request_ingest_raw_produces_raw_ingest() {
+        // IngestRaw wire shape: text body into the raw storage layer
+        // with a fixed "forge-persist" source tag so the daemon can
+        // attribute the ingest to this benchmark.
+        let op = Operation::IngestRaw {
+            index: 0,
+            content: "a deterministic document body".to_string(),
+        };
+        match op_to_request(&op) {
+            Request::RawIngest {
+                text,
+                source,
+                project,
+                session_id,
+                ..
+            } => {
+                assert_eq!(text, "a deterministic document body");
+                assert_eq!(source, HARNESS_SOURCE);
+                assert!(project.is_none());
+                assert!(session_id.is_none());
+            }
+            other => panic!("expected Request::RawIngest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_op_to_request_fisp_send_produces_session_send() {
+        // FispSend maps to Request::SessionSend with a single
+        // MessagePart { kind: "text", text: Some(content) }. The
+        // `to` field receives the to_session name, `from_session`
+        // goes into the explicit field so it isn't defaulted to "api".
+        let op = Operation::FispSend {
+            index: 0,
+            from_session: "persist_session_0".to_string(),
+            to_session: "persist_session_1".to_string(),
+            content: "hello".to_string(),
+        };
+        match op_to_request(&op) {
+            Request::SessionSend {
+                to,
+                kind,
+                topic,
+                parts,
+                from_session,
+                ..
+            } => {
+                assert_eq!(to, "persist_session_1");
+                assert_eq!(kind, "notification");
+                assert_eq!(topic, HARNESS_TOPIC);
+                assert_eq!(parts.len(), 1);
+                assert_eq!(parts[0].kind, "text");
+                assert_eq!(parts[0].text, Some("hello".to_string()));
+                assert_eq!(from_session, Some("persist_session_0".to_string()));
+            }
+            other => panic!("expected Request::SessionSend, got {other:?}"),
+        }
     }
 }
