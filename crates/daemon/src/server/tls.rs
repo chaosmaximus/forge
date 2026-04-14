@@ -24,14 +24,14 @@ const KEY_FILENAME: &str = "localhost.key";
 
 /// Ensure a self-signed TLS certificate exists for localhost.
 ///
-/// If `~/.forge/tls/localhost.crt` and `~/.forge/tls/localhost.key` already
+/// If `<forge_dir>/tls/localhost.crt` and `<forge_dir>/tls/localhost.key` already
 /// exist, their paths are returned immediately. Otherwise a new self-signed
 /// certificate is generated using `rcgen` and written to disk.
 ///
-/// This overload uses the default forge home directory (`~/.forge`).
+/// The forge home directory is resolved via [`forge_core::forge_dir`], which
+/// respects the `FORGE_DIR` env var for test/bench isolation.
 pub fn ensure_certs() -> Result<(PathBuf, PathBuf), String> {
-    let home = dirs_for_forge_home()?;
-    ensure_certs_in(home)
+    ensure_certs_in(dirs_for_forge_home())
 }
 
 /// Same as [`ensure_certs`] but accepts an explicit base directory.
@@ -148,12 +148,14 @@ pub fn build_rustls_config(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve the forge home directory (~/.forge).
-fn dirs_for_forge_home() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| "could not determine home directory".to_string())?;
-    Ok(PathBuf::from(home).join(".forge"))
+/// Resolve the forge home directory via the shared path resolver.
+///
+/// Flows through [`forge_core::forge_dir`], so the `FORGE_DIR` env var
+/// override is honored here — this is the mechanism that lets Forge-Persist
+/// and other subprocess-based tests isolate TLS artifacts into a TempDir
+/// instead of leaking into the user's real `~/.forge/tls/` directory.
+fn dirs_for_forge_home() -> PathBuf {
+    PathBuf::from(forge_core::forge_dir())
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +165,57 @@ fn dirs_for_forge_home() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
+
+    // Test-only env var serialization — recovers from poison because EnvGuard
+    // below restores env state on drop, so the lock always protects a
+    // consistent view even after a panicking test.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    // RAII guard that restores an env var to its pre-test value on drop —
+    // panic-safe. Duplicated from `forge_core::paths::tests::EnvGuard`;
+    // test-only code, acceptable to duplicate across test binaries.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, val);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn test_dirs_for_forge_home_respects_forge_dir_env() {
+        let _lock = env_lock();
+        let _g = EnvGuard::set("FORGE_DIR", "/tmp/tls-test-forge-dir-01KP6J23");
+
+        let result = dirs_for_forge_home();
+
+        assert_eq!(
+            result,
+            PathBuf::from("/tmp/tls-test-forge-dir-01KP6J23"),
+            "dirs_for_forge_home should flow through forge_core::forge_dir()"
+        );
+    }
 
     #[test]
     fn test_generate_and_load_certs() {
