@@ -43,14 +43,19 @@ fn acquire_pid_lock(pid_path: &str) -> std::fs::File {
     match try_open_and_lock() {
         Ok(f) => f,
         Err(e) if e == "lock held" => {
-            // Lock held — check if the PID in the file is actually alive
+            // Lock held — check if the PID in the file is actually alive.
+            // We probe via libc::kill(pid, 0) through forge_daemon::pidlock,
+            // which is portable across Linux/macOS/BSD. The previous
+            // /proc/{pid}.exists() check was Linux-only — on macOS it
+            // always returned false, which meant stale cleanup fired
+            // unconditionally whenever this branch was entered, a latent
+            // bug that could let two live daemons coexist.
             if let Ok(contents) = std::fs::read_to_string(pid_path) {
                 let pid_str = contents.trim();
                 if let Ok(pid_num) = pid_str.parse::<i32>() {
                     #[cfg(unix)]
                     {
-                        // Check if process exists by reading /proc/<pid>/status
-                        let alive = std::path::Path::new(&format!("/proc/{pid_num}")).exists();
+                        let alive = forge_daemon::pidlock::is_pid_alive(pid_num);
                         if !alive {
                             tracing::warn!(
                                 pid = pid_num,

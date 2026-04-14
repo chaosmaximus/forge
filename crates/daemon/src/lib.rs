@@ -16,6 +16,7 @@ pub mod lsp;
 pub mod migrate;
 pub mod notifications;
 pub mod org;
+pub mod pidlock;
 pub mod proactive;
 pub mod raw;
 pub mod reality;
