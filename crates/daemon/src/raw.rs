@@ -11,8 +11,8 @@ use rusqlite::Connection;
 
 use crate::chunk_raw::chunk_text_default;
 use crate::db::raw::{
-    insert_chunk, insert_document, search_chunks, store_chunk_embedding, RawChunk, RawDocument,
-    RawHit,
+    insert_chunk, insert_document, search_chunks, search_chunks_bm25, store_chunk_embedding,
+    RawChunk, RawDocument, RawHit,
 };
 use crate::embed::{EmbedError, Embedder};
 
@@ -205,6 +205,121 @@ pub fn search(
     Ok(hits)
 }
 
+/// Hybrid raw search — fuses the KNN leg (`search_chunks`) and the BM25
+/// leg (`search_chunks_bm25`) via RRF on chunk IDs, then rebuilds a
+/// `Vec<RawHit>` preferring KNN metadata when a chunk appears on both legs.
+///
+/// Fetches `max(50, 10*k)` candidates from each leg before merging — the
+/// larger pool gives downstream feature-engineering waves (bge-large,
+/// preference sidecars, LLM rerank) headroom to reorder without losing
+/// the relevant chunk. No `max_distance` cutoff is applied on the KNN leg
+/// because RRF weighs by rank position, not absolute score — a wider pool
+/// with low-quality tail items is harmless since they get low fused score.
+///
+/// Returns up to `k` chunks sorted by fused RRF score descending.
+///
+/// # Caveat: mixed distance convention
+///
+/// The `RawHit.distance` field on returned hits is NOT comparable across
+/// hits. A chunk retrieved from the KNN leg carries cosine distance; one
+/// retrieved from the BM25 leg carries the SQLite `bm25()` score. This
+/// function never reads `distance` — merging happens by rank position
+/// only. Downstream code must treat `distance` as opaque when iterating
+/// hybrid results. See the `RawHit.distance` doc comment for details.
+///
+/// # Error behavior
+///
+/// Fail-fast: if either leg (embed, KNN, or BM25) fails, the error is
+/// propagated immediately and no partial results are returned. The KNN
+/// work is wasted when BM25 errors after KNN succeeds; this is an
+/// acceptable trade-off versus the complexity of partial-leg degradation.
+pub fn hybrid_search(
+    conn: &Connection,
+    embedder: &Arc<dyn Embedder>,
+    query: &str,
+    project: Option<&str>,
+    session_id: Option<&str>,
+    k: Option<usize>,
+) -> Result<Vec<RawHit>, RawError> {
+    // Short-circuit for queries that would resolve to zero tokens after
+    // FTS5 sanitization (empty string, whitespace, all-punctuation). The
+    // BM25 leg would return empty anyway, and running the KNN leg on a
+    // degenerate query risks an embedder error on pathological inputs.
+    // Return an empty Vec to match the contract of `search_chunks_bm25`.
+    if crate::db::ops::sanitize_fts5_query(query).is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let final_k = k.unwrap_or(DEFAULT_SEARCH_K);
+    if final_k == 0 {
+        tracing::warn!("hybrid_search called with k=0; returning empty result");
+        return Ok(Vec::new());
+    }
+    let pool_k = std::cmp::max(50, final_k * 10);
+
+    // KNN leg — embed the query once, run vec0 MATCH with no distance
+    // cutoff so RRF sees the full pool.
+    let embeddings = embedder.embed(&[query.to_string()])?;
+    let knn_hits: Vec<RawHit> = if let Some(query_vec) = embeddings.into_iter().next() {
+        search_chunks(conn, &query_vec, project, session_id, pool_k, None)?
+    } else {
+        Vec::new()
+    };
+
+    // BM25 leg — sanitize + FTS5 MATCH. Returns empty when the sanitized
+    // query has no surviving tokens (all-punctuation input).
+    let bm25_hits: Vec<RawHit> = search_chunks_bm25(conn, query, project, session_id, pool_k)?;
+
+    // Collect chunk IDs in ranked order (rank 0 = best per leg) for RRF.
+    // Pre-sized to match the pool; avoids a reallocation on large pools.
+    let mut knn_ids: Vec<String> = Vec::with_capacity(knn_hits.len());
+    knn_ids.extend(knn_hits.iter().map(|h| h.chunk_id.clone()));
+    let mut bm25_ids: Vec<String> = Vec::with_capacity(bm25_hits.len());
+    bm25_ids.extend(bm25_hits.iter().map(|h| h.chunk_id.clone()));
+
+    // Pure RRF merge, k=60 convention, capped at `final_k` items.
+    let merged_ids = rrf_merge_raw(&[knn_ids, bm25_ids], 60.0, final_k);
+
+    // Rebuild `Vec<RawHit>` in fused order. KNN metadata takes precedence
+    // when a chunk appears on both legs — we insert BM25 first, then let
+    // KNN overwrite. This ensures `hit.distance` reflects cosine when
+    // available, and only falls back to BM25 score when a chunk is
+    // BM25-only.
+    let mut hit_map: std::collections::HashMap<String, RawHit> =
+        std::collections::HashMap::with_capacity(knn_hits.len() + bm25_hits.len());
+    for h in bm25_hits {
+        hit_map.insert(h.chunk_id.clone(), h);
+    }
+    for h in knn_hits {
+        hit_map.insert(h.chunk_id.clone(), h);
+    }
+
+    Ok(merged_ids
+        .into_iter()
+        .filter_map(|id| hit_map.remove(&id))
+        .collect())
+}
+
+/// Pure Reciprocal Rank Fusion for the raw layer. Merges already-ranked
+/// chunk-ID lists (from KNN and BM25 legs) by rank position only — no
+/// score blending, because cosine distance and SQLite `bm25()` scores
+/// aren't comparable. Each input list is assumed sorted with rank 0 = best.
+///
+///   score(id) = Σ 1 / (k + rank_in_list_i(id) + 1)
+///
+/// Returns up to `limit` distinct chunk IDs sorted by fused score descending.
+fn rrf_merge_raw(ranked_lists: &[Vec<String>], k: f64, limit: usize) -> Vec<String> {
+    let mut scores: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for list in ranked_lists {
+        for (rank, id) in list.iter().enumerate() {
+            *scores.entry(id.clone()).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+        }
+    }
+    let mut sorted: Vec<(String, f64)> = scores.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.into_iter().take(limit).map(|(id, _)| id).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +510,311 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM raw_chunks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(chunk_count, report.chunk_count as i64);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // rrf_merge_raw — pure Reciprocal Rank Fusion for the raw layer.
+    //
+    // Merges two already-ranked chunk-ID lists (from KNN and BM25) into
+    // one fused ranking. No score blending; rank position only, because
+    // cosine distance and SQLite bm25() scores aren't comparable.
+    // Rank 0 = best in every input list.
+    // ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn rrf_merge_raw_single_list_preserves_order() {
+        // One list in, same order out — nothing to fuse.
+        let list = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let merged = rrf_merge_raw(&[list], 60.0, 10);
+        let ids: Vec<&str> = merged.iter().map(|s| s.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn rrf_merge_raw_empty_lists_returns_empty() {
+        // Empty slice of lists: no panic, returns empty Vec.
+        let merged = rrf_merge_raw(&[], 60.0, 10);
+        assert!(
+            merged.is_empty(),
+            "empty input slice must produce empty result"
+        );
+
+        // Slice of empty lists: same.
+        let merged2 = rrf_merge_raw(&[vec![], vec![]], 60.0, 10);
+        assert!(
+            merged2.is_empty(),
+            "slice of empty lists must produce empty result"
+        );
+    }
+
+    #[test]
+    fn rrf_merge_raw_two_lists_reranks_by_overlap() {
+        // "b" appears at rank 1 in both lists. Its fused score is the
+        // sum of two 1/(60+2) contributions ≈ 0.0323. "a" and "c" each
+        // appear once at rank 0 with score 1/(60+1) ≈ 0.0164. So "b"
+        // must rank first after fusion even though it was second in
+        // both individual lists.
+        let list_knn = vec!["a".to_string(), "b".to_string()];
+        let list_bm25 = vec!["c".to_string(), "b".to_string()];
+        let merged = rrf_merge_raw(&[list_knn, list_bm25], 60.0, 10);
+        let ids: Vec<&str> = merged.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            ids[0], "b",
+            "overlapping item must rank first after RRF, got {ids:?}"
+        );
+        assert_eq!(ids.len(), 3);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // hybrid_search — KNN + BM25 fused via RRF.
+    //
+    // End-to-end tests verify the plumbing (both legs invoked, filter
+    // pass-through, edge cases). With FakeEmbedder we cannot construct
+    // a test that strictly REQUIRES BM25 over pure KNN — real-data
+    // verification happens in the day-3 smoke bench.
+    // ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn hybrid_search_finds_matching_chunk() {
+        let (conn, embedder) = setup();
+        ingest_text(
+            &conn,
+            &embedder,
+            IngestParams {
+                text: &"rust programming is fast ".repeat(100),
+                source: "test",
+                project: Some("p1"),
+                session_id: Some("s1"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        ingest_text(
+            &conn,
+            &embedder,
+            IngestParams {
+                text: &"pandas are cute ".repeat(100),
+                source: "test",
+                project: Some("p1"),
+                session_id: Some("s2"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let hits = hybrid_search(
+            &conn,
+            &embedder,
+            &"rust programming is fast ".repeat(100),
+            Some("p1"),
+            None,
+            Some(5),
+        )
+        .unwrap();
+
+        assert!(!hits.is_empty(), "expected at least one hybrid hit");
+        assert!(
+            hits[0].text.contains("rust"),
+            "top hit must contain 'rust', got {:?}",
+            hits[0].text
+        );
+    }
+
+    #[test]
+    fn hybrid_search_preserves_project_filter() {
+        // Two projects with matching chunks. Filter to p1 — no p2 hits allowed.
+        let (conn, embedder) = setup();
+        ingest_text(
+            &conn,
+            &embedder,
+            IngestParams {
+                text: &"rust programming ".repeat(100),
+                source: "test",
+                project: Some("p1"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        ingest_text(
+            &conn,
+            &embedder,
+            IngestParams {
+                text: &"rust programming ".repeat(100),
+                source: "test",
+                project: Some("p2"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let hits = hybrid_search(
+            &conn,
+            &embedder,
+            "rust programming",
+            Some("p1"),
+            None,
+            Some(50),
+        )
+        .unwrap();
+        assert!(!hits.is_empty(), "expected p1 hits");
+        for h in &hits {
+            assert_eq!(
+                h.project.as_deref(),
+                Some("p1"),
+                "hybrid leaked a p2 chunk: {h:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hybrid_search_handles_empty_query() {
+        // Empty / all-punctuation queries sanitize to empty for BM25
+        // and produce a (harmless) vector for KNN. Must return `Ok`
+        // without panicking regardless of what KNN picks up.
+        let (conn, embedder) = setup();
+        ingest_text(
+            &conn,
+            &embedder,
+            IngestParams {
+                text: &"x".repeat(300),
+                source: "test",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(hybrid_search(&conn, &embedder, "", None, None, Some(5)).is_ok());
+        assert!(hybrid_search(&conn, &embedder, "!!!", None, None, Some(5)).is_ok());
+    }
+
+    #[test]
+    fn hybrid_search_respects_k_limit() {
+        // 30 chunks, all matching the query → must cap at k=5 after merge.
+        let (conn, embedder) = setup();
+        for i in 0..30 {
+            let sid = format!("s{i}");
+            ingest_text(
+                &conn,
+                &embedder,
+                IngestParams {
+                    text: &format!("rust programming {i} ").repeat(50),
+                    source: "test",
+                    project: Some("p1"),
+                    session_id: Some(&sid),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let hits = hybrid_search(
+            &conn,
+            &embedder,
+            "rust programming",
+            Some("p1"),
+            None,
+            Some(5),
+        )
+        .unwrap();
+        assert!(
+            hits.len() <= 5,
+            "k=5 must cap result count, got {} hits",
+            hits.len()
+        );
+    }
+
+    #[test]
+    fn hybrid_search_zero_k_returns_empty() {
+        // k=0 is semantically degenerate but shouldn't crash or silently
+        // do work. Contract: return Ok(vec![]) and log a warning. The
+        // adversarial review flagged this as a latent footgun.
+        let (conn, embedder) = setup();
+        ingest_text(
+            &conn,
+            &embedder,
+            IngestParams {
+                text: &"rust programming ".repeat(100),
+                source: "test",
+                project: Some("p1"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let hits = hybrid_search(&conn, &embedder, "rust", Some("p1"), None, Some(0)).unwrap();
+        assert!(hits.is_empty(), "k=0 must return empty Vec, got {hits:?}");
+    }
+
+    #[test]
+    fn hybrid_search_prefers_knn_distance_when_chunk_on_both_legs() {
+        // A chunk that both KNN and BM25 surface: the returned
+        // `hit.distance` must be the KNN cosine distance (non-negative,
+        // in [0, 2]), NOT the BM25 score (negative). Locks in the
+        // metadata-precedence design decision so a future refactor
+        // can't silently flip it.
+        let (conn, embedder) = setup();
+        ingest_text(
+            &conn,
+            &embedder,
+            IngestParams {
+                text: &"rust programming is fast ".repeat(100),
+                source: "test",
+                project: Some("p1"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let hits = hybrid_search(
+            &conn,
+            &embedder,
+            &"rust programming is fast ".repeat(100),
+            Some("p1"),
+            None,
+            Some(5),
+        )
+        .unwrap();
+        assert!(!hits.is_empty());
+        assert!(
+            hits[0].distance >= 0.0,
+            "top hit's distance must be KNN cosine (>=0), got {} (looks like a negative BM25 score)",
+            hits[0].distance
+        );
+    }
+
+    #[test]
+    fn rrf_merge_raw_input_rank_zero_is_best() {
+        // Guarantee: callers MUST pass lists sorted so rank 0 = best.
+        // This test catches a sort-direction inversion in rrf_merge_raw
+        // itself: if the final sort were accidentally ascending, the
+        // lowest-scoring (worst) items would rank at the top.
+        //
+        // Adversarial review added this test explicitly — without it,
+        // a single-character typo in the sort comparator would silently
+        // destroy recall and pass every other cycle.
+        //
+        // Setup: two disjoint lists of 3 items each, winner at rank 0.
+        // After merge, the two winners must sit in the top 2 (either
+        // order, since both have the same fused score).
+        let list_knn = vec![
+            "win_knn".to_string(),
+            "lose_knn".to_string(),
+            "trash_knn".to_string(),
+        ];
+        let list_bm25 = vec![
+            "win_bm25".to_string(),
+            "lose_bm25".to_string(),
+            "trash_bm25".to_string(),
+        ];
+        let merged = rrf_merge_raw(&[list_knn, list_bm25], 60.0, 10);
+        let ids: Vec<&str> = merged.iter().map(|s| s.as_str()).collect();
+
+        let top_two: std::collections::HashSet<&str> = ids.iter().take(2).copied().collect();
+        let expected: std::collections::HashSet<&str> =
+            ["win_knn", "win_bm25"].iter().copied().collect();
+        assert_eq!(
+            top_two, expected,
+            "rank-0 items from each list must end up in the top 2 of the merge, got {ids:?}"
+        );
     }
 }
