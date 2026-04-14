@@ -12,3 +12,20 @@
 pub mod locomo;
 pub mod longmemeval;
 pub mod scoring;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reqwest_blocking_feature_is_enabled() {
+        // Regression guard for Forge-Persist prerequisite (c).
+        // The upcoming subprocess-based Forge-Persist harness talks to
+        // a spawned forge-daemon via reqwest::blocking::Client. If the
+        // "blocking" feature is ever removed from crates/daemon/Cargo.toml,
+        // this test fails to compile — catching the regression before it
+        // reaches the harness code.
+        //
+        // See docs/benchmarks/forge-persist-design.md §7.3 and §14 TDD
+        // step (c).
+        let _ = reqwest::blocking::Client::new();
+    }
+}
