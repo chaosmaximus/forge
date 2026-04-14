@@ -8,6 +8,8 @@
 use rusqlite::{params, Connection};
 use zerocopy::AsBytes;
 
+use crate::db::ops;
+
 /// Embedding dimension for the raw layer. Matches `all-MiniLM-L6-v2` (fastembed).
 /// This is a compile-time constant — do NOT change without a schema migration.
 pub const RAW_EMBEDDING_DIM: usize = 384;
@@ -34,7 +36,22 @@ pub struct RawChunk {
     pub metadata_json: String,
 }
 
-/// A hit returned by `search_chunks` — joins a chunk row with its parent document.
+/// A hit returned by `search_chunks` or `search_chunks_bm25` — joins a chunk
+/// row with its parent document.
+///
+/// # Distance field convention (MIXED — read this)
+///
+/// `distance` is "lower is better" in both search paths, but the numeric
+/// ranges are different:
+///
+/// - `search_chunks` (KNN) sets `distance` to the cosine distance from
+///   sqlite-vec — a non-negative value in `[0, 2]` where 0 is identical.
+/// - `search_chunks_bm25` sets `distance` to SQLite's `bm25(raw_chunks_fts)`
+///   score — **negative**, where more negative means more relevant.
+///
+/// Downstream code MUST NOT compare `distance` across hits from different
+/// search paths. The hybrid path in `raw::hybrid_search` merges by RRF rank
+/// position only; it never reads `distance` for any merge decision.
 #[derive(Debug, Clone)]
 pub struct RawHit {
     pub chunk_id: String,
@@ -182,6 +199,75 @@ pub fn search_chunks(
         .collect();
 
     Ok(hits)
+}
+
+/// Full-text BM25 search over raw chunks via the `raw_chunks_fts` virtual table.
+///
+/// Sibling to `search_chunks` (KNN). The FTS5 contentless table is populated
+/// automatically on every chunk insert by triggers declared in `schema.rs`, so
+/// this function just runs a MATCH query and joins back to `raw_chunks` /
+/// `raw_documents` to build the same `RawHit` shape as KNN.
+///
+/// The `distance` field on each hit carries the SQLite `bm25(raw_chunks_fts)`
+/// score, which is **negative** and **lower-is-better** (SQLite convention —
+/// unlike cosine distance). Callers that combine this with KNN hits must
+/// merge by rank, not by raw score.
+///
+/// Query is sanitized via `ops::sanitize_fts5_query` before being passed to
+/// FTS5 so user input cannot inject operators. Returns `Ok(vec![])` if the
+/// sanitized query is empty (all punctuation / stopwords dropped).
+pub fn search_chunks_bm25(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+    session_id: Option<&str>,
+    k: usize,
+) -> rusqlite::Result<Vec<RawHit>> {
+    let safe_query = ops::sanitize_fts5_query(query);
+    if safe_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Unlike vec0 (whose MATCH constraint must be the sole filter on the vec
+    // table), FTS5 JOINs accept additional WHERE clauses. Pushing the
+    // project/session filters into SQL avoids the top-K truncation bug: if
+    // we instead post-filtered in Rust, a query whose top-K BM25 hits were
+    // all in the wrong project would drop every hit and return zero results
+    // even when matching chunks exist in the target project. The
+    // `(?N IS NULL OR col = ?N)` pattern is a no-op when the caller passes
+    // `None` and a strict equality match otherwise; SQL NULL semantics
+    // correctly exclude rows whose column is itself NULL when a concrete
+    // filter is supplied.
+    let mut stmt = conn.prepare(
+        "SELECT c.id, bm25(raw_chunks_fts) AS score, c.document_id, c.chunk_index, c.text,
+                d.project, d.session_id, d.source, d.timestamp
+         FROM raw_chunks_fts
+         JOIN raw_chunks c ON c.rowid = raw_chunks_fts.rowid
+         JOIN raw_documents d ON d.id = c.document_id
+         WHERE raw_chunks_fts MATCH ?1
+           AND (?3 IS NULL OR d.project = ?3)
+           AND (?4 IS NULL OR d.session_id = ?4)
+         ORDER BY score
+         LIMIT ?2",
+    )?;
+
+    let rows = stmt
+        .query_map(params![safe_query, k as i64, project, session_id], |row| {
+            Ok(RawHit {
+                chunk_id: row.get(0)?,
+                distance: row.get(1)?,
+                document_id: row.get(2)?,
+                chunk_index: row.get::<_, i64>(3)? as usize,
+                text: row.get(4)?,
+                project: row.get(5)?,
+                session_id: row.get(6)?,
+                source: row.get(7)?,
+                timestamp: row.get(8)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(rows)
 }
 
 /// Delete a raw document and all its chunks (cascade via the FK).
@@ -448,5 +534,267 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(rows.len(), 1);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // search_chunks_bm25 — FTS5 MATCH keyword retrieval.
+    //
+    // Sibling to `search_chunks` (KNN). Together they form the two legs of
+    // the hybrid raw search path. Written test-first; one cycle per behavior.
+    // ──────────────────────────────────────────────────────────
+
+    fn insert_named_chunk(conn: &Connection, doc_id: &str, chunk_id: &str, idx: usize, text: &str) {
+        insert_chunk(
+            conn,
+            &RawChunk {
+                id: chunk_id.to_string(),
+                document_id: doc_id.to_string(),
+                chunk_index: idx,
+                text: text.to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn search_chunks_bm25_matches_single_term() {
+        let conn = setup();
+        insert_document(&conn, &sample_document("doc1", None, "body")).unwrap();
+        insert_named_chunk(&conn, "doc1", "c_rust", 0, "rust programming is fast");
+        insert_named_chunk(&conn, "doc1", "c_python", 1, "python code is expressive");
+        insert_named_chunk(&conn, "doc1", "c_js", 2, "javascript runs in browsers");
+
+        let hits = search_chunks_bm25(&conn, "rust", None, None, 10).unwrap();
+        assert!(
+            hits.iter().any(|h| h.chunk_id == "c_rust"),
+            "expected c_rust in hits, got: {hits:?}"
+        );
+        assert_eq!(
+            hits[0].chunk_id, "c_rust",
+            "expected c_rust to rank first (only chunk containing the term)"
+        );
+    }
+
+    #[test]
+    fn search_chunks_bm25_filters_project() {
+        let conn = setup();
+        insert_document(&conn, &sample_document("doc_p1", Some("p1"), "body")).unwrap();
+        insert_document(&conn, &sample_document("doc_p2", Some("p2"), "body")).unwrap();
+        insert_named_chunk(&conn, "doc_p1", "c_p1", 0, "rust programming is fast");
+        insert_named_chunk(&conn, "doc_p2", "c_p2", 0, "rust programming is fast");
+
+        let hits = search_chunks_bm25(&conn, "rust", Some("p1"), None, 10).unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected exactly one hit after project filter, got {:?}",
+            hits.iter().map(|h| &h.chunk_id).collect::<Vec<_>>()
+        );
+        assert_eq!(hits[0].chunk_id, "c_p1");
+        assert_eq!(hits[0].project.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn search_chunks_bm25_combined_project_and_session_filter() {
+        // 2×2 matrix of (project, session) — all chunks contain the same
+        // keyword. Querying with both filters must return ONLY the
+        // (p1, s1) intersection, not the project-only or session-only
+        // supersets. Catches the bug where one filter silently overrides
+        // or masks the other inside the WHERE clause.
+        let conn = setup();
+        let doc = |id: &str, p: &str, s: &str| RawDocument {
+            id: id.to_string(),
+            project: Some(p.to_string()),
+            session_id: Some(s.to_string()),
+            source: "test".to_string(),
+            text: "body".to_string(),
+            timestamp: "2026-04-14T00:00:00Z".to_string(),
+            metadata_json: "{}".to_string(),
+        };
+        insert_document(&conn, &doc("doc_11", "p1", "s1")).unwrap();
+        insert_document(&conn, &doc("doc_12", "p1", "s2")).unwrap();
+        insert_document(&conn, &doc("doc_21", "p2", "s1")).unwrap();
+        insert_document(&conn, &doc("doc_22", "p2", "s2")).unwrap();
+        insert_named_chunk(&conn, "doc_11", "c_11", 0, "rust programming");
+        insert_named_chunk(&conn, "doc_12", "c_12", 0, "rust programming");
+        insert_named_chunk(&conn, "doc_21", "c_21", 0, "rust programming");
+        insert_named_chunk(&conn, "doc_22", "c_22", 0, "rust programming");
+
+        let hits = search_chunks_bm25(&conn, "rust", Some("p1"), Some("s1"), 10).unwrap();
+        let ids: Vec<_> = hits.iter().map(|h| h.chunk_id.as_str()).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "combined filter must return exactly (p1,s1), got {ids:?}"
+        );
+        assert_eq!(hits[0].chunk_id, "c_11");
+        assert_eq!(hits[0].project.as_deref(), Some("p1"));
+        assert_eq!(hits[0].session_id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn search_chunks_bm25_project_filter_does_not_truncate_top_k() {
+        // The adversarial reviewer found a real bug: if the top-K BM25
+        // hits are all in the wrong project, a post-SQL filter drops them
+        // and returns zero results even when matching chunks exist in the
+        // right project. Unlike vec0, FTS5 JOINs accept WHERE clauses —
+        // the fix is to push the filter into SQL.
+        //
+        // Setup: 5 high-frequency chunks in `p_other` (dominate BM25
+        // ranking), 2 lower-frequency chunks in `p_target`. k=3. With the
+        // current post-filter impl, SQL returns top-3 (all p_other),
+        // post-filter drops them, we get 0 hits — BUG. With the fix, SQL
+        // pre-filters to p_target, returns both c_target chunks, we get 2.
+        let conn = setup();
+        insert_document(
+            &conn,
+            &sample_document("doc_other", Some("p_other"), "body"),
+        )
+        .unwrap();
+        insert_document(
+            &conn,
+            &sample_document("doc_target", Some("p_target"), "body"),
+        )
+        .unwrap();
+
+        for i in 0..5 {
+            insert_named_chunk(
+                &conn,
+                "doc_other",
+                &format!("c_other_{i}"),
+                i,
+                "rust rust rust rust rust",
+            );
+        }
+        for i in 0..2 {
+            insert_named_chunk(
+                &conn,
+                "doc_target",
+                &format!("c_target_{i}"),
+                i,
+                "rust programming",
+            );
+        }
+
+        let hits = search_chunks_bm25(&conn, "rust", Some("p_target"), None, 3).unwrap();
+        let ids: Vec<_> = hits.iter().map(|h| h.chunk_id.as_str()).collect();
+        assert_eq!(
+            hits.len(),
+            2,
+            "expected 2 p_target hits (not truncated by higher-frequency p_other chunks), got {ids:?}"
+        );
+        for h in &hits {
+            assert_eq!(h.project.as_deref(), Some("p_target"));
+        }
+    }
+
+    #[test]
+    fn search_chunks_bm25_ranks_by_relevance() {
+        // BM25 must rank chunks by term frequency + inverse document length.
+        // A chunk with 5 occurrences of "rust" in a short body must rank
+        // above a chunk with 1 occurrence of "rust" in a longer body.
+        //
+        // Without this test a sort-direction inversion in the FTS5 ORDER BY
+        // clause would still pass cycles 1–3 (which only check matching-vs-
+        // non-matching) but silently destroy real relevance. This is the
+        // load-bearing ordering gate — flagged explicitly by the adversarial
+        // review as the missing check in the day-1 plan.
+        let conn = setup();
+        insert_document(&conn, &sample_document("doc1", None, "body")).unwrap();
+        insert_named_chunk(&conn, "doc1", "c_high", 0, "rust rust rust rust rust");
+        insert_named_chunk(
+            &conn,
+            "doc1",
+            "c_low",
+            1,
+            "i once heard someone mention rust briefly in passing",
+        );
+        insert_named_chunk(&conn, "doc1", "c_none", 2, "python is expressive");
+
+        let hits = search_chunks_bm25(&conn, "rust", None, None, 10).unwrap();
+        let ids: Vec<_> = hits.iter().map(|h| h.chunk_id.as_str()).collect();
+        assert_eq!(
+            hits.len(),
+            2,
+            "only 2 chunks should match 'rust', got {ids:?}"
+        );
+        assert_eq!(
+            hits[0].chunk_id, "c_high",
+            "c_high (5× term frequency) must rank above c_low (1× in longer body) — got {ids:?}"
+        );
+        assert_eq!(hits[1].chunk_id, "c_low");
+
+        // SQLite bm25() returns negative scores; ORDER BY ASC → lowest first.
+        // Assert the ranking field is monotone ascending.
+        assert!(
+            hits[0].distance <= hits[1].distance,
+            "hits must be sorted ascending by BM25 score (lower=better), got {} then {}",
+            hits[0].distance,
+            hits[1].distance
+        );
+    }
+
+    #[test]
+    fn search_chunks_bm25_empty_query_returns_empty() {
+        // Two flavors of "empty": literal "" and all-punctuation "!!!".
+        // Both must resolve to the sanitized empty string and return an
+        // empty Vec — never propagate an FTS5 syntax error to the caller.
+        let conn = setup();
+        insert_document(&conn, &sample_document("doc1", None, "body")).unwrap();
+        insert_named_chunk(&conn, "doc1", "c1", 0, "rust programming is fast");
+
+        let hits_punct = search_chunks_bm25(&conn, "!!!", None, None, 10).unwrap();
+        assert!(
+            hits_punct.is_empty(),
+            "all-punctuation query must return no hits, got {hits_punct:?}"
+        );
+
+        let hits_empty = search_chunks_bm25(&conn, "", None, None, 10).unwrap();
+        assert!(
+            hits_empty.is_empty(),
+            "literal empty query must return no hits, got {hits_empty:?}"
+        );
+    }
+
+    #[test]
+    fn search_chunks_bm25_filters_session() {
+        // Two documents sharing the same project but in different sessions.
+        // The session filter must reject chunks from the non-matching session
+        // even when the keyword matches — this closes the cross-tenant leak
+        // the adversarial review flagged as CRITICAL.
+        let conn = setup();
+        let doc_a = RawDocument {
+            id: "doc_a".to_string(),
+            project: Some("p1".to_string()),
+            session_id: Some("sess_a".to_string()),
+            source: "test".to_string(),
+            text: "body".to_string(),
+            timestamp: "2026-04-14T00:00:00Z".to_string(),
+            metadata_json: "{}".to_string(),
+        };
+        let doc_b = RawDocument {
+            id: "doc_b".to_string(),
+            project: Some("p1".to_string()),
+            session_id: Some("sess_b".to_string()),
+            source: "test".to_string(),
+            text: "body".to_string(),
+            timestamp: "2026-04-14T00:00:00Z".to_string(),
+            metadata_json: "{}".to_string(),
+        };
+        insert_document(&conn, &doc_a).unwrap();
+        insert_document(&conn, &doc_b).unwrap();
+        insert_named_chunk(&conn, "doc_a", "c_a", 0, "rust programming is fast");
+        insert_named_chunk(&conn, "doc_b", "c_b", 0, "rust programming is fast");
+
+        let hits = search_chunks_bm25(&conn, "rust", None, Some("sess_a"), 10).unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected exactly one hit after session filter, got {:?}",
+            hits.iter().map(|h| &h.chunk_id).collect::<Vec<_>>()
+        );
+        assert_eq!(hits[0].chunk_id, "c_a");
+        assert_eq!(hits[0].session_id.as_deref(), Some("sess_a"));
     }
 }
