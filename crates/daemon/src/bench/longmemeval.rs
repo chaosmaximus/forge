@@ -33,7 +33,7 @@ use crate::db::vec::init_sqlite_vec;
 use crate::embed::Embedder;
 use crate::extraction::backend::ExtractionResult;
 use crate::extraction::gemini;
-use crate::raw::{ingest_text, search, IngestParams};
+use crate::raw::{hybrid_search, ingest_text, search, IngestParams};
 use crate::workers::consolidator;
 use forge_core::types::{Memory, MemoryType};
 
@@ -148,6 +148,37 @@ impl BenchMode {
     }
 }
 
+/// Dispatch enum for the raw-search path inside `BenchMode::Raw`.
+///
+/// - `Knn` → pure cosine-KNN via `raw::search` (the published 0.9520 baseline).
+/// - `Hybrid` → BM25 + KNN fused via RRF through `raw::hybrid_search` (wave 1).
+///
+/// Default for new bench runs is `Hybrid`. Pure KNN stays reachable behind
+/// the `--raw-mode knn` CLI flag so the parity number against MemPalace can
+/// still be reproduced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawStrategy {
+    Knn,
+    Hybrid,
+}
+
+impl RawStrategy {
+    pub fn parse(s: &str) -> Result<Self, &'static str> {
+        match s {
+            "knn" => Ok(Self::Knn),
+            "hybrid" => Ok(Self::Hybrid),
+            _ => Err("invalid raw strategy (expected 'knn' or 'hybrid')"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Knn => "knn",
+            Self::Hybrid => "hybrid",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum BenchError {
     Io(String),
@@ -192,9 +223,15 @@ impl From<crate::raw::RawError> for BenchError {
 /// Allocates a fresh in-memory SQLite per call, ingests every haystack session
 /// as a `raw_documents` row, queries with the question, and computes the four
 /// retrieval metrics against `answer_session_ids`.
+///
+/// The `strategy` parameter selects between pure KNN (the published 0.9520
+/// baseline) and hybrid BM25+KNN via RRF. Dispatched inside the function
+/// rather than at the caller so the corpus-build path stays shared across
+/// both strategies — they only differ at the retrieval step.
 pub fn run_raw(
     entry: &LongMemEvalEntry,
     embedder: &Arc<dyn Embedder>,
+    strategy: RawStrategy,
 ) -> Result<QuestionResult, BenchError> {
     let started = Instant::now();
 
@@ -245,17 +282,30 @@ pub fn run_raw(
     }
 
     // Top-50 results so we can compute Recall@5, @10, and NDCG@10 from the
-    // same query. Use max_distance: None to disable cutoff — bench scoring
-    // wants the full ranked list, not a quality filter.
-    let hits = search(
-        &conn,
-        embedder,
-        &entry.question,
-        Some("longmemeval"),
-        None,
-        Some(50),
-        Some(2.0),
-    )?;
+    // same query. Dispatch on strategy:
+    //   - Knn → raw::search with cutoff disabled (Some(2.0)), matches
+    //     the exact published 0.9520 baseline.
+    //   - Hybrid → raw::hybrid_search, which uses pool = max(50, 10*k)
+    //     internally and has no `max_distance` parameter.
+    let hits = match strategy {
+        RawStrategy::Knn => search(
+            &conn,
+            embedder,
+            &entry.question,
+            Some("longmemeval"),
+            None,
+            Some(50),
+            Some(2.0),
+        )?,
+        RawStrategy::Hybrid => hybrid_search(
+            &conn,
+            embedder,
+            &entry.question,
+            Some("longmemeval"),
+            None,
+            Some(50),
+        )?,
+    };
 
     // De-duplicate retrieved session IDs while preserving order — multiple
     // chunks from the same session count as one hit at session granularity.
@@ -751,7 +801,7 @@ mod tests {
     fn run_raw_returns_result_for_each_question() {
         let embedder = fake_embedder();
         let entry = entry_with(&["sess-a"]);
-        let result = run_raw(&entry, &embedder).expect("run_raw");
+        let result = run_raw(&entry, &embedder, RawStrategy::Knn).expect("run_raw");
         assert_eq!(result.question_id, "q1");
         assert_eq!(result.question_type, "single-session-user");
         assert_eq!(result.mode, "raw");
@@ -766,10 +816,25 @@ mod tests {
         // hashed identically by the FakeEmbedder. It must rank in the top 5.
         let embedder = fake_embedder();
         let entry = entry_with(&["sess-a"]);
-        let result = run_raw(&entry, &embedder).unwrap();
+        let result = run_raw(&entry, &embedder, RawStrategy::Knn).unwrap();
         assert!(
             result.recall_at_5 == 1.0,
             "expected R@5 = 1.0 on a near-perfect FakeEmbedder match, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn run_raw_finds_self_match_with_hybrid_strategy() {
+        // Same fixture, but via the new hybrid dispatch. Both legs see the
+        // self-match so hybrid's fused ranking must also land it in top 5.
+        // This is the day-3 TDD test that drives the run_raw signature
+        // change to take a RawStrategy parameter.
+        let embedder = fake_embedder();
+        let entry = entry_with(&["sess-a"]);
+        let result = run_raw(&entry, &embedder, RawStrategy::Hybrid).unwrap();
+        assert!(
+            result.recall_at_5 == 1.0,
+            "expected R@5 = 1.0 on hybrid dispatch with FakeEmbedder, got {result:?}"
         );
     }
 
@@ -842,5 +907,40 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].question_id, "qfix");
         assert_eq!(entries[0].haystack_sessions.len(), 2);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // RawStrategy — dispatch enum for the bench raw-search path.
+    //
+    // Wave 1 T4: selects between pure KNN (the published 0.9520 baseline)
+    // and hybrid BM25+KNN (the new default). The CLI flag --raw-mode
+    // accepts "knn" or "hybrid" and parses into this enum.
+    // ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn raw_strategy_parses_knn() {
+        assert_eq!(RawStrategy::parse("knn").unwrap(), RawStrategy::Knn);
+    }
+
+    #[test]
+    fn raw_strategy_parses_hybrid() {
+        assert_eq!(RawStrategy::parse("hybrid").unwrap(), RawStrategy::Hybrid);
+    }
+
+    #[test]
+    fn raw_strategy_rejects_bad_input() {
+        assert!(RawStrategy::parse("").is_err());
+        assert!(RawStrategy::parse("KNN").is_err(), "case-sensitive");
+        assert!(RawStrategy::parse("hybrid ").is_err(), "no trimming");
+        assert!(RawStrategy::parse("garbage").is_err());
+    }
+
+    #[test]
+    fn raw_strategy_as_str_roundtrip() {
+        // Every variant must roundtrip through parse ∘ as_str.
+        for strat in [RawStrategy::Knn, RawStrategy::Hybrid] {
+            let s = strat.as_str();
+            assert_eq!(RawStrategy::parse(s).unwrap(), strat);
+        }
     }
 }

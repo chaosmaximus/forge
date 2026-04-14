@@ -20,7 +20,7 @@ use forge_daemon::bench::locomo::{
 };
 use forge_daemon::bench::longmemeval::{
     load_entries, run_consolidate, run_extract, run_hybrid, run_raw, summarize, BenchMode,
-    QuestionResult,
+    QuestionResult, RawStrategy,
 };
 use forge_daemon::embed::{minilm::MiniLMEmbedder, Embedder, FakeEmbedder};
 
@@ -62,6 +62,10 @@ enum Commands {
         /// Higher = faster but more pressure on rate limits.
         #[arg(long, default_value_t = 8)]
         extract_concurrency: usize,
+        /// Raw mode sub-strategy: `knn` preserves the published KNN-only
+        /// baseline; `hybrid` (default) uses KNN + FTS5 BM25 fused via RRF.
+        #[arg(long, default_value = "hybrid")]
+        raw_mode: String,
     },
     /// Run the LoCoMo benchmark.
     Locomo {
@@ -85,6 +89,10 @@ enum Commands {
         /// Extract mode only: max concurrent Gemini API extraction calls.
         #[arg(long, default_value_t = 8)]
         extract_concurrency: usize,
+        /// Raw mode sub-strategy: `knn` preserves the published KNN-only
+        /// baseline; `hybrid` (default) uses KNN + FTS5 BM25 fused via RRF.
+        #[arg(long, default_value = "hybrid")]
+        raw_mode: String,
     },
 }
 
@@ -106,6 +114,7 @@ async fn main() {
             fake_embedder,
             extract_model,
             extract_concurrency,
+            raw_mode,
         } => {
             run_longmemeval(
                 path,
@@ -115,6 +124,7 @@ async fn main() {
                 fake_embedder,
                 extract_model,
                 extract_concurrency,
+                raw_mode,
             )
             .await
         }
@@ -126,6 +136,7 @@ async fn main() {
             fake_embedder,
             extract_model,
             extract_concurrency,
+            raw_mode,
         } => {
             run_locomo(
                 path,
@@ -135,6 +146,7 @@ async fn main() {
                 fake_embedder,
                 extract_model,
                 extract_concurrency,
+                raw_mode,
             )
             .await
         }
@@ -145,6 +157,11 @@ async fn main() {
     }
 }
 
+// Parameter list mirrors the clap `Commands::Longmemeval` variant fields
+// one-for-one, so bundling them into a struct would only add an extra
+// destructure step in `main`. The clippy lint is suppressed here rather
+// than refactored because the coupling is intentional.
+#[allow(clippy::too_many_arguments)]
 async fn run_longmemeval(
     path: PathBuf,
     mode_str: String,
@@ -153,9 +170,12 @@ async fn run_longmemeval(
     fake_embedder: bool,
     extract_model: String,
     extract_concurrency: usize,
+    raw_mode_str: String,
 ) -> Result<(), String> {
     let mode =
         BenchMode::parse(&mode_str).map_err(|e| format!("invalid --mode '{mode_str}': {e}"))?;
+    let raw_strategy = RawStrategy::parse(&raw_mode_str)
+        .map_err(|e| format!("invalid --raw-mode '{raw_mode_str}': {e}"))?;
     let needs_embedder = matches!(mode, BenchMode::Raw | BenchMode::Hybrid);
     let needs_api_key = matches!(
         mode,
@@ -236,7 +256,7 @@ async fn run_longmemeval(
         let result = match mode {
             BenchMode::Raw => {
                 let emb = embedder.as_ref().ok_or("raw mode requires an embedder")?;
-                run_raw(entry, emb).map_err(|e| e.to_string())?
+                run_raw(entry, emb, raw_strategy).map_err(|e| e.to_string())?
             }
             BenchMode::Extract => {
                 run_extract(entry, &gemini_api_key, &extract_model, extract_concurrency)
@@ -299,9 +319,10 @@ async fn run_longmemeval(
         .map_err(|e| format!("write {}: {e}", summary_path.display()))?;
 
     let repro = format!(
-        "#!/usr/bin/env bash\n# Reproduce this benchmark run.\nset -euo pipefail\ncd \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"\ncargo run --release --bin forge-bench -- longmemeval {} --mode {} --limit {} --output {}\n",
+        "#!/usr/bin/env bash\n# Reproduce this benchmark run.\nset -euo pipefail\ncd \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"\ncargo run --release --bin forge-bench -- longmemeval {} --mode {} --raw-mode {} --limit {} --output {}\n",
         path.display(),
         mode.as_str(),
+        raw_strategy.as_str(),
         limit,
         output.display(),
     );
@@ -342,6 +363,10 @@ fn unix_secs_string() -> String {
     format!("{secs}")
 }
 
+// Parameter list mirrors the clap `Commands::Locomo` variant fields
+// one-for-one — see `run_longmemeval` comment above for why this lint
+// is suppressed rather than refactored.
+#[allow(clippy::too_many_arguments)]
 async fn run_locomo(
     path: PathBuf,
     mode_str: String,
@@ -350,6 +375,7 @@ async fn run_locomo(
     fake_embedder: bool,
     extract_model: String,
     extract_concurrency: usize,
+    raw_mode_str: String,
 ) -> Result<(), String> {
     let mode = match mode_str.as_str() {
         "raw" => "raw",
@@ -360,6 +386,8 @@ async fn run_locomo(
             ));
         }
     };
+    let raw_strategy = RawStrategy::parse(&raw_mode_str)
+        .map_err(|e| format!("invalid --raw-mode '{raw_mode_str}': {e}"))?;
     eprintln!("[forge-bench] loading samples from {}", path.display());
     let mut samples = load_samples(&path).map_err(|e| e.to_string())?;
     if limit > 0 && limit < samples.len() {
@@ -423,7 +451,7 @@ async fn run_locomo(
         let results = match mode {
             "raw" => {
                 let emb = embedder.as_ref().ok_or("raw mode requires an embedder")?;
-                run_sample_raw(sample, emb).map_err(|e| e.to_string())?
+                run_sample_raw(sample, emb, raw_strategy).map_err(|e| e.to_string())?
             }
             "extract" => {
                 run_sample_extract(sample, &gemini_api_key, &extract_model, extract_concurrency)
@@ -462,8 +490,10 @@ async fn run_locomo(
         .map_err(|e| format!("write {}: {e}", summary_path.display()))?;
 
     let repro = format!(
-        "#!/usr/bin/env bash\n# Reproduce this LoCoMo benchmark run.\nset -euo pipefail\ncd \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"\ncargo run --release --bin forge-bench -- locomo {} --limit {} --output {}\n",
+        "#!/usr/bin/env bash\n# Reproduce this LoCoMo benchmark run.\nset -euo pipefail\ncd \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"\ncargo run --release --bin forge-bench -- locomo {} --mode {} --raw-mode {} --limit {} --output {}\n",
         path.display(),
+        mode,
+        raw_strategy.as_str(),
         limit,
         output.display(),
     );

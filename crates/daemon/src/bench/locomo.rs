@@ -19,6 +19,7 @@ use futures_util::stream::{self, StreamExt};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
+use crate::bench::longmemeval::RawStrategy;
 use crate::bench::scoring::{ndcg_at_k, recall_any_at_k};
 use crate::db::ops;
 use crate::db::schema::create_schema;
@@ -26,7 +27,7 @@ use crate::db::vec::init_sqlite_vec;
 use crate::embed::Embedder;
 use crate::extraction::backend::ExtractionResult;
 use crate::extraction::gemini;
-use crate::raw::{ingest_text, search, IngestParams};
+use crate::raw::{hybrid_search, ingest_text, search, IngestParams};
 use forge_core::types::{Memory, MemoryType};
 
 // ────────────────────────────────────────────────────────
@@ -262,6 +263,7 @@ fn dia_id_to_session(dia_id: &str) -> Option<String> {
 pub fn run_sample_raw(
     sample: &LocomoSample,
     embedder: &Arc<dyn Embedder>,
+    strategy: RawStrategy,
 ) -> Result<Vec<QaResult>, BenchError> {
     init_sqlite_vec();
     let conn = Connection::open_in_memory()?;
@@ -309,15 +311,25 @@ pub fn run_sample_raw(
             .into_iter()
             .collect();
 
-        let hits = search(
-            &conn,
-            embedder,
-            &qa.question,
-            Some("locomo"),
-            None,
-            Some(50),
-            Some(2.0),
-        )?;
+        let hits = match strategy {
+            RawStrategy::Knn => search(
+                &conn,
+                embedder,
+                &qa.question,
+                Some("locomo"),
+                None,
+                Some(50),
+                Some(2.0),
+            )?,
+            RawStrategy::Hybrid => hybrid_search(
+                &conn,
+                embedder,
+                &qa.question,
+                Some("locomo"),
+                None,
+                Some(50),
+            )?,
+        };
 
         // Dedupe to session granularity.
         let mut seen: HashSet<String> = HashSet::new();
@@ -637,11 +649,52 @@ mod tests {
                 category: 1,
             }],
         };
-        let results = run_sample_raw(&sample, &embedder).unwrap();
+        let results = run_sample_raw(&sample, &embedder, RawStrategy::Knn).unwrap();
         assert_eq!(results.len(), 1);
         let r = &results[0];
         assert_eq!(r.evidence_session_ids, vec!["session_1"]);
         assert!(r.recall_at_5 == 1.0, "expected R@5 = 1.0, got {r:?}");
+    }
+
+    #[test]
+    fn run_sample_raw_finds_evidence_session_via_hybrid() {
+        // Same fixture but via the hybrid dispatch path. Drives the day-3
+        // signature change to run_sample_raw taking a RawStrategy parameter.
+        let embedder = fake_embedder();
+        let sample = LocomoSample {
+            sample_id: "test_hybrid".to_string(),
+            speaker_a: "Alice".to_string(),
+            speaker_b: "Bob".to_string(),
+            sessions: vec![
+                LocomoSession {
+                    idx: 1,
+                    turns: vec![LocomoTurn {
+                        speaker: "Alice".into(),
+                        text: "weather is great today".repeat(20),
+                    }],
+                },
+                LocomoSession {
+                    idx: 2,
+                    turns: vec![LocomoTurn {
+                        speaker: "Bob".into(),
+                        text: "I love going to the beach in summer".repeat(20),
+                    }],
+                },
+            ],
+            qa: vec![LocomoQa {
+                question: "weather is great today".repeat(20),
+                evidence: vec!["D1:1".to_string()],
+                category: 1,
+            }],
+        };
+        let results = run_sample_raw(&sample, &embedder, RawStrategy::Hybrid).unwrap();
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(r.evidence_session_ids, vec!["session_1"]);
+        assert!(
+            r.recall_at_5 == 1.0,
+            "hybrid dispatch must also land the evidence in top 5, got {r:?}"
+        );
     }
 
     #[test]
