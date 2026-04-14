@@ -573,7 +573,7 @@ async fn build_extract_corpus(
 /// Run a BM25 query against the `memory` table and return deduped session IDs
 /// in BM25-rank order. Used by extract / consolidate / hybrid modes.
 fn bm25_query_session_ids(conn: &Connection, query: &str) -> Result<Vec<String>, BenchError> {
-    let safe_query = sanitize_for_fts(query);
+    let safe_query = ops::sanitize_fts5_query(query);
     if safe_query.is_empty() {
         return Ok(Vec::new());
     }
@@ -654,32 +654,6 @@ fn parse_memory_type(s: &str) -> Option<MemoryType> {
         "skill" | "identity" | "protocol" => None,
         _ => None,
     }
-}
-
-/// Reimplementation of `db::ops::sanitize_fts5_query` (which is private in
-/// that module). Splits on whitespace, strips every non-alphanumeric char,
-/// double-quotes each term to disable FTS5 operator parsing, and joins with
-/// `OR` so each term contributes to the BM25 score. Matches the production
-/// sanitizer's behaviour byte-for-byte.
-fn sanitize_for_fts(query: &str) -> String {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .filter_map(|word| {
-            let cleaned: String = word
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            if cleaned.is_empty() {
-                return None;
-            }
-            let escaped = cleaned.replace('"', "\"\"");
-            Some(format!("\"{escaped}\""))
-        })
-        .collect();
-    if terms.is_empty() {
-        return String::new();
-    }
-    terms.join(" OR ")
 }
 
 /// Aggregate per-question results into a `RunSummary`.

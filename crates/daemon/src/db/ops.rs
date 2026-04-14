@@ -208,7 +208,11 @@ pub fn dedup_memories(conn: &Connection) -> rusqlite::Result<usize> {
 ///
 /// Terms are joined with OR so that a query like "JWT AND bad" matches documents
 /// containing any of the words, not requiring all of them to be present.
-fn sanitize_fts5_query(query: &str) -> String {
+///
+/// `pub(crate)` so the raw layer (`db::raw::search_chunks_bm25`) and the bench
+/// harness (`bench::longmemeval`, `bench::locomo`) share one implementation
+/// instead of duplicating it across three call sites.
+pub(crate) fn sanitize_fts5_query(query: &str) -> String {
     let terms: Vec<String> = query
         .split_whitespace()
         .filter_map(|word| {

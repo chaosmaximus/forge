@@ -450,8 +450,6 @@ pub async fn run_sample_extract(
                 .collect::<String>(),
         );
     }
-    let _ = ops::recall_bm25; // suppress dead-code lint if any
-
     // Run every QA through BM25 and score against evidence session IDs.
     let mut results = Vec::with_capacity(sample.qa.len());
     for qa in &sample.qa {
@@ -464,7 +462,7 @@ pub async fn run_sample_extract(
             .into_iter()
             .collect();
 
-        let safe_query = sanitize_for_fts(&qa.question);
+        let safe_query = ops::sanitize_fts5_query(&qa.question);
         let retrieved_session_ids: Vec<String> = if safe_query.is_empty() {
             Vec::new()
         } else {
@@ -504,29 +502,6 @@ pub async fn run_sample_extract(
         });
     }
     Ok(results)
-}
-
-/// Same FTS5 sanitizer as `longmemeval::sanitize_for_fts`. Duplicated locally
-/// to avoid cross-module dependency; both mirror `db::ops::sanitize_fts5_query`.
-fn sanitize_for_fts(query: &str) -> String {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .filter_map(|word| {
-            let cleaned: String = word
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            if cleaned.is_empty() {
-                return None;
-            }
-            let escaped = cleaned.replace('"', "\"\"");
-            Some(format!("\"{escaped}\""))
-        })
-        .collect();
-    if terms.is_empty() {
-        return String::new();
-    }
-    terms.join(" OR ")
 }
 
 /// Map a valid Forge extraction type string to the typed enum.
