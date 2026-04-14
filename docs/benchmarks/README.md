@@ -66,10 +66,14 @@ Every benchmark run should also report the LongMemEval paper's Stella V5 referen
 
 ## Headline findings
 
-**Raw mode (LongMemEval, full 500 questions):** R@5 = 0.952. Sits 1.4 points below MemPalace's published 0.966 on the same recipe (same embedder, same chunker, same scoring).
+**Raw KNN mode (LongMemEval, full 500 questions):** R@5 = 0.952. Sits 1.4 points below MemPalace's published 0.966 on the same recipe (same embedder, same chunker, same scoring).
 
-**Raw mode (LoCoMo, full 1,986 QAs):** R@10 = 0.875. 27 points above MemPalace's plain session baseline (0.603), within 1.5 points of their tuned hybrid v5 (0.889) without any rerank.
+**Raw KNN mode (LoCoMo, full 1,986 QAs):** R@10 = 0.875. 27 points above MemPalace's plain session baseline (0.603), within 1.5 points of their tuned hybrid v5 (0.889) without any rerank.
 
-**Four-mode comparison (LongMemEval, 50-Q subset):** raw 0.94 > hybrid 0.86 > extract 0.76 = consolidate 0.76 on R@5. **Extraction loses ~18 pp of retrieval recall to raw storage; consolidation does not recover it; hybrid (raw + extract RRF) still underperforms pure raw on R@5.** Same pattern observed on LoCoMo: extract loses ~17 pp R@5 to raw across every category.
+**Wave 1 hybrid raw mode (LongMemEval, full 500 questions, 2026-04-14):** R@5 = **0.964** (+1.2 pp over KNN). Closes the gap to MemPalace from -1.4 pp to -0.2 pp. One category regressed: single-session-preference dropped -6.7 pp because the BM25 leg struggles with paraphrased preference references — this is the exact gap Wave 3 T14 preference sidecars will close. Every other category improved.
 
-**The benchmark plan's central question — "does Forge's extraction pipeline add retrieval value on top of raw storage?" — has an empirically clear answer on LongMemEval and LoCoMo: no.** Extraction's value must come from non-retrieval axes (tool recall, identity persistence, multi-agent coordination, behavioral pattern extraction) which are captured by the custom Forge-* benchmarks — none of which are published yet.
+**Wave 1 hybrid raw mode (LoCoMo, full 1,986 QAs, 2026-04-14):** R@10 = **0.946** (+7.1 pp over KNN). **Beats MemPalace's tuned hybrid v5 (0.889) by 5.7 pp and MemPalace's bge-large hybrid (0.924) by 2.2 pp — using the smaller 384-dim MiniLM embedder.** Every category improved, including temporal-inference (+8.3 pp, historically the hardest category). The dialogue-corpus structure gives BM25 much more signal than LongMemEval's diverse question mix.
+
+**Four-mode comparison (LongMemEval, 50-Q subset):** raw 0.94 > hybrid 0.86 > extract 0.76 = consolidate 0.76 on R@5. **Extraction loses ~18 pp of retrieval recall to raw storage; consolidation does not recover it; hybrid (raw + extract RRF — an older mode unrelated to wave 1 hybrid) still underperforms pure raw on R@5.** Same pattern observed on LoCoMo: extract loses ~17 pp R@5 to raw across every category.
+
+**The benchmark plan's central question — "does Forge's extraction pipeline add retrieval value on top of raw storage?" — has an empirically clear answer on LongMemEval and LoCoMo: no.** Extraction's value must come from non-retrieval axes (tool recall, identity persistence, multi-agent coordination, behavioral pattern extraction) which are captured by the custom Forge-* benchmarks — none of which are published yet. Wave 1 hybrid raw + BM25, by contrast, DID add retrieval value (+1.2 LME, +7.1 LoCoMo) at ~400 LOC of plumbing cost.

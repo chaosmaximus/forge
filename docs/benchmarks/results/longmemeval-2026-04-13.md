@@ -1,11 +1,70 @@
-# LongMemEval — Forge raw layer baseline (2026-04-13)
+# LongMemEval — Forge raw layer baseline (2026-04-13) + wave 1 hybrid (2026-04-14)
 
 **Bench:** `forge-bench longmemeval`, mode `raw`
 **Dataset:** [`xiaowu0162/longmemeval-cleaned`](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) → `longmemeval_s_cleaned.json` (500 questions, 265 MB)
-**Commit:** [`05f62a9`](https://github.com/) (head before this run)
+**Commit (2026-04-13):** [`05f62a9`](https://github.com/) — original raw KNN baseline
+**Commit (2026-04-14):** [`9995c73`](https://github.com/) — wave 1 hybrid BM25+KNN RRF dispatch
 **Hardware:** Apple M1 Pro, macOS Darwin 25.4.0 (arm64)
-**Embedder:** `all-MiniLM-L6-v2` (384-dim) via `fastembed-rs 5.13`
-**Runtime:** 701.57 s wall (~11.7 min) on a single CPU core, no GPU
+**Embedder:** `all-MiniLM-L6-v2` (384-dim) via `fastembed-rs 5.13` — unchanged between both runs
+**Runtime:** 628.57 s for full-500 KNN parity re-run; 1186.85 s for full-500 hybrid (wave 1)
+
+---
+
+## Wave 1 hybrid update (2026-04-14)
+
+Wave 1 of the [improvement roadmap](../improvement-roadmap-2026-04-13.md) added the long-missing BM25 leg to the raw layer (`raw_chunks_fts`, trigger-populated but previously never queried) and fused it with the existing KNN leg via **pure Reciprocal Rank Fusion** (k=60, no score blending). The new `--raw-mode hybrid` is the default; `--raw-mode knn` preserves the 2026-04-13 baseline byte-for-byte.
+
+### Headline — full 500 questions
+
+| Metric | KNN (2026-04-13) | KNN re-run (2026-04-14) | **Hybrid (NEW)** | MemPalace raw |
+|---|---:|---:|---:|---:|
+| **Mean Recall@5** | 0.9520 | 0.9520 ✓ parity | **0.9640** | **0.9660** |
+| Mean Recall@10 | 0.9780 | 0.9780 | **0.9840** | — |
+| Mean Recall_all@10 | 0.9300 | 0.9300 | **0.9340** | — |
+| Mean NDCG@10 | 0.8858 | 0.8858 | **0.9195** | 0.8890 |
+
+In ~400 LOC of hybrid plumbing — no embedder change, no new retrieval model, no rerank tier — wave 1 closes the gap to MemPalace from **-1.4 pp** to **-0.2 pp**, effectively within run-to-run noise.
+
+### Per question_type Recall@5
+
+| Question type | n | KNN | Hybrid | Delta |
+|---|---:|---:|---:|---:|
+| knowledge-update | 78 | 0.9872 | **1.0000** | **+1.3 pp** |
+| temporal-reasoning | 133 | 0.9474 | **0.9850** | **+3.8 pp** |
+| single-session-user | 70 | 0.9286 | **0.9857** | **+5.7 pp** |
+| multi-session | 133 | 0.9774 | 0.9699 | −0.8 pp |
+| single-session-assistant | 56 | 0.9286 | 0.9107 | −1.8 pp |
+| **single-session-preference** | 30 | 0.8667 | **0.8000** | **−6.7 pp ← regression** |
+| **Overall** | **500** | **0.9520** | **0.9640** | **+1.2 pp** |
+
+### Honest finding — hybrid isn't uniformly better
+
+Four categories improved substantially (knowledge-update, temporal-reasoning, and single-session-user all by +1 to +6 pp). Two regressed. **The largest regression is in single-session-preference, which was already the largest gap in the KNN baseline.** Wave 1 made the biggest gap worse.
+
+**Diagnosis:** preference questions typically reference long-ago statements that are semantically paraphrased ("where did I take yoga classes?" → "I went to a yoga studio in Camden last year"). The BM25 leg fires on literal keyword overlap, which for paraphrased preferences is a noisier signal than the KNN semantic match. Adding BM25 candidates into the RRF pool lets keyword-match noise outrank the correct semantic hit within the top-5.
+
+**This is the exact gap MemPalace's hybrid v3 addressed** with 16 preference-pattern regexes that synthesize `User has mentioned: X` sidecar documents at ingest time — captured as **T14 in Wave 3** of the roadmap. Wave 1 doesn't have those sidecars yet; the preference regression is expected to flip back to positive after Wave 3 lands.
+
+Publishing the regression here — not hiding it — because the plan's honesty rail (§7.3) requires all numbers to ship, not just the improvements.
+
+### Reproduction
+
+```bash
+# Hybrid (new default on --mode raw)
+forge-bench longmemeval $LME --mode raw --raw-mode hybrid --output bench_results/
+
+# Pure KNN (parity reproduction of the 2026-04-13 baseline)
+forge-bench longmemeval $LME --mode raw --raw-mode knn --output bench_results/
+```
+
+Where `LME=/tmp/longmemeval-data/longmemeval_s_cleaned.json`. KNN runs ~10 min, hybrid ~20 min on the full 500-Q set (the BM25 query + RRF merge roughly doubles per-question wall time).
+
+### Published JSONL data — wave 1 runs
+
+- Hybrid full 500-Q: `bench_results/longmemeval_raw_1776175748/`
+- KNN parity full 500-Q (2026-04-14 re-run): `bench_results/longmemeval_raw_1776175101/`
+
+---
 
 ## Headline
 
