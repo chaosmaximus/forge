@@ -536,6 +536,76 @@ impl HttpClient {
         }
     }
 
+    /// Poll until the raw layer (MiniLM embedder) is ready, or the
+    /// `timeout` deadline elapses. The daemon loads the embedder
+    /// asynchronously in a background task during startup
+    /// (see `crates/daemon/src/main.rs:265`), so `Health` may succeed
+    /// while `RawIngest` / `RawSearch` still return
+    /// "embedder not initialized".
+    ///
+    /// Probes by issuing a cheap `Request::RawSearch` with a tiny query
+    /// and small `k`. The response shape is irrelevant — we only care
+    /// whether the daemon's embedder gate is open. Polls every 50 ms.
+    ///
+    /// Used by `verify_matches` callers that need raw-layer endpoints
+    /// to be ready before issuing the first request, and by tests
+    /// that must seed `RawIngest` data deterministically.
+    ///
+    /// **Network-error tolerance:** transient `HarnessError::NetworkError`
+    /// (e.g. `ECONNREFUSED` if the probe races daemon port-bind) is
+    /// retried inside the polling window — same treatment as the
+    /// "embedder not initialized" daemon error. Other errors
+    /// (UnexpectedResponse, JsonError, BadStatus, DaemonError without
+    /// the embedder marker) are propagated immediately. The wait
+    /// terminates when either a successful `RawSearch` response
+    /// arrives OR the timeout deadline is reached. Caught by
+    /// adversarial review of cycle (j1) (HIGH 85/100).
+    pub fn wait_for_raw_layer(&self, timeout: Duration) -> Result<(), HarnessError> {
+        let deadline = std::time::Instant::now() + timeout;
+        let probe = Request::RawSearch {
+            query: "forge_persist_warmup_probe".to_string(),
+            project: None,
+            session_id: None,
+            k: Some(1),
+            max_distance: Some(2.0),
+        };
+        loop {
+            match self.execute(&probe) {
+                Ok(Response::Ok {
+                    data: ResponseData::RawSearch { .. },
+                }) => return Ok(()),
+                Ok(Response::Error { message }) if message.contains("embedder not initialized") => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(HarnessError::DaemonError(format!(
+                            "raw layer not ready after {timeout:?}: {message}"
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Ok(Response::Error { message }) => return Err(HarnessError::DaemonError(message)),
+                Ok(Response::Ok { data: other }) => {
+                    return Err(HarnessError::UnexpectedResponse(format!(
+                        "expected RawSearch data, got {other:?}"
+                    )))
+                }
+                // Transient network error (typically ECONNREFUSED if
+                // the probe races daemon port-bind) — retry within
+                // the polling window. The 200ms reqwest connect
+                // timeout means a single probe can fail fast and
+                // burn a poll slot rather than waiting on TCP backoff.
+                Err(HarnessError::NetworkError(e)) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(HarnessError::NetworkError(e));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Marshal a Forge-Persist workload [`Operation`] into its daemon
     /// [`Request`], POST it, and extract the ack id from whichever
     /// `ResponseData` variant the daemon returns.
@@ -568,6 +638,114 @@ impl HttpClient {
                     "expected Stored/RawIngest/MessageSent, got {other:?}"
                 ))),
             },
+            Response::Error { message } => Err(HarnessError::DaemonError(message)),
+        }
+    }
+
+    /// Export all memories from the daemon via `Request::Export`.
+    /// Returns the `Vec<MemoryResult>` portion of the response;
+    /// `files`, `symbols`, and `edges` are dropped because the
+    /// `verify_matches` composer only needs memory id + content for
+    /// recovery and consistency scoring.
+    ///
+    /// **Why Export and not project-filtered Recall:** the harness
+    /// runs in a fresh TempDir so the global memory set IS the
+    /// harness-ingested memory set. Recall is semantic search and
+    /// would be brittle for exact-id verification. There is no
+    /// `MemoriesByProject` endpoint at the time of cycle (j1).
+    ///
+    /// **PRECONDITION (load-bearing for `verify_matches`):** the
+    /// daemon under test MUST be a fresh TempDir-isolated instance
+    /// with no preexisting memories. If the bench is ever pointed
+    /// at a developer daemon (e.g. via `FORGE_DIR` override or a
+    /// reused TempDir from an aborted run), Export returns the
+    /// orphan memories alongside the harness's, inflating
+    /// `consistency_rate`'s denominator and silently failing the
+    /// run for phantom-write reasons. The cycle (j2) orchestrator
+    /// is responsible for asserting an empty Export at startup.
+    /// Caught by adversarial review of cycle (j1) (HIGH 80/100).
+    pub fn export_memories(&self) -> Result<Vec<forge_core::protocol::MemoryResult>, HarnessError> {
+        let req = Request::Export {
+            format: Some("json".to_string()),
+            since: None,
+        };
+        match self.execute(&req)? {
+            Response::Ok {
+                data: ResponseData::Export { memories, .. },
+            } => Ok(memories),
+            Response::Ok { data: other } => Err(HarnessError::UnexpectedResponse(format!(
+                "expected Export, got {other:?}"
+            ))),
+            Response::Error { message } => Err(HarnessError::DaemonError(message)),
+        }
+    }
+
+    /// List FISP messages addressed to `session_id` via
+    /// `Request::SessionMessages`. The daemon-side filter is on
+    /// `to_session`, so callers enumerating all harness FISP traffic
+    /// must iterate the pool sessions (`pool_session_name(0..N)`)
+    /// and union the results — this is what `verify_matches` does.
+    ///
+    /// **HARD CAP — read this before scaling FISP workload:** the
+    /// daemon-side `crates/daemon/src/sessions.rs::list_messages`
+    /// caps `LIMIT` at 100 rows per query (silent `limit.min(100)`).
+    /// Combined with `SESSION_POOL_SIZE = 5`, the harness can
+    /// deterministically enumerate at most **500 FISP messages
+    /// total** before silently truncating. The default workload
+    /// (`fisp_messages = 20`) is well under this. Stress runs that
+    /// configure `fisp_messages > 500` will produce a
+    /// `recovery_rate` that under-counts visible ids — a true loss
+    /// is indistinguishable from list truncation. Caught by
+    /// adversarial review of cycle (j1) (HIGH 82/100). Future
+    /// pagination support belongs in cycle (k) or later.
+    pub fn list_session_messages(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<forge_core::protocol::SessionMessage>, HarnessError> {
+        let req = Request::SessionMessages {
+            session_id: session_id.to_string(),
+            status: None,
+            limit: Some(100),
+        };
+        match self.execute(&req)? {
+            Response::Ok {
+                data: ResponseData::SessionMessageList { messages, .. },
+            } => Ok(messages),
+            Response::Ok { data: other } => Err(HarnessError::UnexpectedResponse(format!(
+                "expected SessionMessageList, got {other:?}"
+            ))),
+            Response::Error { message } => Err(HarnessError::DaemonError(message)),
+        }
+    }
+
+    /// List raw documents tagged with `source` via the j0 endpoint
+    /// `Request::RawDocumentsList`. Returns the verbatim
+    /// `RawDocumentInfo` rows the daemon has on disk.
+    ///
+    /// Used by the cycle (j) `verify_matches` composer to enumerate
+    /// post-restart raw documents the harness ingested pre-kill. The
+    /// caller is responsible for re-hashing the returned `text` via
+    /// [`canonical_hash`] to compute consistency_rate.
+    ///
+    /// Caps at 10 000 rows — large enough for any realistic harness
+    /// workload (default 50 chunks; published stress run is 1 000),
+    /// matches the daemon-side default in
+    /// `crates/daemon/src/server/handler.rs`.
+    pub fn list_raw_documents(
+        &self,
+        source: &str,
+    ) -> Result<Vec<forge_core::protocol::RawDocumentInfo>, HarnessError> {
+        let req = Request::RawDocumentsList {
+            source: source.to_string(),
+            limit: Some(10_000),
+        };
+        match self.execute(&req)? {
+            Response::Ok {
+                data: ResponseData::RawDocumentsList { documents },
+            } => Ok(documents),
+            Response::Ok { data: other } => Err(HarnessError::UnexpectedResponse(format!(
+                "expected RawDocumentsList, got {other:?}"
+            ))),
             Response::Error { message } => Err(HarnessError::DaemonError(message)),
         }
     }
@@ -633,6 +811,101 @@ impl PersistTracker {
         });
         *slot = Some(ack);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Post-restart verification (cycle j1)
+// ---------------------------------------------------------------------------
+
+/// Query the daemon for every doc the harness could have ingested
+/// across all three op kinds and return:
+///
+/// - `visible: HashSet<String>` — every id the daemon currently has
+///   on disk (raw documents + memories + FISP messages combined)
+/// - `content: HashMap<String, String>` — id → reconstructed content
+///   hash, computed by re-running the canonical hashing pipeline on
+///   each recovered payload's verbatim bytes
+///
+/// The cycle (j2) orchestrator passes these into [`recovery_rate`]
+/// and [`consistency_rate`] to compute the durability metrics.
+///
+/// # Hash reconstruction invariant
+///
+/// For each op kind, the recovered hash MUST byte-equal the pre-kill
+/// `canonical_hash(op)` value the harness stored in its `AckedOp`.
+/// Otherwise `consistency_rate` will report false failures even on a
+/// daemon that perfectly persisted everything.
+///
+/// - **Raw documents:** `sha256(doc.text.as_bytes())` — matches
+///   `canonical_hash(IngestRaw { content: doc.text })`
+/// - **Memories:** `sha256(m.memory.content.as_bytes())` — matches
+///   `canonical_hash(Remember { content: m.memory.content })`
+/// - **FISP messages:** `sha256(serde_json::to_string(&m.parts).as_bytes())`
+///   — matches `canonical_hash(FispSend { content })` because
+///   [`fisp_parts`] is the single source of truth and the daemon
+///   round-trips the parts JSON byte-identically (verified by the
+///   integration test `test_persist_harness_list_session_messages_*`).
+///
+/// # FISP enumeration
+///
+/// `Request::SessionMessages` filters by `to_session`, so the harness
+/// must query each of the [`SESSION_POOL_SIZE`] pool sessions and
+/// union the per-session result sets. Cross-pool duplicates are
+/// impossible because every FISP message has exactly one `to_session`.
+///
+/// # PRECONDITIONS (load-bearing — failure modes are silent)
+///
+/// 1. **Fresh-TempDir daemon required.** [`HttpClient::export_memories`]
+///    is unfiltered and returns ALL memories. If the daemon has any
+///    preexisting memories not produced by this harness run, they
+///    appear in `visible` + `content` with no matching ack — silently
+///    failing the run for phantom-write reasons. The cycle (j2)
+///    orchestrator MUST assert an empty Export at startup.
+///
+/// 2. **`fisp_messages ≤ 500`.** [`HttpClient::list_session_messages`]
+///    is capped at 100 rows per pool session × 5 pool sessions =
+///    500 messages total. Larger workloads silently truncate, making
+///    `recovery_rate` indistinguishable from a real loss event.
+///
+/// 3. **`SESSION_POOL_SIZE` lockstep.** The pool size enumeration
+///    here MUST match the value used by the workload generator.
+///    Both call into [`pool_session_name`], which is the single
+///    source of truth — a tripwire test in the unit suite locks
+///    this. Changing the pool size in only one place would silently
+///    miss FISP messages from the un-enumerated sessions.
+pub fn verify_matches(
+    client: &HttpClient,
+) -> Result<(HashSet<String>, HashMap<String, String>), HarnessError> {
+    let mut visible: HashSet<String> = HashSet::new();
+    let mut content: HashMap<String, String> = HashMap::new();
+
+    // 1. Raw documents (cycle j0 endpoint, cycle j1.1 helper).
+    for doc in client.list_raw_documents(HARNESS_SOURCE)? {
+        let hash = bytes_to_hex(&Sha256::digest(doc.text.as_bytes()));
+        visible.insert(doc.id.clone());
+        content.insert(doc.id, hash);
+    }
+
+    // 2. Memories via Export (cycle j1.2 helper). The harness runs
+    // in a fresh TempDir, so the global Export = the harness set.
+    for m in client.export_memories()? {
+        let hash = bytes_to_hex(&Sha256::digest(m.memory.content.as_bytes()));
+        visible.insert(m.memory.id.clone());
+        content.insert(m.memory.id, hash);
+    }
+
+    // 3. FISP messages — one query per pool session (cycle j1.3 helper).
+    for i in 0..SESSION_POOL_SIZE {
+        let session_id = pool_session_name(i);
+        for msg in client.list_session_messages(&session_id)? {
+            let parts_json = serde_json::to_string(&msg.parts).map_err(HarnessError::JsonError)?;
+            let hash = bytes_to_hex(&Sha256::digest(parts_json.as_bytes()));
+            visible.insert(msg.id.clone());
+            content.insert(msg.id, hash);
+        }
+    }
+
+    Ok((visible, content))
 }
 
 // ---------------------------------------------------------------------------
@@ -1557,6 +1830,58 @@ mod tests {
             canonical_hash(&op),
             expected_hash,
             "canonical_hash must agree with the parts shape op_to_request actually sends"
+        );
+    }
+
+    #[test]
+    fn test_canonical_hash_fisp_survives_serde_json_round_trip() {
+        // Cycle (j1) tripwire — the FISP arm of `verify_matches`
+        // re-serializes daemon-recovered parts via `serde_json::to_string`
+        // and feeds the bytes back through SHA-256. This MUST byte-equal
+        // the pre-kill canonical_hash. The risk surfaced by the cycle (j1)
+        // adversarial review (CRITICAL 90/100): a daemon-side schema
+        // change could perturb the JSON shape silently, collapsing
+        // consistency_rate to 0.0 with no integration-test signal.
+        //
+        // This unit test exercises the round-trip without spawning a
+        // daemon: serialize parts → deserialize → re-serialize → compare
+        // bytes. If any intermediate field-ordering or
+        // skip_serializing_if behavior shifts, this test fails loudly.
+        // Faster than the integration test and runs on every PR.
+        let op = Operation::FispSend {
+            index: 0,
+            from_session: "persist_session_0".to_string(),
+            to_session: "persist_session_1".to_string(),
+            content: "round-trip canary payload".to_string(),
+        };
+        let expected_hash = canonical_hash(&op);
+
+        // Forward: serialize parts.
+        let parts_json_v1 = match op_to_request(&op) {
+            Request::SessionSend { parts, .. } => {
+                serde_json::to_string(&parts).expect("parts must serialize")
+            }
+            other => panic!("expected SessionSend, got {other:?}"),
+        };
+
+        // Round-trip: deserialize then re-serialize (mimics the
+        // daemon storing parts as JSON in session_message.parts and
+        // returning them via SessionMessages).
+        let parts_v2: Vec<MessagePart> =
+            serde_json::from_str(&parts_json_v1).expect("parts must deserialize");
+        let parts_json_v2 = serde_json::to_string(&parts_v2).expect("parts must re-serialize");
+
+        // Byte-identical round-trip.
+        assert_eq!(
+            parts_json_v1, parts_json_v2,
+            "MessagePart serde round-trip must be byte-identical for FISP hash stability"
+        );
+
+        // Hash from the round-tripped bytes must match canonical_hash.
+        let round_trip_hash = bytes_to_hex(&Sha256::digest(parts_json_v2.as_bytes()));
+        assert_eq!(
+            round_trip_hash, expected_hash,
+            "round-tripped FISP parts must hash to the same canonical_hash as the original op"
         );
     }
 

@@ -3163,8 +3163,27 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     let messages: Vec<forge_core::protocol::SessionMessage> = rows
                         .into_iter()
                         .map(|r| {
+                            // If parts deserialization fails (e.g. a future
+                            // schema change adds a non-Option field without
+                            // serde(default)), log the failure loudly rather
+                            // than silently returning an empty Vec — empty
+                            // parts would silently break Forge-Persist's
+                            // verify_matches FISP hash round-trip and
+                            // collapse consistency_rate to 0.0 with no test
+                            // signal. Caught by adversarial review of cycle
+                            // (j1) (CRITICAL 90/100).
                             let parts: Vec<forge_core::protocol::request::MessagePart> =
-                                serde_json::from_str(&r.parts).unwrap_or_default();
+                                match serde_json::from_str(&r.parts) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::error!(
+                                            message_id = %r.id,
+                                            error = %e,
+                                            "session_messages: failed to deserialize stored parts JSON; returning empty parts vec — this will break Forge-Persist FISP consistency_rate"
+                                        );
+                                        Vec::new()
+                                    }
+                                };
                             forge_core::protocol::SessionMessage {
                                 id: r.id,
                                 from_session: r.from_session,
