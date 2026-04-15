@@ -13,7 +13,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -664,6 +664,55 @@ pub fn recovery_rate(acked_ids: &HashSet<String>, post_restart_visible: &HashSet
     recovered as f64 / acked_ids.len() as f64
 }
 
+/// §6.2 consistency_rate:
+/// ```text
+/// consistency_rate = |correctly_matched| / |post_restart_visible|
+/// ```
+/// where `correctly_matched` means the post-restart row has the same
+/// id AND same `content_hash` as recorded pre-kill. Returns an `f64`
+/// in `[0.0, 1.0]`. Pass threshold is **1.00** (unconditional, per
+/// §6.4 — corruption is worse than loss).
+///
+/// Inputs:
+/// - `acked`: map of id → pre-kill `content_hash`, extracted from the
+///   [`PersistTracker`] at scoring time
+/// - `post_restart`: map of id → `content_hash` as observed after the
+///   restart by re-hashing each queried row's stored content
+///
+/// **Orphan penalty:** any id present in `post_restart` but NOT in
+/// `acked` is counted in the denominator but NOT in the numerator —
+/// i.e., orphan rows drag the rate below 1.0. This is the §6.2
+/// "no tolerance for orphan rows" rule. Phantom writes (rows that
+/// appear post-restart with no corresponding pre-kill ack) must fail
+/// the run.
+///
+/// **Hash mismatch penalty:** if `post_restart` has an id that IS in
+/// `acked` but with a different hash, it is counted in the denominator
+/// but NOT in the numerator — content corruption fails the run.
+///
+/// **Empty `post_restart`:** returns 1.0. With nothing to check,
+/// consistency is vacuously perfect. [`recovery_rate`] is the metric
+/// that catches the "we lost everything" case, so `score_run` will
+/// still fail the run via the recovery threshold.
+pub fn consistency_rate(
+    acked: &HashMap<String, String>,
+    post_restart: &HashMap<String, String>,
+) -> f64 {
+    if post_restart.is_empty() {
+        return 1.0;
+    }
+    let correctly_matched = post_restart
+        .iter()
+        .filter(|(id, hash)| {
+            acked
+                .get(*id)
+                .map(|acked_hash| acked_hash == *hash)
+                .unwrap_or(false)
+        })
+        .count();
+    correctly_matched as f64 / post_restart.len() as f64
+}
+
 // ---------------------------------------------------------------------------
 // Harness config + handle
 // ---------------------------------------------------------------------------
@@ -1266,6 +1315,79 @@ mod tests {
             expected_hash,
             "canonical_hash must agree with the parts shape op_to_request actually sends"
         );
+    }
+
+    #[test]
+    fn test_consistency_rate_all_matched_is_1_0() {
+        // §6.2: consistency_rate = |correctly_matched| / |post_restart_visible|.
+        // When every post-restart id is present in the acked map AND
+        // its content_hash matches what we recorded pre-kill, the ratio
+        // is exactly 1.0. Drives the existence of `consistency_rate`.
+        let mut acked = HashMap::new();
+        acked.insert("a".to_string(), "hash_a".to_string());
+        acked.insert("b".to_string(), "hash_b".to_string());
+        let post_restart = acked.clone();
+        assert_eq!(consistency_rate(&acked, &post_restart), 1.0);
+    }
+
+    #[test]
+    fn test_consistency_rate_orphan_drags_rate_down() {
+        // §6.2 "no tolerance for orphan rows": an id present in
+        // post_restart but NOT in acked is a phantom write. It counts
+        // in the denominator but not in the numerator, dragging the
+        // rate below 1.0. With 2 matched + 2 orphans = 4 total post-
+        // restart, the rate is 2/4 = 0.5 (exact in IEEE-754).
+        let mut acked = HashMap::new();
+        acked.insert("a".to_string(), "hash_a".to_string());
+        acked.insert("b".to_string(), "hash_b".to_string());
+        let mut post_restart = HashMap::new();
+        post_restart.insert("a".to_string(), "hash_a".to_string());
+        post_restart.insert("b".to_string(), "hash_b".to_string());
+        post_restart.insert("orphan_1".to_string(), "hash_x".to_string());
+        post_restart.insert("orphan_2".to_string(), "hash_y".to_string());
+        assert_eq!(consistency_rate(&acked, &post_restart), 0.5);
+    }
+
+    #[test]
+    fn test_consistency_rate_hash_mismatch_fails() {
+        // Same id on both sides but different content_hash is
+        // corruption. It counts in the denominator but NOT in the
+        // numerator. With 1 matched + 1 corrupted = 2 total, the
+        // rate is 1/2 = 0.5. Cycle (h4)'s threshold check rejects
+        // anything < 1.00.
+        let mut acked = HashMap::new();
+        acked.insert("a".to_string(), "hash_a".to_string());
+        acked.insert("b".to_string(), "hash_b".to_string());
+        let mut post_restart = HashMap::new();
+        post_restart.insert("a".to_string(), "hash_a".to_string()); // matched
+        post_restart.insert("b".to_string(), "CORRUPTED".to_string()); // mismatch
+        assert_eq!(consistency_rate(&acked, &post_restart), 0.5);
+    }
+
+    #[test]
+    fn test_consistency_rate_empty_post_restart_returns_1_0() {
+        // Vacuous case: nothing to check → trivially consistent.
+        // `recovery_rate` is the metric that catches the "everything
+        // was lost" scenario via its own threshold; `consistency_rate`
+        // only grades the shape of what's there, not whether anything
+        // is there at all.
+        let mut acked = HashMap::new();
+        acked.insert("a".to_string(), "hash_a".to_string());
+        acked.insert("b".to_string(), "hash_b".to_string());
+        let post_restart: HashMap<String, String> = HashMap::new();
+        assert_eq!(consistency_rate(&acked, &post_restart), 1.0);
+    }
+
+    #[test]
+    fn test_consistency_rate_all_orphans_is_0_0() {
+        // Catastrophic corruption: acked is empty (nothing we know about)
+        // but the restarted daemon returns data anyway. Every row is
+        // an orphan. 0 correctly_matched / N orphans = 0.0.
+        let acked: HashMap<String, String> = HashMap::new();
+        let mut post_restart = HashMap::new();
+        post_restart.insert("ghost_1".to_string(), "hash_x".to_string());
+        post_restart.insert("ghost_2".to_string(), "hash_y".to_string());
+        assert_eq!(consistency_rate(&acked, &post_restart), 0.0);
     }
 
     #[test]
