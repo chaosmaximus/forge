@@ -807,6 +807,79 @@ pub struct PersistScore {
 /// Per §6.4 "corruption is worse than loss": a run that passes
 /// recovery but fails consistency is still a FAIL — the composite
 /// logic short-circuits correctly because `&&` is strict.
+/// §8.1 CLI-arg snapshot used to format a reproduction shell script.
+/// Built from the same clap `ForgePersist` variant that launched the
+/// run, so `format_repro_sh` can emit a byte-exact re-run command.
+///
+/// Separate from [`RunSummary`] because (a) the repro script needs
+/// runtime paths like `daemon_bin` and `output` that do not belong
+/// in the JSON summary, and (b) `RunSummary` is serialized to disk
+/// while `ReproArgs` is only used to format the bash script. No
+/// serde derive on this struct.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReproArgs {
+    pub memories: usize,
+    pub chunks: usize,
+    pub fisp_messages: usize,
+    pub seed: u64,
+    pub kill_after: f64,
+    pub output: PathBuf,
+    pub daemon_bin: Option<PathBuf>,
+    pub recovery_timeout_ms: u64,
+    pub worker_catchup_ms: u64,
+}
+
+/// Format a bash script that re-invokes `forge-bench forge-persist`
+/// with the exact CLI arguments of a completed run. Used by
+/// [`write_run_outputs`] to produce `repro.sh` alongside
+/// `summary.json`.
+///
+/// The script starts with a standard shebang and shell-safety
+/// prelude, then `cd`s to the git root (falling back to `pwd`
+/// outside a git checkout). When `daemon_bin` is `None`, the
+/// `--daemon-bin` flag is omitted entirely so cycle (j)'s
+/// orchestrator can fall back to locating the binary via
+/// `which forge-daemon`.
+pub fn format_repro_sh(args: &ReproArgs) -> String {
+    let mut cmd = format!(
+        "cargo run --release --bin forge-bench -- forge-persist \\\n  --memories {} \\\n  --chunks {} \\\n  --fisp-messages {} \\\n  --seed {} \\\n  --kill-after {} \\\n  --output {} \\\n  --recovery-timeout-ms {} \\\n  --worker-catchup-ms {}",
+        args.memories,
+        args.chunks,
+        args.fisp_messages,
+        args.seed,
+        args.kill_after,
+        args.output.display(),
+        args.recovery_timeout_ms,
+        args.worker_catchup_ms,
+    );
+    if let Some(bin) = &args.daemon_bin {
+        cmd.push_str(&format!(" \\\n  --daemon-bin {}", bin.display()));
+    }
+    format!(
+        "#!/usr/bin/env bash\n# Reproduce this Forge-Persist benchmark run.\nset -euo pipefail\ncd \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"\n{cmd}\n"
+    )
+}
+
+/// Write `summary.json` + `repro.sh` into `dir` (creating `dir` if
+/// absent). Returns the two written paths for the caller to print /
+/// log. The JSON is pretty-printed for audit readability. On any
+/// filesystem error the function surfaces the `std::io::Error`.
+pub fn write_run_outputs(
+    dir: &std::path::Path,
+    summary: &RunSummary,
+    repro_args: &ReproArgs,
+) -> std::io::Result<(PathBuf, PathBuf)> {
+    std::fs::create_dir_all(dir)?;
+    let summary_path = dir.join("summary.json");
+    let summary_json = serde_json::to_string_pretty(summary).expect(
+        "RunSummary serialization is infallible for generator-local data (all fields are primitive)",
+    );
+    std::fs::write(&summary_path, &summary_json)?;
+    let repro_path = dir.join("repro.sh");
+    std::fs::write(&repro_path, format_repro_sh(repro_args))?;
+    Ok((summary_path, repro_path))
+}
+
 /// §8.1 reporting-layer envelope for a Forge-Persist benchmark run.
 /// Serialized as the top-level JSON object in `summary.json` with the
 /// exact field order the design doc mandates: config echo first, then
@@ -1485,6 +1558,134 @@ mod tests {
             expected_hash,
             "canonical_hash must agree with the parts shape op_to_request actually sends"
         );
+    }
+
+    #[test]
+    fn test_format_repro_sh_emits_cargo_command_with_all_flags() {
+        // Cycle (i3): drives ReproArgs struct + format_repro_sh pure
+        // function. The output must be a runnable bash script that
+        // re-invokes `forge-bench forge-persist` with every flag value
+        // the original run used. Locks the shebang, shell safety
+        // prelude, git-root cd, and every flag the cycle (i1) clap
+        // variant exposes.
+        let args = ReproArgs {
+            memories: 25,
+            chunks: 5,
+            fisp_messages: 3,
+            seed: 7,
+            kill_after: 0.25,
+            output: PathBuf::from("/tmp/persist_out"),
+            daemon_bin: Some(PathBuf::from("/tmp/forge-daemon")),
+            recovery_timeout_ms: 9000,
+            worker_catchup_ms: 15000,
+        };
+        let sh = format_repro_sh(&args);
+        assert!(sh.starts_with("#!/usr/bin/env bash"), "shebang: {sh}");
+        assert!(sh.contains("set -euo pipefail"), "shell safety: {sh}");
+        assert!(sh.contains("git rev-parse --show-toplevel"), "git cd: {sh}");
+        assert!(
+            sh.contains("forge-bench -- forge-persist"),
+            "subcommand: {sh}"
+        );
+        assert!(sh.contains("--memories 25"), "memories: {sh}");
+        assert!(sh.contains("--chunks 5"), "chunks: {sh}");
+        assert!(sh.contains("--fisp-messages 3"), "fisp_messages: {sh}");
+        assert!(sh.contains("--seed 7"), "seed: {sh}");
+        assert!(sh.contains("--kill-after 0.25"), "kill_after: {sh}");
+        assert!(sh.contains("--output /tmp/persist_out"), "output: {sh}");
+        assert!(
+            sh.contains("--daemon-bin /tmp/forge-daemon"),
+            "daemon_bin: {sh}"
+        );
+        assert!(
+            sh.contains("--recovery-timeout-ms 9000"),
+            "recovery_timeout_ms: {sh}"
+        );
+        assert!(
+            sh.contains("--worker-catchup-ms 15000"),
+            "worker_catchup_ms: {sh}"
+        );
+    }
+
+    #[test]
+    fn test_format_repro_sh_omits_daemon_bin_when_none() {
+        // Edge case: daemon_bin is Option<PathBuf>. When None, the
+        // repro script must NOT emit the `--daemon-bin` flag with an
+        // empty value (or a stray literal "None") — it should omit
+        // the flag entirely, letting the cycle (j) orchestrator fall
+        // back to locating the daemon binary via env / which.
+        let args = ReproArgs {
+            memories: 10,
+            chunks: 0,
+            fisp_messages: 0,
+            seed: 1,
+            kill_after: 0.5,
+            output: PathBuf::from("out"),
+            daemon_bin: None,
+            recovery_timeout_ms: 5000,
+            worker_catchup_ms: 10000,
+        };
+        let sh = format_repro_sh(&args);
+        assert!(
+            !sh.contains("--daemon-bin"),
+            "daemon_bin flag should be absent when None: {sh}"
+        );
+        assert!(!sh.contains("None"), "no literal None leak: {sh}");
+    }
+
+    #[test]
+    fn test_write_run_outputs_creates_summary_and_repro_files() {
+        // Cycle (i3): drives write_run_outputs — the harness output
+        // entry point. Takes a directory path, a RunSummary, and a
+        // ReproArgs, writes summary.json + repro.sh, and returns
+        // their paths. Verifies both files exist, summary.json
+        // round-trips back to an equal RunSummary, and repro.sh has
+        // executable-ready shebang content.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let dir = tmp.path().join("forge_persist_123");
+        let summary = RunSummary {
+            seed: 42,
+            memories: 3,
+            chunks: 0,
+            fisp_messages: 0,
+            kill_after: 0.5,
+            total_ops: 3,
+            acked_pre_kill: 2,
+            recovered: 2,
+            matched: 2,
+            recovery_rate: 1.0,
+            consistency_rate: 1.0,
+            recovery_time_ms: 100,
+            passed: true,
+            wall_time_ms: 500,
+            daemon_version: "forge-daemon 0.4.0".to_string(),
+        };
+        let repro = ReproArgs {
+            memories: 3,
+            chunks: 0,
+            fisp_messages: 0,
+            seed: 42,
+            kill_after: 0.5,
+            output: PathBuf::from("bench_results"),
+            daemon_bin: None,
+            recovery_timeout_ms: 5000,
+            worker_catchup_ms: 10000,
+        };
+        let (summary_path, repro_path) =
+            write_run_outputs(&dir, &summary, &repro).expect("write should succeed");
+        assert!(summary_path.exists(), "summary.json must exist");
+        assert!(repro_path.exists(), "repro.sh must exist");
+        assert_eq!(summary_path.file_name().unwrap(), "summary.json");
+        assert_eq!(repro_path.file_name().unwrap(), "repro.sh");
+
+        // summary.json round-trips back to an equal RunSummary
+        let json_contents = std::fs::read_to_string(&summary_path).expect("read summary");
+        let parsed: RunSummary = serde_json::from_str(&json_contents).expect("parse");
+        assert_eq!(parsed, summary);
+
+        // repro.sh starts with a shebang
+        let sh_contents = std::fs::read_to_string(&repro_path).expect("read repro");
+        assert!(sh_contents.starts_with("#!/usr/bin/env bash"));
     }
 
     #[test]
