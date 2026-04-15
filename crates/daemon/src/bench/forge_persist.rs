@@ -572,6 +572,68 @@ impl HttpClient {
 }
 
 // ---------------------------------------------------------------------------
+// Ground-truth tracker (cycle g3)
+// ---------------------------------------------------------------------------
+
+/// Position-indexed record of which workload ops the daemon has
+/// successfully acked. Backed by a `Vec<Option<AckedOp>>` of length
+/// `total_ops`, so `acked[i]` is `Some(ack)` iff op `i` in the shuffled
+/// workload was acked pre-kill, and `None` otherwise.
+///
+/// Cycle (g3) introduces only the STORAGE primitives (`new`,
+/// `add_on_ack`, `ack_count`, `acks`). The consistency-scoring pass
+/// (`verify_matches`) lands in cycle (j) where it wires the tracker
+/// against the post-restart daemon via `Recall` / `SessionMessages` /
+/// the raw-document listing endpoint. Deferred because the design doc
+/// §6.1 assumes a raw-document listing method that does not yet exist
+/// in the Request enum, and the prereq belongs in cycle (j).
+pub struct PersistTracker {
+    acked: Vec<Option<AckedOp>>,
+}
+
+impl PersistTracker {
+    /// Build a fresh tracker with `total_ops` empty slots, ready to
+    /// receive `add_on_ack(workload_position, ack)` calls for positions
+    /// in `0..total_ops`.
+    pub fn new(total_ops: usize) -> Self {
+        Self {
+            acked: vec![None; total_ops],
+        }
+    }
+
+    /// Count of slots that currently hold an ack.
+    pub fn ack_count(&self) -> usize {
+        self.acked.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// Borrow the underlying slot vector. Cycle (j)'s verify_matches
+    /// iterates this directly to issue per-op lookups against the
+    /// restarted daemon.
+    pub fn acks(&self) -> &[Option<AckedOp>] {
+        &self.acked
+    }
+
+    /// Record an ack at the given workload position. `workload_position`
+    /// is the index into the shuffled workload vec returned by
+    /// [`generate_workload`], NOT the op's intrinsic `index` field
+    /// (which is per-kind and collides across kinds after the shuffle).
+    ///
+    /// **Panics** on out-of-bounds `workload_position`. A bench run that
+    /// tries to ack a position past `total_ops` is a programmer error
+    /// (the driver loop walks the workload vec in order) and should
+    /// crash the test loudly rather than silently dropping the ack.
+    pub fn add_on_ack(&mut self, workload_position: usize, ack: AckedOp) {
+        let total = self.acked.len();
+        let slot = self.acked.get_mut(workload_position).unwrap_or_else(|| {
+            panic!(
+                "PersistTracker::add_on_ack: workload_position {workload_position} out of bounds (total_ops={total})"
+            )
+        });
+        *slot = Some(ack);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Harness config + handle
 // ---------------------------------------------------------------------------
 
@@ -1172,6 +1234,115 @@ mod tests {
             canonical_hash(&op),
             expected_hash,
             "canonical_hash must agree with the parts shape op_to_request actually sends"
+        );
+    }
+
+    #[test]
+    fn test_tracker_new_starts_empty() {
+        // A fresh tracker holds `total_ops` slots, all None, with an
+        // ack_count of zero. Drives the existence of PersistTracker,
+        // PersistTracker::new, PersistTracker::ack_count, and
+        // PersistTracker::acks.
+        let tracker = PersistTracker::new(10);
+        assert_eq!(tracker.ack_count(), 0);
+        assert_eq!(tracker.acks().len(), 10);
+        assert!(
+            tracker.acks().iter().all(|slot| slot.is_none()),
+            "all slots should start as None"
+        );
+    }
+
+    #[test]
+    fn test_tracker_add_on_ack_stores_at_index() {
+        // add_on_ack deposits an AckedOp at the given workload position
+        // and bumps ack_count. Only the one slot is touched; other
+        // slots remain None. Drives PersistTracker::add_on_ack.
+        let mut tracker = PersistTracker::new(3);
+        let ack = AckedOp {
+            id: "id_middle".to_string(),
+            content_hash: "hash_middle".to_string(),
+        };
+        tracker.add_on_ack(1, ack.clone());
+        assert_eq!(tracker.ack_count(), 1);
+        assert_eq!(tracker.acks()[0], None);
+        assert_eq!(tracker.acks()[1], Some(ack));
+        assert_eq!(tracker.acks()[2], None);
+    }
+
+    #[test]
+    fn test_tracker_new_zero_ops() {
+        // Edge case: zero-op workload. Both `acks()` and `ack_count()`
+        // must handle the empty case gracefully — no panics, no OOB.
+        let tracker = PersistTracker::new(0);
+        assert_eq!(tracker.ack_count(), 0);
+        assert!(tracker.acks().is_empty());
+    }
+
+    #[test]
+    fn test_tracker_add_on_ack_accumulates() {
+        // Sequential adds at different positions should accumulate
+        // independently. Locks the "slot-based storage" contract
+        // against a broken impl that overwrites the same slot every
+        // time or stores in a shared bucket.
+        let mut tracker = PersistTracker::new(4);
+        for i in 0..4 {
+            tracker.add_on_ack(
+                i,
+                AckedOp {
+                    id: format!("id_{i}"),
+                    content_hash: format!("hash_{i}"),
+                },
+            );
+        }
+        assert_eq!(tracker.ack_count(), 4);
+        for i in 0..4 {
+            let slot = tracker.acks()[i].as_ref().expect("slot should be Some");
+            assert_eq!(slot.id, format!("id_{i}"));
+            assert_eq!(slot.content_hash, format!("hash_{i}"));
+        }
+    }
+
+    #[test]
+    fn test_tracker_add_on_ack_last_write_wins_on_same_slot() {
+        // Adding twice at the same slot replaces the first entry.
+        // ack_count stays at 1 because the slot was already Some.
+        // This codifies the "last write wins" invariant even though
+        // the driver loop never re-acks in practice.
+        let mut tracker = PersistTracker::new(2);
+        tracker.add_on_ack(
+            0,
+            AckedOp {
+                id: "first".to_string(),
+                content_hash: "h1".to_string(),
+            },
+        );
+        tracker.add_on_ack(
+            0,
+            AckedOp {
+                id: "second".to_string(),
+                content_hash: "h2".to_string(),
+            },
+        );
+        assert_eq!(tracker.ack_count(), 1);
+        let slot = tracker.acks()[0].as_ref().unwrap();
+        assert_eq!(slot.id, "second");
+        assert_eq!(slot.content_hash, "h2");
+    }
+
+    #[test]
+    #[should_panic(expected = "workload_position 5 out of bounds")]
+    fn test_tracker_add_on_ack_panics_out_of_bounds() {
+        // Programmer-error guard: the driver loop iterates 0..total_ops,
+        // so an OOB `workload_position` can only come from a bug in the
+        // harness itself. We crash loudly rather than silently dropping
+        // the ack, which would distort cycle (h)'s recovery_rate.
+        let mut tracker = PersistTracker::new(3);
+        tracker.add_on_ack(
+            5,
+            AckedOp {
+                id: "boom".to_string(),
+                content_hash: "boom".to_string(),
+            },
         );
     }
 
