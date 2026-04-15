@@ -67,6 +67,18 @@ async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(
 /// Uses the canonical PID path (`~/.forge/forge.pid` or `$FORGE_DIR/forge.pid`)
 /// rather than deriving from the socket path's parent directory, which would
 /// break when `FORGE_SOCKET` points to a custom location like `/tmp/forge.sock`.
+///
+/// **Caller responsibility:** by the time `run_server` calls this, the
+/// `acquire_pidlock` in `main.rs` has already overwritten the PID file
+/// with the current process's PID (after detecting and cleaning up any
+/// stale prior file). So a naive `libc::kill(pid, 0)` here always
+/// matches the current process and reports "alive", even on a fresh
+/// restart after SIGKILL. The fix lives at the caller — `run_server`
+/// no longer consults this function before removing the socket file,
+/// because `acquire_pidlock` is already the authoritative gate. This
+/// function remains a stable read-the-PID-file primitive used by the
+/// stale-socket regression tests at
+/// `crates/daemon/tests/test_stale_socket.rs`.
 #[cfg(unix)]
 pub fn is_daemon_alive() -> bool {
     let forge_dir = forge_core::forge_dir();
@@ -89,22 +101,42 @@ pub async fn run_server(
     write_tx: mpsc::Sender<WriteCommand>,
     shutdown_tx: watch::Sender<bool>,
 ) -> std::io::Result<()> {
-    // M1: Before removing the socket, check if another daemon is actually alive
+    // M1: Before removing the socket, check if another daemon is
+    // actually alive. By the time we reach here, `acquire_pidlock`
+    // has already overwritten the PID file with the CURRENT process's
+    // PID after detecting and cleaning up any stale prior file
+    // (cycle b libc::kill stale check). So a naive `is_daemon_alive()`
+    // would always read its own PID and report "alive", false-positive
+    // bailing on every restart-after-SIGKILL. The fix: skip the live
+    // check when the PID in the file is provably our own. The check
+    // is still useful as a defense-in-depth against `fs2` advisory-lock
+    // bypass (advisory locks are no-ops on some network filesystems).
+    // Caught by Forge-Persist cycle (j2.1) integration test — the
+    // first end-to-end test that exercises spawn → SIGKILL → spawn
+    // against the real daemon binary, and refined by adversarial
+    // review of cycle (j2) (HIGH 80/100).
     if std::path::Path::new(socket_path).exists() {
         #[cfg(unix)]
-        if is_daemon_alive() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                "another daemon is running",
-            ));
+        {
+            let forge_dir = forge_core::forge_dir();
+            let pid_path = format!("{forge_dir}/forge.pid");
+            let pid_in_file = std::fs::read_to_string(&pid_path)
+                .ok()
+                .and_then(|c| c.trim().parse::<i32>().ok());
+            let is_self = pid_in_file
+                .map(|p| p as u32 == std::process::id())
+                .unwrap_or(false);
+            if !is_self && is_daemon_alive() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "another daemon is running",
+                ));
+            }
         }
-
         // FAIL-LOUD: log stale socket detection so operators can see it
-        eprintln!("[daemon] stale socket detected at {socket_path}, cleaning up");
+        tracing::warn!(socket_path = %socket_path, "orphaned socket detected, cleaning up");
+        let _ = std::fs::remove_file(socket_path);
     }
-
-    // Remove stale socket file (safe — we verified the old daemon is dead)
-    let _ = std::fs::remove_file(socket_path);
 
     // I1: Set umask before bind so the socket is created with 0600 permissions
     // atomically (no TOCTOU window). Restore the old umask immediately after.

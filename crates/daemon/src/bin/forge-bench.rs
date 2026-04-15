@@ -434,28 +434,123 @@ fn unix_secs_string() -> String {
 // bundling would add a destructure step in `main` without simplifying
 // the call site.
 //
-// **Cycle (i1) scope:** this function is a stub. It validates that
-// CLI parsing → dispatch wiring is complete end-to-end, and returns
-// a known-pending error so a user who invokes `forge-bench forge-persist`
-// gets a clear "not yet implemented" message rather than a silent
-// no-op. The full orchestrator (spawn → workload → kill → restart →
-// verify_matches → score) lands in cycle (j).
+// **Cycle (j2.2):** replaces the cycle (i1) stub with the real
+// orchestrator dispatch. Resolves `daemon_bin` (falling back to a
+// sibling `forge-daemon` binary in this binary's parent dir if
+// `--daemon-bin` is omitted), builds a `PersistConfig`, calls
+// `bench::forge_persist::run`, and prints a structured verdict.
+// Exit code 0 if `summary.passed` (production score_run thresholds),
+// 1 otherwise.
 #[allow(clippy::too_many_arguments)]
 fn run_forge_persist(
-    _memories: usize,
-    _chunks: usize,
-    _fisp_messages: usize,
-    _seed: u64,
-    _kill_after: f64,
-    _output: PathBuf,
-    _daemon_bin: Option<PathBuf>,
-    _recovery_timeout_ms: u64,
-    _worker_catchup_ms: u64,
+    memories: usize,
+    chunks: usize,
+    fisp_messages: usize,
+    seed: u64,
+    kill_after: f64,
+    output: PathBuf,
+    daemon_bin: Option<PathBuf>,
+    recovery_timeout_ms: u64,
+    worker_catchup_ms: u64,
 ) -> Result<(), String> {
-    Err(
-        "forge-persist orchestrator lands in cycle (j) — this subcommand is wired at the CLI layer but the runtime is not yet implemented"
-            .to_string(),
-    )
+    use forge_daemon::bench::forge_persist::{run, PersistConfig};
+    use std::time::Duration;
+
+    // Resolve daemon_bin — if --daemon-bin is omitted, default to a
+    // sibling `forge-daemon` next to this binary. forge-bench and
+    // forge-daemon live in the same target/{profile}/ directory by
+    // construction, so this is the right local fallback.
+    let daemon_bin = match daemon_bin {
+        Some(p) => p,
+        None => {
+            let self_exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+            let parent = self_exe
+                .parent()
+                .ok_or_else(|| "current_exe has no parent directory".to_string())?;
+            parent.join("forge-daemon")
+        }
+    };
+    if !daemon_bin.exists() {
+        return Err(format!(
+            "forge-persist: daemon binary not found at {} — pass --daemon-bin <path> or build forge-daemon first",
+            daemon_bin.display()
+        ));
+    }
+
+    eprintln!("=== forge-bench: forge-persist ===");
+    eprintln!("[forge-persist] daemon_bin = {}", daemon_bin.display());
+    eprintln!(
+        "[forge-persist] workload: memories={memories} chunks={chunks} fisp_messages={fisp_messages} seed={seed}"
+    );
+    eprintln!(
+        "[forge-persist] kill_after={kill_after} recovery_timeout_ms={recovery_timeout_ms} worker_catchup_ms={worker_catchup_ms}"
+    );
+    eprintln!("[forge-persist] output = {}", output.display());
+
+    let config = PersistConfig {
+        daemon_bin,
+        memories,
+        chunks,
+        fisp_messages,
+        seed,
+        kill_after,
+        recovery_timeout: Duration::from_millis(recovery_timeout_ms),
+        worker_catchup: Duration::from_millis(worker_catchup_ms),
+        output_dir: Some(output),
+    };
+
+    let summary = run(config).map_err(|e| format!("forge-persist run failed: {e:?}"))?;
+
+    eprintln!("[forge-persist] === verdict ===");
+    eprintln!(
+        "[forge-persist] total_ops={} acked_pre_kill={} recovered={} matched={}",
+        summary.total_ops, summary.acked_pre_kill, summary.recovered, summary.matched
+    );
+    eprintln!(
+        "[forge-persist] recovery_rate={:.4} consistency_rate={:.4} recovery_time_ms={}",
+        summary.recovery_rate, summary.consistency_rate, summary.recovery_time_ms
+    );
+    eprintln!(
+        "[forge-persist] wall_time_ms={} daemon_version={}",
+        summary.wall_time_ms, summary.daemon_version
+    );
+
+    if summary.passed {
+        eprintln!("[forge-persist] PASS");
+        Ok(())
+    } else {
+        // Surface WHICH metric failed so the user can act on it.
+        // Threshold gating mirrors `score_run` in bench::forge_persist.
+        let mut reasons = Vec::new();
+        if summary.total_ops == 0 {
+            reasons.push("zero-op workload".to_string());
+        }
+        if summary.recovery_rate < forge_daemon::bench::forge_persist::RECOVERY_RATE_THRESHOLD {
+            reasons.push(format!(
+                "recovery_rate {:.4} < {}",
+                summary.recovery_rate,
+                forge_daemon::bench::forge_persist::RECOVERY_RATE_THRESHOLD
+            ));
+        }
+        if summary.consistency_rate < forge_daemon::bench::forge_persist::CONSISTENCY_RATE_THRESHOLD
+        {
+            reasons.push(format!(
+                "consistency_rate {:.4} < {}",
+                summary.consistency_rate,
+                forge_daemon::bench::forge_persist::CONSISTENCY_RATE_THRESHOLD
+            ));
+        }
+        if summary.recovery_time_ms
+            >= forge_daemon::bench::forge_persist::RECOVERY_TIME_MS_THRESHOLD
+        {
+            reasons.push(format!(
+                "recovery_time_ms {} >= {}",
+                summary.recovery_time_ms,
+                forge_daemon::bench::forge_persist::RECOVERY_TIME_MS_THRESHOLD
+            ));
+        }
+        Err(format!("forge-persist FAIL: {}", reasons.join("; ")))
+    }
 }
 
 // Parameter list mirrors the clap `Commands::Locomo` variant fields

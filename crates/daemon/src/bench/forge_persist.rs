@@ -1205,8 +1205,17 @@ pub struct RunSummary {
     /// Total wall-clock time of the run in milliseconds (CLI start to
     /// scoring complete).
     pub wall_time_ms: u64,
-    /// The daemon binary's `--version` output, captured at spawn time
-    /// for reproduction audits.
+    /// The `forge-daemon` crate version this run was built against,
+    /// captured at compile time via `env!("CARGO_PKG_VERSION")` from
+    /// inside the harness module. Because the harness module lives
+    /// in the daemon crate, this is the daemon's own version IF the
+    /// `--daemon-bin` flag points at a binary built from the same
+    /// workspace (the common case). For runs against a separately-
+    /// built `--daemon-bin` at a different version, this field
+    /// reports the harness build's version, NOT the spawned binary's.
+    /// `forge-daemon` does not currently support `--version`, so
+    /// runtime version capture would require a new daemon endpoint.
+    /// Caught by adversarial review of cycle (j2) (HIGH 82/100).
     pub daemon_version: String,
 }
 
@@ -1277,6 +1286,15 @@ pub struct PersistHarness {
     port: u16,
     client: HttpClient,
     child: Option<Child>,
+    /// True after the first successful `spawn()` call. Distinguishes
+    /// "first spawn — port was never bound" from "re-spawn — port was
+    /// bound by a now-dead daemon". The re-spawn path re-allocates a
+    /// fresh port to sidestep TIME_WAIT on the prior port; the first
+    /// spawn keeps the port allocated in `new()`. Caught by adversarial
+    /// review of cycle (j2) (CRITICAL 88/100) — the previous health-
+    /// probe-based heuristic always fired on the first spawn because
+    /// the unbound port returns Err identically to a killed daemon.
+    has_spawned_before: bool,
     /// Kept last so it is dropped AFTER `child` — removing the
     /// TempDir before killing the daemon would yank its data
     /// directory while it is still writing.
@@ -1296,6 +1314,7 @@ impl PersistHarness {
             port,
             client,
             child: None,
+            has_spawned_before: false,
             tempdir,
         })
     }
@@ -1330,6 +1349,34 @@ impl PersistHarness {
         let forge_dir = self.tempdir.path().join(".forge");
         std::fs::create_dir_all(&forge_dir).map_err(HarnessError::Io)?;
 
+        // Re-spawn (after a prior spawn → kill cycle) needs a fresh
+        // free port to sidestep TIME_WAIT on the previous port.
+        // macOS TIME_WAIT can hold a port unbindable for ~60s after
+        // SIGKILL, longer than the harness's recovery_timeout, which
+        // would manifest as SpawnTimeout. We rebuild the HttpClient
+        // to point at the new port, then proceed with the normal
+        // health-poll loop.
+        //
+        // The flag-based gate (rather than the previous health-probe
+        // heuristic) is correct because the unbound port at construction
+        // returns Err identically to a killed daemon — the only stable
+        // distinguisher is "have we ever successfully spawned before".
+        // First spawn: keep the port from `new()`. Re-spawn: re-allocate.
+        if self.has_spawned_before {
+            let new_port = find_free_port()?;
+            self.port = new_port;
+            self.client = HttpClient::new(format!("http://127.0.0.1:{new_port}"))?;
+        }
+
+        // Honor FORGE_PERSIST_DEBUG_STDERR for surfacing daemon
+        // stderr during integration test debugging. Off by default
+        // so normal test runs stay quiet.
+        let (stdout, stderr) = if std::env::var("FORGE_PERSIST_DEBUG_STDERR").is_ok() {
+            (Stdio::inherit(), Stdio::inherit())
+        } else {
+            (Stdio::null(), Stdio::null())
+        };
+
         let spawn_instant = Instant::now();
         let child = Command::new(&self.config.daemon_bin)
             .env("FORGE_DIR", &forge_dir)
@@ -1337,8 +1384,8 @@ impl PersistHarness {
             .env("FORGE_HTTP_BIND", "127.0.0.1")
             .env("FORGE_HTTP_PORT", self.port.to_string())
             .env("RUST_LOG", "forge_daemon=warn")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
             .spawn()
             .map_err(HarnessError::SpawnFailed)?;
 
@@ -1347,6 +1394,11 @@ impl PersistHarness {
         let deadline = spawn_instant + self.config.recovery_timeout;
         while Instant::now() < deadline {
             if self.client.health().is_ok() {
+                // Mark the harness as having spawned before so the
+                // next call to spawn (after a kill) re-allocates a
+                // fresh port instead of trying to rebind the prior
+                // one.
+                self.has_spawned_before = true;
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -1421,6 +1473,211 @@ fn find_free_port() -> Result<u16, HarnessError> {
     let port = listener.local_addr().map_err(HarnessError::Io)?.port();
     drop(listener);
     Ok(port)
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end orchestrator (cycle j2.1)
+// ---------------------------------------------------------------------------
+
+/// Run a complete Forge-Persist benchmark: spawn → workload → SIGKILL
+/// → restart → verify_matches → score → write outputs.
+///
+/// This is the function the design doc §9 specifies as the canonical
+/// entry point: the integration test calls it directly with an
+/// in-memory `output_dir: None` config; the CLI calls it after
+/// translating its parsed flags into a [`PersistConfig`].
+///
+/// # Returns
+///
+/// On success returns a [`RunSummary`] with all metrics + observability
+/// counts. The caller decides whether to enforce production thresholds
+/// (the CLI uses [`PersistScore::passed`] from [`score_run`]; the
+/// integration test allows CI-loose timing per design §9).
+///
+/// # Steps (per design doc §6.x and §9)
+///
+/// 1. Build [`PersistHarness`] from `config`
+/// 2. Start wall clock
+/// 3. Spawn the daemon (1st time)
+/// 4. If `chunks > 0`: `wait_for_raw_layer` so the embedder is ready
+/// 5. **Empty-Export precondition assertion** — guards against a
+///    non-fresh-TempDir daemon. See cycle (j1) HIGH 80 finding.
+/// 6. Generate the workload
+/// 7. Compute `kill_offset = floor(total_ops × kill_after)`
+/// 8. Pre-kill loop: execute the first `kill_offset` ops, tracking acks
+/// 9. SIGKILL the daemon
+/// 10. Sleep `worker_catchup` (lets async embedder writes finish)
+/// 11. Record `second_spawn_instant`
+/// 12. Spawn the daemon (2nd time)
+/// 13. Record `first_health_ok_instant` (post-spawn-return)
+/// 14. If `chunks > 0`: `wait_for_raw_layer` again (embedder reloads)
+/// 15. Call [`verify_matches`] → `(visible, content)`
+/// 16. Compute [`recovery_rate`] / [`consistency_rate`] / [`recovery_time_ms`]
+/// 17. Compose into a [`PersistScore`] via [`score_run`]
+/// 18. Build [`RunSummary`] with observability counts
+/// 19. If `output_dir` set: build [`ReproArgs`] + [`write_run_outputs`]
+/// 20. SIGKILL the daemon (cleanup)
+/// 21. Return `Ok(summary)`
+///
+/// # Failure modes
+///
+/// - Empty workload (`memories + chunks + fisp_messages == 0`)
+///   → `HarnessError::DaemonError` (zero-op precondition violation)
+/// - Pre-existing memories on the daemon → `HarnessError::DaemonError`
+///   (fresh-TempDir precondition violation)
+/// - Subprocess spawn timeout → `HarnessError::SpawnTimeout`
+/// - Any HTTP / serde / DaemonError from the underlying client calls
+///   propagates verbatim
+pub fn run(config: PersistConfig) -> Result<RunSummary, HarnessError> {
+    // Snapshot config fields the orchestrator needs after the harness
+    // takes ownership of the struct. PathBuf and Duration are Copy /
+    // cheap-to-clone; this avoids contortions reaching back into
+    // harness.config.X across the function body.
+    let memories = config.memories;
+    let chunks = config.chunks;
+    let fisp_messages = config.fisp_messages;
+    let seed = config.seed;
+    let kill_after = config.kill_after;
+    let recovery_timeout = config.recovery_timeout;
+    let worker_catchup = config.worker_catchup;
+    let output_dir = config.output_dir.clone();
+    let daemon_bin = config.daemon_bin.clone();
+
+    // Validate kill_after at the entry point — `f64 as usize` saturating
+    // casts silently turn negatives, NaN, and out-of-range values into
+    // 0 or total_ops. Catch them here with a clear error rather than
+    // letting them silently degrade the run. Caught by adversarial
+    // review of cycle (j2) (CRITICAL 85/100).
+    if !kill_after.is_finite() || !(0.0..=1.0).contains(&kill_after) {
+        return Err(HarnessError::DaemonError(format!(
+            "Forge-Persist precondition violated: kill_after must be a finite fraction in [0.0, 1.0], got {kill_after}"
+        )));
+    }
+
+    let wall_start = Instant::now();
+    let mut harness = PersistHarness::new(config)?;
+
+    // ── Phase 1: pre-kill workload ────────────────────────────────
+    harness.spawn()?;
+    if chunks > 0 {
+        harness.client().wait_for_raw_layer(recovery_timeout)?;
+    }
+
+    // Empty-Export precondition — see cycle (j1) HIGH 80. A non-fresh
+    // TempDir would surface orphan memories that inflate
+    // consistency_rate's denominator and silently fail the run.
+    let pre_existing = harness.client().export_memories()?;
+    if !pre_existing.is_empty() {
+        return Err(HarnessError::DaemonError(format!(
+            "Forge-Persist precondition violated: daemon must start with zero memories, found {} preexisting (was --daemon-bin pointed at a fresh-TempDir-isolated daemon binary?)",
+            pre_existing.len()
+        )));
+    }
+
+    let workload = generate_workload(&WorkloadConfig {
+        seed,
+        memories,
+        chunks,
+        fisp_messages,
+    });
+    let total_ops = workload.len();
+    if total_ops == 0 {
+        return Err(HarnessError::DaemonError(
+            "Forge-Persist precondition violated: zero-op workload (memories + chunks + fisp_messages all 0)".to_string(),
+        ));
+    }
+
+    let kill_offset = ((total_ops as f64) * kill_after).floor() as usize;
+    let mut tracker = PersistTracker::new(total_ops);
+    for (i, op) in workload.iter().take(kill_offset).enumerate() {
+        let ack = harness.client().execute_op(op)?;
+        tracker.add_on_ack(i, ack);
+    }
+    let acked_pre_kill = tracker.ack_count();
+
+    // ── Phase 2: SIGKILL + worker catch-up ──────────────────────
+    harness.kill()?;
+    if worker_catchup > Duration::ZERO {
+        std::thread::sleep(worker_catchup);
+    }
+
+    // ── Phase 3: restart + verification ───────────────────────────
+    let second_spawn_instant = Instant::now();
+    harness.spawn()?;
+    let first_health_ok_instant = Instant::now();
+    if chunks > 0 {
+        harness.client().wait_for_raw_layer(recovery_timeout)?;
+    }
+
+    let (visible, content) = verify_matches(harness.client())?;
+
+    // Build the acked sets from the tracker.
+    let acked_ids: HashSet<String> = tracker
+        .acks()
+        .iter()
+        .filter_map(|slot| slot.as_ref().map(|a| a.id.clone()))
+        .collect();
+    let acked_map: HashMap<String, String> = tracker
+        .acks()
+        .iter()
+        .filter_map(|slot| {
+            slot.as_ref()
+                .map(|a| (a.id.clone(), a.content_hash.clone()))
+        })
+        .collect();
+
+    // ── Phase 4: scoring ────────────────────────────────────────
+    let recovery = recovery_rate(&acked_ids, &visible);
+    let consistency = consistency_rate(&acked_map, &content);
+    let recovery_ms = recovery_time_ms(second_spawn_instant, first_health_ok_instant);
+    let score = score_run(recovery, consistency, recovery_ms, total_ops);
+
+    let recovered = acked_ids.intersection(&visible).count();
+    let matched = acked_map
+        .iter()
+        .filter(|(id, hash)| content.get(*id).is_some_and(|h| h == *hash))
+        .count();
+    let wall_time_ms = wall_start.elapsed().as_millis() as u64;
+
+    let summary = RunSummary {
+        seed,
+        memories,
+        chunks,
+        fisp_messages,
+        kill_after,
+        total_ops,
+        acked_pre_kill,
+        recovered,
+        matched,
+        recovery_rate: score.recovery_rate,
+        consistency_rate: score.consistency_rate,
+        recovery_time_ms: score.recovery_time_ms,
+        passed: score.passed,
+        wall_time_ms,
+        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+
+    // ── Phase 5: optional output writing ────────────────────────
+    if let Some(dir) = output_dir {
+        let repro_args = ReproArgs {
+            memories,
+            chunks,
+            fisp_messages,
+            seed,
+            kill_after,
+            output: dir.clone(),
+            daemon_bin: Some(daemon_bin),
+            recovery_timeout_ms: recovery_timeout.as_millis() as u64,
+            worker_catchup_ms: worker_catchup.as_millis() as u64,
+        };
+        write_run_outputs(&dir, &summary, &repro_args)
+            .map_err(|e| HarnessError::DaemonError(format!("write_run_outputs: {e}")))?;
+    }
+
+    // ── Phase 6: cleanup ────────────────────────────────────────
+    harness.kill()?;
+
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -2115,6 +2372,94 @@ mod tests {
         assert_eq!(score.consistency_rate, 1.0);
         assert_eq!(score.recovery_time_ms, 1500);
         assert_eq!(score.total_ops, 100);
+    }
+
+    #[test]
+    fn test_run_rejects_negative_kill_after() {
+        // Cycle (j2) adversarial review (CRITICAL 85): `f64 as usize`
+        // saturating cast silently turns negative kill_after into 0,
+        // running zero ops without a clear error. The run() entry
+        // point must reject out-of-range kill_after with a clear
+        // precondition violation message.
+        let config = PersistConfig {
+            daemon_bin: PathBuf::from("/nonexistent/forge-daemon"),
+            memories: 1,
+            chunks: 0,
+            fisp_messages: 0,
+            seed: 0,
+            kill_after: -0.5,
+            recovery_timeout: Duration::from_secs(1),
+            worker_catchup: Duration::from_secs(0),
+            output_dir: None,
+        };
+        let err = run(config).expect_err("negative kill_after must fail");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("kill_after"),
+            "error must mention kill_after, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_run_rejects_kill_after_above_one() {
+        let config = PersistConfig {
+            daemon_bin: PathBuf::from("/nonexistent/forge-daemon"),
+            memories: 1,
+            chunks: 0,
+            fisp_messages: 0,
+            seed: 0,
+            kill_after: 1.5,
+            recovery_timeout: Duration::from_secs(1),
+            worker_catchup: Duration::from_secs(0),
+            output_dir: None,
+        };
+        let err = run(config).expect_err("kill_after > 1.0 must fail");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("kill_after"));
+    }
+
+    #[test]
+    fn test_run_rejects_nan_kill_after() {
+        let config = PersistConfig {
+            daemon_bin: PathBuf::from("/nonexistent/forge-daemon"),
+            memories: 1,
+            chunks: 0,
+            fisp_messages: 0,
+            seed: 0,
+            kill_after: f64::NAN,
+            recovery_timeout: Duration::from_secs(1),
+            worker_catchup: Duration::from_secs(0),
+            output_dir: None,
+        };
+        let err = run(config).expect_err("NaN kill_after must fail");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("kill_after"));
+    }
+
+    #[test]
+    fn test_run_accepts_kill_after_boundaries() {
+        // 0.0 and 1.0 must both pass validation. The actual run will
+        // fail later because daemon_bin is bogus, but it should fail
+        // at spawn time, not at the kill_after precondition.
+        for k in [0.0, 1.0] {
+            let config = PersistConfig {
+                daemon_bin: PathBuf::from("/nonexistent/forge-daemon"),
+                memories: 1,
+                chunks: 0,
+                fisp_messages: 0,
+                seed: 0,
+                kill_after: k,
+                recovery_timeout: Duration::from_secs(1),
+                worker_catchup: Duration::from_secs(0),
+                output_dir: None,
+            };
+            let err = run(config).expect_err("nonexistent daemon must fail");
+            let msg = format!("{err:?}");
+            assert!(
+                !msg.contains("kill_after"),
+                "kill_after={k} should pass validation, but failed with: {msg}"
+            );
+        }
     }
 
     #[test]

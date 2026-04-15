@@ -447,3 +447,53 @@ fn test_persist_harness_verify_matches_unions_all_three_op_types() {
 
     harness.kill().expect("kill should succeed");
 }
+
+#[test]
+fn test_persist_harness_full_run_passes_on_clean_workload() {
+    // Phase 2A-1 Forge-Persist cycle (j2.1): the canonical end-to-end
+    // integration test from design doc §9. Spawns a real daemon, runs
+    // a small mixed workload (3 memories + 2 raw + 2 FISP), SIGKILLs
+    // at 50% of total ops, restarts, runs verify_matches, computes
+    // recovery + consistency + recovery_time, and asserts the run
+    // produces correct metrics per design §6.4.
+    //
+    // Uses the §9-recommended CI-loose recovery_time threshold of
+    // 10 seconds (vs the 5s production threshold on PersistScore)
+    // because GitHub Actions cold-start runners need headroom for
+    // double daemon spawn + embedder load. The test does NOT assert
+    // `summary.passed` — that uses the strict production score_run
+    // thresholds. The CLI is responsible for enforcing those.
+    let daemon_bin = PathBuf::from(env!("CARGO_BIN_EXE_forge-daemon"));
+    let config = PersistConfig {
+        daemon_bin,
+        memories: 3,
+        chunks: 2,
+        fisp_messages: 2,
+        seed: 1,
+        kill_after: 0.5,
+        recovery_timeout: Duration::from_secs(30),
+        worker_catchup: Duration::from_secs(5),
+        output_dir: None,
+    };
+
+    let summary = forge_daemon::bench::forge_persist::run(config)
+        .expect("full run should complete without crashing");
+
+    assert_eq!(summary.total_ops, 7, "workload should be 3+2+2=7 ops");
+    assert!(summary.wall_time_ms > 0, "wall time must be positive");
+    assert!(
+        summary.recovery_rate >= 0.99,
+        "recovery_rate {} < 0.99: {summary:?}",
+        summary.recovery_rate
+    );
+    assert!(
+        (summary.consistency_rate - 1.0).abs() < f64::EPSILON,
+        "consistency_rate must be exactly 1.0 (no orphans), got {}: {summary:?}",
+        summary.consistency_rate
+    );
+    assert!(
+        summary.recovery_time_ms < 10_000,
+        "recovery_time_ms {} exceeds CI-loose 10s threshold (§9): {summary:?}",
+        summary.recovery_time_ms
+    );
+}
