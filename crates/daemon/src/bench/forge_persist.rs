@@ -7,7 +7,7 @@
 //! See `docs/benchmarks/forge-persist-design.md` for the full design,
 //! scoring rubric, and reproduction contract.
 
-use forge_core::protocol::{MessagePart, Request};
+use forge_core::protocol::{MessagePart, Request, Response, ResponseData};
 use forge_core::types::memory::MemoryType;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -264,16 +264,16 @@ pub fn op_to_request(op: &Operation) -> Request {
 // ---------------------------------------------------------------------------
 
 /// Errors the Forge-Persist harness can report. Preserves the underlying
-/// `std::io::Error` cause for spawn/kill/IO failures so callers (the
-/// integration test or the `forge-bench forge-persist` CLI) can include
-/// it in diagnostics.
+/// `std::io::Error` / `reqwest::Error` / `serde_json::Error` cause for
+/// spawn/kill/IO/HTTP failures so callers (the integration test or the
+/// `forge-bench forge-persist` CLI) can include it in diagnostics.
 #[derive(Debug)]
 pub enum HarnessError {
     /// Failed to bind a free port while preparing the harness.
     BindFailed(std::io::Error),
     /// `Command::spawn` for the daemon binary failed.
     SpawnFailed(std::io::Error),
-    /// Daemon spawned but did not bind its HTTP port within
+    /// Daemon spawned but did not answer HTTP Health within
     /// `recovery_timeout`. `elapsed` is measured from `Command::spawn`.
     SpawnTimeout { elapsed: Duration, port: u16 },
     /// `Child::kill` or `Child::wait` failed during termination.
@@ -283,6 +283,21 @@ pub enum HarnessError {
     AlreadySpawned,
     /// Miscellaneous IO failure (temp-dir creation, dir setup, etc.).
     Io(std::io::Error),
+    /// HTTP transport error — DNS resolution, connection refused, TLS,
+    /// or reqwest-internal failures. Wraps the underlying `reqwest::Error`.
+    NetworkError(reqwest::Error),
+    /// Response body could not be parsed as a `forge_core::protocol::Response`.
+    /// Wraps the `serde_json::Error` so callers can see the exact column.
+    JsonError(serde_json::Error),
+    /// Daemon responded but with a non-2xx HTTP status code.
+    BadStatus(u16),
+    /// Daemon returned a `Response::Error { message }` — application-level
+    /// failure rather than transport.
+    DaemonError(String),
+    /// Daemon returned `Response::Ok` but with a `ResponseData` variant
+    /// the caller did not expect (e.g., `execute_op` expected
+    /// `Stored` but received `Memories`).
+    UnexpectedResponse(String),
 }
 
 impl std::fmt::Display for HarnessError {
@@ -292,13 +307,20 @@ impl std::fmt::Display for HarnessError {
             HarnessError::SpawnFailed(e) => write!(f, "failed to spawn forge-daemon: {e}"),
             HarnessError::SpawnTimeout { elapsed, port } => write!(
                 f,
-                "forge-daemon did not bind port {port} within {elapsed:?} (spawn timeout)"
+                "forge-daemon did not answer HTTP Health on port {port} within {elapsed:?} (spawn timeout)"
             ),
             HarnessError::KillFailed(e) => write!(f, "failed to kill forge-daemon child: {e}"),
             HarnessError::AlreadySpawned => {
                 write!(f, "harness already has an active child process")
             }
             HarnessError::Io(e) => write!(f, "harness IO error: {e}"),
+            HarnessError::NetworkError(e) => write!(f, "HTTP network error: {e}"),
+            HarnessError::JsonError(e) => write!(f, "response JSON decode error: {e}"),
+            HarnessError::BadStatus(code) => write!(f, "daemon returned HTTP {code}"),
+            HarnessError::DaemonError(msg) => write!(f, "daemon returned error response: {msg}"),
+            HarnessError::UnexpectedResponse(msg) => {
+                write!(f, "unexpected daemon response: {msg}")
+            }
         }
     }
 }
@@ -310,7 +332,162 @@ impl std::error::Error for HarnessError {
             | HarnessError::SpawnFailed(e)
             | HarnessError::KillFailed(e)
             | HarnessError::Io(e) => Some(e),
+            HarnessError::NetworkError(e) => Some(e),
+            HarnessError::JsonError(e) => Some(e),
             _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP client wrapper + acked-op record (cycle f2)
+// ---------------------------------------------------------------------------
+
+/// Record of a successfully-acked workload operation. Stored by the
+/// ground-truth tracker in cycle (g) and compared against the daemon's
+/// post-restart state to score recovery.
+///
+/// `content_hash` is a placeholder (empty string) in cycle (f2). Cycle
+/// (g) introduces a SHA-256 canonical-payload hash per design doc §6.2
+/// so the tracker can verify bit-exact consistency after restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AckedOp {
+    /// The daemon-assigned identifier. The exact shape depends on the
+    /// op kind, which matters for cycle (g)'s ground-truth tracker:
+    ///
+    /// - `Remember` → the ULID from `ResponseData::Stored { id }`.
+    ///   Recovery verification looks this up in the `memories` table.
+    /// - `IngestRaw` → the **document-level** `document_id` from
+    ///   `ResponseData::RawIngest { document_id, .. }`. Recovery
+    ///   verification must query `raw_documents.id`, NOT
+    ///   `raw_chunks.id` — the harness never sees chunk ids. (The
+    ///   daemon assigns chunk ids lazily during ingest and they are
+    ///   not exposed via the HTTP response shape.)
+    /// - `FispSend` → the message id from
+    ///   `ResponseData::MessageSent { id, .. }`. Recovery verification
+    ///   looks this up in the `session_messages` table.
+    pub id: String,
+    /// SHA-256 canonical content hash. Empty in cycle (f2); populated
+    /// by the ground-truth tracker in cycle (g).
+    pub content_hash: String,
+}
+
+/// Blocking HTTP client that marshals Forge-Persist workload operations
+/// into `POST /api` requests against a running daemon and parses the
+/// JSON response into `forge_core::protocol::Response`.
+///
+/// Wraps `reqwest::blocking::Client` with a 5-second total per-request
+/// timeout. The timeout is tuned so that (a) during the spawn wait
+/// loop, connection-refused failures still bypass the timeout and
+/// return near-instantly, and (b) actual daemon writes (Remember,
+/// RawIngest) have enough headroom for embedder-backed work.
+pub struct HttpClient {
+    client: reqwest::blocking::Client,
+    base_url: String,
+}
+
+impl HttpClient {
+    /// Build a new client bound to `base_url` (e.g.,
+    /// `"http://127.0.0.1:8420"`). Construction is fallible because
+    /// `reqwest::blocking::Client::builder().build()` can fail during
+    /// TLS stack initialization on some platforms.
+    ///
+    /// **Timeout strategy:** the total per-request timeout is 5 s
+    /// (generous enough for a real `Remember` op that touches the
+    /// embedder), but the TCP-level **connect** timeout is pinned to
+    /// 200 ms. That split matters during the `PersistHarness::spawn`
+    /// wait loop: `ECONNREFUSED` returns immediately when the daemon
+    /// has not yet bound its port, but a stalled connection (e.g.,
+    /// the SYN got dropped on a contended CI runner) would otherwise
+    /// burn the full 5-second budget per probe. 200 ms keeps the
+    /// overrun tight without starving legitimate localhost traffic,
+    /// which should complete in sub-millisecond.
+    pub fn new(base_url: String) -> Result<Self, HarnessError> {
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_millis(200))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(HarnessError::NetworkError)?;
+        Ok(Self { client, base_url })
+    }
+
+    /// POST the given [`Request`] as JSON to `{base_url}/api` and parse
+    /// the body as a [`Response`].
+    ///
+    /// Error taxonomy:
+    /// - `NetworkError` — DNS/connect/TLS/timeout failure before a
+    ///   response body can be read.
+    /// - `BadStatus(code)` — daemon responded with a non-2xx code
+    ///   (we do not try to parse the body as JSON in that case).
+    /// - `JsonError` — body could not be deserialized into `Response`.
+    pub fn execute(&self, req: &Request) -> Result<Response, HarnessError> {
+        let url = format!("{}/api", self.base_url);
+        let http_resp = self
+            .client
+            .post(&url)
+            .json(req)
+            .send()
+            .map_err(HarnessError::NetworkError)?;
+
+        let status = http_resp.status();
+        if !status.is_success() {
+            return Err(HarnessError::BadStatus(status.as_u16()));
+        }
+
+        let body = http_resp.text().map_err(HarnessError::NetworkError)?;
+        serde_json::from_str::<Response>(&body).map_err(HarnessError::JsonError)
+    }
+
+    /// Issue a `Request::Health` and require `Response::Ok { data:
+    /// ResponseData::Health { .. } }`. Any other response shape is a
+    /// bug, so we surface it as `UnexpectedResponse` rather than silently
+    /// returning `Ok(())`. The spawn wait loop and `is_daemon_alive` use
+    /// this as their liveness predicate.
+    pub fn health(&self) -> Result<(), HarnessError> {
+        match self.execute(&Request::Health)? {
+            Response::Ok {
+                data: ResponseData::Health { .. },
+            } => Ok(()),
+            Response::Ok { data: other } => Err(HarnessError::UnexpectedResponse(format!(
+                "expected Health data, got {other:?}"
+            ))),
+            Response::Error { message } => Err(HarnessError::DaemonError(message)),
+        }
+    }
+
+    /// Marshal a Forge-Persist workload [`Operation`] into its daemon
+    /// [`Request`], POST it, and extract the ack id from whichever
+    /// `ResponseData` variant the daemon returns.
+    ///
+    /// Accepted ack shapes:
+    /// - `ResponseData::Stored { id }` — from `Remember`
+    /// - `ResponseData::RawIngest { document_id, .. }` — from `RawIngest`
+    /// - `ResponseData::MessageSent { id, .. }` — from `SessionSend`
+    ///
+    /// Any other `ResponseData` variant is `UnexpectedResponse`.
+    /// `content_hash` is left empty; cycle (g) will populate it via the
+    /// ground-truth tracker's canonical-payload SHA-256.
+    pub fn execute_op(&self, op: &Operation) -> Result<AckedOp, HarnessError> {
+        let req = op_to_request(op);
+        match self.execute(&req)? {
+            Response::Ok { data } => match data {
+                ResponseData::Stored { id } => Ok(AckedOp {
+                    id,
+                    content_hash: String::new(),
+                }),
+                ResponseData::RawIngest { document_id, .. } => Ok(AckedOp {
+                    id: document_id,
+                    content_hash: String::new(),
+                }),
+                ResponseData::MessageSent { id, .. } => Ok(AckedOp {
+                    id,
+                    content_hash: String::new(),
+                }),
+                other => Err(HarnessError::UnexpectedResponse(format!(
+                    "expected Stored/RawIngest/MessageSent, got {other:?}"
+                ))),
+            },
+            Response::Error { message } => Err(HarnessError::DaemonError(message)),
         }
     }
 }
@@ -353,13 +530,15 @@ pub struct PersistConfig {
 
 /// Owning handle for a Forge-Persist benchmark run. Owns the TempDir
 /// that holds the daemon's isolated state (via `FORGE_DIR`), the
-/// bench's free port, the daemon's running child process (when
-/// spawned), and the config describing the workload.
+/// bench's free port, the HTTP client used to probe health and issue
+/// workload ops, the daemon's running child process (when spawned),
+/// and the config describing the workload.
 ///
 /// Drop kills any live child to prevent orphaned daemon processes.
 pub struct PersistHarness {
     config: PersistConfig,
     port: u16,
+    client: HttpClient,
     child: Option<Child>,
     /// Kept last so it is dropped AFTER `child` — removing the
     /// TempDir before killing the daemon would yank its data
@@ -368,15 +547,17 @@ pub struct PersistHarness {
 }
 
 impl PersistHarness {
-    /// Construct a harness. Allocates a fresh TempDir and a free
-    /// port, but does NOT spawn the daemon — call [`Self::spawn`]
-    /// for that.
+    /// Construct a harness. Allocates a fresh TempDir, a free port,
+    /// and a pre-bound HTTP client targeting that port, but does NOT
+    /// spawn the daemon — call [`Self::spawn`] for that.
     pub fn new(config: PersistConfig) -> Result<Self, HarnessError> {
         let tempdir = TempDir::new().map_err(HarnessError::Io)?;
         let port = find_free_port()?;
+        let client = HttpClient::new(format!("http://127.0.0.1:{port}"))?;
         Ok(Self {
             config,
             port,
+            client,
             child: None,
             tempdir,
         })
@@ -388,16 +569,22 @@ impl PersistHarness {
         self.port
     }
 
-    /// Spawn the `forge-daemon` subprocess and wait for its HTTP
-    /// port to accept TCP connections. Returns `Ok(())` once the
-    /// daemon is reachable; returns `SpawnTimeout` if the port never
-    /// binds within `config.recovery_timeout`.
+    /// Borrow the harness's HTTP client. Used by the integration test
+    /// (cycle f2) and later by the benchmark driver loop (cycles g-j)
+    /// to issue workload ops against the running daemon.
+    pub fn client(&self) -> &HttpClient {
+        &self.client
+    }
+
+    /// Spawn the `forge-daemon` subprocess and wait for it to answer
+    /// an HTTP `Health` request. Returns `Ok(())` once the daemon is
+    /// serving HTTP; returns `SpawnTimeout` if the Health endpoint
+    /// does not succeed within `config.recovery_timeout`.
     ///
     /// The spawned daemon has its state isolated via
     /// `FORGE_DIR=<tempdir>/.forge` and its HTTP server enabled on
     /// a random free port on loopback. stdout/stderr are discarded
-    /// to keep test output clean — cycle (f2) may add a log
-    /// capture path if debugging requires it.
+    /// to keep test output clean.
     pub fn spawn(&mut self) -> Result<(), HarnessError> {
         if self.child.is_some() {
             return Err(HarnessError::AlreadySpawned);
@@ -422,7 +609,7 @@ impl PersistHarness {
 
         let deadline = spawn_instant + self.config.recovery_timeout;
         while Instant::now() < deadline {
-            if self.is_port_bound() {
+            if self.client.health().is_ok() {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -438,39 +625,39 @@ impl PersistHarness {
     }
 
     /// Send SIGKILL to the child process (via `Child::kill` which on
-    /// Unix maps to `SIGKILL`), reap the zombie, and wait for the
-    /// port to be released by the kernel. Idempotent: calling on a
-    /// harness with no active child is a no-op.
+    /// Unix maps to `SIGKILL`), reap the zombie, and wait for the HTTP
+    /// endpoint to stop responding. When no child is active this is a
+    /// true no-op: it returns immediately without issuing any HTTP
+    /// probes (adversarial review finding from cycle f2 — the previous
+    /// implementation still ran the post-kill wait loop even when
+    /// there was nothing to kill).
     pub fn kill(&mut self) -> Result<(), HarnessError> {
-        if let Some(mut child) = self.child.take() {
-            child.kill().map_err(HarnessError::KillFailed)?;
-            child.wait().map_err(HarnessError::KillFailed)?;
-        }
+        let Some(mut child) = self.child.take() else {
+            return Ok(());
+        };
+        child.kill().map_err(HarnessError::KillFailed)?;
+        child.wait().map_err(HarnessError::KillFailed)?;
 
-        // Kernel sometimes takes a moment to release the port
-        // binding after the process exits. Brief wait loop bounded
-        // at 5 s — should resolve in tens of milliseconds in practice.
+        // Brief wait loop bounded at 5 s. In practice `Child::wait`
+        // already blocks until the kernel reaps the process, so by
+        // the time we get here the port is usually already released
+        // and the first Health probe fails immediately with
+        // connection-refused.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while self.is_port_bound() && Instant::now() < deadline {
+        while self.client.health().is_ok() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
 
         Ok(())
     }
 
-    /// True if something is accepting TCP connections on the harness
-    /// port. Used as a crude liveness check during the spawn wait
-    /// loop and by the integration test after kill. Cycle (f2) will
-    /// upgrade this to a real HTTP Health probe.
+    /// True iff the daemon is currently answering HTTP `Health`. Used
+    /// by the integration test as a liveness predicate before and
+    /// after SIGKILL. Upgraded in cycle (f2) from a raw TCP probe so
+    /// that "alive" means the HTTP handler is actually serving, not
+    /// just that the kernel listener is bound.
     pub fn is_daemon_alive(&self) -> bool {
-        self.is_port_bound()
-    }
-
-    fn is_port_bound(&self) -> bool {
-        let addr = format!("127.0.0.1:{}", self.port)
-            .parse::<std::net::SocketAddr>()
-            .expect("constructed loopback addr must parse");
-        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
+        self.client.health().is_ok()
     }
 }
 

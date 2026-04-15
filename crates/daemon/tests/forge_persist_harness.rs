@@ -8,7 +8,9 @@
 //! Tests here run via `cargo test -p forge-daemon --test forge_persist_harness`.
 //! They are NOT included in `cargo test --lib` which only runs unit tests.
 
-use forge_daemon::bench::forge_persist::{PersistConfig, PersistHarness};
+use forge_daemon::bench::forge_persist::{
+    generate_workload, PersistConfig, PersistHarness, WorkloadConfig,
+};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -43,7 +45,9 @@ fn test_persist_harness_spawns_and_kills_daemon() {
 
     let mut harness = PersistHarness::new(config).expect("PersistHarness::new should succeed");
 
-    harness.spawn().expect("spawn should succeed within timeout");
+    harness
+        .spawn()
+        .expect("spawn should succeed within timeout");
     assert!(
         harness.is_daemon_alive(),
         "daemon should be accepting TCP connections after spawn"
@@ -54,4 +58,53 @@ fn test_persist_harness_spawns_and_kills_daemon() {
         !harness.is_daemon_alive(),
         "daemon should reject TCP connections after kill"
     );
+}
+
+#[test]
+fn test_persist_harness_executes_op_against_real_daemon() {
+    // Phase 2A-1 Forge-Persist cycle (f2): end-to-end validation that
+    // the HttpClient wrapper can marshal an Operation into a real HTTP
+    // request against a spawned daemon and extract a non-empty ack id.
+    //
+    // Drives the existence of HttpClient, execute_op, AckedOp, and the
+    // new HarnessError network/json/status/daemon variants. Covers the
+    // "spawn daemon → generate workload → POST /api → parse ack" path
+    // end-to-end with a single Remember op (the smallest non-trivial
+    // workload that still exercises Response parsing).
+    let daemon_bin = PathBuf::from(env!("CARGO_BIN_EXE_forge-daemon"));
+    let config = PersistConfig {
+        daemon_bin,
+        memories: 1,
+        chunks: 0,
+        fisp_messages: 0,
+        seed: 42,
+        kill_after: 1.0,
+        recovery_timeout: Duration::from_secs(15),
+        worker_catchup: Duration::from_secs(0),
+        output_dir: None,
+    };
+
+    let mut harness = PersistHarness::new(config).expect("PersistHarness::new should succeed");
+    harness
+        .spawn()
+        .expect("spawn should succeed within timeout");
+
+    let ops = generate_workload(&WorkloadConfig {
+        seed: 42,
+        memories: 1,
+        chunks: 0,
+        fisp_messages: 0,
+    });
+    assert_eq!(ops.len(), 1, "workload should produce exactly 1 op");
+
+    let ack = harness
+        .client()
+        .execute_op(&ops[0])
+        .expect("execute_op should succeed against real daemon");
+    assert!(
+        !ack.id.is_empty(),
+        "Remember ack should carry a non-empty id"
+    );
+
+    harness.kill().expect("kill should succeed");
 }
