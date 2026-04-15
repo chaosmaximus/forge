@@ -13,6 +13,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -634,6 +635,36 @@ impl PersistTracker {
 }
 
 // ---------------------------------------------------------------------------
+// Scoring functions (cycle h)
+// ---------------------------------------------------------------------------
+
+/// §6.1 recovery_rate:
+/// ```text
+/// recovery_rate = |acked ∩ post_restart_visible| / |acked|
+/// ```
+/// Given the set of ids we acked pre-kill and the set of ids the
+/// restarted daemon returns when queried via its public read methods,
+/// returns the fraction of acked ids that survived the kill+restart
+/// as an `f64` in `[0.0, 1.0]`.
+///
+/// **Empty `acked`:** returns 1.0. A zero-op workload is vacuously
+/// fully recovered. Cycle (h4)'s `score_run` is expected to additionally
+/// require a non-empty workload before accepting the run as valid —
+/// otherwise a misconfigured benchmark (forgot to set `memories`) would
+/// trivially pass.
+///
+/// **Orphan ids** (present in `post_restart_visible` but not in `acked`)
+/// do NOT affect this rate — the intersection only counts ids that were
+/// acked. Orphan penalty is the job of [`consistency_rate`] (cycle h2).
+pub fn recovery_rate(acked_ids: &HashSet<String>, post_restart_visible: &HashSet<String>) -> f64 {
+    if acked_ids.is_empty() {
+        return 1.0;
+    }
+    let recovered = acked_ids.intersection(post_restart_visible).count();
+    recovered as f64 / acked_ids.len() as f64
+}
+
+// ---------------------------------------------------------------------------
 // Harness config + handle
 // ---------------------------------------------------------------------------
 
@@ -1235,6 +1266,71 @@ mod tests {
             expected_hash,
             "canonical_hash must agree with the parts shape op_to_request actually sends"
         );
+    }
+
+    #[test]
+    fn test_recovery_rate_all_recovered_is_1_0() {
+        // §6.1: recovery_rate = |acked ∩ visible| / |acked|.
+        // When every acked id shows up in the post-restart visible
+        // set, the intersection equals the acked set and the ratio is
+        // exactly 1.0. Drives the existence of `recovery_rate`.
+        let acked: HashSet<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let visible = acked.clone();
+        assert_eq!(recovery_rate(&acked, &visible), 1.0);
+    }
+
+    #[test]
+    fn test_recovery_rate_none_recovered_is_0_0() {
+        // Catastrophic loss: acked set has 4 ids, visible set is empty.
+        // intersection = ∅, ratio = 0.0. Failing this means recovery
+        // is totally broken post-restart — would fail the 0.99 threshold
+        // in cycle (h4).
+        let acked: HashSet<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        let visible: HashSet<String> = HashSet::new();
+        assert_eq!(recovery_rate(&acked, &visible), 0.0);
+    }
+
+    #[test]
+    fn test_recovery_rate_half_recovered_is_exact_0_5() {
+        // 2 of 4 acked survived — the ratio is exactly 0.5, representable
+        // in IEEE-754 without rounding error. Using a power-of-two
+        // denominator keeps the equality exact across platforms.
+        let acked: HashSet<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        let visible: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(recovery_rate(&acked, &visible), 0.5);
+    }
+
+    #[test]
+    fn test_recovery_rate_empty_acked_returns_1_0() {
+        // Empty-input guard: a zero-op workload is vacuously fully
+        // recovered. Avoids a NaN from 0/0 division and keeps the
+        // return in [0.0, 1.0] for all inputs. Cycle (h4)'s score_run
+        // is responsible for additionally rejecting empty-workload
+        // runs as misconfigured.
+        let acked: HashSet<String> = HashSet::new();
+        let visible: HashSet<String> = HashSet::new();
+        assert_eq!(recovery_rate(&acked, &visible), 1.0);
+        // Also holds when visible is non-empty and acked is empty
+        // (all visible ids are orphans — none were ever acked).
+        let visible_with_orphans: HashSet<String> = ["ghost".to_string(), "phantom".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(recovery_rate(&acked, &visible_with_orphans), 1.0);
+    }
+
+    #[test]
+    fn test_recovery_rate_ignores_orphans_in_visible() {
+        // Orphan ids in `visible` (present post-restart but never acked)
+        // do NOT affect recovery_rate because the intersection only
+        // counts ids that are in BOTH sets. This is exactly the scope
+        // the design doc §6.1 draws: recovery measures loss, orphans
+        // measure corruption — the latter is consistency_rate (h2).
+        let acked: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let visible: HashSet<String> = ["a", "b", "orphan1", "orphan2", "orphan3"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(recovery_rate(&acked, &visible), 1.0);
     }
 
     #[test]
