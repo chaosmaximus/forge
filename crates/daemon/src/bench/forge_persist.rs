@@ -51,10 +51,6 @@ pub const SESSION_POOL_SIZE: usize = 5;
 /// enum declaration order.
 const MEMORY_TYPES: [&str; 5] = ["decision", "lesson", "pattern", "preference", "protocol"];
 
-/// Fixed tag vocabulary — each `Remember` op draws 2 tags via a
-/// deterministic rotation keyed on the op index.
-const TAG_POOL: [&str; 5] = ["persist", "bench", "forge", "durability", "harness"];
-
 /// `source` string attached to every `RawIngest` request this harness
 /// issues. Also serves as a filter during post-restart verification
 /// so the ground-truth matcher in cycle (g) can isolate this bench's
@@ -115,28 +111,68 @@ fn remember_memory_type(index: usize) -> String {
 }
 
 fn remember_title(index: usize) -> String {
-    format!("persist_memory_{index}")
+    // The daemon's `semantic_dedup` (db::ops::semantic_dedup) merges
+    // memories with > 0.65 Jaccard word-overlap in title OR content.
+    // A title like `"persist_memory_0"` splits into {persist, memory}
+    // after `meaningful_words` (single-char tokens dropped), which
+    // collides 100% with every other memory's title and triggers the
+    // merge. To keep the harness from accidentally measuring the
+    // consolidator instead of durability, we build titles from a
+    // deterministic SHA-256 digest of the index so each title has a
+    // dominant unique token. Cycle (k) discovery — locked by the
+    // `test_workload_memories_resist_semantic_dedup` tripwire.
+    let digest = Sha256::digest(format!("persist_title_{index}").as_bytes());
+    let hex = bytes_to_hex(&digest[..8]);
+    format!("{hex}-{index:04}")
 }
 
 fn remember_content(index: usize) -> String {
-    format!("persist_memory_{index}: deterministic memory body for Forge-Persist bench")
+    // Unique-per-index content — see `remember_title` doc comment
+    // for the motivation. Uses the full 32-byte SHA-256 digest as
+    // four 16-char hex tokens (all unique per index) plus a few
+    // shared-boilerplate tokens for flavor. After `meaningful_words`
+    // the shared/unique ratio stays below 0.65 so `semantic_dedup`
+    // leaves these alone on second-daemon startup.
+    let digest = Sha256::digest(format!("persist_content_{index}").as_bytes());
+    let hex = bytes_to_hex(&digest);
+    format!(
+        "persist bench body {} {} {} {} index-{:04}",
+        &hex[..16],
+        &hex[16..32],
+        &hex[32..48],
+        &hex[48..64],
+        index
+    )
 }
 
 fn remember_tags(index: usize) -> Vec<String> {
-    // 2 tags per op, drawn from TAG_POOL by rotating on index. The
-    // design doc §5.5 says "2-3 tags"; two is the minimum that still
-    // exercises the tags vec path in the daemon and keeps the
-    // content hash stable for consistency checks.
-    vec![
-        TAG_POOL[index % TAG_POOL.len()].to_string(),
-        TAG_POOL[(index + 1) % TAG_POOL.len()].to_string(),
-    ]
+    // 2 tags per op — minimum that still exercises the tags vec path
+    // in the daemon. Both tags are per-index unique so no pair of
+    // harness memories shares 2+ tags, which would otherwise trigger
+    // `workers::consolidator::reweave_memories` on the second daemon's
+    // startup. Reweave is destructive: it mutates the survivor's
+    // content (`"{old}\n\n[Update]: {new}"`) and marks the newer one
+    // as `status = 'merged'`, which invalidates both recovery_rate
+    // (losses) and consistency_rate (content drift). Cycle (k)
+    // discovery — locked by the `test_workload_memories_resist_
+    // reweave_shared_tags` tripwire.
+    vec![format!("tag-{index}-a"), format!("tag-{index}-b")]
 }
 
 fn ingest_content(index: usize) -> String {
     // ~200-char lorem-ipsum-derivative body prefixed with the index so
     // every document in the workload is unique while still exercising
     // the raw-layer chunker / BM25 / vec pipeline.
+    //
+    // **Dedup-safety note (cycle k):** `raw_documents` does NOT have
+    // a semantic_dedup or reweave phase in `db::raw` or
+    // `workers::consolidator` as of cycle (k). If either is added to
+    // the raw layer later, this generator will need the same
+    // unique-SHA-256-per-index treatment `remember_content` received,
+    // otherwise the harness will silently start measuring the new
+    // dedup phase instead of durability. Keep an eye on future
+    // additions to `workers::consolidator::run_all_phases` that touch
+    // `raw_documents`.
     format!(
         "persist_doc_{index}: lorem ipsum dolor sit amet consectetur adipiscing \
          elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua \
@@ -145,6 +181,11 @@ fn ingest_content(index: usize) -> String {
 }
 
 fn fisp_content(index: usize) -> String {
+    // **Dedup-safety note (cycle k):** `session_message` does NOT
+    // currently have any dedup phase in `workers::consolidator` —
+    // see `ingest_content` for the same YAGNI disclaimer. If dedup
+    // is ever added for FISP traffic, apply the SHA-256-per-index
+    // unique content pattern from `remember_content`.
     format!("persist_fisp_{index}: deterministic inter-session message body")
 }
 
@@ -1694,6 +1735,144 @@ mod tests {
         };
         let ops = generate_workload(&config);
         assert_eq!(ops.len(), 3, "workload should contain N+K+J operations");
+    }
+
+    #[test]
+    fn test_workload_memories_resist_reweave_shared_tags() {
+        // Cycle (k) second discovery: the daemon's
+        // `workers::consolidator::reweave_memories` merges memory
+        // pairs that share ≥ 2 tags (same project, same type, same
+        // org). Merging is DESTRUCTIVE — the older survivor's content
+        // is mutated to `"{old}\n\n[Update]: {new}"` and the newer
+        // one is marked `status = 'merged'` (disappears from Export).
+        // This invalidates BOTH recovery_rate (losses) and
+        // consistency_rate (content drift) on the second-daemon
+        // startup that runs reweave as part of `run_all_phases`.
+        //
+        // This tripwire asserts every pair of memory ops in a 30-op
+        // workload shares at most 1 tag, so reweave's `shared >= 2`
+        // check never triggers. It is race-complement to the semantic
+        // dedup tripwire above — semantic_dedup operates on word
+        // overlap of title+content, reweave operates on tag overlap.
+        // Both must be satisfied to keep the harness measuring
+        // durability rather than consolidator behavior.
+        use std::collections::HashSet;
+        let workload = generate_workload(&WorkloadConfig {
+            seed: 42,
+            memories: 30,
+            chunks: 0,
+            fisp_messages: 0,
+        });
+        let memory_tags: Vec<Vec<String>> = workload
+            .iter()
+            .filter_map(|op| match op {
+                Operation::Remember { tags, .. } => Some(tags.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(memory_tags.len(), 30);
+
+        for (i, tags_a) in memory_tags.iter().enumerate() {
+            let set_a: HashSet<&str> = tags_a.iter().map(|s| s.as_str()).collect();
+            for (j, tags_b) in memory_tags.iter().enumerate().skip(i + 1) {
+                let set_b: HashSet<&str> = tags_b.iter().map(|s| s.as_str()).collect();
+                let shared = set_a.intersection(&set_b).count();
+                assert!(
+                    shared < 2,
+                    "memories {i} and {j} share {shared} tags (>= 2) — reweave_memories will merge them on second-daemon startup\n  tags_a={tags_a:?}\n  tags_b={tags_b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_workload_memories_resist_semantic_dedup() {
+        // Cycle (k) discovery: the daemon's semantic_dedup
+        // (`db::ops::semantic_dedup`) merges memory pairs whose
+        // title or content word overlap EXCEEDS 0.65 Jaccard
+        // similarity — STRICT `>` at `db/ops.rs:1354`, using
+        // `max(title_score, content_score, 0.5*title + 0.5*content)`.
+        // The second daemon's startup consolidation runs this phase
+        // automatically, so any harness that generates near-duplicate
+        // titles/contents gets its memories silently collapsed on
+        // restart — measuring the consolidator's behavior, not
+        // durability.
+        //
+        // This tripwire uses the daemon's OWN `meaningful_words_pub`
+        // (the single source of truth that `semantic_dedup` consumes)
+        // to compute every pairwise score in a 30-memory workload and
+        // asserts each is STRICTLY BELOW 0.65. The strict less-than
+        // leaves a margin below the daemon's `> 0.65` merge boundary
+        // and matches the safety zone required by the generator.
+        //
+        // Sample size (30 memories, 6 per type) is sufficient because
+        // uniqueness between indices is guaranteed algebraically —
+        // each title embeds `SHA256("persist_title_{index}")[..8]` and
+        // each content embeds the full SHA-256 digest as four 16-char
+        // hex tokens, so the worst-case Jaccard score is bounded by
+        // the ratio of shared boilerplate ("persist", "bench", "body")
+        // to total tokens per memory. Empirical worst case (verified
+        // by this test's pass) is content_score ≈ 3/8 = 0.375 from
+        // the 3 shared boilerplate tokens in 8-token content vectors,
+        // well below 0.65. Scaling the workload to 100+ memories does
+        // not change the algebra — each memory still has its own
+        // unique hex prefix.
+        use crate::db::ops::meaningful_words_pub;
+        let workload = generate_workload(&WorkloadConfig {
+            seed: 42,
+            memories: 30,
+            chunks: 0,
+            fisp_messages: 0,
+        });
+        let memory_ops: Vec<(&str, &str)> = workload
+            .iter()
+            .filter_map(|op| match op {
+                Operation::Remember { title, content, .. } => {
+                    Some((title.as_str(), content.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(memory_ops.len(), 30, "expected 30 memory ops in workload");
+
+        // Strict `<` to match the daemon's `>` merge boundary and
+        // leave margin. A pair at exactly 0.65 would technically be
+        // safe in the daemon (which only merges at `> 0.65`), but
+        // the generator must stay strictly below to guard against
+        // future vocabulary drift.
+        const DEDUP_THRESHOLD: f64 = 0.65;
+        for (i, (title_a, content_a)) in memory_ops.iter().enumerate() {
+            let tw_a = meaningful_words_pub(title_a);
+            let cw_a = meaningful_words_pub(content_a);
+            for (j, (title_b, content_b)) in memory_ops.iter().enumerate().skip(i + 1) {
+                let tw_b = meaningful_words_pub(title_b);
+                let cw_b = meaningful_words_pub(content_b);
+
+                let title_inter = tw_a.intersection(&tw_b).count() as f64;
+                let title_max = tw_a.len().max(tw_b.len()) as f64;
+                let title_score = if title_max > 0.0 {
+                    title_inter / title_max
+                } else {
+                    0.0
+                };
+
+                let content_inter = cw_a.intersection(&cw_b).count() as f64;
+                let content_max = cw_a.len().max(cw_b.len()) as f64;
+                let content_score = if content_max > 0.0 {
+                    content_inter / content_max
+                } else {
+                    0.0
+                };
+
+                let weighted = title_score * 0.5 + content_score * 0.5;
+                let combined = weighted.max(title_score).max(content_score);
+
+                assert!(
+                    combined < DEDUP_THRESHOLD,
+                    "memories {i} and {j} have combined semantic score {combined:.3} — must be strictly < {DEDUP_THRESHOLD} to sit safely below the daemon's `> 0.65` merge boundary (`db::ops::semantic_dedup` at `db/ops.rs:1354`). At or above this score, second-daemon startup consolidation may merge the pair and silently invalidate recovery_rate.\n  title_a={title_a}\n  title_b={title_b}\n  title_score={title_score:.3}\n  content_score={content_score:.3}"
+                );
+            }
+        }
     }
 
     #[test]
