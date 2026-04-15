@@ -739,6 +739,88 @@ pub fn recovery_time_ms(spawn_instant: Instant, first_health_ok: Instant) -> u64
         .unwrap_or(0)
 }
 
+/// §6.1 recovery_rate pass threshold — a run must recover at least
+/// **99%** of its acked ops to pass. The 1% tolerance is reserved for
+/// HTTP-client-level transient failures (connection reset races during
+/// the kill transition) that are neither the daemon's nor the
+/// harness's fault.
+pub const RECOVERY_RATE_THRESHOLD: f64 = 0.99;
+
+/// §6.2 consistency_rate pass threshold — **strict 1.00**, no
+/// tolerance. Any less is corruption or phantom-write and the run
+/// fails unconditionally (§6.4: "corruption is worse than loss").
+pub const CONSISTENCY_RATE_THRESHOLD: f64 = 1.00;
+
+/// §6.3 recovery_time_ms pass threshold — **5000 ms** provisional
+/// (per Q4 in the design doc, calibrated empirically on the first
+/// run and then locked in a decision log entry with ≥50% margin over
+/// observed time).
+pub const RECOVERY_TIME_MS_THRESHOLD: u64 = 5000;
+
+/// §6.4 composite benchmark result. Built by [`score_run`] from the
+/// three individual metrics and carries a pre-computed `passed` flag.
+/// Serialized into cycle (i)'s `summary.json` and displayed by the
+/// CLI as the final verdict for the run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersistScore {
+    /// §6.1 recovery rate in `[0.0, 1.0]`.
+    pub recovery_rate: f64,
+    /// §6.2 consistency rate in `[0.0, 1.0]`.
+    pub consistency_rate: f64,
+    /// §6.3 wall-clock recovery time in milliseconds.
+    pub recovery_time_ms: u64,
+    /// Total workload operations the bench attempted. Included in the
+    /// composite score so cycle (i)'s CLI output and `summary.json`
+    /// can report "N ops tested" alongside the pass/fail verdict, and
+    /// so `passed` can reject zero-op runs as misconfigured.
+    pub total_ops: usize,
+    /// Composite PASS/FAIL per §6.4. `true` iff ALL four conditions
+    /// hold: `total_ops > 0` (non-empty workload),
+    /// `recovery_rate >= 0.99`, `consistency_rate >= 1.00`, and
+    /// `recovery_time_ms < 5000`. A zero-op workload unconditionally
+    /// fails — otherwise `recovery_rate` and `consistency_rate` both
+    /// return their vacuous 1.0 fast-paths and a misconfigured
+    /// "forgot to set memories" run would silently pass.
+    pub passed: bool,
+}
+
+/// §6.4 compose a [`PersistScore`] from the three individual metrics
+/// plus the workload size, and apply the pass-threshold check. Pure
+/// function — takes pre-computed metrics from [`recovery_rate`],
+/// [`consistency_rate`], and [`recovery_time_ms`] rather than raw
+/// inputs, so callers can construct a score from any source (real
+/// daemon data, fixture data in tests, historical run replays).
+///
+/// **Pass rule:** a run passes iff `total_ops > 0` AND all three
+/// metric thresholds are met. The `total_ops > 0` guard is essential:
+/// without it, a zero-op workload (misconfigured `WorkloadConfig`
+/// with `memories=0, chunks=0, fisp_messages=0`) would pass because
+/// both [`recovery_rate`] and [`consistency_rate`] return their
+/// vacuous `1.0` fast-paths when their inputs are empty — the exact
+/// false-positive the cycle (h4) adversarial review caught.
+///
+/// Per §6.4 "corruption is worse than loss": a run that passes
+/// recovery but fails consistency is still a FAIL — the composite
+/// logic short-circuits correctly because `&&` is strict.
+pub fn score_run(
+    recovery_rate: f64,
+    consistency_rate: f64,
+    recovery_time_ms: u64,
+    total_ops: usize,
+) -> PersistScore {
+    let passed = total_ops > 0
+        && recovery_rate >= RECOVERY_RATE_THRESHOLD
+        && consistency_rate >= CONSISTENCY_RATE_THRESHOLD
+        && recovery_time_ms < RECOVERY_TIME_MS_THRESHOLD;
+    PersistScore {
+        recovery_rate,
+        consistency_rate,
+        recovery_time_ms,
+        total_ops,
+        passed,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Harness config + handle
 // ---------------------------------------------------------------------------
@@ -1341,6 +1423,106 @@ mod tests {
             expected_hash,
             "canonical_hash must agree with the parts shape op_to_request actually sends"
         );
+    }
+
+    #[test]
+    fn test_score_run_all_thresholds_met_passes() {
+        // §6.4: a run passes iff `total_ops > 0` AND all three metric
+        // thresholds are met (>=0.99 recovery, ==1.00 consistency,
+        // <5000 ms recovery_time). This test drives the existence of
+        // `PersistScore`, `score_run`, and the `*_THRESHOLD` consts.
+        let score = score_run(1.0, 1.0, 1500, 100);
+        assert!(score.passed, "1.0/1.0/1500/100 must pass all thresholds");
+        assert_eq!(score.recovery_rate, 1.0);
+        assert_eq!(score.consistency_rate, 1.0);
+        assert_eq!(score.recovery_time_ms, 1500);
+        assert_eq!(score.total_ops, 100);
+    }
+
+    #[test]
+    fn test_score_run_zero_total_ops_fails_unconditionally() {
+        // Adversarial review (cycle h4) caught: a zero-op workload
+        // would silently pass because `recovery_rate(∅, ∅)` returns
+        // 1.0 (vacuous), `consistency_rate(∅, ∅)` returns 1.0
+        // (vacuous), and recovery_time_ms is trivially small for a
+        // do-nothing run. Without the `total_ops > 0` guard in
+        // score_run, a misconfigured "forgot to set memories"
+        // WorkloadConfig would certify the daemon as safe while
+        // never actually exercising it. This test locks the guard.
+        let score = score_run(1.0, 1.0, 100, 0);
+        assert!(
+            !score.passed,
+            "zero total_ops must unconditionally fail score_run"
+        );
+        assert_eq!(score.total_ops, 0);
+    }
+
+    #[test]
+    fn test_score_run_at_recovery_threshold_boundary_passes() {
+        // Boundary: exactly 0.99 recovery passes (>= comparison).
+        let score = score_run(0.99, 1.0, 1000, 10);
+        assert!(score.passed);
+    }
+
+    #[test]
+    fn test_score_run_below_recovery_threshold_fails() {
+        // 0.98 recovery fails the 0.99 floor, run must FAIL.
+        let score = score_run(0.98, 1.0, 1000, 10);
+        assert!(!score.passed);
+    }
+
+    #[test]
+    fn test_score_run_below_consistency_threshold_fails() {
+        // §6.4 "corruption is worse than loss": a run that passes
+        // recovery (1.0) but fails consistency (0.99) is a FAIL.
+        // This is the canonical case the design doc singles out.
+        let score = score_run(1.0, 0.99, 1000, 10);
+        assert!(
+            !score.passed,
+            "consistency < 1.0 must fail even if recovery is perfect"
+        );
+    }
+
+    #[test]
+    fn test_score_run_at_recovery_time_boundary_fails() {
+        // Boundary: recovery_time_ms < 5000 (strictly less than).
+        // Exactly 5000 must FAIL, not pass — the design doc uses `<`
+        // not `<=` in §6.3 so we lock that semantic.
+        let score = score_run(1.0, 1.0, RECOVERY_TIME_MS_THRESHOLD, 10);
+        assert!(!score.passed, "recovery_time == threshold must fail");
+    }
+
+    #[test]
+    fn test_score_run_just_under_recovery_time_threshold_passes() {
+        // 4999 ms passes, 5000 doesn't. Locks the strict-<
+        // comparison direction (cf. the `>=` used for the two
+        // rate thresholds).
+        let score = score_run(1.0, 1.0, RECOVERY_TIME_MS_THRESHOLD - 1, 10);
+        assert!(score.passed);
+    }
+
+    #[test]
+    fn test_score_run_populates_all_fields() {
+        // Guard: score_run must faithfully copy the four input
+        // values into the struct, not accidentally zero one or
+        // swap positions.
+        let score = score_run(0.42, 0.7, 12345, 77);
+        assert_eq!(score.recovery_rate, 0.42);
+        assert_eq!(score.consistency_rate, 0.7);
+        assert_eq!(score.recovery_time_ms, 12345);
+        assert_eq!(score.total_ops, 77);
+        assert!(!score.passed);
+    }
+
+    #[test]
+    fn test_score_thresholds_match_design_doc() {
+        // §6.1 / §6.2 / §6.3 values — locked against accidental
+        // drift. Any future change MUST bump the bench version in
+        // cycle (i)'s summary.json per the hash_scheme version
+        // contract applied to scoring thresholds.
+        assert_eq!(RECOVERY_RATE_THRESHOLD, 0.99);
+        assert_eq!(CONSISTENCY_RATE_THRESHOLD, 1.00);
+        assert_eq!(RECOVERY_TIME_MS_THRESHOLD, 5000);
     }
 
     #[test]
