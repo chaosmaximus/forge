@@ -888,6 +888,18 @@ pub enum Request {
         #[serde(default)]
         max_distance: Option<f64>,
     },
+    /// List raw documents filtered by their `source` tag.
+    ///
+    /// Primary caller is the Forge-Persist benchmark harness, which uses a
+    /// per-run source string to enumerate the documents it ingested pre-kill
+    /// and verify they survived a restart. Returns verbatim document text so
+    /// callers can compute content hashes client-side.
+    RawDocumentsList {
+        source: String,
+        /// Maximum rows to return. Omitted → daemon default (10 000).
+        #[serde(default)]
+        limit: Option<usize>,
+    },
 
     Shutdown,
 }

@@ -5666,6 +5666,33 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 },
             }
         }
+
+        Request::RawDocumentsList { source, limit } => {
+            // Default row cap: 10_000. Large enough for any realistic
+            // Forge-Persist workload, small enough to keep a single
+            // pathological caller from fan-out-reading the whole table.
+            const RAW_DOCUMENTS_LIST_DEFAULT_LIMIT: usize = 10_000;
+            let effective_limit = limit.unwrap_or(RAW_DOCUMENTS_LIST_DEFAULT_LIMIT);
+            match crate::db::raw::list_documents_by_source(&state.conn, &source, effective_limit) {
+                Ok(docs) => {
+                    let documents = docs
+                        .into_iter()
+                        .map(|d| forge_core::protocol::RawDocumentInfo {
+                            id: d.id,
+                            source: d.source,
+                            text: d.text,
+                            timestamp: d.timestamp,
+                        })
+                        .collect();
+                    Response::Ok {
+                        data: ResponseData::RawDocumentsList { documents },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("raw_documents_list: {e}"),
+                },
+            }
+        }
     }
 }
 
@@ -11146,5 +11173,60 @@ mod tests {
         assert_eq!(kpis.hooks_fired.len(), 2, "should have 2 hook types");
         assert_eq!(*kpis.hooks_fired.get("UserPromptSubmit").unwrap_or(&0), 1);
         assert_eq!(*kpis.hooks_fired.get("PostEdit").unwrap_or(&0), 1);
+    }
+
+    #[test]
+    fn test_raw_documents_list_filters_by_source_through_handler() {
+        // Exercise the handler arm end-to-end: seed 3 raw documents directly
+        // via the db layer (bypassing the embedder-dependent RawIngest path),
+        // then dispatch Request::RawDocumentsList through handle_request and
+        // verify the response shape.
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        for (id, source, text) in [
+            ("doc_a", "forge-persist", "alpha"),
+            ("doc_b", "forge-persist", "beta"),
+            ("doc_c", "claude-code", "gamma"),
+        ] {
+            crate::db::raw::insert_document(
+                &state.conn,
+                &crate::db::raw::RawDocument {
+                    id: id.to_string(),
+                    project: None,
+                    session_id: None,
+                    source: source.to_string(),
+                    text: text.to_string(),
+                    timestamp: "2026-04-15T00:00:00Z".to_string(),
+                    metadata_json: "{}".to_string(),
+                },
+            )
+            .unwrap();
+        }
+
+        let response = handle_request(
+            &mut state,
+            Request::RawDocumentsList {
+                source: "forge-persist".to_string(),
+                limit: Some(100),
+            },
+        );
+
+        match response {
+            Response::Ok {
+                data: ResponseData::RawDocumentsList { documents },
+            } => {
+                assert_eq!(documents.len(), 2);
+                let ids: Vec<&str> = documents.iter().map(|d| d.id.as_str()).collect();
+                assert!(ids.contains(&"doc_a"), "expected doc_a in {ids:?}");
+                assert!(ids.contains(&"doc_b"), "expected doc_b in {ids:?}");
+                for doc in &documents {
+                    assert_eq!(doc.source, "forge-persist");
+                }
+                let doc_a = documents.iter().find(|d| d.id == "doc_a").unwrap();
+                assert_eq!(doc_a.text, "alpha");
+                assert_eq!(doc_a.timestamp, "2026-04-15T00:00:00Z");
+            }
+            other => panic!("expected RawDocumentsList response, got {other:?}"),
+        }
     }
 }

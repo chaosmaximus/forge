@@ -9,6 +9,6 @@ pub use request::{EvaluationFinding, MessagePart, RecallQuery, Request};
 pub use response::{
     BlastRadiusDecision, ConflictPair, ConflictVersion, DiagnosticEntry, ExportEdge,
     FileMemoryInfo, GraphEdge, GraphNode, HealthCheck, HealthProjectData, LspServerInfo,
-    MemoryEdge, MemoryResult, RawSearchHit, Response, ResponseData, SessionInfo, SessionMessage,
-    TraceEntry,
+    MemoryEdge, MemoryResult, RawDocumentInfo, RawSearchHit, Response, ResponseData, SessionInfo,
+    SessionMessage, TraceEntry,
 };

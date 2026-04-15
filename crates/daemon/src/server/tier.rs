@@ -286,7 +286,9 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         // === Free tier: raw layer (benchmark parity + verbatim retrieval) ===
         // The daemon is free; gating for the raw layer happens (if ever) at
         // retention/storage limits in the reaper, not at the request boundary.
-        Request::RawIngest { .. } | Request::RawSearch { .. } => None,
+        Request::RawIngest { .. }
+        | Request::RawSearch { .. }
+        | Request::RawDocumentsList { .. } => None,
     }
 }
 

@@ -305,6 +305,41 @@ pub fn count_documents(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(count as usize)
 }
 
+/// List raw documents filtered by their `source` tag, up to `limit` rows.
+///
+/// Rows are returned ordered by `id`, which (since IDs are ULIDs) is
+/// equivalent to chronological insertion order. The primary caller is the
+/// Forge-Persist benchmark harness, which uses a per-run source tag to
+/// enumerate the documents it ingested pre-kill and verify they survived
+/// the restart.
+pub fn list_documents_by_source(
+    conn: &Connection,
+    source: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<RawDocument>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, project, session_id, source, text, timestamp, metadata_json
+         FROM raw_documents
+         WHERE source = ?1
+         ORDER BY id
+         LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![source, limit as i64], |row| {
+            Ok(RawDocument {
+                id: row.get(0)?,
+                project: row.get(1)?,
+                session_id: row.get(2)?,
+                source: row.get(3)?,
+                text: row.get(4)?,
+                timestamp: row.get(5)?,
+                metadata_json: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,6 +377,48 @@ mod tests {
         insert_document(&conn, &sample_document("doc1", Some("p1"), "hello world")).unwrap();
         insert_document(&conn, &sample_document("doc2", Some("p2"), "goodbye world")).unwrap();
         assert_eq!(count_documents(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_list_documents_by_source_filters_by_source_tag() {
+        let conn = setup();
+        let mut doc_a = sample_document("doc_a", Some("p1"), "content a");
+        doc_a.source = "forge-persist".to_string();
+        insert_document(&conn, &doc_a).unwrap();
+        let mut doc_b = sample_document("doc_b", Some("p1"), "content b");
+        doc_b.source = "forge-persist".to_string();
+        insert_document(&conn, &doc_b).unwrap();
+        // doc_c retains the default "claude-code" source from sample_document.
+        insert_document(&conn, &sample_document("doc_c", Some("p2"), "content c")).unwrap();
+
+        let docs = list_documents_by_source(&conn, "forge-persist", 100).unwrap();
+        assert_eq!(docs.len(), 2);
+        let ids: Vec<&str> = docs.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"doc_a"), "expected doc_a in {ids:?}");
+        assert!(ids.contains(&"doc_b"), "expected doc_b in {ids:?}");
+        for doc in &docs {
+            assert_eq!(doc.source, "forge-persist");
+        }
+    }
+
+    #[test]
+    fn test_list_documents_by_source_respects_limit() {
+        let conn = setup();
+        for i in 0..5 {
+            let mut doc = sample_document(&format!("doc_{i}"), None, "x");
+            doc.source = "forge-persist".to_string();
+            insert_document(&conn, &doc).unwrap();
+        }
+        let docs = list_documents_by_source(&conn, "forge-persist", 3).unwrap();
+        assert_eq!(docs.len(), 3);
+    }
+
+    #[test]
+    fn test_list_documents_by_source_returns_empty_for_missing_source() {
+        let conn = setup();
+        insert_document(&conn, &sample_document("doc_a", None, "x")).unwrap();
+        let docs = list_documents_by_source(&conn, "forge-persist-nonexistent", 100).unwrap();
+        assert!(docs.is_empty());
     }
 
     #[test]

@@ -213,6 +213,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_raw_documents_project ON raw_documents(project);
         CREATE INDEX IF NOT EXISTS idx_raw_documents_session ON raw_documents(session_id);
         CREATE INDEX IF NOT EXISTS idx_raw_documents_timestamp ON raw_documents(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_raw_documents_source ON raw_documents(source);
 
         -- raw_chunks MUST stay rowid-backed (no WITHOUT ROWID). The FTS5
         -- contentless table `raw_chunks_fts` below joins on `raw_chunks.rowid`

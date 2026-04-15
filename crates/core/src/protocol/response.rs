@@ -908,8 +908,25 @@ pub enum ResponseData {
         hits: Vec<RawSearchHit>,
         query_embedding_dim: usize,
     },
+    /// Result of a `RawDocumentsList` call.
+    RawDocumentsList {
+        documents: Vec<RawDocumentInfo>,
+    },
 
     Shutdown,
+}
+
+/// A row returned by `RawDocumentsList`. Minimal subset of the underlying
+/// raw document — callers that need extra fields should propose expanding
+/// this struct rather than querying the DB directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RawDocumentInfo {
+    pub id: String,
+    pub source: String,
+    pub text: String,
+    /// ISO-8601 timestamp the document was ingested at. Mirrors the
+    /// underlying `raw_documents.timestamp` column verbatim.
+    pub timestamp: String,
 }
 
 /// One hit from a raw layer search.

@@ -1791,4 +1791,68 @@ mod tests {
             _ => panic!("expected RawSearch variant"),
         }
     }
+
+    #[test]
+    fn test_raw_documents_list_round_trip() {
+        let req = Request::RawDocumentsList {
+            source: "forge-persist".into(),
+            limit: Some(100),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains("\"method\":\"raw_documents_list\""),
+            "raw_documents_list method name missing: {json}"
+        );
+        assert!(json.contains("\"source\":\"forge-persist\""));
+        assert!(json.contains("\"limit\":100"));
+        let decoded = decode_request(&json).expect("decode raw_documents_list");
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn test_raw_documents_list_minimal() {
+        // `limit` is optional — omitted callers must still deserialize.
+        let json = r#"{"method":"raw_documents_list","params":{"source":"forge-persist"}}"#;
+        let decoded = decode_request(json).expect("decode minimal raw_documents_list");
+        match decoded {
+            Request::RawDocumentsList { source, limit } => {
+                assert_eq!(source, "forge-persist");
+                assert!(limit.is_none());
+            }
+            _ => panic!("expected RawDocumentsList variant"),
+        }
+    }
+
+    #[test]
+    fn test_raw_documents_list_response_round_trip() {
+        use crate::protocol::response::{RawDocumentInfo, Response, ResponseData};
+        let resp = Response::Ok {
+            data: ResponseData::RawDocumentsList {
+                documents: vec![
+                    RawDocumentInfo {
+                        id: "doc_a".into(),
+                        source: "forge-persist".into(),
+                        text: "content a".into(),
+                        timestamp: "2026-04-15T00:00:00Z".into(),
+                    },
+                    RawDocumentInfo {
+                        id: "doc_b".into(),
+                        source: "forge-persist".into(),
+                        text: "content b".into(),
+                        timestamp: "2026-04-15T00:00:01Z".into(),
+                    },
+                ],
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            json.contains("\"kind\":\"raw_documents_list\""),
+            "raw_documents_list kind tag missing: {json}"
+        );
+        assert!(json.contains("\"id\":\"doc_a\""));
+        assert!(json.contains("\"text\":\"content a\""));
+        assert!(json.contains("\"timestamp\":\"2026-04-15T00:00:00Z\""));
+        let decoded: Response = serde_json::from_str(&json).expect("decode response");
+        assert_eq!(resp, decoded);
+    }
 }
