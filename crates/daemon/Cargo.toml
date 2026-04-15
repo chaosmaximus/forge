@@ -92,6 +92,12 @@ fastembed = "5"
 rand = "0.9"
 rand_chacha = "0.9"
 
+# SHA-256 for Forge-Persist's canonical content hashing — cycle (g).
+# See docs/benchmarks/forge-persist-design.md §6.2 for the exact
+# canonical-payload definition per op variant. Pinned to 0.10 for
+# long-term API stability.
+sha2 = "0.10"
+
 # CLI parsing for the forge-bench binary (not used by forge-daemon itself).
 clap = { version = "4", features = ["derive"] }
 

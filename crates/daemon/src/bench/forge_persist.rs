@@ -12,6 +12,7 @@ use forge_core::types::memory::MemoryType;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use sha2::{Digest, Sha256};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -145,6 +146,28 @@ fn fisp_content(index: usize) -> String {
     format!("persist_fisp_{index}: deterministic inter-session message body")
 }
 
+/// Single source of truth for the `Vec<MessagePart>` shape a FISP
+/// workload message marshals into. Used by BOTH [`op_to_request`] and
+/// [`canonical_hash`] so that the hashed payload is, by construction,
+/// byte-identical to the payload actually sent over the wire. If this
+/// shape ever changes (new `MessagePart` fields, different `kind`,
+/// multi-part message), both the request and the hash follow in lockstep
+/// automatically — no more silent divergence at the refactor boundary.
+///
+/// Extracted in cycle (g1) adversarial review to fix HIGH 95/100
+/// ("silent hash divergence on FispSend when `op_to_request` is
+/// modified"). A cross-check test in `mod tests` verifies the two
+/// paths remain in agreement even after future refactors.
+fn fisp_parts(content: &str) -> Vec<MessagePart> {
+    vec![MessagePart {
+        kind: "text".to_string(),
+        text: Some(content.to_string()),
+        path: None,
+        data: None,
+        memory_id: None,
+    }]
+}
+
 /// Generate a deterministic workload from `config`.
 ///
 /// The returned `Vec<Operation>` has exactly
@@ -244,19 +267,70 @@ pub fn op_to_request(op: &Operation) -> Request {
             to: to_session.clone(),
             kind: "notification".to_string(),
             topic: HARNESS_TOPIC.to_string(),
-            parts: vec![MessagePart {
-                kind: "text".to_string(),
-                text: Some(content.clone()),
-                path: None,
-                data: None,
-                memory_id: None,
-            }],
+            parts: fisp_parts(content),
             project: None,
             timeout_secs: None,
             meeting_id: None,
             from_session: Some(from_session.clone()),
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical content hashing (cycle g1)
+// ---------------------------------------------------------------------------
+
+/// Compute the canonical content hash for a Forge-Persist workload
+/// [`Operation`] per design doc §6.2.
+///
+/// `canonical_hash` is a pure function of the op's payload, returning a
+/// lowercase hex-encoded SHA-256 digest (64 chars). The exact canonical
+/// bytes depend on the op variant:
+///
+/// - `Remember` → UTF-8 bytes of the `content` field, unchanged
+/// - `IngestRaw` → UTF-8 bytes of the `content` field, unchanged
+/// - `FispSend` → UTF-8 bytes of `serde_json::to_string(&parts)`, where
+///   `parts` is the `Vec<MessagePart>` reconstructed exactly as
+///   [`op_to_request`] builds it for `SessionSend`. `serde_json` preserves
+///   struct field declaration order for `#[derive(Serialize)]` types, so
+///   the output is deterministic across machines and runs.
+///
+/// **Invariant:** two `Operation` values that are `PartialEq`-equal MUST
+/// produce the same hash. The content-only hashing scheme for Remember
+/// and IngestRaw means two ops of different kinds but the same body
+/// collide — that's expected: recovery verification looks up each ack
+/// by ID (which is kind-specific), so cross-kind collisions have no
+/// effect on scoring.
+///
+/// **Hash scheme version:** SHA-256 + per-variant canonical payload as
+/// above. Any change to this function must bump the `hash_scheme` field
+/// of `summary.json` output in cycle (i).
+pub fn canonical_hash(op: &Operation) -> String {
+    let canonical_bytes: Vec<u8> = match op {
+        Operation::Remember { content, .. } | Operation::IngestRaw { content, .. } => {
+            content.as_bytes().to_vec()
+        }
+        Operation::FispSend { content, .. } => {
+            // `fisp_parts` is the single source of truth — `op_to_request`
+            // uses the same helper, so the hashed payload is by
+            // construction byte-identical to the payload actually sent
+            // over the wire. A cross-check test verifies this invariant
+            // holds under future refactors.
+            let parts = fisp_parts(content);
+            serde_json::to_string(&parts)
+                .expect("MessagePart serialization is infallible for generator-local data")
+                .into_bytes()
+        }
+    };
+    bytes_to_hex(&Sha256::digest(&canonical_bytes))
+}
+
+/// Lowercase-hex encoding of a byte slice. Inlined to avoid taking a
+/// direct dependency on the `hex` crate — SHA-256 digests are only 32
+/// bytes, so the alloc cost is negligible and the helper stays private
+/// to this module.
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +1005,197 @@ mod tests {
             }
             other => panic!("expected Request::RawIngest, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_canonical_hash_remember_uses_content_field() {
+        // §6.2: Remember hash = sha256(content bytes), nothing else.
+        // Known SHA-256 of the UTF-8 bytes of "hello world" (no trailing
+        // newline) is the classic test vector — hardcoded here so a
+        // broken hash function (different algorithm, wrong encoding,
+        // off-by-one on the byte range) fails loudly instead of silently
+        // round-tripping its own mistake.
+        let op = Operation::Remember {
+            index: 0,
+            memory_type: "decision".to_string(),
+            title: "anything".to_string(),
+            content: "hello world".to_string(),
+            tags: vec!["ignored".to_string()],
+        };
+        let hash = canonical_hash(&op);
+        assert_eq!(
+            hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "hash must equal the known SHA-256 of 'hello world' bytes"
+        );
+    }
+
+    #[test]
+    fn test_canonical_hash_ingest_raw_uses_content_field() {
+        // §6.2: IngestRaw hash = sha256(content bytes), same scheme as
+        // Remember. Since "hello world" has a well-known SHA-256, we
+        // reuse it here as the KAT. The fact that Remember and IngestRaw
+        // share a hash for identical content is intentional: ids are
+        // kind-scoped, so collisions cannot confuse verify_matches.
+        let op = Operation::IngestRaw {
+            index: 0,
+            content: "hello world".to_string(),
+        };
+        let hash = canonical_hash(&op);
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn test_canonical_hash_fisp_send_matches_serde_json_compact() {
+        // §6.2: FispSend hash = sha256(serde_json::to_string(&parts)
+        // bytes). For an op with content="hello", parts serializes as
+        // exactly: [{"kind":"text","text":"hello"}]
+        // (compact, no whitespace, struct field order preserved by
+        // serde's derive, None fields elided via skip_serializing_if).
+        //
+        // Pre-computed offline with python3's hashlib.sha256 over those
+        // exact bytes. If serde_json ever changes how it orders or
+        // elides fields, this KAT fails loudly — exactly the tripwire
+        // the design doc §6.2 version-bump requirement is protecting.
+        let op = Operation::FispSend {
+            index: 0,
+            from_session: "persist_session_0".to_string(),
+            to_session: "persist_session_1".to_string(),
+            content: "hello".to_string(),
+        };
+        let hash = canonical_hash(&op);
+        assert_eq!(
+            hash,
+            "20ae1a900410d7f6f6a0ad4a944d7b62c52f230016c80ab37603d2e4e130f390"
+        );
+    }
+
+    #[test]
+    fn test_canonical_hash_is_deterministic_for_same_op() {
+        // Locks the "pure function" contract: the same op must always
+        // produce the same hash, no matter how many times it is called.
+        // If canonical_hash ever grows state (e.g., a timestamp or a
+        // session-specific salt), this test fails.
+        let op = Operation::Remember {
+            index: 7,
+            memory_type: "lesson".to_string(),
+            title: "stable".to_string(),
+            content: "stable body".to_string(),
+            tags: vec!["a".to_string(), "b".to_string()],
+        };
+        let first = canonical_hash(&op);
+        let second = canonical_hash(&op);
+        assert_eq!(first, second, "canonical_hash must be deterministic");
+        assert_eq!(first.len(), 64, "SHA-256 hex output is exactly 64 chars");
+    }
+
+    #[test]
+    fn test_canonical_hash_differs_for_different_content() {
+        // Guard against a trivial impl that returns a constant or hashes
+        // something unrelated. Two ops with different body strings MUST
+        // produce different hashes.
+        let a = Operation::Remember {
+            index: 0,
+            memory_type: "decision".to_string(),
+            title: "t".to_string(),
+            content: "body A".to_string(),
+            tags: vec![],
+        };
+        let b = Operation::Remember {
+            index: 0,
+            memory_type: "decision".to_string(),
+            title: "t".to_string(),
+            content: "body B".to_string(),
+            tags: vec![],
+        };
+        assert_ne!(canonical_hash(&a), canonical_hash(&b));
+    }
+
+    #[test]
+    fn test_canonical_hash_fisp_send_differs_for_different_content() {
+        // FispSend content change → different hash. Parallels the
+        // Remember test above; closes the gap where a constant-output
+        // bug in the FispSend code path would slip past the single
+        // FispSend KAT that only tests one content value.
+        let a = Operation::FispSend {
+            index: 0,
+            from_session: "persist_session_0".to_string(),
+            to_session: "persist_session_1".to_string(),
+            content: "body A".to_string(),
+        };
+        let b = Operation::FispSend {
+            index: 0,
+            from_session: "persist_session_0".to_string(),
+            to_session: "persist_session_1".to_string(),
+            content: "body B".to_string(),
+        };
+        assert_ne!(canonical_hash(&a), canonical_hash(&b));
+    }
+
+    #[test]
+    fn test_canonical_hash_fisp_matches_op_to_request_parts() {
+        // Tripwire test — the critical invariant between `op_to_request`
+        // and `canonical_hash`. Both paths MUST agree on the exact
+        // `Vec<MessagePart>` shape that gets sent + hashed, because
+        // cycle (h)'s consistency_rate == 1.00 requires byte-exact hash
+        // match against the daemon's stored content.
+        //
+        // This test takes the REAL output of `op_to_request` for a
+        // FispSend op, extracts its `parts` vec, recomputes the hash
+        // from it, and asserts equality with `canonical_hash(&op)`.
+        // If either side ever refactors the MessagePart shape without
+        // updating the other (or, more importantly, without updating
+        // the shared `fisp_parts` helper), this test fails loudly.
+        let op = Operation::FispSend {
+            index: 0,
+            from_session: "persist_session_0".to_string(),
+            to_session: "persist_session_1".to_string(),
+            content: "tripwire payload".to_string(),
+        };
+        let expected_hash = match op_to_request(&op) {
+            Request::SessionSend { parts, .. } => {
+                let json = serde_json::to_string(&parts)
+                    .expect("parts must serialize for the tripwire check");
+                let digest = Sha256::digest(json.as_bytes());
+                bytes_to_hex(&digest)
+            }
+            other => panic!("expected SessionSend from op_to_request, got {other:?}"),
+        };
+        assert_eq!(
+            canonical_hash(&op),
+            expected_hash,
+            "canonical_hash must agree with the parts shape op_to_request actually sends"
+        );
+    }
+
+    #[test]
+    fn test_canonical_hash_remember_ignores_non_content_fields() {
+        // §6.2: Remember hash = sha256(content bytes), nothing else.
+        // Changing title, memory_type, tags, or index MUST NOT affect
+        // the hash. This locks the content-only scheme against an
+        // over-eager refactor that starts folding extra fields into
+        // the canonical payload.
+        let base = Operation::Remember {
+            index: 0,
+            memory_type: "decision".to_string(),
+            title: "original".to_string(),
+            content: "same body".to_string(),
+            tags: vec!["a".to_string()],
+        };
+        let changed = Operation::Remember {
+            index: 99,
+            memory_type: "protocol".to_string(),
+            title: "different title".to_string(),
+            content: "same body".to_string(),
+            tags: vec!["x".to_string(), "y".to_string(), "z".to_string()],
+        };
+        assert_eq!(
+            canonical_hash(&base),
+            canonical_hash(&changed),
+            "Remember hash must depend only on the content field"
+        );
     }
 
     #[test]
