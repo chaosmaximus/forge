@@ -67,6 +67,51 @@ enum Commands {
         #[arg(long, default_value = "hybrid")]
         raw_mode: String,
     },
+    /// Run the Forge-Persist benchmark — spawn a daemon, issue a
+    /// scripted seeded workload, SIGKILL mid-run, restart, and
+    /// verify every HTTP-200-acked op survived. See
+    /// `docs/benchmarks/forge-persist-design.md` §8 for the full
+    /// flag contract and §6 for the scoring rubric.
+    ForgePersist {
+        /// Number of `Remember` ops in the workload.
+        #[arg(long, default_value_t = 100)]
+        memories: usize,
+        /// Number of `RawIngest` ops.
+        #[arg(long, default_value_t = 50)]
+        chunks: usize,
+        /// Number of `SessionSend` (FISP) ops.
+        #[arg(long, default_value_t = 20)]
+        fisp_messages: usize,
+        /// ChaCha20 PRNG seed for the workload interleaver. Controls
+        /// the shuffled order of ops but NOT their content, which is
+        /// index-derived and always deterministic.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Fraction of total ops at which SIGKILL fires. 0.5 = kill
+        /// after half the workload has been acked.
+        #[arg(long, default_value_t = 0.5)]
+        kill_after: f64,
+        /// Output directory for `summary.json`, `repro.sh`, and the
+        /// pre_kill/post_restart JSONL dumps.
+        #[arg(long, default_value = "bench_results")]
+        output: PathBuf,
+        /// Path to the forge-daemon binary. Defaults to None; cycle
+        /// (j)'s orchestrator falls back to locating the binary via
+        /// `which forge-daemon` if this flag is omitted.
+        #[arg(long)]
+        daemon_bin: Option<PathBuf>,
+        /// Wall-clock timeout for the daemon's HTTP Health response
+        /// after spawn. If Health isn't reachable within this window,
+        /// the harness reports `SpawnTimeout` and aborts the run.
+        #[arg(long, default_value_t = 5000)]
+        recovery_timeout_ms: u64,
+        /// Post-restart catch-up window. After the second spawn,
+        /// the harness waits this long before scoring so the
+        /// async embedder worker can finish processing pre-kill
+        /// memories that were acked but not yet embedded at kill time.
+        #[arg(long, default_value_t = 10000)]
+        worker_catchup_ms: u64,
+    },
     /// Run the LoCoMo benchmark.
     Locomo {
         /// Path to locomo10.json (from snap-research/locomo).
@@ -150,6 +195,27 @@ async fn main() {
             )
             .await
         }
+        Commands::ForgePersist {
+            memories,
+            chunks,
+            fisp_messages,
+            seed,
+            kill_after,
+            output,
+            daemon_bin,
+            recovery_timeout_ms,
+            worker_catchup_ms,
+        } => run_forge_persist(
+            memories,
+            chunks,
+            fisp_messages,
+            seed,
+            kill_after,
+            output,
+            daemon_bin,
+            recovery_timeout_ms,
+            worker_catchup_ms,
+        ),
     };
     if let Err(e) = outcome {
         eprintln!("forge-bench: {e}");
@@ -363,6 +429,35 @@ fn unix_secs_string() -> String {
     format!("{secs}")
 }
 
+// Parameter list mirrors the clap `Commands::ForgePersist` variant
+// fields one-for-one, same rationale as `run_longmemeval` above —
+// bundling would add a destructure step in `main` without simplifying
+// the call site.
+//
+// **Cycle (i1) scope:** this function is a stub. It validates that
+// CLI parsing → dispatch wiring is complete end-to-end, and returns
+// a known-pending error so a user who invokes `forge-bench forge-persist`
+// gets a clear "not yet implemented" message rather than a silent
+// no-op. The full orchestrator (spawn → workload → kill → restart →
+// verify_matches → score) lands in cycle (j).
+#[allow(clippy::too_many_arguments)]
+fn run_forge_persist(
+    _memories: usize,
+    _chunks: usize,
+    _fisp_messages: usize,
+    _seed: u64,
+    _kill_after: f64,
+    _output: PathBuf,
+    _daemon_bin: Option<PathBuf>,
+    _recovery_timeout_ms: u64,
+    _worker_catchup_ms: u64,
+) -> Result<(), String> {
+    Err(
+        "forge-persist orchestrator lands in cycle (j) — this subcommand is wired at the CLI layer but the runtime is not yet implemented"
+            .to_string(),
+    )
+}
+
 // Parameter list mirrors the clap `Commands::Locomo` variant fields
 // one-for-one — see `run_longmemeval` comment above for why this lint
 // is suppressed rather than refactored.
@@ -524,4 +619,101 @@ async fn run_locomo(
     println!("  repro.sh        {}", repro_path.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cli_parses_forge_persist_subcommand_with_defaults() {
+        // Cycle (i1): drives the ForgePersist variant into existence
+        // via clap's Derive parser. Only `--daemon-bin` is provided;
+        // every other flag must fall back to its default from §8.
+        let cli = Cli::try_parse_from([
+            "forge-bench",
+            "forge-persist",
+            "--daemon-bin",
+            "/tmp/forge-daemon",
+        ])
+        .expect("forge-persist subcommand should parse with --daemon-bin only");
+        match cli.command {
+            Commands::ForgePersist {
+                memories,
+                chunks,
+                fisp_messages,
+                seed,
+                kill_after,
+                output,
+                daemon_bin,
+                recovery_timeout_ms,
+                worker_catchup_ms,
+            } => {
+                assert_eq!(memories, 100);
+                assert_eq!(chunks, 50);
+                assert_eq!(fisp_messages, 20);
+                assert_eq!(seed, 42);
+                assert_eq!(kill_after, 0.5);
+                assert_eq!(output, PathBuf::from("bench_results"));
+                assert_eq!(daemon_bin, Some(PathBuf::from("/tmp/forge-daemon")));
+                assert_eq!(recovery_timeout_ms, 5000);
+                assert_eq!(worker_catchup_ms, 10000);
+            }
+            other => panic!("expected Commands::ForgePersist, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_forge_persist_accepts_all_flags() {
+        // Cycle (i1): end-to-end flag override test — every flag
+        // from §8 overridden on the command line, and every value
+        // correctly propagated into the parsed variant.
+        let cli = Cli::try_parse_from([
+            "forge-bench",
+            "forge-persist",
+            "--memories",
+            "25",
+            "--chunks",
+            "5",
+            "--fisp-messages",
+            "3",
+            "--seed",
+            "7",
+            "--kill-after",
+            "0.25",
+            "--output",
+            "/tmp/persist_out",
+            "--daemon-bin",
+            "/tmp/forge-daemon",
+            "--recovery-timeout-ms",
+            "9000",
+            "--worker-catchup-ms",
+            "15000",
+        ])
+        .expect("all flags should parse");
+        match cli.command {
+            Commands::ForgePersist {
+                memories,
+                chunks,
+                fisp_messages,
+                seed,
+                kill_after,
+                output,
+                daemon_bin,
+                recovery_timeout_ms,
+                worker_catchup_ms,
+            } => {
+                assert_eq!(memories, 25);
+                assert_eq!(chunks, 5);
+                assert_eq!(fisp_messages, 3);
+                assert_eq!(seed, 7);
+                assert_eq!(kill_after, 0.25);
+                assert_eq!(output, PathBuf::from("/tmp/persist_out"));
+                assert_eq!(daemon_bin, Some(PathBuf::from("/tmp/forge-daemon")));
+                assert_eq!(recovery_timeout_ms, 9000);
+                assert_eq!(worker_catchup_ms, 15000);
+            }
+            other => panic!("expected Commands::ForgePersist, got {other:?}"),
+        }
+    }
 }
