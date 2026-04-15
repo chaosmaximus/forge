@@ -12,6 +12,7 @@ use forge_core::types::memory::MemoryType;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener;
@@ -759,9 +760,9 @@ pub const RECOVERY_TIME_MS_THRESHOLD: u64 = 5000;
 
 /// §6.4 composite benchmark result. Built by [`score_run`] from the
 /// three individual metrics and carries a pre-computed `passed` flag.
-/// Serialized into cycle (i)'s `summary.json` and displayed by the
-/// CLI as the final verdict for the run.
-#[derive(Debug, Clone, PartialEq)]
+/// Serialized into cycle (i)'s `summary.json` (via the `"pass"` field
+/// rename) and displayed by the CLI as the final verdict for the run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersistScore {
     /// §6.1 recovery rate in `[0.0, 1.0]`.
     pub recovery_rate: f64,
@@ -781,6 +782,10 @@ pub struct PersistScore {
     /// fails — otherwise `recovery_rate` and `consistency_rate` both
     /// return their vacuous 1.0 fast-paths and a misconfigured
     /// "forgot to set memories" run would silently pass.
+    ///
+    /// Serialized as `"pass"` (not `"passed"`) to match the
+    /// `summary.json` shape in design doc §8.1.
+    #[serde(rename = "pass")]
     pub passed: bool,
 }
 
@@ -802,6 +807,63 @@ pub struct PersistScore {
 /// Per §6.4 "corruption is worse than loss": a run that passes
 /// recovery but fails consistency is still a FAIL — the composite
 /// logic short-circuits correctly because `&&` is strict.
+/// §8.1 reporting-layer envelope for a Forge-Persist benchmark run.
+/// Serialized as the top-level JSON object in `summary.json` with the
+/// exact field order the design doc mandates: config echo first, then
+/// workload/orchestrator counts, then scoring metrics, then pass flag,
+/// then run metadata.
+///
+/// Fields are duplicated from [`PersistScore`] rather than embedded
+/// via `#[serde(flatten)]` to preserve the §8.1 field order
+/// byte-exactly — flatten would interleave the nested struct's fields
+/// at its declaration site, which conflicts with the spec's placement
+/// of `total_ops` adjacent to the config fields. Cycle (j)'s
+/// orchestrator constructs a `RunSummary` by copying fields out of a
+/// [`PersistScore`] plus the additional observability counts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunSummary {
+    /// ChaCha20 PRNG seed for the workload interleaver (§5.1).
+    pub seed: u64,
+    /// Number of `Remember` ops configured.
+    pub memories: usize,
+    /// Number of `RawIngest` ops configured.
+    pub chunks: usize,
+    /// Number of `SessionSend` (FISP) ops configured.
+    pub fisp_messages: usize,
+    /// Fraction of total ops after which SIGKILL fires (§5).
+    pub kill_after: f64,
+    /// Total workload size (`memories + chunks + fisp_messages`).
+    /// Duplicated from [`PersistScore::total_ops`] for spec-order
+    /// placement adjacent to the config fields.
+    pub total_ops: usize,
+    /// Number of ops the daemon acked pre-kill (the size of the
+    /// ground-truth set).
+    pub acked_pre_kill: usize,
+    /// Number of acked ids visible post-restart (the numerator of
+    /// [`recovery_rate`]).
+    pub recovered: usize,
+    /// Number of post-restart rows with matching content hash (the
+    /// numerator of [`consistency_rate`]).
+    pub matched: usize,
+    /// §6.1 recovery rate. Duplicated from [`PersistScore::recovery_rate`].
+    pub recovery_rate: f64,
+    /// §6.2 consistency rate. Duplicated from [`PersistScore::consistency_rate`].
+    pub consistency_rate: f64,
+    /// §6.3 wall-clock recovery time in ms. Duplicated from
+    /// [`PersistScore::recovery_time_ms`].
+    pub recovery_time_ms: u64,
+    /// Composite PASS/FAIL (§6.4). Duplicated from
+    /// [`PersistScore::passed`]. Serialized as `"pass"` per §8.1.
+    #[serde(rename = "pass")]
+    pub passed: bool,
+    /// Total wall-clock time of the run in milliseconds (CLI start to
+    /// scoring complete).
+    pub wall_time_ms: u64,
+    /// The daemon binary's `--version` output, captured at spawn time
+    /// for reproduction audits.
+    pub daemon_version: String,
+}
+
 pub fn score_run(
     recovery_rate: f64,
     consistency_rate: f64,
@@ -1422,6 +1484,96 @@ mod tests {
             canonical_hash(&op),
             expected_hash,
             "canonical_hash must agree with the parts shape op_to_request actually sends"
+        );
+    }
+
+    #[test]
+    fn test_run_summary_round_trips_and_matches_section_8_1_shape() {
+        // §8.1 mandates a specific flat `summary.json` shape with keys
+        // in this order: seed, memories, chunks, fisp_messages,
+        // kill_after, total_ops, acked_pre_kill, recovered, matched,
+        // recovery_rate, consistency_rate, recovery_time_ms, pass,
+        // wall_time_ms, daemon_version. Cycle (i2) locks the struct
+        // layout and the "pass" key rename.
+        let summary = RunSummary {
+            seed: 42,
+            memories: 100,
+            chunks: 50,
+            fisp_messages: 20,
+            kill_after: 0.5,
+            total_ops: 170,
+            acked_pre_kill: 85,
+            recovered: 85,
+            matched: 85,
+            recovery_rate: 1.0,
+            consistency_rate: 1.0,
+            recovery_time_ms: 1420,
+            passed: true,
+            wall_time_ms: 14360,
+            daemon_version: "forge-daemon 0.7.0".to_string(),
+        };
+        let json = serde_json::to_string(&summary).expect("serialize");
+        // Every §8.1 field present with expected value
+        assert!(json.contains(r#""seed":42"#), "seed: {json}");
+        assert!(json.contains(r#""memories":100"#), "memories: {json}");
+        assert!(json.contains(r#""chunks":50"#), "chunks: {json}");
+        assert!(
+            json.contains(r#""fisp_messages":20"#),
+            "fisp_messages: {json}"
+        );
+        assert!(json.contains(r#""total_ops":170"#), "total_ops: {json}");
+        assert!(
+            json.contains(r#""acked_pre_kill":85"#),
+            "acked_pre_kill: {json}"
+        );
+        assert!(json.contains(r#""recovered":85"#), "recovered: {json}");
+        assert!(json.contains(r#""matched":85"#), "matched: {json}");
+        assert!(
+            json.contains(r#""recovery_time_ms":1420"#),
+            "recovery_time_ms: {json}"
+        );
+        assert!(
+            json.contains(r#""wall_time_ms":14360"#),
+            "wall_time_ms: {json}"
+        );
+        assert!(
+            json.contains(r#""daemon_version":"forge-daemon 0.7.0""#),
+            "daemon_version: {json}"
+        );
+        // "pass" key rename
+        assert!(json.contains(r#""pass":true"#), "pass rename: {json}");
+        assert!(
+            !json.contains(r#""passed""#),
+            "should not leak Rust name: {json}"
+        );
+        // Round trip
+        let parsed: RunSummary = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(summary, parsed);
+    }
+
+    #[test]
+    fn test_persist_score_round_trips_through_json() {
+        // §8.1 requires summary.json to serialize a flat object with a
+        // `"pass"` key (not `"passed"`). Cycle (i2) adds Serialize +
+        // Deserialize derives on PersistScore with the field rename.
+        // This test locks both the trait impls and the JSON key.
+        let score = PersistScore {
+            recovery_rate: 0.99,
+            consistency_rate: 1.0,
+            recovery_time_ms: 1234,
+            total_ops: 170,
+            passed: true,
+        };
+        let json = serde_json::to_string(&score).expect("serialize");
+        let round_trip: PersistScore = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(score, round_trip);
+        assert!(
+            json.contains(r#""pass":true"#),
+            "JSON should use key 'pass', got: {json}"
+        );
+        assert!(
+            !json.contains(r#""passed""#),
+            "JSON should NOT leak the Rust field name 'passed', got: {json}"
         );
     }
 
