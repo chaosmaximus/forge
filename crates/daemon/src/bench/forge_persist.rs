@@ -713,6 +713,32 @@ pub fn consistency_rate(
     correctly_matched as f64 / post_restart.len() as f64
 }
 
+/// §6.3 recovery_time_ms:
+/// ```text
+/// recovery_time_ms = first_health_ok_timestamp - second_daemon_spawn_timestamp
+/// ```
+/// Returns the wall-clock delta (in milliseconds) between the second
+/// `Command::spawn()` call and the first successful `Health` HTTP 200
+/// from the restarted daemon. The harness records both `Instant` marks
+/// and passes them to this function at scoring time.
+///
+/// **Clock-reversal safety:** if `first_health_ok` is somehow less
+/// than `spawn_instant` (monotonic-clock hiccups are rare but
+/// possible), the function saturates to 0 rather than panicking or
+/// returning a wrapped-around value. This is the safest behavior for
+/// a metric that cycle (h4) compares against a threshold — 0 ms is
+/// interpreted as "instantaneous recovery" and trivially passes.
+///
+/// **Cast safety:** `Duration::as_millis()` returns `u128`, but a u64
+/// of milliseconds can hold ~584 million years of delta — well beyond
+/// any realistic benchmark run. The `as u64` cast is safe.
+pub fn recovery_time_ms(spawn_instant: Instant, first_health_ok: Instant) -> u64 {
+    first_health_ok
+        .checked_duration_since(spawn_instant)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // Harness config + handle
 // ---------------------------------------------------------------------------
@@ -1315,6 +1341,36 @@ mod tests {
             expected_hash,
             "canonical_hash must agree with the parts shape op_to_request actually sends"
         );
+    }
+
+    #[test]
+    fn test_recovery_time_ms_computes_millisecond_delta() {
+        // §6.3: recovery_time_ms = first_health_ok - spawn_instant.
+        // Using `start + Duration::from_millis(X)` lets us construct a
+        // deterministic later Instant without a real sleep (avoids CI
+        // flake on slow runners). Drives `recovery_time_ms` into
+        // existence and locks the millisecond-conversion math.
+        let start = Instant::now();
+        let later = start + Duration::from_millis(2500);
+        assert_eq!(recovery_time_ms(start, later), 2500);
+    }
+
+    #[test]
+    fn test_recovery_time_ms_zero_when_instants_equal() {
+        // Boundary: if spawn and first-health-ok are the same Instant,
+        // the delta is exactly 0 ms.
+        let now = Instant::now();
+        assert_eq!(recovery_time_ms(now, now), 0);
+    }
+
+    #[test]
+    fn test_recovery_time_ms_saturates_to_zero_on_reverse_order() {
+        // Clock-reversal safety: if first_health_ok somehow predates
+        // spawn_instant (monotonic-clock hiccup on exotic hardware),
+        // the function must not panic or wrap. It saturates to 0.
+        let start = Instant::now();
+        let earlier = start - Duration::from_millis(1000);
+        assert_eq!(recovery_time_ms(start, earlier), 0);
     }
 
     #[test]
