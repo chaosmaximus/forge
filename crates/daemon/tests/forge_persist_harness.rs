@@ -9,7 +9,7 @@
 //! They are NOT included in `cargo test --lib` which only runs unit tests.
 
 use forge_daemon::bench::forge_persist::{
-    generate_workload, PersistConfig, PersistHarness, WorkloadConfig,
+    canonical_hash, generate_workload, PersistConfig, PersistHarness, WorkloadConfig,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -104,6 +104,21 @@ fn test_persist_harness_executes_op_against_real_daemon() {
     assert!(
         !ack.id.is_empty(),
         "Remember ack should carry a non-empty id"
+    );
+
+    // Cycle (g2): execute_op must now populate content_hash with the
+    // canonical SHA-256 of the op's payload per design doc §6.2. An
+    // empty content_hash (the f2 placeholder) fails this assertion
+    // loudly — this is the RED test that drives g2.
+    assert_eq!(
+        ack.content_hash,
+        canonical_hash(&ops[0]),
+        "content_hash must equal canonical_hash(op) — cycle g2 wiring"
+    );
+    assert_eq!(
+        ack.content_hash.len(),
+        64,
+        "SHA-256 hex digest is exactly 64 chars"
     );
 
     harness.kill().expect("kill should succeed");

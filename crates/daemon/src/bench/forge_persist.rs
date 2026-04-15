@@ -417,17 +417,19 @@ impl std::error::Error for HarnessError {
 // HTTP client wrapper + acked-op record (cycle f2)
 // ---------------------------------------------------------------------------
 
-/// Record of a successfully-acked workload operation. Stored by the
-/// ground-truth tracker in cycle (g) and compared against the daemon's
-/// post-restart state to score recovery.
+/// Record of a successfully-acked workload operation. Produced by
+/// [`HttpClient::execute_op`] at ack time and later used by the
+/// ground-truth tracker (cycle g3) and consistency scorer (cycle h) to
+/// compare against the daemon's post-restart state.
 ///
-/// `content_hash` is a placeholder (empty string) in cycle (f2). Cycle
-/// (g) introduces a SHA-256 canonical-payload hash per design doc §6.2
-/// so the tracker can verify bit-exact consistency after restart.
+/// Both fields are always populated from cycle (g2) onward: `id` comes
+/// from the daemon's Response, and `content_hash` is computed inline
+/// from the input op via [`canonical_hash`] (per design doc §6.2)
+/// BEFORE the HTTP request is sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AckedOp {
     /// The daemon-assigned identifier. The exact shape depends on the
-    /// op kind, which matters for cycle (g)'s ground-truth tracker:
+    /// op kind, which matters for cycle (j)'s verify_matches lookups:
     ///
     /// - `Remember` → the ULID from `ResponseData::Stored { id }`.
     ///   Recovery verification looks this up in the `memories` table.
@@ -441,8 +443,11 @@ pub struct AckedOp {
     ///   `ResponseData::MessageSent { id, .. }`. Recovery verification
     ///   looks this up in the `session_messages` table.
     pub id: String,
-    /// SHA-256 canonical content hash. Empty in cycle (f2); populated
-    /// by the ground-truth tracker in cycle (g).
+    /// SHA-256 canonical content hash, always 64 lowercase hex chars.
+    /// Populated by [`HttpClient::execute_op`] via [`canonical_hash`]
+    /// per design doc §6.2 at the moment the op is acked. Cycle (h)'s
+    /// consistency_rate metric requires this to match the daemon's
+    /// post-restart stored content byte-exactly.
     pub content_hash: String,
 }
 
@@ -539,24 +544,24 @@ impl HttpClient {
     /// - `ResponseData::MessageSent { id, .. }` — from `SessionSend`
     ///
     /// Any other `ResponseData` variant is `UnexpectedResponse`.
-    /// `content_hash` is left empty; cycle (g) will populate it via the
-    /// ground-truth tracker's canonical-payload SHA-256.
+    ///
+    /// **Content hash wiring (cycle g2):** `canonical_hash(op)` is
+    /// computed before the request is sent, from the input op alone, so
+    /// it is deterministic regardless of whether the daemon succeeds or
+    /// fails. The resulting `AckedOp.content_hash` feeds cycle (h)'s
+    /// consistency_rate metric, which requires byte-exact match against
+    /// the daemon's post-restart stored content.
     pub fn execute_op(&self, op: &Operation) -> Result<AckedOp, HarnessError> {
         let req = op_to_request(op);
+        let content_hash = canonical_hash(op);
         match self.execute(&req)? {
             Response::Ok { data } => match data {
-                ResponseData::Stored { id } => Ok(AckedOp {
-                    id,
-                    content_hash: String::new(),
-                }),
+                ResponseData::Stored { id } => Ok(AckedOp { id, content_hash }),
                 ResponseData::RawIngest { document_id, .. } => Ok(AckedOp {
                     id: document_id,
-                    content_hash: String::new(),
+                    content_hash,
                 }),
-                ResponseData::MessageSent { id, .. } => Ok(AckedOp {
-                    id,
-                    content_hash: String::new(),
-                }),
+                ResponseData::MessageSent { id, .. } => Ok(AckedOp { id, content_hash }),
                 other => Err(HarnessError::UnexpectedResponse(format!(
                     "expected Stored/RawIngest/MessageSent, got {other:?}"
                 ))),
