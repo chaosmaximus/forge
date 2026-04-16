@@ -8,19 +8,32 @@
 
 ---
 
-## Headline — 5-seed calibration sweep
+## Headline — 5-seed calibration sweep (post daemon fix)
 
 | Seed | context_assembly_f1 | guardrails_f1 | completion_f1 | layer_recall_f1 | tool_filter_accuracy | composite | verdict |
 |---:|---:|---:|---:|---:|---:|---:|:---:|
-| 1 | **1.0000** | **0.7667** | **0.5000** | **1.0000** | **1.0000** | **0.8300** | PASS |
-| 2 | **1.0000** | **0.7667** | **0.5000** | **1.0000** | **1.0000** | **0.8300** | PASS |
-| 3 | **1.0000** | **0.7667** | **0.5000** | **1.0000** | **1.0000** | **0.8300** | PASS |
-| 42 | **1.0000** | **0.7667** | **0.5000** | **1.0000** | **1.0000** | **0.8300** | PASS |
-| 100 | **1.0000** | **0.7667** | **0.5000** | **1.0000** | **1.0000** | **0.8300** | PASS |
+| 1 | **1.0000** | **0.7667** | **1.0000** | **1.0000** | **1.0000** | **0.9300** | PASS |
+| 2 | **1.0000** | **0.7667** | **1.0000** | **1.0000** | **1.0000** | **0.9300** | PASS |
+| 3 | **1.0000** | **0.7667** | **1.0000** | **1.0000** | **1.0000** | **0.9300** | PASS |
+| 42 | **1.0000** | **0.7667** | **1.0000** | **1.0000** | **1.0000** | **0.9300** | PASS |
+| 100 | **1.0000** | **0.7667** | **1.0000** | **1.0000** | **1.0000** | **0.9300** | PASS |
 
-**All 5 seeds identical.** The benchmark is fully deterministic — same seed produces the same dataset, and the daemon's BM25/FTS5 recall on the same data is deterministic.
+**All 5 seeds identical.** The benchmark is fully deterministic.
 
-**Composite: 0.8300** against a pass threshold of 0.50.
+**Composite: 0.9300** against a pass threshold of 0.50.
+
+### Improvement from daemon fixes
+
+The first calibration run scored 0.8300. Two daemon fixes lifted the score:
+- **PreBashCheck LIMIT 1→2:** Now surfaces 2 matching skills instead of 1 (guardrails unchanged — the ceiling is LIKE matching, not LIMIT)
+- **CompletionCheck `%deployment%` tag:** Deployment-tagged lessons now surfaced (completion 0.50 → 1.00)
+
+| Dimension | Before | After | Delta |
+|-----------|--------|-------|-------|
+| Completion | 0.5000 | **1.0000** | +0.50 |
+| Composite | 0.8300 | **0.9300** | +0.10 |
+
+The remaining 0.07 gap is entirely in guardrails (0.77) — a structural ceiling from LIKE-based skill matching in `find_applicable_skills`. Fixing this requires FTS5 search for skills (deferred to the improvement roadmap).
 
 ---
 
@@ -43,15 +56,11 @@ The daemon correctly identifies decisions linked to files via `affects` edges in
 
 2. **`PreBashCheck` returns at most 1 skill** per the `LIMIT 1` in the SQL. When multiple matching skills exist, only the highest-success-count one is returned.
 
-### Completion (F1 = 0.5000) — expected ceiling
+### Completion (F1 = 1.0000) — perfect (after daemon fix)
 
-The CompletionCheck handler returns lessons matching `tags LIKE '%testing%' OR '%production-readiness%' OR '%anti-pattern%' OR '%uat%'`, limited to top 3 by quality_score/confidence. The 0.50 F1 reflects:
+The CompletionCheck handler now matches 5 tag patterns: `%testing%`, `%production-readiness%`, `%anti-pattern%`, `%uat%`, `%deployment%`. All 10 lessons in the seeded corpus have at least one matching tag. The top 3 by quality_score/confidence are correctly returned.
 
-1. Only lessons with these specific tag substrings are returned — not all lessons
-2. The `quality_score` ranking may not match the ground-truth's insertion-order assumption for all tie cases
-3. `TaskCompletionCheck` uses a different regex-based detection (`ship|deploy|release|production|merge|push`) which is correctly matched by the ground truth
-
-This is a real performance characteristic of the completion intelligence path, not a bench bug.
+**Before the daemon fix (0.50):** The handler only checked 4 tag patterns (missing `%deployment%`). Lessons tagged with "deployment" were invisible to completion intelligence — a real daemon bug caught by the benchmark.
 
 ### Layer Recall (F1 = 1.0000) — perfect
 
