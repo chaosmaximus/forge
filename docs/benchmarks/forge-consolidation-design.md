@@ -32,7 +32,7 @@ Empirical facts from a reconnaissance pass over the daemon's consolidation syste
    - **Phase 1** (`line 73`): `ops::dedup_memories(conn)` — exact dedup via `ROW_NUMBER() PARTITION BY title, memory_type ORDER BY confidence DESC, created_at DESC` keeping rank 1. Returns deletion count.
    - **Phase 2** (`line 84`): `ops::semantic_dedup(conn, batch_limit)` — word-overlap merge on `meaningful_words` (≥2-char alphanumeric, stopwords filtered — see §2 point 12 for exact filter). Combined score: `weighted = 0.5*title_score + 0.5*content_score; combined = max(weighted, title_score, content_score)`. If `combined > 0.65` → supersede lower-confidence copy, create `supersedes` edge.
    - **Phase 3** (`line 95`): `ops::link_related_memories(conn, batch_limit)` — creates `related_to` edges for memory pairs sharing ≥2 tags.
-   - **Phase 4** (`line 106`): `ops::decay_memories(conn, batch_limit)` — exponential decay `confidence * exp(-0.03 * days_old)`; memories with `effective_confidence < 0.1` transition to `faded` status.
+   - **Phase 4** (`line 106`): `ops::decay_memories(conn, batch_limit)` — exponential decay keyed off **`accessed_at`** (NOT `created_at`): `confidence * exp(-0.03 * days_since_accessed)`. Query at `ops.rs:537`: `SELECT id, confidence, accessed_at FROM memory WHERE status = 'active' LIMIT ?1`. Memories with `effective_confidence < 0.1` transition to `faded` status. **Seeded `created_at` is irrelevant for Phase 4** — only `accessed_at` matters.
    - **Phase 5** (`line 117`): `ops::promote_recurring_lessons(conn, batch_limit)` — clusters of 3+ lessons with >50% title overlap same project → Pattern memory with `confidence + 0.1` (capped 1.0), originals superseded.
    - **Phase 6** (`line 128`): `ops::find_reconsolidation_candidates(conn)` — memories with `access_count >= 5` get `confidence + 0.05` (capped 1.0). Returns top 5 by access count.
    - **Phase 7** (`line 154`): `ops::embedding_merge(conn)` — KNN search (k=10) on `memory_vec`; pairs with distance < 0.1 (cosine similarity > 0.9) and same type merge via `supersedes` edge. Batch 200 to limit N+1.
@@ -75,9 +75,10 @@ Empirical facts from a reconnaissance pass over the daemon's consolidation syste
    - `ConsolidationConfig { batch_limit: 200, reweave_limit: 50 }` — clamped `[1, 1000]` and `[1, 500]`.
    - `HealingConfig { enabled: true, cosine_threshold: 0.65, overlap_low: 0.3, overlap_high: 0.7, staleness_days: 7, staleness_min_quality: 0.2, quality_decay_per_cycle: 0.1, quality_boost_per_access: 0.05, batch_limit: 200 }`.
 
-8. **Memory table columns** (`crates/daemon/src/db/schema.rs`):
+8. **Memory table columns** (`crates/daemon/src/db/schema.rs`, verified against current schema):
    - Base: `id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, organization_id`
-   - Added via migrations: `activation_level REAL DEFAULT 0.0`, `valence TEXT NOT NULL DEFAULT 'neutral'`, `intensity REAL NOT NULL DEFAULT 0.0`, `quality_score REAL DEFAULT 0.5`, `access_count`, `memory_type_extra`.
+   - Added via migrations: `activation_level REAL DEFAULT 0.0`, `valence TEXT NOT NULL DEFAULT 'neutral'`, `intensity REAL NOT NULL DEFAULT 0.0`, `quality_score REAL DEFAULT 0.5`, `access_count INTEGER DEFAULT 0`, `hlc_timestamp`, `node_id`, `session_id`, `alternatives`, `participants`, `portability TEXT`, `deleted_at`, `superseded_by`, `reality_id TEXT`.
+   - Note: `memory_type_extra` was mentioned in an earlier plan but is NOT in the current schema. The bench does not depend on it.
 
 9. **Edge table** (`schema.rs`): `{ id, from_id, to_id, edge_type, properties (JSON), created_at, valid_from, valid_until }`. Edge types used by consolidation: `supersedes`, `related_to`, `contradicts`, `promoted_to`.
 
@@ -93,7 +94,10 @@ Empirical facts from a reconnaissance pass over the daemon's consolidation syste
 
 15. **Healing log** (`consolidator.rs:1320`): Phases 20-22 log entries to `healing_log` table for diagnostics. Includes candidate memory IDs, similarity scores, decisions made.
 
-16. **Multi-tenant isolation** (consolidator-wide): All cross-memory operations (dedup, reweave, promotion, contradictions, topic supersede) check `organization_id` match. Default org is `"default"`.
+16. **Multi-tenant isolation — partial, NOT consolidator-wide** (verified against source): The design previously overstated this. Actual behavior:
+    - **Organization-scoped phases**: Phase 5 promotion (same project only, not org), Phase 14 reweave (checks `organization_id`), Phase 20 topic supersede (checks `organization_id`).
+    - **NOT organization-scoped**: Phase 1 exact dedup (`PARTITION BY title, memory_type` only), Phase 2 semantic dedup (same type + project, not org), Phase 3 link-related (no org filter), Phase 7 embedding merge (no org filter in KNN), Phase 9a valence contradiction (no org filter), Phase 9b content contradiction (same type only, not org).
+    - **Implication for bench**: Seeding the bench with a single `organization_id = 'default'` avoids cross-org issues regardless of per-phase isolation. Cross-org isolation correctness is explicitly out of scope — tested by Forge-Transfer (Phase 2A-6).
 
 17. **Existing bench harnesses** (`crates/daemon/src/bench/mod.rs`): `forge_persist.rs` (subprocess), `forge_context.rs` (in-process), `longmemeval.rs` (in-process), `locomo.rs` (in-process), `common.rs` (shared helpers: `bytes_to_hex`, `seeded_rng`, `sha256_hex`), `scoring.rs` (shared retrieval metrics). Forge-Context is the pattern to follow.
 
@@ -134,12 +138,13 @@ All data is generated deterministically from a `seed: u64` via ChaCha20 PRNG, fo
 
 ### Category 2: Semantic near-duplicates (16 memories → 8 pairs)
 
-8 pairs with paraphrased titles sharing >0.65 Jaccard word overlap by the consolidation semantic-dedup formula. Same type and project. Different confidence levels.
+8 pairs designed to trigger Phase 2's combined-score threshold (> 0.65). Same type and project. Different confidence levels.
 
-- Example: "Always run tests before deploying services" vs "Run tests before deploying every service always"
+- Phase 2 metric is NOT Jaccard. For each axis (title, content): `score = |intersection(words_a, words_b)| / max(|words_a|, |words_b|)` using `meaningful_words` (≥2 chars, stopwords removed). Combined: `max(0.5*title_score + 0.5*content_score, title_score, content_score) > 0.65`.
+- Example: "Always run tests before deploying services" vs "Run tests before deploying every service always" — overlap computed by intersection/max(len), not Jaccard
 - Pairs designed to be paraphrases but NOT exact duplicates (would be caught by Phase 1 first)
-- Word overlap tuned to > 0.65 threshold with margin
-- **Ground truth:** 8 superseded (lower confidence), 8 active survivors, 8 `supersedes` edges
+- Word overlap tuned to produce `combined > 0.65` with margin using the intersection/max metric
+- **Ground truth:** 8 superseded (lower confidence), 8 active survivors, 8 `supersedes` edges (Phase 2 creates these at `ops.rs:1376` — verified)
 
 ### Category 3: Embedding near-duplicates (12 memories → 4 merge pairs + 2 control pairs)
 
@@ -153,9 +158,9 @@ All data is generated deterministically from a `seed: u64` via ChaCha20 PRNG, fo
 - 4 valence-based pairs (Phase 9a): opposite valence ({positive, negative}), ≥2 shared tags, intensity > 0.5. Phase 12 should synthesize resolutions. Any memory type allowed.
 - 4 content-based pairs (Phase 9b): **must be type `decision`, `pattern`, or `protocol`** — NOT `lesson` (Phase 9b filter at `consolidator.rs:510-511` excludes lessons). Same type within each pair, title Jaccard ≥ 0.5 (using Phase 9b's local `word_set` with `len() >= 3` filter), content Jaccard < 0.3 (same filter). Recommend using `decision` type for contradictory statements.
 - **Ground truth:**
-  - 8 contradiction detections (diagnostics + `contradicts` edges)
-  - 4 synthesis resolutions (new Resolution memory with title `"Resolution: {a.title} vs {b.title}"` + content `"Previously: {a.content}. Later: {b.content}. The later decision supersedes the earlier one."` + both originals superseded + `supersedes` edges)
-  - 4 content contradictions remain as diagnostics only (Phase 12 only synthesizes valence contradictions)
+  - 8 contradiction detections surfaced as `contradicts` edges (Phase 9a and 9b both insert edges). Bench extracts contradiction pairs from the `edge` table where `edge_type = 'contradicts'` — NOT from `diagnostic.type` (column does not exist). Each pair is deduplicated as an unordered `(min(from_id, to_id), max(from_id, to_id))` tuple before scoring.
+  - 4 synthesis resolutions (new Resolution memory with title `"Resolution: {a.title} vs {b.title}"` + content `"Previously: {a.content}. Later: {b.content}. The later decision supersedes the earlier one."` + both originals marked `superseded`). **Phase 12 does NOT create `supersedes` edges** — verified against `consolidator.rs:687` (`synthesize_contradictions` inserts resolution memory + UPDATEs original statuses only, no edge INSERT). Bench audits synthesis by: (1) resolution memory exists with matching title prefix `"Resolution: "`, (2) both originals have `status = 'superseded'`.
+  - 4 content contradictions remain as `contradicts` edges only (Phase 12 only synthesizes valence contradictions — filter at `consolidator.rs:711` requires `valence IN ('positive', 'negative')`).
 
 ### Category 5: Reweave and enrichment candidates (30 memories)
 
@@ -167,17 +172,17 @@ All data is generated deterministically from a `seed: u64` via ChaCha20 PRNG, fo
 
 ### Category 6: Lifecycle and quality (31 memories)
 
-- 6 with old `created_at` (30+ days) for decay testing (Phase 4) — expected decay to known confidence values per formula — 6 memories
+- 6 with old **`accessed_at` (30+ days ago)** for decay testing (Phase 4) — expected decay per `confidence * exp(-0.03 * days_since_accessed)`. Seeded `created_at` value is immaterial to Phase 4 — only `accessed_at` drives decay. — 6 memories
 - 5 with `access_count >= 5` for reconsolidation (Phase 6) — confidence boost +0.05 — 5 memories
 - 4 clusters of 3 lessons (12 lessons total) with >50% title overlap for promotion (Phase 5) — 4 new Pattern memories expected — 12 memories
-- 8 with varied quality dimensions (access_count, age, content length, activation) for quality scoring validation (Phase 15) — expected `quality_score` per formula with ±0.01 tolerance — 8 memories
-- **Ground truth:** 6 decayed confidences, 5 reconsolidated boosts, 4 pattern promotions (12 source lessons superseded), 8 computed quality scores (all tolerance ±0.01)
+- 8 with varied quality dimensions (access_count, age, content length, activation) for quality scoring validation (Phase 15) — expected `quality_score` per formula with ±0.01 tolerance. **Activation candidates must have their `activation_level` seeded POST-Phase-10-decay value** (i.e., seed the expected post-decay value, since Phase 10 runs before Phase 15 — see §7 cascade). — 8 memories
+- **Ground truth:** 6 decayed confidences (computed from seeded `accessed_at` ages), 5 reconsolidated boosts, 4 pattern promotions (12 source lessons superseded), 8 computed quality scores (all tolerance ±0.01)
 
 ### Category 7: Self-healing targets (24 memories)
 
 - 6 pairs for topic-aware auto-supersede (Phase 20): synthetic embeddings at distance < 0.35, word overlap on combined `title + content` text in [0.3, 0.7), same type/org, older confidence < 0.95 — 12 memories (6 older + 6 newer)
-- 6 memories for staleness fade (Phase 21): **seeded with `created_at = now - 90 days`** (NOT just 7+ days — see gotcha table) so Phase 15 freshness hits the 0.1 floor, giving quality ≤ 0.04 < 0.1 (aggressive tier threshold). Zero access, minimal content (<20 chars). Seeded via direct SQL INSERT with `quality_score = 0.05` (NOT default 0.5) — but after Phase 15 runs, the quality is recomputed, so the seed value is irrelevant; what matters is the post-Phase-15 value < 0.1. 6 memories.
-- 6 mixed (Phase 22): 3 low-quality unaccessed (seeded 90+ days old → Phase 15 quality ≤ 0.04 → Phase 22 accelerated decay ≥0.15), 3 recently-accessed (`access_count > 0 AND accessed_at > now - 1 day`) → Phase 22 quality boost +0.05 — 6 memories
+- 6 memories for staleness fade (Phase 21): **seeded with `created_at = now - 90 days` AND `accessed_at = now - 90 days`** so Phase 15 freshness hits the 0.1 floor. With zero access, minimal content (target ≤10 chars to keep `completeness = content.len()/200.0 ≤ 0.05`), and activation 0: Phase 15 quality = `0.1*0.3 + 0*0.3 + 0.05*0.2 + 0*0.2 = 0.03 + 0.01 = 0.04`. Precise arithmetic: if content is 10 chars, completeness = 0.05, so quality = 0.03 + 0.01 = **0.04**. If content is 19 chars, completeness = 0.095, so quality = 0.03 + 0.019 = **0.049** — still below 0.1 aggressive tier threshold but above design's previous claim of ≤ 0.04. To guarantee ≤ 0.04, keep content ≤ 10 chars. 6 memories.
+- 6 mixed (Phase 22): 3 low-quality unaccessed (seeded 90+ days old, content ≤ 10 chars → Phase 15 quality ≤ 0.04 → Phase 22 accelerated decay ≥0.15), 3 recently-accessed (`access_count > 0 AND accessed_at > now - 1 day`) → Phase 22 quality boost +0.05 — 6 memories
 - **Ground truth:** 6 topic-superseded (older members of pairs), 6 staleness-faded, 3 quality-decayed, 3 quality-boosted, 6+ `healing_log` entries with `action = 'auto_superseded'`
 
 ### Category 8: Infrastructure and side-effects (26 memories)
@@ -199,15 +204,31 @@ All data is generated deterministically from a `seed: u64` via ChaCha20 PRNG, fo
 
 ### Recall query bank (for pre/post improvement delta)
 
-~15 recall queries targeting information that should survive consolidation. Examples:
+~15 recall queries designed around what consolidation ACTUALLY changes in the hybrid_recall ranking substrate: (a) non-active memories disappear from result set, (b) new memories (resolutions, patterns, protocols) appear, (c) reweave-enriched BM25 scores change, (d) graph expansion reaches new neighbors via `related_to` edges. Consolidation does NOT change `confidence`/`quality_score` ranking because hybrid_recall ignores them — queries must NOT depend on that effect.
 
-1. Query for a concept that appears in multiple exact duplicates — post-consolidation should return fewer, higher-confidence results
-2. Query for a topic with contradictions — post-consolidation should return the resolution memory, not the conflicting originals
-3. Query for a tag that appears in reweave candidates — post-consolidation should return enriched (longer) content
-4. Query for a behavioral pattern — post-consolidation should return the newly-promoted Protocol memory
-5. Query for a high-access memory — post-consolidation should rank it higher (boosted confidence + quality)
+Examples:
 
-Queries are run via `Request::Recall { layer: None, query, k: 10 }` through `handle_request`. Expected ground truth is the set of memory titles that SHOULD appear in top-10.
+1. **Duplicate-dilution query**: a concept seeded in 6 exact duplicates AND in 2 unique memories. Pre-consolidation: 6 duplicate rows crowd top-10, pushing the unique memory out. Post-Phase-1: 5 duplicates DELETEd → unique memory returns to top-10. Ground truth: set of expected unique-memory titles that SHOULD appear post-consolidation.
+2. **Contradiction-resolution query**: a topic with a valence contradiction pair. Pre-consolidation: both originals appear in top-10 (BM25 matches both). Post-Phase-12: both originals superseded (filtered out at `recall.rs:313`), resolution memory with synthesized content appears. Ground truth: expect the resolution memory title `"Resolution: ..."` in top-10.
+3. **Topic-supersede query**: a topic with a Category 7 supersede pair. Pre-consolidation: older version appears in BM25 results. Post-Phase-20: older marked `superseded`, filtered out, newer version ranks higher. Ground truth: newer memory in top-10, older absent.
+4. **Pattern-promotion query**: a theme repeated across 3+ lessons (Category 6 cluster). Pre-consolidation: individual lesson titles dominate top-10. Post-Phase-5: Pattern memory created, source lessons superseded. Ground truth: Pattern memory title in top-10, source lesson titles absent.
+5. **Protocol-extraction query**: a behavioral preference (Category 5 process memory). Pre-consolidation: single preference memory in top-10. Post-Phase-17: NEW Protocol memory created with promoted_to edge; BM25 matches both preference and Protocol. Ground truth: Protocol memory title in top-10.
+6. **Reweave-enrichment query**: older memory whose content gets `"[Update]: ..."` appended by Phase 14. Pre-consolidation: BM25 matches older memory on original terms only. Post-Phase-14: BM25 also matches terms from the appended update. Ground truth: older memory with updated content ranks higher OR additional update terms match new queries.
+7. **Graph-expansion query**: a memory that gets `related_to` edges created by Phase 3. Pre-consolidation: graph expansion has no edges to traverse for this memory. Post-Phase-3: expansion reaches tag-sharing neighbors. Ground truth: neighbor titles appear in top-10 when querying the hub.
+8. **Noise-reduction query**: generic term that appears in many Category 1/2/3 duplicates and near-duplicates. Pre-consolidation: ~10 duplicate hits. Post-Phase-1/2/7: duplicates collapsed, signal-carrying memories surface. Ground truth: 3-5 specific non-duplicate titles.
+
+Additional queries round out to ~15 total. Every query MUST target a pre/post effect that hybrid_recall will actually reflect — no queries relying on confidence/quality/access_count for ranking.
+
+Queries are run via `Request::Recall { query, memory_type: None, project: None, limit: Some(10), layer: None, ..Default::default() }` through `handle_request`. The actual field is `limit`, not `k` (verified against `crates/core/src/protocol/request.rs:54-63`). Expected ground truth is the set of memory titles that SHOULD appear in top-10.
+
+**Recall ranking substrate (important):** `handle_request(Request::Recall{..})` calls `hybrid_recall` which ranks by (1) BM25 text match, (2) optional vector search (skipped in the bench — no query embedding provided), (3) RRF merge, (4) graph expansion, (5) reality/portability weighting, (6) **recency boost `exp(-0.1 * days_old) * 1.5`**. Ranking does NOT use `confidence` or `quality_score`. Phase 6/15/22 confidence/quality adjustments therefore do NOT affect recall ranking. The measurable pre/post delta comes from:
+
+1. **Non-active memories disappear from results** (`recall.rs:313` filters `status == Active`) — superseded/faded/merged memories caught by Phases 1, 2, 5, 7, 12, 14, 20, 21 leave the result set post-consolidation. This reduces noise in top-10.
+2. **New memories appear** — Phase 12 resolution memories, Phase 5 Pattern memories, Phase 17 Protocol memories are new rows created during consolidation. They enter BM25 search post-consolidation.
+3. **Reweave-enriched content changes BM25 scores** — Phase 14 appends `"[Update]: {newer_content}"` to older memory content; BM25 term frequencies change.
+4. **Graph expansion changes** — Phase 3 creates `related_to` edges; post-consolidation, graph expansion surfaces neighbors not previously connected.
+
+The recall query bank (§4 examples) must be designed around these effects, NOT around confidence/quality ranking changes. See §4 Recall query bank notes for the corrected query design rationale.
 
 ---
 
@@ -219,23 +240,27 @@ Queries are run via `Request::Recall { layer: None, query, k: 10 }` through `han
 
 Covers Phases 1 (exact dedup), 2 (semantic dedup), 7 (embedding merge).
 
-- **Dedup precision** = `|superseded_or_deleted ∩ GT_duplicates| / |superseded_or_deleted|`
-- **Dedup recall** = `|superseded_or_deleted ∩ GT_duplicates| / |GT_duplicates|`
+Dedup-phase outputs audited are memories transitioned to `superseded` (Phases 2, 7) or DELETED (Phase 1). Other legitimate status transitions — Phase 5 promotion supersedes source lessons, Phase 12 synthesis supersedes originals, Phase 14 reweave marks newer as `merged`, Phase 20 topic supersede marks older as `superseded`, Phase 21 fades stale memories — are NOT scored as dedup errors.
+
+- **Dedup precision** = `|dedup_phase_transitions ∩ GT_dedup_victims| / |dedup_phase_transitions|`
+- **Dedup recall** = `|dedup_phase_transitions ∩ GT_dedup_victims| / |GT_dedup_victims|`
 - **F1** = harmonic mean of precision and recall
-- **Signal preservation gate:** For every memory in `GT_unique` (memories NOT marked as duplicates), assert `status = 'active'` post-consolidation. If ANY unique memory is superseded/deleted, dimension score = 0 regardless of F1.
+- **Signal preservation gate:** `GT_controls` is the explicit set of memories that NO phase is expected to mutate — the 2 embedding control pairs (4 memories) in Category 3 plus any memory marked `expected_status = Active` in the GroundTruth struct. The gate asserts every `GT_controls` memory has `status = 'active'` post-consolidation. This gate does NOT apply to all non-duplicates — it applies only to controls.
 - **Score** = F1 (only if signal preservation gate passes, else 0.0)
+
+To distinguish dedup-phase transitions from other phase transitions, the bench uses the `edge` table: Phase 2 creates `supersedes` edges with a specific JSON property `{"reason": "semantic_dedup"}` (verify against daemon code during implementation). Phase 1 DELETEs, so we audit pre/post memory IDs to find deletions. Phase 7 creates `supersedes` edges with `{"reason": "embedding_merge"}` (verify). If edge properties do not distinguish dedup reasons, the bench tags GT duplicates as `Victim` and asserts `status != active` — cross-checking with GroundTruth.duplicate_of.
 
 ### Dimension 2: Contradiction handling (weight 0.20)
 
 Covers Phases 9a (valence contradictions), 9b (content contradictions), 12 (synthesis).
 
-- **Detection precision** = `|detected_contradiction_pairs ∩ GT_contradictions| / |detected|`
+**Detected contradiction pair extraction:** The bench queries the `edge` table for rows with `edge_type = 'contradicts'`, then dedupes pairs as unordered sets `{from_id, to_id}` to avoid double-counting. The `diagnostic` table has NO `type` column — do not query it for contradictions; use the edge table only.
+
+- **Detection precision** = `|detected_contradiction_pairs ∩ GT_contradictions| / |detected_contradiction_pairs|`
 - **Detection recall** = `|detected_contradiction_pairs ∩ GT_contradictions| / |GT_contradictions|`
 - **Detection F1** = harmonic mean
-- **Synthesis accuracy** = `|GT_valence_contradictions where resolution memory exists AND both originals superseded| / |GT_valence_contradictions|`
+- **Synthesis accuracy** = `|GT_valence_contradictions where resolution memory with title prefix "Resolution: " exists AND both originals have status = 'superseded'| / |GT_valence_contradictions|`
 - **Score** = 0.5 * detection_F1 + 0.5 * synthesis_accuracy
-
-Detected contradiction pairs are extracted from `diagnostic` table entries with type `contradiction` and from `edge` table entries with `edge_type = 'contradicts'`.
 
 ### Dimension 3: Reweave and enrichment (weight 0.15)
 
@@ -420,7 +445,8 @@ Consolidation runs phases 1→22 sequentially. Earlier phases mutate state that 
 - **Phase 5 supersedes clustered lessons → Phases 14, 18 miss those lessons** (Phase 5 uses raw `split_whitespace()` WITHOUT stopword filtering — two-word generic titles can accidentally cluster). Dataset must ensure Category 5 reweave lessons and Category 5 anti-pattern lessons have ≤50% whitespace-token overlap with each other AND with Category 6 cluster lessons (which are intentionally clustered).
 - Phase 6 boosts confidence `+0.05` on `access_count >= 5` memories → Phase 7 merge tiebreakers see boosted confidence → isolate duplicate pair members to `access_count < 5`
 - Phase 9 creates contradiction edges → Phase 12 reads those edges AND re-queries for valence pairs independently (Phase 12 does NOT rely on Phase 9's edges — it re-applies the same filter)
-- Phase 15 recomputes `quality_score` for ALL active memories → Phases 21, 22 filter on post-Phase-15 quality. **Seeded `quality_score` values are overwritten by Phase 15.** Staleness candidates must be engineered so Phase 15's formula produces low quality (e.g., age 90+ days → freshness floors at 0.1; zero access → utility 0; short content → completeness <0.1; activation 0 → quality ≤ 0.04).
+- **Phase 10 decays `activation_level *= 0.95` BEFORE Phase 15 reads it.** Expected quality scores for Category 6's 8 quality-scoring memories must be computed from `post_decay_activation = seeded_activation * 0.95` (NOT seeded activation). Memories with `activation_level <= 0.01` get zeroed out entirely by Phase 10.
+- Phase 15 recomputes `quality_score` for ALL active memories → Phases 21, 22 filter on post-Phase-15 quality. **Seeded `quality_score` values are overwritten by Phase 15.** Staleness candidates must be engineered so Phase 15's formula produces low quality (age 90+ days AND zero access AND short content AND zero activation → quality ≤ 0.04). Precise formula and content-length constraints in §4 Category 7.
 - Phase 17 creates Protocol memories → Phase 19a notification fires (protocols > 0 → notification)
 - Phase 9a creates contradictions → Phase 19b notification fires (contradictions > 0 → notification)
 - Phase 20 supersedes older pair member → `healing_log` populated with `action = 'auto_superseded'`
@@ -454,7 +480,7 @@ All values are checked against actual daemon behavior via unit tests BEFORE lock
 | Notification throttling | Clean in-memory DB has no prior throttle entries. First run fires. |
 | Embedding merge prerequisites | synthetic embeddings INSERTed AFTER memory rows. Extension loaded at DaemonState initialization. |
 | Activation decay floor | Bench activations set > 0.01 to avoid being zeroed out by the `<= 0.01 → 0` rule. |
-| Organization isolation | All memories use `organization_id = 'default'`. Cross-org isolation tested by Forge-Transfer. |
+| Organization isolation (partial) | NOT all consolidation phases are org-scoped. Phase 1 exact dedup, Phase 2 semantic dedup, Phase 3 linking, Phase 7 embedding merge, Phase 9a/9b contradictions have no org filter. Phase 5 uses project only. Phase 14 reweave and Phase 20 topic supersede DO check org. Bench seeds single `organization_id = 'default'` to avoid any interaction. Cross-org isolation tested by Forge-Transfer. |
 | Protocol deduplication | Phase 17 skips protocols with existing-same-title rows. Bench ground truth accounts for this — seed process memories with unique titles. |
 | Anti-pattern idempotency | Phase 18 checks if tag already present. Bench seeds negative-signal lessons WITHOUT the tag. |
 | Quality scoring tolerance | Float comparisons use `abs(observed - expected) <= 0.01` — not exact equality. |
