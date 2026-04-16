@@ -111,6 +111,12 @@ enum Commands {
         /// memories that were acked but not yet embedded at kill time.
         #[arg(long, default_value_t = 10000)]
         worker_catchup_ms: u64,
+        /// Per-request total timeout for HttpClient in milliseconds.
+        /// The original 5 s default caused `NetworkError::TimedOut` on
+        /// stress workloads with 250+ raw ingests. 30 s provides
+        /// headroom without hiding real hangs.
+        #[arg(long, default_value_t = 30000)]
+        request_timeout_ms: u64,
     },
     /// Run the LoCoMo benchmark.
     Locomo {
@@ -205,6 +211,7 @@ async fn main() {
             daemon_bin,
             recovery_timeout_ms,
             worker_catchup_ms,
+            request_timeout_ms,
         } => run_forge_persist(
             memories,
             chunks,
@@ -215,6 +222,7 @@ async fn main() {
             daemon_bin,
             recovery_timeout_ms,
             worker_catchup_ms,
+            request_timeout_ms,
         ),
     };
     if let Err(e) = outcome {
@@ -452,6 +460,7 @@ fn run_forge_persist(
     daemon_bin: Option<PathBuf>,
     recovery_timeout_ms: u64,
     worker_catchup_ms: u64,
+    request_timeout_ms: u64,
 ) -> Result<(), String> {
     use forge_daemon::bench::forge_persist::{run, PersistConfig};
     use std::time::Duration;
@@ -497,6 +506,7 @@ fn run_forge_persist(
         recovery_timeout: Duration::from_millis(recovery_timeout_ms),
         worker_catchup: Duration::from_millis(worker_catchup_ms),
         output_dir: Some(output),
+        request_timeout: Duration::from_millis(request_timeout_ms),
     };
 
     let summary = run(config).map_err(|e| format!("forge-persist run failed: {e:?}"))?;
@@ -743,6 +753,7 @@ mod tests {
                 daemon_bin,
                 recovery_timeout_ms,
                 worker_catchup_ms,
+                request_timeout_ms,
             } => {
                 assert_eq!(memories, 100);
                 assert_eq!(chunks, 50);
@@ -753,6 +764,7 @@ mod tests {
                 assert_eq!(daemon_bin, Some(PathBuf::from("/tmp/forge-daemon")));
                 assert_eq!(recovery_timeout_ms, 5000);
                 assert_eq!(worker_catchup_ms, 10000);
+                assert_eq!(request_timeout_ms, 30000);
             }
             other => panic!("expected Commands::ForgePersist, got {other:?}"),
         }
@@ -784,6 +796,8 @@ mod tests {
             "9000",
             "--worker-catchup-ms",
             "15000",
+            "--request-timeout-ms",
+            "60000",
         ])
         .expect("all flags should parse");
         match cli.command {
@@ -797,6 +811,7 @@ mod tests {
                 daemon_bin,
                 recovery_timeout_ms,
                 worker_catchup_ms,
+                request_timeout_ms,
             } => {
                 assert_eq!(memories, 25);
                 assert_eq!(chunks, 5);
@@ -807,6 +822,7 @@ mod tests {
                 assert_eq!(daemon_bin, Some(PathBuf::from("/tmp/forge-daemon")));
                 assert_eq!(recovery_timeout_ms, 9000);
                 assert_eq!(worker_catchup_ms, 15000);
+                assert_eq!(request_timeout_ms, 60000);
             }
             other => panic!("expected Commands::ForgePersist, got {other:?}"),
         }

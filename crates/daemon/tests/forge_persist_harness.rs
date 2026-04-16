@@ -42,6 +42,7 @@ fn test_persist_harness_spawns_and_kills_daemon() {
         recovery_timeout: Duration::from_secs(15),
         worker_catchup: Duration::from_secs(0),
         output_dir: None,
+        request_timeout: Duration::from_secs(30),
     };
 
     let mut harness = PersistHarness::new(config).expect("PersistHarness::new should succeed");
@@ -83,6 +84,7 @@ fn test_persist_harness_executes_op_against_real_daemon() {
         recovery_timeout: Duration::from_secs(15),
         worker_catchup: Duration::from_secs(0),
         output_dir: None,
+        request_timeout: Duration::from_secs(30),
     };
 
     let mut harness = PersistHarness::new(config).expect("PersistHarness::new should succeed");
@@ -149,6 +151,7 @@ fn test_persist_harness_list_raw_documents_returns_acked_doc() {
         recovery_timeout: Duration::from_secs(15),
         worker_catchup: Duration::from_secs(0),
         output_dir: None,
+        request_timeout: Duration::from_secs(30),
     };
     let mut harness = PersistHarness::new(config).expect("PersistHarness::new should succeed");
     harness
@@ -231,6 +234,7 @@ fn test_persist_harness_export_memories_returns_acked_memory() {
         recovery_timeout: Duration::from_secs(15),
         worker_catchup: Duration::from_secs(0),
         output_dir: None,
+        request_timeout: Duration::from_secs(30),
     };
     let mut harness = PersistHarness::new(config).expect("PersistHarness::new should succeed");
     harness
@@ -308,6 +312,7 @@ fn test_persist_harness_list_session_messages_returns_acked_fisp_message() {
         recovery_timeout: Duration::from_secs(15),
         worker_catchup: Duration::from_secs(0),
         output_dir: None,
+        request_timeout: Duration::from_secs(30),
     };
     let mut harness = PersistHarness::new(config).expect("PersistHarness::new should succeed");
     harness
@@ -395,6 +400,7 @@ fn test_persist_harness_verify_matches_unions_all_three_op_types() {
         recovery_timeout: Duration::from_secs(15),
         worker_catchup: Duration::from_secs(0),
         output_dir: None,
+        request_timeout: Duration::from_secs(30),
     };
     let mut harness = PersistHarness::new(config).expect("PersistHarness::new should succeed");
     harness
@@ -474,6 +480,7 @@ fn test_persist_harness_full_run_passes_on_clean_workload() {
         recovery_timeout: Duration::from_secs(30),
         worker_catchup: Duration::from_secs(5),
         output_dir: None,
+        request_timeout: Duration::from_secs(30),
     };
 
     let summary = forge_daemon::bench::forge_persist::run(config)

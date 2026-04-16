@@ -533,6 +533,18 @@ impl HttpClient {
         Ok(Self { client, base_url })
     }
 
+    /// Build a client with a custom total per-request timeout.
+    /// Connect timeout remains pinned at 200 ms (load-bearing for
+    /// spawn polling — see `HttpClient::new` doc comment).
+    pub fn with_timeout(base_url: String, request_timeout: Duration) -> Result<Self, HarnessError> {
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_millis(200))
+            .timeout(request_timeout)
+            .build()
+            .map_err(HarnessError::NetworkError)?;
+        Ok(Self { client, base_url })
+    }
+
     /// POST the given [`Request`] as JSON to `{base_url}/api` and parse
     /// the body as a [`Response`].
     ///
@@ -1313,6 +1325,10 @@ pub struct PersistConfig {
     /// Optional output directory for results. `None` means "in-memory
     /// only, don't write files" — used by the integration test.
     pub output_dir: Option<PathBuf>,
+    /// Per-request total timeout for the HttpClient. Defaults to 30 s
+    /// for production workloads. The original 5 s default caused
+    /// `NetworkError::TimedOut` on stress runs with 250+ raw ingests.
+    pub request_timeout: Duration,
 }
 
 /// Owning handle for a Forge-Persist benchmark run. Owns the TempDir
@@ -1349,7 +1365,10 @@ impl PersistHarness {
     pub fn new(config: PersistConfig) -> Result<Self, HarnessError> {
         let tempdir = TempDir::new().map_err(HarnessError::Io)?;
         let port = find_free_port()?;
-        let client = HttpClient::new(format!("http://127.0.0.1:{port}"))?;
+        let client = HttpClient::with_timeout(
+            format!("http://127.0.0.1:{port}"),
+            config.request_timeout,
+        )?;
         Ok(Self {
             config,
             port,
@@ -1406,7 +1425,10 @@ impl PersistHarness {
         if self.has_spawned_before {
             let new_port = find_free_port()?;
             self.port = new_port;
-            self.client = HttpClient::new(format!("http://127.0.0.1:{new_port}"))?;
+            self.client = HttpClient::with_timeout(
+                format!("http://127.0.0.1:{new_port}"),
+                self.config.request_timeout,
+            )?;
         }
 
         // Honor FORGE_PERSIST_DEBUG_STDERR for surfacing daemon
@@ -1724,6 +1746,15 @@ pub fn run(config: PersistConfig) -> Result<RunSummary, HarnessError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_http_client_with_timeout_uses_custom_duration() {
+        let client = HttpClient::with_timeout(
+            "http://127.0.0.1:9999".to_string(),
+            Duration::from_secs(60),
+        );
+        assert!(client.is_ok(), "HttpClient::with_timeout should not fail construction");
+    }
 
     #[test]
     fn test_workload_has_expected_op_count() {
@@ -2570,6 +2601,7 @@ mod tests {
             recovery_timeout: Duration::from_secs(1),
             worker_catchup: Duration::from_secs(0),
             output_dir: None,
+            request_timeout: Duration::from_secs(30),
         };
         let err = run(config).expect_err("negative kill_after must fail");
         let msg = format!("{err:?}");
@@ -2591,6 +2623,7 @@ mod tests {
             recovery_timeout: Duration::from_secs(1),
             worker_catchup: Duration::from_secs(0),
             output_dir: None,
+            request_timeout: Duration::from_secs(30),
         };
         let err = run(config).expect_err("kill_after > 1.0 must fail");
         let msg = format!("{err:?}");
@@ -2609,6 +2642,7 @@ mod tests {
             recovery_timeout: Duration::from_secs(1),
             worker_catchup: Duration::from_secs(0),
             output_dir: None,
+            request_timeout: Duration::from_secs(30),
         };
         let err = run(config).expect_err("NaN kill_after must fail");
         let msg = format!("{err:?}");
@@ -2631,6 +2665,7 @@ mod tests {
                 recovery_timeout: Duration::from_secs(1),
                 worker_catchup: Duration::from_secs(0),
                 output_dir: None,
+                request_timeout: Duration::from_secs(30),
             };
             let err = run(config).expect_err("nonexistent daemon must fail");
             let msg = format!("{err:?}");
