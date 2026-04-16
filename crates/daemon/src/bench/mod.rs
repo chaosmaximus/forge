@@ -10,6 +10,7 @@
 //   - Output: per-question JSONL + summary stats.
 
 pub mod common;
+pub mod forge_consolidation;
 pub mod forge_context;
 pub mod forge_persist;
 pub mod locomo;
