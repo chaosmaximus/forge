@@ -11,6 +11,8 @@
 //! into the DB — the filter rejects skills mentioning a keyword for which
 //! no matching tool row exists.
 
+use std::collections::HashSet;
+
 use forge_core::protocol::{Request, Response, ResponseData};
 use forge_core::types::manas::{DomainDna, Skill, Tool, ToolHealth, ToolKind};
 use forge_core::types::memory::MemoryType;
@@ -428,12 +430,450 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> Result<SeededDataset, S
     })
 }
 
+// ── Query bank types ──────────────────────────────────────────────
+
+/// Scoring dimensions for the Forge-Context benchmark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Dimension {
+    ContextAssembly,
+    Guardrails,
+    Completion,
+    LayerRecall,
+}
+
+/// A single query with ground-truth expected results.
+pub struct QueryCase {
+    pub id: String,
+    pub dimension: Dimension,
+    pub request: Request,
+    /// Expected items that should appear in the response.
+    /// Expressed in the EXACT format the daemon produces.
+    pub expected: HashSet<String>,
+}
+
+// ── Query bank generator ──────────────────────────────────────────
+
+/// Generate a bank of queries with ground-truth annotations across 4 dimensions.
+///
+/// The ground truth is intentionally conservative: only items that DEFINITELY
+/// appear in the daemon response are included. BM25/FTS5 ranking can be
+/// non-deterministic for ties, so we only assert on items whose ranking
+/// position is unambiguous.
+pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
+    let mut cases = Vec::new();
+
+    // ── Dimension 1: Context Assembly (CA-1..CA-6) ────────────────
+
+    // CA-1..CA-3: CompileContext with focus for 3 domains.
+    // Focus uses FTS5 MATCH to filter decisions only.
+    // Expected: decision TITLES whose content/title match the focus domain.
+    for (ca_idx, &domain) in DOMAINS[..3].iter().enumerate() {
+        let id = format!("CA-{}", ca_idx + 1);
+
+        // Decisions matching this domain: decisions with domain tag in title/content.
+        // Decision titles contain the domain name, so FTS5 MATCH on the domain
+        // will find them. Decisions cycle through DOMAINS[i % 5], so for a given
+        // domain, indices i where i % 5 == domain_index will match.
+        let domain_idx = ca_idx; // DOMAINS[0..3] = auth, database, networking
+        let expected: HashSet<String> = (0..10)
+            .filter(|&i| i % DOMAINS.len() == domain_idx)
+            .map(|i| {
+                let token = sha256_hex(&format!("forge-context-42-decision-{i}"));
+                let file = FILE_PATHS[i % FILE_PATHS.len()];
+                format!("Decision: {domain} layer architecture ({token}) — affects {file}")
+            })
+            .collect();
+
+        cases.push(QueryCase {
+            id,
+            dimension: Dimension::ContextAssembly,
+            request: Request::CompileContext {
+                agent: None,
+                project: None,
+                static_only: None,
+                excluded_layers: None,
+                session_id: Some(dataset.session_id.clone()),
+                focus: Some(domain.to_string()),
+            },
+            expected,
+        });
+    }
+
+    // CA-4..CA-6: CompileContext without focus — check tool filtering on skills.
+    // Skills are fetched independently (not filtered by focus). Present-tool skills
+    // (Tier A) and no-tool skills (Tier C) should survive. Absent-tool skills
+    // (Tier B) should be filtered out.
+    //
+    // The skill XML format is: <skill domain="{domain}" uses="{success_count}">{name}</skill>
+    // We check that NO Tier B skill names appear in the output.
+    // We can't predict exactly which 5 skills appear (ordering depends on list_skills
+    // iteration order + take(5)), so we only assert on the ABSENCE of Tier B.
+    for ca_idx in 0..3 {
+        let id = format!("CA-{}", ca_idx + 4);
+
+        // Expected: the Tier B skill names that must NOT appear.
+        // We encode these as "ABSENT:{name}" — the scorer will check for absence.
+        let expected: HashSet<String> = dataset.skills[10..20]
+            .iter()
+            .map(|s| format!("ABSENT:{}", s.name))
+            .collect();
+
+        cases.push(QueryCase {
+            id,
+            dimension: Dimension::ContextAssembly,
+            request: Request::CompileContext {
+                agent: None,
+                project: None,
+                static_only: None,
+                excluded_layers: None,
+                session_id: Some(dataset.session_id.clone()),
+                focus: None,
+            },
+            expected,
+        });
+    }
+
+    // ── Dimension 2: Guardrails (GR-1..GR-10) ────────────────────
+
+    // GR-1..GR-5: PostEditCheck for each file path.
+    // Expected: decisions_to_review (decision TITLES linked via affects edges)
+    //           and applicable_skills formatted as "Skill: {name} ({domain})".
+    for (gr_idx, file) in FILE_PATHS.iter().enumerate() {
+        let id = format!("GR-{}", gr_idx + 1);
+        let mut expected = HashSet::new();
+
+        // decisions_to_review: decision titles linked to this file via affects edges.
+        // Each decision is linked to FILE_PATHS[i % 5]. So for file_path at index fp_idx,
+        // decisions with i % 5 == fp_idx are linked.
+        let fp_idx = gr_idx;
+        for i in 0..10 {
+            if i % FILE_PATHS.len() == fp_idx {
+                let domain = DOMAINS[i % DOMAINS.len()];
+                let token = sha256_hex(&format!("forge-context-42-decision-{i}"));
+                expected.insert(format!(
+                    "Decision: {domain} layer architecture ({token}) — affects {file}"
+                ));
+            }
+        }
+
+        // applicable_skills: "Skill: {name} ({domain})" for skills matching file path.
+        // find_applicable_skills parses search terms from the file path.
+        // For "src/auth/middleware.rs": terms = ["middleware.rs", "middleware", "auth"]
+        // For "src/database/schema.rs": terms = ["schema.rs", "schema", "database"]
+        // etc. "src" is in skip_dirs.
+        //
+        // These terms are matched via LIKE on name/description/domain.
+        // The domain component (e.g., "auth") will match skills with that domain.
+        // Skills are ordered by success_count DESC LIMIT 2.
+        //
+        // For domain "auth": Tier A skills 0,5 have domain "auth" (i % 5 == 0).
+        //   Skill a-0: success_count=1, Skill a-5: success_count=6
+        //   Tier C skills 0,5 also have domain "auth": c-0 success=1, c-5 success=6
+        //   But we also need to check Tier B — b-0 and b-5 have domain "auth" too.
+        //   All three tiers have domain "auth" for indices 0,5.
+        //   Ordered by success_count DESC: a-5 (6), b-5 (6), c-5 (6), a-0 (1), b-0 (1), c-0 (1)
+        //   Ties in success_count — LIMIT 2 picks first two in DB insertion order.
+        //   Skills are inserted in order: a-0..a-9, b-0..b-9, c-0..c-9.
+        //   So among success_count=6: a-5 first, then b-5, then c-5.
+        //   Result: top 2 = a-5, b-5 (both success_count=6).
+        //
+        // The stem component (e.g., "middleware") would also match skills mentioning
+        // "middleware" in name/description/domain. But our skills don't contain
+        // "middleware" — they use tool names and domain names.
+        //
+        // Since we can't predict the exact LIMIT 2 tiebreaking across all files,
+        // we conservatively skip applicable_skills from expected for PostEditCheck.
+        // (The skill matching depends on which search terms hit which skills,
+        // and ties in success_count make the result unpredictable.)
+
+        cases.push(QueryCase {
+            id,
+            dimension: Dimension::Guardrails,
+            request: Request::PostEditCheck {
+                file: file.to_string(),
+            },
+            expected,
+        });
+    }
+
+    // GR-6..GR-8: PreBashCheck for commands.
+    // Expected: relevant_skills formatted as "{name} ({domain})" (NO "Skill: " prefix).
+    // The pre_bash_check searches for %{cmd_name}% in skill name/description/domain.
+    let bash_commands = ["cargo test", "npm run build", "docker compose up"];
+    for (gr_idx, cmd) in bash_commands.iter().enumerate() {
+        let id = format!("GR-{}", gr_idx + 6);
+
+        // Extract the first word of the command for matching.
+        let cmd_name = cmd.split_whitespace().next().unwrap_or("");
+
+        // Find skills that match %{cmd_name}% in name/description/domain.
+        // Only Tier A skills mention tool names. Tier B also mentions tool names
+        // (absent ones). But pre_bash_check doesn't filter by tool availability.
+        // It uses: `WHERE success_count > 0 AND (description LIKE ?1 OR name LIKE ?1 OR domain LIKE ?1)`
+        // ordered by success_count DESC LIMIT 1.
+        let mut expected = HashSet::new();
+        let matching_skills: Vec<&Skill> = dataset.skills.iter()
+            .filter(|s| {
+                let text = format!("{} {} {}", s.name, s.description, s.domain).to_lowercase();
+                text.contains(cmd_name)
+            })
+            .collect();
+
+        // Sort by success_count DESC, take 1
+        if let Some(best) = matching_skills.iter()
+            .max_by_key(|s| s.success_count)
+        {
+            // PreBashCheck relevant_skills format: "{name} ({domain})"
+            expected.insert(format!("{} ({})", best.name, best.domain));
+        }
+
+        cases.push(QueryCase {
+            id,
+            dimension: Dimension::Guardrails,
+            request: Request::PreBashCheck {
+                command: cmd.to_string(),
+            },
+            expected,
+        });
+    }
+
+    // GR-9..GR-10: GuardrailsCheck for 2 files.
+    // Expected: decisions_affected contains decision IDs (not titles!).
+    for (gr_idx, &file) in FILE_PATHS[..2].iter().enumerate() {
+        let id = format!("GR-{}", gr_idx + 9);
+        let mut expected = HashSet::new();
+
+        // decisions_affected: decision IDs linked via affects edges.
+        for (did, fpath) in &dataset.decision_file_map {
+            if fpath == file {
+                expected.insert(did.clone());
+            }
+        }
+
+        cases.push(QueryCase {
+            id,
+            dimension: Dimension::Guardrails,
+            request: Request::GuardrailsCheck {
+                file: file.to_string(),
+                action: "edit".to_string(),
+            },
+            expected,
+        });
+    }
+
+    // ── Dimension 3: Completion (CO-1..CO-5) ──────────────────────
+
+    // CO-1..CO-3: CompletionCheck with claimed_done=true.
+    // Returns relevant_lessons as "title: content_substr(150)".
+    // SQL: memory_type IN ('lesson', 'decision'), tags matching completion tags,
+    // ORDER BY quality_score DESC, confidence DESC LIMIT 3.
+    //
+    // All memories have quality_score=0.5 (default), so ordering is by confidence DESC.
+    // We need to find the top-3 memories (lessons+decisions) that match the tag filter.
+    //
+    // Matching decisions: those with tag "testing" (domain "testing"): i=3 (conf=0.88), i=8 (conf=0.93)
+    // Matching lessons: ALL 10 lessons have completion tags.
+    //   Top by confidence: i=9 (0.93), i=8 (0.91), i=7 (0.89), i=6 (0.87), ...
+    //
+    // Combined and sorted by confidence DESC:
+    //   Decision i=8: 0.93, Lesson i=9: 0.93, Lesson i=8: 0.91, Decision i=3: 0.88, ...
+    //
+    // For ties at 0.93: DB insertion order matters. Decisions are inserted before lessons
+    // (indices 0..9 are decisions, 10..19 are lessons), so Decision i=8 comes first.
+    //
+    // Top 3: Decision i=8, Lesson i=9, Lesson i=8
+    //
+    // Format: "title: content_substr(150)"
+    // We conservatively include only the items we're SURE about. The top item
+    // (Decision i=8 at conf 0.93) is definitely in there, and Lesson i=9 (0.93)
+    // is second (or first if ties break differently). Lesson i=8 (0.91) is the
+    // clear 3rd since no other has conf > 0.91 except the two 0.93s.
+    //
+    // We'll include all 3 in expected but be aware of tie-breaking uncertainty.
+    for co_idx in 0..3 {
+        let id = format!("CO-{}", co_idx + 1);
+
+        // We'll be conservative: just assert that the response is non-empty
+        // and contains at least the lesson with highest unambiguous confidence.
+        // Lesson i=8 (conf 0.91) is unambiguously in top 3 since only 2 items
+        // are above it (the two 0.93 ones).
+        let mut expected = HashSet::new();
+
+        // Lesson i=8: title and content
+        let token_l8 = sha256_hex("forge-context-42-lesson-8");
+        let domain_l8 = DOMAINS[8 % DOMAINS.len()]; // "testing"
+        let ctag_l8 = COMPLETION_TAGS[8 % 4]; // "testing"
+        let title_l8 = format!("Lesson: {domain_l8} {ctag_l8} insight ({token_l8})");
+        let content_l8 = format!("Learned about {ctag_l8} in {domain_l8} context. Unique token: {token_l8}");
+        let content_substr_l8: String = content_l8.chars().take(150).collect();
+        expected.insert(format!("{title_l8}: {content_substr_l8}"));
+
+        cases.push(QueryCase {
+            id,
+            dimension: Dimension::Completion,
+            request: Request::CompletionCheck {
+                session_id: dataset.session_id.clone(),
+                claimed_done: true,
+            },
+            expected,
+        });
+    }
+
+    // CO-4..CO-5: TaskCompletionCheck with shipping-related subjects.
+    // Returns checklists as lesson TITLES (SELECT title).
+    // SQL: memory_type = 'lesson', tags LIKE '%uat%' OR '%production%' OR '%deployment%',
+    // ORDER BY quality_score DESC LIMIT 3.
+    //
+    // Matching lessons:
+    //   i=1: tags=["database","uat"] → matches %uat%
+    //   i=3: tags=["testing","production-readiness"] → matches %production%
+    //   i=4: tags=["deployment","testing"] → matches %deployment%
+    //   i=5: tags=["auth","uat"] → matches %uat%
+    //   i=7: tags=["networking","production-readiness"] → matches %production%
+    //   i=9: tags=["deployment","uat"] → matches %uat% and %deployment%
+    //
+    // All quality_score=0.5. ORDER BY quality_score DESC gives them all equal.
+    // SQLite returns by rowid in tie: i=1, i=3, i=4.
+    // But this is implementation-dependent. Conservatively include just i=1
+    // which is the first matching lesson by insertion order.
+    let task_subjects = [
+        "deploy to production",
+        "ship the release",
+    ];
+    for (co_idx, subject) in task_subjects.iter().enumerate() {
+        let id = format!("CO-{}", co_idx + 4);
+        let mut expected = HashSet::new();
+
+        // Conservatively, include the first matching lesson by insertion order.
+        let token_l1 = sha256_hex("forge-context-42-lesson-1");
+        let domain_l1 = DOMAINS[1 % DOMAINS.len()]; // "database"
+        let ctag_l1 = COMPLETION_TAGS[1]; // "uat"
+        expected.insert(format!("Lesson: {domain_l1} {ctag_l1} insight ({token_l1})"));
+
+        cases.push(QueryCase {
+            id,
+            dimension: Dimension::Completion,
+            request: Request::TaskCompletionCheck {
+                session_id: dataset.session_id.clone(),
+                task_subject: subject.to_string(),
+                task_description: None,
+            },
+            expected,
+        });
+    }
+
+    // ── Dimension 4: Layer Recall (LR-1..LR-8) ───────────────────
+
+    // LR-1..LR-5: Recall with layer="skill", query="{domain} workflow".
+    // search_skills does LIKE %{query}% on name/description/domain.
+    // Tier A skill names: "{tool_name} {domain} workflow {token}" → matches "{domain} workflow".
+    // Returns MemoryResult with title "[skill:{domain}] {name}".
+    // Ordered by success_count DESC LIMIT 5.
+    for (lr_idx, &domain) in DOMAINS.iter().enumerate() {
+        let id = format!("LR-{}", lr_idx + 1);
+        let query = format!("{domain} workflow");
+
+        // Find Tier A skills matching this domain (domain in name as "{domain} workflow")
+        let domain_idx = lr_idx;
+        let mut expected = HashSet::new();
+
+        for i in 0..10 {
+            if i % DOMAINS.len() == domain_idx {
+                let skill = &dataset.skills[i]; // Tier A: indices 0..9
+                expected.insert(format!("[skill:{}] {}", skill.domain, skill.name));
+            }
+        }
+
+        cases.push(QueryCase {
+            id,
+            dimension: Dimension::LayerRecall,
+            request: Request::Recall {
+                query,
+                memory_type: None,
+                project: None,
+                limit: Some(10),
+                layer: Some("skill".to_string()),
+                since: None,
+            },
+            expected,
+        });
+    }
+
+    // LR-6..LR-8: Recall with layer="domain_dna", query="{domain}".
+    // Filters by pattern.to_lowercase().contains(query_lower).
+    // DNA patterns: "{domain} uses standard patterns. Token: {hash}"
+    // Query "{domain}" matches patterns containing that domain.
+    // Returns MemoryResult with title "[dna:{aspect}] {pattern}".
+    for (lr_idx, &domain) in DOMAINS[..3].iter().enumerate() {
+        let id = format!("LR-{}", lr_idx + 6);
+        let query = domain.to_string();
+
+        let dna_token = sha256_hex(&format!("forge-context-42-dna-{lr_idx}"));
+        let aspect = format!("{domain}-conventions");
+        let pattern = format!("{domain} uses standard patterns. Token: {dna_token}");
+
+        let mut expected = HashSet::new();
+        expected.insert(format!("[dna:{aspect}] {pattern}"));
+
+        cases.push(QueryCase {
+            id,
+            dimension: Dimension::LayerRecall,
+            request: Request::Recall {
+                query,
+                memory_type: None,
+                project: None,
+                limit: Some(10),
+                layer: Some("domain_dna".to_string()),
+                since: None,
+            },
+            expected,
+        });
+    }
+
+    cases
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn test_generate_query_bank_covers_all_dimensions() {
+        let mut state = DaemonState::new(":memory:").expect("state");
+        let dataset = seed_state(&mut state, 42).expect("seed");
+        let queries = generate_query_bank(&dataset);
+
+        assert!(!queries.is_empty(), "query bank must not be empty");
+
+        let dims: HashSet<Dimension> = queries.iter().map(|q| q.dimension).collect();
+        assert!(dims.contains(&Dimension::ContextAssembly), "missing ContextAssembly");
+        assert!(dims.contains(&Dimension::Guardrails), "missing Guardrails");
+        assert!(dims.contains(&Dimension::Completion), "missing Completion");
+        assert!(dims.contains(&Dimension::LayerRecall), "missing LayerRecall");
+
+        // Count queries per dimension
+        let ca_count = queries.iter().filter(|q| q.dimension == Dimension::ContextAssembly).count();
+        let gr_count = queries.iter().filter(|q| q.dimension == Dimension::Guardrails).count();
+        let co_count = queries.iter().filter(|q| q.dimension == Dimension::Completion).count();
+        let lr_count = queries.iter().filter(|q| q.dimension == Dimension::LayerRecall).count();
+
+        assert_eq!(ca_count, 6, "expected 6 ContextAssembly queries (CA-1..CA-6)");
+        assert_eq!(gr_count, 10, "expected 10 Guardrails queries (GR-1..GR-10)");
+        assert_eq!(co_count, 5, "expected 5 Completion queries (CO-1..CO-5)");
+        assert_eq!(lr_count, 8, "expected 8 LayerRecall queries (LR-1..LR-8)");
+
+        // All query IDs are unique
+        let ids: HashSet<&str> = queries.iter().map(|q| q.id.as_str()).collect();
+        assert_eq!(ids.len(), queries.len(), "all query IDs must be unique");
+
+        // Every query has at least one expected item
+        for q in &queries {
+            assert!(!q.expected.is_empty(), "query {} must have expected items", q.id);
+        }
+    }
 
     #[test]
     fn test_generate_tools_splits_present_and_absent() {
