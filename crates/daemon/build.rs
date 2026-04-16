@@ -31,10 +31,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo::rustc-env=FORGE_RUSTC_VERSION={rustc_version}");
 
-    // Capture target triple
-    if let Ok(target) = std::env::var("TARGET") {
-        println!("cargo::rustc-env=FORGE_TARGET={target}");
-    }
+    // Capture target triple (unconditional — env!("FORGE_TARGET") in handler
+    // would fail to compile if this is missing)
+    let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
+    println!("cargo::rustc-env=FORGE_TARGET={target}");
+
+    // Re-run build script when HEAD changes so git_sha stays current
+    // in incremental builds.
+    println!("cargo::rerun-if-changed=.git/HEAD");
 
     Ok(())
 }
