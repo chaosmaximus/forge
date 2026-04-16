@@ -657,6 +657,823 @@ pub fn generate_category_4_contradictions(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
     (specs, truths)
 }
 
+/// Category 5: 30 memories for Phase 14 (reweave), Phase 17 (protocol extraction),
+/// Phase 18 (anti-pattern tagging).
+///
+/// CRITICAL: Titles must have <=50% whitespace-token overlap with each other to avoid
+/// accidental Phase 5 clustering (which uses raw split_whitespace without stopword filter).
+pub fn generate_category_5_reweave_enrichment(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
+    let unique = |label: &str, idx: usize| sha256_hex(&format!("c5-{seed}-{label}-{idx}"));
+
+    let mut specs = Vec::new();
+    let mut truths = Vec::new();
+
+    // 10 REWEAVE pairs — same type + project + org + ≥2 shared tags, different ages
+    for pair_idx in 0..10 {
+        let topic_token = unique("rtopic", pair_idx);
+        let shared_tags = vec![
+            "category-5-reweave".into(),
+            format!("reweave-topic-{topic_token}"),
+            format!("reweave-pair-{pair_idx}"),
+        ];
+        let older_id = format!("c5-reweave-{pair_idx}-older");
+        let newer_id = format!("c5-reweave-{pair_idx}-newer");
+
+        // Use distinct anchor tokens in titles so they don't cluster via Phase 5
+        specs.push(MemorySpec {
+            id: older_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Initial {} analysis", unique("rolder-title", pair_idx)),
+            content: format!("Original findings for {topic_token}."),
+            confidence: 0.8,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: shared_tags.clone(),
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW-10d".into(), // older
+            accessed_at_spec: "NOW-10d".into(),
+        });
+        specs.push(MemorySpec {
+            id: newer_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Further {} refinement", unique("rnewer-title", pair_idx)),
+            content: format!(
+                "Additional insight: topic {topic_token} behaves differently at scale."
+            ),
+            confidence: 0.85,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: shared_tags,
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(), // newer
+            accessed_at_spec: "NOW".into(),
+        });
+
+        // Phase 14 reweave: newer marked 'merged', older content appended with "[Update]: ..."
+        truths.push(GroundTruth {
+            memory_id: older_id.clone(),
+            category: Category::ReweaveEnrichment,
+            expected_status: ExpectedStatus::Active, // content enriched in place
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: Some(newer_id.clone()),
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+        truths.push(GroundTruth {
+            memory_id: newer_id,
+            category: Category::ReweaveEnrichment,
+            expected_status: ExpectedStatus::Merged,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    // 4 PREFERENCES with process signals for Phase 17 Tier 1
+    for pref_idx in 0..4 {
+        let token = unique("pref", pref_idx);
+        let id = format!("c5-pref-{pref_idx}");
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Preference,
+            title: format!("Preference {token} workflow"),
+            content: format!("User always must require validation for workflow {token}."),
+            confidence: 0.9,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-5-protocol".into(), format!("pref-{pref_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::ReweaveEnrichment,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    // 3 PATTERNS with behavioral: prefix + process signal for Phase 17 Tier 2
+    for pat_idx in 0..3 {
+        let token = unique("behavioral", pat_idx);
+        let id = format!("c5-pattern-{pat_idx}");
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Pattern,
+            title: format!("behavioral: always follow {token} rule"),
+            content: format!("Always require {token} before proceeding. This is a workflow rule."),
+            confidence: 0.85,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-5-protocol".into(), format!("pattern-{pat_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::ReweaveEnrichment,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    // 3 LESSONS with negative signals for Phase 18 anti-pattern tagging
+    for les_idx in 0..3 {
+        let token = unique("antipattern", les_idx);
+        let id = format!("c5-antipattern-{les_idx}");
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Lesson,
+            title: format!("Avoid pitfall: unique-phrase-{token}"), // unique anchor per lesson
+            content: format!("Don't use approach {token} — it caused problem last quarter."),
+            confidence: 0.8,
+            valence: "negative".into(),
+            intensity: 0.6,
+            tags: vec!["category-5-antipattern".into(), format!("lesson-{les_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::ReweaveEnrichment,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    (specs, truths)
+}
+
+/// Category 6: 31 memories for Phases 4 (decay), 5 (promotion), 6 (reconsolidation),
+/// 15 (quality scoring).
+pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
+    let unique = |label: &str, idx: usize| sha256_hex(&format!("c6-{seed}-{label}-{idx}"));
+
+    let mut specs = Vec::new();
+    let mut truths = Vec::new();
+
+    // 6 DECAY candidates — accessed_at 30+ days ago (Phase 4 keys off accessed_at!)
+    for d_idx in 0..6 {
+        let token = unique("decay", d_idx);
+        let id = format!("c6-decay-{d_idx}");
+        let days_old = 30 + (d_idx * 5) as i64; // 30, 35, 40, 45, 50, 55 days old
+                                                // Expected post-decay confidence: 0.9 * exp(-0.03 * days_old)
+        let expected_conf = 0.9_f64 * (-0.03_f64 * days_old as f64).exp();
+
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Old decayed decision {token}"),
+            content: format!("Reasoning for old decision {token}."),
+            confidence: 0.9,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-6-decay".into(), format!("decay-{d_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: format!("NOW-{days_old}d"),
+            accessed_at_spec: format!("NOW-{days_old}d"), // critical: accessed_at drives decay
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::LifecycleQuality,
+            expected_status: if expected_conf < 0.1 {
+                ExpectedStatus::Faded
+            } else {
+                ExpectedStatus::Active
+            },
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: Some(expected_conf),
+            expected_activation: None,
+        });
+    }
+
+    // 5 RECONSOLIDATION candidates — access_count >= 5 → confidence += 0.05
+    for r_idx in 0..5 {
+        let token = unique("recon", r_idx);
+        let id = format!("c6-recon-{r_idx}");
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Frequently-accessed decision {token}"),
+            content: format!("High-access memory {token}."),
+            confidence: 0.8,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-6-recon".into(), format!("recon-{r_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 5 + r_idx as u64,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::LifecycleQuality,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: Some(0.85_f64.min(1.0)), // 0.80 + 0.05
+            expected_activation: None,
+        });
+    }
+
+    // 4 CLUSTERS of 3 lessons (12 total) with >50% title overlap for Phase 5 promotion
+    for cluster_idx in 0..4 {
+        let cluster_token = unique("cluster-topic", cluster_idx);
+        for lesson_idx in 0..3 {
+            let id = format!("c6-cluster-{cluster_idx}-{lesson_idx}");
+            // Titles share the cluster token (50%+ word overlap via split_whitespace)
+            let title = format!("Lesson cluster repetition {cluster_token} variant {lesson_idx}");
+            specs.push(MemorySpec {
+                id: id.clone(),
+                memory_type: MemoryType::Lesson,
+                title,
+                content: format!("Lesson {lesson_idx} about {cluster_token}."),
+                confidence: 0.75,
+                valence: "neutral".into(),
+                intensity: 0.0,
+                tags: vec![
+                    "category-6-cluster".into(),
+                    format!("cluster-{cluster_idx}"),
+                ],
+                project: "forge-consolidation-bench".into(),
+                access_count: 0,
+                activation_level: 0.0,
+                quality_score: None,
+                created_at_spec: "NOW".into(),
+                accessed_at_spec: "NOW".into(),
+            });
+            truths.push(GroundTruth {
+                memory_id: id,
+                category: Category::LifecycleQuality,
+                expected_status: ExpectedStatus::Superseded, // Phase 5 supersedes cluster members
+                duplicate_of: None,
+                contradicts: None,
+                reweave_source: None,
+                expected_quality: None,
+                expected_confidence: None,
+                expected_activation: None,
+            });
+        }
+    }
+
+    // 8 QUALITY scoring validation memories — varied dimensions, expected quality computed
+    for q_idx in 0..8 {
+        let token = unique("quality", q_idx);
+        let id = format!("c6-quality-{q_idx}");
+
+        // Vary each dimension: age 0-7 days, access 0-7, content len 50-190, activation 0.0-0.7
+        let age_days = q_idx as i64; // 0, 1, 2, 3, 4, 5, 6, 7
+        let access = q_idx as u64;
+        let content = "x".repeat(50 + q_idx * 20); // 50, 70, 90, ..., 190 chars
+        let seeded_activation = (q_idx as f64) * 0.1; // 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7
+
+        // Phase 10 decays activation BEFORE Phase 15 reads it
+        let post_decay_activation = if seeded_activation * 0.95 > 0.01 {
+            seeded_activation * 0.95
+        } else {
+            0.0
+        };
+
+        // Phase 15 formula
+        let freshness = (1.0_f64 - (age_days as f64 / 7.0) * 0.1).clamp(0.1, 1.0);
+        let utility = (access as f64 / 10.0).clamp(0.0, 1.0);
+        let completeness = (content.len() as f64 / 200.0).min(1.0);
+        let activation = post_decay_activation.clamp(0.0, 1.0);
+        let expected_quality =
+            freshness * 0.3 + utility * 0.3 + completeness * 0.2 + activation * 0.2;
+
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Quality scoring candidate {token}"),
+            content,
+            confidence: 0.85,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-6-quality".into(), format!("quality-{q_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: access,
+            activation_level: seeded_activation,
+            quality_score: None,
+            created_at_spec: format!("NOW-{age_days}d"),
+            accessed_at_spec: "NOW".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::LifecycleQuality,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: Some(expected_quality),
+            expected_confidence: None,
+            expected_activation: Some(post_decay_activation),
+        });
+    }
+
+    (specs, truths)
+}
+
+/// Category 7: 24 memories for Phase 20 (topic supersede), Phase 21 (staleness fade),
+/// Phase 22 (quality pressure).
+pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
+    let unique = |label: &str, idx: usize| sha256_hex(&format!("c7-{seed}-{label}-{idx}"));
+
+    let mut specs = Vec::new();
+    let mut truths = Vec::new();
+
+    // 6 TOPIC-SUPERSEDE pairs — synthetic embeddings + word overlap 0.3-0.7 on title+content
+    for pair_idx in 0..6 {
+        let topic = unique("topic", pair_idx);
+        let older_id = format!("c7-supersede-{pair_idx}-older");
+        let newer_id = format!("c7-supersede-{pair_idx}-newer");
+
+        // Moderate word overlap — some shared tokens but distinct content
+        specs.push(MemorySpec {
+            id: older_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Topic {topic} original decision"),
+            content: format!("Topic {topic} rationale from earlier analysis."),
+            confidence: 0.8, // <0.95 to allow supersede
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-7-supersede".into(), format!("topic-{topic}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW-2d".into(),
+            accessed_at_spec: "NOW-2d".into(),
+        });
+        specs.push(MemorySpec {
+            id: newer_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Topic {topic} revised approach"),
+            content: format!("Topic {topic} updated conclusion with new evidence."),
+            confidence: 0.85,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-7-supersede".into(), format!("topic-{topic}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+
+        truths.push(GroundTruth {
+            memory_id: older_id.clone(),
+            category: Category::SelfHealing,
+            expected_status: ExpectedStatus::Superseded,
+            duplicate_of: Some(newer_id.clone()),
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+        truths.push(GroundTruth {
+            memory_id: newer_id,
+            category: Category::SelfHealing,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: Some(older_id),
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    // 6 STALENESS candidates — age 90 days, access=0, content ≤10 chars, activation=0
+    //   Phase 15 quality will be: 0.1*0.3 + 0 + 0.025*0.2 + 0 = 0.035 < 0.1 aggressive tier
+    for s_idx in 0..6 {
+        let id = format!("c7-stale-{s_idx}");
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Lesson,
+            title: format!("stale {s_idx}"),
+            content: "short".into(), // 5 chars → completeness 0.025
+            confidence: 0.5,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-7-stale".into()],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW-90d".into(),
+            accessed_at_spec: "NOW-90d".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::SelfHealing,
+            expected_status: ExpectedStatus::Faded,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    // 6 QUALITY-PRESSURE candidates — 3 accelerated-decay + 3 boost
+    for p_idx in 0..3 {
+        // Accelerated decay: 90-day-old, low quality, zero access
+        let id = format!("c7-decay-{p_idx}");
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("decay {p_idx}"),
+            content: "short".into(),
+            confidence: 0.5,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-7-pressure-decay".into()],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW-90d".into(),
+            accessed_at_spec: "NOW-90d".into(),
+        });
+        // Note: Phase 21 fires BEFORE Phase 22. These get faded by Phase 21, not Phase 22.
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::SelfHealing,
+            expected_status: ExpectedStatus::Faded,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+    for p_idx in 0..3 {
+        // Boost: high access, recent, moderate quality
+        let id = format!("c7-boost-{p_idx}");
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("boost {p_idx}"),
+            content: "Content for boost candidate with sufficient length for normal completeness."
+                .into(),
+            confidence: 0.8,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-7-pressure-boost".into()],
+            project: "forge-consolidation-bench".into(),
+            access_count: 3 + p_idx as u64,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::SelfHealing,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    (specs, truths)
+}
+
+/// Category 8: 26 memories for Phase 3 (linking), Phase 10 (activation decay),
+/// Phase 11 (entity detection), Phase 16 (portability).
+pub fn generate_category_8_infrastructure(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
+    let unique = |label: &str, idx: usize| sha256_hex(&format!("c8-{seed}-{label}-{idx}"));
+
+    let mut specs = Vec::new();
+    let mut truths = Vec::new();
+
+    // 5 LINKING pairs — share ≥2 tags, accessed_at within last hour for Phase 8
+    for pair_idx in 0..5 {
+        let shared_tags = vec!["category-8-link".into(), format!("link-group-{pair_idx}")];
+        for member_idx in 0..2 {
+            let id = format!("c8-link-{pair_idx}-{member_idx}");
+            let token = unique("link", pair_idx * 2 + member_idx);
+            specs.push(MemorySpec {
+                id: id.clone(),
+                memory_type: MemoryType::Decision,
+                title: format!("Link pair {pair_idx} member {member_idx} {token}"),
+                content: format!("Linked memory {token} in pair {pair_idx}."),
+                confidence: 0.85,
+                valence: "neutral".into(),
+                intensity: 0.0,
+                tags: shared_tags.clone(),
+                project: "forge-consolidation-bench".into(),
+                access_count: 1, // recently accessed for Phase 8
+                activation_level: 0.0,
+                quality_score: None,
+                created_at_spec: "NOW".into(),
+                accessed_at_spec: "NOW".into(),
+            });
+            truths.push(GroundTruth {
+                memory_id: id,
+                category: Category::Infrastructure,
+                expected_status: ExpectedStatus::Active,
+                duplicate_of: None,
+                contradicts: None,
+                reweave_source: None,
+                expected_quality: None,
+                expected_confidence: None,
+                expected_activation: None,
+            });
+        }
+    }
+
+    // 5 ACTIVATION candidates — activation_level 0.1..0.5, should be decayed to *0.95
+    for a_idx in 0..5 {
+        let id = format!("c8-activation-{a_idx}");
+        let token = unique("activation", a_idx);
+        let seeded_activation = 0.1 + (a_idx as f64) * 0.1; // 0.1, 0.2, 0.3, 0.4, 0.5
+        let expected_activation = seeded_activation * 0.95;
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Activation test {token}"),
+            content: format!("Content {token}"),
+            confidence: 0.85,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-8-activation".into()],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: seeded_activation,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::Infrastructure,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: Some(expected_activation),
+        });
+    }
+
+    // 8 ENTITY memories with proper nouns (PascalCase terms)
+    let entity_terms = [
+        ("Kubernetes", "container orchestration"),
+        ("PostgreSQL", "database server"),
+        ("Terraform", "infrastructure as code"),
+        ("Prometheus", "metrics system"),
+        ("Grafana", "dashboard tool"),
+        ("RabbitMQ", "message broker"),
+        ("Redis", "cache layer"),
+        ("Consul", "service discovery"),
+    ];
+    for (e_idx, (entity, desc)) in entity_terms.iter().enumerate() {
+        let id = format!("c8-entity-{e_idx}");
+        let token = unique("entity", e_idx);
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("{entity} usage note {token}"),
+            content: format!("Using {entity} as {desc}."),
+            confidence: 0.9,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-8-entity".into()],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::Infrastructure,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    // 3 PORTABILITY candidates — no portability set (NULL/default 'unknown')
+    for p_idx in 0..3 {
+        let id = format!("c8-portability-{p_idx}");
+        let token = unique("portability", p_idx);
+        specs.push(MemorySpec {
+            id: id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Portability candidate {token}"),
+            content: format!("Content {token} of unknown portability class."),
+            confidence: 0.8,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-8-portability".into()],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        truths.push(GroundTruth {
+            memory_id: id,
+            category: Category::Infrastructure,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    (specs, truths)
+}
+
+// ── Corpus seeding ───────────────────────────────────────────────
+
+/// Resolve "NOW" / "NOW-Nd" specs to concrete ISO-8601 timestamps.
+/// Uses `forge_core::time::now_offset` (seconds from now) — no chrono dependency.
+fn resolve_timestamp(spec: &str) -> String {
+    if spec == "NOW" || spec == "NOW-0d" {
+        return forge_core::time::now_iso();
+    }
+    if let Some(rest) = spec.strip_prefix("NOW-") {
+        if let Some(n_str) = rest.strip_suffix('d') {
+            if let Ok(n) = n_str.parse::<i64>() {
+                return forge_core::time::now_offset(-(n * 86_400));
+            }
+        }
+    }
+    // Fallback: assume already ISO-8601
+    spec.to_string()
+}
+
+/// Insert a single MemorySpec into the memory table via explicit SQL.
+/// Uses explicit quality_score when provided; otherwise DB default (0.5) applies
+/// and will be overwritten by Phase 15 anyway.
+pub fn insert_memory_spec(conn: &rusqlite::Connection, spec: &MemorySpec) -> rusqlite::Result<()> {
+    let created_at = resolve_timestamp(&spec.created_at_spec);
+    let accessed_at = resolve_timestamp(&spec.accessed_at_spec);
+    let type_str = match spec.memory_type {
+        MemoryType::Decision => "decision",
+        MemoryType::Lesson => "lesson",
+        MemoryType::Pattern => "pattern",
+        MemoryType::Preference => "preference",
+        _ => "decision",
+    };
+    let tags_json = serde_json::to_string(&spec.tags).unwrap_or_else(|_| "[]".into());
+
+    conn.execute(
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags,
+                             created_at, accessed_at, valence, intensity, access_count,
+                             activation_level, quality_score, organization_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'default')",
+        rusqlite::params![
+            spec.id,
+            type_str,
+            spec.title,
+            spec.content,
+            spec.confidence,
+            spec.project,
+            tags_json,
+            created_at,
+            accessed_at,
+            spec.valence,
+            spec.intensity,
+            spec.access_count as i64,
+            spec.activation_level,
+            spec.quality_score.unwrap_or(0.5),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Full corpus seeder + ground-truth orchestrator.
+/// Does NOT insert embeddings — that's Task 4's `seed_embeddings`.
+pub fn seed_corpus(
+    conn: &rusqlite::Connection,
+    seed: u64,
+) -> Result<(Vec<MemorySpec>, SeededDataset), String> {
+    let (c1_s, c1_t) = generate_category_1_exact_duplicates(seed);
+    let (c2_s, c2_t) = generate_category_2_semantic_duplicates(seed);
+    let (c3_s, c3_t) = generate_category_3_embedding_duplicates(seed);
+    let (c4_s, c4_t) = generate_category_4_contradictions(seed);
+    let (c5_s, c5_t) = generate_category_5_reweave_enrichment(seed);
+    let (c6_s, c6_t) = generate_category_6_lifecycle_quality(seed);
+    let (c7_s, c7_t) = generate_category_7_self_healing(seed);
+    let (c8_s, c8_t) = generate_category_8_infrastructure(seed);
+
+    let mut all_specs = Vec::new();
+    all_specs.extend(c1_s);
+    all_specs.extend(c2_s);
+    all_specs.extend(c3_s);
+    all_specs.extend(c4_s);
+    all_specs.extend(c5_s);
+    all_specs.extend(c6_s);
+    all_specs.extend(c7_s);
+    all_specs.extend(c8_s);
+
+    let mut all_truths = Vec::new();
+    all_truths.extend(c1_t);
+    all_truths.extend(c2_t);
+    all_truths.extend(c3_t);
+    all_truths.extend(c4_t);
+    all_truths.extend(c5_t);
+    all_truths.extend(c6_t);
+    all_truths.extend(c7_t);
+    all_truths.extend(c8_t);
+
+    // Verify no ID collisions
+    let mut ids = HashSet::new();
+    for spec in &all_specs {
+        if !ids.insert(&spec.id) {
+            return Err(format!("duplicate ID {} across categories", spec.id));
+        }
+    }
+
+    // Insert all memories
+    for spec in &all_specs {
+        insert_memory_spec(conn, spec).map_err(|e| format!("insert {}: {e}", spec.id))?;
+    }
+
+    Ok((
+        all_specs.clone(),
+        SeededDataset {
+            seed,
+            ground_truth: all_truths,
+            recall_queries: Vec::new(), // filled by Task 5 `generate_query_bank`
+            expected_pattern_count: 4,
+            expected_protocol_count: 7,
+            expected_resolution_count: 4,
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1005,6 +1822,115 @@ mod tests {
                 "content pair {} content Jaccard too high for Phase 9b ({content_jaccard})",
                 pair_idx
             );
+        }
+    }
+
+    // ── Category 5 tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_category_5_produces_30_memories() {
+        let (specs, truths) = generate_category_5_reweave_enrichment(42);
+        assert_eq!(specs.len(), 30);
+        assert_eq!(truths.len(), 30);
+
+        let merged = truths
+            .iter()
+            .filter(|t| t.expected_status == ExpectedStatus::Merged)
+            .count();
+        assert_eq!(merged, 10); // 10 newer reweave partners
+    }
+
+    // ── Category 6 tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_category_6_produces_31_memories() {
+        let (specs, truths) = generate_category_6_lifecycle_quality(42);
+        assert_eq!(specs.len(), 31);
+
+        // 6 decay + 5 reconsolidation + 12 cluster + 8 quality = 31
+        // Decay values: 0.9 * exp(-0.03 * N) for N=30..55 → all < 0.5
+        // Recon value: 0.85 (distinguishable by threshold < 0.5)
+        let decay = truths
+            .iter()
+            .filter(|t| t.expected_confidence.is_some() && t.expected_confidence.unwrap() < 0.5)
+            .count();
+        let recon = truths
+            .iter()
+            .filter(|t| t.expected_confidence == Some(0.85_f64.min(1.0)))
+            .count();
+        let clusters = truths
+            .iter()
+            .filter(|t| t.expected_status == ExpectedStatus::Superseded)
+            .count();
+        let quality = truths
+            .iter()
+            .filter(|t| t.expected_quality.is_some())
+            .count();
+
+        assert_eq!(decay, 6);
+        assert_eq!(recon, 5);
+        assert_eq!(clusters, 12);
+        assert_eq!(quality, 8);
+    }
+
+    // ── Category 7 tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_category_7_produces_24_memories() {
+        let (specs, truths) = generate_category_7_self_healing(42);
+        assert_eq!(specs.len(), 24);
+
+        let superseded = truths
+            .iter()
+            .filter(|t| t.expected_status == ExpectedStatus::Superseded)
+            .count();
+        let faded = truths
+            .iter()
+            .filter(|t| t.expected_status == ExpectedStatus::Faded)
+            .count();
+        let active = truths
+            .iter()
+            .filter(|t| t.expected_status == ExpectedStatus::Active)
+            .count();
+
+        assert_eq!(superseded, 6); // older members of topic-supersede pairs
+        assert_eq!(faded, 9); // 6 staleness + 3 pressure-decay (all faded by Phase 21)
+        assert_eq!(active, 9); // 6 newer topic-supersede + 3 boost
+    }
+
+    // ── Category 8 tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_category_8_produces_26_memories() {
+        let (specs, truths) = generate_category_8_infrastructure(42);
+        assert_eq!(specs.len(), 26);
+        // 10 link + 5 activation + 8 entity + 3 portability = 26
+        assert_eq!(
+            truths
+                .iter()
+                .filter(|t| t.expected_activation.is_some())
+                .count(),
+            5
+        );
+    }
+
+    // ── seed_corpus tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_seed_corpus_produces_167_memories() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (specs, dataset) = seed_corpus(&state.conn, 42).unwrap();
+        assert_eq!(specs.len(), 167);
+        assert_eq!(dataset.ground_truth.len(), 167);
+    }
+
+    #[test]
+    fn test_seed_corpus_no_id_collisions() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
+        let mut ids = HashSet::new();
+        for gt in &dataset.ground_truth {
+            assert!(ids.insert(&gt.memory_id), "collision: {}", gt.memory_id);
         }
     }
 }
