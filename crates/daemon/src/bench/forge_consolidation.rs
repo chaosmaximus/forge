@@ -545,20 +545,53 @@ pub fn generate_category_4_contradictions(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
     }
 
     // 4 CONTENT pairs — same type (decision), title Jaccard ≥0.5, content Jaccard <0.3
+    // Titles use asymmetric lengths so Phase 2 intersection/max stays below 0.65
+    // while Phase 9b intersection/union stays above 0.5.
+    // Contents are substantially different so Phase 9b content Jaccard stays below 0.3.
+    //
+    // Title A: 10 core words + anchor = 11 Phase-2-meaningful-words total
+    // Title B:  6 core words + anchor =  7 Phase-2-meaningful-words total (all B-core ⊆ A-core)
+    //   Shared = 6 core + anchor = 7
+    //   Phase 2 title_score = 7/max(11,7) = 7/11 ≈ 0.636  (< 0.65 ✓)
+    //   Phase 9b title Jaccard = 7/(11+7-7) = 7/11 ≈ 0.636 (≥ 0.5 ✓)
+    //
+    // Content A and B use completely disjoint vocabulary (< 1 shared len≥3 word expected).
+    //   Phase 2 content_score ≈ 0            (< 0.65 ✓)
+    //   Phase 9b content Jaccard ≈ 0         (< 0.3  ✓)
     for pair_idx in 0..4 {
-        let token_t = unique(100 + pair_idx); // shared title anchor
-        let token_a = unique(200 + pair_idx * 2);
-        let token_b = unique(200 + pair_idx * 2 + 1);
+        let token_t = unique(100 + pair_idx); // shared title anchor (64-char hex)
         let a_id = format!("c4-content-{pair_idx}-a");
         let b_id = format!("c4-content-{pair_idx}-b");
 
-        // Share "policy enforce" words in title plus the title anchor
-        // B uses "delay" instead of "timeout" to avoid Phase 1 exact dedup
+        // Title A: 10 core words + anchor
+        let title_a = format!(
+            "Configure service timeout retry backoff interval policy limits monitoring alerts {token_t}"
+        );
+        // Title B: 6 core words (all ⊆ A's core words) + anchor
+        let title_b = format!("Configure service retry interval limits alerts {token_t}");
+
+        // Content A: specific vocabulary around long cooldown periods.
+        // len≥3 words: {set, the, retry, backoff, thirty, seconds, upstream, apis, receive,
+        //               mandatory, cooldown, calls, token_a_val} — disjoint from B.
+        let token_a_val = unique(200 + pair_idx * 2);
+        let content_a = format!(
+            "Set the retry backoff to thirty seconds so upstream APIs receive mandatory cooldown between calls {token_a_val}"
+        );
+
+        // Content B: specific vocabulary around minimal delay / high throughput.
+        // len≥3 words: {use, five, milliseconds, delay, attempts, maximize, throughput,
+        //               avoid, queue, saturation, token_b_val} — disjoint from A.
+        // "between" is the only potential overlap; it does NOT appear in B.
+        let token_b_val = unique(200 + pair_idx * 2 + 1);
+        let content_b = format!(
+            "Use five milliseconds delay per attempt to maximize throughput and avoid queue saturation {token_b_val}"
+        );
+
         specs.push(MemorySpec {
             id: a_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Policy enforce timeout {token_t}"),
-            content: format!("Set timeout to 30 seconds because {token_a}."),
+            title: title_a,
+            content: content_a,
             confidence: 0.9,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -576,8 +609,8 @@ pub fn generate_category_4_contradictions(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
         specs.push(MemorySpec {
             id: b_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Policy enforce delay {token_t}"), // changed "timeout" to "delay"
-            content: format!("Set timeout to 5 seconds because {token_b}."), // different reasoning
+            title: title_b,
+            content: content_b,
             confidence: 0.85,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -806,6 +839,113 @@ mod tests {
             assert_ne!(
                 a, b,
                 "content pair {pair_idx} has identical titles — would be caught by Phase 1"
+            );
+        }
+    }
+
+    #[test]
+    fn test_category_4_content_pairs_avoid_phase_2() {
+        use std::collections::HashSet;
+
+        // Approximate Phase 2's meaningful_words: len > 1, exclude a small set of common stopwords
+        // Phase 2's actual filter is more comprehensive; this test uses a minimal proxy to verify
+        // the DESIGN, not exact Phase 2 compliance.
+        fn mw(text: &str) -> HashSet<String> {
+            let stop: HashSet<&str> = ["the", "to", "a", "an", "is", "are", "so", "that", "and"]
+                .iter()
+                .copied()
+                .collect();
+            text.to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 1 && !stop.contains(w))
+                .map(String::from)
+                .collect()
+        }
+
+        let (specs, _) = generate_category_4_contradictions(42);
+        // Content pairs are specs 8-15 (8 valence first, then 8 content)
+        for pair_idx in 0..4 {
+            let a = &specs[8 + pair_idx * 2];
+            let b = &specs[8 + pair_idx * 2 + 1];
+            let title_a_words = mw(&a.title);
+            let title_b_words = mw(&b.title);
+            let content_a_words = mw(&a.content);
+            let content_b_words = mw(&b.content);
+
+            let title_shared = title_a_words.intersection(&title_b_words).count() as f64;
+            let title_max = std::cmp::max(title_a_words.len(), title_b_words.len()) as f64;
+            let title_score = if title_max == 0.0 {
+                0.0
+            } else {
+                title_shared / title_max
+            };
+
+            let content_shared = content_a_words.intersection(&content_b_words).count() as f64;
+            let content_max = std::cmp::max(content_a_words.len(), content_b_words.len()) as f64;
+            let content_score = if content_max == 0.0 {
+                0.0
+            } else {
+                content_shared / content_max
+            };
+
+            let weighted = 0.5 * title_score + 0.5 * content_score;
+            let combined = weighted.max(title_score).max(content_score);
+
+            assert!(
+                combined < 0.65,
+                "content pair {} would be caught by Phase 2 (combined={combined}, title_score={title_score}, content_score={content_score})",
+                pair_idx
+            );
+        }
+    }
+
+    #[test]
+    fn test_category_4_content_pairs_trigger_phase_9b() {
+        use std::collections::HashSet;
+
+        // Phase 9b word_set: len >= 3, no stopword filter
+        fn ws(text: &str) -> HashSet<String> {
+            text.to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() >= 3)
+                .map(String::from)
+                .collect()
+        }
+
+        let (specs, _) = generate_category_4_contradictions(42);
+        for pair_idx in 0..4 {
+            let a = &specs[8 + pair_idx * 2];
+            let b = &specs[8 + pair_idx * 2 + 1];
+            let title_a_ws = ws(&a.title);
+            let title_b_ws = ws(&b.title);
+            let content_a_ws = ws(&a.content);
+            let content_b_ws = ws(&b.content);
+
+            let t_shared = title_a_ws.intersection(&title_b_ws).count() as f64;
+            let t_union = title_a_ws.union(&title_b_ws).count() as f64;
+            let title_jaccard = if t_union == 0.0 {
+                0.0
+            } else {
+                t_shared / t_union
+            };
+
+            let c_shared = content_a_ws.intersection(&content_b_ws).count() as f64;
+            let c_union = content_a_ws.union(&content_b_ws).count() as f64;
+            let content_jaccard = if c_union == 0.0 {
+                0.0
+            } else {
+                c_shared / c_union
+            };
+
+            assert!(
+                title_jaccard >= 0.5,
+                "content pair {} title Jaccard too low for Phase 9b ({title_jaccard})",
+                pair_idx
+            );
+            assert!(
+                content_jaccard < 0.3,
+                "content pair {} content Jaccard too high for Phase 9b ({content_jaccard})",
+                pair_idx
             );
         }
     }
