@@ -119,6 +119,24 @@ pub enum ResponseData {
         /// Structured health checks with ok/warn/error status.
         #[serde(default)]
         checks: Vec<HealthCheck>,
+        /// Daemon version (CARGO_PKG_VERSION).
+        #[serde(default)]
+        version: String,
+        /// Short git commit hash at build time.
+        #[serde(default)]
+        git_sha: Option<String>,
+        /// Total raw documents ingested into the raw layer.
+        #[serde(default)]
+        raw_document_count: usize,
+        /// Total raw chunks (embedder output) in the raw layer.
+        #[serde(default)]
+        raw_chunk_count: usize,
+        /// Number of active sessions.
+        #[serde(default)]
+        active_session_count: usize,
+        /// Total session messages exchanged via FISP.
+        #[serde(default)]
+        session_message_count: usize,
     },
     Export {
         memories: Vec<MemoryResult>,

@@ -1009,6 +1009,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             });
 
+            let raw_doc_count = crate::db::raw::count_documents(&state.conn).unwrap_or(0);
+            let raw_chunk_count = crate::db::raw::count_chunks(&state.conn).unwrap_or(0);
+            let active_session_count =
+                crate::sessions::count_active_sessions(&state.conn).unwrap_or(0);
+            let session_message_count =
+                crate::sessions::count_all_messages(&state.conn).unwrap_or(0);
+
             Response::Ok {
                 data: ResponseData::Doctor {
                     daemon_up: true,
@@ -1038,6 +1045,19 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     identity_count: mh.identity_facets_active,
                     disposition_count: mh.dispositions,
                     checks,
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    git_sha: {
+                        let sha = env!("FORGE_GIT_SHA");
+                        if sha.is_empty() {
+                            None
+                        } else {
+                            Some(sha.to_string())
+                        }
+                    },
+                    raw_document_count: raw_doc_count,
+                    raw_chunk_count,
+                    active_session_count,
+                    session_message_count,
                 },
             }
         }
@@ -5919,6 +5939,32 @@ mod tests {
                 assert_eq!(disposition_count, 0);
             }
             _ => panic!("expected Doctor response"),
+        }
+    }
+
+    #[test]
+    fn test_doctor_includes_version_and_raw_stats() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+        let resp = handle_request(&mut state, Request::Doctor);
+        match resp {
+            Response::Ok {
+                data:
+                    ResponseData::Doctor {
+                        version,
+                        raw_document_count,
+                        raw_chunk_count,
+                        active_session_count,
+                        session_message_count,
+                        ..
+                    },
+            } => {
+                assert!(!version.is_empty(), "doctor should include version");
+                assert_eq!(raw_document_count, 0);
+                assert_eq!(raw_chunk_count, 0);
+                assert_eq!(active_session_count, 0);
+                assert_eq!(session_message_count, 0);
+            }
+            other => panic!("expected Doctor response, got: {other:?}"),
         }
     }
 

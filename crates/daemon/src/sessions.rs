@@ -692,6 +692,24 @@ pub fn compile_session_kpis(
     })
 }
 
+/// Count active sessions.
+pub fn count_active_sessions(conn: &Connection) -> rusqlite::Result<usize> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM session WHERE status = 'active'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+/// Count total session messages.
+pub fn count_all_messages(conn: &Connection) -> rusqlite::Result<usize> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM session_message", [], |row| {
+        row.get(0)
+    })?;
+    Ok(count as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1556,5 +1574,33 @@ mod tests {
             Some("other"),
             Some("forge")
         ));
+    }
+
+    // ── Count helpers ──
+
+    #[test]
+    fn test_count_active_sessions() {
+        let conn = setup();
+        assert_eq!(count_active_sessions(&conn).unwrap(), 0);
+
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+        assert_eq!(count_active_sessions(&conn).unwrap(), 2);
+
+        end_session(&conn, "s1").unwrap();
+        assert_eq!(count_active_sessions(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_count_all_messages() {
+        let conn = setup();
+        assert_eq!(count_all_messages(&conn).unwrap(), 0);
+
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+
+        send_message(&conn, "s1", "s2", "notification", "t1", "[]", Some("forge"), None, None).unwrap();
+        send_message(&conn, "s1", "s2", "notification", "t2", "[]", Some("forge"), None, None).unwrap();
+        assert_eq!(count_all_messages(&conn).unwrap(), 2);
     }
 }
