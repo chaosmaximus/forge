@@ -1085,6 +1085,96 @@ pub fn compute_composite(results: &[QueryResult], tool_filter_accuracy: f64) -> 
     }
 }
 
+// ── Orchestrator (Task 6) ─────────────────────────────────────────
+
+/// Configuration for a Forge-Context benchmark run.
+pub struct ContextConfig {
+    pub seed: u64,
+    pub output_dir: Option<std::path::PathBuf>,
+}
+
+/// Compute tool-filter accuracy from CA-4..CA-6 query results.
+///
+/// These queries use the `ABSENT:` prefix convention — they assert that
+/// absent-tool skills do NOT leak into the compiled context. If all three
+/// score F1 = 1.0, tool filtering is exact (accuracy = 1.0). Otherwise,
+/// accuracy = fraction of CA-4..CA-6 queries with F1 = 1.0.
+fn compute_tool_filter_accuracy(results: &[QueryResult]) -> f64 {
+    let tool_filter_results: Vec<&QueryResult> = results
+        .iter()
+        .filter(|r| {
+            r.dimension == Dimension::ContextAssembly
+                && (r.id == "CA-4" || r.id == "CA-5" || r.id == "CA-6")
+        })
+        .collect();
+
+    if tool_filter_results.is_empty() {
+        return 1.0; // no tool-filter queries → vacuously exact
+    }
+
+    let passed = tool_filter_results
+        .iter()
+        .filter(|r| (r.f1 - 1.0).abs() < f64::EPSILON)
+        .count();
+
+    passed as f64 / tool_filter_results.len() as f64
+}
+
+/// Run the Forge-Context benchmark and return composite scores.
+pub fn run(config: ContextConfig) -> Result<ContextScore, String> {
+    let mut state = DaemonState::new(":memory:").map_err(|e| format!("DaemonState: {e}"))?;
+
+    // 1. Seed the dataset
+    let dataset = seed_state(&mut state, config.seed)?;
+
+    // 2. Generate query bank with ground truth
+    let queries = generate_query_bank(&dataset);
+
+    // 3. Execute each query, extract results, score
+    let mut results = Vec::new();
+    for query in &queries {
+        let response = handle_request(&mut state, query.request.clone());
+        let actual = extract_result_items(&response)
+            .map_err(|e| format!("query {}: {e}", query.id))?;
+
+        let (p, r, f1) = precision_recall_f1(&query.expected, &actual);
+        results.push(QueryResult {
+            id: query.id.clone(),
+            dimension: query.dimension,
+            precision: p,
+            recall: r,
+            f1,
+            expected_count: query.expected.len(),
+            actual_count: actual.len(),
+            matched_count: query.expected.iter().filter(|item| {
+                if let Some(stripped) = item.strip_prefix("ABSENT:") {
+                    !actual.contains(stripped)
+                } else {
+                    actual.contains(*item)
+                }
+            }).count(),
+        });
+    }
+
+    // 4. Compute tool-filter accuracy from CA-4..CA-6 results
+    let tool_filter_accuracy = compute_tool_filter_accuracy(&results);
+
+    // 5. Compute composite
+    let mut score = compute_composite(&results, tool_filter_accuracy);
+    score.seed = config.seed;
+
+    // 6. Write output if requested
+    if let Some(dir) = &config.output_dir {
+        std::fs::create_dir_all(dir).map_err(|e| format!("mkdir: {e}"))?;
+        let json = serde_json::to_string_pretty(&score)
+            .map_err(|e| format!("json serialize: {e}"))?;
+        std::fs::write(dir.join("summary.json"), &json)
+            .map_err(|e| format!("write summary: {e}"))?;
+    }
+
+    Ok(score)
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]

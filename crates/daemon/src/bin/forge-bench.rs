@@ -118,6 +118,16 @@ enum Commands {
         #[arg(long, default_value_t = 30000)]
         request_timeout_ms: u64,
     },
+    /// Run the Forge-Context benchmark (proactive intelligence precision).
+    /// See docs/benchmarks/forge-context-design.md.
+    ForgeContext {
+        /// ChaCha20 seed for deterministic dataset generation.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Output directory for summary.json.
+        #[arg(long, default_value = "bench_results_context")]
+        output: PathBuf,
+    },
     /// Run the LoCoMo benchmark.
     Locomo {
         /// Path to locomo10.json (from snap-research/locomo).
@@ -200,6 +210,9 @@ async fn main() {
                 raw_mode,
             )
             .await
+        }
+        Commands::ForgeContext { seed, output } => {
+            run_forge_context(seed, output)
         }
         Commands::ForgePersist {
             memories,
@@ -435,6 +448,42 @@ fn unix_secs_string() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("{secs}")
+}
+
+fn run_forge_context(seed: u64, output: PathBuf) -> Result<(), String> {
+    use forge_daemon::bench::forge_context::{run, ContextConfig};
+
+    eprintln!("=== forge-bench: forge-context ===");
+    eprintln!("[forge-context] seed={seed}");
+    eprintln!("[forge-context] output = {}", output.display());
+
+    let config = ContextConfig {
+        seed,
+        output_dir: Some(output),
+    };
+
+    match run(config) {
+        Ok(score) => {
+            eprintln!("[forge-context] === results ===");
+            eprintln!("[forge-context] context_assembly_f1={:.4}", score.context_assembly_f1);
+            eprintln!("[forge-context] guardrails_f1={:.4}", score.guardrails_f1);
+            eprintln!("[forge-context] completion_f1={:.4}", score.completion_f1);
+            eprintln!("[forge-context] layer_recall_f1={:.4}", score.layer_recall_f1);
+            eprintln!("[forge-context] tool_filter_accuracy={:.4}", score.tool_filter_accuracy);
+            eprintln!("[forge-context] composite={:.4}", score.composite);
+            if score.pass {
+                eprintln!("[forge-context] PASS");
+                Ok(())
+            } else {
+                eprintln!("[forge-context] FAIL");
+                Err("forge-context FAIL: composite below threshold".to_string())
+            }
+        }
+        Err(e) => {
+            eprintln!("[forge-context] ERROR: {e}");
+            Err(format!("forge-context error: {e}"))
+        }
+    }
 }
 
 // Parameter list mirrors the clap `Commands::ForgePersist` variant
@@ -825,6 +874,39 @@ mod tests {
                 assert_eq!(request_timeout_ms, 60000);
             }
             other => panic!("expected Commands::ForgePersist, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_forge_context_subcommand_with_defaults() {
+        let cli = Cli::try_parse_from(["forge-bench", "forge-context"])
+            .expect("forge-context subcommand should parse with defaults");
+        match cli.command {
+            Commands::ForgeContext { seed, output } => {
+                assert_eq!(seed, 42);
+                assert_eq!(output, PathBuf::from("bench_results_context"));
+            }
+            other => panic!("expected Commands::ForgeContext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_forge_context_accepts_all_flags() {
+        let cli = Cli::try_parse_from([
+            "forge-bench",
+            "forge-context",
+            "--seed",
+            "99",
+            "--output",
+            "/tmp/context_out",
+        ])
+        .expect("all flags should parse");
+        match cli.command {
+            Commands::ForgeContext { seed, output } => {
+                assert_eq!(seed, 99);
+                assert_eq!(output, PathBuf::from("/tmp/context_out"));
+            }
+            other => panic!("expected Commands::ForgeContext, got {other:?}"),
         }
     }
 }
