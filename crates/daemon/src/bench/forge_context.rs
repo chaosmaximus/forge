@@ -565,34 +565,29 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         }
 
         // applicable_skills: "Skill: {name} ({domain})" for skills matching file path.
-        // find_applicable_skills parses search terms from the file path.
-        // For "src/auth/middleware.rs": terms = ["middleware.rs", "middleware", "auth"]
-        // For "src/database/schema.rs": terms = ["schema.rs", "schema", "database"]
-        // etc. "src" is in skip_dirs.
+        // find_applicable_skills parses search terms from the file path and matches
+        // via LIKE on name/description/domain. The domain component (e.g., "auth")
+        // matches all skills with that domain across all tiers (A, B, C).
         //
-        // These terms are matched via LIKE on name/description/domain.
-        // The domain component (e.g., "auth") will match skills with that domain.
-        // Skills are ordered by success_count DESC LIMIT 2.
+        // For domain_idx, matching skill indices are domain_idx and domain_idx+5
+        // (i % 5 == domain_idx). Each tier has two such skills:
+        //   - i=domain_idx:   success_count = domain_idx + 1
+        //   - i=domain_idx+5: success_count = domain_idx + 6
         //
-        // For domain "auth": Tier A skills 0,5 have domain "auth" (i % 5 == 0).
-        //   Skill a-0: success_count=1, Skill a-5: success_count=6
-        //   Tier C skills 0,5 also have domain "auth": c-0 success=1, c-5 success=6
-        //   But we also need to check Tier B — b-0 and b-5 have domain "auth" too.
-        //   All three tiers have domain "auth" for indices 0,5.
-        //   Ordered by success_count DESC: a-5 (6), b-5 (6), c-5 (6), a-0 (1), b-0 (1), c-0 (1)
-        //   Ties in success_count — LIMIT 2 picks first two in DB insertion order.
-        //   Skills are inserted in order: a-0..a-9, b-0..b-9, c-0..c-9.
-        //   So among success_count=6: a-5 first, then b-5, then c-5.
-        //   Result: top 2 = a-5, b-5 (both success_count=6).
-        //
-        // The stem component (e.g., "middleware") would also match skills mentioning
-        // "middleware" in name/description/domain. But our skills don't contain
-        // "middleware" — they use tool names and domain names.
-        //
-        // Since we can't predict the exact LIMIT 2 tiebreaking across all files,
-        // we conservatively skip applicable_skills from expected for PostEditCheck.
-        // (The skill matching depends on which search terms hit which skills,
-        // and ties in success_count make the result unpredictable.)
+        // Across 3 tiers, there are 3 skills with success_count = domain_idx+6
+        // (tied). ORDER BY success_count DESC LIMIT 2 picks the first two by
+        // rowid (insertion order): Tier A i=domain_idx+5, then Tier B i=domain_idx+5.
+        let domain_idx = gr_idx;
+        let domain = DOMAINS[domain_idx];
+        let skill_i = domain_idx + 5;
+
+        // Tier A skill (present-tool): index skill_i in Tier A
+        let skill_a = &dataset.skills[skill_i];
+        expected.insert(format!("Skill: {} ({domain})", skill_a.name));
+
+        // Tier B skill (absent-tool): index skill_i in Tier B (offset by 10)
+        let skill_b = &dataset.skills[10 + skill_i];
+        expected.insert(format!("Skill: {} ({domain})", skill_b.name));
 
         cases.push(QueryCase {
             id,
@@ -646,7 +641,8 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
     }
 
     // GR-9..GR-10: GuardrailsCheck for 2 files.
-    // Expected: decisions_affected contains decision IDs (not titles!).
+    // Expected: decisions_affected contains decision IDs (not titles!),
+    //           and applicable_skills formatted as "Skill: {name} ({domain})".
     for (gr_idx, &file) in FILE_PATHS[..2].iter().enumerate() {
         let id = format!("GR-{}", gr_idx + 9);
         let mut expected = HashSet::new();
@@ -657,6 +653,19 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
                 expected.insert(did.clone());
             }
         }
+
+        // applicable_skills: same logic as GR-1..GR-5.
+        // For FILE_PATHS[0] ("src/auth/middleware.rs") → domain_idx=0
+        // For FILE_PATHS[1] ("src/database/schema.rs") → domain_idx=1
+        let domain_idx = gr_idx;
+        let domain = DOMAINS[domain_idx];
+        let skill_i = domain_idx + 5;
+
+        let skill_a = &dataset.skills[skill_i];
+        expected.insert(format!("Skill: {} ({domain})", skill_a.name));
+
+        let skill_b = &dataset.skills[10 + skill_i];
+        expected.insert(format!("Skill: {} ({domain})", skill_b.name));
 
         cases.push(QueryCase {
             id,
@@ -1759,4 +1768,5 @@ mod tests {
         // composite = 0.30*0.5 + 0.30*1.0 + 0.20*1.0 + 0.20*1.0 = 0.15 + 0.30 + 0.20 + 0.20 = 0.85
         assert!((score.composite - 0.85).abs() < 0.001, "composite should be 0.85, got {}", score.composite);
     }
+
 }
