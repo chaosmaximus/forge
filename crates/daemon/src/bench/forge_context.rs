@@ -833,6 +833,258 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
     cases
 }
 
+// ── Result extractors (Task 4) ───────────────────────────────────
+
+/// Normalize a daemon `Response` into a flat set of strings for scoring.
+///
+/// Each response variant produces items in the EXACT format the daemon
+/// emits, so the scorer can intersect them with ground-truth expectations.
+pub fn extract_result_items(response: &Response) -> Result<HashSet<String>, String> {
+    match response {
+        Response::Error { message } => Err(format!("daemon returned error: {message}")),
+        Response::Ok { data } => match data {
+            ResponseData::GuardrailsCheck {
+                decisions_affected,
+                relevant_lessons,
+                applicable_skills,
+                ..
+            } => {
+                let mut items = HashSet::new();
+                for s in decisions_affected { items.insert(s.clone()); }
+                for s in relevant_lessons { items.insert(s.clone()); }
+                for s in applicable_skills { items.insert(s.clone()); }
+                Ok(items)
+            }
+            ResponseData::PostEditChecked {
+                applicable_skills,
+                decisions_to_review,
+                relevant_lessons,
+                ..
+            } => {
+                let mut items = HashSet::new();
+                for s in applicable_skills { items.insert(s.clone()); }
+                for s in decisions_to_review { items.insert(s.clone()); }
+                for s in relevant_lessons { items.insert(s.clone()); }
+                Ok(items)
+            }
+            ResponseData::PreBashChecked {
+                relevant_skills,
+                ..
+            } => {
+                let mut items = HashSet::new();
+                for s in relevant_skills { items.insert(s.clone()); }
+                Ok(items)
+            }
+            ResponseData::CompletionCheckResult {
+                relevant_lessons,
+                ..
+            } => {
+                let mut items = HashSet::new();
+                for s in relevant_lessons { items.insert(s.clone()); }
+                Ok(items)
+            }
+            ResponseData::TaskCompletionCheckResult {
+                checklists,
+                ..
+            } => {
+                let mut items = HashSet::new();
+                for s in checklists { items.insert(s.clone()); }
+                Ok(items)
+            }
+            ResponseData::Memories { results, .. } => {
+                let items: HashSet<String> = results
+                    .iter()
+                    .map(|mr| mr.memory.title.clone())
+                    .collect();
+                Ok(items)
+            }
+            ResponseData::CompiledContext { context, .. } => {
+                let items: HashSet<String> = extract_from_compiled_context(context)
+                    .into_iter()
+                    .collect();
+                Ok(items)
+            }
+            other => Err(format!("unhandled response variant for extraction: {other:?}")),
+        },
+    }
+}
+
+/// Parse CompileContext XML output and extract skill names and decision titles.
+///
+/// Skills appear as: `<skill domain="X" uses="N">name</skill>`
+/// Decisions appear as: `<decision confidence="X.Y">title</decision>`
+pub fn extract_from_compiled_context(context: &str) -> Vec<String> {
+    let mut items = Vec::new();
+
+    // Extract skill names from <skill ...>name</skill>
+    for cap in context.split("<skill ") {
+        // Each split piece after the first starts with attributes>content</skill>
+        if let Some(close_bracket) = cap.find('>') {
+            let after_bracket = &cap[close_bracket + 1..];
+            if let Some(end_tag) = after_bracket.find("</skill>") {
+                let name = &after_bracket[..end_tag];
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    items.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    // Extract decision titles from <decision ...>title</decision>
+    for cap in context.split("<decision ") {
+        if let Some(close_bracket) = cap.find('>') {
+            let after_bracket = &cap[close_bracket + 1..];
+            if let Some(end_tag) = after_bracket.find("</decision>") {
+                let title = &after_bracket[..end_tag];
+                let trimmed = title.trim();
+                if !trimmed.is_empty() {
+                    items.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    items
+}
+
+// ── Scoring (Task 5) ─────────────────────────────────────────────
+
+/// Standard IR precision / recall / F1.
+///
+/// - Both empty: `(1.0, 1.0, 1.0)` — nothing expected, nothing returned = perfect.
+/// - Actual empty but expected non-empty: `(0.0, 0.0, 0.0)`.
+/// - Otherwise: `precision = |intersection| / |actual|`, `recall = |intersection| / |expected|`,
+///   `F1 = 2 * P * R / (P + R)`.
+///
+/// **ABSENT: prefix convention**: expected items starting with `"ABSENT:"` are
+/// *absence assertions*. For each such item, we strip the prefix and check that
+/// the remainder is NOT present in `actual`. A satisfied absence = a "match"
+/// for scoring purposes; a violated absence (item found in actual) = a mismatch.
+pub fn precision_recall_f1(expected: &HashSet<String>, actual: &HashSet<String>) -> (f64, f64, f64) {
+    if expected.is_empty() && actual.is_empty() {
+        return (1.0, 1.0, 1.0);
+    }
+
+    // Split expected into presence and absence assertions.
+    let mut presence_expected = HashSet::new();
+    let mut absence_expected = HashSet::new();
+    for item in expected {
+        if let Some(stripped) = item.strip_prefix("ABSENT:") {
+            absence_expected.insert(stripped.to_string());
+        } else {
+            presence_expected.insert(item.clone());
+        }
+    }
+
+    // Count matches: presence items found in actual + absence items NOT found in actual.
+    let presence_matches = presence_expected.intersection(actual).count();
+    let absence_matches = absence_expected
+        .iter()
+        .filter(|item| !actual.contains(*item))
+        .count();
+    let matched = presence_matches + absence_matches;
+
+    let total_expected = presence_expected.len() + absence_expected.len();
+
+    // For precision denominator: actual items + absence assertions (since absence
+    // assertions are "virtual" items in the actual set). If there are only absence
+    // assertions and no actual items, use absence count as the denominator.
+    let precision_denom = if presence_expected.is_empty() && !absence_expected.is_empty() {
+        // Pure absence queries: precision = matched / total_expected
+        total_expected
+    } else {
+        actual.len() + absence_expected.len()
+    };
+
+    if precision_denom == 0 && total_expected > 0 {
+        return (0.0, 0.0, 0.0);
+    }
+    if precision_denom == 0 {
+        return (1.0, 1.0, 1.0);
+    }
+
+    let precision = matched as f64 / precision_denom as f64;
+    let recall = if total_expected == 0 { 1.0 } else { matched as f64 / total_expected as f64 };
+
+    let f1 = if precision + recall == 0.0 {
+        0.0
+    } else {
+        2.0 * precision * recall / (precision + recall)
+    };
+
+    (precision, recall, f1)
+}
+
+/// Per-query scoring result.
+pub struct QueryResult {
+    pub id: String,
+    pub dimension: Dimension,
+    pub precision: f64,
+    pub recall: f64,
+    pub f1: f64,
+    pub expected_count: usize,
+    pub actual_count: usize,
+    pub matched_count: usize,
+}
+
+/// Aggregate benchmark score for a single seed run.
+#[derive(Debug, serde::Serialize)]
+pub struct ContextScore {
+    pub seed: u64,
+    pub context_assembly_f1: f64,
+    pub guardrails_f1: f64,
+    pub completion_f1: f64,
+    pub layer_recall_f1: f64,
+    pub tool_filter_accuracy: f64,
+    pub composite: f64,
+    pub total_queries: usize,
+    pub pass: bool,
+}
+
+/// Aggregate per-dimension F1 into a composite score.
+///
+/// Weights: `0.30 * context_assembly + 0.30 * guardrails + 0.20 * completion + 0.20 * layer_recall`
+///
+/// `tool_filter_accuracy` is passed through to the output but does NOT factor into
+/// the composite (it is covered indirectly by context_assembly absence assertions).
+pub fn compute_composite(results: &[QueryResult], tool_filter_accuracy: f64) -> ContextScore {
+    let avg_f1_for = |dim: Dimension| -> f64 {
+        let matching: Vec<f64> = results
+            .iter()
+            .filter(|r| r.dimension == dim)
+            .map(|r| r.f1)
+            .collect();
+        if matching.is_empty() {
+            0.0
+        } else {
+            matching.iter().sum::<f64>() / matching.len() as f64
+        }
+    };
+
+    let context_assembly_f1 = avg_f1_for(Dimension::ContextAssembly);
+    let guardrails_f1 = avg_f1_for(Dimension::Guardrails);
+    let completion_f1 = avg_f1_for(Dimension::Completion);
+    let layer_recall_f1 = avg_f1_for(Dimension::LayerRecall);
+
+    let composite = 0.30 * context_assembly_f1
+        + 0.30 * guardrails_f1
+        + 0.20 * completion_f1
+        + 0.20 * layer_recall_f1;
+
+    ContextScore {
+        seed: 0, // caller sets this
+        context_assembly_f1,
+        guardrails_f1,
+        completion_f1,
+        layer_recall_f1,
+        tool_filter_accuracy,
+        composite,
+        total_queries: results.len(),
+        pass: composite >= 0.5,
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1100,5 +1352,278 @@ mod tests {
 
         // Session
         assert_eq!(dataset.session_id, format!("forge-context-bench-42"));
+    }
+
+    // ── Task 4 tests: result extractors ──
+
+    #[test]
+    fn test_extract_result_items_from_guardrails_check() {
+        let mut state = DaemonState::new(":memory:").expect("state");
+        let _dataset = seed_state(&mut state, 42).expect("seed");
+        let resp = handle_request(&mut state, Request::GuardrailsCheck {
+            file: "src/auth/middleware.rs".to_string(),
+            action: "edit".to_string(),
+        });
+        let items = extract_result_items(&resp);
+        assert!(items.is_ok(), "extraction should not error on valid response");
+    }
+
+    #[test]
+    fn test_extract_result_items_from_post_edit_checked() {
+        let mut state = DaemonState::new(":memory:").expect("state");
+        let _dataset = seed_state(&mut state, 42).expect("seed");
+        let resp = handle_request(&mut state, Request::PostEditCheck {
+            file: "src/auth/middleware.rs".to_string(),
+        });
+        let items = extract_result_items(&resp);
+        assert!(items.is_ok(), "extraction should not error on PostEditChecked");
+    }
+
+    #[test]
+    fn test_extract_result_items_from_pre_bash_checked() {
+        let mut state = DaemonState::new(":memory:").expect("state");
+        let _dataset = seed_state(&mut state, 42).expect("seed");
+        let resp = handle_request(&mut state, Request::PreBashCheck {
+            command: "cargo test".to_string(),
+        });
+        let items = extract_result_items(&resp);
+        assert!(items.is_ok(), "extraction should not error on PreBashChecked");
+    }
+
+    #[test]
+    fn test_extract_result_items_from_completion_check() {
+        let mut state = DaemonState::new(":memory:").expect("state");
+        let dataset = seed_state(&mut state, 42).expect("seed");
+        let resp = handle_request(&mut state, Request::CompletionCheck {
+            session_id: dataset.session_id.clone(),
+            claimed_done: true,
+        });
+        let items = extract_result_items(&resp);
+        assert!(items.is_ok(), "extraction should not error on CompletionCheckResult");
+    }
+
+    #[test]
+    fn test_extract_result_items_from_task_completion_check() {
+        let mut state = DaemonState::new(":memory:").expect("state");
+        let dataset = seed_state(&mut state, 42).expect("seed");
+        let resp = handle_request(&mut state, Request::TaskCompletionCheck {
+            session_id: dataset.session_id.clone(),
+            task_subject: "deploy to production".to_string(),
+            task_description: None,
+        });
+        let items = extract_result_items(&resp);
+        assert!(items.is_ok(), "extraction should not error on TaskCompletionCheckResult");
+    }
+
+    #[test]
+    fn test_extract_result_items_from_memories() {
+        let mut state = DaemonState::new(":memory:").expect("state");
+        let _dataset = seed_state(&mut state, 42).expect("seed");
+        let resp = handle_request(&mut state, Request::Recall {
+            query: "auth workflow".to_string(),
+            memory_type: None,
+            project: None,
+            limit: Some(5),
+            layer: Some("skill".to_string()),
+            since: None,
+        });
+        let items = extract_result_items(&resp);
+        assert!(items.is_ok(), "extraction should not error on Memories");
+        let items = items.unwrap();
+        // Should find at least one skill mentioning auth
+        assert!(!items.is_empty(), "recall for 'auth workflow' in skill layer should return items");
+    }
+
+    #[test]
+    fn test_extract_result_items_from_compiled_context() {
+        let mut state = DaemonState::new(":memory:").expect("state");
+        let dataset = seed_state(&mut state, 42).expect("seed");
+        let resp = handle_request(&mut state, Request::CompileContext {
+            agent: None,
+            project: None,
+            static_only: None,
+            excluded_layers: None,
+            session_id: Some(dataset.session_id.clone()),
+            focus: None,
+        });
+        let items = extract_result_items(&resp);
+        assert!(items.is_ok(), "extraction should not error on CompiledContext");
+        let items = items.unwrap();
+        // Should contain at least some decisions or skills
+        assert!(!items.is_empty(), "compiled context should produce items");
+    }
+
+    #[test]
+    fn test_extract_result_items_error_response() {
+        let resp = Response::Error { message: "test error".to_string() };
+        let items = extract_result_items(&resp);
+        assert!(items.is_err(), "should error on Response::Error");
+    }
+
+    #[test]
+    fn test_extract_from_compiled_context_skills() {
+        let xml = r#"<skills hint="use ...">
+  <skill domain="auth" uses="5">cargo auth workflow abc12345</skill>
+  <skill domain="database" uses="3">npm database pipeline def67890</skill>
+</skills>"#;
+        let items = extract_from_compiled_context(xml);
+        assert_eq!(items.len(), 2);
+        assert!(items.contains(&"cargo auth workflow abc12345".to_string()));
+        assert!(items.contains(&"npm database pipeline def67890".to_string()));
+    }
+
+    #[test]
+    fn test_extract_from_compiled_context_decisions() {
+        let xml = r#"<decisions>
+  <decision confidence="0.9">Decision: auth layer architecture (token123)</decision>
+  <decision confidence="0.8">Decision: database refactor (token456)</decision>
+</decisions>"#;
+        let items = extract_from_compiled_context(xml);
+        assert_eq!(items.len(), 2);
+        assert!(items.contains(&"Decision: auth layer architecture (token123)".to_string()));
+        assert!(items.contains(&"Decision: database refactor (token456)".to_string()));
+    }
+
+    #[test]
+    fn test_extract_from_compiled_context_mixed() {
+        let xml = r#"<decisions>
+  <decision confidence="0.9">My Decision</decision>
+</decisions>
+<skills>
+  <skill domain="auth" uses="2">My Skill</skill>
+</skills>"#;
+        let items = extract_from_compiled_context(xml);
+        assert_eq!(items.len(), 2);
+        assert!(items.contains(&"My Decision".to_string()));
+        assert!(items.contains(&"My Skill".to_string()));
+    }
+
+    #[test]
+    fn test_extract_from_compiled_context_empty() {
+        let xml = "<decisions/>\n<skills/>\n";
+        let items = extract_from_compiled_context(xml);
+        assert!(items.is_empty());
+    }
+
+    // ── Task 5 tests: scoring ──
+
+    #[test]
+    fn test_precision_recall_f1_basic() {
+        let expected: HashSet<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let actual: HashSet<String> = ["a", "b", "d"].iter().map(|s| s.to_string()).collect();
+        let (p, r, f1) = precision_recall_f1(&expected, &actual);
+        assert!((p - 2.0/3.0).abs() < 0.001);
+        assert!((r - 2.0/3.0).abs() < 0.001);
+        assert!((f1 - 2.0/3.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_precision_recall_f1_empty_both() {
+        let (p, r, f1) = precision_recall_f1(&HashSet::new(), &HashSet::new());
+        assert_eq!(p, 1.0);
+        assert_eq!(r, 1.0);
+        assert_eq!(f1, 1.0);
+    }
+
+    #[test]
+    fn test_precision_recall_f1_empty_actual() {
+        let expected: HashSet<String> = ["a"].iter().map(|s| s.to_string()).collect();
+        let (_, r, f1) = precision_recall_f1(&expected, &HashSet::new());
+        assert_eq!(r, 0.0);
+        assert_eq!(f1, 0.0);
+    }
+
+    #[test]
+    fn test_precision_recall_f1_perfect() {
+        let expected: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let actual: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let (p, r, f1) = precision_recall_f1(&expected, &actual);
+        assert_eq!(p, 1.0);
+        assert_eq!(r, 1.0);
+        assert_eq!(f1, 1.0);
+    }
+
+    #[test]
+    fn test_precision_recall_f1_absent_convention() {
+        // ABSENT: items should be checked for absence in actual
+        let expected: HashSet<String> = [
+            "ABSENT:bad_skill_1",
+            "ABSENT:bad_skill_2",
+        ].iter().map(|s| s.to_string()).collect();
+        // Actual does NOT contain the absent items → perfect score
+        let actual: HashSet<String> = ["good_skill"].iter().map(|s| s.to_string()).collect();
+        let (p, r, _f1) = precision_recall_f1(&expected, &actual);
+        assert_eq!(r, 1.0, "recall should be 1.0 when absent items are indeed absent");
+        assert!(p > 0.0, "precision should be positive");
+    }
+
+    #[test]
+    fn test_precision_recall_f1_absent_violation() {
+        // ABSENT: items that ARE present in actual → mismatch
+        let expected: HashSet<String> = [
+            "ABSENT:bad_skill",
+        ].iter().map(|s| s.to_string()).collect();
+        let actual: HashSet<String> = ["bad_skill"].iter().map(|s| s.to_string()).collect();
+        let (_p, r, _f1) = precision_recall_f1(&expected, &actual);
+        assert_eq!(r, 0.0, "recall should be 0.0 when absent item is present");
+    }
+
+    #[test]
+    fn test_composite_score_weights() {
+        // Verify the 0.30/0.30/0.20/0.20 weighting
+        let results = vec![
+            QueryResult { id: "CA-1".into(), dimension: Dimension::ContextAssembly, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult { id: "GR-1".into(), dimension: Dimension::Guardrails, precision: 0.5, recall: 0.5, f1: 0.5, expected_count: 2, actual_count: 2, matched_count: 1 },
+            QueryResult { id: "CO-1".into(), dimension: Dimension::Completion, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
+            QueryResult { id: "LR-1".into(), dimension: Dimension::LayerRecall, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+        ];
+        let score = compute_composite(&results, 1.0);
+        // composite = 0.30*1.0 + 0.30*0.5 + 0.20*0.0 + 0.20*1.0 = 0.30 + 0.15 + 0.0 + 0.20 = 0.65
+        assert!((score.composite - 0.65).abs() < 0.001, "composite should be 0.65, got {}", score.composite);
+        assert!(score.pass, "0.65 >= 0.5 should pass");
+        assert_eq!(score.total_queries, 4);
+        assert_eq!(score.tool_filter_accuracy, 1.0);
+    }
+
+    #[test]
+    fn test_composite_score_all_perfect() {
+        let results = vec![
+            QueryResult { id: "CA-1".into(), dimension: Dimension::ContextAssembly, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult { id: "GR-1".into(), dimension: Dimension::Guardrails, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult { id: "CO-1".into(), dimension: Dimension::Completion, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult { id: "LR-1".into(), dimension: Dimension::LayerRecall, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+        ];
+        let score = compute_composite(&results, 1.0);
+        assert!((score.composite - 1.0).abs() < 0.001, "all perfect = 1.0");
+    }
+
+    #[test]
+    fn test_composite_score_all_zero() {
+        let results = vec![
+            QueryResult { id: "CA-1".into(), dimension: Dimension::ContextAssembly, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
+            QueryResult { id: "GR-1".into(), dimension: Dimension::Guardrails, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
+            QueryResult { id: "CO-1".into(), dimension: Dimension::Completion, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
+            QueryResult { id: "LR-1".into(), dimension: Dimension::LayerRecall, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
+        ];
+        let score = compute_composite(&results, 0.0);
+        assert!((score.composite).abs() < 0.001, "all zero = 0.0");
+        assert!(!score.pass, "0.0 < 0.5 should not pass");
+    }
+
+    #[test]
+    fn test_composite_score_multiple_per_dimension() {
+        // Two queries per dimension — F1 is averaged
+        let results = vec![
+            QueryResult { id: "CA-1".into(), dimension: Dimension::ContextAssembly, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult { id: "CA-2".into(), dimension: Dimension::ContextAssembly, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
+            QueryResult { id: "GR-1".into(), dimension: Dimension::Guardrails, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult { id: "GR-2".into(), dimension: Dimension::Guardrails, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult { id: "CO-1".into(), dimension: Dimension::Completion, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult { id: "LR-1".into(), dimension: Dimension::LayerRecall, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+        ];
+        let score = compute_composite(&results, 1.0);
+        // CA avg = 0.5, GR avg = 1.0, CO = 1.0, LR = 1.0
+        // composite = 0.30*0.5 + 0.30*1.0 + 0.20*1.0 + 0.20*1.0 = 0.15 + 0.30 + 0.20 + 0.20 = 0.85
+        assert!((score.composite - 0.85).abs() < 0.001, "composite should be 0.85, got {}", score.composite);
     }
 }
