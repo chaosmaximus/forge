@@ -571,17 +571,20 @@ pub fn generate_category_4_contradictions(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
         let title_b = format!("Configure service retry interval limits alerts {token_t}");
 
         // Content A: specific vocabulary around long cooldown periods.
-        // len≥3 words: {set, the, retry, backoff, thirty, seconds, upstream, apis, receive,
-        //               mandatory, cooldown, calls, token_a_val} — disjoint from B.
+        // len≥3 words (Phase 9b: len>=3, no stopword filter):
+        //   {set, the, retry, backoff, thirty, seconds, upstream, apis, receive,
+        //    mandatory, cooldown, between, calls, token_a_val} — disjoint from B.
+        // ("to", "so" are len<3 and excluded; "between" appears in A, NOT in B)
         let token_a_val = unique(200 + pair_idx * 2);
         let content_a = format!(
             "Set the retry backoff to thirty seconds so upstream APIs receive mandatory cooldown between calls {token_a_val}"
         );
 
         // Content B: specific vocabulary around minimal delay / high throughput.
-        // len≥3 words: {use, five, milliseconds, delay, attempts, maximize, throughput,
-        //               avoid, queue, saturation, token_b_val} — disjoint from A.
-        // "between" is the only potential overlap; it does NOT appear in B.
+        // len≥3 words (Phase 9b: len>=3, no stopword filter):
+        //   {use, five, milliseconds, delay, per, attempt, maximize, throughput,
+        //    and, avoid, queue, saturation, token_b_val} — disjoint from A.
+        // Intersection with A's word_set = ∅.
         let token_b_val = unique(200 + pair_idx * 2 + 1);
         let content_b = format!(
             "Use five milliseconds delay per attempt to maximize throughput and avoid queue saturation {token_b_val}"
@@ -801,6 +804,61 @@ mod tests {
         assert_eq!(merge_victims, 4);
         assert_eq!(merge_keepers, 4);
         assert_eq!(controls, 4);
+    }
+
+    #[test]
+    fn test_category_3_merge_pairs_avoid_phase_2() {
+        use std::collections::HashSet;
+
+        // Phase 2's meaningful_words proxy: len > 1, stopwords removed.
+        // Same minimal stopword set as test_category_4_content_pairs_avoid_phase_2.
+        fn mw(text: &str) -> HashSet<String> {
+            let stop: HashSet<&str> = ["the", "to", "a", "an", "is", "are", "so", "that", "and"]
+                .iter()
+                .copied()
+                .collect();
+            text.to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 1 && !stop.contains(w))
+                .map(String::from)
+                .collect()
+        }
+
+        let (specs, _) = generate_category_3_embedding_duplicates(42);
+        // Merge pairs are specs 0-7 (4 pairs of 2 = 8 specs). Control pairs are 8-11.
+        for pair_idx in 0..4 {
+            let a = &specs[pair_idx * 2];
+            let b = &specs[pair_idx * 2 + 1];
+            let title_a_words = mw(&a.title);
+            let title_b_words = mw(&b.title);
+            let content_a_words = mw(&a.content);
+            let content_b_words = mw(&b.content);
+
+            let title_shared = title_a_words.intersection(&title_b_words).count() as f64;
+            let title_max = std::cmp::max(title_a_words.len(), title_b_words.len()) as f64;
+            let title_score = if title_max == 0.0 {
+                0.0
+            } else {
+                title_shared / title_max
+            };
+
+            let content_shared = content_a_words.intersection(&content_b_words).count() as f64;
+            let content_max = std::cmp::max(content_a_words.len(), content_b_words.len()) as f64;
+            let content_score = if content_max == 0.0 {
+                0.0
+            } else {
+                content_shared / content_max
+            };
+
+            let weighted = 0.5 * title_score + 0.5 * content_score;
+            let combined = weighted.max(title_score).max(content_score);
+
+            assert!(
+                combined < 0.65,
+                "Category 3 merge pair {} would be caught by Phase 2 (combined={combined}, title_score={title_score}, content_score={content_score})",
+                pair_idx
+            );
+        }
     }
 
     // ── Category 4 tests ─────────────────────────────────────────
