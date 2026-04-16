@@ -618,21 +618,21 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         // Only Tier A skills mention tool names. Tier B also mentions tool names
         // (absent ones). But pre_bash_check doesn't filter by tool availability.
         // It uses: `WHERE success_count > 0 AND (description LIKE ?1 OR name LIKE ?1 OR domain LIKE ?1)`
-        // ordered by success_count DESC LIMIT 1.
+        // ordered by success_count DESC LIMIT 2.
         let mut expected = HashSet::new();
-        let matching_skills: Vec<&Skill> = dataset.skills.iter()
+        let mut matching_skills: Vec<&Skill> = dataset.skills.iter()
             .filter(|s| {
                 let text = format!("{} {} {}", s.name, s.description, s.domain).to_lowercase();
                 text.contains(cmd_name)
             })
             .collect();
 
-        // Sort by success_count DESC, take 1
-        if let Some(best) = matching_skills.iter()
-            .max_by_key(|s| s.success_count)
-        {
+        // Sort by success_count DESC (stable — preserves insertion order for ties),
+        // then take top 2 to match the SQL LIMIT 2.
+        matching_skills.sort_by(|a, b| b.success_count.cmp(&a.success_count));
+        for skill in matching_skills.iter().take(2) {
             // PreBashCheck relevant_skills format: "{name} ({domain})"
-            expected.insert(format!("{} ({})", best.name, best.domain));
+            expected.insert(format!("{} ({})", skill.name, skill.domain));
         }
 
         cases.push(QueryCase {
@@ -674,47 +674,70 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
     // CO-1..CO-3: CompletionCheck with claimed_done=true.
     // Returns relevant_lessons as "title: content_substr(150)".
     // SQL: memory_type IN ('lesson', 'decision'), tags matching completion tags,
+    //   (tags LIKE '%testing%' OR '%production-readiness%' OR '%anti-pattern%'
+    //    OR '%uat%' OR '%deployment%')
     // ORDER BY quality_score DESC, confidence DESC LIMIT 3.
     //
     // All memories have quality_score=0.5 (default), so ordering is by confidence DESC.
     // We need to find the top-3 memories (lessons+decisions) that match the tag filter.
     //
-    // Matching decisions: those with tag "testing" (domain "testing"): i=3 (conf=0.88), i=8 (conf=0.93)
-    // Matching lessons: ALL 10 lessons have completion tags.
-    //   Top by confidence: i=9 (0.93), i=8 (0.91), i=7 (0.89), i=6 (0.87), ...
+    // Matching decisions: those with tag "testing" or "deployment" in their domain:
+    //   Decision i=3: tag="testing", conf=0.88
+    //   Decision i=4: tag="deployment", conf=0.89
+    //   Decision i=8: tag="testing", conf=0.93
+    //   Decision i=9: tag="deployment", conf=0.94
+    //
+    // Matching lessons: ALL 10 lessons have a completion tag.
+    //   COMPLETION_TAGS = ["testing","uat","deployment","anti-pattern","production-readiness"]
+    //   Lesson i=0: "testing" (0.75), i=1: "uat" (0.77), i=2: "deployment" (0.79),
+    //   i=3: "anti-pattern" (0.81), ..., i=9: "production-readiness" (0.93)
     //
     // Combined and sorted by confidence DESC:
-    //   Decision i=8: 0.93, Lesson i=9: 0.93, Lesson i=8: 0.91, Decision i=3: 0.88, ...
+    //   Decision i=9: 0.94
+    //   Decision i=8: 0.93, Lesson i=9: 0.93 (tie — decisions inserted first, lower rowid wins)
+    //   Lesson i=8: 0.91
     //
-    // For ties at 0.93: DB insertion order matters. Decisions are inserted before lessons
-    // (indices 0..9 are decisions, 10..19 are lessons), so Decision i=8 comes first.
-    //
-    // Top 3: Decision i=8, Lesson i=9, Lesson i=8
-    //
-    // Format: "title: content_substr(150)"
-    // We conservatively include only the items we're SURE about. The top item
-    // (Decision i=8 at conf 0.93) is definitely in there, and Lesson i=9 (0.93)
-    // is second (or first if ties break differently). Lesson i=8 (0.91) is the
-    // clear 3rd since no other has conf > 0.91 except the two 0.93s.
-    //
-    // We'll include all 3 in expected but be aware of tie-breaking uncertainty.
+    // Top 3: Decision i=9 (0.94), Decision i=8 (0.93), Lesson i=9 (0.93)
     for co_idx in 0..3 {
         let id = format!("CO-{}", co_idx + 1);
-
-        // We'll be conservative: just assert that the response is non-empty
-        // and contains at least the lesson with highest unambiguous confidence.
-        // Lesson i=8 (conf 0.91) is unambiguously in top 3 since only 2 items
-        // are above it (the two 0.93 ones).
         let mut expected = HashSet::new();
 
-        // Lesson i=8: title and content
-        let token_l8 = sha256_hex(&format!("forge-context-{seed}-lesson-8"));
-        let domain_l8 = DOMAINS[8 % DOMAINS.len()]; // "testing"
-        let ctag_l8 = COMPLETION_TAGS[8 % 4]; // "testing"
-        let title_l8 = format!("Lesson: {domain_l8} {ctag_l8} insight ({token_l8})");
-        let content_l8 = format!("Learned about {ctag_l8} in {domain_l8} context. Unique token: {token_l8}");
-        let content_substr_l8: String = content_l8.chars().take(150).collect();
-        expected.insert(format!("{title_l8}: {content_substr_l8}"));
+        // Decision i=9: tag="deployment", conf=0.94 (highest)
+        let token_d9 = sha256_hex(&format!("forge-context-{seed}-decision-9"));
+        let domain_d9 = DOMAINS[9 % DOMAINS.len()]; // "deployment"
+        let file_d9 = FILE_PATHS[9 % FILE_PATHS.len()]; // "src/deployment/config.rs"
+        let title_d9 = format!(
+            "Decision: {domain_d9} layer architecture ({token_d9}) — affects {file_d9}"
+        );
+        let content_d9 = format!(
+            "Decided to refactor {domain_d9} layer via {file_d9}. Unique token: {token_d9}"
+        );
+        let content_substr_d9: String = content_d9.chars().take(150).collect();
+        expected.insert(format!("{title_d9}: {content_substr_d9}"));
+
+        // Decision i=8: tag="testing", conf=0.93 (ties with Lesson i=9 but lower rowid)
+        let token_d8 = sha256_hex(&format!("forge-context-{seed}-decision-8"));
+        let domain_d8 = DOMAINS[8 % DOMAINS.len()]; // "testing"
+        let file_d8 = FILE_PATHS[8 % FILE_PATHS.len()]; // "src/testing/harness.rs"
+        let title_d8 = format!(
+            "Decision: {domain_d8} layer architecture ({token_d8}) — affects {file_d8}"
+        );
+        let content_d8 = format!(
+            "Decided to refactor {domain_d8} layer via {file_d8}. Unique token: {token_d8}"
+        );
+        let content_substr_d8: String = content_d8.chars().take(150).collect();
+        expected.insert(format!("{title_d8}: {content_substr_d8}"));
+
+        // Lesson i=9: tag="production-readiness", conf=0.93 (loses tie to Decision i=8)
+        let token_l9 = sha256_hex(&format!("forge-context-{seed}-lesson-9"));
+        let domain_l9 = DOMAINS[9 % DOMAINS.len()]; // "deployment"
+        let ctag_l9 = COMPLETION_TAGS[9 % COMPLETION_TAGS.len()]; // "production-readiness"
+        let title_l9 = format!("Lesson: {domain_l9} {ctag_l9} insight ({token_l9})");
+        let content_l9 = format!(
+            "Learned about {ctag_l9} in {domain_l9} context. Unique token: {token_l9}"
+        );
+        let content_substr_l9: String = content_l9.chars().take(150).collect();
+        expected.insert(format!("{title_l9}: {content_substr_l9}"));
 
         cases.push(QueryCase {
             id,
@@ -732,18 +755,17 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
     // SQL: memory_type = 'lesson', tags LIKE '%uat%' OR '%production%' OR '%deployment%',
     // ORDER BY quality_score DESC LIMIT 3.
     //
-    // Matching lessons:
-    //   i=1: tags=["database","uat"] → matches %uat%
-    //   i=3: tags=["testing","production-readiness"] → matches %production%
-    //   i=4: tags=["deployment","testing"] → matches %deployment%
-    //   i=5: tags=["auth","uat"] → matches %uat%
-    //   i=7: tags=["networking","production-readiness"] → matches %production%
-    //   i=9: tags=["deployment","uat"] → matches %uat% and %deployment%
+    // With COMPLETION_TAGS = ["testing","uat","deployment","anti-pattern","production-readiness"],
+    // matching lessons (tag at i % 5):
+    //   i=1: tag="uat" → matches %uat%
+    //   i=2: tag="deployment" → matches %deployment%
+    //   i=4: tag="production-readiness" → matches %production%
+    //   i=6: tag="uat" → matches %uat%
+    //   i=7: tag="deployment" → matches %deployment%
+    //   i=9: tag="production-readiness" → matches %production%
     //
     // All quality_score=0.5. ORDER BY quality_score DESC gives them all equal.
-    // SQLite returns by rowid in tie: i=1, i=3, i=4.
-    // But this is implementation-dependent. Conservatively include just i=1
-    // which is the first matching lesson by insertion order.
+    // SQLite returns by rowid in tie: i=1, i=2, i=4 (top 3 by insertion order).
     let task_subjects = [
         "deploy to production",
         "ship the release",
@@ -752,11 +774,24 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         let id = format!("CO-{}", co_idx + 4);
         let mut expected = HashSet::new();
 
-        // Conservatively, include the first matching lesson by insertion order.
+        // Include the top 3 matching lessons by insertion order.
+        // Lesson i=1: tag="uat"
         let token_l1 = sha256_hex(&format!("forge-context-{seed}-lesson-1"));
         let domain_l1 = DOMAINS[1 % DOMAINS.len()]; // "database"
-        let ctag_l1 = COMPLETION_TAGS[1]; // "uat"
+        let ctag_l1 = COMPLETION_TAGS[1 % COMPLETION_TAGS.len()]; // "uat"
         expected.insert(format!("Lesson: {domain_l1} {ctag_l1} insight ({token_l1})"));
+
+        // Lesson i=2: tag="deployment"
+        let token_l2 = sha256_hex(&format!("forge-context-{seed}-lesson-2"));
+        let domain_l2 = DOMAINS[2 % DOMAINS.len()]; // "networking"
+        let ctag_l2 = COMPLETION_TAGS[2 % COMPLETION_TAGS.len()]; // "deployment"
+        expected.insert(format!("Lesson: {domain_l2} {ctag_l2} insight ({token_l2})"));
+
+        // Lesson i=4: tag="production-readiness"
+        let token_l4 = sha256_hex(&format!("forge-context-{seed}-lesson-4"));
+        let domain_l4 = DOMAINS[4 % DOMAINS.len()]; // "deployment"
+        let ctag_l4 = COMPLETION_TAGS[4 % COMPLETION_TAGS.len()]; // "production-readiness"
+        expected.insert(format!("Lesson: {domain_l4} {ctag_l4} insight ({token_l4})"));
 
         cases.push(QueryCase {
             id,
