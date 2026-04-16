@@ -19,6 +19,12 @@ pub async fn doctor() {
                     workers,
                     uptime_secs,
                     checks,
+                    version,
+                    git_sha,
+                    raw_document_count,
+                    raw_chunk_count,
+                    active_session_count,
+                    session_message_count,
                     ..
                 },
         }) => {
@@ -38,6 +44,23 @@ pub async fn doctor() {
             println!("  Symbols:     {symbol_count}");
             println!("  Edges:       {edge_count}");
             println!("  Workers:     {}", workers.join(", "));
+
+            // Observability fields (added in housekeeping cycle)
+            if !version.is_empty() {
+                let sha_str = git_sha
+                    .as_deref()
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                println!("  Version:     {version}{sha_str}");
+            }
+            if raw_document_count > 0 || raw_chunk_count > 0 {
+                println!("  Raw docs:    {raw_document_count}");
+                println!("  Raw chunks:  {raw_chunk_count}");
+            }
+            if active_session_count > 0 || session_message_count > 0 {
+                println!("  Sessions:    {active_session_count} active");
+                println!("  Messages:    {session_message_count} total");
+            }
 
             if !checks.is_empty() {
                 println!();
