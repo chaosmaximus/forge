@@ -55,6 +55,7 @@ const COMPLETION_TAGS: [&str; 4] = [
 
 /// Metadata from seeding, used by the query-bank generator.
 pub struct SeededDataset {
+    pub seed: u64,
     pub present_tools: Vec<Tool>,
     pub absent_keywords: Vec<String>,
     pub skills: Vec<Skill>,
@@ -419,6 +420,7 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> Result<SeededDataset, S
     }
 
     Ok(SeededDataset {
+        seed,
         present_tools,
         absent_keywords,
         skills,
@@ -460,6 +462,7 @@ pub struct QueryCase {
 /// non-deterministic for ties, so we only assert on items whose ranking
 /// position is unambiguous.
 pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
+    let seed = dataset.seed;
     let mut cases = Vec::new();
 
     // ── Dimension 1: Context Assembly (CA-1..CA-6) ────────────────
@@ -478,7 +481,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         let expected: HashSet<String> = (0..10)
             .filter(|&i| i % DOMAINS.len() == domain_idx)
             .map(|i| {
-                let token = sha256_hex(&format!("forge-context-42-decision-{i}"));
+                let token = sha256_hex(&format!("forge-context-{seed}-decision-{i}"));
                 let file = FILE_PATHS[i % FILE_PATHS.len()];
                 format!("Decision: {domain} layer architecture ({token}) — affects {file}")
             })
@@ -491,7 +494,11 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
                 agent: None,
                 project: None,
                 static_only: None,
-                excluded_layers: None,
+                // Exclude skills: focus does NOT filter skills (they're
+                // fetched independently via list_skills). Including them
+                // would degrade precision since we only expect decisions.
+                // Adversarial review CRITICAL-2.
+                excluded_layers: Some(vec!["skills".to_string()]),
                 session_id: Some(dataset.session_id.clone()),
                 focus: Some(domain.to_string()),
             },
@@ -549,7 +556,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         for i in 0..10 {
             if i % FILE_PATHS.len() == fp_idx {
                 let domain = DOMAINS[i % DOMAINS.len()];
-                let token = sha256_hex(&format!("forge-context-42-decision-{i}"));
+                let token = sha256_hex(&format!("forge-context-{seed}-decision-{i}"));
                 expected.insert(format!(
                     "Decision: {domain} layer architecture ({token}) — affects {file}"
                 ));
@@ -700,7 +707,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         let mut expected = HashSet::new();
 
         // Lesson i=8: title and content
-        let token_l8 = sha256_hex("forge-context-42-lesson-8");
+        let token_l8 = sha256_hex(&format!("forge-context-{seed}-lesson-8"));
         let domain_l8 = DOMAINS[8 % DOMAINS.len()]; // "testing"
         let ctag_l8 = COMPLETION_TAGS[8 % 4]; // "testing"
         let title_l8 = format!("Lesson: {domain_l8} {ctag_l8} insight ({token_l8})");
@@ -745,7 +752,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         let mut expected = HashSet::new();
 
         // Conservatively, include the first matching lesson by insertion order.
-        let token_l1 = sha256_hex("forge-context-42-lesson-1");
+        let token_l1 = sha256_hex(&format!("forge-context-{seed}-lesson-1"));
         let domain_l1 = DOMAINS[1 % DOMAINS.len()]; // "database"
         let ctag_l1 = COMPLETION_TAGS[1]; // "uat"
         expected.insert(format!("Lesson: {domain_l1} {ctag_l1} insight ({token_l1})"));
@@ -808,7 +815,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         let id = format!("LR-{}", lr_idx + 6);
         let query = domain.to_string();
 
-        let dna_token = sha256_hex(&format!("forge-context-42-dna-{lr_idx}"));
+        let dna_token = sha256_hex(&format!("forge-context-{seed}-dna-{lr_idx}"));
         let aspect = format!("{domain}-conventions");
         let pattern = format!("{domain} uses standard patterns. Token: {dna_token}");
 
