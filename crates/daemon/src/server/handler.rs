@@ -844,6 +844,29 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::Version => Response::Ok {
+            data: ResponseData::Version {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                build_profile: if cfg!(debug_assertions) {
+                    "debug"
+                } else {
+                    "release"
+                }
+                .to_string(),
+                target_triple: env!("FORGE_TARGET").to_string(),
+                rustc_version: env!("FORGE_RUSTC_VERSION").to_string(),
+                git_sha: {
+                    let sha = env!("FORGE_GIT_SHA");
+                    if sha.is_empty() {
+                        None
+                    } else {
+                        Some(sha.to_string())
+                    }
+                },
+                uptime_secs: state.started_at.elapsed().as_secs(),
+            },
+        },
+
         Request::Doctor => {
             let h = match ops::health(&state.conn) {
                 Ok(h) => h,
@@ -11246,6 +11269,33 @@ mod tests {
                 assert_eq!(doc_a.timestamp, "2026-04-15T00:00:00Z");
             }
             other => panic!("expected RawDocumentsList response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_version_returns_build_metadata() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+        let resp = handle_request(&mut state, Request::Version);
+        match resp {
+            Response::Ok {
+                data:
+                    ResponseData::Version {
+                        version,
+                        build_profile,
+                        target_triple,
+                        rustc_version,
+                        ..
+                    },
+            } => {
+                assert!(!version.is_empty(), "version must not be empty");
+                assert!(
+                    build_profile == "release" || build_profile == "debug",
+                    "build_profile must be 'release' or 'debug', got: {build_profile}"
+                );
+                assert!(!target_triple.is_empty(), "target_triple must not be empty");
+                assert!(!rustc_version.is_empty(), "rustc_version must not be empty");
+            }
+            other => panic!("expected Version response, got: {other:?}"),
         }
     }
 }

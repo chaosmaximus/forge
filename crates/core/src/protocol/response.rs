@@ -913,6 +913,22 @@ pub enum ResponseData {
         documents: Vec<RawDocumentInfo>,
     },
 
+    /// Runtime version and build metadata — no DB queries, sub-1ms.
+    Version {
+        /// Crate version from Cargo.toml (e.g., "0.4.0").
+        version: String,
+        /// "release" or "debug".
+        build_profile: String,
+        /// Platform triple (e.g., "aarch64-apple-darwin").
+        target_triple: String,
+        /// Rust compiler version used to build this binary.
+        rustc_version: String,
+        /// Short git commit hash at build time, if available.
+        git_sha: Option<String>,
+        /// Daemon uptime in seconds since process start.
+        uptime_secs: u64,
+    },
+
     Shutdown,
 }
 

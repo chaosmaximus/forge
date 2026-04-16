@@ -200,6 +200,7 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::BackfillProject
         | Request::CleanupMemory
         | Request::SetCurrentTask { .. }
+        | Request::Version
         | Request::Shutdown
         | Request::LicenseStatus
         | Request::SetLicense { .. }

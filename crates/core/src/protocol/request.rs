@@ -901,5 +901,8 @@ pub enum Request {
         limit: Option<usize>,
     },
 
+    /// Runtime version and build metadata. Lightweight (no DB queries).
+    Version,
+
     Shutdown,
 }

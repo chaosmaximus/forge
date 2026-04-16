@@ -37,6 +37,7 @@ mod tests {
             ("list_organizations", Request::ListOrganizations),
             ("healing_status", Request::HealingStatus),
             ("healing_run", Request::HealingRun),
+            ("version", Request::Version),
             ("shutdown", Request::Shutdown),
         ];
 
@@ -1127,6 +1128,7 @@ mod tests {
             ("list_organizations", r#"{"method":"list_organizations"}"#),
             ("healing_status", r#"{"method":"healing_status"}"#),
             ("healing_run", r#"{"method":"healing_run"}"#),
+            ("version", r#"{"method":"version"}"#),
             ("shutdown", r#"{"method":"shutdown"}"#),
         ];
 
@@ -1180,12 +1182,12 @@ mod tests {
     /// the count assertion will fail.
     #[test]
     fn test_variant_count_completeness() {
-        // Unit variants: 19 (was 20; ForceIndex moved to parameterized — now has optional path)
-        let unit_count = 19;
+        // Unit variants: 20 (was 19; +1 Version)
+        let unit_count = 20;
         // Parameterized variants: 97 (was 95; +2 ListContradictions, ResolveContradiction)
         let param_count = 97;
-        // Total: 116
-        let expected_total = 116;
+        // Total: 117
+        let expected_total = 117;
 
         assert_eq!(
             unit_count + param_count,
@@ -1253,6 +1255,7 @@ mod tests {
                     knowledge_domains: None,
                     decision_style: None,
                 },
+                Request::Version,
                 Request::Shutdown,
                 // Parameterized variants
                 Request::Remember {
