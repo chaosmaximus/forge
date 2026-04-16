@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 // ── Configuration ────────────────────────────────────────────────
 
 /// Configuration for a single Forge-Consolidation run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConsolidationBenchConfig {
     pub seed: u64,
     pub output_dir: PathBuf,
@@ -35,6 +35,7 @@ impl Default for ConsolidationBenchConfig {
 
 /// Dataset categories from design doc §4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Category {
     ExactDuplicates,     // Category 1
     SemanticDuplicates,  // Category 2
@@ -46,13 +47,26 @@ pub enum Category {
     Infrastructure,      // Category 8
 }
 
-/// Expected memory status after consolidation.
+/// Expected post-consolidation memory states for ground-truth assertions.
+///
+/// Most variants map 1-to-1 with the typed `MemoryStatus` enum
+/// (`crates/core/src/types/memory.rs`). `Merged` is a **harness-only sentinel**
+/// — `MemoryStatus` has no `Merged` variant; the consolidator writes the raw SQL
+/// literal `'merged'` at `consolidator.rs:1035` (Phase 14 reweave). If you ever
+/// deserialise that row through the typed enum, it falls through to
+/// `MemoryStatus::Active`. Audit code (e.g. Task 3 `audit_reweave`) MUST
+/// compare against the raw SQL string (`newer_status.as_deref() == Some("merged")`),
+/// NOT against `MemoryStatus` enum variants.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExpectedStatus {
     Active,     // memory should remain active
     Superseded, // marked superseded by Phases 1, 2, 5, 7, 12, 20
     Faded,      // marked faded by Phase 4 or Phase 21
-    Merged,     // marked merged by Phase 14 (reweave)
+    /// Harness-only sentinel. Corresponds to raw SQL status `'merged'` written
+    /// by Phase 14 reweave (`consolidator.rs:1035`). `MemoryStatus` enum has no
+    /// `Merged` variant — always compare via raw SQL string, never via the enum.
+    Merged, // marked merged by Phase 14 (reweave)
     Deleted,    // DELETEd by Phase 1 (exact dedup)
 }
 
@@ -116,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_category_is_hashable() {
-        let mut set = std::collections::HashSet::new();
+        let mut set = HashSet::new();
         set.insert(Category::ExactDuplicates);
         set.insert(Category::SemanticDuplicates);
         assert_eq!(set.len(), 2);
