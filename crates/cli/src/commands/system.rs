@@ -822,6 +822,7 @@ pub async fn list_messages(
         session_id: session,
         status,
         limit,
+        offset: None,
     };
     match client::send(&req).await {
         Ok(Response::Ok {
@@ -879,6 +880,7 @@ pub async fn message_read(id: String) {
         session_id: String::new(),
         status: None,
         limit: Some(100),
+        offset: None,
     };
     match client::send(&req).await {
         Ok(Response::Ok {

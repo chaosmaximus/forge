@@ -3175,12 +3175,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             session_id,
             status,
             limit,
+            offset,
         } => {
             match crate::sessions::list_messages(
                 &state.conn,
                 &session_id,
                 status.as_deref(),
                 limit.unwrap_or(20),
+                offset,
             ) {
                 Ok(rows) => {
                     let messages: Vec<forge_core::protocol::SessionMessage> = rows

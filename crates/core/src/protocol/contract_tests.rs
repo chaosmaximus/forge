@@ -1339,6 +1339,7 @@ mod tests {
                     session_id: "s1".into(),
                     status: None,
                     limit: None,
+                    offset: Some(5),
                 },
                 Request::SessionAck {
                     message_ids: vec!["m1".into()],

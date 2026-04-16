@@ -384,6 +384,8 @@ pub enum Request {
         session_id: String,
         status: Option<String>,
         limit: Option<usize>,
+        #[serde(default)]
+        offset: Option<usize>,
     },
     /// Mark messages as read/consumed
     SessionAck {

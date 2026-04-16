@@ -741,36 +741,47 @@ impl HttpClient {
     /// must iterate the pool sessions (`pool_session_name(0..N)`)
     /// and union the results — this is what `verify_matches` does.
     ///
-    /// **HARD CAP — read this before scaling FISP workload:** the
-    /// daemon-side `crates/daemon/src/sessions.rs::list_messages`
-    /// caps `LIMIT` at 100 rows per query (silent `limit.min(100)`).
-    /// Combined with `SESSION_POOL_SIZE = 5`, the harness can
-    /// deterministically enumerate at most **500 FISP messages
-    /// total** before silently truncating. The default workload
-    /// (`fisp_messages = 20`) is well under this. Stress runs that
-    /// configure `fisp_messages > 500` will produce a
-    /// `recovery_rate` that under-counts visible ids — a true loss
-    /// is indistinguishable from list truncation. Caught by
-    /// adversarial review of cycle (j1) (HIGH 82/100). Future
-    /// pagination support belongs in cycle (k) or later.
+    /// Auto-paginates with 1000-row pages using the `offset`
+    /// parameter, looping until returned count < page_size. The
+    /// daemon-side cap is 1000 rows per query (raised from 100 in
+    /// the pagination offset patch). This removes the former 500-
+    /// message FISP ceiling (HIGH 82 from cycle j1 review).
     pub fn list_session_messages(
         &self,
         session_id: &str,
     ) -> Result<Vec<forge_core::protocol::SessionMessage>, HarnessError> {
-        let req = Request::SessionMessages {
-            session_id: session_id.to_string(),
-            status: None,
-            limit: Some(100),
-        };
-        match self.execute(&req)? {
-            Response::Ok {
-                data: ResponseData::SessionMessageList { messages, .. },
-            } => Ok(messages),
-            Response::Ok { data: other } => Err(HarnessError::UnexpectedResponse(format!(
-                "expected SessionMessageList, got {other:?}"
-            ))),
-            Response::Error { message } => Err(HarnessError::DaemonError(message)),
+        let page_size = 1000;
+        let mut all_messages = Vec::new();
+        let mut offset: usize = 0;
+        loop {
+            let req = Request::SessionMessages {
+                session_id: session_id.to_string(),
+                status: None,
+                limit: Some(page_size),
+                offset: Some(offset),
+            };
+            match self.execute(&req)? {
+                Response::Ok {
+                    data: ResponseData::SessionMessageList { messages, .. },
+                } => {
+                    let count = messages.len();
+                    all_messages.extend(messages);
+                    if count < page_size {
+                        break;
+                    }
+                    offset += count;
+                }
+                Response::Ok { data: other } => {
+                    return Err(HarnessError::UnexpectedResponse(format!(
+                        "expected SessionMessageList, got {other:?}"
+                    )));
+                }
+                Response::Error { message } => {
+                    return Err(HarnessError::DaemonError(message));
+                }
+            }
         }
+        Ok(all_messages)
     }
 
     /// List raw documents tagged with `source` via the j0 endpoint
@@ -917,10 +928,10 @@ impl PersistTracker {
 ///    failing the run for phantom-write reasons. The cycle (j2)
 ///    orchestrator MUST assert an empty Export at startup.
 ///
-/// 2. **`fisp_messages ≤ 500`.** [`HttpClient::list_session_messages`]
-///    is capped at 100 rows per pool session × 5 pool sessions =
-///    500 messages total. Larger workloads silently truncate, making
-///    `recovery_rate` indistinguishable from a real loss event.
+/// 2. **No FISP message ceiling.** [`HttpClient::list_session_messages`]
+///    auto-paginates with 1000-row pages via the `offset` parameter,
+///    so there is no longer a hard cap on enumerable FISP messages.
+///    (Previously capped at 500; fixed by the pagination offset patch.)
 ///
 /// 3. **`SESSION_POOL_SIZE` lockstep.** The pool size enumeration
 ///    here MUST match the value used by the workload generator.

@@ -1653,7 +1653,7 @@ pub fn compile_dynamic_suffix(
     if !excluded_layers.iter().any(|l| l == "pending_messages") {
         if let Some(sid) = session_id {
             let messages =
-                crate::sessions::list_messages(conn, sid, Some("pending"), 10).unwrap_or_default();
+                crate::sessions::list_messages(conn, sid, Some("pending"), 10, None).unwrap_or_default();
             if messages.is_empty() {
                 xml.push_str("<pending-messages/>\n");
             } else {

@@ -434,23 +434,25 @@ pub fn respond_to_message(
     }
 }
 
-/// List messages for a session (inbox). Limit capped at 100.
+/// List messages for a session (inbox). Limit capped at 1000.
 pub fn list_messages(
     conn: &Connection,
     session_id: &str,
     status_filter: Option<&str>,
     limit: usize,
+    offset: Option<usize>,
 ) -> rusqlite::Result<Vec<SessionMessageRow>> {
-    let limit = limit.min(100) as i64; // Cap at 100, safe i64 cast
+    let limit = limit.min(1000) as i64; // Cap at 1000, safe i64 cast
+    let offset = offset.unwrap_or(0) as i64;
     let (sql, use_status) = match status_filter {
         Some(_) => (
             "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
-             FROM session_message WHERE to_session = ?1 AND status = ?2 ORDER BY created_at DESC LIMIT ?3",
+             FROM session_message WHERE to_session = ?1 AND status = ?2 ORDER BY created_at DESC LIMIT ?3 OFFSET ?4",
             true,
         ),
         None => (
             "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
-             FROM session_message WHERE to_session = ?1 ORDER BY created_at DESC LIMIT ?2",
+             FROM session_message WHERE to_session = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
             false,
         ),
     };
@@ -473,12 +475,12 @@ pub fn list_messages(
     };
     let rows: Vec<rusqlite::Result<SessionMessageRow>> = if use_status {
         stmt.query_map(
-            params![session_id, status_filter.unwrap_or(""), limit],
+            params![session_id, status_filter.unwrap_or(""), limit, offset],
             map_row,
         )?
         .collect()
     } else {
-        stmt.query_map(params![session_id, limit], map_row)?
+        stmt.query_map(params![session_id, limit, offset], map_row)?
             .collect()
     };
     rows.into_iter().collect()
@@ -1073,7 +1075,7 @@ mod tests {
         .unwrap();
         assert!(!msg_id.is_empty());
 
-        let messages = list_messages(&conn, "s2", None, 10).unwrap();
+        let messages = list_messages(&conn, "s2", None, 10, None).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].from_session, "s1");
         assert_eq!(messages[0].to_session, "s2");
@@ -1103,11 +1105,11 @@ mod tests {
         .unwrap();
 
         // s2 and s3 should each get a message, s1 (sender) should not
-        let s2_msgs = list_messages(&conn, "s2", None, 10).unwrap();
+        let s2_msgs = list_messages(&conn, "s2", None, 10, None).unwrap();
         assert_eq!(s2_msgs.len(), 1, "s2 should receive broadcast");
-        let s3_msgs = list_messages(&conn, "s3", None, 10).unwrap();
+        let s3_msgs = list_messages(&conn, "s3", None, 10, None).unwrap();
         assert_eq!(s3_msgs.len(), 1, "s3 should receive broadcast");
-        let s1_msgs = list_messages(&conn, "s1", None, 10).unwrap();
+        let s1_msgs = list_messages(&conn, "s1", None, 10, None).unwrap();
         assert_eq!(s1_msgs.len(), 0, "sender should not receive own broadcast");
     }
 
@@ -1141,7 +1143,7 @@ mod tests {
         assert!(found, "should find and respond to original message");
 
         // Original message status should be updated
-        let msgs = list_messages(&conn, "s2", Some("completed"), 10).unwrap();
+        let msgs = list_messages(&conn, "s2", Some("completed"), 10, None).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].status, "completed");
     }
@@ -1180,9 +1182,9 @@ mod tests {
         assert_eq!(acked, 2);
 
         // Messages should now be "read"
-        let pending = list_messages(&conn, "s1", Some("pending"), 10).unwrap();
+        let pending = list_messages(&conn, "s1", Some("pending"), 10, None).unwrap();
         assert_eq!(pending.len(), 0, "no pending messages after ack");
-        let read = list_messages(&conn, "s1", Some("read"), 10).unwrap();
+        let read = list_messages(&conn, "s1", Some("read"), 10, None).unwrap();
         assert_eq!(read.len(), 2, "both messages should be read");
     }
 
@@ -1244,12 +1246,70 @@ mod tests {
         .unwrap();
         ack_messages(&conn, &[id2], "s1").unwrap();
 
-        let pending = list_messages(&conn, "s1", Some("pending"), 10).unwrap();
+        let pending = list_messages(&conn, "s1", Some("pending"), 10, None).unwrap();
         assert_eq!(pending.len(), 1, "should have 1 pending message");
-        let read = list_messages(&conn, "s1", Some("read"), 10).unwrap();
+        let read = list_messages(&conn, "s1", Some("read"), 10, None).unwrap();
         assert_eq!(read.len(), 1, "should have 1 read message");
-        let all = list_messages(&conn, "s1", None, 10).unwrap();
+        let all = list_messages(&conn, "s1", None, 10, None).unwrap();
         assert_eq!(all.len(), 2, "should have 2 total messages");
+    }
+
+    #[test]
+    fn test_list_messages_with_offset() {
+        let conn = setup();
+        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+
+        // Insert 5 messages so we can page through them
+        for i in 0..5 {
+            send_message(
+                &conn,
+                "api",
+                "s1",
+                "notification",
+                &format!("topic_{i}"),
+                "[]",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        }
+
+        // All 5 with no offset
+        let all = list_messages(&conn, "s1", None, 10, None).unwrap();
+        assert_eq!(all.len(), 5, "should have 5 total messages");
+
+        // First page: limit 2, offset 0
+        let page1 = list_messages(&conn, "s1", None, 2, Some(0)).unwrap();
+        assert_eq!(page1.len(), 2, "page 1 should have 2 messages");
+
+        // Second page: limit 2, offset 2
+        let page2 = list_messages(&conn, "s1", None, 2, Some(2)).unwrap();
+        assert_eq!(page2.len(), 2, "page 2 should have 2 messages");
+
+        // Third page: limit 2, offset 4
+        let page3 = list_messages(&conn, "s1", None, 2, Some(4)).unwrap();
+        assert_eq!(page3.len(), 1, "page 3 should have 1 message");
+
+        // Pages should not overlap — all ids should be unique
+        let mut all_ids: Vec<String> = page1
+            .iter()
+            .chain(page2.iter())
+            .chain(page3.iter())
+            .map(|m| m.id.clone())
+            .collect();
+        let total = all_ids.len();
+        all_ids.sort();
+        all_ids.dedup();
+        assert_eq!(all_ids.len(), total, "paginated ids must be unique (no overlap)");
+
+        // Offset past the end should return empty
+        let empty = list_messages(&conn, "s1", None, 10, Some(100)).unwrap();
+        assert_eq!(empty.len(), 0, "offset past end should return empty");
+
+        // Offset with status filter
+        let pending_page = list_messages(&conn, "s1", Some("pending"), 2, Some(2)).unwrap();
+        assert_eq!(pending_page.len(), 2, "status-filtered offset should work");
     }
 
     // ── A2A Permission Tests ──
