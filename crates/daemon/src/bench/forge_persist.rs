@@ -15,6 +15,8 @@ use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+
+use super::common::bytes_to_hex;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -368,13 +370,7 @@ pub fn canonical_hash(op: &Operation) -> String {
     bytes_to_hex(&Sha256::digest(&canonical_bytes))
 }
 
-/// Lowercase-hex encoding of a byte slice. Inlined to avoid taking a
-/// direct dependency on the `hex` crate — SHA-256 digests are only 32
-/// bytes, so the alloc cost is negligible and the helper stays private
-/// to this module.
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+// `bytes_to_hex` imported from `super::common` — shared across harnesses.
 
 // ---------------------------------------------------------------------------
 // Error taxonomy
