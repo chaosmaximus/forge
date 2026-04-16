@@ -498,11 +498,13 @@ pub struct AckedOp {
 /// into `POST /api` requests against a running daemon and parses the
 /// JSON response into `forge_core::protocol::Response`.
 ///
-/// Wraps `reqwest::blocking::Client` with a 5-second total per-request
-/// timeout. The timeout is tuned so that (a) during the spawn wait
-/// loop, connection-refused failures still bypass the timeout and
-/// return near-instantly, and (b) actual daemon writes (Remember,
-/// RawIngest) have enough headroom for embedder-backed work.
+/// Wraps `reqwest::blocking::Client` with a configurable total
+/// per-request timeout (set via [`HttpClient::with_timeout`]).
+/// The TCP-level connect timeout is pinned at 200 ms so that
+/// (a) during the spawn wait loop, connection-refused failures
+/// bypass the total timeout and return near-instantly, and
+/// (b) actual daemon writes (Remember, RawIngest) have enough
+/// headroom for embedder-backed work.
 pub struct HttpClient {
     client: reqwest::blocking::Client,
     base_url: String,
@@ -1153,6 +1155,7 @@ pub struct ReproArgs {
     pub daemon_bin: Option<PathBuf>,
     pub recovery_timeout_ms: u64,
     pub worker_catchup_ms: u64,
+    pub request_timeout_ms: u64,
 }
 
 /// Format a bash script that re-invokes `forge-bench forge-persist`
@@ -1168,7 +1171,7 @@ pub struct ReproArgs {
 /// `which forge-daemon`.
 pub fn format_repro_sh(args: &ReproArgs) -> String {
     let mut cmd = format!(
-        "cargo run --release --bin forge-bench -- forge-persist \\\n  --memories {} \\\n  --chunks {} \\\n  --fisp-messages {} \\\n  --seed {} \\\n  --kill-after {} \\\n  --output {} \\\n  --recovery-timeout-ms {} \\\n  --worker-catchup-ms {}",
+        "cargo run --release --bin forge-bench -- forge-persist \\\n  --memories {} \\\n  --chunks {} \\\n  --fisp-messages {} \\\n  --seed {} \\\n  --kill-after {} \\\n  --output {} \\\n  --recovery-timeout-ms {} \\\n  --worker-catchup-ms {} \\\n  --request-timeout-ms {}",
         args.memories,
         args.chunks,
         args.fisp_messages,
@@ -1177,6 +1180,7 @@ pub fn format_repro_sh(args: &ReproArgs) -> String {
         args.output.display(),
         args.recovery_timeout_ms,
         args.worker_catchup_ms,
+        args.request_timeout_ms,
     );
     if let Some(bin) = &args.daemon_bin {
         cmd.push_str(&format!(" \\\n  --daemon-bin {}", bin.display()));
@@ -1603,6 +1607,7 @@ pub fn run(config: PersistConfig) -> Result<RunSummary, HarnessError> {
     let kill_after = config.kill_after;
     let recovery_timeout = config.recovery_timeout;
     let worker_catchup = config.worker_catchup;
+    let request_timeout = config.request_timeout;
     let output_dir = config.output_dir.clone();
     let daemon_bin = config.daemon_bin.clone();
 
@@ -1732,6 +1737,7 @@ pub fn run(config: PersistConfig) -> Result<RunSummary, HarnessError> {
             daemon_bin: Some(daemon_bin),
             recovery_timeout_ms: recovery_timeout.as_millis() as u64,
             worker_catchup_ms: worker_catchup.as_millis() as u64,
+            request_timeout_ms: request_timeout.as_millis() as u64,
         };
         write_run_outputs(&dir, &summary, &repro_args)
             .map_err(|e| HarnessError::DaemonError(format!("write_run_outputs: {e}")))?;
@@ -2370,6 +2376,7 @@ mod tests {
             daemon_bin: Some(PathBuf::from("/tmp/forge-daemon")),
             recovery_timeout_ms: 9000,
             worker_catchup_ms: 15000,
+            request_timeout_ms: 30000,
         };
         let sh = format_repro_sh(&args);
         assert!(sh.starts_with("#!/usr/bin/env bash"), "shebang: {sh}");
@@ -2416,6 +2423,7 @@ mod tests {
             daemon_bin: None,
             recovery_timeout_ms: 5000,
             worker_catchup_ms: 10000,
+            request_timeout_ms: 30000,
         };
         let sh = format_repro_sh(&args);
         assert!(
@@ -2462,6 +2470,7 @@ mod tests {
             daemon_bin: None,
             recovery_timeout_ms: 5000,
             worker_catchup_ms: 10000,
+            request_timeout_ms: 30000,
         };
         let (summary_path, repro_path) =
             write_run_outputs(&dir, &summary, &repro).expect("write should succeed");
