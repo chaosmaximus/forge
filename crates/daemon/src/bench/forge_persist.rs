@@ -591,6 +591,25 @@ impl HttpClient {
         }
     }
 
+    /// Query the daemon's runtime version via `Request::Version`.
+    ///
+    /// Returns the crate version string reported by the running daemon
+    /// (e.g., `"0.4.0"`). Callers should use `unwrap_or_else` with
+    /// `env!("CARGO_PKG_VERSION")` as a fallback so the bench remains
+    /// backward-compatible with older daemons that lack the Version
+    /// endpoint.
+    pub fn version(&self) -> Result<String, HarnessError> {
+        match self.execute(&Request::Version)? {
+            Response::Ok {
+                data: ResponseData::Version { version, .. },
+            } => Ok(version),
+            Response::Ok { data } => Err(HarnessError::DaemonError(format!(
+                "expected Version response, got {data:?}"
+            ))),
+            Response::Error { message } => Err(HarnessError::DaemonError(message)),
+        }
+    }
+
     /// Poll until the raw layer (MiniLM embedder) is ready, or the
     /// `timeout` deadline elapses. The daemon loads the embedder
     /// asynchronously in a background task during startup
@@ -1642,6 +1661,14 @@ pub fn run(config: PersistConfig) -> Result<RunSummary, HarnessError> {
         harness.client().wait_for_raw_layer(recovery_timeout)?;
     }
 
+    // Query the running daemon's version. Falls back to the bench
+    // binary's own build-time version if the endpoint is unavailable
+    // (backward compat with older daemon binaries).
+    let daemon_version = harness
+        .client()
+        .version()
+        .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string());
+
     // Empty-Export precondition — see cycle (j1) HIGH 80. A non-fresh
     // TempDir would surface orphan memories that inflate
     // consistency_rate's denominator and silently fail the run.
@@ -1733,7 +1760,7 @@ pub fn run(config: PersistConfig) -> Result<RunSummary, HarnessError> {
         recovery_time_ms: score.recovery_time_ms,
         passed: score.passed,
         wall_time_ms,
-        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+        daemon_version,
     };
 
     // ── Phase 5: optional output writing ────────────────────────
