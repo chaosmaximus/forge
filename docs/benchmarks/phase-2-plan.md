@@ -43,69 +43,106 @@ A deliverable that fails any gate returns to design-gate rework, not patchwork. 
 
 ---
 
-## Phase 2A — Moat: five custom Forge-* benchmarks
+## Phase 2A — Moat: six custom Forge-* benchmarks
 
-Each of these five benchmarks is a complete, standalone deliverable that ships independently (results published, commit landed, memory indexed) before the next begins. Order selected for: framework risk first (validate the custom-bench framework), narrative weight in the middle, biggest moat play toward the end once the framework is battle-tested.
+Each benchmark is a complete, standalone deliverable that ships independently (results published, commit landed, memory indexed) before the next begins. Order selected for: framework risk first (validate the custom-bench framework), proactive intelligence next (highest product-narrative weight), then self-healing and identity (core differentiators), multi-agent coordination (biggest moat), and enterprise isolation last.
 
-### 2A-1 — Forge-Persist
+**Revision note (2026-04-16):** expanded from 5 to 6 benchmarks after deep product-vision analysis. Each benchmark now maps to a specific product claim from the investor/customer pitch. Forge-Tool renamed to Forge-Context (scope broadened from skill search to full proactive intelligence lifecycle). Forge-Consolidation added to prove the "self-healing memory" differentiator — the #1 claim in every elevator pitch.
 
-**The thesis:** "Local-first means nothing if the daemon can't survive a restart and replay correctly." Simplest bench — useful for proving the custom-bench framework works before tackling harder ones.
+### 2A-1 — Forge-Persist ✅ COMPLETE (2026-04-15)
+
+**Product claim:** "Crash-proof substrate — local-first means nothing if the daemon can't survive a restart."
+
+**The thesis:** "Local-first cognitive infrastructure is meaningless if the daemon cannot survive abrupt termination and replay correctly."
+
+**Results:** 5-seed calibration sweep, all seeds 1.0/1.0 recovery/consistency, ~271ms recovery time (18× headroom on 5000ms threshold). See `docs/benchmarks/results/forge-persist-2026-04-15.md`.
 
 **What it measures:**
 - State persistence across `SIGKILL → restart` cycles
 - WAL replay correctness after abrupt shutdown
-- Memory-table + raw-layer integrity
-- Session recovery
-- Worker resumption
-
-**Dataset shape:**
-- Scripted workload: N memory inserts, K raw-chunk ingests, J FISP sessions
-- Random interleaving (seeded for reproducibility)
-- Mid-run SIGKILL at a configurable offset
-- Expected post-restart state documented per seed
+- Memory-table + raw-layer + session-message integrity
+- Recovery time (spawn → first healthy response)
 
 **Scoring rubric:**
-- **Recovery rate** (%): fraction of pre-kill state visible post-restart
-- **Consistency rate** (%): fraction of recovered state that matches pre-kill exactly (no corruption, no duplicates)
-- **Recovery time** (seconds): wall time from `forge-next start` to first successful `forge-next health`
-- **Pass threshold:** recovery rate ≥ 99%, consistency rate 100%, recovery time < 5 s
+- **Recovery rate** (≥ 0.99): fraction of pre-kill acked ops visible post-restart
+- **Consistency rate** (= 1.00): fraction of recovered state with byte-identical content hash
+- **Recovery time** (< 5000 ms): wall time from second spawn to first health OK
 
-**Deliverables:**
-- `crates/daemon/src/bench/forge_persist.rs` harness
-- `crates/daemon/src/bin/forge-bench.rs` — new subcommand `forge-persist`
-- Dataset generator at `crates/daemon/src/bench/datasets/persist.rs` with seed-based reproducibility
-- `docs/benchmarks/results/forge-persist-<date>.md` honest results doc
-- Integration test at `crates/daemon/tests/forge_persist_harness.rs`
-- MEMORY.md index entry
+**Deliverables (landed):**
+- `crates/daemon/src/bench/forge_persist.rs` harness (3000+ LOC)
+- `crates/daemon/src/bin/forge-bench.rs` CLI subcommand
+- `docs/benchmarks/results/forge-persist-2026-04-15.md` results doc
+- `crates/daemon/tests/forge_persist_harness.rs` integration tests
+- 23 commits on master (cycles a–k), all 7 quality gates green
 
-**Framework-shakedown flag:** if the Forge-Persist harness is painful to build, the framework design needs rework before 2A-2 begins.
+### 2A-2 — Forge-Context
 
-### 2A-2 — Forge-Tool
+**Product claim:** "Surfaces the right knowledge at the right moment — the agent thinks, Forge does everything else."
 
-**The thesis:** "Agents should remember the procedures they've learned." Tool/skill recall is the most concrete non-retrieval axis where Forge's extraction pipeline earns its keep — the skill layer (Manas procedural memory) is a first-class Forge concept competitors don't have.
+**The thesis:** "Proactive intelligence is the daemon's primary value proposition. Given a context (file being edited, command being run, agent claiming done, session being compiled), the daemon must surface the right procedural knowledge with the right relevance at the right moment in the agent lifecycle."
 
-**What it measures:**
-- Accuracy of tool-procedure recall across N+1 sessions given N prior sessions of usage
-- Skill generalization (same tool used in a new context)
-- Skill precedence (when multiple similar tools exist, does the right one surface?)
-- Skill staleness (tools not used for a long time decay correctly)
+This bench validates the full proactive intelligence stack: Prajna matrix scoring, CompileContext assembly with focus filtering, guardrails routing, completion intelligence, and layer-specific recall. It is NOT a text-search benchmark — it tests whether the daemon's multi-path recall system produces contextually appropriate results across the 9 hook events that drive a real agent session.
+
+**What it measures (4 scoring dimensions):**
+
+1. **Context assembly precision** — Does `CompileContext` with `focus` filter produce relevant skills, decisions, and lessons? Does tool-availability filtering correctly exclude skills for missing tools?
+2. **Proactive guardrails accuracy** — Given a file edit (`PostEditCheck`) or bash command (`PreBashCheck`), does the daemon surface the right skills, anti-patterns, and blast-radius warnings? Does `GuardrailsCheck` correctly identify decisions linked to the file?
+3. **Completion intelligence** — When an agent claims done (`CompletionCheck`) or marks a shipping task (`TaskCompletionCheck`), does the daemon surface relevant testing/deployment lessons?
+4. **Layer recall precision** — Does `Recall { layer: "skill" }` return the right skills? Does `Recall { layer: "domain_dna" }` return the right project conventions?
+
+**Harness architecture:** In-process (DaemonState with in-memory SQLite). No subprocess — retrieval quality doesn't need process isolation.
 
 **Dataset shape:**
-- Synthetic session logs: each session uses a mix of tools (shell commands, API calls, editor operations)
-- 5-10 distinct tools per corpus
-- Question bank: "what command did I use to X?" / "what's my preferred way to Y?" / "show me the procedure for Z"
-- Hand-curated ground truth for each question
+- Deterministic seed-based generation of tools, skills, domain DNA, memories (decisions, lessons, patterns)
+- Each item tagged with ground-truth contexts where it should surface
+- Query bank: file paths, bash commands, completion claims, focus topics — each with expected results
+- Ground-truth mapping: for each (query, hook_event) pair, the set of items that SHOULD appear in the response
 
-**Scoring:**
-- Recall@1 (did the right tool show up first)
-- Recall@5 (did the right tool show up in top 5)
-- Precision of the returned procedure (does the *instance* returned match the query context?)
+**Scoring rubric:**
+- **Precision@K** per recall path: fraction of top-K returned items that are in the ground truth set
+- **Recall@K** per recall path: fraction of ground truth items that appear in top-K
+- **Prajna relevance correctness**: does the daemon's hook_event × knowledge_type scoring produce injections at or above the 0.3 relevance threshold for the right pairs?
+- **Tool-availability filtering accuracy**: when a tool is marked unavailable, do its dependent skills get correctly excluded from CompileContext?
+- **Composite score**: weighted mean of per-path scores
 
-**Dogfood extra:** the founder uses Forge-Tool on their own Claude Code session logs for ≥ 1 calendar day before merge.
+**Pass thresholds:** set during calibration (no a priori guess — the daemon's actual capability determines the bar, then the bar is locked for regression detection).
 
-### 2A-3 — Forge-Identity
+**Open decision D1 (resolved):** Synthetic dataset, not real Claude Code logs. Real logs introduce privacy/reproducibility concerns; synthetic with deterministic seed gives clean signal.
 
-**The thesis:** "Memory systems that treat preferences as static lose information the moment the user changes their mind." Identity and preference-tracking is where Forge's consolidation phases (contradiction detection, reconsolidation, valence flipping) are supposed to pay off.
+### 2A-3 — Forge-Consolidation
+
+**Product claim:** "Self-healing memory that gets smarter while you sleep — 22-phase consolidation is what no competitor has."
+
+**The thesis:** "A memory system that only stores is a database. Forge's 22-phase consolidation cycle must demonstrably IMPROVE retrieval quality over time — deduplication reduces noise without losing signal, reweave enriches old memories with new context, contradiction detection resolves conflicting information, and quality scoring correctly prioritizes high-value memories."
+
+This is the benchmark that proves the #1 differentiator in every elevator pitch. If consolidation doesn't improve quality, the extraction pipeline is architectural cost that should be cut (per the Phase 2 plan's original question).
+
+**What it measures:**
+
+1. **Dedup quality** — Does exact + semantic dedup reduce memory count without losing distinct information? (False positive = lost signal. False negative = noise remains.)
+2. **Reweave quality** — Do memories enriched by `reweave_memories` have higher recall relevance than their pre-reweave versions?
+3. **Contradiction detection accuracy** — Are contradicting memories correctly identified? Does resolution keep the right winner?
+4. **Quality scoring accuracy** — Do the 4-dimension quality scores (Freshness, Utility, Completeness, Activation) correctly rank memories by value?
+5. **Consolidation-then-recall improvement** — Given a noisy initial corpus, does running `ForceConsolidate` + re-querying produce measurably better recall results than querying the raw uncleaned corpus?
+
+**Harness architecture:** In-process. Seed noisy corpus → snapshot recall baseline → run consolidation → measure recall improvement.
+
+**Dataset shape:**
+- Corpus with deliberate noise: exact duplicates, near-duplicates (paraphrased), contradictions, stale memories, high/low quality mix
+- Ground-truth annotations: which pairs are duplicates, which contradict, which should survive consolidation
+- Pre/post recall queries with expected ranking changes
+
+**Scoring rubric:**
+- **Dedup precision/recall** against ground-truth duplicate pairs
+- **Contradiction detection F1** against ground-truth contradiction pairs
+- **Recall improvement delta**: post-consolidation recall@K minus pre-consolidation recall@K (must be positive)
+- **Signal preservation rate**: fraction of unique (non-duplicate) memories that survive consolidation intact
+
+### 2A-4 — Forge-Identity
+
+**Product claim:** "Memory is identity — agents develop persistent personality that compounds across sessions."
+
+**The thesis:** "Memory systems that treat preferences as static lose information the moment the user changes their mind. Identity and preference-tracking is where Forge's consolidation phases (contradiction detection, reconsolidation, valence flipping) are supposed to pay off."
 
 **This is also the bench that flips the Wave 1 single-session-preference regression story into a win on our own axis.** MemPalace's LongMemEval weakness is paraphrased preference questions; Forge-Identity is the bench where Forge should dominate.
 
@@ -113,62 +150,87 @@ Each of these five benchmarks is a complete, standalone deliverable that ships i
 - Time-ordered preference tracking (most-recent wins when the user changes their mind)
 - Contradiction detection (opposing preferences across sessions)
 - Valence flipping (like → dislike transitions handled)
-- Implicit preference inference (user behavior → inferred preference)
+- Identity facet persistence and influence on context compilation
+- Disposition drift accuracy (caution/confidence ±0.05/cycle cap)
+- Behavioral skill extraction ("learns how you think" — observed patterns become skills)
 - Preference staleness (preferences from 6 months ago weaker than yesterday)
 
 **Dataset shape:**
 - Time-stamped conversation logs with explicit preference statements at varying points
-- Preference categories: food, tools, workflow, communication style, aesthetic
+- Preference categories: tools, workflow, communication style, code conventions
 - Contradictions injected at known timestamps
-- Paraphrased preferences (same meaning, different words)
-- Question bank: "what's my current preference for X?" / "has my preference for Y changed?" / "what did I prefer last month?"
+- Identity facets with strength scores across multiple sessions
+- Behavioral patterns repeated across sessions (should become skills)
+- Question bank: "what's my current preference for X?" / "has my preference for Y changed?" / "what's my agent's expertise?"
 
-**Scoring:** preference accuracy + temporal correctness + contradiction-resolution accuracy.
+**Scoring:** preference accuracy + temporal correctness + contradiction-resolution accuracy + identity coherence.
 
 **Narrative gate:** results doc must include a comparison row against LongMemEval single-session-preference showing the story arc.
 
-### 2A-4 — Forge-Multi
+### 2A-5 — Forge-Multi
 
-**The thesis:** "Agents sharing memories via FISP is a Forge concept competitors literally cannot run." Biggest moat play. Positioned fourth because by this point the framework is battle-tested and we can focus on FISP coordination semantics rather than framework risk.
+**Product claim:** "Multi-agent coordination that competitors literally cannot run."
+
+**The thesis:** "Agents sharing context via FISP is a Forge concept competitors literally cannot replicate. Biggest moat play."
 
 **What it measures:**
-- Cross-agent memory sharing via FISP
-- Memory propagation latency (agent A writes → agent B sees)
-- Access control (agent A's private memories don't leak to B unless shared)
-- Conflict resolution (two agents write same key)
-- Subscription semantics (agent B subscribed to agent A's domain gets updates)
+- FISP message delivery and ordering guarantees (SessionSend → SessionMessages → SessionRespond)
+- Meeting protocol correctness (CreateMeeting → participant responses → MeetingSynthesize → MeetingDecide)
+- Team orchestration (RunTeam topology, agent spawning, budget enforcement)
+- Cross-session context sharing (agent A's decision visible in agent B's CompileContext)
+- A2A permission enforcement (GrantPermission / RevokePermission)
+- Budget enforcement (RecordAgentCost → BudgetStatus → exceeded flag)
+
+**Harness architecture:** Subprocess-based (like Forge-Persist). Multi-agent coordination requires real process-level session management.
 
 **Dataset shape:**
-- Multi-agent scenario simulator: spawn N agent sessions, script their memory interactions
-- FISP message traces with expected outcomes
-- Edge cases: disconnected agents, high-frequency writes, schema mismatches
+- Multi-agent scenario simulator: spawn N agent sessions, script their FISP interactions
+- Meeting protocol traces with expected outcomes
+- Edge cases: disconnected agents, high-frequency writes, permission violations, budget overruns
 
-**Scoring:** correctness rate on scripted interactions + latency percentiles.
+**Scoring:** correctness rate on scripted interactions + delivery latency percentiles + meeting protocol completion rate.
 
 **Narrative gate:** results doc frames this as "the bench competitors literally cannot run" — honestly, just the facts, no hype.
 
-### 2A-5 — Forge-Transfer
+### 2A-6 — Forge-Transfer
 
-**The thesis:** "Domain isolation is an enterprise/security concern that also catches cross-tenant bugs." Last in Phase 2A because smaller test surface but most important for enterprise credibility.
+**Product claim:** "Enterprise-grade domain isolation — your agent's brain stays in your network."
+
+**The thesis:** "Domain isolation is an enterprise/security concern that also catches cross-tenant bugs. Scoped configuration cascade, reality detection, and organizational boundaries must work correctly."
 
 **What it measures:**
 - Project/session isolation (memories from project A don't leak to project B)
-- Cross-tenant leakage vectors (same user, different projects)
-- Explicit transfer (when user wants to move memories across projects, does it work correctly?)
-- Audit trail integrity
+- Scoped config cascade correctness (org → team → project → user, with locked keys and ceilings)
+- Reality detection accuracy (auto-identifies Rust vs Node vs Python codebase)
+- Cross-tenant leakage vectors (same user, different projects/orgs)
+- Multi-reality context compilation (CompileContext for project A returns project A's context, not B's)
+- HUD config inheritance (org-level defaults cascade to teams)
 
 **Dataset shape:**
-- Multi-project corpora with ground-truth "this memory belongs to project X, should NOT appear in project Y query"
-- Deliberate probing queries designed to flush out leaks
-- Cross-tenant attacks (session hijacking simulation, org-scope bypass attempts)
+- Multi-project, multi-org corpus with ground-truth isolation boundaries
+- Deliberate probing queries designed to flush out cross-project leaks
+- Scoped config with locked overrides and ceiling values
+- Multiple realities with different domain fingerprints
 
-**Scoring:** isolation rate (no false positives) + transfer correctness.
+**Scoring:** isolation rate (no false positives) + cascade correctness + reality detection accuracy.
 
 **Security-review gate:** the results of this bench are a prerequisite for any enterprise pitch. Phase 2C-5 (security audit) must see these results.
 
+### Phase 2A KPI validation tests (CI-integrated, lighter weight)
+
+In addition to the six Forge-* benchmarks, these KPI tests validate specific product claims from the pitch. They run as part of CI, not as standalone calibration runs.
+
+| KPI Claim | Test | Threshold |
+|-----------|------|-----------|
+| "Bootstrap 100 memories in 60 seconds" | Timed ingestion of 100 Remember ops | < 60s wall time |
+| "Memory recall latency: <50ms" | P95 hybrid_recall latency on 500-memory corpus | < 50ms |
+| "Tool auto-discovery: 95% accuracy" | detect_and_store_tools vs known PATH ground truth | ≥ 95% |
+| "KV-cache-aware layout saves 40-60% tokens" | static_prefix reuse rate across 10 CompileContext calls | ≥ 40% chars stable |
+| "Consolidation cycle: <30s" | ForceConsolidate on 500-memory corpus | < 30s wall time |
+
 ### Phase 2A exit gate
 
-All 5 custom benches published with honest results docs. Framework (dataset generators, scoring helpers, forge-bench subcommand pattern) extracted into reusable modules. MEMORY.md updated with pointers to each result. Every bench passes the full 7-gate quality checklist.
+All 6 custom benches published with honest results docs. KPI validation tests passing in CI. Framework (dataset generators, scoring helpers, forge-bench subcommand pattern) extracted into reusable modules. MEMORY.md updated with pointers to each result. Every bench passes the full 7-gate quality checklist.
 
 ---
 
@@ -341,18 +403,20 @@ Because there's no time gating, the sequencing is about dependencies and interwe
 **Recommended overall shape:**
 
 ```
-Phase 2A ──────────────────────────┐
-                                   │
-  Forge-Persist ─→ Forge-Tool ─→ Forge-Identity ─→ Forge-Multi ─→ Forge-Transfer
-  (framework)     (narrative)    (moat pivot)      (big moat)     (enterprise)
-       │                                                                │
+Phase 2A ──────────────────────────────────────────┐
+                                                   │
+  Forge-Persist ─→ Forge-Context ─→ Forge-Consolidation ─→ Forge-Identity ─→ Forge-Multi ─→ Forge-Transfer
+  (substrate) ✅   (proactive)     (self-healing)         (personality)      (big moat)     (enterprise)
+       │                                                                                          │
        ├─── 2C-1 observability (parallel from here, emits KPI natively)
-       │                                                                │
-       ├─── 2C-3 bug fixing (continuous from here)                      │
-       │                                                                │
-       │                          ├─── Wave 3 (after Forge-Identity)    │
-       │                          │                                     │
-       │                          │                                     ├─── 2C-5 security audit
+       │                                                                                          │
+       ├─── 2C-3 bug fixing (continuous from here)                                                │
+       │                                                                                          │
+       │                                        ├─── Wave 3 (after Forge-Identity)                │
+       │                                        │                                                 │
+       │                                        │                                                 ├─── 2C-5 security audit
+       │
+       ├─── KPI validation tests (CI, parallel from Forge-Context onward)
        │
 Phase 2B ──────────────────────────┐
   Wave 3 ──→ (Wave 2?) ──→ (Wave 4?) ──→ ConvoMem/MemBench
@@ -372,6 +436,10 @@ Phase 2D ───────────────────────�
 |---|---|---|
 | 2026-04-14 | Phase 2 runs moat-first (2A before 2B) | Founder precedence: unique value > benchmark numbers |
 | 2026-04-14 | Phase 2A order: Persist → Tool → Identity → Multi → Transfer | Framework risk → narrative weight → moat strength |
+| 2026-04-16 | Phase 2A expanded to 6 benchmarks, renamed Forge-Tool → Forge-Context, added Forge-Consolidation | Deep product-vision analysis revealed "self-healing memory" is #1 differentiator in every pitch; "proactive intelligence" is broader than skill search. Each bench now maps to a product claim. |
+| 2026-04-16 | Phase 2A order updated: Persist → Context → Consolidation → Identity → Multi → Transfer | Context (proactive intelligence) is highest product-narrative weight; Consolidation proves #1 differentiator; Identity builds on Consolidation's quality guarantees |
+| 2026-04-16 | Forge-Context harness is in-process (not subprocess) | Testing retrieval quality, not crash recovery — 10× faster calibration, no incremental signal from subprocess overhead |
+| 2026-04-16 | KPI validation tests added as CI-integrated lightweight benchmarks | Validate specific pitch claims (bootstrap speed, recall latency, tool discovery accuracy, KV-cache savings, consolidation speed) |
 | 2026-04-14 | No time estimates anywhere in the plan | Founder directive: plan for quality and complete delivery, not speed |
 | 2026-04-14 | Wave 2 (bge-large) is now conditional | LoCoMo target already overshot on MiniLM hybrid — re-evaluate after Wave 3 |
 | 2026-04-14 | Wave 3 is the next standard-bench commitment after Phase 2A | Closes the Wave 1 regression + aligns with Forge-Identity story |
