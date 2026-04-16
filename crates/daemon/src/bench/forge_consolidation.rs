@@ -9,6 +9,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use forge_core::types::memory::MemoryType;
+
+use super::common::sha256_hex;
+
 // ── Configuration ────────────────────────────────────────────────
 
 /// Configuration for a single Forge-Consolidation run.
@@ -116,6 +120,507 @@ pub struct SeededDataset {
     pub expected_resolution_count: usize,
 }
 
+// ── Dataset generators: Category 1-4 ─────────────────────────────
+
+/// Spec for a memory to be seeded into the corpus.
+#[derive(Debug, Clone)]
+pub struct MemorySpec {
+    pub id: String,
+    pub memory_type: MemoryType,
+    pub title: String,
+    pub content: String,
+    pub confidence: f64,
+    pub valence: String,
+    pub intensity: f64,
+    pub tags: Vec<String>,
+    pub project: String,
+    pub access_count: u64,
+    pub activation_level: f64,
+    pub quality_score: Option<f64>,
+    /// `created_at` as ISO-8601, or "NOW" / "NOW-Nd" shortcuts.
+    pub created_at_spec: String,
+    pub accessed_at_spec: String,
+}
+
+/// Category 1: 12 memories in 6 exact-duplicate pairs.
+/// Phase 1 should keep higher-confidence copy and DELETE the other.
+pub fn generate_category_1_exact_duplicates(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
+    let unique_token = |idx: usize| sha256_hex(&format!("c1-{seed}-{idx}"));
+
+    let types = [
+        MemoryType::Decision,
+        MemoryType::Decision,
+        MemoryType::Lesson,
+        MemoryType::Lesson,
+        MemoryType::Pattern,
+        MemoryType::Pattern,
+    ];
+
+    let mut specs = Vec::new();
+    let mut truths = Vec::new();
+
+    for (pair_idx, mt) in types.iter().enumerate() {
+        let token = unique_token(pair_idx);
+        let title = format!("C1 exact duplicate pair {pair_idx} [{token}]");
+        let keeper_id = format!("c1-{pair_idx}-keeper");
+        let victim_id = format!("c1-{pair_idx}-victim");
+
+        specs.push(MemorySpec {
+            id: keeper_id.clone(),
+            memory_type: mt.clone(),
+            title: title.clone(),
+            content: format!("Exact duplicate pair {pair_idx} keeper — content [{token}]"),
+            confidence: 0.9,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-1".into(), format!("pair-{pair_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        specs.push(MemorySpec {
+            id: victim_id.clone(),
+            memory_type: mt.clone(),
+            title: title.clone(), // SAME title triggers Phase 1 exact dedup
+            content: format!("Exact duplicate pair {pair_idx} victim — content [{token}]"),
+            confidence: 0.7, // LOWER confidence → victim
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-1".into(), format!("pair-{pair_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+
+        truths.push(GroundTruth {
+            memory_id: keeper_id.clone(),
+            category: Category::ExactDuplicates,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: Some(victim_id.clone()),
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+        truths.push(GroundTruth {
+            memory_id: victim_id,
+            category: Category::ExactDuplicates,
+            expected_status: ExpectedStatus::Deleted, // Phase 1 DELETEs
+            duplicate_of: Some(keeper_id),
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    (specs, truths)
+}
+
+/// Category 2: 16 memories in 8 semantic near-duplicate pairs.
+/// Titles share high word overlap via common anchor token.
+pub fn generate_category_2_semantic_duplicates(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
+    // 8 distinct anchor tokens, one per pair
+    let anchors: Vec<String> = (0..8)
+        .map(|i| sha256_hex(&format!("c2-anchor-{seed}-{i}")))
+        .collect();
+
+    let types = [
+        MemoryType::Decision,
+        MemoryType::Decision,
+        MemoryType::Decision,
+        MemoryType::Lesson,
+        MemoryType::Lesson,
+        MemoryType::Lesson,
+        MemoryType::Pattern,
+        MemoryType::Pattern,
+    ];
+
+    let mut specs = Vec::new();
+    let mut truths = Vec::new();
+
+    for (pair_idx, mt) in types.iter().enumerate() {
+        let anchor = &anchors[pair_idx];
+        // Two paraphrases sharing the anchor token produce >0.65 overlap
+        let title_a = format!("Always enforce {anchor} on deployment boundaries");
+        let title_b = format!("Enforce {anchor} deployment boundaries always");
+        let content_a = format!("Policy: always enforce {anchor} validation before deployment");
+        let content_b = format!("Deployment validation must always enforce {anchor}");
+
+        let keeper_id = format!("c2-{pair_idx}-keeper");
+        let victim_id = format!("c2-{pair_idx}-victim");
+
+        specs.push(MemorySpec {
+            id: keeper_id.clone(),
+            memory_type: mt.clone(),
+            title: title_a,
+            content: content_a,
+            confidence: 0.9,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-2".into(), format!("pair-{pair_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        specs.push(MemorySpec {
+            id: victim_id.clone(),
+            memory_type: mt.clone(),
+            title: title_b,
+            content: content_b,
+            confidence: 0.75, // Lower — becomes victim
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-2".into(), format!("pair-{pair_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+
+        truths.push(GroundTruth {
+            memory_id: keeper_id.clone(),
+            category: Category::SemanticDuplicates,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: Some(victim_id.clone()),
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+        truths.push(GroundTruth {
+            memory_id: victim_id,
+            category: Category::SemanticDuplicates,
+            expected_status: ExpectedStatus::Superseded,
+            duplicate_of: Some(keeper_id),
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    (specs, truths)
+}
+
+/// Category 3: 12 memories — 4 embedding-merge pairs + 2 embedding-control pairs.
+/// Titles engineered to have LOW word overlap (<0.65) so Phase 2 does NOT catch them.
+/// Phase 7 embedding merge catches them via cosine distance < 0.1 (synthetic embeddings added in Task 4).
+pub fn generate_category_3_embedding_duplicates(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
+    let unique = |label: &str, idx: usize| sha256_hex(&format!("c3-{seed}-{label}-{idx}"));
+
+    let mut specs = Vec::new();
+    let mut truths = Vec::new();
+
+    // 4 merge pairs — distance < 0.1 (Phase 7 merges lower-confidence victim)
+    for pair_idx in 0..4 {
+        let token_a = unique("A", pair_idx);
+        let token_b = unique("B", pair_idx);
+        let keeper_id = format!("c3-merge-{pair_idx}-keeper");
+        let victim_id = format!("c3-merge-{pair_idx}-victim");
+
+        specs.push(MemorySpec {
+            id: keeper_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Pattern {token_a}"),
+            content: format!("Topic {token_a} rationale follows from context alpha."),
+            confidence: 0.9,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-3-merge".into(), format!("pair-{pair_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        specs.push(MemorySpec {
+            id: victim_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Approach {token_b}"), // disjoint anchor → low word overlap
+            content: format!("Rationale covers {token_b} derivation from stream beta."),
+            confidence: 0.7,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec!["category-3-merge".into(), format!("pair-{pair_idx}")],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+
+        truths.push(GroundTruth {
+            memory_id: keeper_id.clone(),
+            category: Category::EmbeddingDuplicates,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: Some(victim_id.clone()),
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+        truths.push(GroundTruth {
+            memory_id: victim_id,
+            category: Category::EmbeddingDuplicates,
+            expected_status: ExpectedStatus::Superseded,
+            duplicate_of: Some(keeper_id),
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    // 2 CONTROL pairs — distance 0.15 (Phase 7 does NOT merge)
+    for pair_idx in 0..2 {
+        let token_a = unique("CA", pair_idx);
+        let token_b = unique("CB", pair_idx);
+        let a_id = format!("c3-control-{pair_idx}-a");
+        let b_id = format!("c3-control-{pair_idx}-b");
+
+        specs.push(MemorySpec {
+            id: a_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Control memory A {token_a}"),
+            content: format!("Distinct topic {token_a} with unique content."),
+            confidence: 0.85,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec![
+                "category-3-control".into(),
+                format!("control-pair-{pair_idx}"),
+            ],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        specs.push(MemorySpec {
+            id: b_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Control memory B {token_b}"),
+            content: format!("Separate topic {token_b} unrelated to A."),
+            confidence: 0.85,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec![
+                "category-3-control".into(),
+                format!("control-pair-{pair_idx}"),
+            ],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+
+        // BOTH remain active — these are signal-preservation gate controls
+        truths.push(GroundTruth {
+            memory_id: a_id,
+            category: Category::EmbeddingDuplicates,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+        truths.push(GroundTruth {
+            memory_id: b_id,
+            category: Category::EmbeddingDuplicates,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: None,
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    (specs, truths)
+}
+
+/// Category 4: 16 memories in 4 valence + 4 content contradiction pairs.
+/// Phase 9a detects valence pairs; Phase 12 synthesizes resolutions.
+/// Phase 9b detects content pairs; NO synthesis. All pairs use decision/pattern/protocol
+/// types (Phase 9b excludes lesson).
+pub fn generate_category_4_contradictions(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
+    let unique = |idx: usize| sha256_hex(&format!("c4-{seed}-{idx}"));
+
+    let mut specs = Vec::new();
+    let mut truths = Vec::new();
+
+    // 4 VALENCE pairs — opposite valence, ≥2 shared tags, intensity > 0.5
+    for pair_idx in 0..4 {
+        let token = unique(pair_idx);
+        let shared_tags = vec![
+            "category-4-valence".into(),
+            format!("topic-{token}"),
+            format!("valence-pair-{pair_idx}"),
+        ];
+        let pos_id = format!("c4-val-{pair_idx}-pos");
+        let neg_id = format!("c4-val-{pair_idx}-neg");
+
+        specs.push(MemorySpec {
+            id: pos_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("We should adopt approach {token}"),
+            content: format!("Approach {token} solves the problem cleanly."),
+            confidence: 0.85,
+            valence: "positive".into(),
+            intensity: 0.8,
+            tags: shared_tags.clone(),
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        specs.push(MemorySpec {
+            id: neg_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("We should NOT adopt approach {token}"),
+            content: format!("Approach {token} fails under load."),
+            confidence: 0.9,
+            valence: "negative".into(),
+            intensity: 0.9,
+            tags: shared_tags,
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+
+        // Phase 12 synthesizes → BOTH superseded
+        truths.push(GroundTruth {
+            memory_id: pos_id.clone(),
+            category: Category::Contradictions,
+            expected_status: ExpectedStatus::Superseded,
+            duplicate_of: None,
+            contradicts: Some(neg_id.clone()),
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+        truths.push(GroundTruth {
+            memory_id: neg_id,
+            category: Category::Contradictions,
+            expected_status: ExpectedStatus::Superseded,
+            duplicate_of: None,
+            contradicts: Some(pos_id),
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    // 4 CONTENT pairs — same type (decision), title Jaccard ≥0.5, content Jaccard <0.3
+    for pair_idx in 0..4 {
+        let token_t = unique(100 + pair_idx); // shared title anchor
+        let token_a = unique(200 + pair_idx * 2);
+        let token_b = unique(200 + pair_idx * 2 + 1);
+        let a_id = format!("c4-content-{pair_idx}-a");
+        let b_id = format!("c4-content-{pair_idx}-b");
+
+        // Share "policy enforce" words in title plus the title anchor
+        // B uses "delay" instead of "timeout" to avoid Phase 1 exact dedup
+        specs.push(MemorySpec {
+            id: a_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Policy enforce timeout {token_t}"),
+            content: format!("Set timeout to 30 seconds because {token_a}."),
+            confidence: 0.9,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec![
+                "category-4-content".into(),
+                format!("content-pair-{pair_idx}"),
+            ],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+        specs.push(MemorySpec {
+            id: b_id.clone(),
+            memory_type: MemoryType::Decision,
+            title: format!("Policy enforce delay {token_t}"), // changed "timeout" to "delay"
+            content: format!("Set timeout to 5 seconds because {token_b}."), // different reasoning
+            confidence: 0.85,
+            valence: "neutral".into(),
+            intensity: 0.0,
+            tags: vec![
+                "category-4-content".into(),
+                format!("content-pair-{pair_idx}"),
+            ],
+            project: "forge-consolidation-bench".into(),
+            access_count: 0,
+            activation_level: 0.0,
+            quality_score: None,
+            created_at_spec: "NOW".into(),
+            accessed_at_spec: "NOW".into(),
+        });
+
+        // Phase 9b detects; Phase 12 does NOT synthesize → both stay ACTIVE with `contradicts` edge
+        truths.push(GroundTruth {
+            memory_id: a_id.clone(),
+            category: Category::Contradictions,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: Some(b_id.clone()),
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+        truths.push(GroundTruth {
+            memory_id: b_id,
+            category: Category::Contradictions,
+            expected_status: ExpectedStatus::Active,
+            duplicate_of: None,
+            contradicts: Some(a_id),
+            reweave_source: None,
+            expected_quality: None,
+            expected_confidence: None,
+            expected_activation: None,
+        });
+    }
+
+    (specs, truths)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +659,154 @@ mod tests {
         };
         assert_eq!(ds.seed, 42);
         assert_eq!(ds.expected_pattern_count, 4);
+    }
+
+    // ── Category 1 tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_category_1_produces_12_memories_in_6_pairs() {
+        let (specs, truths) = generate_category_1_exact_duplicates(42);
+        assert_eq!(specs.len(), 12);
+        assert_eq!(truths.len(), 12);
+
+        // Each pair has the SAME title
+        for i in 0..6 {
+            assert_eq!(specs[i * 2].title, specs[i * 2 + 1].title);
+        }
+
+        // Higher-confidence is keeper; lower is victim
+        let keepers: Vec<_> = truths
+            .iter()
+            .filter(|t| t.expected_status == ExpectedStatus::Active)
+            .collect();
+        let victims: Vec<_> = truths
+            .iter()
+            .filter(|t| t.expected_status == ExpectedStatus::Deleted)
+            .collect();
+        assert_eq!(keepers.len(), 6);
+        assert_eq!(victims.len(), 6);
+    }
+
+    #[test]
+    fn test_category_1_deterministic() {
+        let (specs_a, _) = generate_category_1_exact_duplicates(42);
+        let (specs_b, _) = generate_category_1_exact_duplicates(42);
+        for (a, b) in specs_a.iter().zip(specs_b.iter()) {
+            assert_eq!(a.title, b.title);
+            assert_eq!(a.content, b.content);
+        }
+    }
+
+    // ── Category 2 tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_category_2_produces_16_memories() {
+        let (specs, truths) = generate_category_2_semantic_duplicates(42);
+        assert_eq!(specs.len(), 16);
+        assert_eq!(truths.len(), 16);
+
+        let keepers = truths
+            .iter()
+            .filter(|t| t.expected_status == ExpectedStatus::Active)
+            .count();
+        let victims = truths
+            .iter()
+            .filter(|t| t.expected_status == ExpectedStatus::Superseded)
+            .count();
+        assert_eq!(keepers, 8);
+        assert_eq!(victims, 8);
+    }
+
+    #[test]
+    fn test_category_2_pairs_share_anchor_token() {
+        let (specs, _) = generate_category_2_semantic_duplicates(42);
+        // Each pair's titles should share a 64-char hex anchor
+        for pair_idx in 0..8 {
+            let a = &specs[pair_idx * 2].title;
+            let b = &specs[pair_idx * 2 + 1].title;
+            // Extract 64-hex token from a
+            let token = a
+                .split_whitespace()
+                .find(|w| w.len() == 64 && w.chars().all(|c| c.is_ascii_hexdigit()))
+                .expect("no 64-hex token in title A");
+            assert!(
+                b.contains(token),
+                "title B doesn't share anchor: a={a}, b={b}"
+            );
+        }
+    }
+
+    // ── Category 3 tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_category_3_produces_12_memories_4_merge_2_control() {
+        let (specs, truths) = generate_category_3_embedding_duplicates(42);
+        assert_eq!(specs.len(), 12);
+        let merge_victims = truths
+            .iter()
+            .filter(|t| {
+                t.category == Category::EmbeddingDuplicates
+                    && t.expected_status == ExpectedStatus::Superseded
+            })
+            .count();
+        let merge_keepers = truths
+            .iter()
+            .filter(|t| {
+                t.category == Category::EmbeddingDuplicates
+                    && t.expected_status == ExpectedStatus::Active
+                    && t.duplicate_of.is_some()
+            })
+            .count();
+        let controls = truths
+            .iter()
+            .filter(|t| {
+                t.category == Category::EmbeddingDuplicates
+                    && t.expected_status == ExpectedStatus::Active
+                    && t.duplicate_of.is_none()
+            })
+            .count();
+        assert_eq!(merge_victims, 4);
+        assert_eq!(merge_keepers, 4);
+        assert_eq!(controls, 4);
+    }
+
+    // ── Category 4 tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_category_4_produces_16_memories() {
+        let (specs, truths) = generate_category_4_contradictions(42);
+        assert_eq!(specs.len(), 16);
+        assert_eq!(truths.len(), 16);
+
+        let valence_superseded = truths
+            .iter()
+            .filter(|t| {
+                t.category == Category::Contradictions
+                    && t.expected_status == ExpectedStatus::Superseded
+            })
+            .count();
+        let content_active = truths
+            .iter()
+            .filter(|t| {
+                t.category == Category::Contradictions
+                    && t.expected_status == ExpectedStatus::Active
+            })
+            .count();
+        assert_eq!(valence_superseded, 8); // all 4 valence pairs superseded
+        assert_eq!(content_active, 8); // all 4 content pairs stay active
+    }
+
+    #[test]
+    fn test_category_4_content_titles_not_exact_duplicates() {
+        let (specs, _) = generate_category_4_contradictions(42);
+        // Content pairs are specs 8-15 (after 8 valence specs)
+        for pair_idx in 0..4 {
+            let a = &specs[8 + pair_idx * 2].title;
+            let b = &specs[8 + pair_idx * 2 + 1].title;
+            assert_ne!(
+                a, b,
+                "content pair {pair_idx} has identical titles — would be caught by Phase 1"
+            );
+        }
     }
 }
