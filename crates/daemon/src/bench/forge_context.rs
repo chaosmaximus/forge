@@ -39,10 +39,12 @@ const FILE_PATHS: [&str; 5] = [
 ];
 
 /// Tags relevant to CompletionCheck / TaskCompletionCheck queries.
-const COMPLETION_TAGS: [&str; 5] = [
+/// Each must match one of the LIKE patterns in the CompletionCheck handler
+/// (handler.rs:2185): `%testing%`, `%production-readiness%`, `%anti-pattern%`,
+/// `%uat%`. "deployment" was removed because the handler does NOT query for it.
+const COMPLETION_TAGS: [&str; 4] = [
     "testing",
     "uat",
-    "deployment",
     "anti-pattern",
     "production-readiness",
 ];
@@ -225,9 +227,11 @@ pub fn generate_memories(seed: u64) -> Vec<MemorySpec> {
         let token = sha256_hex(&format!("forge-context-{seed}-decision-{i}"));
         specs.push(MemorySpec {
             memory_type: MemoryType::Decision,
+            // Full 64-char token in title to resist semantic dedup.
+            // Truncating to 8 chars caused same-domain pairs to exceed
+            // the 0.65 Jaccard threshold (adversarial review CRITICAL-1).
             title: format!(
-                "Decision: {domain} layer architecture ({}) — affects {file}",
-                &token[..8]
+                "Decision: {domain} layer architecture ({token}) — affects {file}"
             ),
             content: format!(
                 "Decided to refactor {domain} layer via {file}. Unique token: {token}"
@@ -241,13 +245,12 @@ pub fn generate_memories(seed: u64) -> Vec<MemorySpec> {
     // 10 Lessons
     for i in 0..10 {
         let domain = DOMAINS[i % DOMAINS.len()];
-        let completion_tag = COMPLETION_TAGS[i % COMPLETION_TAGS.len()];
+        let completion_tag = COMPLETION_TAGS[i % 4]; // 4 tags now (deployment removed)
         let token = sha256_hex(&format!("forge-context-{seed}-lesson-{i}"));
         specs.push(MemorySpec {
             memory_type: MemoryType::Lesson,
             title: format!(
-                "Lesson: {domain} {completion_tag} insight ({})",
-                &token[..8]
+                "Lesson: {domain} {completion_tag} insight ({token})"
             ),
             content: format!(
                 "Learned about {completion_tag} in {domain} context. Unique token: {token}"
@@ -264,7 +267,7 @@ pub fn generate_memories(seed: u64) -> Vec<MemorySpec> {
         let token = sha256_hex(&format!("forge-context-{seed}-pattern-{i}"));
         specs.push(MemorySpec {
             memory_type: MemoryType::Pattern,
-            title: format!("Pattern: {domain} convention ({})", &token[..8]),
+            title: format!("Pattern: {domain} convention ({token})"),
             content: format!(
                 "Observed recurring {domain} pattern. Unique token: {token}"
             ),
@@ -305,7 +308,7 @@ use crate::server::handler::{handle_request, DaemonState};
 ///
 /// Returns the `SeededDataset` metadata that the query-bank generator
 /// needs to construct ground-truth expectations.
-pub fn seed_state(state: &mut DaemonState, seed: u64) -> SeededDataset {
+pub fn seed_state(state: &mut DaemonState, seed: u64) -> Result<SeededDataset, String> {
     let session_id = format!("forge-context-bench-{seed}");
 
     // 1. Register a test session
@@ -320,21 +323,28 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> SeededDataset {
             current_task: None,
         },
     );
-    assert!(
-        matches!(resp, Response::Ok { .. }),
-        "RegisterSession failed: {resp:?}"
-    );
+    if !matches!(resp, Response::Ok { .. }) {
+        return Err(format!("RegisterSession failed: {resp:?}"));
+    }
 
     // 2. Generate and store tools; purge auto-detected tools that conflict
     //    with our "absent" set so the split is deterministic.
     let (present_tools, absent_keywords) = generate_tools(seed);
 
-    // Delete all auto-detected tools first so we have a clean slate, then
-    // insert only our present tools.
-    state
+    // Assert the tool table is empty (in-memory DB should have no tools
+    // unless DaemonState::new auto-detects them). If tools exist, clear
+    // them for determinism. This only runs against in-memory DBs in the
+    // bench harness, never against production file-backed DBs.
+    let tool_count: usize = state
         .conn
-        .execute("DELETE FROM tool", [])
-        .expect("clear tool table");
+        .query_row("SELECT COUNT(*) FROM tool", [], |r| r.get(0))
+        .map_err(|e| format!("count tools: {e}"))?;
+    if tool_count > 0 {
+        state
+            .conn
+            .execute("DELETE FROM tool", [])
+            .map_err(|e| format!("clear tool table: {e}"))?;
+    }
 
     for tool in &present_tools {
         let resp = handle_request(
@@ -343,17 +353,16 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> SeededDataset {
                 tool: tool.clone(),
             },
         );
-        assert!(
-            matches!(resp, Response::Ok { .. }),
-            "StoreTool failed: {resp:?}"
-        );
+        if !matches!(resp, Response::Ok { .. }) {
+            return Err(format!("StoreTool failed: {resp:?}"));
+        }
     }
 
     // 3. Generate and store skills
     let skills = generate_skills(seed, &present_tools, &absent_keywords);
     for skill in &skills {
         crate::db::manas::store_skill(&state.conn, skill)
-            .expect("store_skill failed");
+            .map_err(|e| format!("store_skill failed: {e}"))?;
     }
 
     // 4. Generate and store memories; collect IDs
@@ -395,7 +404,7 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> SeededDataset {
                     decision_file_map.push((id, fp.clone()));
                 }
             }
-            other => panic!("Remember failed: {other:?}"),
+            other => return Err(format!("Remember failed: {other:?}")),
         }
     }
 
@@ -404,10 +413,10 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> SeededDataset {
     let domain_dna_aspects: Vec<String> = dna_entries.iter().map(|d| d.aspect.clone()).collect();
     for dna in &dna_entries {
         crate::db::manas::store_domain_dna(&state.conn, dna)
-            .expect("store_domain_dna failed");
+            .map_err(|e| format!("store_domain_dna failed: {e}"))?;
     }
 
-    SeededDataset {
+    Ok(SeededDataset {
         present_tools,
         absent_keywords,
         skills,
@@ -416,7 +425,7 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> SeededDataset {
         domain_dna_aspects,
         file_paths: FILE_PATHS.iter().map(|s| s.to_string()).collect(),
         session_id,
-    }
+    })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -578,7 +587,7 @@ mod tests {
     #[test]
     fn test_seed_state_populates_all_categories() {
         let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
-        let dataset = seed_state(&mut state, 42);
+        let dataset = seed_state(&mut state, 42).expect("seed_state");
 
         // Tools
         assert_eq!(dataset.present_tools.len(), 6, "6 present tools");
