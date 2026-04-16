@@ -43,10 +43,11 @@ const FILE_PATHS: [&str; 5] = [
 /// Tags relevant to CompletionCheck / TaskCompletionCheck queries.
 /// Each must match one of the LIKE patterns in the CompletionCheck handler
 /// (handler.rs:2185): `%testing%`, `%production-readiness%`, `%anti-pattern%`,
-/// `%uat%`. "deployment" was removed because the handler does NOT query for it.
-const COMPLETION_TAGS: [&str; 4] = [
+/// `%uat%`, `%deployment%`.
+const COMPLETION_TAGS: [&str; 5] = [
     "testing",
     "uat",
+    "deployment",
     "anti-pattern",
     "production-readiness",
 ];
@@ -248,7 +249,7 @@ pub fn generate_memories(seed: u64) -> Vec<MemorySpec> {
     // 10 Lessons
     for i in 0..10 {
         let domain = DOMAINS[i % DOMAINS.len()];
-        let completion_tag = COMPLETION_TAGS[i % 4]; // 4 tags now (deployment removed)
+        let completion_tag = COMPLETION_TAGS[i % COMPLETION_TAGS.len()];
         let token = sha256_hex(&format!("forge-context-{seed}-lesson-{i}"));
         specs.push(MemorySpec {
             memory_type: MemoryType::Lesson,

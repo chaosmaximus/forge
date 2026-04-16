@@ -341,7 +341,7 @@ pub fn pre_bash_check(conn: &Connection, command: &str) -> PreBashResult {
         if let Ok(mut stmt) = conn.prepare(
             "SELECT name, domain FROM skill WHERE success_count > 0
              AND (description LIKE ?1 OR name LIKE ?1 OR domain LIKE ?1)
-             ORDER BY success_count DESC LIMIT 1",
+             ORDER BY success_count DESC LIMIT 2",
         ) {
             if let Ok(rows) = stmt.query_map(params![search], |row| {
                 Ok(format!(
@@ -1327,5 +1327,65 @@ mod tests {
         assert!(all_warnings.contains("Blast radius"));
         assert!(all_warnings.contains("Lesson: Always test auth"));
         assert!(all_warnings.contains("Dangerous pattern: Never use eval()"));
+    }
+
+    // ── Fix: PreBashCheck should return up to 2 skills, not 1 ──
+
+    #[test]
+    fn test_pre_bash_check_returns_two_matching_skills() {
+        let conn = setup();
+
+        // Insert two skills matching "cargo"
+        store_skill(
+            &conn,
+            &Skill {
+                id: "skill-cargo-build".into(),
+                name: "cargo build workflow".into(),
+                domain: "rust".into(),
+                description: "Build Rust projects with cargo".into(),
+                steps: vec!["run cargo build".into()],
+                success_count: 5,
+                fail_count: 0,
+                last_used: None,
+                source: "bench".into(),
+                version: 1,
+                project: None,
+                skill_type: "procedural".into(),
+                user_specific: false,
+                observed_count: 1,
+                correlation_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        store_skill(
+            &conn,
+            &Skill {
+                id: "skill-cargo-test".into(),
+                name: "cargo test procedure".into(),
+                domain: "testing".into(),
+                description: "Run tests with cargo test".into(),
+                steps: vec!["run cargo test".into()],
+                success_count: 3,
+                fail_count: 0,
+                last_used: None,
+                source: "bench".into(),
+                version: 1,
+                project: None,
+                skill_type: "procedural".into(),
+                user_specific: false,
+                observed_count: 1,
+                correlation_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        let result = pre_bash_check(&conn, "cargo test --release");
+        assert_eq!(
+            result.relevant_skills.len(),
+            2,
+            "PreBashCheck should return up to 2 matching skills, got: {:?}",
+            result.relevant_skills
+        );
     }
 }

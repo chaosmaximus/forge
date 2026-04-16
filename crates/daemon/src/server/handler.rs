@@ -2182,7 +2182,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     "SELECT title || ': ' || SUBSTR(content, 1, 150) FROM memory
                      WHERE memory_type IN ('lesson', 'decision') AND status = 'active'
                      AND (organization_id = ?1 OR ?1 IS NULL)
-                     AND (tags LIKE '%testing%' OR tags LIKE '%production-readiness%' OR tags LIKE '%anti-pattern%' OR tags LIKE '%uat%')
+                     AND (tags LIKE '%testing%' OR tags LIKE '%production-readiness%' OR tags LIKE '%anti-pattern%' OR tags LIKE '%uat%' OR tags LIKE '%deployment%')
                      ORDER BY quality_score DESC, confidence DESC LIMIT 3"
                 ).ok()
                     .map(|mut stmt| stmt.query_map(rusqlite::params![completion_org_id], |row| row.get(0))
@@ -8428,6 +8428,48 @@ mod tests {
             } => {
                 assert!(has_completion_signal);
                 assert!(!relevant_lessons.is_empty(), "should surface UAT lesson");
+                assert_eq!(severity, "high");
+            }
+            other => panic!("expected CompletionCheckResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_completion_check_surfaces_deployment_tagged_lesson() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        // Store a lesson tagged ONLY with "deployment" — no other completion tags
+        handle_request(
+            &mut state,
+            Request::Remember {
+                memory_type: MemoryType::Lesson,
+                title: "Verify rollback plan before deployment".into(),
+                content: "Every deployment needs a rollback strategy".into(),
+                tags: Some(vec!["deployment".into()]),
+                confidence: None,
+                project: None,
+                metadata: None,
+            },
+        );
+        let resp = handle_request(
+            &mut state,
+            Request::CompletionCheck {
+                session_id: "s1".into(),
+                claimed_done: true,
+            },
+        );
+        match resp {
+            Response::Ok {
+                data:
+                    ResponseData::CompletionCheckResult {
+                        relevant_lessons,
+                        severity,
+                        ..
+                    },
+            } => {
+                assert!(
+                    !relevant_lessons.is_empty(),
+                    "deployment-tagged lesson must be surfaced by CompletionCheck"
+                );
                 assert_eq!(severity, "high");
             }
             other => panic!("expected CompletionCheckResult, got {other:?}"),
