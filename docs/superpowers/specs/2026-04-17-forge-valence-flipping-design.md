@@ -168,7 +168,7 @@ PreferenceFlipped {
     new_id: String,
     new_valence: String,
     new_intensity: f64,
-    flipped_at: String,  // ISO UTC timestamp
+    flipped_at: String,  // "YYYY-MM-DD HH:MM:SS" (SQLite format, no T, no Z — matches forge_core::time::now_iso())
 },
 ```
 
@@ -219,8 +219,8 @@ Implemented in `crates/daemon/src/server/handler.rs`:
       semantically distinct from old.content because of the flip annotation)
     - alternatives = vec![]  (reset — old's alternatives don't apply to the flipped preference)
     - participants = vec![]  (reset — same reasoning)
-    - confidence = old.confidence.max(0.5)  (D2 revision: inherit, but floor at 0.5 to
-      avoid propagating decayed old-pref confidence onto a fresh flip; rationale per §4.4)
+    - confidence = old.confidence.max(0.5).min(1.0)  (D2 revision: inherit, but floor
+      at 0.5 and cap at 1.0; rationale per §4.4)
     - valence = new_valence.clone()
     - intensity = new_intensity
     - created_at = now.clone()
@@ -347,17 +347,19 @@ The v1 spec claimed a post-processing retain filter at `recall.rs:313` would suf
 ```sql
 -- When include_flipped = false (current behavior):
 WHERE m.status = 'active'
-  AND m.memory_type = COALESCE(?, m.memory_type)
-  -- ... other existing filters ...
+  AND m.memory_type = COALESCE(?2, m.memory_type)
+  -- ... other existing filters bound as ?3, ?4 ...
 
 -- When include_flipped = true:
 WHERE (
     m.status = 'active'
     OR (m.status = 'superseded' AND m.valence_flipped_at IS NOT NULL AND m.memory_type = 'preference')
   )
-  AND m.memory_type = COALESCE(?, m.memory_type)
-  -- ... other existing filters ...
+  AND m.memory_type = COALESCE(?2, m.memory_type)
+  -- ... other existing filters bound as ?3, ?4 ...
 ```
+
+(Placeholder numbering illustrative; the implementation plan locks the exact bindings in T10. Pattern matches the numbered-placeholder rule from §3.)
 
 The vector search (`vec::search_vectors` via `memory_vec`) has no status column, but its results get mapped back to `memory` via JOIN; the post-RRF step filters by `status IN ('active', 'superseded_flipped_preference_pseudo-status')` per the same rule. Details are in the 2A-4a implementation plan's T10 tasks.
 
@@ -499,11 +501,13 @@ Precedent at `crates/daemon/src/server/handler.rs:767-773` emits `"memory_supers
     "new_valence": "negative",
     "new_intensity": 0.8,
     "reason": "team switched to spaces",
-    "flipped_at": "2026-04-17T14:22:00Z"
+    "flipped_at": "2026-04-17 14:22:00"
 }
 ```
 
-**Emission site:** directly after the successful supersede_memory_impl() call in the FlipPreference handler, before the Response::Ok return.
+(Timestamp uses `forge_core::time::now_iso()` format: `"YYYY-MM-DD HH:MM:SS"` — no T, no Z — consistent with §4.3 step 5 and §7 XML samples.)
+
+**Emission site:** strictly AFTER `tx.commit()?` succeeds in the FlipPreference handler, before the Response::Ok return. Emitting pre-commit would leak the event even on rollback. Matches §4.3 step 8 sequence.
 
 **No new `Request::Notification`-style structured variant** — consistent with how `memory_superseded` is handled today. Subscribers (HUD, CLI) opt in via the broadcast event channel.
 
