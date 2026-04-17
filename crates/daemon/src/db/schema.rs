@@ -1203,16 +1203,17 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN superseded_by TEXT", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN metadata TEXT", []);
 
+    // ── Phase 2A-4a: Valence Flipping ──
     // Phase 2A-4a: valence_flipped_at marks preferences that have been superseded
     // via Request::FlipPreference (as opposed to plain Supersede). Used by
     // CompileContext's <preferences-flipped> section and the ListFlipped endpoint.
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN valence_flipped_at TEXT", []);
-    conn.execute(
+    let _ = conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_valence_flipped_at
              ON memory(valence_flipped_at)
              WHERE valence_flipped_at IS NOT NULL",
         [],
-    )?;
+    );
 
     // ── v2.7: Memory Self-Healing ──
     conn.execute_batch(
