@@ -128,6 +128,20 @@ enum Commands {
         #[arg(long, default_value = "bench_results_context")]
         output: PathBuf,
     },
+    /// Run the Forge-Consolidation benchmark (memory consolidation quality).
+    /// See docs/benchmarks/forge-consolidation-design.md.
+    ForgeConsolidation {
+        /// ChaCha20 seed for deterministic dataset generation.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Output directory for summary.json, baseline.json, post.json, repro.sh.
+        #[arg(long, default_value = "bench_results_consolidation")]
+        output: PathBuf,
+        /// Expected recall-improvement delta for pass/fail gate.
+        /// Omit on first calibration run — observed delta will be printed.
+        #[arg(long)]
+        expected_recall_delta: Option<f64>,
+    },
     /// Run the LoCoMo benchmark.
     Locomo {
         /// Path to locomo10.json (from snap-research/locomo).
@@ -211,9 +225,12 @@ async fn main() {
             )
             .await
         }
-        Commands::ForgeContext { seed, output } => {
-            run_forge_context(seed, output)
-        }
+        Commands::ForgeContext { seed, output } => run_forge_context(seed, output),
+        Commands::ForgeConsolidation {
+            seed,
+            output,
+            expected_recall_delta,
+        } => run_forge_consolidation(seed, output, expected_recall_delta),
         Commands::ForgePersist {
             memories,
             chunks,
@@ -465,11 +482,20 @@ fn run_forge_context(seed: u64, output: PathBuf) -> Result<(), String> {
     match run(config) {
         Ok(score) => {
             eprintln!("[forge-context] === results ===");
-            eprintln!("[forge-context] context_assembly_f1={:.4}", score.context_assembly_f1);
+            eprintln!(
+                "[forge-context] context_assembly_f1={:.4}",
+                score.context_assembly_f1
+            );
             eprintln!("[forge-context] guardrails_f1={:.4}", score.guardrails_f1);
             eprintln!("[forge-context] completion_f1={:.4}", score.completion_f1);
-            eprintln!("[forge-context] layer_recall_f1={:.4}", score.layer_recall_f1);
-            eprintln!("[forge-context] tool_filter_accuracy={:.4}", score.tool_filter_accuracy);
+            eprintln!(
+                "[forge-context] layer_recall_f1={:.4}",
+                score.layer_recall_f1
+            );
+            eprintln!(
+                "[forge-context] tool_filter_accuracy={:.4}",
+                score.tool_filter_accuracy
+            );
             eprintln!("[forge-context] composite={:.4}", score.composite);
             if score.pass {
                 eprintln!("[forge-context] PASS");
@@ -482,6 +508,55 @@ fn run_forge_context(seed: u64, output: PathBuf) -> Result<(), String> {
         Err(e) => {
             eprintln!("[forge-context] ERROR: {e}");
             Err(format!("forge-context error: {e}"))
+        }
+    }
+}
+
+fn run_forge_consolidation(
+    seed: u64,
+    output: PathBuf,
+    expected_recall_delta: Option<f64>,
+) -> Result<(), String> {
+    use forge_daemon::bench::forge_consolidation::{run, ConsolidationBenchConfig};
+
+    eprintln!("=== forge-bench: forge-consolidation ===");
+    eprintln!("[forge-consolidation] seed={seed}");
+    eprintln!("[forge-consolidation] output = {}", output.display());
+    if let Some(d) = expected_recall_delta {
+        eprintln!("[forge-consolidation] expected_recall_delta={d}");
+    }
+
+    let config = ConsolidationBenchConfig {
+        seed,
+        output_dir: output,
+        expected_recall_delta,
+    };
+
+    match run(config) {
+        Ok(score) => {
+            eprintln!("[forge-consolidation] === results ===");
+            eprintln!("[forge-consolidation] composite={:.4}", score.composite);
+            eprintln!(
+                "[forge-consolidation] recall_delta={:.4}",
+                score.recall_delta
+            );
+            for (name, d) in &score.dimensions {
+                eprintln!("[forge-consolidation] {name}={:.4}", d.f1);
+            }
+            for failure in &score.infrastructure_failures {
+                eprintln!("[forge-consolidation] INFRA_FAIL: {failure}");
+            }
+            if score.pass {
+                eprintln!("[forge-consolidation] PASS");
+                Ok(())
+            } else {
+                eprintln!("[forge-consolidation] FAIL");
+                Err("forge-consolidation FAIL: composite below threshold or infrastructure failures".to_string())
+            }
+        }
+        Err(e) => {
+            eprintln!("[forge-consolidation] ERROR: {e}");
+            Err(format!("forge-consolidation error: {e}"))
         }
     }
 }
@@ -907,6 +982,51 @@ mod tests {
                 assert_eq!(output, PathBuf::from("/tmp/context_out"));
             }
             other => panic!("expected Commands::ForgeContext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_forge_consolidation_subcommand_with_defaults() {
+        let cli = Cli::try_parse_from(["forge-bench", "forge-consolidation"])
+            .expect("forge-consolidation subcommand should parse with defaults");
+        match cli.command {
+            Commands::ForgeConsolidation {
+                seed,
+                output,
+                expected_recall_delta,
+            } => {
+                assert_eq!(seed, 42);
+                assert_eq!(output, PathBuf::from("bench_results_consolidation"));
+                assert!(expected_recall_delta.is_none());
+            }
+            other => panic!("expected Commands::ForgeConsolidation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_forge_consolidation_accepts_all_flags() {
+        let cli = Cli::try_parse_from([
+            "forge-bench",
+            "forge-consolidation",
+            "--seed",
+            "7",
+            "--output",
+            "/tmp/cons_out",
+            "--expected-recall-delta",
+            "0.15",
+        ])
+        .expect("all flags should parse");
+        match cli.command {
+            Commands::ForgeConsolidation {
+                seed,
+                output,
+                expected_recall_delta,
+            } => {
+                assert_eq!(seed, 7);
+                assert_eq!(output, PathBuf::from("/tmp/cons_out"));
+                assert_eq!(expected_recall_delta, Some(0.15));
+            }
+            other => panic!("expected Commands::ForgeConsolidation, got {other:?}"),
         }
     }
 }

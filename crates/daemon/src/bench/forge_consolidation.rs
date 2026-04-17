@@ -2620,6 +2620,97 @@ pub fn compute_score(
     }
 }
 
+// ── Orchestrator ──────────────────────────────────────────────────
+
+pub fn run(config: ConsolidationBenchConfig) -> Result<ConsolidationScore, String> {
+    // 1. Create in-memory state
+    let mut state = crate::server::handler::DaemonState::new(":memory:")
+        .map_err(|e| format!("state init: {e}"))?;
+
+    // 2. Seed corpus
+    let (_specs, mut dataset) = seed_corpus(&state.conn, config.seed)?;
+    let _ = seed_embeddings(&state.conn, config.seed)?;
+
+    // 3. Generate query bank
+    dataset.recall_queries = generate_query_bank(&dataset);
+
+    // 4. Baseline recall snapshot
+    let baseline = snapshot_recall(&mut state, &dataset.recall_queries);
+
+    // 5. Run all consolidation phases
+    let cons_config = crate::config::ConsolidationConfig {
+        batch_limit: 500,
+        reweave_limit: 100,
+    };
+    let stats = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
+    let _ = stats;
+
+    // 6. Post-consolidation recall snapshot
+    let post = snapshot_recall(&mut state, &dataset.recall_queries);
+
+    // 7. Audit dimensions
+    let dim1 = audit_dedup(&state.conn, &dataset)?;
+    let dim2 = audit_contradictions(&state.conn, &dataset)?;
+    let dim3 = audit_reweave(&state.conn, &dataset)?;
+    let dim4 = audit_lifecycle(&state.conn, &dataset)?;
+    let infra_failures = audit_infrastructure(&state.conn, &dataset)?;
+
+    // 8. Compute composite
+    let score = compute_score(
+        config.seed,
+        dim1,
+        dim2,
+        dim3,
+        dim4,
+        &baseline,
+        &post,
+        config.expected_recall_delta,
+        infra_failures,
+    );
+
+    // 9. Write artifacts
+    write_artifacts(&config.output_dir, &score, &baseline, &post)?;
+
+    Ok(score)
+}
+
+fn write_artifacts(
+    output_dir: &PathBuf,
+    score: &ConsolidationScore,
+    baseline: &RecallSnapshot,
+    post: &RecallSnapshot,
+) -> Result<(), String> {
+    std::fs::create_dir_all(output_dir).map_err(|e| format!("create output dir: {e}"))?;
+
+    let write_one = |name: &str, content: String| -> Result<(), String> {
+        let path = output_dir.join(name);
+        std::fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))
+    };
+
+    write_one(
+        "summary.json",
+        serde_json::to_string_pretty(score).map_err(|e| format!("serialize summary.json: {e}"))?,
+    )?;
+    write_one(
+        "baseline.json",
+        serde_json::to_string_pretty(baseline)
+            .map_err(|e| format!("serialize baseline.json: {e}"))?,
+    )?;
+    write_one(
+        "post.json",
+        serde_json::to_string_pretty(post).map_err(|e| format!("serialize post.json: {e}"))?,
+    )?;
+
+    // repro.sh
+    let repro = format!(
+        "#!/bin/bash\nset -euo pipefail\ncd \"$(git rev-parse --show-toplevel)\"\ncargo build --release --bin forge-bench\n./target/release/forge-bench forge-consolidation --seed {} --output {}\n",
+        score.seed,
+        output_dir.display()
+    );
+    write_one("repro.sh", repro)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3697,5 +3788,20 @@ mod tests {
             s.recall_delta_score, 0.0,
             "expected=Some(0.0) → INVALID → 0.0"
         );
+    }
+
+    #[test]
+    #[ignore] // heavy — runs full bench; invoke with `-- --ignored`
+    fn test_run_orchestrator_produces_score() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = ConsolidationBenchConfig {
+            seed: 42,
+            output_dir: tmp.path().to_path_buf(),
+            expected_recall_delta: None,
+        };
+        let score = run(cfg).unwrap();
+        assert_eq!(score.seed, 42);
+        // Composite must be a valid [0,1] float
+        assert!(score.composite >= 0.0 && score.composite <= 1.0);
     }
 }
