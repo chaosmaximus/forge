@@ -5668,13 +5668,15 @@ mod tests {
 
         supersede_memory_impl(&conn, "01OLDID", "01NEWID", None, None).unwrap();
 
-        let flipped_at: Option<String> = conn
+        let (status, superseded_by, flipped_at): (String, Option<String>, Option<String>) = conn
             .query_row(
-                "SELECT valence_flipped_at FROM memory WHERE id = ?1",
+                "SELECT status, superseded_by, valence_flipped_at FROM memory WHERE id = ?1",
                 rusqlite::params!["01OLDID"],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
+        assert_eq!(status, "superseded");
+        assert_eq!(superseded_by, Some("01NEWID".to_string()));
         assert_eq!(flipped_at, None);
     }
 }
