@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use forge_core::types::memory::MemoryType;
 
-use super::common::sha256_hex;
+use super::common::{seeded_rng, sha256_hex};
 
 // ── Configuration ────────────────────────────────────────────────
 
@@ -1519,6 +1519,121 @@ pub fn seed_corpus(
     ))
 }
 
+// ── Synthetic embeddings ─────────────────────────────────────────
+
+const EMBEDDING_DIM: usize = 768;
+
+/// Generate a deterministic unit vector of dimension EMBEDDING_DIM from a seed string.
+pub fn generate_base_embedding(seed_key: &str) -> Vec<f32> {
+    use rand::Rng;
+    let hash = sha256_hex(seed_key);
+    let mut rng = seeded_rng(u64::from_str_radix(&hash[0..16], 16).unwrap_or(0));
+    let raw: Vec<f32> = (0..EMBEDDING_DIM)
+        .map(|_| rng.random_range(-1.0_f32..1.0_f32))
+        .collect();
+    let norm: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+    raw.into_iter().map(|x| x / norm).collect()
+}
+
+/// Perturb a base embedding to achieve a target cosine distance.
+/// Target distance 0 = identical; 1 = orthogonal.
+pub fn perturb_embedding(base: &[f32], target_distance: f32, seed_key: &str) -> Vec<f32> {
+    use rand::Rng;
+    let hash = sha256_hex(&format!("{seed_key}-perturb"));
+    let mut rng = seeded_rng(u64::from_str_radix(&hash[0..16], 16).unwrap_or(0));
+
+    // Generate a random orthogonal direction
+    let mut direction: Vec<f32> = (0..EMBEDDING_DIM)
+        .map(|_| rng.random_range(-1.0_f32..1.0_f32))
+        .collect();
+    // Project out the base direction (Gram-Schmidt)
+    let dot: f32 = direction.iter().zip(base.iter()).map(|(a, b)| a * b).sum();
+    for (d, b) in direction.iter_mut().zip(base.iter()) {
+        *d -= dot * b;
+    }
+    let dir_norm: f32 = direction.iter().map(|x| x * x).sum::<f32>().sqrt();
+    for d in direction.iter_mut() {
+        *d /= dir_norm;
+    }
+
+    // Mix: result = alpha * base + beta * direction, where cos(angle) = alpha = 1 - target_distance
+    let alpha = 1.0 - target_distance;
+    let beta = (1.0 - alpha * alpha).sqrt();
+
+    let mut mixed: Vec<f32> = (0..EMBEDDING_DIM)
+        .map(|i| alpha * base[i] + beta * direction[i])
+        .collect();
+    // Re-normalize to unit length
+    let norm: f32 = mixed.iter().map(|x| x * x).sum::<f32>().sqrt();
+    for x in &mut mixed {
+        *x /= norm;
+    }
+    mixed
+}
+
+/// Compute cosine distance between two unit vectors.
+pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    1.0 - dot
+}
+
+/// Insert synthetic embeddings for Category 3 (merge + control) and Category 7 (topic-supersede)
+/// into the `memory_vec` virtual table.
+///
+/// Category 3: 4 merge pairs at distance 0.08 (< 0.1 threshold → Phase 7 merges),
+/// 2 control pairs at distance 0.15 (> 0.1 → Phase 7 skips).
+/// Category 7: 6 supersede pairs at distance 0.25 (< 0.35 threshold → Phase 20 supersedes).
+pub fn seed_embeddings(conn: &rusqlite::Connection, seed: u64) -> Result<usize, String> {
+    let mut inserted = 0;
+
+    // Category 3 merge pairs: distance 0.08
+    for pair_idx in 0..4 {
+        let base_key = format!("c3-merge-{seed}-{pair_idx}");
+        let base = generate_base_embedding(&base_key);
+        let perturbed = perturb_embedding(&base, 0.08, &format!("c3-merge-{pair_idx}"));
+
+        insert_vec(conn, &format!("c3-merge-{pair_idx}-keeper"), &base)?;
+        insert_vec(conn, &format!("c3-merge-{pair_idx}-victim"), &perturbed)?;
+        inserted += 2;
+    }
+
+    // Category 3 control pairs: distance 0.15
+    for pair_idx in 0..2 {
+        let base_key = format!("c3-control-{seed}-{pair_idx}");
+        let base = generate_base_embedding(&base_key);
+        let perturbed = perturb_embedding(&base, 0.15, &format!("c3-control-{pair_idx}"));
+        insert_vec(conn, &format!("c3-control-{pair_idx}-a"), &base)?;
+        insert_vec(conn, &format!("c3-control-{pair_idx}-b"), &perturbed)?;
+        inserted += 2;
+    }
+
+    // Category 7 supersede pairs: distance 0.25 (< 0.35 threshold)
+    for pair_idx in 0..6 {
+        let base_key = format!("c7-supersede-{seed}-{pair_idx}");
+        let base = generate_base_embedding(&base_key);
+        let perturbed = perturb_embedding(&base, 0.25, &format!("c7-supersede-{pair_idx}"));
+        insert_vec(conn, &format!("c7-supersede-{pair_idx}-older"), &base)?;
+        insert_vec(conn, &format!("c7-supersede-{pair_idx}-newer"), &perturbed)?;
+        inserted += 2;
+    }
+
+    Ok(inserted)
+}
+
+fn insert_vec(
+    conn: &rusqlite::Connection,
+    memory_id: &str,
+    embedding: &[f32],
+) -> Result<(), String> {
+    let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+    conn.execute(
+        "INSERT INTO memory_vec(id, embedding) VALUES (?1, ?2)",
+        rusqlite::params![memory_id, bytes],
+    )
+    .map_err(|e| format!("insert_vec {memory_id}: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2108,5 +2223,51 @@ mod tests {
         for gt in &dataset.ground_truth {
             assert!(ids.insert(&gt.memory_id), "collision: {}", gt.memory_id);
         }
+    }
+
+    // ── synthetic embedding tests ─────────────────────────────────
+
+    #[test]
+    fn test_base_embedding_is_unit_vector() {
+        let v = generate_base_embedding("test-seed");
+        assert_eq!(v.len(), 768);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "norm = {norm}, not 1.0");
+    }
+
+    #[test]
+    fn test_perturb_achieves_target_distance_close() {
+        let base = generate_base_embedding("base-seed");
+        let perturbed = perturb_embedding(&base, 0.08, "pair-0");
+        let d = cosine_distance(&base, &perturbed);
+        assert!((d - 0.08).abs() < 1e-3, "distance = {d}, target 0.08");
+    }
+
+    #[test]
+    fn test_perturb_achieves_target_distance_far() {
+        let base = generate_base_embedding("base-seed");
+        let perturbed = perturb_embedding(&base, 0.15, "pair-0");
+        let d = cosine_distance(&base, &perturbed);
+        assert!((d - 0.15).abs() < 1e-3, "distance = {d}, target 0.15");
+    }
+
+    #[test]
+    fn test_base_embedding_deterministic() {
+        let a = generate_base_embedding("same-key");
+        let b = generate_base_embedding("same-key");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_seed_embeddings_inserts_24_vectors() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let _ = seed_corpus(&state.conn, 42).unwrap();
+        let count = seed_embeddings(&state.conn, 42).unwrap();
+        assert_eq!(count, 24);
+        let db_count: i64 = state
+            .conn
+            .query_row("SELECT COUNT(*) FROM memory_vec", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(db_count, 24);
     }
 }
