@@ -216,6 +216,78 @@ pub fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Optio
     .optional()
 }
 
+/// Typed errors returned by library-layer db::ops helpers that want the caller
+/// to distinguish semantic failures from raw DB errors.
+#[derive(Debug, thiserror::Error)]
+pub enum OpError {
+    #[error("old memory not found or not active: {id}")]
+    OldMemoryNotActive { id: String },
+
+    #[error(transparent)]
+    DbError(#[from] rusqlite::Error),
+}
+
+/// Mark `old_id` as superseded by `new_id`. Creates a 'supersedes' edge from new to old.
+/// If `valence_flipped_at` is `Some(ts)`, additionally sets that column on the old row;
+/// this is the flip-specific codepath used by Request::FlipPreference. When None, behaves
+/// as a plain supersede identical to the pre-refactor Request::Supersede logic.
+///
+/// Caller is responsible for transaction scope. Both statements (UPDATE memory, INSERT edge)
+/// execute as direct rusqlite calls; wrap them in `conn.transaction()` at the caller level
+/// for atomicity.
+///
+/// Returns `OpError::OldMemoryNotActive` when no row matched the UPDATE (either id missing,
+/// status != 'active', or organization_id scope failed).
+pub fn supersede_memory_impl(
+    conn: &Connection,
+    old_id: &str,
+    new_id: &str,
+    organization_id: Option<&str>,
+    valence_flipped_at: Option<&str>,
+) -> Result<(), OpError> {
+    let now = forge_core::time::now_iso();
+    let org = organization_id.unwrap_or("default");
+
+    let rows_updated = if let Some(flip_ts) = valence_flipped_at {
+        conn.execute(
+            "UPDATE memory
+                SET status = 'superseded',
+                    superseded_by = ?1,
+                    valence_flipped_at = ?2
+              WHERE id = ?3
+                AND status = 'active'
+                AND COALESCE(organization_id, 'default') = ?4",
+            params![new_id, flip_ts, old_id, org],
+        )?
+    } else {
+        conn.execute(
+            "UPDATE memory
+                SET status = 'superseded',
+                    superseded_by = ?1
+              WHERE id = ?2
+                AND status = 'active'
+                AND COALESCE(organization_id, 'default') = ?3",
+            params![new_id, old_id, org],
+        )?
+    };
+
+    if rows_updated == 0 {
+        return Err(OpError::OldMemoryNotActive {
+            id: old_id.to_string(),
+        });
+    }
+
+    let edge_id = ulid::Ulid::new().to_string();
+    conn.execute(
+        "INSERT OR IGNORE INTO edge
+             (id, from_id, to_id, edge_type, properties, created_at, valid_from)
+         VALUES (?1, ?2, ?3, 'supersedes', '{}', ?4, ?4)",
+        params![edge_id, new_id, old_id, now],
+    )?;
+
+    Ok(())
+}
+
 /// Boost activation level for a memory (capped at 1.0).
 /// Used to track which memories are actively being used.
 /// Activation decays over time in the consolidator.
@@ -5464,5 +5536,78 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 2, "remember_raw must not dedup");
+    }
+
+    #[test]
+    fn test_supersede_memory_impl_marks_superseded_creates_edge() {
+        let conn = open_db();
+
+        let mut old = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Decision,
+            "old",
+            "old content",
+        );
+        old.id = "01OLDID".to_string();
+        remember(&conn, &old).unwrap();
+
+        let mut new = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Decision,
+            "new",
+            "new content",
+        );
+        new.id = "01NEWID".to_string();
+        remember(&conn, &new).unwrap();
+
+        supersede_memory_impl(&conn, "01OLDID", "01NEWID", None, None).unwrap();
+
+        // Old memory status + superseded_by
+        let (status, superseded_by): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, superseded_by FROM memory WHERE id = ?1",
+                rusqlite::params!["01OLDID"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "superseded");
+        assert_eq!(superseded_by, Some("01NEWID".to_string()));
+
+        // Supersedes edge created
+        let edge_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edge WHERE from_id = ?1 AND to_id = ?2 AND edge_type = 'supersedes'",
+                rusqlite::params!["01NEWID", "01OLDID"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_count, 1);
+    }
+
+    #[test]
+    fn test_supersede_memory_impl_rejects_missing_old() {
+        let conn = open_db();
+
+        let result = supersede_memory_impl(&conn, "does-not-exist", "also-missing", None, None);
+        match result {
+            Err(OpError::OldMemoryNotActive { id }) => assert_eq!(id, "does-not-exist"),
+            other => panic!("expected OldMemoryNotActive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_supersede_memory_impl_respects_org_scope() {
+        let conn = open_db();
+
+        let mut old = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Decision,
+            "old",
+            "content",
+        );
+        old.id = "01OLDID".to_string();
+        old.organization_id = Some("org-a".to_string());
+        remember(&conn, &old).unwrap();
+
+        // Caller claims org-b; should be rejected.
+        let result = supersede_memory_impl(&conn, "01OLDID", "01NEWID", Some("org-b"), None);
+        assert!(matches!(result, Err(OpError::OldMemoryNotActive { .. })));
     }
 }

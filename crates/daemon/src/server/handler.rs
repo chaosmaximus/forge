@@ -716,7 +716,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::Supersede { old_id, new_id } => {
-            // Multi-tenant: derive org_id from the old memory's session
+            // Derive org scope from the old memory's session (unchanged).
             let supersede_org_id = {
                 let mem_session: Option<String> = state
                     .conn
@@ -728,20 +728,32 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     .ok();
                 get_session_org_id(&state.conn, mem_session.as_deref())
             };
-            // Verify both memories exist within the same organization
-            let old_exists: bool = state.conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active' AND (organization_id = ?2 OR ?2 IS NULL))",
-                rusqlite::params![old_id, supersede_org_id],
-                |row| row.get(0),
-            ).unwrap_or(false);
-            if !old_exists {
+
+            // Pre-fetch old memory to distinguish "old missing/not-active" from
+            // "new missing" (preserves the current handler's per-ID error message).
+            let old = match ops::fetch_memory_by_id(&state.conn, &old_id) {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    return Response::Error {
+                        message: format!("old memory not found or already superseded: {old_id}"),
+                    }
+                }
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("supersede failed: {e}"),
+                    }
+                }
+            };
+            if old.status != forge_core::types::memory::MemoryStatus::Active {
                 return Response::Error {
                     message: format!("old memory not found or already superseded: {old_id}"),
                 };
             }
+
+            // Verify new memory exists (org-scoped).
             let new_exists: bool = state.conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active' AND (organization_id = ?2 OR ?2 IS NULL))",
-                rusqlite::params![new_id, supersede_org_id],
+                rusqlite::params![&new_id, &supersede_org_id],
                 |row| row.get(0),
             ).unwrap_or(false);
             if !new_exists {
@@ -749,21 +761,15 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     message: format!("new memory not found: {new_id}"),
                 };
             }
-            // Mark old as superseded and record which memory replaced it
-            let result = state.conn.execute(
-                "UPDATE memory SET status = 'superseded', superseded_by = ?2 WHERE id = ?1 AND status = 'active'",
-                rusqlite::params![old_id, new_id],
-            );
-            match result {
-                Ok(rows) if rows > 0 => {
-                    // Create a 'supersedes' edge for graph traversal
-                    let edge_id = ulid::Ulid::new().to_string();
-                    let now = forge_core::time::now_iso();
-                    let _ = state.conn.execute(
-                        "INSERT OR IGNORE INTO edge (id, from_id, to_id, edge_type, created_at, valid_from)
-                         VALUES (?1, ?2, ?3, 'supersedes', ?4, ?4)",
-                        rusqlite::params![edge_id, new_id, old_id, now],
-                    );
+
+            match ops::supersede_memory_impl(
+                &state.conn,
+                &old_id,
+                &new_id,
+                Some(&supersede_org_id),
+                None,
+            ) {
+                Ok(()) => {
                     crate::events::emit(
                         &state.events,
                         "memory_superseded",
@@ -776,10 +782,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         data: ResponseData::Superseded { old_id, new_id },
                     }
                 }
-                Ok(_) => Response::Error {
+                Err(ops::OpError::OldMemoryNotActive { .. }) => Response::Error {
                     message: format!("memory not found or already superseded: {old_id}"),
                 },
-                Err(e) => Response::Error {
+                Err(ops::OpError::DbError(e)) => Response::Error {
                     message: format!("supersede failed: {e}"),
                 },
             }

@@ -91,6 +91,7 @@ fastembed = "5"
 # pull rand 0.9.2), avoiding a dual rand 0.8 + 0.9 ecosystem.
 rand = "0.9"
 rand_chacha = "0.9"
+thiserror = "1"
 
 # SHA-256 for Forge-Persist's canonical content hashing — cycle (g).
 # See docs/benchmarks/forge-persist-design.md §6.2 for the exact

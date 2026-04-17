@@ -1496,6 +1496,7 @@ pub fn heal_topic_supersedes(
                 continue;
             }
 
+            // TODO(2A-4+): migrate to ops::supersede_memory_impl() — see docs/superpowers/specs/2026-04-17-forge-valence-flipping-design.md §14 R1.
             // Supersede: update status + superseded_by (org-scoped for multi-tenant safety)
             if conn.execute(
                 "UPDATE memory SET status = 'superseded', superseded_by = ?1 WHERE id = ?2 AND organization_id = ?3",
