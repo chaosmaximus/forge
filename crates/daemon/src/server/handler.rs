@@ -751,8 +751,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
 
             // Verify new memory exists (org-scoped).
+            // COALESCE(...) keeps the check symmetric with supersede_memory_impl(),
+            // which also COALESCEs NULL-org memories into the 'default' bucket.
             let new_exists: bool = state.conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active' AND (organization_id = ?2 OR ?2 IS NULL))",
+                "SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1 AND status = 'active' AND COALESCE(organization_id, 'default') = ?2)",
                 rusqlite::params![&new_id, &supersede_org_id],
                 |row| row.get(0),
             ).unwrap_or(false);
@@ -762,13 +764,19 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 };
             }
 
-            match ops::supersede_memory_impl(
-                &state.conn,
-                &old_id,
-                &new_id,
-                Some(&supersede_org_id),
-                None,
-            ) {
+            // Wrap the helper call in a transaction so UPDATE + edge INSERT are
+            // atomic. Without this, a disk error on the edge INSERT would leave
+            // memory.status = 'superseded' with no supersedes edge — inconsistent
+            // state. This also matches the pattern T6's FlipPreference handler
+            // will use for its 3-statement (INSERT new + UPDATE old + edge) flow.
+            let supersede_result: Result<(), ops::OpError> = (|| {
+                let tx = state.conn.unchecked_transaction()?;
+                ops::supersede_memory_impl(&tx, &old_id, &new_id, Some(&supersede_org_id), None)?;
+                tx.commit()?;
+                Ok(())
+            })();
+
+            match supersede_result {
                 Ok(()) => {
                     crate::events::emit(
                         &state.events,
@@ -783,7 +791,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     }
                 }
                 Err(ops::OpError::OldMemoryNotActive { .. }) => Response::Error {
-                    message: format!("memory not found or already superseded: {old_id}"),
+                    message: format!("old memory not found or already superseded: {old_id}"),
                 },
                 Err(ops::OpError::DbError(e)) => Response::Error {
                     message: format!("supersede failed: {e}"),
