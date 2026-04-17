@@ -5610,4 +5610,71 @@ mod tests {
         let result = supersede_memory_impl(&conn, "01OLDID", "01NEWID", Some("org-b"), None);
         assert!(matches!(result, Err(OpError::OldMemoryNotActive { .. })));
     }
+
+    #[test]
+    fn test_supersede_memory_impl_with_flip_sets_valence_flipped_at() {
+        let conn = open_db();
+
+        let mut old = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Preference,
+            "tabs over spaces",
+            "prefer tabs",
+        );
+        old.id = "01OLDID".to_string();
+        old.valence = "positive".to_string();
+        remember(&conn, &old).unwrap();
+
+        let mut new = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Preference,
+            "tabs over spaces (flipped)",
+            "[flipped from positive to negative]: prefer tabs",
+        );
+        new.id = "01NEWID".to_string();
+        new.valence = "negative".to_string();
+        remember_raw(&conn, &new).unwrap();
+
+        supersede_memory_impl(
+            &conn,
+            "01OLDID",
+            "01NEWID",
+            None,
+            Some("2026-04-17 14:22:00"),
+        )
+        .unwrap();
+
+        let (status, superseded_by, flipped_at): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT status, superseded_by, valence_flipped_at FROM memory WHERE id = ?1",
+                rusqlite::params!["01OLDID"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "superseded");
+        assert_eq!(superseded_by, Some("01NEWID".to_string()));
+        assert_eq!(flipped_at, Some("2026-04-17 14:22:00".to_string()));
+    }
+
+    #[test]
+    fn test_supersede_memory_impl_without_flip_leaves_valence_flipped_at_null() {
+        let conn = open_db();
+
+        let mut old = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Decision,
+            "old",
+            "content",
+        );
+        old.id = "01OLDID".to_string();
+        remember(&conn, &old).unwrap();
+
+        supersede_memory_impl(&conn, "01OLDID", "01NEWID", None, None).unwrap();
+
+        let flipped_at: Option<String> = conn
+            .query_row(
+                "SELECT valence_flipped_at FROM memory WHERE id = ?1",
+                rusqlite::params!["01OLDID"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(flipped_at, None);
+    }
 }
