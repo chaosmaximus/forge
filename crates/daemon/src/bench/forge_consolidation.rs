@@ -2569,16 +2569,16 @@ pub fn compute_score(
 
     let dim5_score = match (recall_delta, expected_recall_delta) {
         (d, _) if d < 0.0 => 0.0,
-        (d, Some(expected)) if expected > 0.0 => (d / expected).clamp(0.0, 1.0),
-        (0.0, Some(_)) => 0.5, // neutral pass
+        (0.0, Some(e)) if e > 0.0 => 0.5, // neutral pass: delta==0, expected>0
+        (d, Some(e)) if e > 0.0 => (d / e).clamp(0.0, 1.0), // delta>0, expected>0
+        (_, Some(_)) => 0.0,              // expected==Some(0.0) or negative: INVALID
         (_, None) => {
             if recall_delta > 0.0 {
                 1.0
             } else {
                 0.5
             }
-        } // no threshold yet
-        _ => 0.0,              // expected_delta=0 invalid
+        } // no threshold yet (first calibration)
     };
 
     let mut dimensions = HashMap::new();
@@ -3604,6 +3604,98 @@ mod tests {
         assert!(
             !s.pass,
             "infrastructure failure should block pass even with composite 1.0"
+        );
+    }
+
+    #[test]
+    fn test_compute_score_none_expected_positive_delta_gives_one() {
+        let d = |f: f64| DimensionScore {
+            dimension: "".into(),
+            precision: 0.0,
+            recall: 0.0,
+            f1: f,
+            details: vec![],
+        };
+        let bs = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.0,
+        };
+        let ps = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.5,
+        };
+        let s = compute_score(42, d(1.0), d(1.0), d(1.0), d(1.0), &bs, &ps, None, vec![]);
+        assert_eq!(
+            s.recall_delta_score, 1.0,
+            "None expected + positive delta → 1.0"
+        );
+    }
+
+    #[test]
+    fn test_compute_score_zero_delta_positive_expected_is_neutral() {
+        let d = |f: f64| DimensionScore {
+            dimension: "".into(),
+            precision: 0.0,
+            recall: 0.0,
+            f1: f,
+            details: vec![],
+        };
+        let bs = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.5,
+        };
+        let ps = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.5,
+        };
+        let s = compute_score(
+            42,
+            d(1.0),
+            d(1.0),
+            d(1.0),
+            d(1.0),
+            &bs,
+            &ps,
+            Some(0.3),
+            vec![],
+        );
+        assert_eq!(
+            s.recall_delta_score, 0.5,
+            "delta=0 + expected>0 → 0.5 (neutral pass)"
+        );
+    }
+
+    #[test]
+    fn test_compute_score_zero_expected_is_invalid() {
+        let d = |f: f64| DimensionScore {
+            dimension: "".into(),
+            precision: 0.0,
+            recall: 0.0,
+            f1: f,
+            details: vec![],
+        };
+        let bs = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.0,
+        };
+        let ps = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.5,
+        };
+        let s = compute_score(
+            42,
+            d(1.0),
+            d(1.0),
+            d(1.0),
+            d(1.0),
+            &bs,
+            &ps,
+            Some(0.0),
+            vec![],
+        );
+        assert_eq!(
+            s.recall_delta_score, 0.0,
+            "expected=Some(0.0) → INVALID → 0.0"
         );
     }
 }
