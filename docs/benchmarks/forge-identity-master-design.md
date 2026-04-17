@@ -1,6 +1,6 @@
-# Forge-Identity — Phase 2A-4 Master Design (v2)
+# Forge-Identity — Phase 2A-4 Master Design (v3)
 
-**Status:** DRAFT v2 — addresses findings from Claude adversarial review (8 CRITICAL, 11 IMPORTANT) and codex CLI adversarial review (2 CRITICAL, 9 HIGH). Awaiting second review pass.
+**Status:** DRAFT v3 — addresses v2 review blockers (Claude second-pass: 4 CRITICAL / 10 HIGH; codex second-pass: 1 CRITICAL / 6 HIGH). v3 targets only the 5 master-level blockers that affect bench validity and pushes all code-reality-drift findings to sub-phase design docs where they will be grounded by direct code exploration.
 **Parent plan:** [phase-2-plan.md §2A-4](./phase-2-plan.md) "Memory is identity — agents develop persistent personality that compounds across sessions."
 **Methodology:** Same 7-gate pattern as Forge-Consolidation: design → adversarial reviews → implementation plan → TDD subagent cycles → dogfood → results doc → memory handoff.
 **v1 → v2 diff summary:** Auto-flip simplified to explicit-only; decay anchor changed from `accessed_at` to `created_at` with explicit `touch()` exemption for preferences; 2A-4c split into c1 (tool-use schema) + c2 (Phase 23); `<preferences>` XML reclassified as greenfield; Dim 6 replaced with gradient test; Dim 3/6 independence resolved; Phase 17/23 ownership rule; per-dim minimums added; LongMemEval gate downgraded to narrative goal.
@@ -63,7 +63,7 @@ Six scored dimensions with per-dim minimums, weighted composite, pass at composi
 | 3 | Preference time-ordering (pure-preference recall) | 0.15 | Three same-topic preferences at `created_at` = −180d / −90d / −1d — pure-preference query returns in order [−1d, −90d, −180d] | 0.80 |
 | 4 | Valence flipping correctness | 0.15 | `FlipPreference(id, new_valence)` marks old as flipped (status='superseded' + `valence_flipped_at` metadata); new preference active; `ListFlipped` returns old; default recall filters flipped; explicit `include_flipped=true` surfaces both | 0.85 |
 | 5 | Behavioral skill inference | 0.15 | Recorded tool-use pattern (via `Request::RecordToolUse`) repeating in N ≥ 3 distinct sessions with identical canonical fingerprint → appears in `skill` table with `inferred_from={session_ids}`; no duplicate skill row for the same canonical fingerprint | 0.80 |
-| 6 | Preference staleness formula correctness + mixed-corpus precision | 0.25 | **(6a, weight 0.15)** For four same-topic preferences at `created_at` = now − {1, 14, 90, 180} days, each with seeded `confidence = 0.9`, compute the effective post-RRF score. Expected `effective_score = 0.9 × 2^(-days / 14)` within ±0.005 absolute tolerance, AND strict ordering score(−1d) > score(−14d) > score(−90d) > score(−180d). **(6b, weight 0.10)** Mixed-corpus test: same 4 prefs + 4 non-preference distractors (lessons/decisions) with similar embedding. Expected top-8: (i) 4 prefs in recency order, (ii) ≥ 1 non-preference in top-5 (recency multiplier doesn't crowd out non-prefs), (iii) rank of −180d pref ≥ 5. | 0.80 |
+| 6 | Preference staleness ratio-correctness + mixed-corpus precision | 0.25 | **(6a, weight 0.15, floor 0.75)** For four same-topic preferences at `created_at` = now − {1, 14, 90, 180} days with identical embeddings and identical seeded `confidence = 0.9`, compute the final post-RRF scores from Recall. Assert ratio invariants that are RRF-invariant because all four prefs have identical BM25/vector ranks — only the type-dispatched recency multiplier differs: `score(−1d)/score(−14d)` ∈ [1.90, 2.05] (expected 2^(13/14) ≈ 1.950), `score(−14d)/score(−90d)` ∈ [40, 45] (expected 2^(76/14) ≈ 41.95), `score(−90d)/score(−180d)` ∈ [82, 90] (expected 2^(90/14) ≈ 83.90). AND strict ordering score(−1d) > score(−14d) > score(−90d) > score(−180d). **(6b, weight 0.10, floor 0.75)** Mixed-corpus test: same 4 prefs + 4 non-preference distractors (lessons/decisions) with similar embedding. Expected top-8: (i) 4 prefs in recency order, (ii) ≥ 1 non-preference in top-5 (recency multiplier doesn't crowd out non-prefs), (iii) rank of −180d pref ≥ 5. **Parent score:** `dim6 = (0.15 × score_6a + 0.10 × score_6b) / 0.25`. Parent minimum 0.80 applies to that quotient. Both sub-minimums (0.75 each) must also independently hold. | 0.80 |
 
 **Pass gate:** composite ≥ 0.95 AND every dimension ≥ its minimum AND all infrastructure assertions pass. Any failure = bench FAIL. No "weighted-average bailout" where one broken dim hides behind high scores elsewhere.
 
@@ -91,12 +91,13 @@ Weights balance: existing daemon gets 0.30 (dims 1+2); new-feature dims get 0.70
 
 ### 2A-4b — Recency-weighted Preference Decay (daemon feature)
 
+**Regression-guard scope (master-level mandate):** The new type-dispatched post-RRF recency multiplier changes absolute scores for ALL memories (not just preferences). Prior benches Forge-Context (2A-2) and Forge-Consolidation (2A-3) calibrated 1.0 composites against the current universal recency formula. The 2A-4b implementation plan MUST include re-running both benches' full 5-seed calibration sweeps after the formula change and BEFORE 2A-4b merges. Any non-trivial score regression in prior benches blocks 2A-4b until resolved (either by tuning the new formula, by anchoring a compatibility mode, or by updating prior benches' expected-score ranges with documented justification). The 2A-4b results-doc template must include a "prior-bench regression table" showing before/after composites for Forge-Context and Forge-Consolidation.
+
 **What ships:**
 - New config in `config.toml`: `preference_half_life_days = 14` (default; validated 1..=365)
 - New config: `preference_fade_threshold = 0.01` (default; validated 0.001..=0.1)
 - New decay formula in `ops::decay_memories` for `memory_type = 'preference'`: `confidence × 2^(-days_since_pref_age / half_life)` where `days_since_pref_age = now_utc - coalesce(reaffirmed_at, created_at)`. Non-preferences keep the existing `× exp(-0.03 × days)` formula.
-- Preferences exempt from universal hard-fade at 0.1. The `decay_memories` function skips the `UPDATE memory SET status='faded'` branch when `memory_type = 'preference'`. Preferences remain `status='active'` with whatever decayed confidence they have; recall ranking simply de-boosts them via the type-dispatched recency multiplier. No new `suppressed` column needed.
-- `preference_fade_threshold = 0.01` config is informational only (used by diagnostics tooling to flag "very stale" preferences), not a functional cutoff.
+- Preferences exempt from universal hard-fade at 0.1. The `decay_memories` function skips the `UPDATE memory SET status='faded'` branch when `memory_type = 'preference'`. Preferences remain `status='active'` with whatever decayed confidence they have; recall ranking simply de-boosts them via the type-dispatched recency multiplier. No new `suppressed` column, no new `preference_fade_threshold` config — hard-fade exemption alone is sufficient (removes the v2 contradiction flagged by both reviewers).
 - `recall.rs:404` recency boost becomes type-dispatched: `if memory_type == 'preference' { 2^(-days/half_life) } else { exp(-0.03 × days) }`. Composition with RRF: **post-RRF multiplicative** — after both BM25 and vector rankers have produced their ranked lists and `rrf_merge` has fused them, the final score gets multiplied by the type-dispatched recency factor. Preferences don't strictly demote against non-preferences because both types get the multiplier (just with different decay curves).
 - `touch()` exemption: when writer path calls `touch()` on a returned memory, skip entirely if `memory_type == 'preference'`. Preferences' `accessed_at` is informational only.
 - `CompileContext` XML: new greenfield `<preferences>` section with `<pref age="1d|1w|1mo|6mo+">...</pref>` children. Budget-accounted like `<preferences-flipped>`. Age buckets use `coalesce(reaffirmed_at, created_at)`. Element **always emitted, even empty** (bare `<preferences/>`) — satisfies infrastructure assertion 10 and keeps the XML schema stable regardless of corpus state.
@@ -129,6 +130,8 @@ Weights balance: existing daemon gets 0.30 (dims 1+2); new-feature dims get 0.70
 **Out of scope:** Retroactive tool-use import from transcripts, multi-agent tool-use correlation, tool-use deduplication beyond what c2 does.
 
 ### 2A-4c2 — Phase 23 Behavioral Skill Inference (daemon feature)
+
+**Prerequisite renderer update (master-level mandate):** The existing `<skills>` renderer at `crates/daemon/src/recall.rs:1058-1152` filters rows with `success_count > 0`. Phase 23 inserts new skills with `success_count = 0`. Without updating the renderer, newly-inferred skills will be invisible to `CompileContext` — Dim 5 would silently fail. The 2A-4c2 implementation plan MUST include a task that changes the renderer to also include rows where `inferred_at IS NOT NULL` (i.e., Phase 23 rows). Alternative resolution (defer to 2A-4c2 detailed design): insert Phase 23 rows with `success_count = 1` at creation time and increment on each observed successful use. Either path must be chosen and locked in 2A-4c2 design, and infrastructure assertion 12 must verify Phase 23 rows surface in `<skills>`.
 
 **What ships:**
 - New consolidator phase (Phase 23): `infer_skills_from_behavior` — runs after Phase 17 (protocol extraction)
@@ -280,10 +283,65 @@ Still open, to be resolved during sub-phase design:
 
 ---
 
+---
+
+## 13. Sub-phase resolution index
+
+All non-master-level findings from v2 adversarial review are assigned here to the sub-phase whose detailed design doc must resolve them. Each resolution must reference the finding and show the chosen resolution before the sub-phase's design-gate passes.
+
+**Resolve in 2A-4a (Valence Flipping) detailed design:**
+- `supersede_memory()` helper extraction from existing `handler.rs:718-768` inline SQL (Claude N-H3). First task of 2A-4a is to refactor-extract the helper, then FlipPreference calls it.
+- `flipped_to_id` vs `superseded_by` overlap semantics for pref flips (Claude I1 partial). Decide: always identical for pref flips, or divergent?
+- XML emit policy consistency across `<preferences>` (always emit), `<preferences-flipped>` (omit empty), `<skills>` (omit empty) — either align all three or document rationale for the split (Claude N-H6, Codex L1).
+
+**Resolve in 2A-4b (Recency-weighted Decay) detailed design:**
+- `touch()` exemption architectural layer — must be in `db/ops.rs:touch()` with SQL predicate `AND memory_type != 'preference'`, NOT in `writer.rs` (which doesn't see memory_type) (Claude N-H1).
+- Non-preference decay rate constants: reconcile `db/ops.rs:562` (0.03 for fader, uses accessed_at) vs `recall.rs:412` (0.1 for ranker, uses created_at). Pick correct rates, document them, ensure v3 master quotes the right numbers (Claude N-H8).
+- Graph-expanded result recency composition (open decision D7) — recommend yes, apply same type-dispatched multiplier (Codex PARTIAL [6]).
+
+**Resolve in 2A-4c1 (Tool-use schema) detailed design:**
+- `session_tool_call` uniqueness: align table definition (non-unique indexes) with infrastructure assertion 7 (which required "unique index"). Decision: drop the "unique" word from assertion 7 — tool calls can repeat (Codex H4).
+- `user_correction_flag` producer specification: either (a) Claude Code hook heuristic marks at record time, (b) new `Request::FlagToolUseCorrection { tool_call_id }` retrofits, or (c) explicit bench-only seeding. Lock one (Claude N-H5).
+- `user_correction_flag` row-level vs session-level: Phase 23 filter "no user_correction_flag=1 rows in the sessions in question" means any corrected tool call poisons its entire session for skill inference. Decide: keep session-level (permissive) or narrow to "sequence-adjacent only" (strict) (Codex H5).
+- `id TEXT PRIMARY KEY` ID scheme for `session_tool_call`: specify ULID to match existing `memory.id` convention (Claude N-M5).
+
+**Resolve in 2A-4c2 (Phase 23) detailed design:**
+- Canonical fingerprint sequence/multiplicity: `sha256(sort(unique(tool_names)) + sort(tool_arg_shapes))` loses order and count. Decide: is order-preserving fingerprint better (e.g., `sha256(tool_sequence_in_order + arg_shape_sequence)`) or is unordered acceptable for the bench's use case? Trade-off documented in 2A-4c2 design (Claude N-H10, Codex H1).
+- `templated_name(fingerprint)` definition — pin exact format, e.g., `format!("skill-{domain}-{}", &fingerprint[0..12])` (Claude N-H10, Codex unaddressed).
+- `infer_domain(tool_names)` definition — pin exact rule, e.g., "first tool_name if homogeneous, else 'mixed'" (Claude N-H10).
+- `phase_registry()` enforceability — either (a) refactor `run_all_phases` to expose a `Vec<PhaseFn>` registry (expands 2A-4c2 scope), or (b) replace assertion 9 with a source-level check via `include_str!` + pattern matching, or (c) add a runtime probe request `Request::ProbePhase { phase_name: "infer_skills_from_behavior" }` (Claude N-C2, Codex unaddressed).
+- `informed_by` edge between Protocol and Skill rows at ≥ 0.8 topic Jaccard: define `topic` (recommend: lowercased title token set, stop-words removed, from `memory.title` or `skill.name`), define Jaccard tokenization, define edge storage location (recommend: existing `edge` table with `edge_type='informed_by'`) (Claude N-H2, Codex H6).
+- `<skills>` renderer update (per master mandate above): lock the chosen resolution path (drop `success_count>0` filter, OR set `success_count` at insert).
+- Phase 17 current behavior misdescription in v2 master: verify actual Phase 17 query and update master (Claude PARTIAL [8]).
+
+**Resolve in 2A-4d (Forge-Identity Bench) detailed design:**
+- Per-dimension DB isolation: each dim generator uses its own `DaemonState::new(":memory:")` instance, not a shared DB — prevents Dim 5 ForceConsolidate from polluting Dim 3/6 fixtures (Claude N-H7, Codex M3).
+- Disposition worker bench fixtures: exact `session` row specs with `started_at` / `ended_at` timestamps, duration patterns (short <5min, long >30min) per cycle to drive short/long ratio computation. Spec `StepDispositionOnce { synthetic_sessions: Vec<SessionFixture> }` API or equivalent (Claude I3, Codex unaddressed).
+- "Session" semantics in bench: memory-grouping only (session_id is a label for grouping memories by simulated session), not touching `session` table persistence (Claude I4, Codex unaddressed).
+- `MAX_DELTA` visibility for const_assert: make `pub(crate)` in disposition.rs, import in bench (Claude N-H4).
+- Bench-isolation invariant: "No generator calls Request::Recall or Request::CompileContext before scoring" — enforce via instrumented handle_request in bench mode (Claude N-M1).
+- Dim 1 identity worker control: use `DaemonState::new_test()` (if exists; if not, introduce) that does not start workers (Claude N-M3).
+
+**Resolve in any sub-phase (flexible):**
+- `ReaffirmPreference` non-preference validation: ReaffirmPreference must validate `memory_type = 'preference'` like FlipPreference does. Add to 2A-4b task list (Codex M2).
+- Migration rollback recipe acceptance criteria: "forward-migrate, populate 1 row per new column, rollback, verify rollback runs cleanly" (Claude N-M6).
+- SHA-256 token pattern per-dimension enforcement: each dimension's generator documents its token usage in a tripwire comment (Codex Part C).
+
+---
+
 ## Changelog
 
 - **v1 (2026-04-17, commit 059be8d):** Initial master design.
-- **v2 (2026-04-17, this revision):** Addresses 10 CRITICAL findings from Claude + codex adversarial reviews.
+- **v2 (2026-04-17, commit 084cc68):** Addresses 10 CRITICAL findings from first-pass adversarial reviews.
+- **v3 (2026-04-17, this revision):** Addresses v2 master-level blockers (5 items). All remaining code-reality-drift findings (~20) pushed to sub-phase detailed designs (see §13 resolution index). Key v3 changes:
+  - Dim 6a formula target replaced with **RRF-invariant ratio test** (identical embeddings ensure identical RRF ranks; only recency multiplier differs; ratios computable from pure formula) — addresses Claude N-C3, Codex C1.
+  - `<skills>` renderer update marked as **prerequisite mandate** in 2A-4c2 — blocks the silent-Dim-5-failure risk flagged by both reviewers.
+  - `preference_fade_threshold` config **removed entirely** — hard-fade exemption alone suffices; removes v2's "informational only" vs "functional cutoff" contradiction.
+  - Dim 6 weight composition made **explicit** with per-sub minimums 6a ≥ 0.75 AND 6b ≥ 0.75 independently, parent minimum 0.80 on the composed quotient.
+  - 2A-4b **regression-guard scope** added: prior benches (Forge-Context 2A-2, Forge-Consolidation 2A-3) must re-calibrate after type-dispatched recency lands; any score shift must be documented and ratified before 2A-4b merges.
+  - New §13 "Sub-phase resolution index" explicitly assigns all ~20 deferred findings to the sub-phase design doc responsible.
+
+- **v2 (2026-04-17, commit 084cc68):** Addresses 10 CRITICAL findings from Claude + codex adversarial reviews.
   - Split 2A-4c into 2A-4c1 (tool-use schema) + 2A-4c2 (Phase 23), addressing Claude C1 (session_message wrong target).
   - Anchored decay to `created_at`/`reaffirmed_at`, added `touch()` exemption for preferences (Claude C4, Codex C2).
   - Added `preference_fade_threshold` for soft-fade exemption (Claude C5).
