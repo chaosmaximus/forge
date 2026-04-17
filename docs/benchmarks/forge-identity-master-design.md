@@ -45,10 +45,10 @@ Because preference staleness is central to Dim 3 and Dim 6, and because `accesse
 
 - **Primary anchor:** `created_at` (immutable after insert)
 - **User-controlled anchor (future-proof):** a new nullable column `reaffirmed_at` (written only by explicit user/agent action, never by `touch()`). If null, falls back to `created_at`.
-- **`touch()` exemption for preferences:** `touch()` is skipped entirely for `memory_type = 'preference'`. Writer path (`crates/daemon/src/writer.rs`) adds `if matches!(memory.memory_type, MemoryType::Preference) { return; }` at the relevant branch.
+- **`touch()` exemption for preferences:** `touch()` is skipped entirely for `memory_type = 'preference'`. The exemption lives inside `crates/daemon/src/db/ops.rs:touch()` (the actual mutation point reached from `writer.rs`), implemented as a SQL predicate: `UPDATE memory SET accessed_at = ... WHERE id IN (...) AND memory_type != 'preference'`. This is the only sound architectural layer: `writer.rs` receives `ids: Vec<String>` without memory types, so the type check must happen at the DB-ops layer where the UPDATE is built.
 - **Preference decay formula (2A-4b):** `confidence × 2^(-days_since_pref_age / half_life)` where `days_since_pref_age = now - coalesce(reaffirmed_at, created_at)`.
-- **Preference-fade exemption:** preferences are exempt from the universal hard-fade threshold of 0.1. A separate `preference_fade_threshold = 0.01` applies. A 180d-old preference with confidence 0.9 and half-life 14d has effective 0.00012, which is below 0.01 → soft-fade (status remains 'active' but ranking is suppressed). This means the bench can observe a weak-but-present preference instead of a hard-faded one.
-- **Recall-side recency weighting (2A-4b):** Applied post-RRF at `recall.rs:404`. The existing universal recency boost becomes type-dispatched: non-preferences keep the current `0.03 exp decay`; preferences use the 14d half-life formula. One decision point (pre-RRF vs post-RRF) is locked: **post-RRF multiplicative**, applied after both BM25 and vector rankers have produced RRF-fused scores.
+- **Preference-fade exemption:** preferences are exempt from the universal hard-fade threshold of 0.1. The `decay_memories` function skips the `UPDATE memory SET status='faded'` branch when `memory_type = 'preference'`. Preferences always remain `status='active'` with whatever decayed confidence they have; recall ranking naturally de-boosts them via the type-dispatched recency multiplier (no separate threshold config needed).
+- **Recall-side recency weighting (2A-4b):** Applied post-RRF at `recall.rs:404-413`. The CURRENT code pattern there is `result.score *= 1.0 + recency_boost * 0.5` where `recency_boost = exp(-0.1 * days_old)`. **The 2A-4b change replaces this pattern entirely** with a direct type-dispatched multiplier: `result.score *= recency_factor(memory)` where `recency_factor` is `exp(-0.1 * days_old)` for non-preferences (preserving the current *shape* of decay while dropping the `1.0 + ... * 0.5` envelope) OR `2^(-days / 14)` for preferences. The change in structure (direct multiplier vs envelope) is a deliberate simplification — the 2A-4b regression-guard (see §5) re-calibrates Forge-Context and Forge-Consolidation against the new structure; any score shift must be documented and resolved before 2A-4b merges.
 
 ---
 
@@ -63,7 +63,7 @@ Six scored dimensions with per-dim minimums, weighted composite, pass at composi
 | 3 | Preference time-ordering (pure-preference recall) | 0.15 | Three same-topic preferences at `created_at` = −180d / −90d / −1d — pure-preference query returns in order [−1d, −90d, −180d] | 0.80 |
 | 4 | Valence flipping correctness | 0.15 | `FlipPreference(id, new_valence)` marks old as flipped (status='superseded' + `valence_flipped_at` metadata); new preference active; `ListFlipped` returns old; default recall filters flipped; explicit `include_flipped=true` surfaces both | 0.85 |
 | 5 | Behavioral skill inference | 0.15 | Recorded tool-use pattern (via `Request::RecordToolUse`) repeating in N ≥ 3 distinct sessions with identical canonical fingerprint → appears in `skill` table with `inferred_from={session_ids}`; no duplicate skill row for the same canonical fingerprint | 0.80 |
-| 6 | Preference staleness ratio-correctness + mixed-corpus precision | 0.25 | **(6a, weight 0.15, floor 0.75)** For four same-topic preferences at `created_at` = now − {1, 14, 90, 180} days with identical embeddings and identical seeded `confidence = 0.9`, compute the final post-RRF scores from Recall. Assert ratio invariants that are RRF-invariant because all four prefs have identical BM25/vector ranks — only the type-dispatched recency multiplier differs: `score(−1d)/score(−14d)` ∈ [1.90, 2.05] (expected 2^(13/14) ≈ 1.950), `score(−14d)/score(−90d)` ∈ [40, 45] (expected 2^(76/14) ≈ 41.95), `score(−90d)/score(−180d)` ∈ [82, 90] (expected 2^(90/14) ≈ 83.90). AND strict ordering score(−1d) > score(−14d) > score(−90d) > score(−180d). **(6b, weight 0.10, floor 0.75)** Mixed-corpus test: same 4 prefs + 4 non-preference distractors (lessons/decisions) with similar embedding. Expected top-8: (i) 4 prefs in recency order, (ii) ≥ 1 non-preference in top-5 (recency multiplier doesn't crowd out non-prefs), (iii) rank of −180d pref ≥ 5. **Parent score:** `dim6 = (0.15 × score_6a + 0.10 × score_6b) / 0.25`. Parent minimum 0.80 applies to that quotient. Both sub-minimums (0.75 each) must also independently hold. | 0.80 |
+| 6 | Preference staleness ratio-correctness + mixed-corpus precision | 0.25 | **(6a, weight 0.15, floor 0.75)** Four same-topic preferences at `created_at` = now − {1, 14, 90, 180} days. Fixture requires **RRF-identity** — all 4 prefs share: (i) identical 768-dim embedding `v_pref` (not similar — byte-identical), (ii) identical `title` string (so BM25 produces identical lexical ranks), (iii) identical seeded `confidence = 0.9`. With RRF-identity, BM25 ranks tie and vector ranks tie, so the RRF-fused score is identical for all 4; only the type-dispatched recency multiplier differs. Compute final post-RRF scores from Recall. Assert ratio invariants (these are the TRUE values to 4 decimal places — verify in bench code): `score(−1d)/score(−14d)` ∈ [1.85, 2.00] (expected `2^(13/14)` = **1.9034**), `score(−14d)/score(−90d)` ∈ [40.5, 45.5] (expected `2^(76/14)` = **43.0688**), `score(−90d)/score(−180d)` ∈ [81, 91] (expected `2^(90/14)` = **86.1376**). AND strict ordering score(−1d) > score(−14d) > score(−90d) > score(−180d). **(6b, weight 0.10, floor 0.75)** Mixed-corpus test: same 4 prefs + 4 non-preference distractors (lessons/decisions) with similar but distinct embedding. Expected top-8: (i) 4 prefs in recency order, (ii) ≥ 1 non-preference in top-5 (recency multiplier doesn't crowd out non-prefs), (iii) rank of −180d pref ≥ 5. **Parent score:** `dim6 = (0.15 × score_6a + 0.10 × score_6b) / 0.25`. Parent minimum 0.80 applies to that quotient. Both sub-minimums (0.75 each) must also independently hold. | 0.80 |
 
 **Pass gate:** composite ≥ 0.95 AND every dimension ≥ its minimum AND all infrastructure assertions pass. Any failure = bench FAIL. No "weighted-average bailout" where one broken dim hides behind high scores elsewhere.
 
@@ -95,11 +95,10 @@ Weights balance: existing daemon gets 0.30 (dims 1+2); new-feature dims get 0.70
 
 **What ships:**
 - New config in `config.toml`: `preference_half_life_days = 14` (default; validated 1..=365)
-- New config: `preference_fade_threshold = 0.01` (default; validated 0.001..=0.1)
-- New decay formula in `ops::decay_memories` for `memory_type = 'preference'`: `confidence × 2^(-days_since_pref_age / half_life)` where `days_since_pref_age = now_utc - coalesce(reaffirmed_at, created_at)`. Non-preferences keep the existing `× exp(-0.03 × days)` formula.
-- Preferences exempt from universal hard-fade at 0.1. The `decay_memories` function skips the `UPDATE memory SET status='faded'` branch when `memory_type = 'preference'`. Preferences remain `status='active'` with whatever decayed confidence they have; recall ranking simply de-boosts them via the type-dispatched recency multiplier. No new `suppressed` column, no new `preference_fade_threshold` config — hard-fade exemption alone is sufficient (removes the v2 contradiction flagged by both reviewers).
-- `recall.rs:404` recency boost becomes type-dispatched: `if memory_type == 'preference' { 2^(-days/half_life) } else { exp(-0.03 × days) }`. Composition with RRF: **post-RRF multiplicative** — after both BM25 and vector rankers have produced their ranked lists and `rrf_merge` has fused them, the final score gets multiplied by the type-dispatched recency factor. Preferences don't strictly demote against non-preferences because both types get the multiplier (just with different decay curves).
-- `touch()` exemption: when writer path calls `touch()` on a returned memory, skip entirely if `memory_type == 'preference'`. Preferences' `accessed_at` is informational only.
+- New decay formula in `ops::decay_memories` for `memory_type = 'preference'`: `confidence × 2^(-days_since_pref_age / half_life)` where `days_since_pref_age = now_utc - coalesce(reaffirmed_at, created_at)`. For non-preferences, `decay_memories` continues to use its existing `accessed_at`-based `× exp(-0.03 × days)` formula — unchanged.
+- Preferences exempt from universal hard-fade at 0.1 (see §3 above). No `preference_fade_threshold` config — hard-fade exemption alone is sufficient.
+- `recall.rs:404-413` recency weighting becomes type-dispatched. **Structural change:** the existing `result.score *= 1.0 + recency_boost * 0.5` envelope is **replaced** with a direct multiplicative factor: `result.score *= recency_factor(memory)` where `recency_factor(memory) = if memory.memory_type == Preference { 2^(-days_since_pref_age / 14) } else { exp(-0.1 * days_since_created) }`. Non-preferences keep the same 0.1 exponent as the current code but lose the `1.0 + ... * 0.5` envelope. **Composition with RRF:** applied AFTER `rrf_merge` in `recall.rs:280`, on the final `score_map` scores. Applied uniformly to graph-expanded rows too (so 1-hop neighbor preferences decay under the same rule).
+- `touch()` exemption: implemented at the mutation point in `db/ops.rs:touch()` (reached via `writer.rs`), via SQL predicate `AND memory_type != 'preference'` on the UPDATE. Preferences' `accessed_at` is informational only and not updated by recall.
 - `CompileContext` XML: new greenfield `<preferences>` section with `<pref age="1d|1w|1mo|6mo+">...</pref>` children. Budget-accounted like `<preferences-flipped>`. Age buckets use `coalesce(reaffirmed_at, created_at)`. Element **always emitted, even empty** (bare `<preferences/>`) — satisfies infrastructure assertion 10 and keeps the XML schema stable regardless of corpus state.
 - New Request variant: `Request::ReaffirmPreference { memory_id: String }` — sets `reaffirmed_at = now_utc`. Used when user re-states a preference (e.g., "yes, still prefer vim"). Valence-only re-statement doesn't create a new memory.
 
@@ -175,15 +174,15 @@ Before any dimension is scored, bench asserts the following prerequisites exist.
 3. `memory` table has columns `valence_flipped_at TEXT NULL`, `flipped_to_id TEXT NULL`, `reaffirmed_at TEXT NULL` (post 2A-4a and 2A-4b)
 4. `Request::FlipPreference`, `Request::ListFlipped`, `Request::ReaffirmPreference` variants exist with correct field shapes (post 2A-4a, 2A-4b)
 5. `Request::RecordToolUse`, `Request::ListToolCalls` variants exist (post 2A-4c1)
-6. Config values: `preference_half_life_days` ∈ 1..=365, `preference_fade_threshold` ∈ 0.001..=0.1, `skill_inference_min_sessions` ∈ 1..=20 (post 2A-4b, 2A-4c2)
-7. `session_tool_call` table exists with specified columns and unique index (post 2A-4c1)
+6. Config values: `preference_half_life_days` ∈ 1..=365, `skill_inference_min_sessions` ∈ 1..=20 (post 2A-4b, 2A-4c2)
+7. `session_tool_call` table exists with specified columns and per-session/per-agent indexes (non-unique — tool calls can repeat) (post 2A-4c1)
 8. `skill` table has columns `agent`, `fingerprint`, `inferred_from`, `success_count`, `inferred_at`; unique index on `(agent, fingerprint)` (post 2A-4c2)
-9. Consolidator registers Phase 23 by function name (not just count); `phase_registry()` returns Phase 23 after Phase 17 in the Vec order (addresses Codex L1)
+9. Phase 23 is registered in the consolidator and executes after Phase 17 — verified by sourcing a compile-time check or a `Request::ProbePhase { phase_name: "infer_skills_from_behavior" }` probe (exact mechanism locked in 2A-4c2 design per §13)
 10. `CompileContext` response XML contains `<preferences>` element (present or empty — D4 resolved: always emit, even empty) (post 2A-4b)
 11. `CompileContext` response XML contains `<preferences-flipped>` element (may be absent if empty) (post 2A-4a)
-12. `CompileContext` response XML contains `<skills>` element (may be absent if empty) (post 2A-4c2)
-13. `writer.rs` `touch()` exemption for preferences verified by parity test (addresses Codex H9)
-14. `recall.rs:404` type-dispatched recency branch exists and is unit-tested (addresses Codex H3 + H9)
+12. `CompileContext` response XML: after seeding a Phase 23 skill (via `RecordToolUse` ≥ 3 sessions + ForceConsolidate), `<skills>` contains at least one `<skill>` child with the seeded skill's identifying token — verifies Phase 23 rows actually surface (not just that the element exists) (post 2A-4c2)
+13. `touch()` exemption for preferences implemented in `db/ops.rs:touch()` SQL predicate (`AND memory_type != 'preference'`); verified by parity test confirming preference accessed_at does not update across a Recall call
+14. `recall.rs:404-413` recency pattern `result.score *= 1.0 + recency_boost * 0.5` has been replaced by direct type-dispatched multiplier `result.score *= recency_factor(memory)` — verified by source-level assertion that the string `"1.0 + recency_boost * 0.5"` does not appear and `recency_factor` is called
 
 ---
 
@@ -257,13 +256,13 @@ Each of 2A-4a / 2A-4b / 2A-4c1 / 2A-4c2 ships:
 ## 11. Known risks (expanded)
 
 - **2A-4c2 Phase 23 complexity** — canonical fingerprint + deduplication is the biggest unknown. If the 8-12 task estimate blows up, split c2 further (detection heuristic vs elevation logic).
-- **`touch()` exemption side effects** — writer.rs path is centralized, but some recall sub-paths may call `touch()` via different functions. Audit needed during 2A-4b.
+- **`touch()` exemption side effects** — exemption lives in `db/ops.rs:touch()` SQL predicate (§3). Audit during 2A-4b for any other mutation path that updates `accessed_at` outside `touch()` (e.g., direct UPDATEs in other ops functions); ensure they all respect the preference exemption.
 - **Type-dispatched recency interactions with graph expansion** — `recall.rs:279-280` RRF fusion, then graph expansion, then post-RRF recency. If graph expansion surfaces a preference via graph traversal, the type-dispatched recency still applies. Test: ensure graph-surfaced preferences decay by the same rule as query-matched ones.
 - **Auto-flip deferral** — we're explicitly NOT building auto-detection in 2A-4a. If product/UX later wants auto-flip, Phase 9a must gain a confidence score (D1 returns as a future decision).
 - **Bench timing sensitivity** — Dim 6 calibrated ratio bands are narrow. If Phase 4 decay OR universal recency changes formula in a future sprint, bench breaks. Mitigation: bench tracks the formula parameters in its summary.json so a regression is traceable.
 - **Schema churn cost** — this phase adds ≥ 6 new columns across `memory`, `skill`, plus a new `session_tool_call` table. Migration order matters. Mitigation: each sub-phase's migration is independently reversible.
 - **Retrieval feedback risk (revisited)** — `touch()` exemption resolves the immediate issue for preferences, but other memory types still self-refresh. Document as non-goal; future Phase 2A-n may exempt all types.
-- **Dim 6 ratio calibration may need adjustment after first bench run** — the initial bands (1.4–2.5, 2.0–10, 2.0–15) are math-derived estimates. Actual RRF + graph + type-dispatched recency composition may produce slightly different ratios. Mitigation: run bench once during 2A-4d calibration, observe actual ratios, lock bands based on observed + theoretical.
+- **Dim 6 ratio calibration may need adjustment after first bench run** — the v4 bands ([1.85, 2.00], [40.5, 45.5], [81, 91]) are derived from the theoretical values 1.9034, 43.0688, 86.1376 with ~2–5% margin on each side to absorb floating-point + RRF rank-ordering noise. If 2A-4d calibration observes ratios drifting further, bands should be re-calibrated then locked. Summary.json records observed ratios per-seed for regression traceability.
 
 ---
 
@@ -277,8 +276,8 @@ Resolved in v2:
 Still open, to be resolved during sub-phase design:
 - **D2 — Preference half-life (2A-4b):** 14 days default. Could be 7 (aggressive) or 30 (conservative). Decide during 2A-4b design + potentially tuned during 2A-4d calibration.
 - **D3 — Skill inference min sessions (2A-4c2):** 3. Could be 2 (eager) or 5 (cautious). Decide during 2A-4c2 design.
-- **D6 — Bench temporal simulation depth:** 180 days fixed per non-goal; no 2+ year simulation.
-- **D7 — Recency composition order (2A-4b):** Post-RRF multiplicative is locked above. Sub-decision: should graph-expanded results apply the recency factor? (Recommend: yes, for consistency. Lock in 2A-4b.)
+- **D6 — Bench temporal simulation depth:** **RESOLVED:** 180 days fixed per non-goal §8; no 2+ year simulation. Cap is enforced in bench generators.
+- **D7 — Recency composition order (2A-4b):** **RESOLVED:** Post-RRF multiplicative, applied uniformly to graph-expanded rows (§3 line 51 and §5 2A-4b). Graph-surfaced preferences decay under the same rule as query-matched ones.
 - **D8 — Parity test pattern (2A-4a, 2A-4b, 2A-4c1):** What's the idiom? (Recommend: each bench-only hook has a `#[test]` that calls both the hook and the production path with matching inputs, asserts output equivalence. Lock in 2A-4a.)
 
 ---
@@ -333,13 +332,19 @@ All non-master-level findings from v2 adversarial review are assigned here to th
 
 - **v1 (2026-04-17, commit 059be8d):** Initial master design.
 - **v2 (2026-04-17, commit 084cc68):** Addresses 10 CRITICAL findings from first-pass adversarial reviews.
-- **v3 (2026-04-17, this revision):** Addresses v2 master-level blockers (5 items). All remaining code-reality-drift findings (~20) pushed to sub-phase detailed designs (see §13 resolution index). Key v3 changes:
-  - Dim 6a formula target replaced with **RRF-invariant ratio test** (identical embeddings ensure identical RRF ranks; only recency multiplier differs; ratios computable from pure formula) — addresses Claude N-C3, Codex C1.
-  - `<skills>` renderer update marked as **prerequisite mandate** in 2A-4c2 — blocks the silent-Dim-5-failure risk flagged by both reviewers.
-  - `preference_fade_threshold` config **removed entirely** — hard-fade exemption alone suffices; removes v2's "informational only" vs "functional cutoff" contradiction.
-  - Dim 6 weight composition made **explicit** with per-sub minimums 6a ≥ 0.75 AND 6b ≥ 0.75 independently, parent minimum 0.80 on the composed quotient.
-  - 2A-4b **regression-guard scope** added: prior benches (Forge-Context 2A-2, Forge-Consolidation 2A-3) must re-calibrate after type-dispatched recency lands; any score shift must be documented and ratified before 2A-4b merges.
-  - New §13 "Sub-phase resolution index" explicitly assigns all ~20 deferred findings to the sub-phase design doc responsible.
+- **v3 (2026-04-17, commit 0cc369e):** Addresses v2 master-level blockers (5 items). Introduced 2 CRITICAL regressions flagged by third-pass review: (a) `preference_fade_threshold` removal was incomplete (still referenced in 3 places); (b) Dim 6a ratio math was numerically wrong (stated 1.950/41.95/83.90 vs true 1.9034/43.07/86.14).
+- **v4 (2026-04-17, this revision):** Fixes v3 regressions + tightens code-reality grounding.
+  - `preference_fade_threshold` **completely removed** from §3, §5 (2A-4b config list), and §6 (infrastructure assertion 6). Only hard-fade exemption remains, which is sufficient.
+  - Dim 6a ratios **corrected** to true values (1.9034, 43.0688, 86.1376) with calibrated bands [1.85, 2.00], [40.5, 45.5], [81, 91] that allow symmetric ~3–6% drift.
+  - RRF-identity fixture spec **strengthened** — prefs must share identical `title` strings (ensures identical BM25 ranks) in addition to identical embeddings.
+  - `touch()` exemption location **corrected** in §3 from `writer.rs` to `db/ops.rs:touch()` with SQL predicate (the only sound architectural layer; `writer.rs` doesn't see memory_type).
+  - Non-preference recency formula **corrected** from `exp(-0.03 × days)` to `exp(-0.1 × days_since_created)` (matches actual code at `recall.rs:412-413`).
+  - Recency composition structure **pinned**: 2A-4b replaces the existing `result.score *= 1.0 + recency_boost * 0.5` envelope with a direct multiplicative factor (change documented so 2A-4b regression-guard against Forge-Context/Forge-Consolidation has a concrete "before/after" to compare).
+  - Infrastructure assertion 12 **tightened** from "`<skills>` element exists" to "`<skills>` contains a Phase 23 seeded skill's token after ForceConsolidate" — prevents silent Dim-5 failure.
+  - Infrastructure assertion 14 **tightened** to source-level check that the old `1.0 + recency_boost * 0.5` pattern is replaced.
+  - §11 Known Risks **updated** from stale v2 bands (1.4–2.5, 2.0–10, 2.0–15) to current v4 bands with proper rationale.
+  - §12 D6 and D7 **resolved** with references to their master-level resolutions.
+  - §13 finding assignment preserved; assertion 7 "unique index" softened to "non-unique indexes" (tool calls repeat; see §13 line 303 for rationale).
 
 - **v2 (2026-04-17, commit 084cc68):** Addresses 10 CRITICAL findings from Claude + codex adversarial reviews.
   - Split 2A-4c into 2A-4c1 (tool-use schema) + 2A-4c2 (Phase 23), addressing Claude C1 (session_message wrong target).
