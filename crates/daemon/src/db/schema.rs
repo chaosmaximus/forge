@@ -1203,6 +1203,17 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN superseded_by TEXT", []);
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN metadata TEXT", []);
 
+    // Phase 2A-4a: valence_flipped_at marks preferences that have been superseded
+    // via Request::FlipPreference (as opposed to plain Supersede). Used by
+    // CompileContext's <preferences-flipped> section and the ListFlipped endpoint.
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN valence_flipped_at TEXT", []);
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_valence_flipped_at
+             ON memory(valence_flipped_at)
+             WHERE valence_flipped_at IS NOT NULL",
+        [],
+    )?;
+
     // ── v2.7: Memory Self-Healing ──
     conn.execute_batch(
         "
@@ -1855,5 +1866,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "dedup should keep only 1 team per (name, org)");
+    }
+
+    #[test]
+    fn test_memory_schema_has_valence_flipped_at_column() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(memory)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert!(
+            cols.contains(&"valence_flipped_at".to_string()),
+            "memory table missing valence_flipped_at column; columns: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn test_memory_schema_has_valence_flipped_at_partial_index() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let indexes: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='memory'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert!(
+            indexes.contains(&"idx_memory_valence_flipped_at".to_string()),
+            "memory table missing idx_memory_valence_flipped_at; indexes: {indexes:?}"
+        );
     }
 }
