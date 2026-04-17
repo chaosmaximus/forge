@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use forge_core::types::memory::MemoryType;
@@ -1868,6 +1869,607 @@ pub fn snapshot_recall(
     }
 }
 
+// ── Audit functions ──────────────────────────────────────────────
+
+/// Per-dimension scoring result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DimensionScore {
+    pub dimension: String,
+    pub precision: f64,
+    pub recall: f64,
+    pub f1: f64,
+    pub details: Vec<String>,
+}
+
+/// Dimension 1: dedup quality.
+///
+/// Counts transitions within Categories 1, 2, 3 only. Phases 5/12/14/20/21
+/// are NOT counted as dedup events (scope filter). Signal preservation gate:
+/// all 4 control memories (Category 3, `duplicate_of=None`) must remain active
+/// or the entire score is zeroed.
+pub fn audit_dedup(
+    conn: &rusqlite::Connection,
+    dataset: &SeededDataset,
+) -> Result<DimensionScore, String> {
+    // GT victims: memories expected deleted/superseded BY DEDUP PHASES (1, 2, 7).
+    let gt_victims: HashSet<String> = dataset
+        .ground_truth
+        .iter()
+        .filter(|t| {
+            (t.category == Category::ExactDuplicates
+                || t.category == Category::SemanticDuplicates
+                || t.category == Category::EmbeddingDuplicates)
+                && (t.expected_status == ExpectedStatus::Superseded
+                    || t.expected_status == ExpectedStatus::Deleted)
+        })
+        .map(|t| t.memory_id.clone())
+        .collect();
+
+    // Scope: all IDs in categories 1-3
+    let dedup_scope: HashSet<String> = dataset
+        .ground_truth
+        .iter()
+        .filter(|t| {
+            t.category == Category::ExactDuplicates
+                || t.category == Category::SemanticDuplicates
+                || t.category == Category::EmbeddingDuplicates
+        })
+        .map(|t| t.memory_id.clone())
+        .collect();
+
+    // Observed victims: memories in dedup scope that are deleted or superseded
+    let mut observed_dedup: HashSet<String> = HashSet::new();
+    for id in &dedup_scope {
+        let result: rusqlite::Result<Option<String>> = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .optional();
+        match result {
+            Ok(None) => {
+                observed_dedup.insert(id.clone());
+            } // deleted
+            Ok(Some(s)) if s == "superseded" => {
+                observed_dedup.insert(id.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let (precision, recall, f1) = pr_f1(&gt_victims, &observed_dedup);
+
+    // Signal preservation gate: all Category 3 controls must remain active
+    let controls: Vec<&GroundTruth> = dataset
+        .ground_truth
+        .iter()
+        .filter(|t| t.category == Category::EmbeddingDuplicates && t.duplicate_of.is_none())
+        .collect();
+    let mut failed_controls = Vec::new();
+    for c in &controls {
+        let status: rusqlite::Result<String> = conn.query_row(
+            "SELECT status FROM memory WHERE id = ?1",
+            rusqlite::params![c.memory_id],
+            |row| row.get(0),
+        );
+        if status.as_deref() != Ok("active") {
+            failed_controls.push(c.memory_id.clone());
+        }
+    }
+
+    let final_f1 = if failed_controls.is_empty() { f1 } else { 0.0 };
+    let mut details = vec![
+        format!("gt_victims={}", gt_victims.len()),
+        format!("observed_dedup={}", observed_dedup.len()),
+    ];
+    if !failed_controls.is_empty() {
+        details.push(format!("SIGNAL_PRESERVATION_FAILED: {failed_controls:?}"));
+    }
+
+    Ok(DimensionScore {
+        dimension: "dedup_quality".into(),
+        precision,
+        recall,
+        f1: final_f1,
+        details,
+    })
+}
+
+/// Compute precision, recall, F1 for two sets of strings.
+/// If `observed` is empty → precision = 0.0.
+/// If `expected` is empty → recall = 1.0 (nothing to miss).
+pub fn pr_f1(expected: &HashSet<String>, observed: &HashSet<String>) -> (f64, f64, f64) {
+    let tp = expected.intersection(observed).count() as f64;
+    let precision = if observed.is_empty() {
+        0.0
+    } else {
+        tp / observed.len() as f64
+    };
+    let recall = if expected.is_empty() {
+        1.0
+    } else {
+        tp / expected.len() as f64
+    };
+    let f1 = if precision + recall == 0.0 {
+        0.0
+    } else {
+        2.0 * precision * recall / (precision + recall)
+    };
+    (precision, recall, f1)
+}
+
+/// Compute precision, recall, F1 for two sets of unordered string pairs.
+pub fn pr_f1_pairs(
+    expected: &HashSet<(String, String)>,
+    observed: &HashSet<(String, String)>,
+) -> (f64, f64, f64) {
+    let tp = expected.intersection(observed).count() as f64;
+    let precision = if observed.is_empty() {
+        0.0
+    } else {
+        tp / observed.len() as f64
+    };
+    let recall = if expected.is_empty() {
+        1.0
+    } else {
+        tp / expected.len() as f64
+    };
+    let f1 = if precision + recall == 0.0 {
+        0.0
+    } else {
+        2.0 * precision * recall / (precision + recall)
+    };
+    (precision, recall, f1)
+}
+
+/// Dimension 2: contradiction handling.
+///
+/// Score = 0.5 * detection_F1 + 0.5 * synthesis_accuracy.
+/// Detection uses `edge` table (`edge_type='contradicts'`), pairs deduped as
+/// unordered (min, max) tuples. Synthesis checks that a resolution memory with
+/// title prefix `"Resolution: "` exists and both originals are superseded.
+pub fn audit_contradictions(
+    conn: &rusqlite::Connection,
+    dataset: &SeededDataset,
+) -> Result<DimensionScore, String> {
+    // GT contradiction pairs (unordered)
+    let gt_pairs: HashSet<(String, String)> = dataset
+        .ground_truth
+        .iter()
+        .filter_map(|t| {
+            t.contradicts.as_ref().map(|other| {
+                if t.memory_id < *other {
+                    (t.memory_id.clone(), other.clone())
+                } else {
+                    (other.clone(), t.memory_id.clone())
+                }
+            })
+        })
+        .collect();
+
+    // Observed: edge_type='contradicts', deduped as unordered pairs
+    let mut stmt = conn
+        .prepare("SELECT from_id, to_id FROM edge WHERE edge_type = 'contradicts'")
+        .map_err(|e| format!("contradicts query: {e}"))?;
+    let observed_raw: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| format!("{e}"))?
+        .filter_map(|r| r.ok())
+        .collect();
+    let observed: HashSet<(String, String)> = observed_raw
+        .into_iter()
+        .map(|(a, b)| if a < b { (a, b) } else { (b, a) })
+        .collect();
+
+    let (pp, rr, detection_f1) = pr_f1_pairs(&gt_pairs, &observed);
+
+    // Synthesis accuracy: for each valence-pair, resolution memory + both superseded
+    let valence_gt_pairs: HashSet<(String, String)> = dataset
+        .ground_truth
+        .iter()
+        .filter(|t| {
+            t.category == Category::Contradictions
+                && t.expected_status == ExpectedStatus::Superseded
+        })
+        .filter_map(|t| {
+            t.contradicts.as_ref().map(|o| {
+                if t.memory_id < *o {
+                    (t.memory_id.clone(), o.clone())
+                } else {
+                    (o.clone(), t.memory_id.clone())
+                }
+            })
+        })
+        .collect();
+
+    let total_valence_pairs = valence_gt_pairs.len();
+    let mut synthesis_correct = 0usize;
+    for (a, b) in &valence_gt_pairs {
+        let a_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![a],
+                |r| r.get(0),
+            )
+            .ok();
+        let b_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![b],
+                |r| r.get(0),
+            )
+            .ok();
+        let resolution_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM memory WHERE title LIKE 'Resolution: %'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if a_status.as_deref() == Some("superseded")
+            && b_status.as_deref() == Some("superseded")
+            && resolution_exists
+        {
+            synthesis_correct += 1;
+        }
+    }
+    let synthesis_accuracy = if total_valence_pairs == 0 {
+        1.0
+    } else {
+        synthesis_correct as f64 / total_valence_pairs as f64
+    };
+
+    let score = 0.5 * detection_f1 + 0.5 * synthesis_accuracy;
+    Ok(DimensionScore {
+        dimension: "contradiction_handling".into(),
+        precision: pp,
+        recall: rr,
+        f1: score,
+        details: vec![
+            format!("detection_f1={detection_f1:.4}"),
+            format!("synthesis_accuracy={synthesis_accuracy:.4}"),
+            format!("gt_pairs={}", gt_pairs.len()),
+            format!("observed_pairs={}", observed.len()),
+        ],
+    })
+}
+
+/// Dimension 3: reweave & enrichment.
+///
+/// Weighted: 0.30 * reweave_F1 + 0.25 * protocol_accuracy +
+///           0.25 * antipattern_accuracy + 0.20 * promotion_accuracy.
+pub fn audit_reweave(
+    conn: &rusqlite::Connection,
+    dataset: &SeededDataset,
+) -> Result<DimensionScore, String> {
+    // Reweave: newer marked 'merged' AND older content contains '[Update]:'
+    let gt_pairs: Vec<(String, String)> = dataset
+        .ground_truth
+        .iter()
+        .filter_map(|t| {
+            t.reweave_source
+                .as_ref()
+                .map(|newer| (t.memory_id.clone(), newer.clone()))
+        })
+        .collect();
+    let total = gt_pairs.len();
+    let mut correct = 0usize;
+    for (older_id, newer_id) in &gt_pairs {
+        let newer_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id=?1",
+                rusqlite::params![newer_id],
+                |r| r.get(0),
+            )
+            .ok();
+        let older_content: Option<String> = conn
+            .query_row(
+                "SELECT content FROM memory WHERE id=?1",
+                rusqlite::params![older_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if newer_status.as_deref() == Some("merged")
+            && older_content.is_some_and(|c| c.contains("[Update]:"))
+        {
+            correct += 1;
+        }
+    }
+    let reweave_f1 = if total == 0 {
+        1.0
+    } else {
+        correct as f64 / total as f64
+    };
+
+    // Promotion: Pattern memories in category-6-cluster project
+    let pattern_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory WHERE memory_type = 'pattern' AND project = 'forge-consolidation-bench' AND tags LIKE '%category-6-cluster%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let promo_accuracy = if dataset.expected_pattern_count == 0 {
+        1.0
+    } else {
+        (pattern_count as f64 / dataset.expected_pattern_count as f64).min(1.0)
+    };
+
+    // Protocol: protocol memories created by Phase 17
+    let protocol_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory WHERE memory_type = 'protocol' AND project = 'forge-consolidation-bench'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let proto_accuracy = if dataset.expected_protocol_count == 0 {
+        1.0
+    } else {
+        (protocol_count as f64 / dataset.expected_protocol_count as f64).min(1.0)
+    };
+
+    // Anti-pattern tags: Category 5 anti-pattern memories must have "anti-pattern" tag
+    let antipattern_ids: Vec<String> = dataset
+        .ground_truth
+        .iter()
+        .filter(|t| {
+            t.category == Category::ReweaveEnrichment && t.memory_id.starts_with("c5-antipattern-")
+        })
+        .map(|t| t.memory_id.clone())
+        .collect();
+    let mut antipattern_correct = 0usize;
+    for id in &antipattern_ids {
+        let tags: Option<String> = conn
+            .query_row(
+                "SELECT tags FROM memory WHERE id=?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .ok();
+        if tags.is_some_and(|t| t.contains("anti-pattern")) {
+            antipattern_correct += 1;
+        }
+    }
+    let ap_accuracy = if antipattern_ids.is_empty() {
+        1.0
+    } else {
+        antipattern_correct as f64 / antipattern_ids.len() as f64
+    };
+
+    let score =
+        0.30 * reweave_f1 + 0.25 * proto_accuracy + 0.25 * ap_accuracy + 0.20 * promo_accuracy;
+    Ok(DimensionScore {
+        dimension: "reweave_enrichment".into(),
+        precision: 0.0,
+        recall: 0.0,
+        f1: score,
+        details: vec![
+            format!("reweave_f1={reweave_f1:.4}"),
+            format!("promo_accuracy={promo_accuracy:.4}"),
+            format!("proto_accuracy={proto_accuracy:.4}"),
+            format!("ap_accuracy={ap_accuracy:.4}"),
+        ],
+    })
+}
+
+/// Dimension 4: quality lifecycle.
+///
+/// Unweighted mean of 5 sub-accuracies: decay, reconsolidation, quality_score,
+/// activation_level, staleness. All float comparisons use ±0.01 tolerance.
+pub fn audit_lifecycle(
+    conn: &rusqlite::Connection,
+    dataset: &SeededDataset,
+) -> Result<DimensionScore, String> {
+    let tol = 0.01_f64;
+    let mut decay_pass = 0usize;
+    let mut decay_total = 0usize;
+    let mut recon_pass = 0usize;
+    let mut recon_total = 0usize;
+    let mut quality_pass = 0usize;
+    let mut quality_total = 0usize;
+    let mut activation_pass = 0usize;
+    let mut activation_total = 0usize;
+    let mut stale_pass = 0usize;
+    let mut stale_total = 0usize;
+
+    for gt in &dataset.ground_truth {
+        if let Some(expected_conf) = gt.expected_confidence {
+            if gt.memory_id.starts_with("c6-decay-") {
+                decay_total += 1;
+                let obs: Option<f64> = conn
+                    .query_row(
+                        "SELECT confidence FROM memory WHERE id=?1",
+                        rusqlite::params![gt.memory_id],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if obs.is_some_and(|o| (o - expected_conf).abs() < tol) {
+                    decay_pass += 1;
+                }
+            } else if gt.memory_id.starts_with("c6-recon-") {
+                recon_total += 1;
+                let obs: Option<f64> = conn
+                    .query_row(
+                        "SELECT confidence FROM memory WHERE id=?1",
+                        rusqlite::params![gt.memory_id],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if obs.is_some_and(|o| (o - expected_conf).abs() < tol) {
+                    recon_pass += 1;
+                }
+            }
+        }
+        if let Some(expected_q) = gt.expected_quality {
+            quality_total += 1;
+            let obs: Option<f64> = conn
+                .query_row(
+                    "SELECT quality_score FROM memory WHERE id=?1",
+                    rusqlite::params![gt.memory_id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if obs.is_some_and(|o| (o - expected_q).abs() < tol) {
+                quality_pass += 1;
+            }
+        }
+        if let Some(expected_a) = gt.expected_activation {
+            activation_total += 1;
+            let obs: Option<f64> = conn
+                .query_row(
+                    "SELECT activation_level FROM memory WHERE id=?1",
+                    rusqlite::params![gt.memory_id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if obs.is_some_and(|o| (o - expected_a).abs() < tol) {
+                activation_pass += 1;
+            }
+        }
+        if gt.category == Category::SelfHealing && gt.memory_id.starts_with("c7-stale-") {
+            stale_total += 1;
+            let status: Option<String> = conn
+                .query_row(
+                    "SELECT status FROM memory WHERE id=?1",
+                    rusqlite::params![gt.memory_id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if status.as_deref() == Some("faded") {
+                stale_pass += 1;
+            }
+        }
+    }
+
+    let frac = |pass: usize, total: usize| {
+        if total == 0 {
+            1.0
+        } else {
+            pass as f64 / total as f64
+        }
+    };
+    let decay = frac(decay_pass, decay_total);
+    let recon = frac(recon_pass, recon_total);
+    let quality = frac(quality_pass, quality_total);
+    let act = frac(activation_pass, activation_total);
+    let stale = frac(stale_pass, stale_total);
+    let score = (decay + recon + quality + act + stale) / 5.0;
+
+    Ok(DimensionScore {
+        dimension: "quality_lifecycle".into(),
+        precision: 0.0,
+        recall: 0.0,
+        f1: score,
+        details: vec![
+            format!("decay={decay:.4}"),
+            format!("recon={recon:.4}"),
+            format!("quality={quality:.4}"),
+            format!("activation={act:.4}"),
+            format!("staleness={stale:.4}"),
+        ],
+    })
+}
+
+/// Infrastructure pass/fail assertions (Phases 3, 8, 11, 13, 19a, 19b, 20).
+///
+/// Returns a list of failure messages. Empty list = all assertions passed.
+pub fn audit_infrastructure(
+    conn: &rusqlite::Connection,
+    dataset: &SeededDataset,
+) -> Result<Vec<String>, String> {
+    let _ = dataset; // dataset not needed for infrastructure assertions
+    let mut failures = Vec::new();
+
+    // Phase 3: at least 5 related_to edges
+    let related_to_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edge WHERE edge_type='related_to'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if related_to_count < 5 {
+        failures.push(format!(
+            "Phase 3: only {related_to_count} related_to edges (need >=5)"
+        ));
+    }
+
+    // Phase 8: at least one related_to edge with strength >= 0.2 in properties JSON
+    // We check for any JSON object with a "strength" key whose value is >= 0.2
+    let strengthened: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edge WHERE edge_type='related_to' AND CAST(json_extract(properties, '$.strength') AS REAL) >= 0.2",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if strengthened == 0 {
+        failures.push("Phase 8: no related_to edges with strength >= 0.2".into());
+    }
+
+    // Phase 11: at least 5 unique entities
+    let entity_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entity", [], |r| r.get(0))
+        .unwrap_or(0);
+    if entity_count < 5 {
+        failures.push(format!("Phase 11: only {entity_count} entities (need >=5)"));
+    }
+
+    // Phase 13: at least 1 knowledge_gap perception
+    let gaps: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM perception WHERE kind='knowledge_gap'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if gaps < 1 {
+        failures.push("Phase 13: no knowledge_gap perceptions".into());
+    }
+
+    // Phase 19a: protocol_suggestion notification
+    let proto_notif: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notification WHERE topic='protocol_suggestion'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if proto_notif == 0 {
+        failures.push("Phase 19a: no protocol_suggestion notification".into());
+    }
+
+    // Phase 19b: contradiction notification
+    let contra_notif: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notification WHERE topic='contradiction'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if contra_notif == 0 {
+        failures.push("Phase 19b: no contradiction notification".into());
+    }
+
+    // Phase 20: at least 6 healing_log entries with action='auto_superseded'
+    let heal_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM healing_log WHERE action='auto_superseded'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if heal_count < 6 {
+        failures.push(format!(
+            "Phase 20: only {heal_count} healing_log auto_superseded entries (need >=6)"
+        ));
+    }
+
+    Ok(failures)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2653,5 +3255,108 @@ mod tests {
             c5_expected.contains(c5_actual),
             "c5 reweave helper mismatch: actual={c5_actual}, expected={c5_expected:?}"
         );
+    }
+
+    // ── pr_f1 / pr_f1_pairs tests ─────────────────────────────────
+
+    #[test]
+    fn test_pr_f1_basic() {
+        let e: HashSet<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let o: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let (p, r, f) = pr_f1(&e, &o);
+        assert!((p - 1.0).abs() < 1e-9, "precision={p}");
+        assert!((r - 2.0 / 3.0).abs() < 1e-9, "recall={r}");
+        assert!((f - 0.8).abs() < 1e-9, "f1={f}");
+    }
+
+    #[test]
+    fn test_pr_f1_empty_observed() {
+        let e: HashSet<String> = ["a"].iter().map(|s| s.to_string()).collect();
+        let o: HashSet<String> = HashSet::new();
+        let (p, r, _) = pr_f1(&e, &o);
+        assert_eq!(p, 0.0, "precision should be 0 when observed is empty");
+        assert_eq!(
+            r, 0.0,
+            "recall should be 0 when nothing observed from expected"
+        );
+    }
+
+    #[test]
+    fn test_pr_f1_pairs_basic() {
+        let e: HashSet<(String, String)> = [("a".into(), "b".into())].iter().cloned().collect();
+        let o: HashSet<(String, String)> = [("a".into(), "b".into()), ("c".into(), "d".into())]
+            .iter()
+            .cloned()
+            .collect();
+        let (p, r, f) = pr_f1_pairs(&e, &o);
+        assert!((p - 0.5).abs() < 1e-9, "precision={p}");
+        assert!((r - 1.0).abs() < 1e-9, "recall={r}");
+        assert!((f - 2.0 / 3.0).abs() < 1e-9, "f1={f}");
+    }
+
+    #[test]
+    fn test_audit_dedup_smoke() {
+        // smoke: audit_dedup runs on seeded dataset without panic
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
+        let result = audit_dedup(&state.conn, &dataset);
+        assert!(result.is_ok(), "audit_dedup failed: {:?}", result.err());
+        let score = result.unwrap();
+        assert_eq!(score.dimension, "dedup_quality");
+        // Before consolidation runs, no victims are deleted/superseded → observed=0
+        // gt_victims ≥ 1, observed=0 → recall=0, precision=0, f1=0
+        assert_eq!(score.f1, 0.0, "pre-consolidation f1 should be 0");
+    }
+
+    #[test]
+    fn test_audit_contradictions_smoke() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
+        let result = audit_contradictions(&state.conn, &dataset);
+        assert!(
+            result.is_ok(),
+            "audit_contradictions failed: {:?}",
+            result.err()
+        );
+        let score = result.unwrap();
+        assert_eq!(score.dimension, "contradiction_handling");
+    }
+
+    #[test]
+    fn test_audit_reweave_smoke() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
+        let result = audit_reweave(&state.conn, &dataset);
+        assert!(result.is_ok(), "audit_reweave failed: {:?}", result.err());
+        let score = result.unwrap();
+        assert_eq!(score.dimension, "reweave_enrichment");
+    }
+
+    #[test]
+    fn test_audit_lifecycle_smoke() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
+        let result = audit_lifecycle(&state.conn, &dataset);
+        assert!(result.is_ok(), "audit_lifecycle failed: {:?}", result.err());
+        let score = result.unwrap();
+        assert_eq!(score.dimension, "quality_lifecycle");
+        // f1 is in [0, 1]
+        assert!(score.f1 >= 0.0 && score.f1 <= 1.0, "f1={}", score.f1);
+    }
+
+    #[test]
+    fn test_audit_infrastructure_smoke() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
+        let result = audit_infrastructure(&state.conn, &dataset);
+        assert!(
+            result.is_ok(),
+            "audit_infrastructure failed: {:?}",
+            result.err()
+        );
+        // Before consolidation, all infrastructure checks will fail — that's expected
+        let failures = result.unwrap();
+        // Just verify we get a Vec (can be non-empty pre-consolidation)
+        assert!(failures.len() <= 7, "at most 7 infrastructure assertions");
     }
 }
