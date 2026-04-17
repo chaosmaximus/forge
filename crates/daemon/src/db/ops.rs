@@ -567,6 +567,13 @@ pub fn decay_memories(conn: &Connection, limit: usize) -> rusqlite::Result<(usiz
                 params![id],
             )?;
             faded_count += 1;
+        } else if days_since > 1.0 {
+            // Write the decayed confidence value so callers can observe the decay numerically.
+            // Only update when meaningful decay has occurred (> 1 day old).
+            conn.execute(
+                "UPDATE memory SET confidence = ?1 WHERE id = ?2",
+                params![effective, id],
+            )?;
         }
     }
 
@@ -578,6 +585,9 @@ pub fn decay_memories(conn: &Connection, limit: usize) -> rusqlite::Result<(usiz
 /// Handles two formats produced by SQLite and Rust code:
 /// - Pure epoch seconds: "1743548000"
 /// - SQLite datetime: "2026-04-02 12:00:00" or ISO 8601 "2026-04-02T12:00:00Z"
+///
+/// Uses exact calendar arithmetic (same algorithm as `forge_core::time::epoch_to_iso`)
+/// rather than the previous approximation, which was off by up to ~2 days.
 pub fn parse_timestamp_to_epoch(s: &str) -> Option<f64> {
     if s.is_empty() {
         return None;
@@ -592,15 +602,33 @@ pub fn parse_timestamp_to_epoch(s: &str) -> Option<f64> {
     // Try SQLite datetime format: "YYYY-MM-DD HH:MM:SS" or ISO 8601 with T
     let parts: Vec<&str> = s.split(&['-', ' ', ':', 'T'][..]).collect();
     if parts.len() >= 6 {
-        let y: f64 = parts[0].parse().ok()?;
-        let m: f64 = parts[1].parse().ok()?;
-        let d: f64 = parts[2].parse().ok()?;
-        let h: f64 = parts[3].parse().ok()?;
-        let min: f64 = parts[4].parse().ok()?;
-        let sec: f64 = parts[5].trim_end_matches('Z').parse().ok()?;
-        // Approximate conversion (good enough for decay calculation — off by at most ~1 day)
-        let days = (y - 1970.0) * 365.25 + (m - 1.0) * 30.44 + d;
-        return Some(days * 86400.0 + h * 3600.0 + min * 60.0 + sec);
+        let year: u64 = parts[0].trim_end_matches('Z').parse().ok()?;
+        let month: u64 = parts[1].trim_end_matches('Z').parse().ok()?;
+        let day: u64 = parts[2].trim_end_matches('Z').parse().ok()?;
+        let hour: u64 = parts[3].trim_end_matches('Z').parse().ok()?;
+        let minute: u64 = parts[4].trim_end_matches('Z').parse().ok()?;
+        let second: u64 = parts[5].trim_end_matches('Z').parse().ok()?;
+
+        // Exact epoch calculation: count days from 1970-01-01
+        // Uses the same logic as forge_core::time::epoch_to_iso but in reverse.
+        let mut days: u64 = 0;
+        for y in 1970..year {
+            let is_leap = y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
+            days += if is_leap { 366 } else { 365 };
+        }
+        let is_leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+        let month_days: [u64; 12] = if is_leap {
+            [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        } else {
+            [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        };
+        for m in 0..(month.saturating_sub(1) as usize) {
+            days += month_days.get(m).copied().unwrap_or(30);
+        }
+        days += day.saturating_sub(1); // day is 1-indexed
+
+        let epoch_secs = days * 86400 + hour * 3600 + minute * 60 + second;
+        return Some(epoch_secs as f64);
     }
     None
 }

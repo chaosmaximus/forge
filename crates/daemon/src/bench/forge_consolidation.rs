@@ -826,9 +826,10 @@ pub fn generate_category_5_reweave_enrichment(seed: u64) -> (Vec<MemorySpec>, Ve
             memory_type: MemoryType::Preference,
             // Two unique tokens → no shared meaningful_words across the 4 preferences ✓
             title: format!("{token} {title_t2}"),
-            // Phase 17 Tier 1 promotes ALL preferences regardless of content (SQL: memory_type='preference').
-            // Content = two unique tokens → content_score = 0 across the 4 preference memories ✓.
-            content: format!("{token} {title_t2}"),
+            // Phase 17 applies a has_process_signal check on content. "always" satisfies it
+            // and is not a stop word. Shared "always" across 4 preferences gives content_score
+            // = 1/3 ≈ 0.333 < 0.65 threshold → no semantic dedup interference ✓.
+            content: format!("always {token} {title_t2}"),
             confidence: 0.9,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -1119,8 +1120,20 @@ pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec
         let utility = (access as f64 / 10.0).clamp(0.0, 1.0);
         let completeness = (content.len() as f64 / 200.0).min(1.0);
         let activation = post_decay_activation.clamp(0.0, 1.0);
-        let expected_quality =
+        let phase15_quality =
             freshness * 0.3 + utility * 0.3 + completeness * 0.2 + activation * 0.2;
+
+        // Phase 22 (quality pressure) adjusts quality AFTER Phase 15:
+        //   - access_count = 0: normal decay -0.1 (if phase15 >= 0.3) or accel -0.15 (if < 0.3)
+        //   - access_count > 0 AND accessed_at within 1 day: boost +0.05
+        // All c6-quality memories use accessed_at_spec="NOW", so they qualify for the boost.
+        let expected_quality = if access == 0 {
+            let decay = if phase15_quality < 0.3 { 0.15_f64 } else { 0.1_f64 };
+            (phase15_quality - decay).max(0.0)
+        } else {
+            // access > 0 AND accessed within 1 day → boost applies
+            (phase15_quality + 0.05_f64).min(1.0)
+        };
 
         specs.push(MemorySpec {
             id: id.clone(),
@@ -1170,10 +1183,14 @@ pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<Grou
     //   within-pair: intersection = {topic} = 1, max = 2 → title_score = 0.5 < 0.65 ✓
     //   across-pairs: each pair has DIFFERENT topic token → cross-pair intersection = {} → 0 ✓
     // Content: unique per-member token keeps content_score = 0 across all memories ✓.
-    // Phase 20 combined title+content overlap still in [0.3, 0.7):
-    //   title_score = 0.5 ✓ (falls in range needed for Phase 20)
-    //   content_score = 0 → combined ≈ 0.25 (weighted 0.5*0.5 + 0.5*0) = 0.25 < 0.3
-    //   Phase 20 uses embedding distance (< 0.35) as PRIMARY signal, so this is fine ✓.
+    // Phase 20 combined title+content overlap in [0.3, 0.7):
+    //   combined mw(title+content) for older = {topic, unique_older} (2 words)
+    //   combined mw(title+content) for newer = {topic, unique_newer} (2 words)
+    //   intersection=1, union=3 → overlap=0.333 ∈ [0.3, 0.7) ✓
+    //
+    // Phase 14 guard: ONLY 1 tag per pair ("category-7-supersede" only, no per-pair tag).
+    //   Phase 14 (reweave) fires when memories share ≥2 tags. With 1 shared tag, Phase 14
+    //   is suppressed → Phase 20 can find both memories still active ✓.
     for pair_idx in 0..6 {
         let topic = unique("topic", pair_idx);
         let unique_older = sha256_hex(&format!("c7-older-{seed}-{pair_idx}"));
@@ -1189,7 +1206,9 @@ pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<Grou
             confidence: 0.8,               // <0.95 to allow supersede
             valence: "neutral".into(),
             intensity: 0.0,
-            tags: vec!["category-7-supersede".into(), format!("topic-{topic}")],
+            // Only 1 tag: Phase 14 reweave requires ≥2 shared tags → suppressed ✓
+            // Phase 20 uses embedding KNN (distance < 0.35) as primary signal → still fires ✓
+            tags: vec!["category-7-supersede".into()],
             project: "forge-consolidation-bench".into(),
             access_count: 0,
             activation_level: 0.0,
@@ -1205,7 +1224,8 @@ pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<Grou
             confidence: 0.85,
             valence: "neutral".into(),
             intensity: 0.0,
-            tags: vec!["category-7-supersede".into(), format!("topic-{topic}")],
+            // Only 1 tag: Phase 14 reweave requires ≥2 shared tags → suppressed ✓
+            tags: vec!["category-7-supersede".into()],
             project: "forge-consolidation-bench".into(),
             access_count: 0,
             activation_level: 0.0,
@@ -2342,10 +2362,17 @@ pub fn audit_reweave(
         correct as f64 / total as f64
     };
 
-    // Promotion: Pattern memories in category-6-cluster project
+    // Promotion: Pattern memories promoted by Phase 5 from Category 6 lesson clusters.
+    // Phase 5's promote_recurring_lessons() creates Pattern memories with the cluster lesson
+    // title (format: "{cluster_token} repeats {token_a} across {token_b}") and inherits
+    // the source project. Tags are NOT copied from source lessons, so we cannot filter by
+    // category-6-cluster tag. Instead we identify Phase 5 patterns by their title pattern
+    // (contains "repeats" and "across") within the bench project.
     let pattern_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM memory WHERE memory_type = 'pattern' AND project = 'forge-consolidation-bench' AND tags LIKE '%category-6-cluster%'",
+            "SELECT COUNT(*) FROM memory WHERE memory_type = 'pattern'
+             AND project = 'forge-consolidation-bench'
+             AND title LIKE '% repeats % across %'",
             [],
             |r| r.get(0),
         )
@@ -2356,10 +2383,15 @@ pub fn audit_reweave(
         (pattern_count as f64 / dataset.expected_pattern_count as f64).min(1.0)
     };
 
-    // Protocol: protocol memories created by Phase 17
+    // Protocol: protocol memories created by Phase 17.
+    // Phase 17's extract_protocols() creates protocols with title "Protocol: {source_title}"
+    // but does NOT inherit the project from the source memory (INSERT doesn't set project).
+    // We identify Phase 17 protocols by the "Protocol: " title prefix regardless of project.
     let protocol_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM memory WHERE memory_type = 'protocol' AND project = 'forge-consolidation-bench'",
+            "SELECT COUNT(*) FROM memory WHERE memory_type = 'protocol'
+             AND status = 'active'
+             AND title LIKE 'Protocol: %'",
             [],
             |r| r.get(0),
         )
@@ -4046,5 +4078,112 @@ mod tests {
             phase2_merged, 8,
             "seed 1: Phase 2 merged {phase2_merged}, expected 8"
         );
+    }
+
+    /// Guard: all 6 Cat7 topic-supersede pairs must have combined title+content overlap in [0.3, 0.7).
+    #[test]
+    fn test_category_7_topic_supersede_in_phase_20_range() {
+        use crate::db::ops::meaningful_words_pub;
+        let (specs, _) = generate_category_7_self_healing(42);
+        for pair_idx in 0..6 {
+            let older = &specs[pair_idx * 2];
+            let newer = &specs[pair_idx * 2 + 1];
+            let older_text = format!("{} {}", older.title, older.content);
+            let newer_text = format!("{} {}", newer.title, newer.content);
+            let older_mw = meaningful_words_pub(&older_text);
+            let newer_mw = meaningful_words_pub(&newer_text);
+            let intersection = older_mw.intersection(&newer_mw).count();
+            let union = older_mw.union(&newer_mw).count();
+            let overlap = if union > 0 { intersection as f64 / union as f64 } else { 0.0 };
+            assert!(
+                overlap >= 0.3 && overlap < 0.7,
+                "pair {pair_idx}: overlap={overlap:.4} not in [0.3, 0.7)"
+            );
+        }
+    }
+
+    /// Guard: Cat7 topic-supersede pairs must have exactly 1 shared tag to prevent Phase 14 reweave.
+    #[test]
+    fn test_category_7_topic_supersede_single_shared_tag() {
+        let (specs, _) = generate_category_7_self_healing(42);
+        for pair_idx in 0..6 {
+            let older = &specs[pair_idx * 2];
+            let newer = &specs[pair_idx * 2 + 1];
+            // Each member should have exactly 1 tag
+            assert_eq!(older.tags.len(), 1, "pair {pair_idx} older should have 1 tag");
+            assert_eq!(newer.tags.len(), 1, "pair {pair_idx} newer should have 1 tag");
+            // Shared tags between pair must be < 2 (Phase 14 threshold)
+            let shared: usize = older.tags.iter().filter(|t| newer.tags.contains(t)).count();
+            assert!(
+                shared < 2,
+                "pair {pair_idx}: {shared} shared tags — Phase 14 would trigger (need < 2)"
+            );
+        }
+    }
+
+    /// Guard: Phase 20 fires for all 6 Cat7 topic-supersede pairs after a full run.
+    #[test]
+    fn test_phase_20_fires_for_all_supersede_pairs() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        seed_corpus(&state.conn, 42).unwrap();
+        let _ = seed_embeddings(&state.conn, 42);
+        let cons_config = crate::config::ConsolidationConfig { batch_limit: 500, reweave_limit: 100 };
+        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
+        let heal_count: i64 = state.conn.query_row(
+            "SELECT COUNT(*) FROM healing_log WHERE action='auto_superseded'",
+            [], |r| r.get(0)
+        ).unwrap_or(0);
+        assert!(heal_count >= 6, "Phase 20 should fire ≥6 times, got {heal_count}");
+        // Verify all older memories are superseded and all newer are active
+        for pair_idx in 0..6 {
+            let older_status: String = state.conn.query_row(
+                "SELECT status FROM memory WHERE id=?1",
+                rusqlite::params![&format!("c7-supersede-{pair_idx}-older")],
+                |r| r.get(0)
+            ).unwrap_or_default();
+            let newer_status: String = state.conn.query_row(
+                "SELECT status FROM memory WHERE id=?1",
+                rusqlite::params![&format!("c7-supersede-{pair_idx}-newer")],
+                |r| r.get(0)
+            ).unwrap_or_default();
+            assert_eq!(older_status, "superseded", "pair {pair_idx} older should be superseded");
+            assert_eq!(newer_status, "active", "pair {pair_idx} newer should be active");
+        }
+    }
+
+    /// Guard: audit_reweave finds promoted patterns and extracted protocols.
+    #[test]
+    fn test_audit_reweave_finds_new_memories() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
+        let _ = seed_embeddings(&state.conn, 42);
+        let cons_config = crate::config::ConsolidationConfig { batch_limit: 500, reweave_limit: 100 };
+        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
+        let score = audit_reweave(&state.conn, &dataset).unwrap();
+        assert!(score.f1 > 0.9, "reweave_enrichment score should be > 0.9, got {:.4}", score.f1);
+        // Check individual sub-scores in details
+        let promo = score.details.iter().find(|d| d.starts_with("promo_accuracy=")).unwrap();
+        let proto = score.details.iter().find(|d| d.starts_with("proto_accuracy=")).unwrap();
+        let promo_val: f64 = promo.strip_prefix("promo_accuracy=").unwrap().parse().unwrap();
+        let proto_val: f64 = proto.strip_prefix("proto_accuracy=").unwrap().parse().unwrap();
+        assert!(promo_val > 0.9, "promo_accuracy should be > 0.9, got {promo_val:.4}");
+        assert!(proto_val > 0.3, "proto_accuracy should be > 0.3, got {proto_val:.4}");
+    }
+
+    /// Guard: audit_lifecycle finds correct decay confidence and quality scores.
+    #[test]
+    fn test_audit_lifecycle_decay_and_quality() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
+        let cons_config = crate::config::ConsolidationConfig { batch_limit: 500, reweave_limit: 100 };
+        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
+        let score = audit_lifecycle(&state.conn, &dataset).unwrap();
+        // decay and quality should now pass
+        let decay_detail = score.details.iter().find(|d| d.starts_with("decay=")).unwrap();
+        let quality_detail = score.details.iter().find(|d| d.starts_with("quality=")).unwrap();
+        let decay_val: f64 = decay_detail.strip_prefix("decay=").unwrap().parse().unwrap();
+        let quality_val: f64 = quality_detail.strip_prefix("quality=").unwrap().parse().unwrap();
+        assert!(decay_val > 0.8, "decay sub-score should be > 0.8, got {decay_val:.4}");
+        assert!(quality_val > 0.8, "quality sub-score should be > 0.8, got {quality_val:.4}");
     }
 }
