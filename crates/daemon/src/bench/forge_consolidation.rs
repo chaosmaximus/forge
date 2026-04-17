@@ -2259,8 +2259,8 @@ pub fn audit_reweave(
 
 /// Dimension 4: quality lifecycle.
 ///
-/// Unweighted mean of 5 sub-accuracies: decay, reconsolidation, quality_score,
-/// activation_level, staleness. All float comparisons use ±0.01 tolerance.
+/// Unweighted mean of 6 sub-accuracies: decay, reconsolidation, quality_score,
+/// activation_level, staleness, quality_pressure. All float comparisons use ±0.01 tolerance.
 pub fn audit_lifecycle(
     conn: &rusqlite::Connection,
     dataset: &SeededDataset,
@@ -2276,6 +2276,8 @@ pub fn audit_lifecycle(
     let mut activation_total = 0usize;
     let mut stale_pass = 0usize;
     let mut stale_total = 0usize;
+    let mut pressure_pass = 0usize;
+    let mut pressure_total = 0usize;
 
     for gt in &dataset.ground_truth {
         if let Some(expected_conf) = gt.expected_confidence {
@@ -2344,6 +2346,22 @@ pub fn audit_lifecycle(
                 stale_pass += 1;
             }
         }
+        // Quality pressure (Phase 22 boost): c7-boost-* candidates have high access + recent
+        // creation so Phase 22 applies a +0.05 boost. Post-consolidation quality_score should
+        // be >= 0.5 (Phase 15 baseline ~0.48 + 0.05 boost).
+        if gt.category == Category::SelfHealing && gt.memory_id.starts_with("c7-boost-") {
+            pressure_total += 1;
+            let q: Option<f64> = conn
+                .query_row(
+                    "SELECT quality_score FROM memory WHERE id=?1",
+                    rusqlite::params![gt.memory_id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if q.is_some_and(|v| v >= 0.5) {
+                pressure_pass += 1;
+            }
+        }
     }
 
     let frac = |pass: usize, total: usize| {
@@ -2358,7 +2376,8 @@ pub fn audit_lifecycle(
     let quality = frac(quality_pass, quality_total);
     let act = frac(activation_pass, activation_total);
     let stale = frac(stale_pass, stale_total);
-    let score = (decay + recon + quality + act + stale) / 5.0;
+    let pressure = frac(pressure_pass, pressure_total);
+    let score = (decay + recon + quality + act + stale + pressure) / 6.0;
 
     Ok(DimensionScore {
         dimension: "quality_lifecycle".into(),
@@ -2371,6 +2390,7 @@ pub fn audit_lifecycle(
             format!("quality={quality:.4}"),
             format!("activation={act:.4}"),
             format!("staleness={stale:.4}"),
+            format!("pressure={pressure:.4}"),
         ],
     })
 }
@@ -2399,17 +2419,18 @@ pub fn audit_infrastructure(
         ));
     }
 
-    // Phase 8: at least one related_to edge with strength >= 0.2 in properties JSON
-    // We check for any JSON object with a "strength" key whose value is >= 0.2
+    // Phase 8: at least one related_to edge with strength >= 0.1 in properties JSON.
+    // strengthen_active_edges adds +0.1 per cycle from a 0.0 baseline, so after one
+    // run_all_phases call the maximum reachable strength is 0.1. Threshold must be 0.1.
     let strengthened: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM edge WHERE edge_type='related_to' AND CAST(json_extract(properties, '$.strength') AS REAL) >= 0.2",
+            "SELECT COUNT(*) FROM edge WHERE edge_type='related_to' AND CAST(json_extract(properties, '$.strength') AS REAL) >= 0.1",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0);
     if strengthened == 0 {
-        failures.push("Phase 8: no related_to edges with strength >= 0.2".into());
+        failures.push("Phase 8: no edges with strength >= 0.1 (single-cycle max is 0.1)".into());
     }
 
     // Phase 11: at least 5 unique entities
@@ -2467,6 +2488,50 @@ pub fn audit_infrastructure(
     if heal_count < 6 {
         failures.push(format!(
             "Phase 20: only {heal_count} healing_log auto_superseded entries (need >=6)"
+        ));
+    }
+
+    // Phase 16: portability candidates must be classified (no NULL or 'unknown' portability)
+    let unclassified_portability: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory WHERE id LIKE 'c8-portability-%' AND (portability IS NULL OR portability = 'unknown')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if unclassified_portability > 0 {
+        failures.push(format!(
+            "Phase 16: {unclassified_portability} portability candidates still unclassified"
+        ));
+    }
+
+    // Phase 19c: no unexpected quality_decline notifications — corpus is seeded with healthy
+    // quality; any such notification indicates either a daemon bug or a corpus design flaw.
+    let quality_decline_notifs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notification WHERE topic LIKE '%quality_decline%' OR topic LIKE '%decline%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if quality_decline_notifs > 0 {
+        failures.push(format!(
+            "Phase 19c: unexpected quality_decline notification ({quality_decline_notifs} rows) — corpus was seeded with healthy quality"
+        ));
+    }
+
+    // Phase 19d: no meeting notifications — no meetings were seeded; any meeting notification
+    // indicates phantom meetings or a daemon bug.
+    let meeting_notifs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notification WHERE topic LIKE '%meeting%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if meeting_notifs > 0 {
+        failures.push(format!(
+            "Phase 19d: unexpected meeting notification ({meeting_notifs} rows) — no meetings seeded"
         ));
     }
 
@@ -3360,6 +3425,6 @@ mod tests {
         // Before consolidation, all infrastructure checks will fail — that's expected
         let failures = result.unwrap();
         // Just verify we get a Vec (can be non-empty pre-consolidation)
-        assert!(failures.len() <= 7, "at most 7 infrastructure assertions");
+        assert!(failures.len() <= 10, "at most 10 infrastructure assertions");
     }
 }
