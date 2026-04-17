@@ -1,6 +1,6 @@
-# Forge-Identity — Phase 2A-4 Master Design (v5)
+# Forge-Identity — Phase 2A-4 Master Design (v6)
 
-**Status:** DRAFT v5 — resolves remaining CRITICAL from fourth-pass reviews (both reviewers converged on Dim 6a RRF-identity being unachievable under BM25 + RRF positional-rank behavior). v5 drops the full-recall round-trip for Dim 6a and scores the formula directly via a new test-only `Request::ComputeRecencyFactor` probe, bypassing BM25/vector/RRF entirely. Dim 6b retains the full-recall mixed-corpus test where ranking semantics actually matter.
+**Status:** DRAFT v6 — resolves residual code-grounding issues flagged in fifth-pass reviews: Phase 17 function name corrected (`extract_protocols`, not `infer_protocols`); `bench` Cargo feature declaration added to §13 sub-phase work; `debug_assert!` upgraded to `assert!` for release-path correctness; Dim 6b's Recall-vs-embedding gap explicitly deferred to 2A-4d detailed design; §13 orphan D7 reference cleared; changelog v5/v6 entries added.
 **Parent plan:** [phase-2-plan.md §2A-4](./phase-2-plan.md) "Memory is identity — agents develop persistent personality that compounds across sessions."
 **Methodology:** Same 7-gate pattern as Forge-Consolidation: design → adversarial reviews → implementation plan → TDD subagent cycles → dogfood → results doc → memory handoff.
 **v1 → v2 diff summary:** Auto-flip simplified to explicit-only; decay anchor changed from `accessed_at` to `created_at` with explicit `touch()` exemption for preferences; 2A-4c split into c1 (tool-use schema) + c2 (Phase 23); `<preferences>` XML reclassified as greenfield; Dim 6 replaced with gradient test; Dim 3/6 independence resolved; Phase 17/23 ownership rule; per-dim minimums added; LongMemEval gate downgraded to narrative goal.
@@ -178,7 +178,7 @@ Before any dimension is scored, bench asserts the following prerequisites exist.
 6. Config values: `preference_half_life_days` ∈ 1..=365, `skill_inference_min_sessions` ∈ 1..=20 (post 2A-4b, 2A-4c2)
 7. `session_tool_call` table exists with specified columns and per-session/per-agent indexes (non-unique — tool calls can repeat) (post 2A-4c1)
 8. `skill` table has columns `agent`, `fingerprint`, `inferred_from`, `success_count`, `inferred_at`; unique index on `(agent, fingerprint)` (post 2A-4c2)
-9. Phase 23 is registered and executes after Phase 17 — verified via new test/bench-only `Request::ProbePhase { phase_name: "infer_skills_from_behavior" } -> { executed_at_phase_index: usize, executed_after: Vec<String> }` (added in 2A-4c2, gated under `#[cfg(any(test, feature = "bench"))]`). Assertion checks `executed_at_phase_index > 17` AND `executed_after.contains("infer_protocols")` (Phase 17 function name).
+9. Phase 23 is registered and executes after Phase 17 — verified via new test/bench-only `Request::ProbePhase { phase_name: "infer_skills_from_behavior" } -> { executed_at_phase_index: usize, executed_after: Vec<String> }` (added in 2A-4c2, gated under `#[cfg(any(test, feature = "bench"))]` — requires the `bench` Cargo feature to be declared in `crates/core/Cargo.toml` and `crates/daemon/Cargo.toml` as a prereq task in 2A-4c2; if the feature is not declared, fall back to `#[cfg(test)]` only and the bench harness accesses via integration-test style). Assertion checks `executed_at_phase_index > 17` AND `executed_after.contains("extract_protocols")` (the actual Phase 17 function name in `crates/daemon/src/workers/consolidator.rs:1145`).
 10. `CompileContext` response XML contains `<preferences>` element (present or empty — D4 resolved: always emit, even empty) (post 2A-4b)
 11. `CompileContext` response XML contains `<preferences-flipped>` element (may be absent if empty) (post 2A-4a)
 12. `CompileContext` response XML: after seeding a Phase 23 skill (via `RecordToolUse` ≥ 3 sessions + ForceConsolidate), `<skills>` contains at least one `<skill>` child with the seeded skill's identifying token — verifies Phase 23 rows actually surface (not just that the element exists) (post 2A-4c2)
@@ -263,7 +263,7 @@ Each of 2A-4a / 2A-4b / 2A-4c1 / 2A-4c2 ships:
 - **Bench timing sensitivity** — Dim 6 calibrated ratio bands are narrow. If Phase 4 decay OR universal recency changes formula in a future sprint, bench breaks. Mitigation: bench tracks the formula parameters in its summary.json so a regression is traceable.
 - **Schema churn cost** — this phase adds ≥ 6 new columns across `memory`, `skill`, plus a new `session_tool_call` table. Migration order matters. Mitigation: each sub-phase's migration is independently reversible.
 - **Retrieval feedback risk (revisited)** — `touch()` exemption resolves the immediate issue for preferences, but other memory types still self-refresh. Document as non-goal; future Phase 2A-n may exempt all types.
-- **Dim 6 ratio calibration may need adjustment after first bench run** — the v4 bands ([1.85, 2.00], [40.5, 45.5], [81, 91]) are derived from the theoretical values 1.9034, 43.0688, 86.1376 with ~2–5% margin on each side to absorb floating-point + RRF rank-ordering noise. If 2A-4d calibration observes ratios drifting further, bands should be re-calibrated then locked. Summary.json records observed ratios per-seed for regression traceability.
+- **Dim 6a and 6b calibration** — Dim 6a is a pure formula probe (via `Request::ComputeRecencyFactor`) and therefore deterministic; factors match formula to ±0.0001 per v5. Dim 6b is a full-Recall ranking test whose exact behavior depends on how `Request::Recall` passes (or computes) query embedding — the current handler at `handler.rs:453` passes `None` for query_embedding, so the bench must either (a) extend Request::Recall to accept a query_embedding param (test/bench-gated), (b) use BM25-only ranking semantics for Dim 6b (accept that cosine similarity spec becomes aspirational), or (c) invoke hybrid_recall directly from the bench bypassing the Request handler. This is explicitly deferred to 2A-4d detailed design — see §13 for the assigned resolution.
 
 ---
 
@@ -273,7 +273,7 @@ Resolved at master level (no further action needed):
 - **D1 — Auto-flip threshold:** no auto-flip in 2A-4; explicit `FlipPreference` API only. Phase 9a remains diagnostic-only.
 - **D4 — CompileContext preferences section:** always emit `<preferences>` (even empty) to satisfy assertion 10; `<preferences-flipped>` and `<skills>` omitted when empty.
 - **D5 — Flipped-memory ranking:** flipped memories filtered by default in recall; surfaced with `include_flipped: true` query param.
-- **D6 — Bench temporal simulation depth:** 180 days fixed per non-goal §8; no 2+ year simulation. Generators `debug_assert!(days <= 180)`.
+- **D6 — Bench temporal simulation depth:** 180 days fixed per non-goal §8; no 2+ year simulation. Generators `assert!(days <= 180)` — NOT `debug_assert!`, because `forge-bench` runs in release profile which strips `debug_assert!`. The hard `assert!` ensures the cap holds on calibration and CI runs.
 - **D7 — Recency composition order:** Post-RRF multiplicative (see §3 line 51 and §5 2A-4b), applied uniformly to graph-expanded rows. Graph-surfaced preferences decay under the same rule as query-matched ones.
 
 Deferred to sub-phase design docs (explicitly assigned in §13):
@@ -297,7 +297,7 @@ All non-master-level findings from v2 adversarial review are assigned here to th
 **Resolve in 2A-4b (Recency-weighted Decay) detailed design:**
 - `touch()` exemption architectural layer — must be in `db/ops.rs:touch()` with SQL predicate `AND memory_type != 'preference'`, NOT in `writer.rs` (which doesn't see memory_type) (Claude N-H1).
 - Non-preference decay rate constants: reconcile `db/ops.rs:562` (0.03 for fader, uses accessed_at) vs `recall.rs:412` (0.1 for ranker, uses created_at). Pick correct rates, document them, ensure v3 master quotes the right numbers (Claude N-H8).
-- Graph-expanded result recency composition (open decision D7) — recommend yes, apply same type-dispatched multiplier (Codex PARTIAL [6]).
+- Graph-expanded result recency composition (D7, resolved at §12) — implementation follows §5 2A-4b spec: apply same type-dispatched multiplier to graph-expanded rows (Codex PARTIAL [6]).
 
 **Resolve in 2A-4c1 (Tool-use schema) detailed design:**
 - `session_tool_call` uniqueness: align table definition (non-unique indexes) with infrastructure assertion 7 (which required "unique index"). Decision: drop the "unique" word from assertion 7 — tool calls can repeat (Codex H4).
@@ -309,10 +309,10 @@ All non-master-level findings from v2 adversarial review are assigned here to th
 - Canonical fingerprint sequence/multiplicity: `sha256(sort(unique(tool_names)) + sort(tool_arg_shapes))` loses order and count. Decide: is order-preserving fingerprint better (e.g., `sha256(tool_sequence_in_order + arg_shape_sequence)`) or is unordered acceptable for the bench's use case? Trade-off documented in 2A-4c2 design (Claude N-H10, Codex H1).
 - `templated_name(fingerprint)` definition — pin exact format, e.g., `format!("skill-{domain}-{}", &fingerprint[0..12])` (Claude N-H10, Codex unaddressed).
 - `infer_domain(tool_names)` definition — pin exact rule, e.g., "first tool_name if homogeneous, else 'mixed'" (Claude N-H10).
-- `phase_registry()` enforceability — either (a) refactor `run_all_phases` to expose a `Vec<PhaseFn>` registry (expands 2A-4c2 scope), or (b) replace assertion 9 with a source-level check via `include_str!` + pattern matching, or (c) add a runtime probe request `Request::ProbePhase { phase_name: "infer_skills_from_behavior" }` (Claude N-C2, Codex unaddressed).
+- `phase_registry()` enforceability — v6 commits to option (c) via `Request::ProbePhase`; 2A-4c2 implements it. If c proves unworkable during implementation, fallback to (a) refactor `run_all_phases` to maintain an ordered phase list, OR (b) source-level `include_str!` + pattern matching on the phase sequence (Claude N-C2, resolved to option c at master level).
 - `informed_by` edge between Protocol and Skill rows at ≥ 0.8 topic Jaccard: define `topic` (recommend: lowercased title token set, stop-words removed, from `memory.title` or `skill.name`), define Jaccard tokenization, define edge storage location (recommend: existing `edge` table with `edge_type='informed_by'`) (Claude N-H2, Codex H6).
 - `<skills>` renderer update (per master mandate above): lock the chosen resolution path (drop `success_count>0` filter, OR set `success_count` at insert).
-- Phase 17 current behavior misdescription in v2 master: verify actual Phase 17 query and update master (Claude PARTIAL [8]).
+- **Phase 17 current behavior description correction (v6 addition):** the current consolidator.rs:1145-1163 `extract_protocols` function queries preferences AND memories with `pattern` type with "Behavioral:" title prefix. The master §5 2A-4c2 "Phase 17 (Protocol)" description says "process-signal content" inputs but Phase 17 does not currently scan arbitrary content for process signals — it matches on type + title prefix. 2A-4c2 design must either (a) correct the description to match current behavior, or (b) extend Phase 17 to actually scan content (out-of-scope unless needed by Dim 5) (Codex v5 Part C).
 
 **Resolve in 2A-4d (Forge-Identity Bench) detailed design:**
 - Per-dimension DB isolation: each dim generator uses its own `DaemonState::new(":memory:")` instance, not a shared DB — prevents Dim 5 ForceConsolidate from polluting Dim 3/6 fixtures (Claude N-H7, Codex M3).
@@ -321,6 +321,11 @@ All non-master-level findings from v2 adversarial review are assigned here to th
 - `MAX_DELTA` visibility for const_assert: make `pub(crate)` in disposition.rs, import in bench (Claude N-H4).
 - Bench-isolation invariant: "No generator calls Request::Recall or Request::CompileContext before scoring" — enforce via instrumented handle_request in bench mode (Claude N-M1).
 - Dim 1 identity worker control: use `DaemonState::new_test()` (if exists; if not, introduce) that does not start workers (Claude N-M3).
+- **Dim 6b query-embedding integration (v6 addition):** `Request::Recall` currently passes `None` to `hybrid_recall` for `query_embedding` (see `handler.rs:453`). Dim 6b's cosine-similarity spec requires the bench to control the query embedding. Decide between: (a) extend `Request::Recall` with optional `query_embedding: Option<Vec<f32>>` field (test/bench-gated under `#[cfg(any(test, feature = "bench"))]`), (b) call `hybrid_recall` directly from the bench bypassing the Request handler, or (c) accept BM25-only ranking semantics for Dim 6b (drop cosine spec). Lock in 2A-4d design. (Codex v5 Part C.)
+- **Dim 6b distractor BM25-tie prevention:** BM25 indexes `(title, content, tags)`. Dim 6b spec must pin distractor `title`, `content`, AND `tags` (not just title) to control BM25 ranking deterministically. Per-distractor SHA-256 tokens apply to all three FTS-indexed fields.
+
+**Resolve in 2A-4b OR 2A-4c2 (whichever ships the first `#[cfg(feature = "bench")]`-gated variant):**
+- **`bench` Cargo feature declaration** — neither `crates/core/Cargo.toml` nor `crates/daemon/Cargo.toml` currently declares a `[features]` section. The first sub-phase that introduces a `#[cfg(any(test, feature = "bench"))]`-gated Request variant (e.g., `ComputeRecencyFactor` in 2A-4b, or `ProbePhase` in 2A-4c2) must add `[features]\nbench = []` to both Cargo.toml files. This is a prerequisite task — the feature gate won't compile without it (Codex v5 CRITICAL R1).
 
 **Resolve in any sub-phase (flexible):**
 - `ReaffirmPreference` non-preference validation: ReaffirmPreference must validate `memory_type = 'preference'` like FlipPreference does. Add to 2A-4b task list (Codex M2).
@@ -334,7 +339,7 @@ All non-master-level findings from v2 adversarial review are assigned here to th
 - **v1 (2026-04-17, commit 059be8d):** Initial master design.
 - **v2 (2026-04-17, commit 084cc68):** Addresses 10 CRITICAL findings from first-pass adversarial reviews.
 - **v3 (2026-04-17, commit 0cc369e):** Addresses v2 master-level blockers (5 items). Introduced 2 CRITICAL regressions flagged by third-pass review: (a) `preference_fade_threshold` removal was incomplete (still referenced in 3 places); (b) Dim 6a ratio math was numerically wrong (stated 1.950/41.95/83.90 vs true 1.9034/43.07/86.14).
-- **v4 (2026-04-17, this revision):** Fixes v3 regressions + tightens code-reality grounding.
+- **v4 (2026-04-17, commit 787cf8f):** Fixes v3 regressions + tightens code-reality grounding.
   - `preference_fade_threshold` **completely removed** from §3, §5 (2A-4b config list), and §6 (infrastructure assertion 6). Only hard-fade exemption remains, which is sufficient.
   - Dim 6a ratios **corrected** to true values (1.9034, 43.0688, 86.1376) with calibrated bands [1.85, 2.00], [40.5, 45.5], [81, 91] that allow symmetric ~3–6% drift.
   - RRF-identity fixture spec **strengthened** — prefs must share identical `title` strings (ensures identical BM25 ranks) in addition to identical embeddings.
@@ -347,23 +352,21 @@ All non-master-level findings from v2 adversarial review are assigned here to th
   - §12 D6 and D7 **resolved** with references to their master-level resolutions.
   - §13 finding assignment preserved; assertion 7 "unique index" softened to "non-unique indexes" (tool calls repeat; see §13 line 303 for rationale).
 
-- **v2 (2026-04-17, commit 084cc68):** Addresses 10 CRITICAL findings from Claude + codex adversarial reviews.
-  - Split 2A-4c into 2A-4c1 (tool-use schema) + 2A-4c2 (Phase 23), addressing Claude C1 (session_message wrong target).
-  - Anchored decay to `created_at`/`reaffirmed_at`, added `touch()` exemption for preferences (Claude C4, Codex C2).
-  - Added `preference_fade_threshold` for soft-fade exemption (Claude C5).
-  - Replaced Dim 6 with 4-point gradient test with calibrated ratio bands (Claude C6, Codex H2).
-  - Locked recency × RRF composition as post-RRF type-dispatched multiplicative (Claude C7, Codex H3).
-  - Dropped auto-flip "confidence" language; explicit API only (Claude C2, C8, Codex C1).
-  - Reclassified `<preferences>` and `<preferences-flipped>` as greenfield XML sections (Claude C3).
-  - Added per-dim minimums (Codex H7).
-  - Specified Phase 17 vs Phase 23 ownership boundary (Claude I2, Codex H4).
-  - Resolved D5 (flipped memory recall) at master level; added `include_flipped` Recall param (Codex H8).
-  - Added parity-test requirement for bench-only hooks (Codex H9).
-  - Added canonical fingerprint spec for skill deduplication (Codex H5).
-  - Specified semantic similarity model for Dim 6 (Claude I5).
-  - Specified consolidator-run policy for scoring (Claude I11).
-  - Specified Dim 1 strength tolerance ±0.001 (Claude I10).
-  - Downgraded LongMemEval dominance to narrative goal (Codex M3).
-  - Added bench self-contamination non-goal (Codex M4).
-  - Added schema migration rollback recipe to deliverables (Claude N8).
-  - Added `ReaffirmPreference` Request variant for user-initiated recency reset (addresses the semantic gap around "user restates preference").
+- **v5 (2026-04-17, commit ed17f10):** Resolves remaining CRITICAL from fourth-pass reviews (both reviewers converged on Dim 6a RRF-identity being unachievable under BM25 + RRF positional-rank behavior).
+  - **Dim 6a bypasses Recall** — new test/bench-only `Request::ComputeRecencyFactor { memory_id } -> f64` returns pure `recency_factor(memory)` value, bypassing BM25/vector/RRF/graph. Assert factors within ±0.0001 of formula (0.9517 / 0.5 / 0.01161 / 0.000135).
+  - **Dim 6b fixture pinned** — distractors fully specified (2 lessons + 2 decisions at specific `created_at`, distinct embedding with `cosine(v_pref, v_non) = 0.85`, query embedding `v_q` with `cosine(v_q, v_pref) = 0.95`, SHA-256 tokens on distractor titles).
+  - **Assertion 9 concrete** — new test/bench-only `Request::ProbePhase { phase_name }` replaces deferred `phase_registry()`.
+  - **ReaffirmPreference validates `memory_type = 'preference'`** — matches FlipPreference validation (Codex M2).
+  - **§12 restructured** — renamed "Open decisions" to "Decisions index" with clear Resolved/Deferred sections; removed "Still open" heading that contradicted D6/D7 RESOLVED status.
+  - **Header updated v3 → v5.**
+  - **D6 enforcement** — `debug_assert!(days <= 180)` in generators.
+
+- **v6 (2026-04-17, this revision):** Resolves residual code-grounding issues from fifth-pass reviews.
+  - **Phase 17 function name corrected** in assertion 9 from `infer_protocols` to `extract_protocols` (actual name in `crates/daemon/src/workers/consolidator.rs:1145`) (Codex v5 Part C, Claude v5 Fix 3 PARTIAL).
+  - **`bench` Cargo feature** explicitly scoped to the first sub-phase that introduces a feature-gated variant (2A-4b or 2A-4c2); must declare `[features]\nbench = []` in both `core/Cargo.toml` and `daemon/Cargo.toml` as a prereq task. Fallback to `#[cfg(test)]` only if the feature declaration proves difficult (Codex v5 CRITICAL R1).
+  - **`debug_assert!` → `assert!`** for D6 enforcement — release builds strip `debug_assert!`; `forge-bench` runs in release so the cap must be a hard `assert!` (Codex v5 BROKEN fix 7, Claude v5 B-H1).
+  - **Dim 6b Recall-vs-embedding gap** documented in §11 and deferred to 2A-4d detailed design. Current `Request::Recall` passes `None` for `query_embedding` at `handler.rs:453` → cosine similarity spec for Dim 6b can't be exercised without either (a) extending Request::Recall with test/bench-gated `query_embedding` param, (b) calling `hybrid_recall` directly from bench, or (c) accepting BM25-only ranking (Codex v5 Part B, Claude v5 B-C1 scope-limited).
+  - **Dim 6b distractor BM25-tie prevention** assigned to 2A-4d — must pin `title`, `content`, AND `tags` (not just title) to control BM25 deterministically (Codex v5 BROKEN fix 2).
+  - **§13 orphan D7 reference** at line 300 cleared (now references §12 resolution).
+  - **§11 line 266 "ratio calibration" text** updated — v5's Dim 6a is formula probe (no ratio test via Recall), so calibration concerns apply only to Dim 6b's ranking.
+  - **Phase 17 behavior description** flagged for correction in 2A-4c2 (Codex v5 Part C).
