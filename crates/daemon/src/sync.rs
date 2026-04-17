@@ -296,6 +296,8 @@ fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         alternatives,
         participants,
         organization_id: row.get::<_, Option<String>>(19).unwrap_or(None),
+        superseded_by: None,
+        valence_flipped_at: None,
     })
 }
 
@@ -935,6 +937,8 @@ mod tests {
             alternatives: vec![],
             participants: vec![],
             organization_id: None,
+            superseded_by: None,
+            valence_flipped_at: None,
         })
         .unwrap();
 
@@ -976,6 +980,8 @@ mod tests {
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: None,
+            superseded_by: None,
+            valence_flipped_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1017,6 +1023,8 @@ mod tests {
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: None,
+            superseded_by: None,
+            valence_flipped_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1067,6 +1075,8 @@ mod tests {
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: None,
+            superseded_by: None,
+            valence_flipped_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1127,6 +1137,8 @@ mod tests {
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: None,
+            superseded_by: None,
+            valence_flipped_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1169,6 +1181,8 @@ mod tests {
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: None,
+            superseded_by: None,
+            valence_flipped_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1306,6 +1320,8 @@ mod tests {
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: None,
+            superseded_by: None,
+            valence_flipped_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1369,6 +1385,8 @@ mod tests {
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: None,
+            superseded_by: None,
+            valence_flipped_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 

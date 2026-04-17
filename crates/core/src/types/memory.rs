@@ -58,6 +58,15 @@ pub struct Memory {
     pub participants: Vec<String>, // Who was involved (relational memory)
     #[serde(default)]
     pub organization_id: Option<String>, // Multi-tenant isolation: org that owns this memory
+    /// Phase 2A-4a: pointer from a superseded memory to its replacement. Mirrors
+    /// the DB column added in Phase 2A-0 (superseded_by). Omitted in JSON when None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// Phase 2A-4a: set when this memory was flipped (i.e. replaced via
+    /// Request::FlipPreference). Distinguishes flip-supersede from plain supersede.
+    /// Format matches forge_core::time::now_iso(): "YYYY-MM-DD HH:MM:SS".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valence_flipped_at: Option<String>,
 }
 
 fn default_valence() -> String {
@@ -93,6 +102,8 @@ impl Memory {
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: None,
+            superseded_by: None,
+            valence_flipped_at: None,
         }
     }
 
@@ -229,5 +240,67 @@ mod tests {
         assert_eq!(original.tags, restored.tags);
         assert_eq!(original.project, restored.project);
         assert_eq!(original.created_at, restored.created_at);
+    }
+
+    #[test]
+    fn test_memory_struct_has_valence_flipped_at_and_superseded_by_fields() {
+        let m = Memory::new(MemoryType::Preference, "test", "test content");
+        assert_eq!(m.superseded_by, None);
+        assert_eq!(m.valence_flipped_at, None);
+    }
+
+    #[test]
+    fn test_memory_struct_roundtrips_superseded_by_and_valence_flipped_at() {
+        let mut m = Memory::new(MemoryType::Preference, "test", "test content");
+        m.superseded_by = Some("01JABCDEF".to_string());
+        m.valence_flipped_at = Some("2026-04-17 14:22:00".to_string());
+
+        let json = serde_json::to_string(&m).unwrap();
+        let decoded: Memory = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.superseded_by, Some("01JABCDEF".to_string()));
+        assert_eq!(
+            decoded.valence_flipped_at,
+            Some("2026-04-17 14:22:00".to_string())
+        );
+    }
+
+    #[test]
+    fn test_memory_struct_deserializes_old_json_without_new_fields() {
+        // Backward compat: old JSON payloads lacking the fields MUST still deserialize.
+        let old_json = r#"{
+            "id": "01JABC",
+            "memory_type": "preference",
+            "title": "test",
+            "content": "test",
+            "confidence": 0.9,
+            "status": "active",
+            "project": null,
+            "tags": [],
+            "embedding": null,
+            "created_at": "2026-04-17 00:00:00",
+            "accessed_at": "2026-04-17 00:00:00",
+            "valence": "neutral",
+            "intensity": 0.0
+        }"#;
+        let m: Memory = serde_json::from_str(old_json).unwrap();
+        assert_eq!(m.superseded_by, None);
+        assert_eq!(m.valence_flipped_at, None);
+    }
+
+    #[test]
+    fn test_memory_struct_omits_new_fields_when_none() {
+        // Forward compat: when None, the serialized JSON must NOT contain these keys
+        // (so older deserializers don't trip on unexpected nulls).
+        let m = Memory::new(MemoryType::Preference, "test", "test");
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("superseded_by"),
+            "should omit superseded_by when None; json: {json}"
+        );
+        assert!(
+            !json.contains("valence_flipped_at"),
+            "should omit valence_flipped_at when None; json: {json}"
+        );
     }
 }

@@ -787,6 +787,8 @@ pub fn export_memories_org(
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: row.get::<_, Option<String>>(17)?,
+            superseded_by: None,
+            valence_flipped_at: None,
         })
     };
     if use_org {
@@ -1501,6 +1503,8 @@ pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Ve
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: row.get::<_, Option<String>>(17)?,
+            superseded_by: None,
+            valence_flipped_at: None,
         })
     })?;
     rows.collect()

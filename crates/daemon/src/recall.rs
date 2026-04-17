@@ -123,6 +123,8 @@ fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Me
             alternatives,
             participants,
             organization_id: row.get::<_, Option<String>>(19)?,
+            superseded_by: None,
+            valence_flipped_at: None,
         }))
     } else {
         Ok(None)
