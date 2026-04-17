@@ -156,13 +156,7 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
 /// including the Phase 2A-4a `superseded_by` and `valence_flipped_at` columns.
 /// Centralizing the mapping here means future column additions only need to
 /// touch one place.
-pub fn fetch_memory_by_id(
-    conn: &Connection,
-    id: &str,
-) -> rusqlite::Result<Option<forge_core::types::memory::Memory>> {
-    use forge_core::types::memory::{Memory, MemoryStatus, MemoryType};
-    use rusqlite::OptionalExtension;
-
+pub fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
     conn.query_row(
         "SELECT id, memory_type, title, content, confidence, status, project, tags,
                 created_at, accessed_at, valence, intensity, hlc_timestamp, node_id,
@@ -171,7 +165,7 @@ pub fn fetch_memory_by_id(
                 organization_id, superseded_by, valence_flipped_at
            FROM memory
           WHERE id = ?1",
-        rusqlite::params![id],
+        params![id],
         |row| {
             let memory_type_str: String = row.get(1)?;
             let status_str: String = row.get(5)?;
@@ -191,37 +185,14 @@ pub fn fetch_memory_by_id(
                     "pattern" => MemoryType::Pattern,
                     "preference" => MemoryType::Preference,
                     "protocol" => MemoryType::Protocol,
-                    other => {
-                        return Err(rusqlite::Error::FromSqlConversionFailure(
-                            1,
-                            rusqlite::types::Type::Text,
-                            Box::new(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                format!("unknown memory_type: {other}"),
-                            )),
-                        ))
-                    }
+                    // Unknown types fall back silently — matches historical behavior at
+                    // recall.rs:93 pre-consolidation AND the status_from_str convention.
+                    _ => MemoryType::Decision,
                 },
                 title: row.get(2)?,
                 content: row.get(3)?,
                 confidence: row.get(4)?,
-                status: match status_str.as_str() {
-                    "active" => MemoryStatus::Active,
-                    "superseded" => MemoryStatus::Superseded,
-                    "reverted" => MemoryStatus::Reverted,
-                    "faded" => MemoryStatus::Faded,
-                    "conflict" => MemoryStatus::Conflict,
-                    other => {
-                        return Err(rusqlite::Error::FromSqlConversionFailure(
-                            5,
-                            rusqlite::types::Type::Text,
-                            Box::new(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                format!("unknown status: {other}"),
-                            )),
-                        ))
-                    }
-                },
+                status: status_from_str(&status_str),
                 project: row.get(6)?,
                 tags: serde_json::from_str(&tags_json).unwrap_or_default(),
                 embedding: None,
