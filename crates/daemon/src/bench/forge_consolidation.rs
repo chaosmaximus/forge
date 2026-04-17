@@ -145,6 +145,10 @@ pub struct MemorySpec {
 
 /// Category 1: 12 memories in 6 exact-duplicate pairs.
 /// Phase 1 should keep higher-confidence copy and DELETE the other.
+///
+/// Phase 2 guard: each pair's title is JUST the pair's SHA-256 token.
+/// Within a pair: keeper and victim share the SAME token title → Phase 1 catches them.
+/// Across pairs: every pair has a DIFFERENT token → meaningful_words intersection = 0 → Phase 2 skips.
 pub fn generate_category_1_exact_duplicates(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
     let unique_token = |idx: usize| sha256_hex(&format!("c1-{seed}-{idx}"));
 
@@ -162,15 +166,20 @@ pub fn generate_category_1_exact_duplicates(seed: u64) -> (Vec<MemorySpec>, Vec<
 
     for (pair_idx, mt) in types.iter().enumerate() {
         let token = unique_token(pair_idx);
-        let title = format!("C1 exact duplicate pair {pair_idx} [{token}]");
+        // Title = just the token. Both keeper and victim share the SAME title (Phase 1 dedup).
+        // Across pairs, tokens are distinct → no meaningful_words overlap → Phase 2 safe.
+        let title = token.clone();
         let keeper_id = format!("c1-{pair_idx}-keeper");
         let victim_id = format!("c1-{pair_idx}-victim");
+        // Content: per-memory unique tokens → content_score = 0 across all pairs.
+        let keeper_content_token = sha256_hex(&format!("c1-content-{seed}-{pair_idx}-keeper"));
+        let victim_content_token = sha256_hex(&format!("c1-content-{seed}-{pair_idx}-victim"));
 
         specs.push(MemorySpec {
             id: keeper_id.clone(),
             memory_type: mt.clone(),
             title: title.clone(),
-            content: format!("Exact duplicate pair {pair_idx} keeper — content [{token}]"),
+            content: keeper_content_token,
             confidence: 0.9,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -186,7 +195,7 @@ pub fn generate_category_1_exact_duplicates(seed: u64) -> (Vec<MemorySpec>, Vec<
             id: victim_id.clone(),
             memory_type: mt.clone(),
             title: title.clone(), // SAME title triggers Phase 1 exact dedup
-            content: format!("Exact duplicate pair {pair_idx} victim — content [{token}]"),
+            content: victim_content_token,
             confidence: 0.7, // LOWER confidence → victim
             valence: "neutral".into(),
             intensity: 0.0,
@@ -227,11 +236,25 @@ pub fn generate_category_1_exact_duplicates(seed: u64) -> (Vec<MemorySpec>, Vec<
 }
 
 /// Category 2: 16 memories in 8 semantic near-duplicate pairs.
-/// Titles share high word overlap via common anchor token.
+/// Titles share high word overlap via common anchor + pair token.
+///
+/// Phase 2 design:
+/// - Within-pair: combined = 1.0 > 0.65 → Phase 2 correctly catches victim ✓
+/// - Cross-pair: each pair has unique anchor + pair_token → intersection = {"enforce", "validation"}
+///   = 2 words. Max = 4 words → 2/4 = 0.5 < 0.65 → Phase 2 skips cross-pair ✓
+///
+/// meaningful_words for keeper title: {pair_token, "enforce", anchor, "validation"} (4 words)
+/// meaningful_words for victim title:  {"enforce", anchor, "validation", pair_token} (4 words)
+/// Within intersection = all 4. Max = 4 → 1.0 > 0.65 ✓
+/// Cross-pair keeper0 vs keeper1: anchor differs, pair_token differs → {enforce, validation} = 2/4 = 0.5 ✓
 pub fn generate_category_2_semantic_duplicates(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
     // 8 distinct anchor tokens, one per pair
     let anchors: Vec<String> = (0..8)
         .map(|i| sha256_hex(&format!("c2-anchor-{seed}-{i}")))
+        .collect();
+    // 8 distinct per-pair tokens (unique to each pair, same within a pair)
+    let pair_tokens: Vec<String> = (0..8)
+        .map(|i| sha256_hex(&format!("c2-pair-{seed}-{i}")))
         .collect();
 
     let types = [
@@ -250,11 +273,13 @@ pub fn generate_category_2_semantic_duplicates(seed: u64) -> (Vec<MemorySpec>, V
 
     for (pair_idx, mt) in types.iter().enumerate() {
         let anchor = &anchors[pair_idx];
-        // Two paraphrases sharing the anchor token produce >0.65 overlap
-        let title_a = format!("Always enforce {anchor} on deployment boundaries");
-        let title_b = format!("Enforce {anchor} deployment boundaries always");
-        let content_a = format!("Policy: always enforce {anchor} validation before deployment");
-        let content_b = format!("Deployment validation must always enforce {anchor}");
+        let pair_token = &pair_tokens[pair_idx];
+        // Two paraphrases sharing anchor + pair_token produce combined = 1.0 > 0.65.
+        // Cross-pair: anchor and pair_token differ → only {"enforce", "validation"} shared = 2/4 = 0.5 < 0.65.
+        let title_a = format!("{pair_token} enforce {anchor} validation");
+        let title_b = format!("enforce {anchor} validation {pair_token}");
+        let content_a = format!("{pair_token} enforce {anchor} validation");
+        let content_b = format!("enforce {anchor} validation {pair_token}");
 
         let keeper_id = format!("c2-{pair_idx}-keeper");
         let victim_id = format!("c2-{pair_idx}-victim");
@@ -322,6 +347,10 @@ pub fn generate_category_2_semantic_duplicates(seed: u64) -> (Vec<MemorySpec>, V
 /// Category 3: 12 memories — 4 embedding-merge pairs + 2 embedding-control pairs.
 /// Titles engineered to have LOW word overlap (<0.65) so Phase 2 does NOT catch them.
 /// Phase 7 embedding merge catches them via cosine distance < 0.1 (synthetic embeddings added in Task 4).
+///
+/// Phase 2 guard: each memory in a pair gets two per-memory unique SHA-256 tokens as its
+/// entire title and content. Across ALL cat-3 memories (same project, same memory_type=Decision),
+/// meaningful_words intersection = 0 since every token is unique → combined = 0 < 0.65.
 pub fn generate_category_3_embedding_duplicates(seed: u64) -> (Vec<MemorySpec>, Vec<GroundTruth>) {
     let unique = |label: &str, idx: usize| sha256_hex(&format!("c3-{seed}-{label}-{idx}"));
 
@@ -330,16 +359,22 @@ pub fn generate_category_3_embedding_duplicates(seed: u64) -> (Vec<MemorySpec>, 
 
     // 4 merge pairs — distance < 0.1 (Phase 7 merges lower-confidence victim)
     for pair_idx in 0..4 {
-        let token_a = unique("A", pair_idx);
-        let token_b = unique("B", pair_idx);
+        let token_a1 = unique("A1", pair_idx);
+        let token_a2 = unique("A2", pair_idx);
+        let token_b1 = unique("B1", pair_idx);
+        let token_b2 = unique("B2", pair_idx);
         let keeper_id = format!("c3-merge-{pair_idx}-keeper");
         let victim_id = format!("c3-merge-{pair_idx}-victim");
 
+        // Title = two unique tokens (no shared English words across any cat-3 memory).
+        // Content = two unique tokens (no shared English words).
+        // Phase 2 combined = 0 for all cross-memory pairs → never caught.
+        // Phase 7 catches via synthetic embedding cosine distance < 0.1.
         specs.push(MemorySpec {
             id: keeper_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Pattern {token_a}"),
-            content: format!("Topic {token_a} rationale follows from context alpha."),
+            title: format!("{token_a1} {token_a2}"),
+            content: format!("{token_a1} {token_a2}"),
             confidence: 0.9,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -354,8 +389,8 @@ pub fn generate_category_3_embedding_duplicates(seed: u64) -> (Vec<MemorySpec>, 
         specs.push(MemorySpec {
             id: victim_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Approach {token_b}"), // disjoint anchor → low word overlap
-            content: format!("Rationale covers {token_b} derivation from stream beta."),
+            title: format!("{token_b1} {token_b2}"),
+            content: format!("{token_b1} {token_b2}"),
             confidence: 0.7,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -393,17 +428,20 @@ pub fn generate_category_3_embedding_duplicates(seed: u64) -> (Vec<MemorySpec>, 
     }
 
     // 2 CONTROL pairs — distance 0.15 (Phase 7 does NOT merge)
+    // Phase 2 guard: each control memory gets two unique tokens for title and content.
     for pair_idx in 0..2 {
-        let token_a = unique("CA", pair_idx);
-        let token_b = unique("CB", pair_idx);
+        let token_a1 = unique("CA1", pair_idx);
+        let token_a2 = unique("CA2", pair_idx);
+        let token_b1 = unique("CB1", pair_idx);
+        let token_b2 = unique("CB2", pair_idx);
         let a_id = format!("c3-control-{pair_idx}-a");
         let b_id = format!("c3-control-{pair_idx}-b");
 
         specs.push(MemorySpec {
             id: a_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Control memory A {token_a}"),
-            content: format!("Distinct topic {token_a} with unique content."),
+            title: format!("{token_a1} {token_a2}"),
+            content: format!("{token_a1} {token_a2}"),
             confidence: 0.85,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -421,8 +459,8 @@ pub fn generate_category_3_embedding_duplicates(seed: u64) -> (Vec<MemorySpec>, 
         specs.push(MemorySpec {
             id: b_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Control memory B {token_b}"),
-            content: format!("Separate topic {token_b} unrelated to A."),
+            title: format!("{token_b1} {token_b2}"),
+            content: format!("{token_b1} {token_b2}"),
             confidence: 0.85,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -477,21 +515,36 @@ pub fn generate_category_4_contradictions(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
     let mut truths = Vec::new();
 
     // 4 VALENCE pairs — opposite valence, ≥2 shared tags, intensity > 0.5
+    //
+    // Phase 2 guard: titles use the pattern "{pos_token} favors {shared_token}" vs
+    // "{neg_token} opposes {shared_token}". meaningful_words analysis:
+    //   pos mw = {pos_token, "favors", shared_token} (3 words)
+    //   neg mw = {neg_token, "opposes", shared_token} (3 words)
+    //   intersection = {shared_token} = 1, max = 3 → title_score = 1/3 ≈ 0.333 < 0.65 ✓
+    // Across pairs: shared_token differs per pair → cross-pair intersection = {} → 0 ✓
+    // Phase 9a still detects via valence+tags+intensity, NOT title text ✓.
     for pair_idx in 0..4 {
-        let token = unique(pair_idx);
+        let shared_token = unique(pair_idx);
+        let pos_token = sha256_hex(&format!("c4-pos-{seed}-{pair_idx}"));
+        let neg_token = sha256_hex(&format!("c4-neg-{seed}-{pair_idx}"));
         let shared_tags = vec![
             "category-4-valence".into(),
-            format!("topic-{token}"),
+            format!("topic-{shared_token}"),
             format!("valence-pair-{pair_idx}"),
         ];
         let pos_id = format!("c4-val-{pair_idx}-pos");
         let neg_id = format!("c4-val-{pair_idx}-neg");
 
+        // Content: unique per-member token + opposite valence signal.
+        // Phase 9a uses valence field, not content text.
+        let pos_content_token = sha256_hex(&format!("c4-pos-content-{seed}-{pair_idx}"));
+        let neg_content_token = sha256_hex(&format!("c4-neg-content-{seed}-{pair_idx}"));
+
         specs.push(MemorySpec {
             id: pos_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("We should adopt approach {token}"),
-            content: format!("Approach {token} solves the problem cleanly."),
+            title: format!("{pos_token} favors {shared_token}"),
+            content: format!("{pos_content_token} resolves {shared_token} positively"),
             confidence: 0.85,
             valence: "positive".into(),
             intensity: 0.8,
@@ -506,8 +559,8 @@ pub fn generate_category_4_contradictions(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
         specs.push(MemorySpec {
             id: neg_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("We should NOT adopt approach {token}"),
-            content: format!("Approach {token} fails under load."),
+            title: format!("{neg_token} opposes {shared_token}"),
+            content: format!("{neg_content_token} rejects {shared_token} negatively"),
             confidence: 0.9,
             valence: "negative".into(),
             intensity: 0.9,
@@ -546,50 +599,55 @@ pub fn generate_category_4_contradictions(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
     }
 
     // 4 CONTENT pairs — same type (decision), title Jaccard ≥0.5, content Jaccard <0.3
-    // Titles use asymmetric lengths so Phase 2 intersection/max stays below 0.65
-    // while Phase 9b intersection/union stays above 0.5.
-    // Contents are substantially different so Phase 9b content Jaccard stays below 0.3.
     //
-    // Title A: 10 core words + anchor = 11 Phase-2-meaningful-words total
-    // Title B:  6 core words + anchor =  7 Phase-2-meaningful-words total (all B-core ⊆ A-core)
-    //   Shared = 6 core + anchor = 7
-    //   Phase 2 title_score = 7/max(11,7) = 7/11 ≈ 0.636  (< 0.65 ✓)
-    //   Phase 9b title Jaccard = 7/(11+7-7) = 7/11 ≈ 0.636 (≥ 0.5 ✓)
+    // Phase 2 guard + Phase 9b trigger design (using REAL stop-word filtered meaningful_words):
     //
-    // Content A and B use completely disjoint vocabulary (< 1 shared len≥3 word expected).
-    //   Phase 2 content_score ≈ 0            (< 0.65 ✓)
-    //   Phase 9b content Jaccard ≈ 0         (< 0.3  ✓)
+    // Token anchors:
+    //   token_t  = per-pair unique anchor (64-hex) — in BOTH A and B ✓
+    //   pair_uniq = per-pair unique word (64-hex)   — in BOTH A and B ✓
+    //
+    // Title A mw: {token_t, pair_uniq, "retry", "interval", "configure"} = 5 words
+    // Title B mw: {token_t, pair_uniq, "retry"}                           = 3 words
+    //   (B is a subset of A's vocabulary: {token_t, pair_uniq, "retry"})
+    //
+    // Within-pair Phase 2:
+    //   intersection = {token_t, pair_uniq, "retry"} = 3
+    //   max = max(5, 3) = 5
+    //   title_score = 3/5 = 0.60 < 0.65 ✓
+    //
+    // Within-pair Phase 9b title Jaccard (len≥3, no stop):
+    //   word_set_A = {token_t, pair_uniq, "retry", "interval", "configure"} = 5
+    //   word_set_B = {token_t, pair_uniq, "retry"} = 3
+    //   shared = 3, union = 5  →  Jaccard = 3/5 = 0.60 ≥ 0.5 ✓
+    //
+    // Cross-pair Phase 2 (A0 vs A1 — token_t and pair_uniq differ):
+    //   intersection = {"retry", "interval", "configure"} = 3
+    //   max = 5
+    //   title_score = 3/5 = 0.60 < 0.65 ✓
+    //
+    // Cross-pair Phase 2 (B0 vs B1 — token_t and pair_uniq differ):
+    //   intersection = {"retry"} = 1, max = 3 → 1/3 = 0.333 < 0.65 ✓
+    //
+    // Content: per-pair per-member unique tokens → content Jaccard ≈ 0 for both Phase 2 and Phase 9b ✓
     for pair_idx in 0..4 {
-        let token_t = unique(100 + pair_idx); // shared title anchor (64-char hex)
+        let token_t = unique(100 + pair_idx); // shared title anchor (64-char hex), same within pair
+        let pair_uniq = sha256_hex(&format!("c4-pair-uniq-{seed}-{pair_idx}")); // second shared token
         let a_id = format!("c4-content-{pair_idx}-a");
         let b_id = format!("c4-content-{pair_idx}-b");
 
-        // Title A: 10 core words + anchor
-        let title_a = format!(
-            "Configure service timeout retry backoff interval policy limits monitoring alerts {token_t}"
-        );
-        // Title B: 6 core words (all ⊆ A's core words) + anchor
-        let title_b = format!("Configure service retry interval limits alerts {token_t}");
+        // Title A: 5 mw words: {token_t, pair_uniq, "retry", "interval", "configure"}
+        let title_a = format!("{token_t} {pair_uniq} retry interval configure");
+        // Title B: 3 mw words (subset of A's vocab): {token_t, pair_uniq, "retry"}
+        let title_b = format!("{token_t} {pair_uniq} retry");
 
-        // Content A: specific vocabulary around long cooldown periods.
-        // len≥3 words (Phase 9b: len>=3, no stopword filter):
-        //   {set, the, retry, backoff, thirty, seconds, upstream, apis, receive,
-        //    mandatory, cooldown, between, calls, token_a_val} — disjoint from B.
-        // ("to", "so" are len<3 and excluded; "between" appears in A, NOT in B)
+        // Content A: single unique token → Phase 9b content Jaccard within-pair = 0 < 0.3 ✓
+        //           Cross-pair: different unique tokens → content Jaccard = 0 ✓
         let token_a_val = unique(200 + pair_idx * 2);
-        let content_a = format!(
-            "Set the retry backoff to thirty seconds so upstream APIs receive mandatory cooldown between calls {token_a_val}"
-        );
+        let content_a = token_a_val;
 
-        // Content B: specific vocabulary around minimal delay / high throughput.
-        // len≥3 words (Phase 9b: len>=3, no stopword filter):
-        //   {use, five, milliseconds, delay, per, attempt, maximize, throughput,
-        //    and, avoid, queue, saturation, token_b_val} — disjoint from A.
-        // Intersection with A's word_set = ∅.
+        // Content B: single unique token (different from A's) → Phase 9b content Jaccard = 0 ✓
         let token_b_val = unique(200 + pair_idx * 2 + 1);
-        let content_b = format!(
-            "Use five milliseconds delay per attempt to maximize throughput and avoid queue saturation {token_b_val}"
-        );
+        let content_b = token_b_val;
 
         specs.push(MemorySpec {
             id: a_id.clone(),
@@ -670,6 +728,12 @@ pub fn generate_category_5_reweave_enrichment(seed: u64) -> (Vec<MemorySpec>, Ve
     let mut truths = Vec::new();
 
     // 10 REWEAVE pairs — same type + project + org + ≥2 shared tags, different ages
+    //
+    // Phase 2 guard: titles = two per-memory unique SHA-256 tokens → mw intersection = 0 across
+    // all 20 reweave memories (no shared English words) → combined = 0 < 0.65 ✓.
+    // Content: two per-memory unique tokens → content_score = 0 across memories ✓.
+    // Phase 5 raw split_whitespace overlap between older and newer: 0/4 = 0 < 0.5 → no clustering ✓.
+    // Phase 14 reweave still triggers via shared tags + age difference ✓.
     for pair_idx in 0..10 {
         let topic_token = unique("rtopic", pair_idx);
         let shared_tags = vec![
@@ -680,12 +744,21 @@ pub fn generate_category_5_reweave_enrichment(seed: u64) -> (Vec<MemorySpec>, Ve
         let older_id = format!("c5-reweave-{pair_idx}-older");
         let newer_id = format!("c5-reweave-{pair_idx}-newer");
 
-        // Use distinct anchor tokens in titles so they don't cluster via Phase 5
+        // Unique tokens per memory — no shared English boilerplate in title or content.
+        let older_title_t1 = unique("rolder-t1", pair_idx);
+        let older_title_t2 = unique("rolder-t2", pair_idx);
+        let older_content_t1 = unique("rolder-c1", pair_idx);
+        let older_content_t2 = unique("rolder-c2", pair_idx);
+        let newer_title_t1 = unique("rnewer-t1", pair_idx);
+        let newer_title_t2 = unique("rnewer-t2", pair_idx);
+        let newer_content_t1 = unique("rnewer-c1", pair_idx);
+        let newer_content_t2 = unique("rnewer-c2", pair_idx);
+
         specs.push(MemorySpec {
             id: older_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Initial {} analysis", unique("rolder-title", pair_idx)),
-            content: format!("Original findings for {topic_token}."),
+            title: format!("{older_title_t1} {older_title_t2}"),
+            content: format!("{older_content_t1} {older_content_t2}"),
             confidence: 0.8,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -700,10 +773,8 @@ pub fn generate_category_5_reweave_enrichment(seed: u64) -> (Vec<MemorySpec>, Ve
         specs.push(MemorySpec {
             id: newer_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Further {} refinement", unique("rnewer-title", pair_idx)),
-            content: format!(
-                "Additional insight: topic {topic_token} behaves differently at scale."
-            ),
+            title: format!("{newer_title_t1} {newer_title_t2}"),
+            content: format!("{newer_content_t1} {newer_content_t2}"),
             confidence: 0.85,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -742,14 +813,22 @@ pub fn generate_category_5_reweave_enrichment(seed: u64) -> (Vec<MemorySpec>, Ve
     }
 
     // 4 PREFERENCES with process signals for Phase 17 Tier 1
+    //
+    // Phase 2 guard: title = two unique tokens per preference → mw intersection = 0 ✓.
+    // Content: "always must require" process signals kept for Phase 17, plus unique token ✓.
+    // Preferences are MemoryType::Preference — only compared against other preferences.
     for pref_idx in 0..4 {
         let token = unique("pref", pref_idx);
+        let title_t2 = unique("pref-t2", pref_idx);
         let id = format!("c5-pref-{pref_idx}");
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Preference,
-            title: format!("Preference {token} workflow"),
-            content: format!("User always must require validation for workflow {token}."),
+            // Two unique tokens → no shared meaningful_words across the 4 preferences ✓
+            title: format!("{token} {title_t2}"),
+            // Phase 17 Tier 1 promotes ALL preferences regardless of content (SQL: memory_type='preference').
+            // Content = two unique tokens → content_score = 0 across the 4 preference memories ✓.
+            content: format!("{token} {title_t2}"),
             confidence: 0.9,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -775,14 +854,25 @@ pub fn generate_category_5_reweave_enrichment(seed: u64) -> (Vec<MemorySpec>, Ve
     }
 
     // 3 PATTERNS with behavioral: prefix + process signal for Phase 17 Tier 2
+    //
+    // Phase 2 guard: title = "behavioral: {unique_a} {unique_b}" — "behavioral" IS a shared
+    // word across the 3 patterns, but meaningful_words of Pattern type only compared with other
+    // Pattern memories. With 3 patterns sharing "behavioral" and 2 unique tokens each:
+    //   mw = {"behavioral", unique_a, unique_b} (3 words)
+    //   cross-pattern intersection = {"behavioral"} = 1, max = 3 → title_score = 1/3 ≈ 0.333 < 0.65 ✓
+    // Content: "always require" process signals kept for Phase 17, plus unique token ✓.
     for pat_idx in 0..3 {
-        let token = unique("behavioral", pat_idx);
+        let token_a = unique("behavioral-a", pat_idx);
+        let token_b = unique("behavioral-b", pat_idx);
         let id = format!("c5-pattern-{pat_idx}");
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Pattern,
-            title: format!("behavioral: always follow {token} rule"),
-            content: format!("Always require {token} before proceeding. This is a workflow rule."),
+            // "behavioral:" prefix needed for Phase 17 Tier 2 SQL filter (`LOWER(title) LIKE 'behavioral:%'`)
+            // AND satisfies the has_process_signal check via `title_lower.starts_with("behavioral:")`.
+            // Content = two unique tokens → no shared boilerplate across the 3 patterns ✓.
+            title: format!("behavioral: {token_a} {token_b}"),
+            content: format!("{token_a} {token_b}"),
             confidence: 0.85,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -808,14 +898,22 @@ pub fn generate_category_5_reweave_enrichment(seed: u64) -> (Vec<MemorySpec>, Ve
     }
 
     // 3 LESSONS with negative signals for Phase 18 anti-pattern tagging
+    //
+    // Phase 2 guard: title = two unique tokens per lesson → mw intersection = 0 across
+    // all lesson-type memories (cat 5, cat 6 clusters, cat 7 stale) ✓.
+    // Content: "don't" / "avoid" / "caused problem" signals kept in CONTENT for Phase 18 ✓.
+    // Phase 18 detects from content, not title, so removing "Avoid" from title is safe ✓.
     for les_idx in 0..3 {
-        let token = unique("antipattern", les_idx);
+        let token_a = unique("antipattern-a", les_idx);
+        let token_b = unique("antipattern-b", les_idx);
         let id = format!("c5-antipattern-{les_idx}");
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Lesson,
-            title: format!("Avoid pitfall: unique-phrase-{token}"), // unique anchor per lesson
-            content: format!("Don't use approach {token} — it caused problem last quarter."),
+            // Two unique tokens — no shared English boilerplate → Phase 2 safe ✓
+            title: format!("{token_a} {token_b}"),
+            // Negative signals in content where Phase 18 looks ✓
+            content: format!("Don't use {token_a} — it caused problem and avoid {token_b}."),
             confidence: 0.8,
             valence: "negative".into(),
             intensity: 0.6,
@@ -852,8 +950,12 @@ pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec
     let mut truths = Vec::new();
 
     // 6 DECAY candidates — accessed_at 30+ days ago (Phase 4 keys off accessed_at!)
+    //
+    // Phase 2 guard: title = two unique tokens per decay memory → mw intersection = 0
+    // across all decision-type memories → combined = 0 < 0.65 ✓.
     for d_idx in 0..6 {
-        let token = unique("decay", d_idx);
+        let token_a = unique("decay-a", d_idx);
+        let token_b = unique("decay-b", d_idx);
         let id = format!("c6-decay-{d_idx}");
         let days_old = 30 + (d_idx * 5) as i64; // 30, 35, 40, 45, 50, 55 days old
                                                 // Expected post-decay confidence: 0.9 * exp(-0.03 * days_old)
@@ -862,8 +964,8 @@ pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Old decayed decision {token}"),
-            content: format!("Reasoning for old decision {token}."),
+            title: format!("{token_a} {token_b}"),
+            content: format!("{token_a} {token_b}"),
             confidence: 0.9,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -893,14 +995,17 @@ pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec
     }
 
     // 5 RECONSOLIDATION candidates — access_count >= 5 → confidence += 0.05
+    //
+    // Phase 2 guard: title = two unique tokens → mw intersection = 0 across all Decision memories ✓.
     for r_idx in 0..5 {
-        let token = unique("recon", r_idx);
+        let token_a = unique("recon-a", r_idx);
+        let token_b = unique("recon-b", r_idx);
         let id = format!("c6-recon-{r_idx}");
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Frequently-accessed decision {token}"),
-            content: format!("High-access memory {token}."),
+            title: format!("{token_a} {token_b}"),
+            content: format!("{token_a} {token_b}"),
             confidence: 0.8,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -988,8 +1093,12 @@ pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec
     }
 
     // 8 QUALITY scoring validation memories — varied dimensions, expected quality computed
+    //
+    // Phase 2 guard: title = two unique tokens → mw intersection = 0 across Decision memories ✓.
+    // Content uses "x".repeat(N) — all-same-char content → mw = {} (no len>1 distinct words) → score = 0 ✓.
     for q_idx in 0..8 {
-        let token = unique("quality", q_idx);
+        let token_a = unique("quality-a", q_idx);
+        let token_b = unique("quality-b", q_idx);
         let id = format!("c6-quality-{q_idx}");
 
         // Vary each dimension: age 0-7 days, access 0-7, content len 50-190, activation 0.0-0.7
@@ -1016,7 +1125,7 @@ pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Quality scoring candidate {token}"),
+            title: format!("{token_a} {token_b}"),
             content,
             confidence: 0.85,
             valence: "neutral".into(),
@@ -1053,19 +1162,31 @@ pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<Grou
     let mut specs = Vec::new();
     let mut truths = Vec::new();
 
-    // 6 TOPIC-SUPERSEDE pairs — synthetic embeddings + word overlap 0.3-0.7 on title+content
+    // 6 TOPIC-SUPERSEDE pairs — synthetic embeddings + word overlap 0.3-0.7 on title+content.
+    //
+    // Phase 2 guard: title pattern "{topic} {unique_per_member}":
+    //   older mw = {topic, unique_older} (2 words)
+    //   newer mw = {topic, unique_newer} (2 words)
+    //   within-pair: intersection = {topic} = 1, max = 2 → title_score = 0.5 < 0.65 ✓
+    //   across-pairs: each pair has DIFFERENT topic token → cross-pair intersection = {} → 0 ✓
+    // Content: unique per-member token keeps content_score = 0 across all memories ✓.
+    // Phase 20 combined title+content overlap still in [0.3, 0.7):
+    //   title_score = 0.5 ✓ (falls in range needed for Phase 20)
+    //   content_score = 0 → combined ≈ 0.25 (weighted 0.5*0.5 + 0.5*0) = 0.25 < 0.3
+    //   Phase 20 uses embedding distance (< 0.35) as PRIMARY signal, so this is fine ✓.
     for pair_idx in 0..6 {
         let topic = unique("topic", pair_idx);
+        let unique_older = sha256_hex(&format!("c7-older-{seed}-{pair_idx}"));
+        let unique_newer = sha256_hex(&format!("c7-newer-{seed}-{pair_idx}"));
         let older_id = format!("c7-supersede-{pair_idx}-older");
         let newer_id = format!("c7-supersede-{pair_idx}-newer");
 
-        // Moderate word overlap — some shared tokens but distinct content
         specs.push(MemorySpec {
             id: older_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Topic {topic} original decision"),
-            content: format!("Topic {topic} rationale from earlier analysis."),
-            confidence: 0.8, // <0.95 to allow supersede
+            title: format!("{topic} {unique_older}"),
+            content: unique_older.clone(), // unique per member → content_score = 0 cross-memory ✓
+            confidence: 0.8,               // <0.95 to allow supersede
             valence: "neutral".into(),
             intensity: 0.0,
             tags: vec!["category-7-supersede".into(), format!("topic-{topic}")],
@@ -1079,8 +1200,8 @@ pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<Grou
         specs.push(MemorySpec {
             id: newer_id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Topic {topic} revised approach"),
-            content: format!("Topic {topic} updated conclusion with new evidence."),
+            title: format!("{topic} {unique_newer}"),
+            content: unique_newer.clone(), // unique per member → content_score = 0 cross-memory ✓
             confidence: 0.85,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -1250,16 +1371,20 @@ pub fn generate_category_8_infrastructure(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
     let mut truths = Vec::new();
 
     // 5 LINKING pairs — share ≥2 tags, accessed_at within last hour for Phase 8
+    //
+    // Phase 2 guard: title = two unique per-member tokens → mw intersection = 0 across all
+    // Decision-type link memories → combined = 0 < 0.65 ✓.
     for pair_idx in 0..5 {
         let shared_tags = vec!["category-8-link".into(), format!("link-group-{pair_idx}")];
         for member_idx in 0..2 {
             let id = format!("c8-link-{pair_idx}-{member_idx}");
-            let token = unique("link", pair_idx * 2 + member_idx);
+            let token_a = unique("link-a", pair_idx * 2 + member_idx);
+            let token_b = unique("link-b", pair_idx * 2 + member_idx);
             specs.push(MemorySpec {
                 id: id.clone(),
                 memory_type: MemoryType::Decision,
-                title: format!("Link pair {pair_idx} member {member_idx} {token}"),
-                content: format!("Linked memory {token} in pair {pair_idx}."),
+                title: format!("{token_a} {token_b}"),
+                content: format!("{token_a} {token_b}"),
                 confidence: 0.85,
                 valence: "neutral".into(),
                 intensity: 0.0,
@@ -1286,16 +1411,21 @@ pub fn generate_category_8_infrastructure(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
     }
 
     // 5 ACTIVATION candidates — activation_level 0.1..0.5, should be decayed to *0.95
+    //
+    // Phase 2 note: "test" IS a stop word. "Activation test {token}" → mw = {"activation", token}.
+    // Cross-activation: intersection = {} → score = 0 ✓. These are already safe, but using
+    // two unique tokens per memory for consistency with the overall Phase 2 guard strategy.
     for a_idx in 0..5 {
         let id = format!("c8-activation-{a_idx}");
-        let token = unique("activation", a_idx);
+        let token_a = unique("activation-a", a_idx);
+        let token_b = unique("activation-b", a_idx);
         let seeded_activation = 0.1 + (a_idx as f64) * 0.1; // 0.1, 0.2, 0.3, 0.4, 0.5
         let expected_activation = seeded_activation * 0.95;
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Activation test {token}"),
-            content: format!("Content {token}"),
+            title: format!("{token_a} {token_b}"),
+            content: format!("{token_a} {token_b}"),
             confidence: 0.85,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -1364,14 +1494,17 @@ pub fn generate_category_8_infrastructure(seed: u64) -> (Vec<MemorySpec>, Vec<Gr
     }
 
     // 3 PORTABILITY candidates — no portability set (NULL/default 'unknown')
+    //
+    // Phase 2 guard: title = two unique tokens → mw intersection = 0 → combined = 0 < 0.65 ✓.
     for p_idx in 0..3 {
         let id = format!("c8-portability-{p_idx}");
-        let token = unique("portability", p_idx);
+        let token_a = unique("portability-a", p_idx);
+        let token_b = unique("portability-b", p_idx);
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("Portability candidate {token}"),
-            content: format!("Content {token} of unknown portability class."),
+            title: format!("{token_a} {token_b}"),
+            content: format!("{token_a} {token_b}"),
             confidence: 0.8,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -1644,82 +1777,100 @@ fn insert_vec(
 /// - New memories (resolutions, patterns, protocols) appear
 /// - Reweave-enriched BM25 scores
 /// - Graph expansion via related_to edges
+///
+/// NOTE: Since memory titles now use SHA-256 hex tokens, BM25 queries must include the
+/// actual token to match. Queries are derived from the same seed-based token generation
+/// as the generators, ensuring BM25 can find the memories.
 pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<RecallQuery> {
     let mut queries = Vec::new();
+    let seed = dataset.seed;
 
-    // RC-1: Duplicate-dilution — Category 1 pair 0's title fragment
-    // Pre: 2 rows (keeper + victim) in BM25 top results; victim DELETEd post.
-    let c1_title_frag = "exact duplicate pair 0"; // case-insensitive BM25 will match
+    // RC-1: Duplicate-dilution — Category 1 pair 0 token (keeper and victim share same title token)
+    // Pre: 2 rows (keeper + victim) match the token; victim DELETEd post-Phase-1, keeper stays.
+    let c1_token_0 = sha256_hex(&format!("c1-{seed}-0"));
     queries.push(RecallQuery {
         id: "RC-1".into(),
-        query: c1_title_frag.into(),
+        query: c1_token_0, // exact token — BM25 matches both pre-consolidation, only keeper post
         description: "Category 1 exact-dup query: keeper should remain after Phase 1 DELETE".into(),
         expected_titles: expected_titles_for_c1_keeper(dataset, 0),
     });
 
-    // RC-2: Semantic dedup — Category 2 pair 0 anchor
+    // RC-2: Semantic dedup — Category 2 pair 0 anchor (titles still contain the anchor token)
+    let c2_anchor_0 = sha256_hex(&format!("c2-anchor-{seed}-0"));
     queries.push(RecallQuery {
         id: "RC-2".into(),
-        query: format!("enforce deployment boundaries pair {}", 0),
+        query: c2_anchor_0,
         description: "Category 2 semantic-dup query: keeper active post-Phase-2".into(),
         expected_titles: expected_titles_for_c2_keeper(dataset, 0),
     });
 
-    // RC-3: Contradiction resolution — Category 4 valence pair 0
+    // RC-3: Contradiction resolution — Category 4 valence pair 0 shared_token
+    // Post-Phase-12: Resolution memory has shared_token in its title.
+    let c4_shared_0 = sha256_hex(&format!("c4-{seed}-0"));
     queries.push(RecallQuery {
         id: "RC-3".into(),
-        query: "adopt approach valence pair 0 topic".into(),
+        query: c4_shared_0,
         description: "Category 4 valence pair: Resolution memory appears post-Phase-12".into(),
         expected_titles: expected_resolution_titles(dataset, 0),
     });
 
-    // RC-4: Pattern promotion — Category 6 cluster 0 repetition topic
+    // RC-4: Pattern promotion — Category 6 cluster 0 cluster_token
+    // Phase 5 promoted Pattern memory title includes the cluster_token.
     queries.push(RecallQuery {
         id: "RC-4".into(),
-        query: "lesson cluster repetition topic 0".into(),
+        query: sha256_hex(&format!("c6-{seed}-cluster-topic-0")),
         description: "Category 6 cluster: Pattern memory promoted post-Phase-5".into(),
         expected_titles: expected_pattern_titles(dataset, 0),
     });
 
-    // RC-5: Protocol extraction — Category 5 preference 0
+    // RC-5: Protocol extraction — Category 5 preference 0 token
+    // Phase 17 Protocol memory title derived from preference source.
+    let c5_pref_token_0 = sha256_hex(&format!("c5-{seed}-pref-0"));
     queries.push(RecallQuery {
         id: "RC-5".into(),
-        query: "preference workflow validation rule".into(),
+        query: c5_pref_token_0,
         description: "Category 5 preference: Protocol memory created post-Phase-17".into(),
         expected_titles: expected_protocol_titles(dataset, 0),
     });
 
-    // RC-6: Reweave enrichment — Category 5 reweave pair 0 topic
+    // RC-6: Reweave enrichment — Category 5 reweave pair 0 older title token
+    // Post-Phase-14: older memory's content enriched with "[Update]:"; title unchanged.
+    let c5_older_t1_0 = sha256_hex(&format!("c5-{seed}-rolder-t1-0"));
     queries.push(RecallQuery {
         id: "RC-6".into(),
-        query: "reweave topic pair 0".into(),
+        query: c5_older_t1_0,
         description: "Category 5 reweave: older content enriched with [Update] post-Phase-14"
             .into(),
         expected_titles: expected_reweaved_titles(dataset, 0),
     });
 
-    // RC-7: Topic supersede — Category 7 pair 0
+    // RC-7: Topic supersede — Category 7 pair 0 newer token
+    // Post-Phase-20: older superseded, newer stays active.
+    let c7_newer_token_0 = sha256_hex(&format!("c7-newer-{seed}-0"));
     queries.push(RecallQuery {
         id: "RC-7".into(),
-        query: "topic supersede pair 0 revised".into(),
+        query: c7_newer_token_0,
         description: "Category 7 topic-supersede: newer version only post-Phase-20".into(),
         expected_titles: expected_supersede_newer(dataset, 0),
     });
 
-    // RC-8 through RC-15: rotations of above patterns across different pair indices
-    // Each targets the same effect type but a different seed-derived topic.
+    // RC-8 through RC-11: C1 duplicate-dilution rotations (pairs 1-4)
     for i in 1..5 {
+        let c1_token_i = sha256_hex(&format!("c1-{seed}-{i}"));
         queries.push(RecallQuery {
             id: format!("RC-{}", 7 + i),
-            query: format!("exact duplicate pair {i}"),
+            query: c1_token_i,
             description: format!("Duplicate-dilution query rotation {i}"),
             expected_titles: expected_titles_for_c1_keeper(dataset, i),
         });
     }
+
+    // RC-12 through RC-15: C4 contradiction resolution rotations (pairs 1-4)
     for i in 1..5 {
+        let c4_shared_i = sha256_hex(&format!("c4-{seed}-{i}"));
         queries.push(RecallQuery {
             id: format!("RC-{}", 11 + i),
-            query: format!("adopt approach valence pair {i} topic"),
+            query: c4_shared_i,
             description: format!("Contradiction resolution rotation {i}"),
             expected_titles: expected_resolution_titles(dataset, i),
         });
@@ -1733,29 +1884,31 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<RecallQuery> {
 
 fn expected_titles_for_c1_keeper(dataset: &SeededDataset, pair_idx: usize) -> HashSet<String> {
     let mut set = HashSet::new();
-    // Keeper memory ID = c1-{pair_idx}-keeper; find its title from the seeded specs (stored in GT).
-    let id = format!("c1-{pair_idx}-keeper");
-    // Victim has same title — but victim is DELETEd post-Phase-1, so keeper remains
-    // Return by matching GT record; title inferred from the generator (stable).
+    // Category 1 titles = just the SHA-256 token (same for keeper and victim in a pair).
+    // After Phase 1, victim is DELETEd and keeper remains with this token as its title.
     let token = sha256_hex(&format!("c1-{}-{}", dataset.seed, pair_idx));
-    set.insert(format!("C1 exact duplicate pair {pair_idx} [{token}]"));
-    let _ = id;
+    set.insert(token);
     set
 }
 
 fn expected_titles_for_c2_keeper(dataset: &SeededDataset, pair_idx: usize) -> HashSet<String> {
     let mut set = HashSet::new();
     let anchor = sha256_hex(&format!("c2-anchor-{}-{}", dataset.seed, pair_idx));
-    // Keeper title from generator
-    set.insert(format!("Always enforce {anchor} on deployment boundaries"));
+    let pair_token = sha256_hex(&format!("c2-pair-{}-{}", dataset.seed, pair_idx));
+    // Keeper title from generator: "{pair_token} enforce {anchor} validation"
+    set.insert(format!("{pair_token} enforce {anchor} validation"));
     set
 }
 
 fn expected_resolution_titles(dataset: &SeededDataset, pair_idx: usize) -> HashSet<String> {
     let mut set = HashSet::new();
-    let token = sha256_hex(&format!("c4-{}-{}", dataset.seed, pair_idx));
-    let pos = format!("We should adopt approach {token}");
-    let neg = format!("We should NOT adopt approach {token}");
+    // Category 4 valence titles now use "{pos_token} favors {shared_token}" and
+    // "{neg_token} opposes {shared_token}" patterns.
+    let shared_token = sha256_hex(&format!("c4-{}-{}", dataset.seed, pair_idx));
+    let pos_token = sha256_hex(&format!("c4-pos-{}-{}", dataset.seed, pair_idx));
+    let neg_token = sha256_hex(&format!("c4-neg-{}-{}", dataset.seed, pair_idx));
+    let pos = format!("{pos_token} favors {shared_token}");
+    let neg = format!("{neg_token} opposes {shared_token}");
     // Phase 12 creates title "Resolution: {a.title} vs {b.title}"
     set.insert(format!("Resolution: {pos} vs {neg}"));
     set
@@ -1776,15 +1929,19 @@ fn expected_protocol_titles(_dataset: &SeededDataset, _idx: usize) -> HashSet<St
 
 fn expected_reweaved_titles(dataset: &SeededDataset, pair_idx: usize) -> HashSet<String> {
     let mut set = HashSet::new();
-    let older_title_token = sha256_hex(&format!("c5-{}-rolder-title-{}", dataset.seed, pair_idx));
-    set.insert(format!("Initial {older_title_token} analysis"));
+    // Category 5 reweave older titles now use "{older_title_t1} {older_title_t2}" pattern.
+    let older_t1 = sha256_hex(&format!("c5-{}-rolder-t1-{}", dataset.seed, pair_idx));
+    let older_t2 = sha256_hex(&format!("c5-{}-rolder-t2-{}", dataset.seed, pair_idx));
+    set.insert(format!("{older_t1} {older_t2}"));
     set
 }
 
 fn expected_supersede_newer(dataset: &SeededDataset, pair_idx: usize) -> HashSet<String> {
     let mut set = HashSet::new();
+    // Category 7 topic-supersede newer title now uses "{topic} {unique_newer}" pattern.
     let topic = sha256_hex(&format!("c7-{}-topic-{}", dataset.seed, pair_idx));
-    set.insert(format!("Topic {topic} revised approach"));
+    let unique_newer = sha256_hex(&format!("c7-newer-{}-{}", dataset.seed, pair_idx));
+    set.insert(format!("{topic} {unique_newer}"));
     set
 }
 
@@ -2808,21 +2965,31 @@ mod tests {
     }
 
     #[test]
-    fn test_category_2_pairs_share_anchor_token() {
+    fn test_category_2_pairs_share_anchor_and_pair_tokens() {
         let (specs, _) = generate_category_2_semantic_duplicates(42);
-        // Each pair's titles should share a 64-char hex anchor
+        // Each pair's titles should share both the anchor and pair_token (both 64-char hex).
+        // New format: keeper = "{pair_token} enforce {anchor} validation"
+        //             victim = "enforce {anchor} validation {pair_token}"
+        // Both titles contain the same anchor AND pair_token for the same pair.
         for pair_idx in 0..8 {
             let a = &specs[pair_idx * 2].title;
             let b = &specs[pair_idx * 2 + 1].title;
-            // Extract 64-hex token from a
-            let token = a
+            // Both 64-char hex tokens in title A must also appear in title B
+            let tokens_in_a: Vec<&str> = a
                 .split_whitespace()
-                .find(|w| w.len() == 64 && w.chars().all(|c| c.is_ascii_hexdigit()))
-                .expect("no 64-hex token in title A");
-            assert!(
-                b.contains(token),
-                "title B doesn't share anchor: a={a}, b={b}"
+                .filter(|w| w.len() == 64 && w.chars().all(|c| c.is_ascii_hexdigit()))
+                .collect();
+            assert_eq!(
+                tokens_in_a.len(),
+                2,
+                "pair {pair_idx} title A should have 2 tokens: {a}"
             );
+            for token in &tokens_in_a {
+                assert!(
+                    b.contains(token),
+                    "pair {pair_idx} title B doesn't share token {token}: a={a}, b={b}"
+                );
+            }
         }
     }
 
@@ -2862,15 +3029,12 @@ mod tests {
 
     #[test]
     fn test_category_3_merge_pairs_avoid_phase_2() {
+        // Use the ACTUAL stop-word list for accuracy.
+        use crate::common::STOP_WORDS;
         use std::collections::HashSet;
 
-        // Phase 2's meaningful_words proxy: len > 1, stopwords removed.
-        // Same minimal stopword set as test_category_4_content_pairs_avoid_phase_2.
-        fn mw(text: &str) -> HashSet<String> {
-            let stop: HashSet<&str> = ["the", "to", "a", "an", "is", "are", "so", "that", "and"]
-                .iter()
-                .copied()
-                .collect();
+        fn mw_real(text: &str) -> HashSet<String> {
+            let stop: HashSet<&str> = STOP_WORDS.iter().copied().collect();
             text.to_lowercase()
                 .split(|c: char| !c.is_alphanumeric())
                 .filter(|w| w.len() > 1 && !stop.contains(w))
@@ -2879,39 +3043,47 @@ mod tests {
         }
 
         let (specs, _) = generate_category_3_embedding_duplicates(42);
-        // Merge pairs are specs 0-7 (4 pairs of 2 = 8 specs). Control pairs are 8-11.
-        for pair_idx in 0..4 {
-            let a = &specs[pair_idx * 2];
-            let b = &specs[pair_idx * 2 + 1];
-            let title_a_words = mw(&a.title);
-            let title_b_words = mw(&b.title);
-            let content_a_words = mw(&a.content);
-            let content_b_words = mw(&b.content);
+        // All 12 specs: 8 merge pair members (pairs 0-3) + 4 control pair members (pairs 0-1).
+        // Check ALL cross-memory pairs of same type (all are Decision).
+        for i in 0..12 {
+            for j in (i + 1)..12 {
+                // Skip same-pair comparison (pair members share the same pair_idx)
+                // Actually we want to verify ALL pairs avoid Phase 2, including within-pair.
+                let a = &specs[i];
+                let b = &specs[j];
+                if a.memory_type != b.memory_type {
+                    continue;
+                }
+                let taw = mw_real(&a.title);
+                let tbw = mw_real(&b.title);
+                let caw = mw_real(&a.content);
+                let cbw = mw_real(&b.content);
 
-            let title_shared = title_a_words.intersection(&title_b_words).count() as f64;
-            let title_max = std::cmp::max(title_a_words.len(), title_b_words.len()) as f64;
-            let title_score = if title_max == 0.0 {
-                0.0
-            } else {
-                title_shared / title_max
-            };
+                let title_shared = taw.intersection(&tbw).count() as f64;
+                let title_max = std::cmp::max(taw.len(), tbw.len()) as f64;
+                let title_score = if title_max == 0.0 {
+                    0.0
+                } else {
+                    title_shared / title_max
+                };
 
-            let content_shared = content_a_words.intersection(&content_b_words).count() as f64;
-            let content_max = std::cmp::max(content_a_words.len(), content_b_words.len()) as f64;
-            let content_score = if content_max == 0.0 {
-                0.0
-            } else {
-                content_shared / content_max
-            };
+                let content_shared = caw.intersection(&cbw).count() as f64;
+                let content_max = std::cmp::max(caw.len(), cbw.len()) as f64;
+                let content_score = if content_max == 0.0 {
+                    0.0
+                } else {
+                    content_shared / content_max
+                };
 
-            let weighted = 0.5 * title_score + 0.5 * content_score;
-            let combined = weighted.max(title_score).max(content_score);
+                let weighted = 0.5 * title_score + 0.5 * content_score;
+                let combined = weighted.max(title_score).max(content_score);
 
-            assert!(
-                combined < 0.65,
-                "Category 3 merge pair {} would be caught by Phase 2 (combined={combined}, title_score={title_score}, content_score={content_score})",
-                pair_idx
-            );
+                assert!(
+                    combined < 0.65,
+                    "Category 3 memory pair ({i},{j}) would be caught by Phase 2 (combined={combined:.3}, ts={title_score:.3}, cs={content_score:.3})\n  a={} b={}",
+                    a.id, b.id
+                );
+            }
         }
     }
 
@@ -2957,16 +3129,14 @@ mod tests {
 
     #[test]
     fn test_category_4_content_pairs_avoid_phase_2() {
+        // Use the ACTUAL stop-word list from the daemon crate (same as Phase 2 uses).
+        // This catches proxy-mismatch bugs where the test passed with a minimal stop set
+        // but the real implementation had different filtering.
+        use crate::common::STOP_WORDS;
         use std::collections::HashSet;
 
-        // Approximate Phase 2's meaningful_words: len > 1, exclude a small set of common stopwords
-        // Phase 2's actual filter is more comprehensive; this test uses a minimal proxy to verify
-        // the DESIGN, not exact Phase 2 compliance.
-        fn mw(text: &str) -> HashSet<String> {
-            let stop: HashSet<&str> = ["the", "to", "a", "an", "is", "are", "so", "that", "and"]
-                .iter()
-                .copied()
-                .collect();
+        fn mw_real(text: &str) -> HashSet<String> {
+            let stop: HashSet<&str> = STOP_WORDS.iter().copied().collect();
             text.to_lowercase()
                 .split(|c: char| !c.is_alphanumeric())
                 .filter(|w| w.len() > 1 && !stop.contains(w))
@@ -2976,24 +3146,25 @@ mod tests {
 
         let (specs, _) = generate_category_4_contradictions(42);
         // Content pairs are specs 8-15 (8 valence first, then 8 content)
+        // WITHIN-PAIR check: Phase 2 must NOT catch A vs B of the same pair.
         for pair_idx in 0..4 {
             let a = &specs[8 + pair_idx * 2];
             let b = &specs[8 + pair_idx * 2 + 1];
-            let title_a_words = mw(&a.title);
-            let title_b_words = mw(&b.title);
-            let content_a_words = mw(&a.content);
-            let content_b_words = mw(&b.content);
+            let taw = mw_real(&a.title);
+            let tbw = mw_real(&b.title);
+            let caw = mw_real(&a.content);
+            let cbw = mw_real(&b.content);
 
-            let title_shared = title_a_words.intersection(&title_b_words).count() as f64;
-            let title_max = std::cmp::max(title_a_words.len(), title_b_words.len()) as f64;
+            let title_shared = taw.intersection(&tbw).count() as f64;
+            let title_max = std::cmp::max(taw.len(), tbw.len()) as f64;
             let title_score = if title_max == 0.0 {
                 0.0
             } else {
                 title_shared / title_max
             };
 
-            let content_shared = content_a_words.intersection(&content_b_words).count() as f64;
-            let content_max = std::cmp::max(content_a_words.len(), content_b_words.len()) as f64;
+            let content_shared = caw.intersection(&cbw).count() as f64;
+            let content_max = std::cmp::max(caw.len(), cbw.len()) as f64;
             let content_score = if content_max == 0.0 {
                 0.0
             } else {
@@ -3005,9 +3176,48 @@ mod tests {
 
             assert!(
                 combined < 0.65,
-                "content pair {} would be caught by Phase 2 (combined={combined}, title_score={title_score}, content_score={content_score})",
-                pair_idx
+                "content pair {pair_idx} A vs B would be caught by Phase 2 (combined={combined:.3}, ts={title_score:.3}, cs={content_score:.3})"
             );
+        }
+
+        // CROSS-PAIR check: Phase 2 must NOT cross-catch A_i vs A_j or B_i vs B_j.
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                let ai = &specs[8 + i * 2];
+                let aj = &specs[8 + j * 2];
+                let bi = &specs[8 + i * 2 + 1];
+                let bj = &specs[8 + j * 2 + 1];
+
+                for (label, x, y) in [("Ai vs Aj", ai, aj), ("Bi vs Bj", bi, bj)] {
+                    let txw = mw_real(&x.title);
+                    let tyw = mw_real(&y.title);
+                    let cxw = mw_real(&x.content);
+                    let cyw = mw_real(&y.content);
+                    let ts = {
+                        let i = txw.intersection(&tyw).count() as f64;
+                        let m = std::cmp::max(txw.len(), tyw.len()) as f64;
+                        if m == 0.0 {
+                            0.0
+                        } else {
+                            i / m
+                        }
+                    };
+                    let cs = {
+                        let i = cxw.intersection(&cyw).count() as f64;
+                        let m = std::cmp::max(cxw.len(), cyw.len()) as f64;
+                        if m == 0.0 {
+                            0.0
+                        } else {
+                            i / m
+                        }
+                    };
+                    let combined = (0.5 * ts + 0.5 * cs).max(ts).max(cs);
+                    assert!(
+                        combined < 0.65,
+                        "content pairs {i} vs {j} ({label}) would be cross-caught by Phase 2: combined={combined:.3} ts={ts:.3} cs={cs:.3}"
+                    );
+                }
+            }
         }
     }
 
@@ -3051,13 +3261,11 @@ mod tests {
 
             assert!(
                 title_jaccard >= 0.5,
-                "content pair {} title Jaccard too low for Phase 9b ({title_jaccard})",
-                pair_idx
+                "content pair {pair_idx} title Jaccard too low for Phase 9b ({title_jaccard:.3})"
             );
             assert!(
                 content_jaccard < 0.3,
-                "content pair {} content Jaccard too high for Phase 9b ({content_jaccard})",
-                pair_idx
+                "content pair {pair_idx} content Jaccard too high for Phase 9b ({content_jaccard:.3})"
             );
         }
     }
@@ -3803,5 +4011,40 @@ mod tests {
         assert_eq!(score.seed, 42);
         // Composite must be a valid [0,1] float
         assert!(score.composite >= 0.0 && score.composite <= 1.0);
+    }
+
+    // ── Cross-category Phase 2 guard tests ───────────────────────────
+    // These are the LINCHPIN tests: Phase 2 semantic_dedup must merge EXACTLY 8 memories
+    // (Category 2 intended victims) and nothing else.
+
+    #[test]
+    fn test_no_phase_2_over_catching_anywhere() {
+        use crate::db::ops;
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, _) = seed_corpus(&state.conn, 42).unwrap();
+
+        // Run only Phase 1 and Phase 2
+        let _ = ops::dedup_memories(&state.conn).unwrap();
+        let phase2_merged = ops::semantic_dedup(&state.conn, 500).unwrap();
+
+        // Should be exactly 8 (Category 2 intended victims)
+        assert_eq!(
+            phase2_merged, 8,
+            "Phase 2 merged {phase2_merged} memories — expected exactly 8 (Cat 2). \
+            Others are being incorrectly caught."
+        );
+    }
+
+    #[test]
+    fn test_no_phase_2_over_catching_seed_1() {
+        use crate::db::ops;
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (_, _) = seed_corpus(&state.conn, 1).unwrap();
+        let _ = ops::dedup_memories(&state.conn).unwrap();
+        let phase2_merged = ops::semantic_dedup(&state.conn, 500).unwrap();
+        assert_eq!(
+            phase2_merged, 8,
+            "seed 1: Phase 2 merged {phase2_merged}, expected 8"
+        );
     }
 }
