@@ -1102,9 +1102,11 @@ pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec
         let token_b = unique("quality-b", q_idx);
         let id = format!("c6-quality-{q_idx}");
 
-        // Vary each dimension: age 0-7 days, access 0-7, content len 50-190, activation 0.0-0.7
+        // Vary each dimension: age 0-7 days, access 0-4 (clamped to avoid Phase 6 recon
+        // interference — only c6-recon-* should have access_count >= 5), content len 50-190,
+        // activation 0.0-0.7
         let age_days = q_idx as i64; // 0, 1, 2, 3, 4, 5, 6, 7
-        let access = q_idx as u64;
+        let access = (q_idx as u64).min(4); // 0, 1, 2, 3, 4, 4, 4, 4 (capped at 4)
         let content = "x".repeat(50 + q_idx * 20); // 50, 70, 90, ..., 190 chars
         let seeded_activation = (q_idx as f64) * 0.1; // 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7
 
@@ -1128,7 +1130,11 @@ pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec
         //   - access_count > 0 AND accessed_at within 1 day: boost +0.05
         // All c6-quality memories use accessed_at_spec="NOW", so they qualify for the boost.
         let expected_quality = if access == 0 {
-            let decay = if phase15_quality < 0.3 { 0.15_f64 } else { 0.1_f64 };
+            let decay = if phase15_quality < 0.3 {
+                0.15_f64
+            } else {
+                0.1_f64
+            };
             (phase15_quality - decay).max(0.0)
         } else {
             // access > 0 AND accessed within 1 day → boost applies
@@ -1360,7 +1366,7 @@ pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<Grou
             intensity: 0.0,
             tags: vec!["category-7-pressure-boost".into()],
             project: "forge-consolidation-bench".into(),
-            access_count: 3 + p_idx as u64,
+            access_count: 1 + p_idx as u64, // 1, 2, 3 — keep > 0 for Phase 22 boost; stay < 5 to avoid recon interference
             activation_level: 0.0,
             quality_score: None,
             created_at_spec: "NOW".into(),
@@ -4094,7 +4100,11 @@ mod tests {
             let newer_mw = meaningful_words_pub(&newer_text);
             let intersection = older_mw.intersection(&newer_mw).count();
             let union = older_mw.union(&newer_mw).count();
-            let overlap = if union > 0 { intersection as f64 / union as f64 } else { 0.0 };
+            let overlap = if union > 0 {
+                intersection as f64 / union as f64
+            } else {
+                0.0
+            };
             assert!(
                 overlap >= 0.3 && overlap < 0.7,
                 "pair {pair_idx}: overlap={overlap:.4} not in [0.3, 0.7)"
@@ -4110,8 +4120,16 @@ mod tests {
             let older = &specs[pair_idx * 2];
             let newer = &specs[pair_idx * 2 + 1];
             // Each member should have exactly 1 tag
-            assert_eq!(older.tags.len(), 1, "pair {pair_idx} older should have 1 tag");
-            assert_eq!(newer.tags.len(), 1, "pair {pair_idx} newer should have 1 tag");
+            assert_eq!(
+                older.tags.len(),
+                1,
+                "pair {pair_idx} older should have 1 tag"
+            );
+            assert_eq!(
+                newer.tags.len(),
+                1,
+                "pair {pair_idx} newer should have 1 tag"
+            );
             // Shared tags between pair must be < 2 (Phase 14 threshold)
             let shared: usize = older.tags.iter().filter(|t| newer.tags.contains(t)).count();
             assert!(
@@ -4127,27 +4145,49 @@ mod tests {
         let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
         seed_corpus(&state.conn, 42).unwrap();
         let _ = seed_embeddings(&state.conn, 42);
-        let cons_config = crate::config::ConsolidationConfig { batch_limit: 500, reweave_limit: 100 };
+        let cons_config = crate::config::ConsolidationConfig {
+            batch_limit: 500,
+            reweave_limit: 100,
+        };
         let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
-        let heal_count: i64 = state.conn.query_row(
-            "SELECT COUNT(*) FROM healing_log WHERE action='auto_superseded'",
-            [], |r| r.get(0)
-        ).unwrap_or(0);
-        assert!(heal_count >= 6, "Phase 20 should fire ≥6 times, got {heal_count}");
+        let heal_count: i64 = state
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM healing_log WHERE action='auto_superseded'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert!(
+            heal_count >= 6,
+            "Phase 20 should fire ≥6 times, got {heal_count}"
+        );
         // Verify all older memories are superseded and all newer are active
         for pair_idx in 0..6 {
-            let older_status: String = state.conn.query_row(
-                "SELECT status FROM memory WHERE id=?1",
-                rusqlite::params![&format!("c7-supersede-{pair_idx}-older")],
-                |r| r.get(0)
-            ).unwrap_or_default();
-            let newer_status: String = state.conn.query_row(
-                "SELECT status FROM memory WHERE id=?1",
-                rusqlite::params![&format!("c7-supersede-{pair_idx}-newer")],
-                |r| r.get(0)
-            ).unwrap_or_default();
-            assert_eq!(older_status, "superseded", "pair {pair_idx} older should be superseded");
-            assert_eq!(newer_status, "active", "pair {pair_idx} newer should be active");
+            let older_status: String = state
+                .conn
+                .query_row(
+                    "SELECT status FROM memory WHERE id=?1",
+                    rusqlite::params![&format!("c7-supersede-{pair_idx}-older")],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            let newer_status: String = state
+                .conn
+                .query_row(
+                    "SELECT status FROM memory WHERE id=?1",
+                    rusqlite::params![&format!("c7-supersede-{pair_idx}-newer")],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            assert_eq!(
+                older_status, "superseded",
+                "pair {pair_idx} older should be superseded"
+            );
+            assert_eq!(
+                newer_status, "active",
+                "pair {pair_idx} newer should be active"
+            );
         }
     }
 
@@ -4157,17 +4197,46 @@ mod tests {
         let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
         let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
         let _ = seed_embeddings(&state.conn, 42);
-        let cons_config = crate::config::ConsolidationConfig { batch_limit: 500, reweave_limit: 100 };
+        let cons_config = crate::config::ConsolidationConfig {
+            batch_limit: 500,
+            reweave_limit: 100,
+        };
         let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
         let score = audit_reweave(&state.conn, &dataset).unwrap();
-        assert!(score.f1 > 0.9, "reweave_enrichment score should be > 0.9, got {:.4}", score.f1);
+        assert!(
+            score.f1 > 0.9,
+            "reweave_enrichment score should be > 0.9, got {:.4}",
+            score.f1
+        );
         // Check individual sub-scores in details
-        let promo = score.details.iter().find(|d| d.starts_with("promo_accuracy=")).unwrap();
-        let proto = score.details.iter().find(|d| d.starts_with("proto_accuracy=")).unwrap();
-        let promo_val: f64 = promo.strip_prefix("promo_accuracy=").unwrap().parse().unwrap();
-        let proto_val: f64 = proto.strip_prefix("proto_accuracy=").unwrap().parse().unwrap();
-        assert!(promo_val > 0.9, "promo_accuracy should be > 0.9, got {promo_val:.4}");
-        assert!(proto_val > 0.3, "proto_accuracy should be > 0.3, got {proto_val:.4}");
+        let promo = score
+            .details
+            .iter()
+            .find(|d| d.starts_with("promo_accuracy="))
+            .unwrap();
+        let proto = score
+            .details
+            .iter()
+            .find(|d| d.starts_with("proto_accuracy="))
+            .unwrap();
+        let promo_val: f64 = promo
+            .strip_prefix("promo_accuracy=")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let proto_val: f64 = proto
+            .strip_prefix("proto_accuracy=")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            promo_val > 0.9,
+            "promo_accuracy should be > 0.9, got {promo_val:.4}"
+        );
+        assert!(
+            proto_val > 0.3,
+            "proto_accuracy should be > 0.3, got {proto_val:.4}"
+        );
     }
 
     /// Guard: audit_lifecycle finds correct decay confidence and quality scores.
@@ -4175,15 +4244,58 @@ mod tests {
     fn test_audit_lifecycle_decay_and_quality() {
         let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
         let (_, dataset) = seed_corpus(&state.conn, 42).unwrap();
-        let cons_config = crate::config::ConsolidationConfig { batch_limit: 500, reweave_limit: 100 };
+        let cons_config = crate::config::ConsolidationConfig {
+            batch_limit: 500,
+            reweave_limit: 100,
+        };
         let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
         let score = audit_lifecycle(&state.conn, &dataset).unwrap();
         // decay and quality should now pass
-        let decay_detail = score.details.iter().find(|d| d.starts_with("decay=")).unwrap();
-        let quality_detail = score.details.iter().find(|d| d.starts_with("quality=")).unwrap();
-        let decay_val: f64 = decay_detail.strip_prefix("decay=").unwrap().parse().unwrap();
-        let quality_val: f64 = quality_detail.strip_prefix("quality=").unwrap().parse().unwrap();
-        assert!(decay_val > 0.8, "decay sub-score should be > 0.8, got {decay_val:.4}");
-        assert!(quality_val > 0.8, "quality sub-score should be > 0.8, got {quality_val:.4}");
+        let decay_detail = score
+            .details
+            .iter()
+            .find(|d| d.starts_with("decay="))
+            .unwrap();
+        let quality_detail = score
+            .details
+            .iter()
+            .find(|d| d.starts_with("quality="))
+            .unwrap();
+        let decay_val: f64 = decay_detail
+            .strip_prefix("decay=")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let quality_val: f64 = quality_detail
+            .strip_prefix("quality=")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            decay_val > 0.8,
+            "decay sub-score should be > 0.8, got {decay_val:.4}"
+        );
+        assert!(
+            quality_val > 0.8,
+            "quality sub-score should be > 0.8, got {quality_val:.4}"
+        );
+    }
+
+    /// Guard: no memory outside c6-recon-* has access_count >= 5.
+    /// This ensures Phase 6 find_reconsolidation_candidates (LIMIT 5, ORDER BY access_count DESC)
+    /// only picks the 5 intended recon candidates and no interfering memories from other categories.
+    #[test]
+    fn test_no_recon_interference() {
+        let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
+        let (specs, _) = seed_corpus(&state.conn, 42).unwrap();
+        let interferers: Vec<_> = specs
+            .iter()
+            .filter(|s| s.access_count >= 5 && !s.id.starts_with("c6-recon-"))
+            .map(|s| s.id.clone())
+            .collect();
+        assert!(
+            interferers.is_empty(),
+            "memories with access_count >= 5 outside c6-recon-*: {interferers:?}"
+        );
     }
 }
