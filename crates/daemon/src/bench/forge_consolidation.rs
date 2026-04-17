@@ -2102,9 +2102,12 @@ pub fn audit_contradictions(
             .ok();
         let resolution_exists: bool = conn
             .query_row(
-                "SELECT COUNT(*) > 0 FROM memory WHERE title LIKE 'Resolution: %'",
-                [],
-                |r| r.get(0),
+                "SELECT COUNT(*) > 0 FROM memory
+                 WHERE title LIKE 'Resolution: %'
+                 AND (title LIKE '%' || (SELECT title FROM memory WHERE id = ?1) || '%'
+                      OR title LIKE '%' || (SELECT title FROM memory WHERE id = ?2) || '%')",
+                rusqlite::params![a, b],
+                |row| row.get(0),
             )
             .unwrap_or(false);
         if a_status.as_deref() == Some("superseded")
