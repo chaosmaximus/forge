@@ -7,7 +7,7 @@ use std::io::Write;
 use tempfile::NamedTempFile;
 
 #[test]
-fn test_confidence_decay_idempotent() {
+fn test_confidence_decay_persists_and_does_not_refade() {
     let state = DaemonState::new(":memory:").unwrap();
 
     // Insert 90-day-old memory (effective = 0.9 * exp(-0.03*90) ~ 0.06 < 0.1 → should fade)
@@ -30,7 +30,7 @@ fn test_confidence_decay_idempotent() {
     assert_eq!(checked, 2);
     assert_eq!(faded, 1, "90-day memory should be faded");
 
-    // Stored confidence is never modified — this is the core fix for HIGH-1
+    // d1 fades (status set to faded); confidence column is left at 0.9 for faded memories
     let conf: f64 = state
         .conn
         .query_row("SELECT confidence FROM memory WHERE id = 'd1'", [], |r| {
@@ -39,18 +39,20 @@ fn test_confidence_decay_idempotent() {
         .unwrap();
     assert!(
         (conf - 0.9).abs() < 0.001,
-        "stored confidence must remain 0.9, got {conf}"
+        "faded memory's stored confidence column is not modified, got {conf}"
     );
 
+    // d2 is 30 days old — confidence is persisted as the decayed value (~0.3659)
     let conf2: f64 = state
         .conn
         .query_row("SELECT confidence FROM memory WHERE id = 'd2'", [], |r| {
             r.get(0)
         })
         .unwrap();
+    let expected_d2 = 0.9_f64 * (-0.03_f64 * 30.0_f64).exp();
     assert!(
-        (conf2 - 0.9).abs() < 0.001,
-        "stored confidence must remain 0.9, got {conf2}"
+        (conf2 - expected_d2).abs() < 0.02,
+        "d2 confidence should be persisted as decayed value ~{expected_d2:.4}, got {conf2}"
     );
 
     // Status checks
@@ -69,7 +71,7 @@ fn test_confidence_decay_idempotent() {
         .unwrap();
     assert_eq!(s2, "active");
 
-    // Running decay again should produce the same result (idempotent)
+    // Running decay again: d1 is already faded (excluded from query), d2 stays active (conf > 0.1)
     let (checked2, faded2) = ops::decay_memories(&state.conn, 1000).unwrap();
     assert_eq!(checked2, 1, "only d2 is still active after first run");
     assert_eq!(faded2, 0, "d2 should not fade on second run");

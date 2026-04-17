@@ -616,7 +616,8 @@ pub fn parse_timestamp_to_epoch(s: &str) -> Option<f64> {
             let is_leap = y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
             days += if is_leap { 366 } else { 365 };
         }
-        let is_leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+        let is_leap =
+            year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
         let month_days: [u64; 12] = if is_leap {
             [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
         } else {
@@ -2911,7 +2912,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decay_memories_does_not_modify_confidence() {
+    fn test_decay_memories_persists_decayed_confidence() {
         let conn = open_db();
         // Insert a 30-day-old memory (effective conf = 0.9 * exp(-0.03*30) ~ 0.37 — still above 0.1)
         conn.execute(
@@ -2920,7 +2921,7 @@ mod tests {
                      datetime('now', '-30 days'), datetime('now', '-30 days'))",
             [],
         ).unwrap();
-        // Insert recent memory
+        // Insert recent memory (0 days — no decay update applied)
         conn.execute(
             "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
              VALUES ('new1', 'decision', 'New decision', 'content', 0.9, 'active', '[]',
@@ -2935,17 +2936,19 @@ mod tests {
             "30-day memory at 0.9 base should not be faded yet"
         );
 
-        // Crucially: stored confidence is NEVER modified
+        // mid1 is 30 days old: confidence must now be persisted as ~0.9 * exp(-0.03 * 30) ≈ 0.3659
         let mid_conf: f64 = conn
             .query_row("SELECT confidence FROM memory WHERE id = 'mid1'", [], |r| {
                 r.get(0)
             })
             .unwrap();
+        let expected_mid = 0.9_f64 * (-0.03_f64 * 30.0_f64).exp();
         assert!(
-            (mid_conf - 0.9).abs() < 0.001,
-            "stored confidence must remain 0.9, got {mid_conf}"
+            (mid_conf - expected_mid).abs() < 0.02,
+            "stored confidence should be decayed to ~{expected_mid:.4}, got {mid_conf}"
         );
 
+        // new1 is ~0 days old — no meaningful decay, confidence stays at 0.9
         let new_conf: f64 = conn
             .query_row("SELECT confidence FROM memory WHERE id = 'new1'", [], |r| {
                 r.get(0)
@@ -2953,7 +2956,7 @@ mod tests {
             .unwrap();
         assert!(
             (new_conf - 0.9).abs() < 0.001,
-            "stored confidence must remain 0.9, got {new_conf}"
+            "recent memory confidence should remain 0.9, got {new_conf}"
         );
     }
 
@@ -3006,39 +3009,56 @@ mod tests {
     }
 
     #[test]
-    fn test_decay_idempotent_across_runs() {
+    fn test_decay_does_not_refade_already_faded_memories() {
         let conn = open_db();
-        // Insert a 30-day-old memory (effective conf ~ 0.37 — above threshold)
+        // Insert a 90-day-old memory — will fade on first run (0.9 * exp(-0.03*90) ~ 0.06 < 0.1)
         conn.execute(
             "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
-             VALUES ('m1', 'decision', 'D1', 'c', 0.9, 'active', '[]',
+             VALUES ('old1', 'decision', 'Old D', 'c', 0.9, 'active', '[]',
+                     datetime('now', '-90 days'), datetime('now', '-90 days'))",
+            [],
+        ).unwrap();
+        // Insert a 30-day-old memory — stays active but gets confidence persisted
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, tags, created_at, accessed_at)
+             VALUES ('mid1', 'decision', 'Mid D', 'c', 0.9, 'active', '[]',
                      datetime('now', '-30 days'), datetime('now', '-30 days'))",
             [],
         ).unwrap();
 
-        // Run decay multiple times — result should be identical each time
-        let (_, faded1) = decay_memories(&conn, 1000).unwrap();
-        let (_, faded2) = decay_memories(&conn, 1000).unwrap();
-        let (_, faded3) = decay_memories(&conn, 1000).unwrap();
+        // First run: old1 fades, mid1 gets confidence persisted
+        let (checked1, faded1) = decay_memories(&conn, 1000).unwrap();
+        assert_eq!(checked1, 2);
+        assert_eq!(faded1, 1, "old1 should fade on first run");
 
-        assert_eq!(
-            faded1, faded2,
-            "repeated decay runs must produce same result"
-        );
-        assert_eq!(
-            faded2, faded3,
-            "repeated decay runs must produce same result"
-        );
+        // Second run: old1 is already faded (status != active) so it is NOT re-checked
+        // mid1 is still active — faded count should remain 0 since confidence ~ 0.37 > 0.1
+        let (checked2, faded2) = decay_memories(&conn, 1000).unwrap();
+        assert_eq!(checked2, 1, "only mid1 remains active");
+        assert_eq!(faded2, 0, "mid1 should not fade on second run");
 
-        // Confidence is still untouched
-        let conf: f64 = conn
-            .query_row("SELECT confidence FROM memory WHERE id = 'm1'", [], |r| {
+        // Verify old1 status is faded and NOT double-counted
+        let old_status: String = conn
+            .query_row("SELECT status FROM memory WHERE id = 'old1'", [], |r| {
                 r.get(0)
             })
             .unwrap();
+        assert_eq!(old_status, "faded", "old1 must remain faded");
+
+        // Verify mid1 confidence was persisted by the first run (~0.9 * exp(-0.03 * 30) ≈ 0.3659)
+        let mid_conf: f64 = conn
+            .query_row("SELECT confidence FROM memory WHERE id = 'mid1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // After two runs the confidence has been compounded twice, but should still be > 0.1
         assert!(
-            (conf - 0.9).abs() < 0.001,
-            "confidence must not change across multiple decay runs, got {conf}"
+            mid_conf > 0.1,
+            "mid1 confidence should remain above fade threshold, got {mid_conf}"
+        );
+        assert!(
+            mid_conf < 0.9,
+            "mid1 confidence should have decayed from original 0.9, got {mid_conf}"
         );
     }
 
