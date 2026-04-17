@@ -924,18 +924,40 @@ pub fn generate_category_6_lifecycle_quality(seed: u64) -> (Vec<MemorySpec>, Vec
         });
     }
 
-    // 4 CLUSTERS of 3 lessons (12 total) with >50% title overlap for Phase 5 promotion
+    // 4 CLUSTERS of 3 lessons (12 total) with >50% title overlap for Phase 5 promotion.
+    // Phase 2 guard: per-member SHA-256 tokens make meaningful_words sets diverge enough
+    // (title combined ≈ 0.60 < 0.65) while keeping raw split_whitespace overlap > 0.5
+    // so Phase 5 still clusters them.
     for cluster_idx in 0..4 {
         let cluster_token = unique("cluster-topic", cluster_idx);
         for lesson_idx in 0..3 {
             let id = format!("c6-cluster-{cluster_idx}-{lesson_idx}");
-            // Titles share the cluster token (50%+ word overlap via split_whitespace)
-            let title = format!("Lesson cluster repetition {cluster_token} variant {lesson_idx}");
+            // Two per-member tokens → meaningful_words intersection/max ≈ 3/5 = 0.60 < 0.65
+            let member_token_a =
+                sha256_hex(&format!("c6-cluster-{seed}-{cluster_idx}-{lesson_idx}-a"));
+            let member_token_b =
+                sha256_hex(&format!("c6-cluster-{seed}-{cluster_idx}-{lesson_idx}-b"));
+            // Raw split: 5 tokens [cluster_token, "repeats", m_a, "across", m_b]
+            // Between variants: shared = {cluster_token, "repeats", "across"} = 3/5 = 0.60 > 0.5 ✓
+            let title = format!("{cluster_token} repeats {member_token_a} across {member_token_b}");
+            // Per-member verb/noun keeps content_score ≈ 0.375 between any two variants
+            let member_verb = match lesson_idx {
+                0 => "discovered",
+                1 => "noticed",
+                _ => "verified",
+            };
+            let member_noun = match lesson_idx {
+                0 => "during review",
+                1 => "in production",
+                _ => "via logs",
+            };
             specs.push(MemorySpec {
                 id: id.clone(),
                 memory_type: MemoryType::Lesson,
                 title,
-                content: format!("Lesson {lesson_idx} about {cluster_token}."),
+                content: format!(
+                    "{member_verb} {member_noun}: {cluster_token} instance {member_token_a} tied to {member_token_b}."
+                ),
                 confidence: 0.75,
                 valence: "neutral".into(),
                 intensity: 0.0,
@@ -1095,14 +1117,24 @@ pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<Grou
     }
 
     // 6 STALENESS candidates — age 90 days, access=0, content ≤10 chars, activation=0
-    //   Phase 15 quality will be: 0.1*0.3 + 0 + 0.025*0.2 + 0 = 0.035 < 0.1 aggressive tier
+    //   Phase 15 quality will be: 0.1*0.3 + 0 + 0.015*0.2 + 0 = 0.033 < 0.1 aggressive tier
+    //   Phase 2 guard: unique 3-char content per candidate keeps content_score = 0 between them.
     for s_idx in 0..6 {
+        let s_token = sha256_hex(&format!("c7-stale-{seed}-{s_idx}"));
+        let s_content = match s_idx {
+            0 => "a1b",
+            1 => "c2d",
+            2 => "e3f",
+            3 => "g4h",
+            4 => "i5j",
+            _ => "k6l",
+        };
         let id = format!("c7-stale-{s_idx}");
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Lesson,
-            title: format!("stale {s_idx}"),
-            content: "short".into(), // 5 chars → completeness 0.025
+            title: format!("stale {s_token}"),
+            content: s_content.into(), // 3 chars → completeness 0.015, Phase 15 quality ≈ 0.033
             confidence: 0.5,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -1128,14 +1160,21 @@ pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<Grou
     }
 
     // 6 QUALITY-PRESSURE candidates — 3 accelerated-decay + 3 boost
+    // Phase 2 guard: unique tokens per candidate make content_score = 0 between them.
     for p_idx in 0..3 {
         // Accelerated decay: 90-day-old, low quality, zero access
+        let p_token = sha256_hex(&format!("c7-decay-{seed}-{p_idx}"));
+        let p_content = match p_idx {
+            0 => "x7y",
+            1 => "z8w",
+            _ => "v9u",
+        };
         let id = format!("c7-decay-{p_idx}");
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("decay {p_idx}"),
-            content: "short".into(),
+            title: format!("decay {p_token}"),
+            content: p_content.into(), // 3 chars → completeness 0.015, Phase 15 quality ≈ 0.033
             confidence: 0.5,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -1162,13 +1201,18 @@ pub fn generate_category_7_self_healing(seed: u64) -> (Vec<MemorySpec>, Vec<Grou
     }
     for p_idx in 0..3 {
         // Boost: high access, recent, moderate quality
+        // Phase 2 guard: two per-member SHA-256 tokens make meaningful_words sets diverge.
+        // Title: "recent {b_token_a} boost {b_token_b}" — 4 words, 2 unique per candidate.
+        // Between any two candidates: shared = {"recent", "boost"} = 2/4 = 0.5 < 0.65 ✓
+        // Content: b_token_a is the only shared meaningful word → content_score = 0 ✓
+        let b_token_a = sha256_hex(&format!("c7-boost-{seed}-{p_idx}-a"));
+        let b_token_b = sha256_hex(&format!("c7-boost-{seed}-{p_idx}-b"));
         let id = format!("c7-boost-{p_idx}");
         specs.push(MemorySpec {
             id: id.clone(),
             memory_type: MemoryType::Decision,
-            title: format!("boost {p_idx}"),
-            content: "Content for boost candidate with sufficient length for normal completeness."
-                .into(),
+            title: format!("recent {b_token_a} boost {b_token_b}"),
+            content: format!("{b_token_a} {b_token_b}"),
             confidence: 0.8,
             valence: "neutral".into(),
             intensity: 0.0,
@@ -1379,12 +1423,13 @@ fn resolve_timestamp(spec: &str) -> String {
 pub fn insert_memory_spec(conn: &rusqlite::Connection, spec: &MemorySpec) -> rusqlite::Result<()> {
     let created_at = resolve_timestamp(&spec.created_at_spec);
     let accessed_at = resolve_timestamp(&spec.accessed_at_spec);
+    // Exhaustive match — no wildcard so new MemoryType variants force an explicit mapping here.
     let type_str = match spec.memory_type {
         MemoryType::Decision => "decision",
         MemoryType::Lesson => "lesson",
         MemoryType::Pattern => "pattern",
         MemoryType::Preference => "preference",
-        _ => "decision",
+        MemoryType::Protocol => "protocol",
     };
     let tags_json = serde_json::to_string(&spec.tags).unwrap_or_else(|_| "[]".into());
 
@@ -1912,6 +1957,137 @@ mod tests {
                 .count(),
             5
         );
+    }
+
+    // ── Category 6 Phase-2 guard tests ───────────────────────────
+
+    #[test]
+    fn test_category_6_cluster_lessons_avoid_phase_2() {
+        use std::collections::HashSet;
+        fn mw(text: &str) -> HashSet<String> {
+            let stop: HashSet<&str> = [
+                "the", "to", "a", "an", "is", "are", "so", "that", "and", "of", "in", "on", "at",
+                "by", "for", "with", "as",
+            ]
+            .iter()
+            .copied()
+            .collect();
+            text.to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 1 && !stop.contains(w))
+                .map(String::from)
+                .collect()
+        }
+        let (specs, _) = generate_category_6_lifecycle_quality(42);
+        // Layout: 6 decay + 5 recon = 11 specs, then 12 cluster lessons at indices 11..23
+        for cluster_idx in 0..4 {
+            for i in 0..3 {
+                for j in (i + 1)..3 {
+                    let a = &specs[11 + cluster_idx * 3 + i];
+                    let b = &specs[11 + cluster_idx * 3 + j];
+                    let tma = mw(&a.title);
+                    let tmb = mw(&b.title);
+                    let cma = mw(&a.content);
+                    let cmb = mw(&b.content);
+                    let t_shared = tma.intersection(&tmb).count() as f64;
+                    let t_max = std::cmp::max(tma.len(), tmb.len()) as f64;
+                    let title_s = if t_max == 0.0 { 0.0 } else { t_shared / t_max };
+                    let c_shared = cma.intersection(&cmb).count() as f64;
+                    let c_max = std::cmp::max(cma.len(), cmb.len()) as f64;
+                    let content_s = if c_max == 0.0 { 0.0 } else { c_shared / c_max };
+                    let combined = (0.5 * title_s + 0.5 * content_s)
+                        .max(title_s)
+                        .max(content_s);
+                    assert!(
+                        combined < 0.65,
+                        "cluster {cluster_idx} lesson pair ({i},{j}) would be caught by Phase 2: \
+                        combined={combined} title={title_s} content={content_s}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_category_6_cluster_lessons_survive_phase_5_clustering() {
+        // Phase 5 uses raw split_whitespace overlap > 0.5 for clustering.
+        let (specs, _) = generate_category_6_lifecycle_quality(42);
+        for cluster_idx in 0..4 {
+            for i in 0..3 {
+                for j in (i + 1)..3 {
+                    let a = &specs[11 + cluster_idx * 3 + i];
+                    let b = &specs[11 + cluster_idx * 3 + j];
+                    let tokens_a: std::collections::HashSet<&str> =
+                        a.title.split_whitespace().collect();
+                    let tokens_b: std::collections::HashSet<&str> =
+                        b.title.split_whitespace().collect();
+                    let shared = tokens_a.intersection(&tokens_b).count() as f64;
+                    let max_len = std::cmp::max(tokens_a.len(), tokens_b.len()) as f64;
+                    let overlap = if max_len == 0.0 {
+                        0.0
+                    } else {
+                        shared / max_len
+                    };
+                    assert!(
+                        overlap > 0.5,
+                        "cluster {cluster_idx} lessons ({i},{j}) don't overlap enough for Phase 5: {overlap}"
+                    );
+                }
+            }
+        }
+    }
+
+    // ── Category 7 Phase-2 guard test ────────────────────────────
+
+    #[test]
+    fn test_category_7_short_title_candidates_avoid_phase_2() {
+        use std::collections::HashSet;
+        fn mw(text: &str) -> HashSet<String> {
+            let stop: HashSet<&str> = [
+                "the", "to", "a", "an", "is", "are", "so", "that", "and", "of", "in", "on", "at",
+                "by", "for", "with", "as",
+            ]
+            .iter()
+            .copied()
+            .collect();
+            text.to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 1 && !stop.contains(w))
+                .map(String::from)
+                .collect()
+        }
+        let (specs, _) = generate_category_7_self_healing(42);
+        // Layout: 12 topic-supersede (6 pairs × 2) + 6 staleness + 3 pressure-decay + 3 boost = 24
+        let groups: [(usize, usize, &str); 3] = [
+            (12, 18, "staleness"),
+            (18, 21, "pressure-decay"),
+            (21, 24, "boost"),
+        ];
+        for (start, end, name) in groups {
+            for i in start..end {
+                for j in (i + 1)..end {
+                    let a = &specs[i];
+                    let b = &specs[j];
+                    let tma = mw(&a.title);
+                    let tmb = mw(&b.title);
+                    let cma = mw(&a.content);
+                    let cmb = mw(&b.content);
+                    let t_shared = tma.intersection(&tmb).count() as f64;
+                    let t_max = std::cmp::max(tma.len(), tmb.len()) as f64;
+                    let title_s = if t_max == 0.0 { 0.0 } else { t_shared / t_max };
+                    let c_shared = cma.intersection(&cmb).count() as f64;
+                    let c_max = std::cmp::max(cma.len(), cmb.len()) as f64;
+                    let content_s = if c_max == 0.0 { 0.0 } else { c_shared / c_max };
+                    let combined = (0.5 * title_s + 0.5 * content_s)
+                        .max(title_s)
+                        .max(content_s);
+                    assert!(
+                        combined < 0.65,
+                        "{name} pair ({i},{j}) Phase 2 risk: combined={combined} title={title_s} content={content_s}"
+                    );
+                }
+            }
+        }
     }
 
     // ── seed_corpus tests ─────────────────────────────────────────
