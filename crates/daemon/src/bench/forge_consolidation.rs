@@ -1590,7 +1590,7 @@ pub fn seed_embeddings(conn: &rusqlite::Connection, seed: u64) -> Result<usize, 
     for pair_idx in 0..4 {
         let base_key = format!("c3-merge-{seed}-{pair_idx}");
         let base = generate_base_embedding(&base_key);
-        let perturbed = perturb_embedding(&base, 0.08, &format!("c3-merge-{pair_idx}"));
+        let perturbed = perturb_embedding(&base, 0.08, &format!("c3-merge-{seed}-{pair_idx}"));
 
         insert_vec(conn, &format!("c3-merge-{pair_idx}-keeper"), &base)?;
         insert_vec(conn, &format!("c3-merge-{pair_idx}-victim"), &perturbed)?;
@@ -1601,7 +1601,7 @@ pub fn seed_embeddings(conn: &rusqlite::Connection, seed: u64) -> Result<usize, 
     for pair_idx in 0..2 {
         let base_key = format!("c3-control-{seed}-{pair_idx}");
         let base = generate_base_embedding(&base_key);
-        let perturbed = perturb_embedding(&base, 0.15, &format!("c3-control-{pair_idx}"));
+        let perturbed = perturb_embedding(&base, 0.15, &format!("c3-control-{seed}-{pair_idx}"));
         insert_vec(conn, &format!("c3-control-{pair_idx}-a"), &base)?;
         insert_vec(conn, &format!("c3-control-{pair_idx}-b"), &perturbed)?;
         inserted += 2;
@@ -1611,7 +1611,7 @@ pub fn seed_embeddings(conn: &rusqlite::Connection, seed: u64) -> Result<usize, 
     for pair_idx in 0..6 {
         let base_key = format!("c7-supersede-{seed}-{pair_idx}");
         let base = generate_base_embedding(&base_key);
-        let perturbed = perturb_embedding(&base, 0.25, &format!("c7-supersede-{pair_idx}"));
+        let perturbed = perturb_embedding(&base, 0.25, &format!("c7-supersede-{seed}-{pair_idx}"));
         insert_vec(conn, &format!("c7-supersede-{pair_idx}-older"), &base)?;
         insert_vec(conn, &format!("c7-supersede-{pair_idx}-newer"), &perturbed)?;
         inserted += 2;
@@ -2269,5 +2269,49 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM memory_vec", [], |r| r.get(0))
             .unwrap();
         assert_eq!(db_count, 24);
+    }
+
+    #[test]
+    fn test_seed_embeddings_produce_correct_distances() {
+        // Verify the end-to-end geometry: Category 3 control pairs must stay above
+        // Phase 7's 0.1 merge threshold (so controls are NOT merged) and Category 7
+        // supersede pairs must stay below Phase 20's 0.35 supersede threshold.
+        // This guards against key-drift between seed_embeddings and the base/perturb logic.
+        let seed = 42u64;
+
+        // Category 3 merge pair 0: should be BELOW 0.1 (Phase 7 merges)
+        let base_c3m = generate_base_embedding(&format!("c3-merge-{seed}-0"));
+        let perturbed_c3m = perturb_embedding(&base_c3m, 0.08, &format!("c3-merge-{seed}-0"));
+        let d_merge = cosine_distance(&base_c3m, &perturbed_c3m);
+        assert!(
+            d_merge < 0.1,
+            "Category 3 merge pair must be below Phase 7 threshold: d={d_merge}"
+        );
+
+        // Category 3 control pair 0: should be ABOVE 0.1 (Phase 7 skips)
+        let base_c3c = generate_base_embedding(&format!("c3-control-{seed}-0"));
+        let perturbed_c3c = perturb_embedding(&base_c3c, 0.15, &format!("c3-control-{seed}-0"));
+        let d_control = cosine_distance(&base_c3c, &perturbed_c3c);
+        assert!(
+            d_control > 0.1,
+            "Category 3 control pair must be ABOVE Phase 7 threshold to avoid merge: d={d_control}"
+        );
+        assert!(
+            d_control < 0.35,
+            "Category 3 control pair should stay below Phase 20 threshold: d={d_control}"
+        );
+
+        // Category 7 supersede pair 0: should be BELOW 0.35 (Phase 20 supersedes)
+        let base_c7 = generate_base_embedding(&format!("c7-supersede-{seed}-0"));
+        let perturbed_c7 = perturb_embedding(&base_c7, 0.25, &format!("c7-supersede-{seed}-0"));
+        let d_supersede = cosine_distance(&base_c7, &perturbed_c7);
+        assert!(
+            d_supersede < 0.35,
+            "Category 7 supersede pair must be below Phase 20 threshold: d={d_supersede}"
+        );
+        assert!(
+            d_supersede > 0.1,
+            "Category 7 supersede pair should stay above Phase 7 threshold to avoid merge: d={d_supersede}"
+        );
     }
 }
