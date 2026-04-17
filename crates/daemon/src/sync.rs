@@ -232,7 +232,7 @@ fn build_export_query(project: Option<&str>, since: Option<&str>) -> (String, Ve
                        created_at, accessed_at, valence, intensity, hlc_timestamp, node_id,
                        session_id, access_count, COALESCE(activation_level, 0.0),
                        COALESCE(alternatives, '[]'), COALESCE(participants, '[]'),
-                       organization_id
+                       organization_id, superseded_by, valence_flipped_at
                 FROM memory WHERE status = 'active'";
 
     let mut clauses = String::from(base);
@@ -296,8 +296,8 @@ fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         alternatives,
         participants,
         organization_id: row.get::<_, Option<String>>(19).unwrap_or(None),
-        superseded_by: None,
-        valence_flipped_at: None,
+        superseded_by: row.get::<_, Option<String>>(20)?,
+        valence_flipped_at: row.get::<_, Option<String>>(21)?,
     })
 }
 

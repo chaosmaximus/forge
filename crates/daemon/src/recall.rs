@@ -63,74 +63,6 @@ fn rrf_merge(lists: &[Vec<(String, f64)>], k: f64, limit: usize) -> Vec<(String,
     merged
 }
 
-/// Fetch a single Memory record from SQLite by its ID.
-fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), COALESCE(alternatives, '[]'), COALESCE(participants, '[]'), organization_id
-         FROM memory WHERE id = ?1",
-    )?;
-
-    let mut rows = stmt.query(params![id])?;
-
-    if let Some(row) = rows.next()? {
-        let type_str: String = row.get(1)?;
-        let status_str: String = row.get(5)?;
-        let project: Option<String> = row.get(6)?;
-        let tags_json: String = row.get(7)?;
-        let alternatives_json: String = row
-            .get::<_, String>(17)
-            .unwrap_or_else(|_| "[]".to_string());
-        let participants_json: String = row
-            .get::<_, String>(18)
-            .unwrap_or_else(|_| "[]".to_string());
-
-        let memory_type = match type_str.as_str() {
-            "decision" => MemoryType::Decision,
-            "lesson" => MemoryType::Lesson,
-            "pattern" => MemoryType::Pattern,
-            "preference" => MemoryType::Preference,
-            "protocol" => MemoryType::Protocol,
-            _ => MemoryType::Decision,
-        };
-
-        let status = ops::status_from_str(&status_str);
-
-        let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-        let alternatives: Vec<String> =
-            serde_json::from_str(&alternatives_json).unwrap_or_default();
-        let participants: Vec<String> =
-            serde_json::from_str(&participants_json).unwrap_or_default();
-
-        Ok(Some(Memory {
-            id: row.get(0)?,
-            memory_type,
-            title: row.get(2)?,
-            content: row.get(3)?,
-            confidence: row.get(4)?,
-            status,
-            project,
-            tags,
-            embedding: None,
-            created_at: row.get(8)?,
-            accessed_at: row.get(9)?,
-            valence: row.get(10)?,
-            intensity: row.get(11)?,
-            hlc_timestamp: row.get(12)?,
-            node_id: row.get(13)?,
-            session_id: row.get::<_, String>(14).unwrap_or_default(),
-            access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
-            activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
-            alternatives,
-            participants,
-            organization_id: row.get::<_, Option<String>>(19)?,
-            superseded_by: None,
-            valence_flipped_at: None,
-        }))
-    } else {
-        Ok(None)
-    }
-}
-
 /// Get 1-hop outgoing neighbors from the edge table via SQL.
 /// Replaces in-memory petgraph GraphStore.neighbors().
 /// Limited to 10 neighbors per node to prevent fan-out explosion
@@ -300,7 +232,7 @@ pub fn hybrid_recall_scoped_org(
     // 5. Fetch full Memory records from SQLite
     let mut results: Vec<MemoryResult> = Vec::new();
     for id in &all_ids {
-        if let Ok(Some(memory)) = fetch_memory_by_id(conn, id) {
+        if let Ok(Some(memory)) = crate::db::ops::fetch_memory_by_id(conn, id) {
             let score = score_map.get(id).copied().unwrap_or(0.001);
             results.push(MemoryResult {
                 memory,

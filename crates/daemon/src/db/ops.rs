@@ -150,6 +150,101 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
     Ok(())
 }
 
+/// Fetch a single memory by id. Returns None if no row matches.
+///
+/// Reads every column of the memory table and constructs a full Memory struct,
+/// including the Phase 2A-4a `superseded_by` and `valence_flipped_at` columns.
+/// Centralizing the mapping here means future column additions only need to
+/// touch one place.
+pub fn fetch_memory_by_id(
+    conn: &Connection,
+    id: &str,
+) -> rusqlite::Result<Option<forge_core::types::memory::Memory>> {
+    use forge_core::types::memory::{Memory, MemoryStatus, MemoryType};
+    use rusqlite::OptionalExtension;
+
+    conn.query_row(
+        "SELECT id, memory_type, title, content, confidence, status, project, tags,
+                created_at, accessed_at, valence, intensity, hlc_timestamp, node_id,
+                session_id, access_count, COALESCE(activation_level, 0.0),
+                COALESCE(alternatives, '[]'), COALESCE(participants, '[]'),
+                organization_id, superseded_by, valence_flipped_at
+           FROM memory
+          WHERE id = ?1",
+        rusqlite::params![id],
+        |row| {
+            let memory_type_str: String = row.get(1)?;
+            let status_str: String = row.get(5)?;
+            let tags_json: String = row.get(7)?;
+            let alternatives_json: String = row
+                .get::<_, String>(17)
+                .unwrap_or_else(|_| "[]".to_string());
+            let participants_json: String = row
+                .get::<_, String>(18)
+                .unwrap_or_else(|_| "[]".to_string());
+
+            Ok(Memory {
+                id: row.get(0)?,
+                memory_type: match memory_type_str.as_str() {
+                    "decision" => MemoryType::Decision,
+                    "lesson" => MemoryType::Lesson,
+                    "pattern" => MemoryType::Pattern,
+                    "preference" => MemoryType::Preference,
+                    "protocol" => MemoryType::Protocol,
+                    other => {
+                        return Err(rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("unknown memory_type: {other}"),
+                            )),
+                        ))
+                    }
+                },
+                title: row.get(2)?,
+                content: row.get(3)?,
+                confidence: row.get(4)?,
+                status: match status_str.as_str() {
+                    "active" => MemoryStatus::Active,
+                    "superseded" => MemoryStatus::Superseded,
+                    "reverted" => MemoryStatus::Reverted,
+                    "faded" => MemoryStatus::Faded,
+                    "conflict" => MemoryStatus::Conflict,
+                    other => {
+                        return Err(rusqlite::Error::FromSqlConversionFailure(
+                            5,
+                            rusqlite::types::Type::Text,
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("unknown status: {other}"),
+                            )),
+                        ))
+                    }
+                },
+                project: row.get(6)?,
+                tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+                embedding: None,
+                created_at: row.get(8)?,
+                accessed_at: row.get(9)?,
+                valence: row.get(10)?,
+                intensity: row.get(11)?,
+                hlc_timestamp: row.get(12)?,
+                node_id: row.get(13)?,
+                session_id: row.get::<_, String>(14).unwrap_or_default(),
+                access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
+                activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
+                alternatives: serde_json::from_str(&alternatives_json).unwrap_or_default(),
+                participants: serde_json::from_str(&participants_json).unwrap_or_default(),
+                organization_id: row.get(19)?,
+                superseded_by: row.get(20)?,
+                valence_flipped_at: row.get(21)?,
+            })
+        },
+    )
+    .optional()
+}
+
 /// Boost activation level for a memory (capped at 1.0).
 /// Used to track which memories are actively being used.
 /// Activation decays over time in the consolidator.
@@ -742,12 +837,12 @@ pub fn export_memories_org(
 ) -> rusqlite::Result<Vec<Memory>> {
     let (sql, use_org) = match org_id {
         Some(_) => (
-            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id
+            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id, superseded_by, valence_flipped_at
              FROM memory WHERE status = 'active' AND COALESCE(organization_id, 'default') = ?1 ORDER BY created_at DESC",
             true,
         ),
         None => (
-            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id
+            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id, superseded_by, valence_flipped_at
              FROM memory WHERE status = 'active' ORDER BY created_at DESC",
             false,
         ),
@@ -787,8 +882,8 @@ pub fn export_memories_org(
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: row.get::<_, Option<String>>(17)?,
-            superseded_by: None,
-            valence_flipped_at: None,
+            superseded_by: row.get::<_, Option<String>>(18)?,
+            valence_flipped_at: row.get::<_, Option<String>>(19)?,
         })
     };
     if use_org {
@@ -1466,7 +1561,8 @@ pub fn link_related_memories(conn: &Connection, limit: usize) -> rusqlite::Resul
 pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
         "SELECT id, memory_type, title, content, confidence, status, project, tags,
-                created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id
+                created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id,
+                superseded_by, valence_flipped_at
          FROM memory WHERE status = 'active' AND access_count >= 5
          ORDER BY access_count DESC LIMIT 5"
     )?;
@@ -1503,8 +1599,8 @@ pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Ve
             alternatives: Vec::new(),
             participants: Vec::new(),
             organization_id: row.get::<_, Option<String>>(17)?,
-            superseded_by: None,
-            valence_flipped_at: None,
+            superseded_by: row.get::<_, Option<String>>(18)?,
+            valence_flipped_at: row.get::<_, Option<String>>(19)?,
         })
     })?;
     rows.collect()
@@ -5330,5 +5426,72 @@ mod tests {
             removed, 0,
             "relative paths should NOT be deleted when no project roots known"
         );
+    }
+
+    #[test]
+    fn test_fetch_memory_by_id_returns_memory_when_exists() {
+        let conn = open_db();
+
+        let mut m = Memory::new(MemoryType::Preference, "tabs over spaces", "prefer tabs");
+        m.id = "01JABCDEF".to_string();
+        remember(&conn, &m).unwrap();
+
+        let fetched = fetch_memory_by_id(&conn, "01JABCDEF").unwrap();
+        assert!(fetched.is_some(), "should fetch memory by id");
+        let fetched = fetched.unwrap();
+        assert_eq!(fetched.id, "01JABCDEF");
+        assert_eq!(fetched.title, "tabs over spaces");
+        assert_eq!(fetched.superseded_by, None);
+        assert_eq!(fetched.valence_flipped_at, None);
+    }
+
+    #[test]
+    fn test_fetch_memory_by_id_returns_none_when_absent() {
+        let conn = open_db();
+
+        let fetched = fetch_memory_by_id(&conn, "does-not-exist").unwrap();
+        assert!(fetched.is_none(), "missing id should return None");
+    }
+
+    #[test]
+    fn test_fetch_memory_by_id_reads_flipped_columns() {
+        let conn = open_db();
+
+        // Insert a pretend-flipped memory via raw SQL so we control the columns exactly.
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, superseded_by, valence_flipped_at)
+             VALUES (?1, 'preference', 'tabs', 'prefer tabs', 0.9, 'superseded', NULL, '[]', '2026-04-17 00:00:00', '2026-04-17 00:00:00', 'positive', 0.8, ?2, ?3)",
+            rusqlite::params!["01OLDMEM", "01NEWMEM", "2026-04-17 14:22:00"],
+        ).unwrap();
+
+        let fetched = fetch_memory_by_id(&conn, "01OLDMEM").unwrap().unwrap();
+        assert_eq!(fetched.superseded_by, Some("01NEWMEM".to_string()));
+        assert_eq!(
+            fetched.valence_flipped_at,
+            Some("2026-04-17 14:22:00".to_string())
+        );
+    }
+
+    #[test]
+    fn test_remember_raw_inserts_without_dedup() {
+        // Pin existing remember_raw bypass behavior (FlipPreference depends on it in T6).
+        let conn = open_db();
+
+        let mut m1 = Memory::new(MemoryType::Preference, "tabs over spaces", "prefer tabs");
+        m1.id = "01FIRST".to_string();
+        remember(&conn, &m1).unwrap();
+
+        let mut m2 = Memory::new(MemoryType::Preference, "tabs over spaces", "new content");
+        m2.id = "01SECOND".to_string();
+        remember_raw(&conn, &m2).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE title = 'tabs over spaces'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2, "remember_raw must not dedup");
     }
 }
