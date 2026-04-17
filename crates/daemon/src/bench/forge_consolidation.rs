@@ -2675,7 +2675,7 @@ pub fn run(config: ConsolidationBenchConfig) -> Result<ConsolidationScore, Strin
 }
 
 fn write_artifacts(
-    output_dir: &PathBuf,
+    output_dir: &std::path::Path,
     score: &ConsolidationScore,
     baseline: &RecallSnapshot,
     post: &RecallSnapshot,
@@ -2703,7 +2703,7 @@ fn write_artifacts(
 
     // repro.sh
     let repro = format!(
-        "#!/bin/bash\nset -euo pipefail\ncd \"$(git rev-parse --show-toplevel)\"\ncargo build --release --bin forge-bench\n./target/release/forge-bench forge-consolidation --seed {} --output {}\n",
+        "#!/bin/bash\nset -euo pipefail\ncd \"$(git rev-parse --show-toplevel)\"\ncargo build --release --bin forge-bench\n./target/release/forge-bench forge-consolidation --seed {} --output \"{}\"\n",
         score.seed,
         output_dir.display()
     );
