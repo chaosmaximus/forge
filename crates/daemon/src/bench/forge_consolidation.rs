@@ -4,7 +4,7 @@
 //! plus infrastructure pass/fail assertions. See
 //! `docs/benchmarks/forge-consolidation-design.md` for full design.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use rusqlite::OptionalExtension;
@@ -2538,6 +2538,88 @@ pub fn audit_infrastructure(
     Ok(failures)
 }
 
+// ── Composite score ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsolidationScore {
+    pub seed: u64,
+    pub dimensions: HashMap<String, DimensionScore>,
+    pub recall_baseline_mean: f64,
+    pub recall_post_mean: f64,
+    pub recall_delta: f64,
+    pub recall_delta_score: f64,
+    pub composite: f64,
+    pub infrastructure_failures: Vec<String>,
+    pub pass: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compute_score(
+    seed: u64,
+    dim1: DimensionScore,
+    dim2: DimensionScore,
+    dim3: DimensionScore,
+    dim4: DimensionScore,
+    baseline: &RecallSnapshot,
+    post: &RecallSnapshot,
+    expected_recall_delta: Option<f64>,
+    infrastructure_failures: Vec<String>,
+) -> ConsolidationScore {
+    let recall_delta = post.mean_recall_at_10 - baseline.mean_recall_at_10;
+
+    let dim5_score = match (recall_delta, expected_recall_delta) {
+        (d, _) if d < 0.0 => 0.0,
+        (d, Some(expected)) if expected > 0.0 => (d / expected).clamp(0.0, 1.0),
+        (0.0, Some(_)) => 0.5, // neutral pass
+        (_, None) => {
+            if recall_delta > 0.0 {
+                1.0
+            } else {
+                0.5
+            }
+        } // no threshold yet
+        _ => 0.0,              // expected_delta=0 invalid
+    };
+
+    let mut dimensions = HashMap::new();
+    dimensions.insert(dim1.dimension.clone(), dim1.clone());
+    dimensions.insert(dim2.dimension.clone(), dim2.clone());
+    dimensions.insert(dim3.dimension.clone(), dim3.clone());
+    dimensions.insert(dim4.dimension.clone(), dim4.clone());
+    dimensions.insert(
+        "recall_improvement".into(),
+        DimensionScore {
+            dimension: "recall_improvement".into(),
+            precision: 0.0,
+            recall: 0.0,
+            f1: dim5_score,
+            details: vec![
+                format!("baseline={:.4}", baseline.mean_recall_at_10),
+                format!("post={:.4}", post.mean_recall_at_10),
+                format!("delta={:.4}", recall_delta),
+                format!("expected={expected_recall_delta:?}"),
+            ],
+        },
+    );
+
+    let composite =
+        0.25 * dim1.f1 + 0.20 * dim2.f1 + 0.15 * dim3.f1 + 0.15 * dim4.f1 + 0.25 * dim5_score;
+
+    let pass = infrastructure_failures.is_empty() && composite >= 0.8;
+
+    ConsolidationScore {
+        seed,
+        dimensions,
+        recall_baseline_mean: baseline.mean_recall_at_10,
+        recall_post_mean: post.mean_recall_at_10,
+        recall_delta,
+        recall_delta_score: dim5_score,
+        composite,
+        infrastructure_failures,
+        pass,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3426,5 +3508,102 @@ mod tests {
         let failures = result.unwrap();
         // Just verify we get a Vec (can be non-empty pre-consolidation)
         assert!(failures.len() <= 10, "at most 10 infrastructure assertions");
+    }
+
+    #[test]
+    fn test_compute_score_all_perfect() {
+        let d = |name: &str| DimensionScore {
+            dimension: name.into(),
+            precision: 1.0,
+            recall: 1.0,
+            f1: 1.0,
+            details: vec![],
+        };
+        let baseline = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.5,
+        };
+        let post = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.8,
+        };
+        let s = compute_score(
+            42,
+            d("dedup_quality"),
+            d("contradiction_handling"),
+            d("reweave_enrichment"),
+            d("quality_lifecycle"),
+            &baseline,
+            &post,
+            Some(0.3),
+            vec![],
+        );
+        assert!((s.composite - 1.0).abs() < 1e-9);
+        assert!(s.pass);
+    }
+
+    #[test]
+    fn test_compute_score_negative_delta_gives_zero() {
+        let d = |f| DimensionScore {
+            dimension: "".into(),
+            precision: 0.0,
+            recall: 0.0,
+            f1: f,
+            details: vec![],
+        };
+        let baseline = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.8,
+        };
+        let post = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.5,
+        };
+        let s = compute_score(
+            42,
+            d(1.0),
+            d(1.0),
+            d(1.0),
+            d(1.0),
+            &baseline,
+            &post,
+            Some(0.3),
+            vec![],
+        );
+        assert_eq!(s.recall_delta_score, 0.0);
+    }
+
+    #[test]
+    fn test_compute_score_infra_failure_blocks_pass() {
+        let d = |f| DimensionScore {
+            dimension: "".into(),
+            precision: 0.0,
+            recall: 0.0,
+            f1: f,
+            details: vec![],
+        };
+        let bs = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 0.0,
+        };
+        let ps = RecallSnapshot {
+            results: vec![],
+            mean_recall_at_10: 1.0,
+        };
+        let s = compute_score(
+            42,
+            d(1.0),
+            d(1.0),
+            d(1.0),
+            d(1.0),
+            &bs,
+            &ps,
+            Some(1.0),
+            vec!["Phase 3 failed".into()],
+        );
+        assert!(
+            !s.pass,
+            "infrastructure failure should block pass even with composite 1.0"
+        );
     }
 }
