@@ -1715,7 +1715,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<RecallQuery> {
             expected_titles: expected_titles_for_c1_keeper(dataset, i),
         });
     }
-    for i in 1..4 {
+    for i in 1..5 {
         queries.push(RecallQuery {
             id: format!("RC-{}", 11 + i),
             query: format!("adopt approach valence pair {i} topic"),
@@ -2553,14 +2553,15 @@ mod tests {
             expected_resolution_count: 4,
         };
         let queries = generate_query_bank(&dataset);
-        assert!(
-            queries.len() >= 13,
-            "expected ~15 queries, got {}",
+        assert_eq!(
+            queries.len(),
+            15,
+            "expected exactly 15 queries, got {}",
             queries.len()
         );
         // All queries have unique IDs
-        let ids: HashSet<_> = queries.iter().map(|q| &q.id).collect();
-        assert_eq!(ids.len(), queries.len());
+        let ids: std::collections::HashSet<_> = queries.iter().map(|q| &q.id).collect();
+        assert_eq!(ids.len(), queries.len(), "query IDs must be unique");
     }
 
     #[test]
