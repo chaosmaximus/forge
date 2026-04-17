@@ -457,6 +457,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             limit,
             layer,
             since,
+            include_flipped: _, // Phase 2A-4a: accepted but unused — T10 wires it up
         } => {
             let lim = limit.unwrap_or(10);
 
@@ -797,6 +798,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     message: format!("supersede failed: {e}"),
                 },
             }
+        }
+
+        Request::FlipPreference { .. } => {
+            todo!("2A-4a T6 — FlipPreference handler");
+        }
+
+        Request::ListFlipped { .. } => {
+            todo!("2A-4a T9 — ListFlipped handler");
         }
 
         Request::HealthByProject => match ops::health_by_project(&state.conn) {
@@ -5818,6 +5827,7 @@ mod tests {
             limit: None,
             layer: None,
             since: None,
+            include_flipped: None,
         };
         let response = handle_request(&mut state, recall_req);
 
@@ -7500,6 +7510,7 @@ mod tests {
                 limit: None,
                 layer: Some("experience".into()),
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -7521,6 +7532,7 @@ mod tests {
                 limit: None,
                 layer: Some("declared".into()),
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -7560,6 +7572,7 @@ mod tests {
                 limit: None,
                 layer: None,
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -7600,6 +7613,7 @@ mod tests {
                 limit: None,
                 layer: Some("identity".into()),
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -7622,6 +7636,7 @@ mod tests {
                 limit: None,
                 layer: Some("identity".into()),
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -7661,6 +7676,7 @@ mod tests {
                 limit: None,
                 layer: Some("perception".into()),
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -7708,6 +7724,7 @@ mod tests {
                 limit: None,
                 layer: Some("skill".into()),
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -7730,6 +7747,7 @@ mod tests {
                 limit: None,
                 layer: Some("skill".into()),
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -8080,6 +8098,7 @@ mod tests {
                 limit: Some(5),
                 layer: None,
                 since: None,
+                include_flipped: None,
             },
         );
         match recall_resp {
@@ -8312,6 +8331,7 @@ mod tests {
                 limit: Some(5),
                 layer: None,
                 since: None,
+                include_flipped: None,
             },
         );
         match recall_resp {
@@ -9979,6 +9999,7 @@ mod tests {
                 limit: Some(10),
                 layer: None,
                 since: Some("2026-04-01 00:00:00".into()),
+                include_flipped: None,
             },
         );
         match resp {
@@ -10013,6 +10034,7 @@ mod tests {
                 limit: Some(10),
                 layer: None,
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -10055,6 +10077,7 @@ mod tests {
                 limit: Some(10),
                 layer: None,
                 since: None,
+                include_flipped: None,
             },
         );
         match resp {
@@ -10372,6 +10395,7 @@ mod tests {
                 limit: Some(5),
                 layer: None,
                 since: None,
+                include_flipped: None,
             },
         );
 

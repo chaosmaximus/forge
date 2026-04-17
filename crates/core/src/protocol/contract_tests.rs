@@ -94,6 +94,35 @@ mod tests {
                     limit: Some(10),
                     layer: Some("experience".into()),
                     since: None,
+                    include_flipped: None,
+                },
+            ),
+            (
+                "recall",
+                Request::Recall {
+                    query: "test".into(),
+                    memory_type: None,
+                    project: None,
+                    limit: Some(10),
+                    layer: None,
+                    since: None,
+                    include_flipped: Some(true),
+                },
+            ),
+            (
+                "flip_preference",
+                Request::FlipPreference {
+                    memory_id: "01JABCDEF".into(),
+                    new_valence: "negative".into(),
+                    new_intensity: 0.8,
+                    reason: Some("team switched to spaces".into()),
+                },
+            ),
+            (
+                "list_flipped",
+                Request::ListFlipped {
+                    agent: Some("claude-code".into()),
+                    limit: Some(10),
                 },
             ),
             ("forget", Request::Forget { id: "abc".into() }),
@@ -1184,10 +1213,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 20 (was 19; +1 Version)
         let unit_count = 20;
-        // Parameterized variants: 97 (was 95; +2 ListContradictions, ResolveContradiction)
-        let param_count = 97;
-        // Total: 117
-        let expected_total = 117;
+        // Parameterized variants: 99 (was 97; +2 FlipPreference, ListFlipped)
+        let param_count = 99;
+        // Total: 119
+        let expected_total = 119;
 
         assert_eq!(
             unit_count + param_count,
@@ -1274,6 +1303,7 @@ mod tests {
                     limit: None,
                     layer: None,
                     since: None,
+                    include_flipped: None,
                 },
                 Request::Forget { id: "x".into() },
                 Request::Export {
@@ -1396,6 +1426,16 @@ mod tests {
                 Request::Supersede {
                     old_id: "old".into(),
                     new_id: "new".into(),
+                },
+                Request::FlipPreference {
+                    memory_id: "01JABCDEF".into(),
+                    new_valence: "negative".into(),
+                    new_intensity: 0.8,
+                    reason: None,
+                },
+                Request::ListFlipped {
+                    agent: None,
+                    limit: None,
                 },
                 Request::ListIdentity { agent: "a".into() },
                 Request::DeactivateIdentity { id: "i".into() },
@@ -1825,6 +1865,47 @@ mod tests {
             }
             _ => panic!("expected RawDocumentsList variant"),
         }
+    }
+
+    #[test]
+    fn test_preference_flipped_response_variant_roundtrips() {
+        use crate::protocol::response::{Response, ResponseData};
+        let resp = Response::Ok {
+            data: ResponseData::PreferenceFlipped {
+                old_id: "01OLD".into(),
+                new_id: "01NEW".into(),
+                new_valence: "negative".into(),
+                new_intensity: 0.8,
+                flipped_at: "2026-04-17 14:22:00".into(),
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let decoded: Response = serde_json::from_str(&json).unwrap();
+        // Response derives may not include PartialEq — compare via re-serialization
+        let reserialized = serde_json::to_string(&decoded).unwrap();
+        assert_eq!(json, reserialized);
+    }
+
+    #[test]
+    fn test_flipped_list_response_variant_roundtrips() {
+        use crate::protocol::response::{FlippedMemory, Response, ResponseData};
+        use crate::types::memory::{Memory, MemoryType};
+        let mut m = Memory::new(MemoryType::Preference, "tabs", "prefer tabs");
+        m.valence_flipped_at = Some("2026-04-17 14:22:00".into());
+        m.superseded_by = Some("01NEW".into());
+        let resp = Response::Ok {
+            data: ResponseData::FlippedList {
+                items: vec![FlippedMemory {
+                    old: m,
+                    flipped_to_id: "01NEW".into(),
+                    flipped_at: "2026-04-17 14:22:00".into(),
+                }],
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let decoded: Response = serde_json::from_str(&json).unwrap();
+        let reserialized = serde_json::to_string(&decoded).unwrap();
+        assert_eq!(json, reserialized);
     }
 
     #[test]

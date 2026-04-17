@@ -69,6 +69,7 @@ fn do_recall(
             limit,
             layer: None,
             since: None,
+            include_flipped: None,
         },
     );
     match resp {
@@ -911,6 +912,7 @@ fn test_edge_cases() {
             limit: None,
             layer: None,
             since: None,
+            include_flipped: None,
         },
     );
     match resp {

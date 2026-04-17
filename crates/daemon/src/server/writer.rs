@@ -284,6 +284,7 @@ mod tests {
             limit: None,
             layer: None,
             since: None,
+            include_flipped: None,
         }));
 
         assert!(is_read_only(&Request::CompileContext {

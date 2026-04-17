@@ -835,6 +835,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
                 limit: Some(10),
                 layer: Some("skill".to_string()),
                 since: None,
+                include_flipped: None,
             },
             expected,
         });
@@ -866,6 +867,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
                 limit: Some(10),
                 layer: Some("domain_dna".to_string()),
                 since: None,
+                include_flipped: None,
             },
             expected,
         });
@@ -1635,6 +1637,7 @@ mod tests {
                 limit: Some(5),
                 layer: Some("skill".to_string()),
                 since: None,
+                include_flipped: None,
             },
         );
         let items = extract_result_items(&resp);

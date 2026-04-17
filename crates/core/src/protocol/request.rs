@@ -64,6 +64,10 @@ pub enum Request {
         /// Example: "2026-04-01 00:00:00". Parsed from relative durations by CLI.
         #[serde(default)]
         since: Option<String>,
+        /// Phase 2A-4a: when Some(true), include superseded-and-flipped preferences
+        /// in the candidate set. Default (None or Some(false)) matches pre-2A-4a behavior.
+        #[serde(default)]
+        include_flipped: Option<bool>,
     },
     Forget {
         id: String,
@@ -72,6 +76,23 @@ pub enum Request {
     Supersede {
         old_id: String,
         new_id: String,
+    },
+    /// Phase 2A-4a: flip a user preference's valence, preserving the original as flipped-history.
+    /// Creates a new memory with `new_valence` and marks the old as superseded with
+    /// `valence_flipped_at` set to the flip timestamp.
+    FlipPreference {
+        memory_id: String,
+        new_valence: String,
+        new_intensity: f64,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// Phase 2A-4a: list preferences whose valence was flipped (i.e. superseded via FlipPreference).
+    ListFlipped {
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
     },
     Health,
     /// Health counts grouped by project

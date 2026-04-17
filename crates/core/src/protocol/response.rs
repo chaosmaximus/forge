@@ -56,6 +56,14 @@ pub struct MemoryResult {
     pub edges: Vec<MemoryEdge>,
 }
 
+/// Phase 2A-4a: a preference memory whose valence was flipped, paired with the successor ID.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FlippedMemory {
+    pub old: crate::types::memory::Memory,
+    pub flipped_to_id: String,
+    pub flipped_at: String,
+}
+
 /// A single structured health check result for `forge doctor`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HealthCheck {
@@ -81,6 +89,18 @@ pub enum ResponseData {
     Superseded {
         old_id: String,
         new_id: String,
+    },
+    /// Phase 2A-4a: response for Request::FlipPreference.
+    PreferenceFlipped {
+        old_id: String,
+        new_id: String,
+        new_valence: String,
+        new_intensity: f64,
+        flipped_at: String,
+    },
+    /// Phase 2A-4a: response for Request::ListFlipped.
+    FlippedList {
+        items: Vec<FlippedMemory>,
     },
     Health {
         decisions: usize,

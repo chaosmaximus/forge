@@ -75,6 +75,7 @@ fn do_recall(state: &mut DaemonState, query: &str, limit: Option<usize>) -> Vec<
             limit,
             layer: None,
             since: None,
+            include_flipped: None,
         },
     );
     match resp {

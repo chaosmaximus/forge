@@ -231,6 +231,7 @@ mod tests {
                 limit: None,
                 layer: None,
                 since: None,
+                include_flipped: None,
             }
         )
         .is_ok());
@@ -291,6 +292,7 @@ mod tests {
                 limit: None,
                 layer: None,
                 since: None,
+                include_flipped: None,
             }
         )
         .is_ok());

@@ -290,6 +290,9 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         Request::RawIngest { .. }
         | Request::RawSearch { .. }
         | Request::RawDocumentsList { .. } => None,
+
+        // === Phase 2A-4a: valence flipping (always allowed — no tier gate) ===
+        Request::FlipPreference { .. } | Request::ListFlipped { .. } => None,
     }
 }
 
@@ -375,6 +378,7 @@ mod tests {
                 limit: None,
                 layer: None,
                 since: None,
+                include_flipped: None,
             },
             Request::Remember {
                 memory_type: forge_core::types::MemoryType::Decision,

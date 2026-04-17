@@ -43,6 +43,7 @@ pub async fn recall(
         limit: Some(limit),
         layer,
         since,
+        include_flipped: None,
     };
 
     match client::send(&request).await {
