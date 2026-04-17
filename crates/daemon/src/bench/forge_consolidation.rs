@@ -1782,7 +1782,7 @@ fn expected_reweaved_titles(dataset: &SeededDataset, pair_idx: usize) -> HashSet
 
 fn expected_supersede_newer(dataset: &SeededDataset, pair_idx: usize) -> HashSet<String> {
     let mut set = HashSet::new();
-    let topic = sha256_hex(&format!("c7-topic-{}-{}", dataset.seed, pair_idx));
+    let topic = sha256_hex(&format!("c7-{}-topic-{}", dataset.seed, pair_idx));
     set.insert(format!("Topic {topic} revised approach"));
     set
 }
@@ -1829,7 +1829,14 @@ pub fn snapshot_recall(
             Response::Ok {
                 data: ResponseData::Memories { ref results, .. },
             } => results.iter().map(|r| r.memory.title.clone()).collect(),
-            _ => HashSet::new(),
+            other => {
+                tracing::warn!(
+                    query_id = %q.id,
+                    "snapshot_recall: unexpected response variant, scoring 0: {:?}",
+                    other
+                );
+                HashSet::new()
+            }
         };
         let matched = q
             .expected_titles
@@ -2570,5 +2577,81 @@ mod tests {
         let snap = snapshot_recall(&mut state, &[]);
         assert_eq!(snap.mean_recall_at_10, 0.0);
         assert!(snap.results.is_empty());
+    }
+
+    #[test]
+    fn test_expected_supersede_newer_matches_generator() {
+        // The helper must produce the same title that the Category 7 generator uses
+        // for the newer member of topic-supersede pair 0 with seed 42.
+        let (specs, _) = generate_category_7_self_healing(42);
+        // Category 7 layout: first 12 specs are the 6 supersede pairs (older then newer)
+        // Pair 0 newer = index 1
+        let actual_newer_title = &specs[1].title;
+        let dataset = SeededDataset {
+            seed: 42,
+            ground_truth: vec![],
+            recall_queries: vec![],
+            expected_pattern_count: 4,
+            expected_protocol_count: 7,
+            expected_resolution_count: 4,
+        };
+        let expected = expected_supersede_newer(&dataset, 0);
+        assert!(
+            expected.contains(actual_newer_title),
+            "expected_supersede_newer must produce the actual newer title.\n  actual: {actual_newer_title}\n  expected set: {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_expected_title_helpers_match_generators() {
+        let seed = 42u64;
+        let dataset = SeededDataset {
+            seed,
+            ground_truth: vec![],
+            recall_queries: vec![],
+            expected_pattern_count: 4,
+            expected_protocol_count: 7,
+            expected_resolution_count: 4,
+        };
+
+        // C1 keeper (pair 0)
+        let (c1_specs, _) = generate_category_1_exact_duplicates(seed);
+        // C1 layout: 2 memories per pair, keeper first, victim second. Pair 0 keeper = index 0
+        let c1_actual = &c1_specs[0].title;
+        let c1_expected = expected_titles_for_c1_keeper(&dataset, 0);
+        assert!(
+            c1_expected.contains(c1_actual),
+            "c1 helper mismatch: actual={c1_actual}, expected={c1_expected:?}"
+        );
+
+        // C2 keeper (pair 0)
+        let (c2_specs, _) = generate_category_2_semantic_duplicates(seed);
+        let c2_actual = &c2_specs[0].title;
+        let c2_expected = expected_titles_for_c2_keeper(&dataset, 0);
+        assert!(
+            c2_expected.contains(c2_actual),
+            "c2 helper mismatch: actual={c2_actual}, expected={c2_expected:?}"
+        );
+
+        // C4 valence → Resolution title
+        let (c4_specs, _) = generate_category_4_contradictions(seed);
+        // C4 layout: 2 memories per valence pair, pos first then neg. Pair 0 pos=0, neg=1
+        let pos = &c4_specs[0].title;
+        let neg = &c4_specs[1].title;
+        let c4_expected = expected_resolution_titles(&dataset, 0);
+        let synthesized = format!("Resolution: {pos} vs {neg}");
+        assert!(
+            c4_expected.contains(&synthesized),
+            "c4 resolution helper mismatch: built={synthesized}, expected={c4_expected:?}"
+        );
+
+        // C5 reweave older (pair 0) — older is index 0 of the pair (each pair = 2 memories, older first, newer second)
+        let (c5_specs, _) = generate_category_5_reweave_enrichment(seed);
+        let c5_actual = &c5_specs[0].title;
+        let c5_expected = expected_reweaved_titles(&dataset, 0);
+        assert!(
+            c5_expected.contains(c5_actual),
+            "c5 reweave helper mismatch: actual={c5_actual}, expected={c5_expected:?}"
+        );
     }
 }
