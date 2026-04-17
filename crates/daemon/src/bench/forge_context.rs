@@ -24,8 +24,18 @@ use super::common::{seeded_rng, sha256_hex};
 
 /// The 12 tool keywords hardcoded in `recall.rs` skill filtering.
 const HARDCODED_TOOL_KEYWORDS: [&str; 12] = [
-    "docker", "kubectl", "terraform", "npm", "cargo", "pip", "gcloud", "aws", "ssh", "make",
-    "scp", "rsync",
+    "docker",
+    "kubectl",
+    "terraform",
+    "npm",
+    "cargo",
+    "pip",
+    "gcloud",
+    "aws",
+    "ssh",
+    "make",
+    "scp",
+    "rsync",
 ];
 
 /// Domain vocabulary used across generators.
@@ -61,7 +71,7 @@ pub struct SeededDataset {
     pub absent_keywords: Vec<String>,
     pub skills: Vec<Skill>,
     pub memory_ids: Vec<(MemoryType, String, String)>, // (type, id, title)
-    pub decision_file_map: Vec<(String, String)>,       // (memory_id, file_path)
+    pub decision_file_map: Vec<(String, String)>,      // (memory_id, file_path)
     pub domain_dna_aspects: Vec<String>,
     pub file_paths: Vec<String>,
     pub session_id: String,
@@ -123,9 +133,7 @@ pub fn generate_skills(
             id: format!("bench-skill-a-{i}"),
             name: format!("{tool_name} {domain} workflow {}", &token[..8]),
             domain: domain.to_string(),
-            description: format!(
-                "Uses {tool_name} for {domain} operations. Token: {token}"
-            ),
+            description: format!("Uses {tool_name} for {domain} operations. Token: {token}"),
             steps: vec![
                 format!("step-1: run {tool_name}"),
                 format!("step-2: verify {domain}"),
@@ -152,9 +160,7 @@ pub fn generate_skills(
             id: format!("bench-skill-b-{i}"),
             name: format!("{tool_kw} {domain} pipeline {}", &token[..8]),
             domain: domain.to_string(),
-            description: format!(
-                "Requires {tool_kw} for {domain} automation. Token: {token}"
-            ),
+            description: format!("Requires {tool_kw} for {domain} automation. Token: {token}"),
             steps: vec![
                 format!("step-1: install {tool_kw}"),
                 format!("step-2: configure {domain}"),
@@ -180,9 +186,7 @@ pub fn generate_skills(
             id: format!("bench-skill-c-{i}"),
             name: format!("{domain} best practice {}", &token[..8]),
             domain: domain.to_string(),
-            description: format!(
-                "Domain-only guidance for {domain} layer. Token: {token}"
-            ),
+            description: format!("Domain-only guidance for {domain} layer. Token: {token}"),
             steps: vec![
                 format!("step-1: review {domain} standards"),
                 format!("step-2: apply pattern"),
@@ -234,9 +238,7 @@ pub fn generate_memories(seed: u64) -> Vec<MemorySpec> {
             // Full 64-char token in title to resist semantic dedup.
             // Truncating to 8 chars caused same-domain pairs to exceed
             // the 0.65 Jaccard threshold (adversarial review CRITICAL-1).
-            title: format!(
-                "Decision: {domain} layer architecture ({token}) — affects {file}"
-            ),
+            title: format!("Decision: {domain} layer architecture ({token}) — affects {file}"),
             content: format!(
                 "Decided to refactor {domain} layer via {file}. Unique token: {token}"
             ),
@@ -253,9 +255,7 @@ pub fn generate_memories(seed: u64) -> Vec<MemorySpec> {
         let token = sha256_hex(&format!("forge-context-{seed}-lesson-{i}"));
         specs.push(MemorySpec {
             memory_type: MemoryType::Lesson,
-            title: format!(
-                "Lesson: {domain} {completion_tag} insight ({token})"
-            ),
+            title: format!("Lesson: {domain} {completion_tag} insight ({token})"),
             content: format!(
                 "Learned about {completion_tag} in {domain} context. Unique token: {token}"
             ),
@@ -272,9 +272,7 @@ pub fn generate_memories(seed: u64) -> Vec<MemorySpec> {
         specs.push(MemorySpec {
             memory_type: MemoryType::Pattern,
             title: format!("Pattern: {domain} convention ({token})"),
-            content: format!(
-                "Observed recurring {domain} pattern. Unique token: {token}"
-            ),
+            content: format!("Observed recurring {domain} pattern. Unique token: {token}"),
             confidence: 0.70 + (i as f64) * 0.02,
             tags: vec![domain.to_string()],
             file_path: None,
@@ -351,12 +349,7 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> Result<SeededDataset, S
     }
 
     for tool in &present_tools {
-        let resp = handle_request(
-            state,
-            Request::StoreTool {
-                tool: tool.clone(),
-            },
-        );
+        let resp = handle_request(state, Request::StoreTool { tool: tool.clone() });
         if !matches!(resp, Response::Ok { .. }) {
             return Err(format!("StoreTool failed: {resp:?}"));
         }
@@ -398,13 +391,7 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> Result<SeededDataset, S
                 // but we add one unconditionally to guarantee the edge exists.
                 if let Some(ref fp) = spec.file_path {
                     let target = format!("file:{fp}");
-                    let _ = crate::db::ops::store_edge(
-                        &state.conn,
-                        &id,
-                        &target,
-                        "affects",
-                        "{}",
-                    );
+                    let _ = crate::db::ops::store_edge(&state.conn, &id, &target, "affects", "{}");
                     decision_file_map.push((id, fp.clone()));
                 }
             }
@@ -615,7 +602,9 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         // It uses: `WHERE success_count > 0 AND (description LIKE ?1 OR name LIKE ?1 OR domain LIKE ?1)`
         // ordered by success_count DESC LIMIT 2.
         let mut expected = HashSet::new();
-        let mut matching_skills: Vec<&Skill> = dataset.skills.iter()
+        let mut matching_skills: Vec<&Skill> = dataset
+            .skills
+            .iter()
             .filter(|s| {
                 let text = format!("{} {} {}", s.name, s.description, s.domain).to_lowercase();
                 text.contains(cmd_name)
@@ -715,9 +704,8 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         let token_d9 = sha256_hex(&format!("forge-context-{seed}-decision-9"));
         let domain_d9 = DOMAINS[9 % DOMAINS.len()]; // "deployment"
         let file_d9 = FILE_PATHS[9 % FILE_PATHS.len()]; // "src/deployment/config.rs"
-        let title_d9 = format!(
-            "Decision: {domain_d9} layer architecture ({token_d9}) — affects {file_d9}"
-        );
+        let title_d9 =
+            format!("Decision: {domain_d9} layer architecture ({token_d9}) — affects {file_d9}");
         let content_d9 = format!(
             "Decided to refactor {domain_d9} layer via {file_d9}. Unique token: {token_d9}"
         );
@@ -728,9 +716,8 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         let token_d8 = sha256_hex(&format!("forge-context-{seed}-decision-8"));
         let domain_d8 = DOMAINS[8 % DOMAINS.len()]; // "testing"
         let file_d8 = FILE_PATHS[8 % FILE_PATHS.len()]; // "src/testing/harness.rs"
-        let title_d8 = format!(
-            "Decision: {domain_d8} layer architecture ({token_d8}) — affects {file_d8}"
-        );
+        let title_d8 =
+            format!("Decision: {domain_d8} layer architecture ({token_d8}) — affects {file_d8}");
         let content_d8 = format!(
             "Decided to refactor {domain_d8} layer via {file_d8}. Unique token: {token_d8}"
         );
@@ -742,9 +729,8 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         let domain_l9 = DOMAINS[9 % DOMAINS.len()]; // "deployment"
         let ctag_l9 = COMPLETION_TAGS[9 % COMPLETION_TAGS.len()]; // "production-readiness"
         let title_l9 = format!("Lesson: {domain_l9} {ctag_l9} insight ({token_l9})");
-        let content_l9 = format!(
-            "Learned about {ctag_l9} in {domain_l9} context. Unique token: {token_l9}"
-        );
+        let content_l9 =
+            format!("Learned about {ctag_l9} in {domain_l9} context. Unique token: {token_l9}");
         let content_substr_l9: String = content_l9.chars().take(150).collect();
         expected.insert(format!("{title_l9}: {content_substr_l9}"));
 
@@ -775,10 +761,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
     //
     // All quality_score=0.5. ORDER BY quality_score DESC gives them all equal.
     // SQLite returns by rowid in tie: i=1, i=2, i=4 (top 3 by insertion order).
-    let task_subjects = [
-        "deploy to production",
-        "ship the release",
-    ];
+    let task_subjects = ["deploy to production", "ship the release"];
     for (co_idx, subject) in task_subjects.iter().enumerate() {
         let id = format!("CO-{}", co_idx + 4);
         let mut expected = HashSet::new();
@@ -788,19 +771,25 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
         let token_l1 = sha256_hex(&format!("forge-context-{seed}-lesson-1"));
         let domain_l1 = DOMAINS[1 % DOMAINS.len()]; // "database"
         let ctag_l1 = COMPLETION_TAGS[1 % COMPLETION_TAGS.len()]; // "uat"
-        expected.insert(format!("Lesson: {domain_l1} {ctag_l1} insight ({token_l1})"));
+        expected.insert(format!(
+            "Lesson: {domain_l1} {ctag_l1} insight ({token_l1})"
+        ));
 
         // Lesson i=2: tag="deployment"
         let token_l2 = sha256_hex(&format!("forge-context-{seed}-lesson-2"));
         let domain_l2 = DOMAINS[2 % DOMAINS.len()]; // "networking"
         let ctag_l2 = COMPLETION_TAGS[2 % COMPLETION_TAGS.len()]; // "deployment"
-        expected.insert(format!("Lesson: {domain_l2} {ctag_l2} insight ({token_l2})"));
+        expected.insert(format!(
+            "Lesson: {domain_l2} {ctag_l2} insight ({token_l2})"
+        ));
 
         // Lesson i=4: tag="production-readiness"
         let token_l4 = sha256_hex(&format!("forge-context-{seed}-lesson-4"));
         let domain_l4 = DOMAINS[4 % DOMAINS.len()]; // "deployment"
         let ctag_l4 = COMPLETION_TAGS[4 % COMPLETION_TAGS.len()]; // "production-readiness"
-        expected.insert(format!("Lesson: {domain_l4} {ctag_l4} insight ({token_l4})"));
+        expected.insert(format!(
+            "Lesson: {domain_l4} {ctag_l4} insight ({token_l4})"
+        ));
 
         cases.push(QueryCase {
             id,
@@ -902,9 +891,15 @@ pub fn extract_result_items(response: &Response) -> Result<HashSet<String>, Stri
                 ..
             } => {
                 let mut items = HashSet::new();
-                for s in decisions_affected { items.insert(s.clone()); }
-                for s in relevant_lessons { items.insert(s.clone()); }
-                for s in applicable_skills { items.insert(s.clone()); }
+                for s in decisions_affected {
+                    items.insert(s.clone());
+                }
+                for s in relevant_lessons {
+                    items.insert(s.clone());
+                }
+                for s in applicable_skills {
+                    items.insert(s.clone());
+                }
                 Ok(items)
             }
             ResponseData::PostEditChecked {
@@ -914,49 +909,55 @@ pub fn extract_result_items(response: &Response) -> Result<HashSet<String>, Stri
                 ..
             } => {
                 let mut items = HashSet::new();
-                for s in applicable_skills { items.insert(s.clone()); }
-                for s in decisions_to_review { items.insert(s.clone()); }
-                for s in relevant_lessons { items.insert(s.clone()); }
+                for s in applicable_skills {
+                    items.insert(s.clone());
+                }
+                for s in decisions_to_review {
+                    items.insert(s.clone());
+                }
+                for s in relevant_lessons {
+                    items.insert(s.clone());
+                }
                 Ok(items)
             }
             ResponseData::PreBashChecked {
-                relevant_skills,
-                ..
+                relevant_skills, ..
             } => {
                 let mut items = HashSet::new();
-                for s in relevant_skills { items.insert(s.clone()); }
+                for s in relevant_skills {
+                    items.insert(s.clone());
+                }
                 Ok(items)
             }
             ResponseData::CompletionCheckResult {
-                relevant_lessons,
-                ..
+                relevant_lessons, ..
             } => {
                 let mut items = HashSet::new();
-                for s in relevant_lessons { items.insert(s.clone()); }
+                for s in relevant_lessons {
+                    items.insert(s.clone());
+                }
                 Ok(items)
             }
-            ResponseData::TaskCompletionCheckResult {
-                checklists,
-                ..
-            } => {
+            ResponseData::TaskCompletionCheckResult { checklists, .. } => {
                 let mut items = HashSet::new();
-                for s in checklists { items.insert(s.clone()); }
+                for s in checklists {
+                    items.insert(s.clone());
+                }
                 Ok(items)
             }
             ResponseData::Memories { results, .. } => {
-                let items: HashSet<String> = results
-                    .iter()
-                    .map(|mr| mr.memory.title.clone())
-                    .collect();
+                let items: HashSet<String> =
+                    results.iter().map(|mr| mr.memory.title.clone()).collect();
                 Ok(items)
             }
             ResponseData::CompiledContext { context, .. } => {
-                let items: HashSet<String> = extract_from_compiled_context(context)
-                    .into_iter()
-                    .collect();
+                let items: HashSet<String> =
+                    extract_from_compiled_context(context).into_iter().collect();
                 Ok(items)
             }
-            other => Err(format!("unhandled response variant for extraction: {other:?}")),
+            other => Err(format!(
+                "unhandled response variant for extraction: {other:?}"
+            )),
         },
     }
 }
@@ -1013,7 +1014,10 @@ pub fn extract_from_compiled_context(context: &str) -> Vec<String> {
 /// *absence assertions*. For each such item, we strip the prefix and check that
 /// the remainder is NOT present in `actual`. A satisfied absence = a "match"
 /// for scoring purposes; a violated absence (item found in actual) = a mismatch.
-pub fn precision_recall_f1(expected: &HashSet<String>, actual: &HashSet<String>) -> (f64, f64, f64) {
+pub fn precision_recall_f1(
+    expected: &HashSet<String>,
+    actual: &HashSet<String>,
+) -> (f64, f64, f64) {
     if expected.is_empty() && actual.is_empty() {
         return (1.0, 1.0, 1.0);
     }
@@ -1057,7 +1061,11 @@ pub fn precision_recall_f1(expected: &HashSet<String>, actual: &HashSet<String>)
     }
 
     let precision = matched as f64 / precision_denom as f64;
-    let recall = if total_expected == 0 { 1.0 } else { matched as f64 / total_expected as f64 };
+    let recall = if total_expected == 0 {
+        1.0
+    } else {
+        matched as f64 / total_expected as f64
+    };
 
     let f1 = if precision + recall == 0.0 {
         0.0
@@ -1186,8 +1194,8 @@ pub fn run(config: ContextConfig) -> Result<ContextScore, String> {
     let mut results = Vec::new();
     for query in &queries {
         let response = handle_request(&mut state, query.request.clone());
-        let actual = extract_result_items(&response)
-            .map_err(|e| format!("query {}: {e}", query.id))?;
+        let actual =
+            extract_result_items(&response).map_err(|e| format!("query {}: {e}", query.id))?;
 
         let (p, r, f1) = precision_recall_f1(&query.expected, &actual);
         results.push(QueryResult {
@@ -1198,13 +1206,17 @@ pub fn run(config: ContextConfig) -> Result<ContextScore, String> {
             f1,
             expected_count: query.expected.len(),
             actual_count: actual.len(),
-            matched_count: query.expected.iter().filter(|item| {
-                if let Some(stripped) = item.strip_prefix("ABSENT:") {
-                    !actual.contains(stripped)
-                } else {
-                    actual.contains(*item)
-                }
-            }).count(),
+            matched_count: query
+                .expected
+                .iter()
+                .filter(|item| {
+                    if let Some(stripped) = item.strip_prefix("ABSENT:") {
+                        !actual.contains(stripped)
+                    } else {
+                        actual.contains(*item)
+                    }
+                })
+                .count(),
         });
     }
 
@@ -1218,8 +1230,8 @@ pub fn run(config: ContextConfig) -> Result<ContextScore, String> {
     // 6. Write output if requested
     if let Some(dir) = &config.output_dir {
         std::fs::create_dir_all(dir).map_err(|e| format!("mkdir: {e}"))?;
-        let json = serde_json::to_string_pretty(&score)
-            .map_err(|e| format!("json serialize: {e}"))?;
+        let json =
+            serde_json::to_string_pretty(&score).map_err(|e| format!("json serialize: {e}"))?;
         std::fs::write(dir.join("summary.json"), &json)
             .map_err(|e| format!("write summary: {e}"))?;
     }
@@ -1243,18 +1255,39 @@ mod tests {
         assert!(!queries.is_empty(), "query bank must not be empty");
 
         let dims: HashSet<Dimension> = queries.iter().map(|q| q.dimension).collect();
-        assert!(dims.contains(&Dimension::ContextAssembly), "missing ContextAssembly");
+        assert!(
+            dims.contains(&Dimension::ContextAssembly),
+            "missing ContextAssembly"
+        );
         assert!(dims.contains(&Dimension::Guardrails), "missing Guardrails");
         assert!(dims.contains(&Dimension::Completion), "missing Completion");
-        assert!(dims.contains(&Dimension::LayerRecall), "missing LayerRecall");
+        assert!(
+            dims.contains(&Dimension::LayerRecall),
+            "missing LayerRecall"
+        );
 
         // Count queries per dimension
-        let ca_count = queries.iter().filter(|q| q.dimension == Dimension::ContextAssembly).count();
-        let gr_count = queries.iter().filter(|q| q.dimension == Dimension::Guardrails).count();
-        let co_count = queries.iter().filter(|q| q.dimension == Dimension::Completion).count();
-        let lr_count = queries.iter().filter(|q| q.dimension == Dimension::LayerRecall).count();
+        let ca_count = queries
+            .iter()
+            .filter(|q| q.dimension == Dimension::ContextAssembly)
+            .count();
+        let gr_count = queries
+            .iter()
+            .filter(|q| q.dimension == Dimension::Guardrails)
+            .count();
+        let co_count = queries
+            .iter()
+            .filter(|q| q.dimension == Dimension::Completion)
+            .count();
+        let lr_count = queries
+            .iter()
+            .filter(|q| q.dimension == Dimension::LayerRecall)
+            .count();
 
-        assert_eq!(ca_count, 6, "expected 6 ContextAssembly queries (CA-1..CA-6)");
+        assert_eq!(
+            ca_count, 6,
+            "expected 6 ContextAssembly queries (CA-1..CA-6)"
+        );
         assert_eq!(gr_count, 10, "expected 10 Guardrails queries (GR-1..GR-10)");
         assert_eq!(co_count, 5, "expected 5 Completion queries (CO-1..CO-5)");
         assert_eq!(lr_count, 8, "expected 8 LayerRecall queries (LR-1..LR-8)");
@@ -1265,7 +1298,11 @@ mod tests {
 
         // Every query has at least one expected item
         for q in &queries {
-            assert!(!q.expected.is_empty(), "query {} must have expected items", q.id);
+            assert!(
+                !q.expected.is_empty(),
+                "query {} must have expected items",
+                q.id
+            );
         }
     }
 
@@ -1324,8 +1361,8 @@ mod tests {
         // Tier A (0..10): each mentions a present tool keyword
         let present_names: HashSet<&str> = present.iter().map(|t| t.name.as_str()).collect();
         for skill in &skills[..10] {
-            let text = format!("{} {} {}", skill.name, skill.description, skill.domain)
-                .to_lowercase();
+            let text =
+                format!("{} {} {}", skill.name, skill.description, skill.domain).to_lowercase();
             let mentions_present = present_names.iter().any(|kw| text.contains(kw));
             assert!(
                 mentions_present,
@@ -1337,8 +1374,8 @@ mod tests {
         // Tier B (10..20): each mentions an absent tool keyword
         let absent_set: HashSet<&str> = absent.iter().map(|s| s.as_str()).collect();
         for skill in &skills[10..20] {
-            let text = format!("{} {} {}", skill.name, skill.description, skill.domain)
-                .to_lowercase();
+            let text =
+                format!("{} {} {}", skill.name, skill.description, skill.domain).to_lowercase();
             let mentions_absent = absent_set.iter().any(|kw| text.contains(kw));
             assert!(
                 mentions_absent,
@@ -1350,8 +1387,8 @@ mod tests {
         // Tier C (20..30): must NOT mention any hardcoded keyword
         let all_kw: HashSet<&str> = HARDCODED_TOOL_KEYWORDS.iter().copied().collect();
         for skill in &skills[20..30] {
-            let text = format!("{} {} {}", skill.name, skill.description, skill.domain)
-                .to_lowercase();
+            let text =
+                format!("{} {} {}", skill.name, skill.description, skill.domain).to_lowercase();
             for kw in &all_kw {
                 assert!(
                     !text.contains(kw),
@@ -1428,8 +1465,7 @@ mod tests {
         assert_eq!(dataset.absent_keywords.len(), 6, "6 absent keywords");
 
         // Verify only present tools are in DB
-        let db_tools = crate::db::manas::list_tools(&state.conn, None)
-            .expect("list_tools");
+        let db_tools = crate::db::manas::list_tools(&state.conn, None).expect("list_tools");
         let db_names: HashSet<String> = db_tools.into_iter().map(|t| t.name).collect();
         for tool in &dataset.present_tools {
             assert!(
@@ -1447,8 +1483,7 @@ mod tests {
 
         // Skills
         assert_eq!(dataset.skills.len(), 30, "30 skills");
-        let db_skills = crate::db::manas::list_skills(&state.conn, None)
-            .expect("list_skills");
+        let db_skills = crate::db::manas::list_skills(&state.conn, None).expect("list_skills");
         let bench_skills: Vec<_> = db_skills
             .iter()
             .filter(|s| s.id.starts_with("bench-skill-"))
@@ -1502,94 +1537,136 @@ mod tests {
     fn test_extract_result_items_from_guardrails_check() {
         let mut state = DaemonState::new(":memory:").expect("state");
         let _dataset = seed_state(&mut state, 42).expect("seed");
-        let resp = handle_request(&mut state, Request::GuardrailsCheck {
-            file: "src/auth/middleware.rs".to_string(),
-            action: "edit".to_string(),
-        });
+        let resp = handle_request(
+            &mut state,
+            Request::GuardrailsCheck {
+                file: "src/auth/middleware.rs".to_string(),
+                action: "edit".to_string(),
+            },
+        );
         let items = extract_result_items(&resp);
-        assert!(items.is_ok(), "extraction should not error on valid response");
+        assert!(
+            items.is_ok(),
+            "extraction should not error on valid response"
+        );
     }
 
     #[test]
     fn test_extract_result_items_from_post_edit_checked() {
         let mut state = DaemonState::new(":memory:").expect("state");
         let _dataset = seed_state(&mut state, 42).expect("seed");
-        let resp = handle_request(&mut state, Request::PostEditCheck {
-            file: "src/auth/middleware.rs".to_string(),
-        });
+        let resp = handle_request(
+            &mut state,
+            Request::PostEditCheck {
+                file: "src/auth/middleware.rs".to_string(),
+            },
+        );
         let items = extract_result_items(&resp);
-        assert!(items.is_ok(), "extraction should not error on PostEditChecked");
+        assert!(
+            items.is_ok(),
+            "extraction should not error on PostEditChecked"
+        );
     }
 
     #[test]
     fn test_extract_result_items_from_pre_bash_checked() {
         let mut state = DaemonState::new(":memory:").expect("state");
         let _dataset = seed_state(&mut state, 42).expect("seed");
-        let resp = handle_request(&mut state, Request::PreBashCheck {
-            command: "cargo test".to_string(),
-        });
+        let resp = handle_request(
+            &mut state,
+            Request::PreBashCheck {
+                command: "cargo test".to_string(),
+            },
+        );
         let items = extract_result_items(&resp);
-        assert!(items.is_ok(), "extraction should not error on PreBashChecked");
+        assert!(
+            items.is_ok(),
+            "extraction should not error on PreBashChecked"
+        );
     }
 
     #[test]
     fn test_extract_result_items_from_completion_check() {
         let mut state = DaemonState::new(":memory:").expect("state");
         let dataset = seed_state(&mut state, 42).expect("seed");
-        let resp = handle_request(&mut state, Request::CompletionCheck {
-            session_id: dataset.session_id.clone(),
-            claimed_done: true,
-        });
+        let resp = handle_request(
+            &mut state,
+            Request::CompletionCheck {
+                session_id: dataset.session_id.clone(),
+                claimed_done: true,
+            },
+        );
         let items = extract_result_items(&resp);
-        assert!(items.is_ok(), "extraction should not error on CompletionCheckResult");
+        assert!(
+            items.is_ok(),
+            "extraction should not error on CompletionCheckResult"
+        );
     }
 
     #[test]
     fn test_extract_result_items_from_task_completion_check() {
         let mut state = DaemonState::new(":memory:").expect("state");
         let dataset = seed_state(&mut state, 42).expect("seed");
-        let resp = handle_request(&mut state, Request::TaskCompletionCheck {
-            session_id: dataset.session_id.clone(),
-            task_subject: "deploy to production".to_string(),
-            task_description: None,
-        });
+        let resp = handle_request(
+            &mut state,
+            Request::TaskCompletionCheck {
+                session_id: dataset.session_id.clone(),
+                task_subject: "deploy to production".to_string(),
+                task_description: None,
+            },
+        );
         let items = extract_result_items(&resp);
-        assert!(items.is_ok(), "extraction should not error on TaskCompletionCheckResult");
+        assert!(
+            items.is_ok(),
+            "extraction should not error on TaskCompletionCheckResult"
+        );
     }
 
     #[test]
     fn test_extract_result_items_from_memories() {
         let mut state = DaemonState::new(":memory:").expect("state");
         let _dataset = seed_state(&mut state, 42).expect("seed");
-        let resp = handle_request(&mut state, Request::Recall {
-            query: "auth workflow".to_string(),
-            memory_type: None,
-            project: None,
-            limit: Some(5),
-            layer: Some("skill".to_string()),
-            since: None,
-        });
+        let resp = handle_request(
+            &mut state,
+            Request::Recall {
+                query: "auth workflow".to_string(),
+                memory_type: None,
+                project: None,
+                limit: Some(5),
+                layer: Some("skill".to_string()),
+                since: None,
+            },
+        );
         let items = extract_result_items(&resp);
         assert!(items.is_ok(), "extraction should not error on Memories");
         let items = items.unwrap();
         // Should find at least one skill mentioning auth
-        assert!(!items.is_empty(), "recall for 'auth workflow' in skill layer should return items");
+        assert!(
+            !items.is_empty(),
+            "recall for 'auth workflow' in skill layer should return items"
+        );
     }
 
     #[test]
     fn test_extract_result_items_from_compiled_context() {
         let mut state = DaemonState::new(":memory:").expect("state");
         let dataset = seed_state(&mut state, 42).expect("seed");
-        let resp = handle_request(&mut state, Request::CompileContext {
-            agent: None,
-            project: None,
-            static_only: None,
-            excluded_layers: None,
-            session_id: Some(dataset.session_id.clone()),
-            focus: None,
-        });
+        let resp = handle_request(
+            &mut state,
+            Request::CompileContext {
+                agent: None,
+                project: None,
+                static_only: None,
+                excluded_layers: None,
+                session_id: Some(dataset.session_id.clone()),
+                focus: None,
+            },
+        );
         let items = extract_result_items(&resp);
-        assert!(items.is_ok(), "extraction should not error on CompiledContext");
+        assert!(
+            items.is_ok(),
+            "extraction should not error on CompiledContext"
+        );
         let items = items.unwrap();
         // Should contain at least some decisions or skills
         assert!(!items.is_empty(), "compiled context should produce items");
@@ -1597,7 +1674,9 @@ mod tests {
 
     #[test]
     fn test_extract_result_items_error_response() {
-        let resp = Response::Error { message: "test error".to_string() };
+        let resp = Response::Error {
+            message: "test error".to_string(),
+        };
         let items = extract_result_items(&resp);
         assert!(items.is_err(), "should error on Response::Error");
     }
@@ -1654,9 +1733,9 @@ mod tests {
         let expected: HashSet<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
         let actual: HashSet<String> = ["a", "b", "d"].iter().map(|s| s.to_string()).collect();
         let (p, r, f1) = precision_recall_f1(&expected, &actual);
-        assert!((p - 2.0/3.0).abs() < 0.001);
-        assert!((r - 2.0/3.0).abs() < 0.001);
-        assert!((f1 - 2.0/3.0).abs() < 0.001);
+        assert!((p - 2.0 / 3.0).abs() < 0.001);
+        assert!((r - 2.0 / 3.0).abs() < 0.001);
+        assert!((f1 - 2.0 / 3.0).abs() < 0.001);
     }
 
     #[test]
@@ -1688,23 +1767,25 @@ mod tests {
     #[test]
     fn test_precision_recall_f1_absent_convention() {
         // ABSENT: items should be checked for absence in actual
-        let expected: HashSet<String> = [
-            "ABSENT:bad_skill_1",
-            "ABSENT:bad_skill_2",
-        ].iter().map(|s| s.to_string()).collect();
+        let expected: HashSet<String> = ["ABSENT:bad_skill_1", "ABSENT:bad_skill_2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         // Actual does NOT contain the absent items → perfect score
         let actual: HashSet<String> = ["good_skill"].iter().map(|s| s.to_string()).collect();
         let (p, r, _f1) = precision_recall_f1(&expected, &actual);
-        assert_eq!(r, 1.0, "recall should be 1.0 when absent items are indeed absent");
+        assert_eq!(
+            r, 1.0,
+            "recall should be 1.0 when absent items are indeed absent"
+        );
         assert!(p > 0.0, "precision should be positive");
     }
 
     #[test]
     fn test_precision_recall_f1_absent_violation() {
         // ABSENT: items that ARE present in actual → mismatch
-        let expected: HashSet<String> = [
-            "ABSENT:bad_skill",
-        ].iter().map(|s| s.to_string()).collect();
+        let expected: HashSet<String> =
+            ["ABSENT:bad_skill"].iter().map(|s| s.to_string()).collect();
         let actual: HashSet<String> = ["bad_skill"].iter().map(|s| s.to_string()).collect();
         let (_p, r, _f1) = precision_recall_f1(&expected, &actual);
         assert_eq!(r, 0.0, "recall should be 0.0 when absent item is present");
@@ -1714,14 +1795,54 @@ mod tests {
     fn test_composite_score_weights() {
         // Verify the 0.30/0.30/0.20/0.20 weighting
         let results = vec![
-            QueryResult { id: "CA-1".into(), dimension: Dimension::ContextAssembly, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
-            QueryResult { id: "GR-1".into(), dimension: Dimension::Guardrails, precision: 0.5, recall: 0.5, f1: 0.5, expected_count: 2, actual_count: 2, matched_count: 1 },
-            QueryResult { id: "CO-1".into(), dimension: Dimension::Completion, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
-            QueryResult { id: "LR-1".into(), dimension: Dimension::LayerRecall, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult {
+                id: "CA-1".into(),
+                dimension: Dimension::ContextAssembly,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
+            QueryResult {
+                id: "GR-1".into(),
+                dimension: Dimension::Guardrails,
+                precision: 0.5,
+                recall: 0.5,
+                f1: 0.5,
+                expected_count: 2,
+                actual_count: 2,
+                matched_count: 1,
+            },
+            QueryResult {
+                id: "CO-1".into(),
+                dimension: Dimension::Completion,
+                precision: 0.0,
+                recall: 0.0,
+                f1: 0.0,
+                expected_count: 1,
+                actual_count: 0,
+                matched_count: 0,
+            },
+            QueryResult {
+                id: "LR-1".into(),
+                dimension: Dimension::LayerRecall,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
         ];
         let score = compute_composite(&results, 1.0);
         // composite = 0.30*1.0 + 0.30*0.5 + 0.20*0.0 + 0.20*1.0 = 0.30 + 0.15 + 0.0 + 0.20 = 0.65
-        assert!((score.composite - 0.65).abs() < 0.001, "composite should be 0.65, got {}", score.composite);
+        assert!(
+            (score.composite - 0.65).abs() < 0.001,
+            "composite should be 0.65, got {}",
+            score.composite
+        );
         assert!(score.pass, "0.65 >= 0.5 should pass");
         assert_eq!(score.total_queries, 4);
         assert_eq!(score.tool_filter_accuracy, 1.0);
@@ -1730,10 +1851,46 @@ mod tests {
     #[test]
     fn test_composite_score_all_perfect() {
         let results = vec![
-            QueryResult { id: "CA-1".into(), dimension: Dimension::ContextAssembly, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
-            QueryResult { id: "GR-1".into(), dimension: Dimension::Guardrails, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
-            QueryResult { id: "CO-1".into(), dimension: Dimension::Completion, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
-            QueryResult { id: "LR-1".into(), dimension: Dimension::LayerRecall, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult {
+                id: "CA-1".into(),
+                dimension: Dimension::ContextAssembly,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
+            QueryResult {
+                id: "GR-1".into(),
+                dimension: Dimension::Guardrails,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
+            QueryResult {
+                id: "CO-1".into(),
+                dimension: Dimension::Completion,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
+            QueryResult {
+                id: "LR-1".into(),
+                dimension: Dimension::LayerRecall,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
         ];
         let score = compute_composite(&results, 1.0);
         assert!((score.composite - 1.0).abs() < 0.001, "all perfect = 1.0");
@@ -1742,10 +1899,46 @@ mod tests {
     #[test]
     fn test_composite_score_all_zero() {
         let results = vec![
-            QueryResult { id: "CA-1".into(), dimension: Dimension::ContextAssembly, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
-            QueryResult { id: "GR-1".into(), dimension: Dimension::Guardrails, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
-            QueryResult { id: "CO-1".into(), dimension: Dimension::Completion, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
-            QueryResult { id: "LR-1".into(), dimension: Dimension::LayerRecall, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
+            QueryResult {
+                id: "CA-1".into(),
+                dimension: Dimension::ContextAssembly,
+                precision: 0.0,
+                recall: 0.0,
+                f1: 0.0,
+                expected_count: 1,
+                actual_count: 0,
+                matched_count: 0,
+            },
+            QueryResult {
+                id: "GR-1".into(),
+                dimension: Dimension::Guardrails,
+                precision: 0.0,
+                recall: 0.0,
+                f1: 0.0,
+                expected_count: 1,
+                actual_count: 0,
+                matched_count: 0,
+            },
+            QueryResult {
+                id: "CO-1".into(),
+                dimension: Dimension::Completion,
+                precision: 0.0,
+                recall: 0.0,
+                f1: 0.0,
+                expected_count: 1,
+                actual_count: 0,
+                matched_count: 0,
+            },
+            QueryResult {
+                id: "LR-1".into(),
+                dimension: Dimension::LayerRecall,
+                precision: 0.0,
+                recall: 0.0,
+                f1: 0.0,
+                expected_count: 1,
+                actual_count: 0,
+                matched_count: 0,
+            },
         ];
         let score = compute_composite(&results, 0.0);
         assert!((score.composite).abs() < 0.001, "all zero = 0.0");
@@ -1756,17 +1949,74 @@ mod tests {
     fn test_composite_score_multiple_per_dimension() {
         // Two queries per dimension — F1 is averaged
         let results = vec![
-            QueryResult { id: "CA-1".into(), dimension: Dimension::ContextAssembly, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
-            QueryResult { id: "CA-2".into(), dimension: Dimension::ContextAssembly, precision: 0.0, recall: 0.0, f1: 0.0, expected_count: 1, actual_count: 0, matched_count: 0 },
-            QueryResult { id: "GR-1".into(), dimension: Dimension::Guardrails, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
-            QueryResult { id: "GR-2".into(), dimension: Dimension::Guardrails, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
-            QueryResult { id: "CO-1".into(), dimension: Dimension::Completion, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
-            QueryResult { id: "LR-1".into(), dimension: Dimension::LayerRecall, precision: 1.0, recall: 1.0, f1: 1.0, expected_count: 1, actual_count: 1, matched_count: 1 },
+            QueryResult {
+                id: "CA-1".into(),
+                dimension: Dimension::ContextAssembly,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
+            QueryResult {
+                id: "CA-2".into(),
+                dimension: Dimension::ContextAssembly,
+                precision: 0.0,
+                recall: 0.0,
+                f1: 0.0,
+                expected_count: 1,
+                actual_count: 0,
+                matched_count: 0,
+            },
+            QueryResult {
+                id: "GR-1".into(),
+                dimension: Dimension::Guardrails,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
+            QueryResult {
+                id: "GR-2".into(),
+                dimension: Dimension::Guardrails,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
+            QueryResult {
+                id: "CO-1".into(),
+                dimension: Dimension::Completion,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
+            QueryResult {
+                id: "LR-1".into(),
+                dimension: Dimension::LayerRecall,
+                precision: 1.0,
+                recall: 1.0,
+                f1: 1.0,
+                expected_count: 1,
+                actual_count: 1,
+                matched_count: 1,
+            },
         ];
         let score = compute_composite(&results, 1.0);
         // CA avg = 0.5, GR avg = 1.0, CO = 1.0, LR = 1.0
         // composite = 0.30*0.5 + 0.30*1.0 + 0.20*1.0 + 0.20*1.0 = 0.15 + 0.30 + 0.20 + 0.20 = 0.85
-        assert!((score.composite - 0.85).abs() < 0.001, "composite should be 0.85, got {}", score.composite);
+        assert!(
+            (score.composite - 0.85).abs() < 0.001,
+            "composite should be 0.85, got {}",
+            score.composite
+        );
     }
-
 }

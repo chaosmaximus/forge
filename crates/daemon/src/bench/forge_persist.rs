@@ -1395,10 +1395,8 @@ impl PersistHarness {
     pub fn new(config: PersistConfig) -> Result<Self, HarnessError> {
         let tempdir = TempDir::new().map_err(HarnessError::Io)?;
         let port = find_free_port()?;
-        let client = HttpClient::with_timeout(
-            format!("http://127.0.0.1:{port}"),
-            config.request_timeout,
-        )?;
+        let client =
+            HttpClient::with_timeout(format!("http://127.0.0.1:{port}"), config.request_timeout)?;
         Ok(Self {
             config,
             port,
@@ -1789,11 +1787,12 @@ mod tests {
 
     #[test]
     fn test_http_client_with_timeout_uses_custom_duration() {
-        let client = HttpClient::with_timeout(
-            "http://127.0.0.1:9999".to_string(),
-            Duration::from_secs(60),
+        let client =
+            HttpClient::with_timeout("http://127.0.0.1:9999".to_string(), Duration::from_secs(60));
+        assert!(
+            client.is_ok(),
+            "HttpClient::with_timeout should not fail construction"
         );
-        assert!(client.is_ok(), "HttpClient::with_timeout should not fail construction");
     }
 
     #[test]
