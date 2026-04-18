@@ -11871,5 +11871,22 @@ mod tests {
             }
             other => panic!("expected error, got {other:?}"),
         }
+
+        // Verify old memory was not mutated by the rejected call.
+        let (status, superseded_by, valence_flipped_at): (String, Option<String>, Option<String>) =
+            state
+                .conn
+                .query_row(
+                    "SELECT status, superseded_by, valence_flipped_at FROM memory WHERE id = ?1",
+                    rusqlite::params!["01PREF"],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+        assert_eq!(status, "active", "no-op flip must not change status");
+        assert_eq!(superseded_by, None, "no-op flip must not set superseded_by");
+        assert_eq!(
+            valence_flipped_at, None,
+            "no-op flip must not set valence_flipped_at"
+        );
     }
 }
