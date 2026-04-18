@@ -210,7 +210,16 @@ pub fn hybrid_recall_scoped_org(
         }
     }
 
-    // 2. Vector search via sqlite-vec (if embedding provided)
+    // 2. Vector search via sqlite-vec (if embedding provided).
+    //
+    // NOTE: `search_vectors` has NO SQL status filter — it is a pure KNN over the
+    // `memory_vec` virtual table, so superseded/deleted memories with embeddings
+    // can enter the candidate set here. The post-fetch `results.retain(...)` below
+    // (the "Filter out non-active memories" block) is the SOLE status gate for
+    // vector candidates. When `include_flipped = true`, the retain passes through
+    // flipped preferences; when `false`, it strips all non-active rows including
+    // superseded non-preferences. Keep the retain logic in sync with
+    // `db::ops::FLIPPED_INCLUSIVE_STATUS_SQL`.
     if let Some(emb) = query_embedding {
         match vec::search_vectors(conn, emb, limit * 3) {
             Ok(vec_results) => {

@@ -2,6 +2,12 @@ use forge_core::types::{CodeFile, CodeSymbol, Memory, MemoryStatus, MemoryType};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 
+/// SQL fragment used by `_flipped` variants of BM25 helpers when `include_flipped = true`.
+/// Admits active memories OR superseded preferences whose valence was flipped
+/// (`status = 'superseded' AND valence_flipped_at IS NOT NULL AND memory_type = 'preference'`).
+/// Single source of truth — keep in sync with the post-fetch retain in `recall::hybrid_recall_scoped_org`.
+const FLIPPED_INCLUSIVE_STATUS_SQL: &str = "(m.status = 'active' OR (m.status = 'superseded' AND m.valence_flipped_at IS NOT NULL AND m.memory_type = 'preference'))";
+
 /// BM25 search result
 #[derive(Debug, Clone)]
 pub struct BM25Result {
@@ -433,10 +439,8 @@ pub fn recall_bm25(
 }
 
 /// Full-text search using FTS5 BM25 scoring with optional organization filter.
-///
-/// `include_flipped`: when `true`, also returns superseded preferences whose valence
-/// was flipped (`valence_flipped_at IS NOT NULL AND memory_type = 'preference'`).
-/// When `false` (default), only active memories are returned.
+/// Returns only active memories (delegates to `recall_bm25_org_flipped` with
+/// `include_flipped = false`).
 pub fn recall_bm25_org(
     conn: &Connection,
     query: &str,
@@ -447,7 +451,11 @@ pub fn recall_bm25_org(
 }
 
 /// Inner implementation of `recall_bm25_org` with explicit `include_flipped` control.
-/// Called by `recall_bm25_project_org` when `project` is `None`.
+/// Called by `recall_bm25_project_org_flipped` when `project` is `None`.
+///
+/// `include_flipped`: when `true`, also returns superseded preferences whose valence
+/// was flipped (`status = 'superseded' AND valence_flipped_at IS NOT NULL AND memory_type = 'preference'`).
+/// When `false`, only active memories are returned.
 pub(crate) fn recall_bm25_org_flipped(
     conn: &Connection,
     query: &str,
@@ -464,7 +472,7 @@ pub(crate) fn recall_bm25_org_flipped(
     // Build the status predicate. When `include_flipped` is set, also admit
     // superseded preferences whose valence was flipped (2A-4a design B-C4).
     let status_predicate = if include_flipped {
-        "(m.status = 'active' OR (m.status = 'superseded' AND m.valence_flipped_at IS NOT NULL AND m.memory_type = 'preference'))"
+        FLIPPED_INCLUSIVE_STATUS_SQL
     } else {
         "m.status = 'active'"
     };
@@ -573,7 +581,7 @@ pub(crate) fn recall_bm25_project_org_flipped(
 
     // Build the status predicate (same logic as recall_bm25_org_flipped).
     let status_predicate = if include_flipped {
-        "(m.status = 'active' OR (m.status = 'superseded' AND m.valence_flipped_at IS NOT NULL AND m.memory_type = 'preference'))"
+        FLIPPED_INCLUSIVE_STATUS_SQL
     } else {
         "m.status = 'active'"
     };
