@@ -11928,15 +11928,21 @@ mod tests {
         assert_eq!(evt.event, "preference_flipped");
         assert_eq!(evt.data["old_id"], "01PREF");
         assert_eq!(evt.data["new_valence"], "negative");
-        assert!(
-            evt.data["new_intensity"].is_number(),
-            "new_intensity should be number, got {:?}",
+        assert_eq!(
             evt.data["new_intensity"]
+                .as_f64()
+                .expect("new_intensity must be number"),
+            0.8,
+            "new_intensity in event must match request value"
         );
         assert_eq!(evt.data["reason"], "team switched");
-        assert!(
-            evt.data["flipped_at"].is_string(),
-            "flipped_at should be string"
+        let flipped_at_str = evt.data["flipped_at"]
+            .as_str()
+            .expect("flipped_at must be string");
+        assert_eq!(
+            flipped_at_str.len(),
+            19,
+            "flipped_at must be YYYY-MM-DD HH:MM:SS (19 chars), got: {flipped_at_str}"
         );
         // new_id should be present and non-empty
         let new_id_val = evt.data["new_id"]
