@@ -11889,4 +11889,60 @@ mod tests {
             "no-op flip must not set valence_flipped_at"
         );
     }
+
+    #[test]
+    fn test_flip_preference_emits_preference_flipped_event() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Arrange: store a preference
+        let mut pref = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Preference,
+            "tabs over spaces",
+            "prefer tabs",
+        );
+        pref.id = "01PREF".to_string();
+        pref.valence = "positive".to_string();
+        crate::db::ops::remember(&state.conn, &pref).unwrap();
+
+        // Subscribe to events BEFORE issuing the request.
+        let mut rx = state.events.subscribe();
+
+        // Act: flip
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: "01PREF".into(),
+                new_valence: "negative".into(),
+                new_intensity: 0.8,
+                reason: Some("team switched".into()),
+            },
+        );
+        // Sanity: ensure the flip succeeded; otherwise the event won't have fired.
+        assert!(
+            matches!(resp, forge_core::protocol::Response::Ok { .. }),
+            "flip must succeed"
+        );
+
+        // Assert: preference_flipped event emitted with expected payload.
+        let evt = rx.try_recv().expect("no event received");
+        assert_eq!(evt.event, "preference_flipped");
+        assert_eq!(evt.data["old_id"], "01PREF");
+        assert_eq!(evt.data["new_valence"], "negative");
+        assert!(
+            evt.data["new_intensity"].is_number(),
+            "new_intensity should be number, got {:?}",
+            evt.data["new_intensity"]
+        );
+        assert_eq!(evt.data["reason"], "team switched");
+        assert!(
+            evt.data["flipped_at"].is_string(),
+            "flipped_at should be string"
+        );
+        // new_id should be present and non-empty
+        let new_id_val = evt.data["new_id"]
+            .as_str()
+            .expect("new_id should be string");
+        assert!(!new_id_val.is_empty());
+        assert_ne!(new_id_val, "01PREF");
+    }
 }
