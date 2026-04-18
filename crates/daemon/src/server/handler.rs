@@ -457,7 +457,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             limit,
             layer,
             since,
-            include_flipped: _, // Phase 2A-4a: accepted but unused — T10 wires it up
+            include_flipped, // Phase 2A-4a: wired up in T10
         } => {
             let lim = limit.unwrap_or(10);
 
@@ -485,6 +485,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     memory_type.as_ref(),
                     project.as_deref(),
                     lim,
+                    include_flipped.unwrap_or(false),
                 ),
                 // "declared" → only declared knowledge
                 Some("declared") => {
@@ -638,6 +639,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         memory_type.as_ref(),
                         project.as_deref(),
                         lim,
+                        include_flipped.unwrap_or(false),
                     );
                     // Cross-layer search (only if no type filter)
                     if memory_type.is_none() {
@@ -3205,6 +3207,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let mut all_touch_ids = Vec::new();
             for q in &queries {
                 let lim = q.limit.unwrap_or(5);
+                // BatchRecall does not expose include_flipped — always exclude flipped prefs.
                 let results = hybrid_recall(
                     &state.conn,
                     &q.text,
@@ -3212,6 +3215,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     q.memory_type.as_ref(),
                     None,
                     lim,
+                    false,
                 );
                 for r in &results {
                     all_touch_ids.push(r.memory.id.clone());

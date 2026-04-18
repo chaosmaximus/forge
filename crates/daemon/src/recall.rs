@@ -125,6 +125,7 @@ pub fn hybrid_recall(
     memory_type: Option<&MemoryType>,
     project: Option<&str>,
     limit: usize,
+    include_flipped: bool,
 ) -> Vec<MemoryResult> {
     hybrid_recall_scoped(
         conn,
@@ -134,6 +135,7 @@ pub fn hybrid_recall(
         project,
         limit,
         None,
+        include_flipped,
     )
 }
 
@@ -142,6 +144,7 @@ pub fn hybrid_recall(
 /// When `reality_id` is provided, results are filtered to memories that either
 /// belong to that reality or have no reality_id (global memories visible everywhere).
 /// When `org_id` is provided, results are filtered to that organization.
+#[allow(clippy::too_many_arguments)]
 pub fn hybrid_recall_scoped(
     conn: &Connection,
     query: &str,
@@ -150,6 +153,7 @@ pub fn hybrid_recall_scoped(
     project: Option<&str>,
     limit: usize,
     reality_id: Option<&str>,
+    include_flipped: bool,
 ) -> Vec<MemoryResult> {
     hybrid_recall_scoped_org(
         conn,
@@ -160,10 +164,16 @@ pub fn hybrid_recall_scoped(
         limit,
         reality_id,
         None,
+        include_flipped,
     )
 }
 
 /// Hybrid recall with reality_id + organization_id scoping.
+///
+/// `include_flipped`: when `true`, superseded preferences whose valence was flipped
+/// (`valence_flipped_at IS NOT NULL AND memory_type = 'preference'`) are admitted
+/// by both the BM25 SQL predicate and the post-fetch status retain. All other
+/// superseded/deleted memories remain hidden regardless of this flag.
 #[allow(clippy::too_many_arguments)]
 pub fn hybrid_recall_scoped_org(
     conn: &Connection,
@@ -174,11 +184,20 @@ pub fn hybrid_recall_scoped_org(
     limit: usize,
     reality_id: Option<&str>,
     org_id: Option<&str>,
+    include_flipped: bool,
 ) -> Vec<MemoryResult> {
     let mut ranked_lists: Vec<Vec<(String, f64)>> = Vec::new();
 
-    // 1. BM25 search (project-scoped + org-scoped: includes global memories)
-    match ops::recall_bm25_project_org(conn, query, project, limit * 3, org_id) {
+    // 1. BM25 search (project-scoped + org-scoped: includes global memories).
+    //    Pass include_flipped so the SQL predicate can admit flipped prefs.
+    match ops::recall_bm25_project_org_flipped(
+        conn,
+        query,
+        project,
+        limit * 3,
+        org_id,
+        include_flipped,
+    ) {
         Ok(bm25_results) => {
             let bm25_list: Vec<(String, f64)> =
                 bm25_results.into_iter().map(|r| (r.id, r.score)).collect();
@@ -243,8 +262,18 @@ pub fn hybrid_recall_scoped_org(
         }
     }
 
-    // Filter out non-active memories (superseded, deleted, etc.)
-    results.retain(|r| r.memory.status == forge_core::types::memory::MemoryStatus::Active);
+    // Filter out non-active memories (superseded, deleted, etc.).
+    // When include_flipped is set, also retain superseded preferences whose
+    // valence was flipped — they entered via the relaxed BM25 predicate or
+    // via vector search (which has no status filter).
+    results.retain(|r| {
+        use forge_core::types::{MemoryStatus, MemoryType};
+        r.memory.status == MemoryStatus::Active
+            || (include_flipped
+                && r.memory.status == MemoryStatus::Superseded
+                && r.memory.valence_flipped_at.is_some()
+                && r.memory.memory_type == MemoryType::Preference)
+    });
 
     // Filter by memory_type if specified
     if let Some(mt) = memory_type {
@@ -1909,7 +1938,7 @@ mod tests {
         );
         ops::remember(&conn, &m).unwrap();
 
-        let results = hybrid_recall(&conn, "JWT authentication", None, None, None, 10);
+        let results = hybrid_recall(&conn, "JWT authentication", None, None, None, 10, false);
 
         assert!(!results.is_empty(), "should find at least one result");
         assert!(
@@ -1939,7 +1968,7 @@ mod tests {
         // Use a slightly different embedding as the query
         let query_emb: Vec<f32> = (0..dim).map(|j| (j as f32 * 0.001 + 0.01).sin()).collect();
 
-        let results = hybrid_recall(&conn, "JWT", Some(&query_emb), None, None, 10);
+        let results = hybrid_recall(&conn, "JWT", Some(&query_emb), None, None, 10, false);
 
         assert!(
             !results.is_empty(),
@@ -1972,7 +2001,7 @@ mod tests {
 
         // Recall "JWT" — should find A directly via BM25
         // B should appear in results via graph expansion (1-hop neighbor of A)
-        let results = hybrid_recall(&conn, "JWT authentication", None, None, None, 10);
+        let results = hybrid_recall(&conn, "JWT authentication", None, None, None, 10, false);
 
         assert!(!results.is_empty(), "should find at least one result");
 
@@ -1998,7 +2027,15 @@ mod tests {
     fn test_hybrid_recall_no_matches() {
         let conn = setup();
 
-        let results = hybrid_recall(&conn, "xyzzy nonexistent gibberish", None, None, None, 10);
+        let results = hybrid_recall(
+            &conn,
+            "xyzzy nonexistent gibberish",
+            None,
+            None,
+            None,
+            10,
+            false,
+        );
 
         assert!(
             results.is_empty(),
@@ -2051,7 +2088,15 @@ mod tests {
 
         // Recall via vector similarity
         let query_emb: Vec<f32> = (0..768).map(|j| (j as f32 * 0.002 + 0.001).sin()).collect();
-        let results = hybrid_recall(&conn, "SQLite storage", Some(&query_emb), None, None, 10);
+        let results = hybrid_recall(
+            &conn,
+            "SQLite storage",
+            Some(&query_emb),
+            None,
+            None,
+            10,
+            false,
+        );
         assert!(!results.is_empty());
         assert_eq!(results[0].memory.id, mem_id);
     }
@@ -3190,7 +3235,7 @@ mod tests {
         ops::remember(&conn, &m2).unwrap();
         ops::store_edge(&conn, &m1_id, &m2_id, "related_to", "{}").unwrap();
 
-        let results = hybrid_recall(&conn, "Rust daemon", None, None, None, 10);
+        let results = hybrid_recall(&conn, "Rust daemon", None, None, None, 10, false);
         assert!(!results.is_empty(), "should find at least one result");
 
         // Find the result for m1 and check it has edges
@@ -3228,7 +3273,7 @@ mod tests {
         ops::remember(&conn, &m2).unwrap();
         ops::store_edge(&conn, &m1_id, &m2_id, "supports", "{}").unwrap();
 
-        let results = hybrid_recall(&conn, "SQLite FTS5", None, None, None, 10);
+        let results = hybrid_recall(&conn, "SQLite FTS5", None, None, None, 10, false);
         // m2 should show up and have an edge back to m1
         let fts_result = results.iter().find(|r| r.memory.id == m2_id);
         if let Some(fts_result) = fts_result {
@@ -3251,7 +3296,7 @@ mod tests {
         );
         ops::remember(&conn, &m).unwrap();
 
-        let results = hybrid_recall(&conn, "PostgreSQL", None, None, None, 10);
+        let results = hybrid_recall(&conn, "PostgreSQL", None, None, None, 10, false);
         assert!(!results.is_empty(), "should find result");
         assert!(
             results[0].edges.is_empty(),
@@ -3564,6 +3609,7 @@ mod tests {
             None,
             10,
             Some("reality-A"),
+            false,
         );
         assert!(!results.is_empty(), "should find universal memory");
         // Universal weight = 1.0, so score should be unchanged (no reduction)
@@ -3592,6 +3638,7 @@ mod tests {
             None,
             10,
             Some("reality-A"),
+            false,
         );
         assert!(!results.is_empty(), "should find same-reality memory");
         // Same reality → weight 1.0, score preserved
@@ -3622,6 +3669,7 @@ mod tests {
             None,
             10,
             Some("reality-A"),
+            false,
         );
         // Memory has reality_id="reality-B" which doesn't match "reality-A" → filtered out
         assert!(
@@ -3658,6 +3706,7 @@ mod tests {
             None,
             10,
             Some("reality-A"),
+            false,
         );
         assert!(results.len() >= 2, "should find both memories");
 
@@ -3757,6 +3806,7 @@ mod tests {
             Some(&MemoryType::Protocol),
             None,
             10,
+            false,
         );
         assert!(
             !results.is_empty(),
@@ -3797,6 +3847,7 @@ mod tests {
             Some(&MemoryType::Decision),
             None,
             10,
+            false,
         );
         for r in &results {
             assert_ne!(
@@ -3943,6 +3994,61 @@ mod tests {
         assert!(
             !suffix_excluded.contains("<agents"),
             "agents section should be excluded"
+        );
+    }
+
+    // ── T10: include_flipped threading tests ──
+
+    #[test]
+    fn test_recall_default_excludes_flipped_prefs() {
+        let conn = setup();
+
+        // Insert a flipped preference. FTS triggers (memory_fts_insert) auto-populate memory_fts.
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, valence_flipped_at, superseded_by)
+             VALUES ('01F', 'preference', 'tabs', 'prefer tabs for flipping tests', 0.9, 'superseded', NULL, '[]', '2026-04-17 00:00:00', '2026-04-17 00:00:00', 'positive', 0.5, '2026-04-17 14:00:00', '01N')",
+            [],
+        ).unwrap();
+
+        let results = hybrid_recall(&conn, "tabs flipping", None, None, None, 10, false);
+        assert!(
+            !results.iter().any(|r| r.memory.id == "01F"),
+            "flipped preference surfaced when include_flipped=false"
+        );
+    }
+
+    #[test]
+    fn test_recall_include_flipped_surfaces_flipped_prefs() {
+        let conn = setup();
+
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, valence_flipped_at, superseded_by)
+             VALUES ('01F', 'preference', 'tabs', 'prefer tabs for flipping tests', 0.9, 'superseded', NULL, '[]', '2026-04-17 00:00:00', '2026-04-17 00:00:00', 'positive', 0.5, '2026-04-17 14:00:00', '01N')",
+            [],
+        ).unwrap();
+
+        let results = hybrid_recall(&conn, "tabs flipping", None, None, None, 10, true);
+        assert!(
+            results.iter().any(|r| r.memory.id == "01F"),
+            "flipped preference NOT surfaced when include_flipped=true"
+        );
+    }
+
+    #[test]
+    fn test_recall_include_flipped_does_not_surface_non_preference_superseded() {
+        let conn = setup();
+
+        // Superseded decision (no valence_flipped_at) — must STAY hidden even when include_flipped=true
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, superseded_by)
+             VALUES ('01D', 'decision', 'migrate', 'migrate auth provider', 0.9, 'superseded', NULL, '[]', '2026-04-17 00:00:00', '2026-04-17 00:00:00', 'neutral', 0.0, '01N')",
+            [],
+        ).unwrap();
+
+        let results = hybrid_recall(&conn, "migrate auth", None, None, None, 10, true);
+        assert!(
+            !results.iter().any(|r| r.memory.id == "01D"),
+            "non-preference superseded should NOT be surfaced by include_flipped"
         );
     }
 }

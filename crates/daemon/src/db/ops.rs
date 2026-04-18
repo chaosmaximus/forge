@@ -433,31 +433,55 @@ pub fn recall_bm25(
 }
 
 /// Full-text search using FTS5 BM25 scoring with optional organization filter.
+///
+/// `include_flipped`: when `true`, also returns superseded preferences whose valence
+/// was flipped (`valence_flipped_at IS NOT NULL AND memory_type = 'preference'`).
+/// When `false` (default), only active memories are returned.
 pub fn recall_bm25_org(
     conn: &Connection,
     query: &str,
     limit: usize,
     org_id: Option<&str>,
 ) -> rusqlite::Result<Vec<BM25Result>> {
-    // NEW-2: Sanitize the query to prevent FTS5 operator injection
+    recall_bm25_org_flipped(conn, query, limit, org_id, false)
+}
+
+/// Inner implementation of `recall_bm25_org` with explicit `include_flipped` control.
+/// Called by `recall_bm25_project_org` when `project` is `None`.
+pub(crate) fn recall_bm25_org_flipped(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+    org_id: Option<&str>,
+    include_flipped: bool,
+) -> rusqlite::Result<Vec<BM25Result>> {
+    // Sanitize the query to prevent FTS5 operator injection.
     let safe_query = sanitize_fts5_query(query);
     if safe_query.is_empty() {
         return Ok(Vec::new()); // No valid search terms after sanitization
     }
 
+    // Build the status predicate. When `include_flipped` is set, also admit
+    // superseded preferences whose valence was flipped (2A-4a design B-C4).
+    let status_predicate = if include_flipped {
+        "(m.status = 'active' OR (m.status = 'superseded' AND m.valence_flipped_at IS NOT NULL AND m.memory_type = 'preference'))"
+    } else {
+        "m.status = 'active'"
+    };
+
     match org_id {
         Some(org) => {
-            let sql = "
-                SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
-                FROM memory_fts
-                JOIN memory m ON memory_fts.rowid = m.rowid
-                WHERE memory_fts MATCH ?1
-                  AND m.status = 'active'
-                  AND COALESCE(m.organization_id, 'default') = ?2
-                ORDER BY score
-                LIMIT ?3
-            ";
-            let mut stmt = conn.prepare(sql)?;
+            let sql = format!(
+                "SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
+                 FROM memory_fts
+                 JOIN memory m ON memory_fts.rowid = m.rowid
+                 WHERE memory_fts MATCH ?1
+                   AND {status_predicate}
+                   AND COALESCE(m.organization_id, 'default') = ?2
+                 ORDER BY score
+                 LIMIT ?3"
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let results = stmt.query_map(params![safe_query, org, limit as i64], |row| {
                 Ok(BM25Result {
                     id: row.get(0)?,
@@ -476,16 +500,16 @@ pub fn recall_bm25_org(
             results.collect()
         }
         None => {
-            let sql = "
-                SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
-                FROM memory_fts
-                JOIN memory m ON memory_fts.rowid = m.rowid
-                WHERE memory_fts MATCH ?1
-                  AND m.status = 'active'
-                ORDER BY score
-                LIMIT ?2
-            ";
-            let mut stmt = conn.prepare(sql)?;
+            let sql = format!(
+                "SELECT m.id, m.title, m.content, bm25(memory_fts) AS score, m.memory_type, m.confidence, m.valence, m.intensity
+                 FROM memory_fts
+                 JOIN memory m ON memory_fts.rowid = m.rowid
+                 WHERE memory_fts MATCH ?1
+                   AND {status_predicate}
+                 ORDER BY score
+                 LIMIT ?2"
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let results = stmt.query_map(params![safe_query, limit as i64], |row| {
                 Ok(BM25Result {
                     id: row.get(0)?,
@@ -529,10 +553,30 @@ pub fn recall_bm25_project_org(
     limit: usize,
     org_id: Option<&str>,
 ) -> rusqlite::Result<Vec<BM25Result>> {
+    recall_bm25_project_org_flipped(conn, query, project, limit, org_id, false)
+}
+
+/// Inner implementation with explicit `include_flipped` control.
+/// Called from `hybrid_recall_scoped_org` to thread the flag into the BM25 layer.
+pub(crate) fn recall_bm25_project_org_flipped(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+    limit: usize,
+    org_id: Option<&str>,
+    include_flipped: bool,
+) -> rusqlite::Result<Vec<BM25Result>> {
     let safe_query = sanitize_fts5_query(query);
     if safe_query.is_empty() {
         return Ok(Vec::new());
     }
+
+    // Build the status predicate (same logic as recall_bm25_org_flipped).
+    let status_predicate = if include_flipped {
+        "(m.status = 'active' OR (m.status = 'superseded' AND m.valence_flipped_at IS NOT NULL AND m.memory_type = 'preference'))"
+    } else {
+        "m.status = 'active'"
+    };
 
     // Build the org filter clause
     let org_filter = if org_id.is_some() {
@@ -548,7 +592,7 @@ pub fn recall_bm25_project_org(
                  FROM memory_fts
                  JOIN memory m ON memory_fts.rowid = m.rowid
                  WHERE memory_fts MATCH ?1
-                   AND m.status = 'active'
+                   AND {status_predicate}
                    AND (m.project = ?2 OR m.project IS NULL OR m.project = ''){org_filter}
                  ORDER BY score
                  LIMIT ?3",
@@ -577,7 +621,7 @@ pub fn recall_bm25_project_org(
                     .collect()
             }
         }
-        None => recall_bm25_org(conn, query, limit, org_id),
+        None => recall_bm25_org_flipped(conn, query, limit, org_id, include_flipped),
     }
 }
 
