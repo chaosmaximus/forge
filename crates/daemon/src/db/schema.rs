@@ -1908,4 +1908,58 @@ mod tests {
             "memory table missing idx_memory_valence_flipped_at; indexes: {indexes:?}"
         );
     }
+
+    #[test]
+    fn test_valence_flipped_at_rollback_recipe_works() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // Insert a row with valence_flipped_at set
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, valence_flipped_at, superseded_by)
+             VALUES ('01F', 'preference', 't', 'c', 0.9, 'superseded', NULL, '[]', '2026-04-17 00:00:00', '2026-04-17 00:00:00', 'positive', 0.5, '2026-04-17 14:00:00', '01N')",
+            [],
+        ).unwrap();
+
+        // Execute the documented rollback recipe.
+        conn.execute("DROP INDEX IF EXISTS idx_memory_valence_flipped_at", [])
+            .unwrap();
+        conn.execute("ALTER TABLE memory DROP COLUMN valence_flipped_at", [])
+            .unwrap();
+
+        // Verify remaining queries still work (column-less SELECT)
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory WHERE id = '01F'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Verify the column is gone
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(memory)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            !cols.contains(&"valence_flipped_at".to_string()),
+            "valence_flipped_at column should be gone after rollback; columns: {cols:?}"
+        );
+
+        // Verify the index is also gone
+        let indexes: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='memory'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            !indexes.contains(&"idx_memory_valence_flipped_at".to_string()),
+            "idx_memory_valence_flipped_at should be gone after rollback; indexes: {indexes:?}"
+        );
+    }
 }
