@@ -974,12 +974,27 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::ListFlipped { agent: _, limit } => {
+            // Phase 2A-4a: agent is informational this phase (no per-agent memory scope).
+            // TODO: derive caller_org_id via get_session_org_id() and pass to list_flipped()
+            // for proper multi-tenancy. Matches the deferred wiring in Recall (~line 477).
             let effective_limit = limit.unwrap_or(20);
             match ops::list_flipped(&state.conn, None, effective_limit) {
                 Ok(memories) => {
                     let items: Vec<forge_core::protocol::response::FlippedMemory> = memories
                         .into_iter()
                         .map(|m| {
+                            // Invariant: list_flipped's SQL filter requires
+                            // valence_flipped_at IS NOT NULL, AND supersede_memory_impl's
+                            // flip branch sets superseded_by + valence_flipped_at atomically.
+                            // Both Options must therefore be Some here.
+                            debug_assert!(
+                                m.superseded_by.is_some(),
+                                "list_flipped SQL guarantees superseded_by is set (atomic with valence_flipped_at via supersede_memory_impl)"
+                            );
+                            debug_assert!(
+                                m.valence_flipped_at.is_some(),
+                                "list_flipped SQL guarantees valence_flipped_at is set"
+                            );
                             let flipped_to_id = m.superseded_by.clone().unwrap_or_default();
                             let flipped_at = m.valence_flipped_at.clone().unwrap_or_default();
                             forge_core::protocol::response::FlippedMemory {

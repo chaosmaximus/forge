@@ -158,62 +158,73 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
 /// touch one place.
 pub fn fetch_memory_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Memory>> {
     conn.query_row(
-        "SELECT id, memory_type, title, content, confidence, status, project, tags,
-                created_at, accessed_at, valence, intensity, hlc_timestamp, node_id,
-                session_id, access_count, COALESCE(activation_level, 0.0),
-                COALESCE(alternatives, '[]'), COALESCE(participants, '[]'),
-                organization_id, superseded_by, valence_flipped_at
-           FROM memory
-          WHERE id = ?1",
+        &format!("SELECT {MEMORY_ROW_COLUMNS} FROM memory WHERE id = ?1"),
         params![id],
-        |row| {
-            let memory_type_str: String = row.get(1)?;
-            let status_str: String = row.get(5)?;
-            let tags_json: String = row.get(7)?;
-            let alternatives_json: String = row
-                .get::<_, String>(17)
-                .unwrap_or_else(|_| "[]".to_string());
-            let participants_json: String = row
-                .get::<_, String>(18)
-                .unwrap_or_else(|_| "[]".to_string());
-
-            Ok(Memory {
-                id: row.get(0)?,
-                memory_type: match memory_type_str.as_str() {
-                    "decision" => MemoryType::Decision,
-                    "lesson" => MemoryType::Lesson,
-                    "pattern" => MemoryType::Pattern,
-                    "preference" => MemoryType::Preference,
-                    "protocol" => MemoryType::Protocol,
-                    // Unknown types fall back silently — matches historical behavior at
-                    // recall.rs:93 pre-consolidation AND the status_from_str convention.
-                    _ => MemoryType::Decision,
-                },
-                title: row.get(2)?,
-                content: row.get(3)?,
-                confidence: row.get(4)?,
-                status: status_from_str(&status_str),
-                project: row.get(6)?,
-                tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-                embedding: None,
-                created_at: row.get(8)?,
-                accessed_at: row.get(9)?,
-                valence: row.get(10)?,
-                intensity: row.get(11)?,
-                hlc_timestamp: row.get(12)?,
-                node_id: row.get(13)?,
-                session_id: row.get::<_, String>(14).unwrap_or_default(),
-                access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
-                activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
-                alternatives: serde_json::from_str(&alternatives_json).unwrap_or_default(),
-                participants: serde_json::from_str(&participants_json).unwrap_or_default(),
-                organization_id: row.get(19)?,
-                superseded_by: row.get(20)?,
-                valence_flipped_at: row.get(21)?,
-            })
-        },
+        map_memory_row,
     )
     .optional()
+}
+
+/// Canonical column list for SELECTs that build a full `Memory` via `map_memory_row`.
+/// Column order MUST match the row indexes in `map_memory_row` — adding/removing/reordering
+/// columns here requires updating both. COALESCE on activation_level/alternatives/participants
+/// keeps row indexes stable across legacy-NULL rows.
+const MEMORY_ROW_COLUMNS: &str =
+    "id, memory_type, title, content, confidence, status, project, tags, \
+     created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, \
+     session_id, access_count, COALESCE(activation_level, 0.0), \
+     COALESCE(alternatives, '[]'), COALESCE(participants, '[]'), \
+     organization_id, superseded_by, valence_flipped_at";
+
+/// Row mapper for any SELECT that uses `MEMORY_ROW_COLUMNS`. Shared between
+/// `fetch_memory_by_id` and `list_flipped` (and any future single-statement loaders)
+/// so a column added to the schema only needs to touch this function plus the
+/// `MEMORY_ROW_COLUMNS` constant.
+fn map_memory_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
+    let memory_type_str: String = row.get(1)?;
+    let status_str: String = row.get(5)?;
+    let tags_json: String = row.get(7)?;
+    let alternatives_json: String = row
+        .get::<_, String>(17)
+        .unwrap_or_else(|_| "[]".to_string());
+    let participants_json: String = row
+        .get::<_, String>(18)
+        .unwrap_or_else(|_| "[]".to_string());
+
+    Ok(Memory {
+        id: row.get(0)?,
+        memory_type: match memory_type_str.as_str() {
+            "decision" => MemoryType::Decision,
+            "lesson" => MemoryType::Lesson,
+            "pattern" => MemoryType::Pattern,
+            "preference" => MemoryType::Preference,
+            "protocol" => MemoryType::Protocol,
+            // Unknown types fall back silently — matches historical behavior at
+            // recall.rs:93 pre-consolidation AND the status_from_str convention.
+            _ => MemoryType::Decision,
+        },
+        title: row.get(2)?,
+        content: row.get(3)?,
+        confidence: row.get(4)?,
+        status: status_from_str(&status_str),
+        project: row.get(6)?,
+        tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+        embedding: None,
+        created_at: row.get(8)?,
+        accessed_at: row.get(9)?,
+        valence: row.get(10)?,
+        intensity: row.get(11)?,
+        hlc_timestamp: row.get(12)?,
+        node_id: row.get(13)?,
+        session_id: row.get::<_, String>(14).unwrap_or_default(),
+        access_count: row.get::<_, i64>(15).unwrap_or(0) as u64,
+        activation_level: row.get::<_, f64>(16).unwrap_or(0.0),
+        alternatives: serde_json::from_str(&alternatives_json).unwrap_or_default(),
+        participants: serde_json::from_str(&participants_json).unwrap_or_default(),
+        organization_id: row.get(19)?,
+        superseded_by: row.get(20)?,
+        valence_flipped_at: row.get(21)?,
+    })
 }
 
 /// Typed errors returned by library-layer db::ops helpers that want the caller
@@ -305,27 +316,22 @@ pub fn list_flipped(
     let org = organization_id.unwrap_or("default");
     let clamped_limit = limit.clamp(1, 100) as i64;
 
-    let mut stmt = conn.prepare(
-        "SELECT id FROM memory
+    // Single SELECT (no N+1) — returns full Memory rows directly. This also closes
+    // a TOCTOU window where a row could have been deleted between an id query and a
+    // per-row fetch, which would have surfaced as a silent gap in the result set.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MEMORY_ROW_COLUMNS}
+           FROM memory
           WHERE valence_flipped_at IS NOT NULL
             AND memory_type = 'preference'
             AND COALESCE(organization_id, 'default') = ?1
           ORDER BY valence_flipped_at DESC
-          LIMIT ?2",
-    )?;
-    let ids: Vec<String> = stmt
-        .query_map(rusqlite::params![org, clamped_limit], |row| {
-            row.get::<_, String>(0)
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    let mut results = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(m) = fetch_memory_by_id(conn, &id)? {
-            results.push(m);
-        }
-    }
-    Ok(results)
+          LIMIT ?2"
+    ))?;
+    let rows: rusqlite::Result<Vec<Memory>> = stmt
+        .query_map(rusqlite::params![org, clamped_limit], map_memory_row)?
+        .collect();
+    rows
 }
 
 /// Boost activation level for a memory (capped at 1.0).
