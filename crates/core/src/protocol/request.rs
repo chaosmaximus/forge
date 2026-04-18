@@ -82,8 +82,8 @@ pub enum Request {
     /// `valence_flipped_at` set to the flip timestamp.
     FlipPreference {
         memory_id: String,
-        new_valence: String,
-        new_intensity: f64,
+        new_valence: String, // "positive" | "negative" | "neutral"
+        new_intensity: f64,  // 0.0..=1.0
         #[serde(default)]
         reason: Option<String>,
     },

@@ -117,14 +117,17 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::SkillsList { .. }
             | Request::SkillsInfo { .. }
             | Request::GetHudConfig { .. }
-            | Request::ExportHudConfig { .. } // NOTE: SetHudConfig is a write — modifies config_scope table
-                                              // NOTE: HealingRun is a write — triggers healing cycle
-                                              // NOTE: AckNotification, DismissNotification, ActOnNotification are writes
-                                              // NOTE: DetectReality is NOT read-only — it may create a reality record
-                                              // NOTE: CreateMeeting, MeetingSynthesize, MeetingDecide, MeetingVote are writes
-                                              // NOTE: ForceIndex is NOT read-only — it triggers indexing
-                                              // NOTE: SpawnAgent, UpdateAgentStatus, RetireAgent, CreateTeam, SetTeamOrchestrator are writes
-                                              // NOTE: SkillsInstall, SkillsUninstall, SkillsRefresh are writes
+            | Request::ExportHudConfig { .. }
+            | Request::ListFlipped { .. } // Phase 2A-4a: read-only listing of flipped preferences
+                                          // NOTE: SetHudConfig is a write — modifies config_scope table
+                                          // NOTE: HealingRun is a write — triggers healing cycle
+                                          // NOTE: AckNotification, DismissNotification, ActOnNotification are writes
+                                          // NOTE: DetectReality is NOT read-only — it may create a reality record
+                                          // NOTE: CreateMeeting, MeetingSynthesize, MeetingDecide, MeetingVote are writes
+                                          // NOTE: ForceIndex is NOT read-only — it triggers indexing
+                                          // NOTE: SpawnAgent, UpdateAgentStatus, RetireAgent, CreateTeam, SetTeamOrchestrator are writes
+                                          // NOTE: SkillsInstall, SkillsUninstall, SkillsRefresh are writes
+                                          // NOTE: FlipPreference is a write — modifies memory state
     )
 }
 

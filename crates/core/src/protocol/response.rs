@@ -56,11 +56,16 @@ pub struct MemoryResult {
     pub edges: Vec<MemoryEdge>,
 }
 
-/// Phase 2A-4a: a preference memory whose valence was flipped, paired with the successor ID.
+/// Phase 2A-4a: a flipped preference plus its replacement-pointer denormalized
+/// for caller convenience. `flipped_to_id` MUST equal `old.superseded_by.unwrap()` —
+/// the field is a top-level mirror so callers don't need to unwrap the Option.
+/// Handlers populating this struct must keep the two in sync.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FlippedMemory {
     pub old: crate::types::memory::Memory,
+    /// Mirror of `old.superseded_by.as_ref().unwrap()` — see struct doc.
     pub flipped_to_id: String,
+    /// Mirror of `old.valence_flipped_at.as_ref().unwrap()` — see struct doc.
     pub flipped_at: String,
 }
 
