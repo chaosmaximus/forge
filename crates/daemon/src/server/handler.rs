@@ -861,7 +861,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     .ok();
                 get_session_org_id(&state.conn, mem_session_opt.as_deref())
             };
-            // If both caller_org and old.organization_id are set and disagree, reject.
+            // If old.organization_id is set and differs from caller_org, reject.
+            // (caller_org always present — get_session_org_id returns String, defaulting
+            // to "default" when no session context exists.)
             if let Some(old_org) = old.organization_id.as_ref() {
                 if &caller_org != old_org {
                     return Response::Error {
@@ -873,7 +875,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // 4. Reject no-op flip (same valence).
             if old.valence == new_valence {
                 return Response::Error {
-                    message: format!("memory already superseded (id: {memory_id})"),
+                    message: format!(
+                        "no-op flip: memory already has valence {new_valence} (id: {memory_id})"
+                    ),
                 };
             }
 
@@ -960,7 +964,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         },
                     }
                 }
-                Err(e) => Response::Error {
+                Err(ops::OpError::OldMemoryNotActive { .. }) => Response::Error {
+                    message: format!("memory already superseded (id: {memory_id})"),
+                },
+                Err(ops::OpError::DbError(e)) => Response::Error {
                     message: format!("flip transaction failed: {e}"),
                 },
             }
