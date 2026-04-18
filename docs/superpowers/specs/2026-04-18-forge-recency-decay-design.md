@@ -1,6 +1,6 @@
 # Phase 2A-4b — Recency-weighted Preference Decay (design)
 
-**Status:** DRAFT v2 — 2026-04-19. Addresses 5 CRITICAL + 11 HIGH + 7 MEDIUM/LOW findings from first-pass adversarial reviews (Claude + Codex). Ready for second-pass review or writing-plans.
+**Status:** DRAFT v3 — 2026-04-19. Addresses second-pass adversarial review findings: 1 CRITICAL (race-vs-state discrimination) + 5 HIGH (formula value, audit completeness, fictional bench-harness step, parity-test plumbing, sync round-trip semantics) + 4 MEDIUM. Ready for writing-plans.
 **Parent plan:** [Phase 2A-4 master design v6](../../benchmarks/forge-identity-master-design.md) §5 "2A-4b — Recency-weighted Preference Decay (daemon feature)" and §13 "Resolve in 2A-4b".
 **Predecessor:** Phase 2A-4a Valence Flipping (shipped commit `66f2118`, 29 commits on master).
 **Sub-phase scope:** daemon feature; unit + integration tests only; no composite bench score here (that's 2A-4d).
@@ -34,17 +34,23 @@ Phase 2A-4b fixes this by introducing:
 **Schema + data model**
 - Add column `memory.reaffirmed_at TEXT NULL` (no index — recall doesn't filter on it; partial index YAGNI)
 - Add field `Memory::reaffirmed_at: Option<String>` with `#[serde(default, skip_serializing_if = "Option::is_none")]`
-- **Memory struct field-addition audit (full scope):** every site that constructs a `Memory` literal or maps a SQL row to `Memory` must be updated to populate or carry `reaffirmed_at`. Known sites:
+- **Memory struct field-addition audit (seed list + mandatory full grep):** every site that constructs a `Memory` literal or maps a SQL row to `Memory` must be updated. Seed list (verified in v3 review):
   - `crates/core/src/types/memory.rs:29-69` — Memory struct + `Memory::new()` constructor
   - `crates/daemon/src/server/handler.rs:902-926` — FlipPreference's new-memory struct literal (must set `reaffirmed_at: None`)
-  - `crates/daemon/src/db/ops.rs:141-150` — `remember_raw` INSERT column list
-  - `crates/daemon/src/db/ops.rs:1047-1094` — `export_memories_org` SELECT/serialization
+  - `crates/daemon/src/db/ops.rs:84-100` — `remember()` UPSERT UPDATE branch — **decision: NO implicit reaffirmation** (preserve user/agent-controlled invariant). UPDATE branch leaves `reaffirmed_at` unchanged. Test asserts: Remember-then-Remember-same-pref does NOT bump reaffirmed_at.
+  - `crates/daemon/src/db/ops.rs:141-150` — `remember_raw` INSERT column list (extend column list AND VALUES)
+  - `crates/daemon/src/db/ops.rs:1047-1094` — `export_memories_org` SELECT/serialization (extend SELECT, populate output JSON)
   - `crates/daemon/src/db/ops.rs:1770-1810` — `find_reconsolidation_candidates` row mapper
   - `crates/daemon/src/db/ops.rs` — `MEMORY_ROW_COLUMNS` const + `map_memory_row()` helper from 2A-4a (extend column list + extraction)
-  - `crates/daemon/src/sync.rs:491` — sync UPDATE statement (verify if affected)
-  - `crates/daemon/src/db/ops.rs:84` — `remember()` UPSERT path (verify carries `reaffirmed_at`)
-  - Any other `Memory { ... }` literal or `from_row` mapper found by full grep before T2 commit
-- Audit task assertion: `cargo build --workspace` passes after T2 (compile errors flag missed sites)
+  - `crates/daemon/src/sync.rs:230-250` — `build_export_query` SELECT (add `reaffirmed_at` to SELECT columns)
+  - `crates/daemon/src/sync.rs:277-285` — `row_to_memory` mapper (add `reaffirmed_at` extraction at correct positional index)
+  - `crates/daemon/src/sync.rs:489-501` — sync import UPDATE — **MUST extend** to propagate `reaffirmed_at = ?N`. Without this, multi-node sync silently desynchronizes preference freshness when a remote node reaffirms.
+- **Mandatory grep (acceptance gate):**
+  - `git grep -n "Memory {" crates/` — visit every match outside test fixtures
+  - `git grep -n "row_to_memory\|map_memory_row\|from_row" crates/` — visit every match
+  - `git grep -n "INSERT INTO memory\|UPDATE memory SET" crates/src/` — visit every match (production code only; test fixtures handled separately)
+- Audit task assertion: `cargo build --workspace` passes after T2 (compile errors flag missed Memory struct construction sites; SQL changes need explicit visit)
+- **Sync round-trip test (added):** `tests/sync_reaffirmed_at.rs` — export node A's reaffirmed pref, import on node B, assert reaffirmed_at survives both directions
 
 **Config**
 - Add `RecallConfig::preference_half_life_days: f64 = 14.0` (default 14, validated to `1..=365`)
@@ -197,13 +203,26 @@ The `preference_half_life_days: f64` value is threaded as a primitive parameter 
 /// can freeze time and assert bit-exact equality between handler and direct
 /// helper invocation. Production callers pass `current_epoch_secs()`.
 pub fn recency_factor(memory: &Memory, preference_half_life_days: f64, now_secs: f64) -> f64 {
+    // Anchor selection — for prefs: reaffirmed_at (if Some AND non-empty), else
+    // created_at. Empty-string Some("") is treated as None (defends against
+    // migration edge cases or corrupt rows).
     let anchor_str = if memory.memory_type == MemoryType::Preference {
-        memory.reaffirmed_at.as_deref().unwrap_or(&memory.created_at)
+        match memory.reaffirmed_at.as_deref() {
+            Some(s) if !s.is_empty() => s,
+            _ => memory.created_at.as_str(),
+        }
     } else {
-        &memory.created_at
+        memory.created_at.as_str()
     };
 
-    let anchor_secs = parse_timestamp_to_epoch(anchor_str).unwrap_or(now_secs);
+    // Parse failures: treat as "ancient" (factor → 0) by anchoring far in the
+    // past. NOT now_secs — that would silently boost corrupt rows to factor=1.
+    // Distinct from clock-skew (anchor in future) handling below.
+    let anchor_secs = match parse_timestamp_to_epoch(anchor_str) {
+        Some(secs) => secs,
+        None => 0.0, // far past → days = now_secs/86400 → factor → 0 for any reasonable now
+    };
+
     // Clock skew clamp: if anchor is in the future (NTP correction, sync from
     // a node whose wall clock leads ours), days = 0 → factor = 1 ("fresh").
     // Acceptable behavior: clock-corrected memories don't become stale.
@@ -235,9 +254,9 @@ With `preference_half_life_days = 14.0`:
 | 1                   | 2^(-1/14)   | **0.9517** |
 | 14                  | 2^(-14/14)  | **0.5000** |
 | 90                  | 2^(-90/14)  | **0.01161** |
-| 180                 | 2^(-180/14) | **0.0001354** |
+| 180                 | 2^(-180/14) | **0.0001348** |
 
-These values are locked for 2A-4d Dim 6a direct formula probe. If the half-life constant changes in a future phase, Dim 6a bench expected values must be recomputed. Master design v6 §4 Dim 6a notes ±0.0001 tolerance — for the −180d cell that is roughly ±74% relative due to floor proximity. 2A-4d may want to tighten the −180d tolerance to ±0.00005 or note the asymmetric tolerance explicitly.
+These values are locked for 2A-4d Dim 6a direct formula probe. If the half-life constant changes in a future phase, Dim 6a bench expected values must be recomputed. Master design v6 §4 Dim 6a notes ±0.0001 tolerance — for the −180d cell that is roughly ±74% relative due to floor proximity. 2A-4d may want to tighten the −180d tolerance to ±0.00005 or note the asymmetric tolerance explicitly. **Note on master vs spec rounding:** master §4 line 66 truncates to 3 sig-fig (`0.000135`); this spec uses 4 sig-fig (`0.0001348`) for arithmetic clarity. True value is `0.0001347766...`. Both are within master's ±0.0001 tolerance.
 
 ### Fader (`decay_memories`) type-dispatch
 
@@ -360,6 +379,15 @@ The `touch()` runtime path that matters is the read-only request path: handlers 
 3. Wait for writer drain
 4. Assert: preference's `accessed_at` unchanged end-to-end; decision's updated
 
+**Layer 4 — integration test through `Request::BatchRecall` (`tests/touch_exemption_batch_recall.rs`):**
+BatchRecall has its own touch path at `handler.rs:3206-3231` with separate `send_touch` invocation — must be tested independently.
+1. Seed a preference + a decision (matching same query terms)
+2. Call `Request::BatchRecall` with multiple queries
+3. Wait for writer drain
+4. Assert: preference's `accessed_at` unchanged end-to-end; decision's updated
+
+**"Wait for writer drain" definition:** poll the DB at 50ms intervals (timeout 5s) checking if the decision's `accessed_at` has changed. Once changed, the writer has drained; preference's `accessed_at` is asserted in the same loop. Avoids brittle `sleep()` hopes. Helper: `fn wait_for_touch(conn, expected_id) -> Result<()>` in test-utils crate.
+
 ---
 
 ## 7. Cargo `bench` feature declaration
@@ -447,10 +475,10 @@ ResponseData::RecencyFactor {
 ### Handler behaviors
 
 **`Request::ReaffirmPreference`:**
-- Fetch memory via `ops::fetch_memory_by_id` (read-side validation for clear error messages)
-- Validate `memory_type = 'preference'`
-- Validate `status = 'active'` (reject if superseded, faded, reverted, conflict)
-- Validate cross-org (caller org must match memory's `organization_id`)
+- Fetch memory via `ops::fetch_memory_by_id` (read-side validation for clear error messages on the happy-path-failure cases)
+- Validate `memory_type = 'preference'` → wrong-type error
+- Validate `status = 'active'` → status-specific errors (superseded-due-to-flip vs superseded-non-flip vs faded/reverted/conflict — see stable error table)
+- Validate cross-org (caller org must match memory's `organization_id`) → cross-org-denied error
 - **Compute `now_iso = forge_core::time::now_iso()` in Rust; bind as parameter (NOT inline `now_iso()` SQL — that function does not exist in SQLite)**
 - **Atomic tx with in-SQL preconditions to prevent TOCTOU between read and write:**
   ```sql
@@ -460,14 +488,21 @@ ResponseData::RecencyFactor {
     AND memory_type = 'preference'
     AND status = 'active'
     AND COALESCE(organization_id, 'default') = COALESCE(?3, 'default')
+  RETURNING id
   ```
-- **Treat `rows_updated != 1` as semantic failure** ("row changed underneath" race). Return error: `"reaffirm raced — memory state changed (id: {memory_id})"`. This guards against a Flip/Supersede landing between the read-side validation and the UPDATE.
-- Post-commit: emit `"preference_reaffirmed"` event with `{memory_id, reaffirmed_at}`
+  (SQLite ≥ 3.35 supports `RETURNING`; bundled rusqlite 0.32 ships SQLite 3.46+ → safe.)
+- **`rows_updated == 0` interpretation (defensive discrimination):** because read-side validation already filtered the non-race failures, `rows_updated == 0` strongly suggests a race. To rule out the rare cases where a race-window-coincident state change made the row no longer satisfy the preconditions for a non-race reason (e.g., a Flip landed between the read and the UPDATE — semantically valid, NOT a corruption), perform a discriminating SELECT after a 0-row UPDATE:
+  - Re-fetch the row by id alone.
+  - If row no longer exists → "memory_id deleted underneath" error.
+  - If row exists but `status='superseded' AND valence_flipped_at IS NOT NULL` → "preference was flipped — use new id from ListFlipped" (race coincided with a flip).
+  - If row exists but `status='superseded'` (no flip) → "memory superseded mid-reaffirm" race error.
+  - If row exists, all preconditions satisfied → true narrow race (rare; likely a concurrent UPDATE that didn't touch status). Return generic race error.
+- Post-commit (only if `rows_updated == 1`): emit `"preference_reaffirmed"` event with `{memory_id, reaffirmed_at}`
 
 **`Request::ComputeRecencyFactor`:**
 - Fetch memory via `ops::fetch_memory_by_id`
 - Read `preference_half_life_days` from config
-- Call `ops::recency_factor(memory, half_life)`
+- Call `ops::current_epoch_secs()` to capture `now_secs`, then `ops::recency_factor(memory, half_life, now_secs)`
 - Return `{memory_id, factor, days_since_anchor, anchor}`
 - No event emission (read-only operation)
 - Add to `writer::is_read_only` matches!()
@@ -476,13 +511,16 @@ ResponseData::RecencyFactor {
 
 | Condition | Message |
 |-----------|---------|
-| `memory_id` not found | `"memory_id not found: {memory_id}"` |
-| Wrong type | `"memory_type must be preference for reaffirm (got: {got})"` |
-| Status superseded due to flip | `"preference was flipped — use new id from ListFlipped (id: {memory_id})"` (when `status='superseded' AND valence_flipped_at IS NOT NULL`) |
-| Status superseded (non-flip) | `"memory superseded (id: {memory_id})"` |
-| Status faded/reverted/conflict | `"memory not active (status: {status}, id: {memory_id})"` |
-| Cross-org denied | `"cross-org reaffirm denied"` |
-| Race (rows_updated != 1) | `"reaffirm raced — memory state changed (id: {memory_id})"` |
+| `memory_id` not found (read-side) | `"memory_id not found: {memory_id}"` |
+| Wrong type (read-side) | `"memory_type must be preference for reaffirm (got: {got})"` |
+| Status superseded due to flip (read-side) | `"preference was flipped — use new id from ListFlipped (id: {memory_id})"` |
+| Status superseded non-flip (read-side) | `"memory superseded (id: {memory_id})"` |
+| Status faded/reverted/conflict (read-side) | `"memory not active (status: {status}, id: {memory_id})"` |
+| Cross-org denied (read-side) | `"cross-org reaffirm denied"` |
+| Race + row deleted underneath (post-UPDATE re-SELECT) | `"memory_id deleted during reaffirm (id: {memory_id})"` |
+| Race + flip landed in window (post-UPDATE re-SELECT) | `"preference was flipped — use new id from ListFlipped (id: {memory_id})"` (same string as read-side flip — agent's response is identical regardless of when the flip landed) |
+| Race + non-flip supersede (post-UPDATE re-SELECT) | `"memory superseded mid-reaffirm (id: {memory_id})"` |
+| Narrow race (post-UPDATE re-SELECT, preconditions still satisfied) | `"reaffirm raced — retry recommended (id: {memory_id})"` |
 | Transaction failed | `"reaffirm transaction failed: {e}"` |
 
 ### Event emission contract
@@ -630,7 +668,7 @@ If any composite regresses beyond rationale, 2A-4b **does not merge** until reso
 
 All `recency_factor` tests use a frozen `now_secs` to avoid wall-clock drift flakiness.
 
-1. **`ops::recency_factor` prefs** — preferences at `{1, 14, 90, 180}` days match `{0.9517, 0.5000, 0.01161, 0.0001354}` within 1e-4 (note: −180d expected value is 0.0001354 to 4 sig-fig, not 0.000135)
+1. **`ops::recency_factor` prefs** — preferences at `{1, 14, 90, 180}` days match `{0.9517, 0.5000, 0.01161, 0.0001348}` within 1e-4 (note: −180d expected value is 0.0001348 to 4 sig-fig; true value is 0.0001347766...)
 2. **`ops::recency_factor` non-prefs** — lesson at `{1, 10, 30}` days matches `{0.9048, 0.3679, 0.04979}` within 1e-3
 3. **`ops::recency_factor` reaffirmed overrides created_at** — seed pref with `created_at=-100d`, `reaffirmed_at=-2d`, assert factor ≈ `2^(-2/14) ≈ 0.9048` within 1e-3
 4. **`recency_factor` clock skew clamp** — anchor in the future (now_secs - 86400 = anchor_secs) → factor = 1.0 exactly
@@ -738,11 +776,13 @@ All `recency_factor` tests use a frozen `now_secs` to avoid wall-clock drift fla
 - **MANDATORY: Update `tier::request_to_feature` at `crates/daemon/src/server/tier.rs:294-295`** for both variants (exhaustive match)
 - **MANDATORY: Update excluded_layers documentation in `crates/core/src/protocol/request.rs:291-295`** to enumerate `"preferences"` (this 2A-4b adds) and `"preferences_flipped"` (missed in 2A-4a)
 
-**T6 — `touch()` exemption SQL predicate + multi-layer tests**
+**T6 — `touch()` exemption SQL predicate + 4-layer tests**
 - Add `AND memory_type != 'preference'` to `ops::touch()` UPDATE
 - Layer 1 — direct unit test in `ops.rs` mod tests: 2 memories (pref + decision), `touch()` both, assert pref `accessed_at` unchanged + `access_count` unchanged; assert decision updated. Negative control: UPDATE memory_type from 'decision' to 'preference', touch again, assert accessed_at stops updating
 - Layer 2 — integration test `tests/touch_exemption_recall.rs`: through `Request::Recall`, assert preference's `accessed_at` unchanged end-to-end after writer drain
 - Layer 3 — integration test `tests/touch_exemption_compile_context.rs`: through `Request::CompileContext`, same assertion
+- Layer 4 — integration test `tests/touch_exemption_batch_recall.rs`: through `Request::BatchRecall` (separate touch path at handler.rs:3206-3231), same assertion
+- Helper: `fn wait_for_touch(conn, expected_id) -> Result<()>` polls 50ms / timeout 5s
 
 **T7 — `decay_memories` type-dispatched formula**
 - SELECT now includes `memory_type, reaffirmed_at` columns
@@ -762,8 +802,8 @@ All `recency_factor` tests use a frozen `now_secs` to avoid wall-clock drift fla
   - `handler.rs:481` Recall arm — read `crate::config::load_config().recall.validated().preference_half_life_days` once and pass through
   - `handler.rs:635` (or current line for the same Recall path under different scope) — same
   - `handler.rs:3212` BatchRecall arm — same
-  - Bench harness call sites in `crates/daemon/src/bench/forge_context.rs` and `forge_consolidation.rs`
-  - Test call sites
+  - **Bench harnesses do NOT call `hybrid_recall` directly** — they send `Request::Recall` over HTTP via the spawned daemon process, so they pick up the config-loaded value through the handler arm. No bench-harness signature change needed.
+  - Test call sites that call `hybrid_recall*` directly: pass a literal default (e.g., `14.0`) since they don't need config plumbing
   - `compile_dynamic_suffix` does NOT call hybrid_recall — no change there
 - Replace post-RRF block:
   ```rust
@@ -779,10 +819,10 @@ All `recency_factor` tests use a frozen `now_secs` to avoid wall-clock drift fla
 - Source-level test: old envelope pattern `"1.0 + recency_boost * 0.5"` does not appear (satisfies master assertion 14)
 - Also extend `ops::decay_memories(conn, limit)` → `ops::decay_memories(conn, limit, preference_half_life_days)`; update consolidator call site at `consolidator.rs:107` to load config and pass half_life
 
-**T9 — ReaffirmPreference handler happy path (with TOCTOU-safe SQL)**
+**T9 — ReaffirmPreference handler happy path (with TOCTOU-safe SQL + race discrimination)**
 - Match arm in `handler.rs` near FlipPreference
 - Compute `let now = forge_core::time::now_iso();` in Rust, bind as parameter (NOT inline `now_iso()` SQL — that function does not exist in SQLite)
-- Atomic tx with in-SQL preconditions:
+- Atomic tx with in-SQL preconditions and `RETURNING`:
   ```sql
   UPDATE memory
   SET reaffirmed_at = ?1
@@ -790,21 +830,30 @@ All `recency_factor` tests use a frozen `now_secs` to avoid wall-clock drift fla
     AND memory_type = 'preference'
     AND status = 'active'
     AND COALESCE(organization_id, 'default') = COALESCE(?3, 'default')
+  RETURNING id
   ```
-- Treat `rows_updated != 1` as semantic failure — return "race" error (per §8 stable error table)
-- Post-commit event emit (subscriber sees AFTER commit succeeds)
-- Test: seed + Reaffirm + assert `reaffirmed_at` set within 2s of `now_iso()`; assert `rows_updated == 1`
+- On `rows_returned == 0` (no row updated): perform discriminating SELECT — see §8 for the 4 race-result error paths
+- Post-commit event emit only if `rows_returned == 1` (subscriber sees AFTER commit succeeds)
+- Test: seed + Reaffirm + assert `reaffirmed_at` set within 2s of `now_iso()`; assert `rows_returned == 1`
 
-**T10 — ReaffirmPreference validation paths + TOCTOU race test**
+**T10 — ReaffirmPreference validation paths + 4 race-discrimination tests**
+Read-side validation tests (these never reach the UPDATE):
 - memory_id not found → `"memory_id not found: {id}"`
 - Wrong type → `"memory_type must be preference for reaffirm (got: {got})"`
 - Status superseded due to flip (valence_flipped_at IS NOT NULL) → `"preference was flipped — use new id from ListFlipped (id: {id})"`
 - Status superseded non-flip → `"memory superseded (id: {id})"`
 - Status faded/reverted/conflict → `"memory not active (status: {status}, id: {id})"`
 - Cross-org denied → `"cross-org reaffirm denied"`
-- TOCTOU race: read-side validation passes, then UPDATE memory SET status='superseded' before helper UPDATE → assert returns `"reaffirm raced — memory state changed (id: {id})"` AND `reaffirmed_at` NOT mutated
-- Tx failure (closed DB simulation) → `"reaffirm transaction failed: {e}"`
-- 8 validation tests
+
+Race-discrimination tests (read-side passes; race injected before UPDATE; discriminating SELECT runs):
+- Race + DELETE: read-side OK, then DELETE row, UPDATE returns 0, re-SELECT shows missing → `"memory_id deleted during reaffirm (id: {id})"`
+- Race + Flip: read-side OK, then call FlipPreference (sets status='superseded' + valence_flipped_at), UPDATE returns 0, re-SELECT shows flipped → `"preference was flipped — use new id from ListFlipped (id: {id})"`
+- Race + plain Supersede: read-side OK, then UPDATE memory SET status='superseded' (no flip), UPDATE returns 0, re-SELECT shows superseded → `"memory superseded mid-reaffirm (id: {id})"`
+- Race + narrow (preconditions still satisfied): inject by holding a read transaction so the UPDATE returns 0 even though preconditions still hold → `"reaffirm raced — retry recommended (id: {id})"`
+
+Tx failure (closed DB simulation) → `"reaffirm transaction failed: {e}"`
+
+11 validation tests total (6 read-side + 4 race + 1 tx failure)
 
 **T11 — ReaffirmPreference event emission post-commit**
 - Subscribe to events before handler call
@@ -815,8 +864,15 @@ All `recency_factor` tests use a frozen `now_secs` to avoid wall-clock drift fla
 **T12 — ComputeRecencyFactor handler + bit-exact parity test (frozen time)**
 - Match arm at `handler.rs` under `#[cfg(any(test, feature = "bench"))]`
 - Fetch memory, read config for `preference_half_life_days`, compute `now_secs = ops::current_epoch_secs()` once per handler call, call `ops::recency_factor(memory, half_life, now_secs)`, return response
-- **Parity test (frozen time):** call handler with seeded memory + injected `now_secs = X`; call `ops::recency_factor(&same_memory, half_life, X)` directly; assert `F1.to_bits() == F2.to_bits()`. Frozen time prevents wall-clock drift between calls. **The handler must accept (or be testable with) an injected `now_secs` for this to work** — either via a test-only `recency_factor_at` helper, or by passing `now_secs` as a hidden parameter (test-cfg only)
-- Acceptance: parity test never flakes across 100 consecutive runs
+- **Parity test plumbing (locked decision):** the parity test bypasses HTTP and calls `crate::server::handler::handle_request(&mut state, req)` directly. To inject a frozen `now_secs`, add a test-only constructor on the handler-internal time source: introduce a `pub(crate) trait Clock { fn now_secs(&self) -> f64; }` with a production impl that calls `current_epoch_secs()` and a test impl `FrozenClock(f64)`. Plumb the clock via a thread-local set by the test, OR through `DaemonState`. Recommend: thread-local — minimal blast radius, keeps `DaemonState` shape unchanged. The thread-local has a debug_assert that production code never sets it (only test/bench `cfg` paths can).
+- Test sequence:
+  1. Set thread-local frozen clock to `X = 1_700_000_000.0`
+  2. Seed memory with known timestamps
+  3. Call handler → captures `F1`
+  4. Call `ops::recency_factor(&memory, 14.0, X)` directly → captures `F2`
+  5. Assert `F1.to_bits() == F2.to_bits()`
+  6. Clear thread-local
+- Acceptance: parity test never flakes across 100 consecutive runs (CI loop verifies)
 
 **T13 — `<preferences>` XML section in compile_dynamic_suffix + ops helper**
 - New helper `ops::list_active_preferences(conn, organization_id, limit) -> rusqlite::Result<Vec<Memory>>` (mirrors `list_flipped_with_targets` pattern; SQL stays in ops.rs)
@@ -952,15 +1008,15 @@ Success criteria:
 
 3. **`recency_factor` config threading** — post-RRF site in `recall.rs:381` doesn't currently receive any config. T8 threads `preference_half_life_days: f64` as a trailing primitive parameter through the THREE `hybrid_recall*` signatures (`hybrid_recall`, `hybrid_recall_scoped`, `hybrid_recall_scoped_org`). Call sites (`handler.rs` Recall + BatchRecall arms) load config once per request via `crate::config::load_config().recall.validated().preference_half_life_days`. **Note:** `ContextConfig` and `RecallConfig` are siblings on `ForgeConfig` (config.rs:144-149) — NOT nested. Do not write `ctx_config.recall.X`.
 
-6. **Memory struct field-addition blast radius** — adding `reaffirmed_at` touches at minimum 7 sites (struct, `Memory::new()`, FlipPreference literal in handler.rs, remember+remember_raw in ops.rs, export_memories_org, find_reconsolidation_candidates, MEMORY_ROW_COLUMNS+map_memory_row). Compile errors flag missed sites at T2 acceptance gate.
+4. **Memory struct field-addition blast radius** — adding `reaffirmed_at` touches at minimum 9 sites including 3 in sync.rs (struct, `Memory::new()`, FlipPreference literal, remember+remember_raw, export_memories_org, find_reconsolidation_candidates, MEMORY_ROW_COLUMNS+map_memory_row, sync.rs build_export_query+row_to_memory+import UPDATE). Compile errors flag struct-construction misses; SQL-only changes need explicit grep visit. Acceptance: T2 mandatory grep methodology.
 
-7. **Cargo feature dep name brittleness** — `daemon/Cargo.toml`'s `bench = ["forge-core/bench"]` requires the dep key to be literally `forge-core`. Verified at `crates/daemon/Cargo.toml:19` as of v2 design write. T0 prerequisite step re-verifies before adding the feature.
+5. **Cargo feature forwarding (dep name brittleness)** — `daemon/Cargo.toml bench = ["forge-core/bench"]` requires the dep key to be literally `forge-core`. Verified at `crates/daemon/Cargo.toml:19` as of v2 design write. T0 prerequisite step re-verifies before adding the feature.
 
-8. **TOCTOU race on ReaffirmPreference** — read-side validation runs before UPDATE; a Flip/Supersede could land between. Mitigation: in-SQL preconditions on the UPDATE + `rows_updated == 1` semantic check (see §8 for SQL).
+6. **TOCTOU race on ReaffirmPreference** — read-side validation runs before UPDATE; a Flip/Supersede/Delete could land between. Mitigation: in-SQL preconditions on the UPDATE with `RETURNING id` + discriminating SELECT on 0-row result to distinguish race-from-flip vs race-from-supersede vs race-from-delete vs narrow race (see §8 for SQL).
 
-4. **Cargo feature forwarding** — `daemon/Cargo.toml bench = ["forge-core/bench"]` requires `forge-core` dep to be named exactly `forge-core`. Verify dep name before T0.
+7. **Sync round-trip preserves reaffirmed_at** — multi-node sync must propagate `reaffirmed_at` in both export and import paths. Without explicit propagation, a remote node's reaffirmation gets lost on round-trip. Mitigation: T2 adds `reaffirmed_at` to `sync.rs:230` SELECT, `sync.rs:277` mapper, and `sync.rs:489` UPDATE; `tests/sync_reaffirmed_at.rs` integration test asserts round-trip preservation.
 
-5. **Dogfood timing sensitivity** — the "1d" bucket depends on `days <= 1.0`. A dogfood run at exactly the 1d boundary could be ambiguous. Mitigation: dogfood test accepts `"1d"` OR `"1w"` for age just after reaffirm (the test is "reaffirm moves the pref into the most recent bucket" — exact bucket name isn't the critical signal).
+8. **Dogfood timing sensitivity** — the "1d" bucket depends on `days <= 1.0`. A dogfood run at exactly the 1d boundary could be ambiguous. Mitigation: dogfood test accepts `"1d"` OR `"1w"` for age just after reaffirm (the test is "reaffirm moves the pref into the most recent bucket" — exact bucket name isn't the critical signal).
 
 ---
 
@@ -995,6 +1051,21 @@ Success criteria:
 ## 19. Changelog
 
 - **v1 (2026-04-18):** Initial brainstorm output. Addresses master §5 2A-4b scope + §13 resolutions assigned to 2A-4b. Locks D2 (half-life=14), D8 (parity test idiom), and all sub-phase design decisions. Ready for adversarial reviews.
+
+- **v3 (2026-04-19):** Addresses second-pass adversarial review findings (1 CRITICAL + 5 HIGH + 4 MEDIUM):
+  - **C1 (Codex):** ReaffirmPreference `rows_updated != 1` interpretation conflated race with state. Now uses `RETURNING` clause + discriminating SELECT on 0-row result. New stable error messages: "memory_id deleted during reaffirm", "preference was flipped" (race-coincident), "memory superseded mid-reaffirm", "reaffirm raced — retry recommended". 4 race-discrimination tests added to T10.
+  - **H1 (Codex):** −180d expected value corrected to 0.0001348 (true value: 0.0001347766...; v2 had 0.0001354 which was a math error). Updated in §5 table, §11 test #1, and changelog.
+  - **H2 (Codex/Claude):** Memory struct audit explicitly enumerates sync.rs sites (build_export_query SELECT at sync.rs:230, row_to_memory mapper at sync.rs:277, import UPDATE at sync.rs:489). Mandatory grep methodology (3 git grep patterns) added as acceptance gate.
+  - **H3 (Codex):** Sync UPDATE at sync.rs:489 explicitly extends to propagate `reaffirmed_at`. New round-trip test `tests/sync_reaffirmed_at.rs` asserts preservation.
+  - **H4 (Claude):** `recency_factor` empty-string handling — Some("") falls back to created_at; parse failure → anchor_secs = 0.0 (factor → 0, NOT 1.0 — defends against silent boost of corrupt rows).
+  - **H5 (Claude):** `remember()` UPSERT path explicit decision: NO implicit reaffirmation. Test added.
+  - **H6 (Claude):** T8 bench-harness call sites bullet removed (bench harnesses use `Request::Recall` over HTTP, not direct `hybrid_recall`).
+  - **H7 (Claude):** T12 parity-test plumbing locked: thread-local frozen `Clock`, debug_assert prevents production override.
+  - **M1 (Codex):** §6 multi-layer touch tests gain Layer 4 (BatchRecall path at handler.rs:3206-3231 has separate touch invocation).
+  - **M2 (Codex):** §5 SELECT-additive wording clarified — "additive at SQL column level, but all 4 existing decay_memories tests must update destructure in same task".
+  - **M3 (Claude):** "Wait for writer drain" replaced with concrete `wait_for_touch(conn, expected_id)` polling helper (50ms / 5s timeout).
+  - **M4 (Claude):** Open risks deduplicated and renumbered (1-8).
+  - Header v2 → v3; status updated; race-discrimination expansion adds 4 tests to T10 (now 11 total).
 
 - **v2 (2026-04-19):** Addresses 5 CRITICAL + 11 HIGH + 7 MEDIUM/LOW findings from first-pass adversarial reviews (Claude + Codex):
   - **C1 (both):** ReaffirmPreference SQL — `now_iso()` is a Rust helper not SQLite; in-SQL preconditions added (type, status, org); `rows_updated != 1` treated as race; new "race" stable error message; new "preference was flipped" stable error message for the flipped-status hint.
