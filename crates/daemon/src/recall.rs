@@ -745,6 +745,7 @@ pub fn compile_prefetch_hints(
 /// Dynamic suffix — things that change per-turn or accumulate.
 /// Regenerated on each compile_context call.
 /// All XML sections always present (masking, not removal) for KV-cache stability.
+#[allow(clippy::too_many_arguments)]
 pub fn compile_dynamic_suffix(
     conn: &Connection,
     agent: &str,
@@ -753,6 +754,7 @@ pub fn compile_dynamic_suffix(
     excluded_layers: &[String],
     session_id: Option<&str>,
     focus: Option<&str>,
+    organization_id: Option<&str>,
 ) -> (String, Vec<String>) {
     let budget = ctx_config.budget_chars;
     let decisions_limit = ctx_config.decisions_limit;
@@ -1706,8 +1708,6 @@ pub fn compile_dynamic_suffix(
         xml.push_str("<meeting-context/>\n");
     }
 
-    let _ = used; // suppress unused warning when meeting_context is last section
-
     // ── Team Backlog ──
     // When workspace auto_write.backlog_read is enabled and workspace mode is not "project",
     // read the team's backlog.md file and inject it into the context.
@@ -1739,6 +1739,37 @@ pub fn compile_dynamic_suffix(
         }
     }
 
+    // Phase 2A-4a: <preferences-flipped> section — shows flipped preferences with both
+    // old and new valence rendered inline so the LLM has full context without a
+    // follow-up lookup.
+    if !excluded_layers.iter().any(|l| l == "preferences_flipped") {
+        let flipped =
+            crate::db::ops::list_flipped_with_targets(conn, organization_id, 5).unwrap_or_default();
+        if !flipped.is_empty() {
+            let mut pf_xml = String::from("<preferences-flipped>");
+            let close_tag = "\n</preferences-flipped>\n";
+            for item in &flipped {
+                let entry = format!(
+                    "\n  <flip at=\"{at}\" old_valence=\"{ov}\" new_valence=\"{nv}\">\n    <topic>{topic}</topic>\n  </flip>",
+                    at = xml_escape(&item.old_flipped_at),
+                    ov = xml_escape(&item.old_valence),
+                    nv = xml_escape(&item.new_valence),
+                    topic = xml_escape(&item.old_title),
+                );
+                if used + pf_xml.len() + entry.len() + close_tag.len() < budget {
+                    pf_xml.push_str(&entry);
+                } else {
+                    break;
+                }
+            }
+            pf_xml.push_str(close_tag);
+            used += pf_xml.len();
+            xml.push_str(&pf_xml);
+        }
+    }
+
+    let _ = used; // suppress unused-variable warning (last section may not consume budget)
+
     xml.push_str("</forge-dynamic>");
     (xml, touched_ids)
 }
@@ -1757,7 +1788,7 @@ pub fn compile_context(conn: &Connection, agent: &str, project: Option<&str>) ->
     let ctx_config = config.context.validated();
     let prefix = compile_static_prefix(conn, agent, None);
     let (suffix, _touched) =
-        compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None, None);
+        compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None, None, None);
     format!("<forge-context version=\"0.7.0\">\n{prefix}\n{suffix}\n</forge-context>")
 }
 
@@ -2334,6 +2365,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert!(
             suffix.contains("<forge-dynamic>"),
@@ -2368,6 +2400,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert!(suffix1.contains("<decisions/>"), "no decisions yet");
 
@@ -2386,6 +2419,7 @@ mod tests {
             None,
             &crate::config::ContextConfig::default(),
             &[],
+            None,
             None,
             None,
         );
@@ -2423,6 +2457,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert!(
             no_focus.contains("Playwright"),
@@ -2442,6 +2477,7 @@ mod tests {
             &[],
             None,
             Some("testing"),
+            None,
         );
         assert!(
             focused.contains("Playwright"),
@@ -3070,6 +3106,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
 
         // Recent decision (0.8 * 1.5 = 1.2) should outrank old (1.0 * 1.0 = 1.0)
@@ -3115,6 +3152,7 @@ mod tests {
             None,
             &crate::config::ContextConfig::default(),
             &[],
+            None,
             None,
             None,
         );
@@ -3163,6 +3201,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
 
         let high_pos = suffix
@@ -3207,6 +3246,7 @@ mod tests {
             None,
             &crate::config::ContextConfig::default(),
             &[],
+            None,
             None,
             None,
         );
@@ -3339,6 +3379,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert!(
             !suffix.contains("active-sessions"),
@@ -3378,6 +3419,7 @@ mod tests {
             None,
             &crate::config::ContextConfig::default(),
             &[],
+            None,
             None,
             None,
         );
@@ -3424,6 +3466,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert!(
             !suffix.contains("active-sessions"),
@@ -3465,6 +3508,7 @@ mod tests {
             None,
             &crate::config::ContextConfig::default(),
             &[],
+            None,
             None,
             None,
         );
@@ -3517,6 +3561,7 @@ mod tests {
             &excluded,
             None,
             None,
+            None,
         );
         assert!(
             suffix.contains("<entities/>"),
@@ -3557,8 +3602,16 @@ mod tests {
         ops::store_symbol(&conn, &sym).unwrap();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let (suffix, _) =
-            compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
 
         assert!(
             suffix.contains("<code-structure"),
@@ -3574,8 +3627,16 @@ mod tests {
         let conn = setup();
 
         let ctx_config = crate::config::ContextConfig::default();
-        let (suffix, _) =
-            compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
 
         assert!(
             suffix.contains("<code-structure/>"),
@@ -3747,6 +3808,7 @@ mod tests {
             None,
             &crate::config::ContextConfig::default(),
             &[],
+            None,
             None,
             None,
         );
@@ -3968,8 +4030,16 @@ mod tests {
             budget_chars: 10000,
             ..Default::default()
         };
-        let (suffix, _) =
-            compile_dynamic_suffix(&conn, "claude-code", None, &ctx_config, &[], None, None);
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
 
         assert!(
             suffix.contains("<agents"),
@@ -3997,6 +4067,7 @@ mod tests {
             None,
             &ctx_config,
             &excluded,
+            None,
             None,
             None,
         );
@@ -4058,6 +4129,110 @@ mod tests {
         assert!(
             !results.iter().any(|r| r.memory.id == "01D"),
             "non-preference superseded should NOT be surfaced by include_flipped"
+        );
+    }
+
+    // ── T11: <preferences-flipped> XML section tests ──
+
+    #[test]
+    fn test_preferences_flipped_section_omitted_when_empty() {
+        let conn = setup();
+
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            !suffix.contains("<preferences-flipped>"),
+            "section should be omitted when no flipped prefs exist"
+        );
+    }
+
+    #[test]
+    fn test_preferences_flipped_section_renders_both_valences() {
+        let conn = setup();
+
+        // Old (flipped) preference
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, valence_flipped_at, superseded_by)
+             VALUES ('01OLD', 'preference', 'tabs over spaces', 'c', 0.9, 'superseded', NULL, '[]', '2026-04-15 00:00:00', '2026-04-15 00:00:00', 'positive', 0.7, '2026-04-17 14:22:00', '01NEW')",
+            [],
+        ).unwrap();
+        // New (active) preference
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity)
+             VALUES ('01NEW', 'preference', 'tabs over spaces', 'c2', 0.9, 'active', NULL, '[]', '2026-04-17 14:22:00', '2026-04-17 14:22:00', 'negative', 0.8)",
+            [],
+        ).unwrap();
+
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            suffix.contains("<preferences-flipped>"),
+            "section missing; suffix: {suffix}"
+        );
+        assert!(
+            suffix.contains("old_valence=\"positive\""),
+            "old valence missing"
+        );
+        assert!(
+            suffix.contains("new_valence=\"negative\""),
+            "new valence missing"
+        );
+        assert!(
+            suffix.contains("at=\"2026-04-17 14:22:00\""),
+            "timestamp missing"
+        );
+        assert!(
+            suffix.contains("<topic>tabs over spaces</topic>"),
+            "topic missing"
+        );
+    }
+
+    #[test]
+    fn test_preferences_flipped_section_respects_excluded_layers() {
+        let conn = setup();
+
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, valence_flipped_at, superseded_by)
+             VALUES ('01OLD', 'preference', 't', 'c', 0.9, 'superseded', NULL, '[]', '2026-04-15 00:00:00', '2026-04-15 00:00:00', 'positive', 0.7, '2026-04-17 14:22:00', '01NEW')",
+            [],
+        ).unwrap();
+
+        let ctx_config = crate::config::ContextConfig::default();
+        let excluded = vec!["preferences_flipped".to_string()];
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &excluded,
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            !suffix.contains("<preferences-flipped>"),
+            "section should be suppressed when layer is excluded"
         );
     }
 }

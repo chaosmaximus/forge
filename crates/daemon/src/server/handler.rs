@@ -2604,6 +2604,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     &excluded,
                     sid,
                     focus.as_deref(),
+                    None, // TODO: wire organization_id from session context (2A-4a T11)
                 );
                 let full = format!(
                     "<forge-context version=\"0.7.0\">\n{static_prefix}\n{dynamic_suffix}\n</forge-context>"
