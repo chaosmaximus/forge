@@ -4235,4 +4235,38 @@ mod tests {
             "section should be suppressed when layer is excluded"
         );
     }
+
+    #[test]
+    fn test_preferences_flipped_section_skips_orphaned_flips() {
+        let conn = setup();
+
+        // Flipped pref pointing to '01MISSING' which doesn't exist (deleted post-flip).
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, valence_flipped_at, superseded_by)
+             VALUES ('01ORPHAN', 'preference', 'orphan topic', 'c', 0.9, 'superseded', NULL, '[]', '2026-04-15 00:00:00', '2026-04-15 00:00:00', 'positive', 0.5, '2026-04-17 14:22:00', '01MISSING')",
+            [],
+        ).unwrap();
+
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+
+        // Orphan should not appear at all (filtered at helper level).
+        assert!(
+            !suffix.contains("orphan topic"),
+            "orphaned flip should be filtered out; suffix: {suffix}"
+        );
+        assert!(
+            !suffix.contains("<preferences-flipped>"),
+            "section should be omitted entirely when only orphans exist; suffix: {suffix}"
+        );
+    }
 }

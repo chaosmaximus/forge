@@ -340,9 +340,13 @@ pub fn list_flipped(
     rows
 }
 
-/// Phase 2A-4a: tuple containing a flipped preference's identifying info AND
+/// Phase 2A-4a: struct containing a flipped preference's identifying info AND
 /// the new active replacement's id+valence, fetched in a single JOIN.
 /// Used by CompileContext's `<preferences-flipped>` renderer.
+///
+/// Note: `old_id` and `new_id` are populated for future consumers (e.g. T12
+/// integration tests, audit trails); the XML renderer itself only uses the
+/// title + valences + timestamp.
 pub struct FlippedWithTarget {
     pub old_id: String,
     pub old_title: String,
@@ -357,6 +361,9 @@ pub struct FlippedWithTarget {
 /// both valences directly without a follow-up lookup.
 ///
 /// Filters: valence_flipped_at IS NOT NULL AND memory_type = 'preference'.
+/// Orphaned flips (where the superseded_by target row was deleted post-flip)
+/// are filtered out post-query — they're a degenerate state and emitting
+/// `new_valence=""` would mislead the LLM.
 /// Ordered by valence_flipped_at DESC. limit clamped to [1, 100].
 pub fn list_flipped_with_targets(
     conn: &Connection,
@@ -384,13 +391,19 @@ pub fn list_flipped_with_targets(
             old_valence: row.get(2)?,
             old_flipped_at: row.get(3)?,
             // m_new fields use unwrap_or_default for the LEFT JOIN edge case where
-            // the new memory is missing (e.g. deleted post-flip).
+            // the new memory is missing (e.g. deleted post-flip). These orphans
+            // are filtered out below before returning.
             new_id: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
             new_valence: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
         })
     })?;
     let result: rusqlite::Result<Vec<FlippedWithTarget>> = rows.collect();
-    result
+    // Drop orphans: if the LEFT JOIN found no successor, the new memory was
+    // deleted post-flip. Emitting `new_valence=""` would be misleading.
+    result.map(|mut v| {
+        v.retain(|r| !r.new_id.is_empty());
+        v
+    })
 }
 
 /// Boost activation level for a memory (capped at 1.0).
