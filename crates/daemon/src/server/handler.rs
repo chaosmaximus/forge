@@ -11684,4 +11684,192 @@ mod tests {
             .unwrap();
         assert_eq!(edge_count, 1);
     }
+
+    #[test]
+    fn test_flip_preference_rejects_missing_memory() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: "does-not-exist".into(),
+                new_valence: "negative".into(),
+                new_intensity: 0.8,
+                reason: None,
+            },
+        );
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("memory_id not found"),
+                    "expected 'memory_id not found', got: {message}"
+                );
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flip_preference_rejects_non_preference_type() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let mut decision = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Decision,
+            "foo",
+            "bar",
+        );
+        decision.id = "01DEC".to_string();
+        crate::db::ops::remember(&state.conn, &decision).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: "01DEC".into(),
+                new_valence: "negative".into(),
+                new_intensity: 0.8,
+                reason: None,
+            },
+        );
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("memory_type must be preference"),
+                    "got: {message}"
+                );
+                // T6's lowercase format: should contain 'decision'
+                assert!(message.contains("decision"), "got: {message}");
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flip_preference_rejects_already_superseded() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Insert a row already in superseded status via raw SQL.
+        state
+            .conn
+            .execute(
+                "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity)
+                 VALUES (?1, 'preference', 'x', 'y', 0.9, 'superseded', NULL, '[]', '2026-04-17 00:00:00', '2026-04-17 00:00:00', 'positive', 0.5)",
+                rusqlite::params!["01SUP"],
+            )
+            .unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: "01SUP".into(),
+                new_valence: "negative".into(),
+                new_intensity: 0.8,
+                reason: None,
+            },
+        );
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(message.contains("already superseded"), "got: {message}");
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flip_preference_rejects_invalid_valence() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let mut pref = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Preference,
+            "x",
+            "y",
+        );
+        pref.id = "01PREF".to_string();
+        crate::db::ops::remember(&state.conn, &pref).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: "01PREF".into(),
+                new_valence: "happy".into(),
+                new_intensity: 0.8,
+                reason: None,
+            },
+        );
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("new_valence must be positive | negative | neutral"),
+                    "got: {message}"
+                );
+                assert!(message.contains("happy"), "got: {message}");
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flip_preference_rejects_out_of_range_intensity() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let mut pref = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Preference,
+            "x",
+            "y",
+        );
+        pref.id = "01PREF".to_string();
+        crate::db::ops::remember(&state.conn, &pref).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: "01PREF".into(),
+                new_valence: "negative".into(),
+                new_intensity: 1.5,
+                reason: None,
+            },
+        );
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("new_intensity must be finite in [0.0, 1.0]"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flip_preference_rejects_noop_same_valence() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        let mut pref = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Preference,
+            "tabs",
+            "prefer tabs",
+        );
+        pref.id = "01PREF".to_string();
+        pref.valence = "positive".to_string();
+        crate::db::ops::remember(&state.conn, &pref).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: "01PREF".into(),
+                new_valence: "positive".into(), // same as old
+                new_intensity: 0.8,
+                reason: None,
+            },
+        );
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("no-op flip"),
+                    "expected 'no-op flip' message, got: {message}"
+                );
+                assert!(message.contains("positive"), "got: {message}");
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
 }
