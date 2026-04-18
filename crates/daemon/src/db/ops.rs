@@ -288,6 +288,46 @@ pub fn supersede_memory_impl(
     Ok(())
 }
 
+/// List preferences whose valence was flipped. Filters on
+/// `valence_flipped_at IS NOT NULL AND memory_type = 'preference'`.
+/// Ordered by `valence_flipped_at DESC` (most recent first).
+///
+/// `organization_id`: when `Some(org)`, restricts to that org via
+/// `COALESCE(organization_id, 'default') = org`. When `None`, returns
+/// flipped memories from the default org bucket (which includes both
+/// explicit-default and NULL-org rows).
+/// `limit`: clamped to [1, 100].
+pub fn list_flipped(
+    conn: &Connection,
+    organization_id: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<forge_core::types::memory::Memory>> {
+    let org = organization_id.unwrap_or("default");
+    let clamped_limit = limit.clamp(1, 100) as i64;
+
+    let mut stmt = conn.prepare(
+        "SELECT id FROM memory
+          WHERE valence_flipped_at IS NOT NULL
+            AND memory_type = 'preference'
+            AND COALESCE(organization_id, 'default') = ?1
+          ORDER BY valence_flipped_at DESC
+          LIMIT ?2",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map(rusqlite::params![org, clamped_limit], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut results = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(m) = fetch_memory_by_id(conn, &id)? {
+            results.push(m);
+        }
+    }
+    Ok(results)
+}
+
 /// Boost activation level for a memory (capped at 1.0).
 /// Used to track which memories are actively being used.
 /// Activation decays over time in the consolidator.
@@ -5678,5 +5718,67 @@ mod tests {
         assert_eq!(status, "superseded");
         assert_eq!(superseded_by, Some("01NEWID".to_string()));
         assert_eq!(flipped_at, None);
+    }
+
+    #[test]
+    fn test_list_flipped_returns_only_flipped_memories_ordered_desc() {
+        let conn = open_db();
+
+        // Active preference (not flipped) — must NOT appear
+        let mut a = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Preference,
+            "active",
+            "content",
+        );
+        a.id = "01ACTIVE".to_string();
+        remember(&conn, &a).unwrap();
+
+        // Two flipped preferences with different flip timestamps
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, valence_flipped_at, superseded_by)
+             VALUES ('01F1', 'preference', 'older flip', 'c1', 0.9, 'superseded', NULL, '[]', '2026-04-15 00:00:00', '2026-04-15 00:00:00', 'positive', 0.5, '2026-04-15 10:00:00', '01N1')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, valence_flipped_at, superseded_by)
+             VALUES ('01F2', 'preference', 'newer flip', 'c2', 0.9, 'superseded', NULL, '[]', '2026-04-16 00:00:00', '2026-04-16 00:00:00', 'negative', 0.6, '2026-04-17 14:00:00', '01N2')",
+            [],
+        ).unwrap();
+
+        // Superseded but NOT flipped (no valence_flipped_at) — must NOT appear
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, superseded_by)
+             VALUES ('01SUP', 'decision', 'plain supersede', 'c3', 0.9, 'superseded', NULL, '[]', '2026-04-17 00:00:00', '2026-04-17 00:00:00', 'neutral', 0.0, '01N3')",
+            [],
+        ).unwrap();
+
+        let flipped = list_flipped(&conn, None, 10).unwrap();
+        assert_eq!(
+            flipped.len(),
+            2,
+            "should return exactly 2 flipped preferences"
+        );
+        assert_eq!(flipped[0].id, "01F2", "most recent flip first");
+        assert_eq!(flipped[1].id, "01F1");
+    }
+
+    #[test]
+    fn test_list_flipped_respects_limit() {
+        let conn = open_db();
+
+        for i in 0..5 {
+            let id = format!("01F{i}");
+            let title = format!("flip {i}");
+            let flip_ts = format!("2026-04-17 0{i}:00:00");
+            let new_id = format!("01N{i}");
+            conn.execute(
+                "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, valence_flipped_at, superseded_by)
+                 VALUES (?1, 'preference', ?2, 'c', 0.9, 'superseded', NULL, '[]', '2026-04-17 00:00:00', '2026-04-17 00:00:00', 'positive', 0.5, ?3, ?4)",
+                rusqlite::params![id, title, flip_ts, new_id],
+            ).unwrap();
+        }
+
+        let flipped = list_flipped(&conn, None, 2).unwrap();
+        assert_eq!(flipped.len(), 2);
     }
 }

@@ -973,8 +973,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::ListFlipped { .. } => {
-            todo!("2A-4a T9 — ListFlipped handler");
+        Request::ListFlipped { agent: _, limit } => {
+            let effective_limit = limit.unwrap_or(20);
+            match ops::list_flipped(&state.conn, None, effective_limit) {
+                Ok(memories) => {
+                    let items: Vec<forge_core::protocol::response::FlippedMemory> = memories
+                        .into_iter()
+                        .map(|m| {
+                            let flipped_to_id = m.superseded_by.clone().unwrap_or_default();
+                            let flipped_at = m.valence_flipped_at.clone().unwrap_or_default();
+                            forge_core::protocol::response::FlippedMemory {
+                                old: m,
+                                flipped_to_id,
+                                flipped_at,
+                            }
+                        })
+                        .collect();
+                    Response::Ok {
+                        data: ResponseData::FlippedList { items },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("list_flipped failed: {e}"),
+                },
+            }
         }
 
         Request::HealthByProject => match ops::health_by_project(&state.conn) {
