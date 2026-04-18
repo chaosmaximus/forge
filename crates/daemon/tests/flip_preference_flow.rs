@@ -142,6 +142,12 @@ fn test_flip_preference_end_to_end_flow() {
     }
 
     // ── Step 6: CompileContext — dynamic_suffix contains <preferences-flipped> ─
+    //
+    // The <preferences-flipped> block is rendered inside compile_dynamic_suffix
+    // (see crates/daemon/src/recall.rs). We assert directly against
+    // `dynamic_suffix` rather than the concatenated `context` string so a
+    // future refactor that accidentally moves the section into `static_prefix`
+    // is caught here instead of silently passing.
     let resp = handle_request(
         &mut state,
         Request::CompileContext {
@@ -155,44 +161,21 @@ fn test_flip_preference_end_to_end_flow() {
     );
     match resp {
         Response::Ok {
-            data:
-                ResponseData::CompiledContext {
-                    context,
-                    dynamic_suffix,
-                    ..
-                },
+            data: ResponseData::CompiledContext { dynamic_suffix, .. },
         } => {
-            // The <preferences-flipped> block is rendered inside compile_dynamic_suffix,
-            // so it must appear in dynamic_suffix (and by extension in context which
-            // concatenates static_prefix + dynamic_suffix).
-            let target = if dynamic_suffix.contains("<preferences-flipped>") {
-                &dynamic_suffix
-            } else {
-                &context
-            };
             assert!(
-                target.contains("<preferences-flipped>"),
-                "<preferences-flipped> tag missing from compiled context.\n\
+                dynamic_suffix.contains("<preferences-flipped>"),
+                "<preferences-flipped> tag missing from dynamic_suffix (must not be in static_prefix).\n\
                  dynamic_suffix (first 600 chars): {}",
                 dynamic_suffix.chars().take(600).collect::<String>()
             );
             assert!(
-                target.contains("old_valence=\"positive\""),
-                "old_valence=\"positive\" missing from <preferences-flipped>.\n\
-                 Relevant section: {}",
-                target
-                    .find("<preferences-flipped>")
-                    .map(|start| &target[start..std::cmp::min(start + 400, target.len())])
-                    .unwrap_or("(not found)")
+                dynamic_suffix.contains("old_valence=\"positive\""),
+                "old_valence=\"positive\" missing from dynamic_suffix"
             );
             assert!(
-                target.contains("new_valence=\"negative\""),
-                "new_valence=\"negative\" missing from <preferences-flipped>.\n\
-                 Relevant section: {}",
-                target
-                    .find("<preferences-flipped>")
-                    .map(|start| &target[start..std::cmp::min(start + 400, target.len())])
-                    .unwrap_or("(not found)")
+                dynamic_suffix.contains("new_valence=\"negative\""),
+                "new_valence=\"negative\" missing from dynamic_suffix"
             );
         }
         other => panic!("compile_context failed: {other:?}"),
