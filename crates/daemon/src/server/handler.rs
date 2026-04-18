@@ -800,8 +800,170 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::FlipPreference { .. } => {
-            todo!("2A-4a T6 — FlipPreference handler");
+        Request::FlipPreference {
+            memory_id,
+            new_valence,
+            new_intensity,
+            reason,
+        } => {
+            // 1. Validate inputs.
+            if !matches!(new_valence.as_str(), "positive" | "negative" | "neutral") {
+                return Response::Error {
+                    message: format!(
+                        "new_valence must be positive | negative | neutral (got: {new_valence})"
+                    ),
+                };
+            }
+            if !new_intensity.is_finite() || !(0.0..=1.0).contains(&new_intensity) {
+                return Response::Error {
+                    message: format!(
+                        "new_intensity must be finite in [0.0, 1.0] (got: {new_intensity})"
+                    ),
+                };
+            }
+
+            // 2. Load the old preference.
+            let old = match ops::fetch_memory_by_id(&state.conn, &memory_id) {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    return Response::Error {
+                        message: format!("memory_id not found: {memory_id}"),
+                    }
+                }
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("flip failed: {e}"),
+                    }
+                }
+            };
+            if old.memory_type != forge_core::types::memory::MemoryType::Preference {
+                let got = format!("{:?}", old.memory_type).to_lowercase();
+                return Response::Error {
+                    message: format!("memory_type must be preference for flip (got: {got})"),
+                };
+            }
+            if old.status != forge_core::types::memory::MemoryStatus::Active {
+                return Response::Error {
+                    message: format!("memory already superseded (id: {memory_id})"),
+                };
+            }
+
+            // 3. Cross-org scope guard.
+            // Derive caller_org from the old memory's session (matches Supersede handler pattern).
+            let caller_org = {
+                let mem_session_opt: Option<String> = state
+                    .conn
+                    .query_row(
+                        "SELECT session_id FROM memory WHERE id = ?1",
+                        rusqlite::params![&memory_id],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                get_session_org_id(&state.conn, mem_session_opt.as_deref())
+            };
+            // If both caller_org and old.organization_id are set and disagree, reject.
+            if let Some(old_org) = old.organization_id.as_ref() {
+                if &caller_org != old_org {
+                    return Response::Error {
+                        message: "cross-org flip denied".to_string(),
+                    };
+                }
+            }
+
+            // 4. Reject no-op flip (same valence).
+            if old.valence == new_valence {
+                return Response::Error {
+                    message: format!("memory already superseded (id: {memory_id})"),
+                };
+            }
+
+            // 5. Synthesize new memory.
+            let now = forge_core::time::now_iso();
+            let reason_suffix = reason
+                .as_ref()
+                .map(|r| format!(" (reason: {r})"))
+                .unwrap_or_default();
+            let new_id = ulid::Ulid::new().to_string();
+            let old_valence = &old.valence;
+            let old_content = &old.content;
+            let new_content = format!(
+                "[flipped from {old_valence} to {new_valence} at {now}]{reason_suffix}: {old_content}"
+            );
+            // D2 (per master design): inherit confidence with floor 0.5 and cap 1.0.
+            // Preserves user's prior conviction while preventing stale-decay propagation.
+            let new_confidence = old.confidence.clamp(0.5, 1.0);
+
+            let new_memory = forge_core::types::memory::Memory {
+                id: new_id.clone(),
+                memory_type: forge_core::types::memory::MemoryType::Preference,
+                title: old.title.clone(),
+                content: new_content,
+                confidence: new_confidence,
+                status: forge_core::types::memory::MemoryStatus::Active,
+                project: old.project.clone(),
+                tags: old.tags.clone(),
+                embedding: None,
+                created_at: now.clone(),
+                accessed_at: now.clone(),
+                valence: new_valence.clone(),
+                intensity: new_intensity,
+                hlc_timestamp: state.hlc.now(),
+                node_id: old.node_id.clone(),
+                session_id: old.session_id.clone(),
+                access_count: 0,
+                activation_level: 0.0,
+                alternatives: Vec::new(),
+                participants: Vec::new(),
+                organization_id: old.organization_id.clone(),
+                superseded_by: None,
+                valence_flipped_at: None,
+            };
+
+            // 6. Atomic transaction: INSERT new + UPDATE+edge via supersede_memory_impl.
+            // Same pattern T1 used for Supersede handler (see handler.rs ~773 for prior art).
+            let result: Result<(), ops::OpError> = (|| {
+                let tx = state.conn.unchecked_transaction()?;
+                ops::remember_raw(&tx, &new_memory)?;
+                ops::supersede_memory_impl(
+                    &tx,
+                    &old.id,
+                    &new_memory.id,
+                    old.organization_id.as_deref(),
+                    Some(&now),
+                )?;
+                tx.commit()?;
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => {
+                    // 7. Emit event AFTER commit succeeds.
+                    crate::events::emit(
+                        &state.events,
+                        "preference_flipped",
+                        serde_json::json!({
+                            "old_id": old.id,
+                            "new_id": new_memory.id,
+                            "new_valence": new_valence,
+                            "new_intensity": new_intensity,
+                            "reason": reason.as_deref().unwrap_or(""),
+                            "flipped_at": now,
+                        }),
+                    );
+                    Response::Ok {
+                        data: ResponseData::PreferenceFlipped {
+                            old_id: old.id,
+                            new_id: new_memory.id,
+                            new_valence,
+                            new_intensity,
+                            flipped_at: now,
+                        },
+                    }
+                }
+                Err(e) => Response::Error {
+                    message: format!("flip transaction failed: {e}"),
+                },
+            }
         }
 
         Request::ListFlipped { .. } => {
@@ -11425,5 +11587,94 @@ mod tests {
             }
             other => panic!("expected Version response, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_flip_preference_creates_new_memory_with_opposite_valence() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+
+        // Arrange: store a preference with positive valence
+        let mut pref = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Preference,
+            "tabs over spaces",
+            "prefer tabs",
+        );
+        pref.id = "01PREF".to_string();
+        pref.valence = "positive".to_string();
+        pref.intensity = 0.7;
+        crate::db::ops::remember(&state.conn, &pref).unwrap();
+
+        // Act: flip it
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: "01PREF".into(),
+                new_valence: "negative".into(),
+                new_intensity: 0.8,
+                reason: Some("team switched to spaces".into()),
+            },
+        );
+
+        // Assert: response carries the flipped data
+        let new_id = match resp {
+            forge_core::protocol::Response::Ok { data } => match data {
+                forge_core::protocol::ResponseData::PreferenceFlipped {
+                    old_id,
+                    new_id,
+                    new_valence,
+                    new_intensity,
+                    flipped_at,
+                } => {
+                    assert_eq!(old_id, "01PREF");
+                    assert_ne!(new_id, "01PREF");
+                    assert_eq!(new_valence, "negative");
+                    assert!((new_intensity - 0.8).abs() < 1e-9);
+                    assert_eq!(flipped_at.len(), 19); // "YYYY-MM-DD HH:MM:SS"
+                    new_id
+                }
+                other => panic!("expected PreferenceFlipped, got {other:?}"),
+            },
+            forge_core::protocol::Response::Error { message } => {
+                panic!("flip failed: {message}")
+            }
+        };
+
+        // Assert: old memory marked superseded with valence_flipped_at set
+        let (status, superseded_by, flipped_at): (String, Option<String>, Option<String>) = state
+            .conn
+            .query_row(
+                "SELECT status, superseded_by, valence_flipped_at FROM memory WHERE id = ?1",
+                rusqlite::params!["01PREF"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "superseded");
+        assert_eq!(superseded_by, Some(new_id.clone()));
+        assert!(flipped_at.is_some());
+
+        // Assert: new memory has opposite valence and annotated content
+        let new = crate::db::ops::fetch_memory_by_id(&state.conn, &new_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(new.valence, "negative");
+        assert!((new.intensity - 0.8).abs() < 1e-9);
+        assert!(new
+            .content
+            .starts_with("[flipped from positive to negative at "));
+        assert!(new.content.contains("prefer tabs"));
+        assert_eq!(new.status, forge_core::types::memory::MemoryStatus::Active);
+        assert_eq!(new.alternatives, Vec::<String>::new());
+        assert_eq!(new.participants, Vec::<String>::new());
+
+        // Assert: supersedes edge from new to old
+        let edge_count: i64 = state
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM edge WHERE from_id = ?1 AND to_id = ?2 AND edge_type = 'supersedes'",
+                rusqlite::params![&new_id, "01PREF"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_count, 1);
     }
 }
