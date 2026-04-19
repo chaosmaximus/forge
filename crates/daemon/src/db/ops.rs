@@ -5921,6 +5921,7 @@ mod tests {
             "yes".to_string(),
         );
         m.reaffirmed_at = Some("2026-01-01 00:00:00".to_string());
+        let original_id = m.id.clone();
 
         remember(&conn, &m).unwrap();
 
@@ -5933,14 +5934,40 @@ mod tests {
         // m2.reaffirmed_at is None — UPSERT must preserve stored value
         remember(&conn, &m2).unwrap();
 
+        // Pin row count: UPSERT semantics require exactly ONE active row, not two
+        let active_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE title = 'prefer-vim' AND status = 'active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            active_count, 1,
+            "UPSERT must produce exactly 1 active row, got {active_count}"
+        );
+
+        // Pin row identity: the same id should remain (proves UPDATE, not INSERT)
+        let stored_id: String = conn
+            .query_row(
+                "SELECT id FROM memory WHERE title = 'prefer-vim' AND status = 'active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored_id, original_id,
+            "UPSERT must preserve original id; got new id {stored_id}"
+        );
+
+        // Original assertion: reaffirmed_at preserved across UPDATE branch
         let stored: Option<String> = conn
             .query_row(
-                "SELECT reaffirmed_at FROM memory WHERE title = 'prefer-vim'",
-                [],
+                "SELECT reaffirmed_at FROM memory WHERE id = ?1",
+                params![original_id],
                 |row| row.get(0),
             )
             .unwrap();
-
         assert_eq!(
             stored,
             Some("2026-01-01 00:00:00".to_string()),
