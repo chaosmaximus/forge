@@ -482,6 +482,10 @@ pub struct RecallConfig {
     pub activation_on_context: f64,
     /// Prefetch session recency weights
     pub prefetch_weights: Vec<f64>,
+    /// Phase 2A-4b: half-life (in days) for preference recency multiplier.
+    /// Used by recall.rs post-RRF and ops::decay_memories.
+    /// Validated to 1.0..=365.0 in validated().
+    pub preference_half_life_days: f64,
 }
 
 impl Default for RecallConfig {
@@ -497,6 +501,7 @@ impl Default for RecallConfig {
             activation_on_recall: 0.3,
             activation_on_context: 0.1,
             prefetch_weights: vec![1.0, 0.7, 0.5],
+            preference_half_life_days: 14.0,
         }
     }
 }
@@ -518,6 +523,7 @@ impl RecallConfig {
             } else {
                 self.prefetch_weights.clone()
             },
+            preference_half_life_days: self.preference_half_life_days.clamp(1.0, 365.0),
         }
     }
 }
@@ -2329,5 +2335,32 @@ heartbeat_timeout_secs = 45
         assert!((config.proactive.anti_pattern_threshold - 0.85).abs() < 0.01);
         assert!(!config.proactive.completion_keywords.is_empty());
         assert_eq!(config.proactive.completion_dismiss_limit, 3);
+    }
+
+    #[test]
+    fn recall_config_default_preference_half_life_days() {
+        let cfg = RecallConfig::default();
+        assert_eq!(cfg.preference_half_life_days, 14.0);
+    }
+
+    #[test]
+    fn recall_config_validated_clamps_preference_half_life_days() {
+        let cfg = RecallConfig {
+            preference_half_life_days: 0.0,
+            ..RecallConfig::default()
+        };
+        assert_eq!(cfg.validated().preference_half_life_days, 1.0);
+
+        let cfg = RecallConfig {
+            preference_half_life_days: 1000.0,
+            ..RecallConfig::default()
+        };
+        assert_eq!(cfg.validated().preference_half_life_days, 365.0);
+
+        let cfg = RecallConfig {
+            preference_half_life_days: 30.0,
+            ..RecallConfig::default()
+        };
+        assert_eq!(cfg.validated().preference_half_life_days, 30.0);
     }
 }
