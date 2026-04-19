@@ -1056,12 +1056,22 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             );
 
             match updated {
-                Ok(reaffirmed_at) => Response::Ok {
-                    data: ResponseData::PreferenceReaffirmed {
-                        memory_id: memory_id.clone(),
-                        reaffirmed_at,
-                    },
-                },
+                Ok(reaffirmed_at) => {
+                    crate::events::emit(
+                        &state.events,
+                        "preference_reaffirmed",
+                        serde_json::json!({
+                            "memory_id": memory_id,
+                            "reaffirmed_at": reaffirmed_at,
+                        }),
+                    );
+                    Response::Ok {
+                        data: ResponseData::PreferenceReaffirmed {
+                            memory_id: memory_id.clone(),
+                            reaffirmed_at,
+                        },
+                    }
+                }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     // Disambiguate failure cause via best-effort diagnostic read.
                     // Scope by org: cross-org memories must surface as "not found"
@@ -12676,6 +12686,74 @@ mod tests {
                     | forge_core::protocol::Response::Error { .. }
             ),
             "response must be Ok or Error, not something else: {resp:?}"
+        );
+    }
+
+    // ── Phase 2A-4b T11: ReaffirmPreference event emission ──────────────────
+
+    #[test]
+    fn reaffirm_preference_emits_preference_reaffirmed_event() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-event".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        // Subscribe BEFORE issuing the request.
+        let mut rx = state.events.subscribe();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: pref_id.clone(),
+            },
+        );
+        assert!(
+            matches!(resp, forge_core::protocol::Response::Ok { .. }),
+            "reaffirm should succeed, got: {resp:?}"
+        );
+
+        let event = rx.try_recv().expect("event should have been emitted");
+        assert_eq!(event.event, "preference_reaffirmed");
+        assert_eq!(
+            event.data["memory_id"],
+            serde_json::json!(pref_id),
+            "memory_id in payload must match"
+        );
+        assert!(
+            event.data["reaffirmed_at"].is_string(),
+            "reaffirmed_at should be a string timestamp, got: {:?}",
+            event.data["reaffirmed_at"]
+        );
+    }
+
+    #[test]
+    fn reaffirm_preference_emits_no_event_on_error() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Subscribe BEFORE issuing the request.
+        let mut rx = state.events.subscribe();
+
+        // Nonexistent memory → Error
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: "does-not-exist".to_string(),
+            },
+        );
+        assert!(
+            matches!(resp, forge_core::protocol::Response::Error { .. }),
+            "expected Error for nonexistent memory, got: {resp:?}"
+        );
+
+        let attempt = rx.try_recv();
+        assert!(
+            attempt.is_err(),
+            "no event should be emitted on error path; got: {attempt:?}"
         );
     }
 }
