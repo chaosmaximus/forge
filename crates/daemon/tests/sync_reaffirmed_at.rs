@@ -152,3 +152,88 @@ fn sync_import_round_trip_update_preserves_reaffirmed_at() {
         "UPDATE branch must propagate reaffirmed_at when remote provides Some value"
     );
 }
+
+#[test]
+fn sync_import_remote_none_preserves_local_reaffirmed_at() {
+    // Branch 2 of COALESCE(?7, reaffirmed_at): remote sends reaffirmed_at=None
+    // (omitted from JSON via skip_serializing_if) — COALESCE must fall back to
+    // the existing local value and NOT overwrite it with NULL.
+
+    let conn = setup_node();
+    let local_node_id = "nodey001";
+
+    // Seed local memory via sync_import (INSERT branch) with reaffirmed_at=Some
+    let mut initial = Memory::new(
+        MemoryType::Preference,
+        "prefer-vim".to_string(),
+        "original content".to_string(),
+    );
+    initial.reaffirmed_at = Some("2026-01-15 10:00:00".to_string());
+    initial.hlc_timestamp = "1744900000000-0000000000-nodey001".to_string();
+    initial.node_id = local_node_id.to_string();
+
+    let line1 = serde_json::to_string(&initial).unwrap();
+    sync::sync_import(&conn, &[line1], local_node_id).unwrap();
+
+    // Verify initial state: reaffirmed_at stored
+    let stored_initial: Option<String> = conn
+        .query_row(
+            "SELECT reaffirmed_at FROM memory WHERE title = 'prefer-vim'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored_initial,
+        Some("2026-01-15 10:00:00".to_string()),
+        "initial insert must store reaffirmed_at"
+    );
+
+    // Remote: same node_id (triggers UPDATE branch), fresher HLC, reaffirmed_at=None.
+    // skip_serializing_if omits the field from JSON; serde default restores None on parse.
+    let mut remote = initial.clone();
+    remote.reaffirmed_at = None; // the "remote never reaffirmed" case
+    remote.hlc_timestamp = "1744999999999-0000000000-nodey001".to_string(); // newer HLC
+    remote.content = "yes (updated remotely)".to_string();
+
+    // Confirm serialization omits reaffirmed_at (the guard we're stress-testing)
+    let line2 = serde_json::to_string(&remote).unwrap();
+    assert!(
+        !line2.contains("\"reaffirmed_at\""),
+        "skip_serializing_if must elide reaffirmed_at when None; got: {line2}"
+    );
+
+    // Apply the update — should fire the COALESCE(?7, reaffirmed_at) branch
+    let result = sync::sync_import(&conn, &[line2], local_node_id).unwrap();
+    assert_eq!(
+        result.imported, 1,
+        "fresher HLC should trigger the UPDATE branch"
+    );
+
+    // Assert: local reaffirmed_at PRESERVED (COALESCE returns existing, not NULL)
+    let stored_after: Option<String> = conn
+        .query_row(
+            "SELECT reaffirmed_at FROM memory WHERE title = 'prefer-vim'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored_after,
+        Some("2026-01-15 10:00:00".to_string()),
+        "remote None must preserve local reaffirmed_at via COALESCE"
+    );
+
+    // Assert: content reflects the remote update (UPDATE branch did fire)
+    let stored_content: String = conn
+        .query_row(
+            "SELECT content FROM memory WHERE title = 'prefer-vim'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored_content, "yes (updated remotely)",
+        "content should reflect the remote update"
+    );
+}
