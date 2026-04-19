@@ -2072,4 +2072,90 @@ mod tests {
             "existing row should have NULL reaffirmed_at after migration"
         );
     }
+
+    #[test]
+    fn test_reaffirmed_at_rollback_recipe_works() {
+        // T15: rollback recipe for the reaffirmed_at column added in T1.
+        // Verifies: forward migration adds column; INSERT with reaffirmed_at;
+        // rollback (ALTER TABLE DROP COLUMN) removes column cleanly;
+        // other column data intact; queries not referencing the column still work.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // 1. Forward migration: verify column exists after create_schema.
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(memory)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            cols.contains(&"reaffirmed_at".to_string()),
+            "reaffirmed_at should exist after create_schema; columns: {cols:?}"
+        );
+
+        // 2. INSERT a row using the reaffirmed_at column.
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, reaffirmed_at)
+             VALUES ('t15-rollback-01', 'preference', 'pref-title', 'pref-content', 0.85, 'active', NULL, '[]', '2026-04-18 00:00:00', '2026-04-18 00:00:00', 'positive', 0.7, '2026-04-18 12:00:00')",
+            [],
+        ).unwrap();
+
+        // Confirm readback.
+        let reaffirmed: Option<String> = conn
+            .query_row(
+                "SELECT reaffirmed_at FROM memory WHERE id = 't15-rollback-01'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            reaffirmed,
+            Some("2026-04-18 12:00:00".to_string()),
+            "reaffirmed_at should hold the written value before rollback"
+        );
+
+        // 3. Execute rollback recipe: DROP COLUMN (SQLite 3.35+ / rusqlite bundled 3.46+).
+        conn.execute("ALTER TABLE memory DROP COLUMN reaffirmed_at", [])
+            .unwrap();
+
+        // 4. Verify column is gone.
+        let cols_after: Vec<String> = conn
+            .prepare("PRAGMA table_info(memory)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            !cols_after.contains(&"reaffirmed_at".to_string()),
+            "reaffirmed_at should be gone after rollback; columns: {cols_after:?}"
+        );
+
+        // 5. Other column data intact.
+        let (title, conf): (String, f64) = conn
+            .query_row(
+                "SELECT title, confidence FROM memory WHERE id = 't15-rollback-01'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "pref-title");
+        assert!(
+            (conf - 0.85).abs() < 1e-6,
+            "confidence should be 0.85; got {conf}"
+        );
+
+        // 6. Queries not referencing reaffirmed_at still work.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE status = 'active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
 }
