@@ -1757,6 +1757,56 @@ pub fn compile_dynamic_suffix(
         }
     }
 
+    // Phase 2A-4b T13: <preferences> section — shows active (non-flipped) preferences
+    // sorted by recency (COALESCE(reaffirmed_at, created_at) DESC), max 5, budget-accounted.
+    // Adds pref IDs to touched_ids so the T6 touch() SQL predicate can filter them back out.
+    if !excluded_layers.iter().any(|l| l == "preferences") {
+        let org = organization_id.unwrap_or("default");
+        let prefs = crate::db::ops::list_active_preferences(conn, org, 5).unwrap_or_default();
+        if !prefs.is_empty() {
+            let mut prefs_block = String::from("<preferences>");
+            let close_tag = "\n</preferences>\n";
+            let now_secs = crate::db::ops::current_epoch_secs();
+            for pref in &prefs {
+                let anchor = if let Some(r) = &pref.reaffirmed_at {
+                    r.as_str()
+                } else {
+                    pref.created_at.as_str()
+                };
+                let anchor_secs = crate::db::ops::parse_timestamp_to_epoch(anchor).unwrap_or(0.0);
+                let days = ((now_secs - anchor_secs) / 86400.0).max(0.0);
+                let age = if days < 1.0 {
+                    "today".to_string()
+                } else if days < 7.0 {
+                    format!("{}d", days.round() as u64)
+                } else if days < 30.0 {
+                    format!("{}w", (days / 7.0).round() as u64)
+                } else if days < 365.0 {
+                    format!("{}mo", (days / 30.0).round() as u64)
+                } else {
+                    format!("{}y", (days / 365.0).round() as u64)
+                };
+                let entry = format!(
+                    "\n  <preference valence=\"{val}\" intensity=\"{int:.2}\" age=\"{age}\" confidence=\"{conf:.2}\">{title}</preference>",
+                    val = xml_escape(&pref.valence),
+                    int = pref.intensity,
+                    age = age,
+                    conf = pref.confidence,
+                    title = xml_escape(&pref.title),
+                );
+                if used + prefs_block.len() + entry.len() + close_tag.len() <= budget {
+                    prefs_block.push_str(&entry);
+                    touched_ids.push(pref.id.clone());
+                } else {
+                    break;
+                }
+            }
+            prefs_block.push_str(close_tag);
+            used += prefs_block.len();
+            xml.push_str(&prefs_block);
+        }
+    }
+
     // Phase 2A-4a: <preferences-flipped> section — shows flipped preferences with both
     // old and new valence rendered inline so the LLM has full context without a
     // follow-up lookup.

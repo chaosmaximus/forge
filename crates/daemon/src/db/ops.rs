@@ -409,6 +409,38 @@ pub fn list_flipped_with_targets(
     })
 }
 
+/// Fetch the N most-recent active preferences for a given organization.
+///
+/// Anchor is `COALESCE(reaffirmed_at, created_at)` — newest first.
+/// Used by `compile_dynamic_suffix` for the `<preferences>` XML section (T13).
+///
+/// Filters:
+/// - `memory_type = 'preference'`
+/// - `status = 'active'`
+/// - `valence_flipped_at IS NULL` (flipped prefs appear in `<preferences-flipped>` instead)
+/// - `COALESCE(organization_id, 'default') = organization_id` arg
+pub fn list_active_preferences(
+    conn: &Connection,
+    organization_id: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<Memory>> {
+    let clamped = limit.clamp(1, 100) as i64;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MEMORY_ROW_COLUMNS}
+           FROM memory
+          WHERE memory_type = 'preference'
+            AND status = 'active'
+            AND valence_flipped_at IS NULL
+            AND COALESCE(organization_id, 'default') = ?1
+          ORDER BY COALESCE(reaffirmed_at, created_at) DESC
+          LIMIT ?2"
+    ))?;
+    let rows: rusqlite::Result<Vec<Memory>> = stmt
+        .query_map(rusqlite::params![organization_id, clamped], map_memory_row)?
+        .collect();
+    rows
+}
+
 /// Boost activation level for a memory (capped at 1.0).
 /// Used to track which memories are actively being used.
 /// Activation decays over time in the consolidator.
@@ -6566,5 +6598,141 @@ mod tests {
             conf < 0.01,
             "pref with invalid anchor should decay aggressively: got {conf}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // list_active_preferences — T13
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn list_active_preferences_returns_active_non_flipped_ordered_by_recency() {
+        let conn = open_db();
+
+        // Seed 3 active prefs with different created_at
+        let p1 = Memory::new(
+            MemoryType::Preference,
+            "topic-1".to_string(),
+            "c1".to_string(),
+        );
+        let p2 = Memory::new(
+            MemoryType::Preference,
+            "topic-2".to_string(),
+            "c2".to_string(),
+        );
+        let p3 = Memory::new(
+            MemoryType::Preference,
+            "topic-3".to_string(),
+            "c3".to_string(),
+        );
+        let p1_id = p1.id.clone();
+        let p2_id = p2.id.clone();
+        let p3_id = p3.id.clone();
+        remember_raw(&conn, &p1).unwrap();
+        remember_raw(&conn, &p2).unwrap();
+        remember_raw(&conn, &p3).unwrap();
+
+        // p1 oldest, p3 newest via created_at
+        conn.execute(
+            "UPDATE memory SET created_at = '2026-01-01 00:00:00' WHERE id = ?1",
+            params![p1_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = '2026-02-01 00:00:00' WHERE id = ?1",
+            params![p2_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE memory SET created_at = '2026-03-01 00:00:00' WHERE id = ?1",
+            params![p3_id],
+        )
+        .unwrap();
+
+        // Seed a flipped pref (should be excluded)
+        let p_flipped = Memory::new(
+            MemoryType::Preference,
+            "topic-flipped".to_string(),
+            "c".to_string(),
+        );
+        let p_flipped_id = p_flipped.id.clone();
+        remember_raw(&conn, &p_flipped).unwrap();
+        conn.execute(
+            "UPDATE memory SET valence_flipped_at = '2026-04-01 00:00:00', status = 'superseded' WHERE id = ?1",
+            params![p_flipped_id],
+        )
+        .unwrap();
+
+        // Seed a non-pref (should be excluded)
+        let lesson = Memory::new(
+            MemoryType::Lesson,
+            "topic-lesson".to_string(),
+            "c".to_string(),
+        );
+        remember_raw(&conn, &lesson).unwrap();
+
+        let results = list_active_preferences(&conn, "default", 10).unwrap();
+        assert_eq!(results.len(), 3, "should find 3 active non-flipped prefs");
+
+        // Order: newest first = p3, p2, p1
+        assert_eq!(results[0].id, p3_id);
+        assert_eq!(results[1].id, p2_id);
+        assert_eq!(results[2].id, p1_id);
+    }
+
+    #[test]
+    fn list_active_preferences_respects_reaffirmed_at() {
+        let conn = open_db();
+
+        let p1 = Memory::new(
+            MemoryType::Preference,
+            "topic-reaff-1".to_string(),
+            "c".to_string(),
+        );
+        let p2 = Memory::new(
+            MemoryType::Preference,
+            "topic-reaff-2".to_string(),
+            "c".to_string(),
+        );
+        let p1_id = p1.id.clone();
+        let p2_id = p2.id.clone();
+        remember_raw(&conn, &p1).unwrap();
+        remember_raw(&conn, &p2).unwrap();
+
+        // p1 is older via created_at, but has a fresh reaffirmed_at
+        conn.execute(
+            "UPDATE memory SET created_at = '2026-01-01 00:00:00', reaffirmed_at = '2026-04-01 00:00:00' WHERE id = ?1",
+            params![p1_id],
+        )
+        .unwrap();
+        // p2 newer created_at but no reaffirmed_at
+        conn.execute(
+            "UPDATE memory SET created_at = '2026-02-01 00:00:00' WHERE id = ?1",
+            params![p2_id],
+        )
+        .unwrap();
+
+        let results = list_active_preferences(&conn, "default", 10).unwrap();
+        assert_eq!(
+            results[0].id, p1_id,
+            "p1 (reaffirmed 2026-04-01) should outrank p2 (created 2026-02-01)"
+        );
+        assert_eq!(results[1].id, p2_id);
+    }
+
+    #[test]
+    fn list_active_preferences_respects_limit() {
+        let conn = open_db();
+
+        for i in 0..10 {
+            let p = Memory::new(
+                MemoryType::Preference,
+                format!("topic-limit-{i}"),
+                "c".to_string(),
+            );
+            remember_raw(&conn, &p).unwrap();
+        }
+
+        let results = list_active_preferences(&conn, "default", 5).unwrap();
+        assert_eq!(results.len(), 5);
     }
 }

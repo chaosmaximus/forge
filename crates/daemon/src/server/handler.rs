@@ -12943,4 +12943,92 @@ mod tests {
             "missing id should return Error, got: {resp:?}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // T13 — <preferences> section in CompileContext
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compile_context_renders_preferences_section() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let mut p = forge_core::types::memory::Memory::new(
+            MemoryType::Preference,
+            "prefer-vim".to_string(),
+            "content".to_string(),
+        );
+        p.valence = "positive".to_string();
+        p.intensity = 0.8;
+        crate::db::ops::remember_raw(&state.conn, &p).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            Request::CompileContext {
+                agent: None,
+                project: None,
+                static_only: None,
+                excluded_layers: None,
+                session_id: None,
+                focus: None,
+            },
+        );
+
+        match resp {
+            Response::Ok {
+                data: ResponseData::CompiledContext { context, .. },
+            } => {
+                assert!(
+                    context.contains("<preferences>"),
+                    "context should contain <preferences> section: {context}"
+                );
+                assert!(
+                    context.contains("prefer-vim"),
+                    "preferences section should contain the preference title: {context}"
+                );
+                assert!(
+                    context.contains("valence=\"positive\""),
+                    "preferences entry should have valence attribute: {context}"
+                );
+            }
+            other => panic!("expected CompiledContext, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_context_omits_preferences_section_when_no_prefs() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // No preferences seeded — only a decision so context is non-trivial
+        let mut d = forge_core::types::memory::Memory::new(
+            MemoryType::Decision,
+            "use-rust".to_string(),
+            "we ship in rust".to_string(),
+        );
+        d.confidence = 0.9;
+        crate::db::ops::remember_raw(&state.conn, &d).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            Request::CompileContext {
+                agent: None,
+                project: None,
+                static_only: None,
+                excluded_layers: None,
+                session_id: None,
+                focus: None,
+            },
+        );
+
+        match resp {
+            Response::Ok {
+                data: ResponseData::CompiledContext { context, .. },
+            } => {
+                assert!(
+                    !context.contains("<preferences>"),
+                    "context must NOT contain <preferences> when no prefs exist: {context}"
+                );
+            }
+            other => panic!("expected CompiledContext, got: {other:?}"),
+        }
+    }
 }
