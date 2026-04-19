@@ -994,11 +994,15 @@ pub fn touch(conn: &Connection, ids: &[&str]) {
     for id in ids {
         // Codex fix: cap access_count at 1000, only increment if last access > 60s ago
         // Prevents gaming via repeated recall to inflate confidence
+        // Phase 2A-4b: skip preferences entirely — preference freshness is
+        // user/agent-controlled via Request::ReaffirmPreference, never
+        // auto-refreshed by recall. See spec §6 for rationale.
         if let Err(e) = conn.execute(
             "UPDATE memory SET accessed_at = datetime('now'),
              access_count = MIN(access_count + 1, 1000)
              WHERE id = ?1
-             AND (accessed_at < datetime('now', '-60 seconds') OR access_count = 0)",
+             AND (accessed_at < datetime('now', '-60 seconds') OR access_count = 0)
+             AND memory_type != 'preference'",
             params![id],
         ) {
             eprintln!("[ops] failed to touch memory {id}: {e}");
@@ -6157,5 +6161,112 @@ mod tests {
         let t2 = current_epoch_secs();
         assert!(t2 > t1, "monotonic: {t1} → {t2}");
         assert!(t1 > 1_700_000_000.0, "epoch_secs should be 2024+");
+    }
+
+    // ── Phase 2A-4b T6: touch() exemption ─────────────────────────────────
+
+    #[test]
+    fn touch_exemption_skips_preferences() {
+        let conn = open_db();
+
+        let pref = Memory::new(MemoryType::Preference, "prefer-vim", "yes");
+        remember_raw(&conn, &pref).unwrap();
+        let pref_id = pref.id.clone();
+
+        let dec = Memory::new(MemoryType::Decision, "use-rust", "ship it");
+        remember_raw(&conn, &dec).unwrap();
+        let dec_id = dec.id.clone();
+
+        // Backdate both so the 60s gate lets the decision through
+        conn.execute(
+            "UPDATE memory SET accessed_at = '2026-01-01 00:00:00' WHERE id IN (?1, ?2)",
+            params![pref_id, dec_id],
+        )
+        .unwrap();
+
+        let pref_before: String = conn
+            .query_row(
+                "SELECT accessed_at FROM memory WHERE id = ?1",
+                params![pref_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let dec_before: String = conn
+            .query_row(
+                "SELECT accessed_at FROM memory WHERE id = ?1",
+                params![dec_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        touch(&conn, &[pref_id.as_str(), dec_id.as_str()]);
+
+        let pref_after: String = conn
+            .query_row(
+                "SELECT accessed_at FROM memory WHERE id = ?1",
+                params![pref_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let dec_after: String = conn
+            .query_row(
+                "SELECT accessed_at FROM memory WHERE id = ?1",
+                params![dec_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            pref_before, pref_after,
+            "preference accessed_at must NOT change"
+        );
+        assert_ne!(dec_before, dec_after, "decision accessed_at MUST change");
+    }
+
+    #[test]
+    fn touch_exemption_negative_control_reflects_type_change() {
+        let conn = open_db();
+
+        let dec = Memory::new(MemoryType::Decision, "use-rust", "ship it");
+        remember_raw(&conn, &dec).unwrap();
+        let dec_id = dec.id.clone();
+
+        // First touch: as decision — should update
+        conn.execute(
+            "UPDATE memory SET accessed_at = '2026-01-01 00:00:00' WHERE id = ?1",
+            params![dec_id],
+        )
+        .unwrap();
+        touch(&conn, &[dec_id.as_str()]);
+        let after_first: String = conn
+            .query_row(
+                "SELECT accessed_at FROM memory WHERE id = ?1",
+                params![dec_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(
+            after_first, "2026-01-01 00:00:00",
+            "first touch (decision) should update accessed_at"
+        );
+
+        // Convert to preference, reset accessed_at, touch again — should NOT update
+        conn.execute(
+            "UPDATE memory SET memory_type = 'preference', accessed_at = '2026-01-01 00:00:00' WHERE id = ?1",
+            params![dec_id],
+        )
+        .unwrap();
+        touch(&conn, &[dec_id.as_str()]);
+        let after_second: String = conn
+            .query_row(
+                "SELECT accessed_at FROM memory WHERE id = ?1",
+                params![dec_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            after_second, "2026-01-01 00:00:00",
+            "second touch (now preference) must NOT update accessed_at"
+        );
     }
 }
