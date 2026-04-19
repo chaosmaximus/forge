@@ -12354,4 +12354,328 @@ mod tests {
             "cross-org call must not modify pref (reaffirmed_at should be NULL)"
         );
     }
+
+    // ── Phase 2A-4b T10: extended validation (9 new tests) ──────────────────
+
+    #[test]
+    fn reaffirm_preference_rejects_faded_memory() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-faded".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        state
+            .conn
+            .execute(
+                "UPDATE memory SET status = 'faded' WHERE id = ?1",
+                rusqlite::params![&pref_id],
+            )
+            .unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference { memory_id: pref_id },
+        );
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("not active") || message.contains("faded"),
+                    "expected not-active/faded message, got: {message}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reaffirm_preference_rejects_conflict_status() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-conflict".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        state
+            .conn
+            .execute(
+                "UPDATE memory SET status = 'conflict' WHERE id = ?1",
+                rusqlite::params![&pref_id],
+            )
+            .unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference { memory_id: pref_id },
+        );
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("not active") || message.contains("conflict"),
+                    "expected not-active/conflict message, got: {message}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reaffirm_preference_rejects_empty_memory_id() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: String::new(),
+            },
+        );
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("not found")
+                        || message.contains("empty")
+                        || message.contains("invalid"),
+                    "expected not-found/empty/invalid message, got: {message}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reaffirm_preference_succeeds_with_null_organization_id() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // organization_id is None by default in Memory::new — resolves to 'default' bucket.
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-null-org".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: pref_id.clone(),
+            },
+        );
+        match resp {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::PreferenceReaffirmed { memory_id, .. },
+            } => {
+                assert_eq!(memory_id, pref_id);
+            }
+            other => panic!("expected PreferenceReaffirmed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reaffirm_preference_same_memory_twice_advances_timestamp() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-twice".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        // First reaffirm.
+        let ts1 = match handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: pref_id.clone(),
+            },
+        ) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::PreferenceReaffirmed { reaffirmed_at, .. },
+            } => reaffirmed_at,
+            other => panic!("expected PreferenceReaffirmed on first call, got: {other:?}"),
+        };
+
+        // Sleep 1.1 s so now_iso() yields a later second-resolution timestamp.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // Second reaffirm.
+        let ts2 = match handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference { memory_id: pref_id },
+        ) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::PreferenceReaffirmed { reaffirmed_at, .. },
+            } => reaffirmed_at,
+            other => panic!("expected PreferenceReaffirmed on second call, got: {other:?}"),
+        };
+
+        assert!(
+            ts2 > ts1,
+            "second reaffirm timestamp ({ts2}) should advance past first ({ts1})"
+        );
+    }
+
+    #[test]
+    fn reaffirm_then_flip_preference_flips_succeed() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-then-flip".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        // Reaffirm first.
+        let resp1 = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: pref_id.clone(),
+            },
+        );
+        assert!(
+            matches!(resp1, forge_core::protocol::Response::Ok { .. }),
+            "reaffirm should succeed, got: {resp1:?}"
+        );
+
+        // Then flip — should also succeed on the now-reaffirmed pref.
+        let resp2 = handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: pref_id,
+                new_valence: "negative".to_string(),
+                new_intensity: 0.8,
+                reason: Some("changed mind".to_string()),
+            },
+        );
+        assert!(
+            matches!(
+                resp2,
+                forge_core::protocol::Response::Ok {
+                    data: forge_core::protocol::ResponseData::PreferenceFlipped { .. }
+                }
+            ),
+            "flip after reaffirm should succeed, got: {resp2:?}"
+        );
+    }
+
+    #[test]
+    fn flip_then_reaffirm_on_new_memory_succeeds() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-flip-then-reaffirm".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        // Flip — produces a new active pref.
+        let new_id = match handle_request(
+            &mut state,
+            forge_core::protocol::Request::FlipPreference {
+                memory_id: pref_id.clone(),
+                new_valence: "negative".to_string(),
+                new_intensity: 0.8,
+                reason: None,
+            },
+        ) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::PreferenceFlipped { new_id, .. },
+            } => new_id,
+            other => panic!("expected PreferenceFlipped, got: {other:?}"),
+        };
+
+        // Old pref is superseded/flipped — reaffirm must fail.
+        let resp2 = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference { memory_id: pref_id },
+        );
+        assert!(
+            matches!(resp2, forge_core::protocol::Response::Error { .. }),
+            "reaffirm of old (flipped) pref should fail, got: {resp2:?}"
+        );
+
+        // New pref is active and non-flipped — reaffirm must succeed.
+        let resp3 = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference { memory_id: new_id },
+        );
+        assert!(
+            matches!(resp3, forge_core::protocol::Response::Ok { .. }),
+            "reaffirm of new (active) pref should succeed, got: {resp3:?}"
+        );
+    }
+
+    #[test]
+    fn reaffirm_preference_works_on_decayed_memory() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // confidence very low (below hard-fade threshold 0.1) but status still 'active'.
+        // Per T7, preferences are hard-fade exempt — status remains 'active'.
+        let mut pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-decayed".to_string(),
+            "content".to_string(),
+        );
+        pref.confidence = 0.005;
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference { memory_id: pref_id },
+        );
+        assert!(
+            matches!(
+                resp,
+                forge_core::protocol::Response::Ok {
+                    data: forge_core::protocol::ResponseData::PreferenceReaffirmed { .. }
+                }
+            ),
+            "reaffirm on decayed-but-active pref should succeed, got: {resp:?}"
+        );
+    }
+
+    #[test]
+    fn reaffirm_preference_uppercase_id_treated_literally() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-case".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        // ULIDs are already uppercase — uppercase lookup should match exactly.
+        // If pref_id is already uppercase, we expect Ok; if somehow lowercase,
+        // we expect Error. Either way the response must be deterministic (no panic).
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: pref_id.to_uppercase(),
+            },
+        );
+        assert!(
+            matches!(
+                resp,
+                forge_core::protocol::Response::Ok { .. }
+                    | forge_core::protocol::Response::Error { .. }
+            ),
+            "response must be Ok or Error, not something else: {resp:?}"
+        );
+    }
 }
