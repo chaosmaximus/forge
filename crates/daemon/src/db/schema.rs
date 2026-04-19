@@ -1992,4 +1992,84 @@ mod tests {
             cols
         );
     }
+
+    #[test]
+    fn forge_db_schema_migrates_existing_memory_table() {
+        use rusqlite::Connection;
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Simulate pre-2A-4b memory table (without reaffirmed_at column).
+        // Includes columns required by create_schema index/trigger DDL (project, tags,
+        // confidence, organization_id) so that the IF NOT EXISTS index creation succeeds.
+        // All columns that were added via ALTER TABLE after the base schema are omitted
+        // (e.g. valence_flipped_at, superseded_by, metadata) to prove the migration path.
+        conn.execute_batch(
+            "CREATE TABLE memory (
+                id TEXT PRIMARY KEY,
+                memory_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.8,
+                status TEXT NOT NULL DEFAULT 'active',
+                project TEXT,
+                tags TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                accessed_at TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'default',
+                valence TEXT NOT NULL DEFAULT 'neutral',
+                intensity REAL NOT NULL DEFAULT 0.5,
+                alternatives TEXT NOT NULL DEFAULT '[]',
+                participants TEXT NOT NULL DEFAULT '[]'
+            );",
+        )
+        .unwrap();
+
+        // Insert a pre-existing row
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, created_at, accessed_at)
+             VALUES ('legacy-1', 'preference', 'old-pref', 'content', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+
+        // Run create_schema to apply the 2A-4b ALTER TABLE
+        create_schema(&conn).unwrap();
+
+        // Assert: column was added
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(memory)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            cols.iter().any(|c| c == "reaffirmed_at"),
+            "column should exist after migration; got: {:?}",
+            cols
+        );
+
+        // Assert: existing row preserved with NULL reaffirmed_at
+        let row_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE id = 'legacy-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(row_count, 1, "existing row should be preserved");
+
+        let reaffirmed: Option<String> = conn
+            .query_row(
+                "SELECT reaffirmed_at FROM memory WHERE id = 'legacy-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            reaffirmed, None,
+            "existing row should have NULL reaffirmed_at after migration"
+        );
+    }
 }
