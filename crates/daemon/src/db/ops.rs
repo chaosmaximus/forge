@@ -935,13 +935,27 @@ pub fn decay_memories(
             } else {
                 reaffirmed_at_or_empty.as_str()
             };
-            let anchor_secs = parse_timestamp_to_epoch(anchor).unwrap_or(now_secs);
+            let anchor_secs = parse_timestamp_to_epoch(anchor).unwrap_or_else(|| {
+                tracing::warn!(
+                    memory_id = %id,
+                    anchor = %anchor,
+                    "decay: failed to parse anchor timestamp; treating as epoch 0 (will fade aggressively)"
+                );
+                0.0
+            });
             let days = ((now_secs - anchor_secs) / 86400.0).max(0.0);
             let eff = confidence * 2_f64.powf(-days / half_life);
             (eff, days)
         } else {
             // Non-pref: UNCHANGED — exp(-0.03 × days_since_accessed)
-            let accessed_secs = parse_timestamp_to_epoch(accessed_at).unwrap_or(now_secs);
+            let accessed_secs = parse_timestamp_to_epoch(accessed_at).unwrap_or_else(|| {
+                tracing::warn!(
+                    memory_id = %id,
+                    accessed_at = %accessed_at,
+                    "decay: failed to parse accessed_at timestamp; treating as epoch 0 (will fade aggressively)"
+                );
+                0.0
+            });
             let days_since = ((now_secs - accessed_secs) / 86400.0).max(0.0);
             let eff = confidence * (-0.03_f64 * days_since).exp();
             (eff, days_since)
@@ -6476,6 +6490,81 @@ mod tests {
         assert!(
             (stored_conf - 0.814).abs() < 1e-2,
             "reaffirmed pref decay: expected ~0.814, got {stored_conf}"
+        );
+    }
+
+    #[test]
+    fn decay_memories_invalid_timestamp_treats_as_old() {
+        let conn = open_db();
+
+        // Insert a non-preference with a garbage accessed_at
+        let mut lesson = Memory::new(
+            MemoryType::Lesson,
+            "topic-garbage-ts".to_string(),
+            "content".to_string(),
+        );
+        lesson.confidence = 0.9;
+        let lesson_id = lesson.id.clone();
+        remember_raw(&conn, &lesson).unwrap();
+
+        conn.execute(
+            "UPDATE memory SET accessed_at = 'not-a-real-timestamp' WHERE id = ?1",
+            params![lesson_id],
+        )
+        .unwrap();
+
+        let (_checked, faded) = decay_memories(&conn, 100, 14.0).unwrap();
+
+        // With unwrap_or(0.0), days_since = (now - 0) / 86400 ≈ very-large →
+        // effective = 0.9 * exp(-0.03 * huge) ≈ 0 → hard-fade triggered.
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                params![lesson_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "faded",
+            "lesson with invalid accessed_at should be faded (treated as epoch 0)"
+        );
+        assert!(faded >= 1);
+    }
+
+    #[test]
+    fn decay_memories_pref_invalid_anchor_decays_aggressively() {
+        let conn = open_db();
+
+        let mut pref = Memory::new(
+            MemoryType::Preference,
+            "topic-garbage-ts-pref".to_string(),
+            "content".to_string(),
+        );
+        pref.confidence = 0.9;
+        let pref_id = pref.id.clone();
+        remember_raw(&conn, &pref).unwrap();
+
+        // Corrupt both created_at and reaffirmed_at
+        conn.execute(
+            "UPDATE memory SET created_at = 'bad', reaffirmed_at = 'also-bad' WHERE id = ?1",
+            params![pref_id],
+        )
+        .unwrap();
+
+        decay_memories(&conn, 100, 14.0).unwrap();
+
+        // Preference stays active (hard-fade exempt) but confidence should be ~0
+        let (status, conf): (String, f64) = conn
+            .query_row(
+                "SELECT status, confidence FROM memory WHERE id = ?1",
+                params![pref_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "active", "pref must stay active even with bad ts");
+        assert!(
+            conf < 0.01,
+            "pref with invalid anchor should decay aggressively: got {conf}"
         );
     }
 }
