@@ -1215,6 +1215,14 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         [],
     );
 
+    // ── Phase 2A-4b: Recency-weighted Preference Decay ───────────────────────
+    // Adds `reaffirmed_at` for user/agent-controlled freshness anchor.
+    // Used by `recency_factor` (recall.rs ranker) and `decay_memories` (fader).
+    // NULL means the preference has never been reaffirmed; falls back to created_at.
+    let _ = conn.execute("ALTER TABLE memory ADD COLUMN reaffirmed_at TEXT", []);
+    // No partial index — recall doesn't filter on reaffirmed_at; only ORDER BY
+    // COALESCE(reaffirmed_at, created_at) which can't use a single-column index.
+
     // ── v2.7: Memory Self-Healing ──
     conn.execute_batch(
         "
@@ -1960,6 +1968,28 @@ mod tests {
         assert!(
             !indexes.contains(&"idx_memory_valence_flipped_at".to_string()),
             "idx_memory_valence_flipped_at should be gone after rollback; indexes: {indexes:?}"
+        );
+    }
+
+    #[test]
+    fn forge_db_schema_creates_reaffirmed_at_column() {
+        use rusqlite::Connection;
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(memory)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            cols.iter().any(|c| c == "reaffirmed_at"),
+            "memory table missing reaffirmed_at column; got: {:?}",
+            cols
         );
     }
 }
