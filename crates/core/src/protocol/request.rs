@@ -304,7 +304,9 @@ pub enum Request {
         static_only: Option<bool>,
         /// Layer names to exclude from the dynamic suffix.
         /// Valid names: "decisions", "lessons", "skills", "perceptions", "working_set", "active_sessions",
-        /// "agents" (2A-4a), "preferences" (2A-4b NEW), "preferences_flipped" (2A-4a).
+        /// "agents" (2A-4a), "preferences_flipped" (2A-4a),
+        /// "preferences" (2A-4b NEW — listed here ahead of time; the <preferences> section in
+        /// compile_dynamic_suffix does not exist yet and will be wired in T13 of 2A-4b).
         /// Excluded layers emit empty self-closing tags to maintain XML structure stability for KV-cache.
         #[serde(default)]
         excluded_layers: Option<Vec<String>>,
