@@ -1028,16 +1028,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::ReaffirmPreference { memory_id } => {
             let now = forge_core::time::now_iso();
 
-            // Atomic UPDATE with RETURNING: validates type, status, and flipped state in one shot.
+            // 1. Derive caller_org from the memory's session — mirrors FlipPreference pattern.
+            let caller_org = {
+                let mem_session_opt: Option<String> = state
+                    .conn
+                    .query_row(
+                        "SELECT session_id FROM memory WHERE id = ?1",
+                        rusqlite::params![&memory_id],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                get_session_org_id(&state.conn, mem_session_opt.as_deref())
+            };
+
+            // 2. Atomic UPDATE with RETURNING: validates type, status, flipped state, and org scope.
             let updated: Result<String, rusqlite::Error> = state.conn.query_row(
                 "UPDATE memory
                    SET reaffirmed_at = ?1
                  WHERE id = ?2
+                   AND COALESCE(organization_id, 'default') = ?3
                    AND memory_type = 'preference'
                    AND status = 'active'
                    AND valence_flipped_at IS NULL
                  RETURNING reaffirmed_at",
-                rusqlite::params![now, memory_id],
+                rusqlite::params![now, memory_id, caller_org],
                 |row| row.get::<_, String>(0),
             );
 
@@ -1050,9 +1064,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 },
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     // Disambiguate failure cause via best-effort diagnostic read.
+                    // Scope by org: cross-org memories must surface as "not found"
+                    // to prevent existence-probing across organizations.
                     let diag = state.conn.query_row(
-                        "SELECT memory_type, status, valence_flipped_at FROM memory WHERE id = ?1",
-                        rusqlite::params![&memory_id],
+                        "SELECT memory_type, status, valence_flipped_at FROM memory
+                          WHERE id = ?1
+                            AND COALESCE(organization_id, 'default') = ?2",
+                        rusqlite::params![&memory_id, &caller_org],
                         |row| {
                             Ok((
                                 row.get::<_, String>(0)?,
@@ -1063,6 +1081,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     );
                     let msg = match diag {
                         Err(rusqlite::Error::QueryReturnedNoRows) => {
+                            // Either truly not found, or belongs to a different org —
+                            // never disclose cross-org existence.
                             format!("memory not found: {memory_id}")
                         }
                         Ok((mem_type, _, _)) if mem_type != "preference" => {
@@ -12253,5 +12273,85 @@ mod tests {
             }
             other => panic!("expected Error, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn reaffirm_preference_rejects_cross_org_access() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Seed a preference belonging to orgA by setting organization_id directly.
+        let mut pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-cross-org".to_string(),
+            "content".to_string(),
+        );
+        pref.organization_id = Some("orgA".to_string());
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        // Register a session in orgB — caller_org will resolve to orgB.
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, project, started_at, status, organization_id) \
+                 VALUES ('sess-orgB', 'test-agent', 'proj', '2026-04-19 00:00:00', 'active', 'orgB')",
+                [],
+            )
+            .unwrap();
+
+        // Link the memory to the orgB session (so get_session_org_id returns orgB).
+        state
+            .conn
+            .execute(
+                "UPDATE memory SET session_id = 'sess-orgB' WHERE id = ?1",
+                rusqlite::params![&pref_id],
+            )
+            .unwrap();
+
+        // Restore organization_id = orgA (session update must not have overwritten it).
+        state
+            .conn
+            .execute(
+                "UPDATE memory SET organization_id = 'orgA' WHERE id = ?1",
+                rusqlite::params![&pref_id],
+            )
+            .unwrap();
+
+        // Now call ReaffirmPreference. The handler derives caller_org via the memory's
+        // session_id ('sess-orgB' → orgB), but the memory belongs to orgA.
+        // The UPDATE WHERE clause COALESCE(organization_id,'default') = 'orgB' won't match
+        // organization_id = 'orgA', so it returns no rows.
+        // The diagnostic SELECT is also org-scoped to orgB → also no rows.
+        // Result must be "not found" — no cross-org existence disclosure.
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: pref_id.clone(),
+            },
+        );
+
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("not found"),
+                    "cross-org access should surface as 'not found', got: {message}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+
+        // Verify the pref is UNCHANGED — no reaffirmed_at written.
+        let reaffirmed_at: Option<String> = state
+            .conn
+            .query_row(
+                "SELECT reaffirmed_at FROM memory WHERE id = ?1",
+                rusqlite::params![pref_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            reaffirmed_at.is_none(),
+            "cross-org call must not modify pref (reaffirmed_at should be NULL)"
+        );
     }
 }
