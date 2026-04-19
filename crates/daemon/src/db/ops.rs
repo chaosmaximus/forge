@@ -880,24 +880,38 @@ pub fn current_epoch_secs() -> f64 {
 
 /// Mark memories as "faded" when their effective confidence drops below 0.1.
 ///
-/// Effective confidence is computed as: stored_confidence * exp(-0.03 * days_since_accessed).
-/// The stored `confidence` field is NEVER modified by decay — it represents the base
-/// confidence set at creation/update time. This avoids the over-decay bug where repeated
-/// consolidation runs would multiply already-decayed values by the full time factor again
-/// (exponential-over-exponential decay).
+/// Type-dispatched:
+/// - **Preference**: effective = confidence × 2^(-days/half_life), where days is measured
+///   from `COALESCE(reaffirmed_at, created_at)`. Preferences are **exempt** from the hard-fade
+///   rule (status stays 'active' even when effective < 0.1) to preserve long-lived preferences.
+/// - **Non-preference**: UNCHANGED — effective = confidence × exp(-0.03 × days_since_accessed).
+///   Hard-fade (status → 'faded') still applies when effective < 0.1.
+///
+/// The stored `confidence` field is updated with the effective value when write_back_days > 1.0
+/// (i.e., meaningful decay has occurred). For non-preference memories that hard-fade, the
+/// stored confidence is left unchanged.
 ///
 /// Returns (checked_count, faded_count).
-pub fn decay_memories(conn: &Connection, limit: usize) -> rusqlite::Result<(usize, usize)> {
+pub fn decay_memories(
+    conn: &Connection,
+    limit: usize,
+    preference_half_life_days: f64,
+) -> rusqlite::Result<(usize, usize)> {
     let mut stmt = conn.prepare(
-        "SELECT id, confidence, accessed_at FROM memory WHERE status = 'active' LIMIT ?1",
+        "SELECT id, confidence, accessed_at,
+                memory_type, COALESCE(reaffirmed_at, ''), created_at
+         FROM memory WHERE status = 'active' LIMIT ?1",
     )?;
 
-    let rows: Vec<(String, f64, String)> = stmt
+    let rows: Vec<(String, f64, String, String, String, String)> = stmt
         .query_map(params![limit as i64], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, f64>(1)?,
                 row.get::<_, String>(2).unwrap_or_default(),
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4).unwrap_or_default(),
+                row.get::<_, String>(5)?,
             ))
         })?
         .filter_map(|r| r.ok())
@@ -911,18 +925,36 @@ pub fn decay_memories(conn: &Connection, limit: usize) -> rusqlite::Result<(usiz
         .unwrap_or_default()
         .as_secs() as f64;
 
-    for (id, confidence, accessed_at) in &rows {
-        let accessed_secs = parse_timestamp_to_epoch(accessed_at).unwrap_or(now_secs);
-        let days_since = ((now_secs - accessed_secs) / 86400.0).max(0.0);
-        let effective = confidence * (-0.03 * days_since).exp();
+    let half_life = preference_half_life_days.max(1.0);
 
-        if effective < 0.1 {
+    for (id, confidence, accessed_at, memory_type, reaffirmed_at_or_empty, created_at) in &rows {
+        let (effective, write_back_days) = if memory_type == "preference" {
+            // Anchor = COALESCE(reaffirmed_at, created_at). Empty-string → treat as NULL.
+            let anchor = if reaffirmed_at_or_empty.is_empty() {
+                created_at.as_str()
+            } else {
+                reaffirmed_at_or_empty.as_str()
+            };
+            let anchor_secs = parse_timestamp_to_epoch(anchor).unwrap_or(now_secs);
+            let days = ((now_secs - anchor_secs) / 86400.0).max(0.0);
+            let eff = confidence * 2_f64.powf(-days / half_life);
+            (eff, days)
+        } else {
+            // Non-pref: UNCHANGED — exp(-0.03 × days_since_accessed)
+            let accessed_secs = parse_timestamp_to_epoch(accessed_at).unwrap_or(now_secs);
+            let days_since = ((now_secs - accessed_secs) / 86400.0).max(0.0);
+            let eff = confidence * (-0.03_f64 * days_since).exp();
+            (eff, days_since)
+        };
+
+        if effective < 0.1 && memory_type != "preference" {
+            // Hard-fade — preferences are exempt
             conn.execute(
                 "UPDATE memory SET status = 'faded' WHERE id = ?1",
                 params![id],
             )?;
             faded_count += 1;
-        } else if days_since > 1.0 {
+        } else if write_back_days > 1.0 {
             // Write the decayed confidence value so callers can observe the decay numerically.
             // Only update when meaningful decay has occurred (> 1 day old).
             conn.execute(
@@ -3295,7 +3327,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let (checked, faded) = decay_memories(&conn, 1000).unwrap();
+        let (checked, faded) = decay_memories(&conn, 1000, 14.0).unwrap();
         assert_eq!(checked, 2, "should check both memories");
         assert_eq!(
             faded, 0,
@@ -3344,7 +3376,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let (checked, faded) = decay_memories(&conn, 1000).unwrap();
+        let (checked, faded) = decay_memories(&conn, 1000, 14.0).unwrap();
         assert_eq!(checked, 2);
         assert_eq!(faded, 1, "90-day-old memory should be faded");
 
@@ -3393,13 +3425,13 @@ mod tests {
         ).unwrap();
 
         // First run: old1 fades, mid1 gets confidence persisted
-        let (checked1, faded1) = decay_memories(&conn, 1000).unwrap();
+        let (checked1, faded1) = decay_memories(&conn, 1000, 14.0).unwrap();
         assert_eq!(checked1, 2);
         assert_eq!(faded1, 1, "old1 should fade on first run");
 
         // Second run: old1 is already faded (status != active) so it is NOT re-checked
         // mid1 is still active — faded count should remain 0 since confidence ~ 0.37 > 0.1
-        let (checked2, faded2) = decay_memories(&conn, 1000).unwrap();
+        let (checked2, faded2) = decay_memories(&conn, 1000, 14.0).unwrap();
         assert_eq!(checked2, 1, "only mid1 remains active");
         assert_eq!(faded2, 0, "mid1 should not fade on second run");
 
@@ -5522,7 +5554,7 @@ mod tests {
         }
 
         // With limit=10, only 10 should be checked
-        let (checked, faded) = decay_memories(&conn, 10).unwrap();
+        let (checked, faded) = decay_memories(&conn, 10, 14.0).unwrap();
         assert_eq!(checked, 10, "limit=10 should check exactly 10 memories");
         assert_eq!(faded, 10, "all 10 checked should be faded (120 days old)");
 
@@ -6284,6 +6316,166 @@ mod tests {
         assert_eq!(
             after_second, before_second,
             "second touch (now preference) must NOT update accessed_at"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // T7: type-dispatched decay_memories tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn decay_memories_pref_uses_half_life_formula() {
+        let conn = open_db();
+
+        let mut pref = Memory::new(
+            MemoryType::Preference,
+            "topic-pref-decay".to_string(),
+            "content".to_string(),
+        );
+        pref.confidence = 0.9;
+        let pref_id = pref.id.clone();
+        remember_raw(&conn, &pref).unwrap();
+
+        let now_secs = current_epoch_secs();
+        let thirty_days_ago = forge_core::time::epoch_to_iso((now_secs - 30.0 * 86400.0) as u64);
+        conn.execute(
+            "UPDATE memory SET created_at = ?1 WHERE id = ?2",
+            params![thirty_days_ago, pref_id],
+        )
+        .unwrap();
+
+        decay_memories(&conn, 100, 14.0).unwrap();
+
+        let stored_conf: f64 = conn
+            .query_row(
+                "SELECT confidence FROM memory WHERE id = ?1",
+                params![pref_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // 0.9 * 2^(-30/14) ≈ 0.9 * 0.2263 ≈ 0.2037
+        assert!(
+            (stored_conf - 0.2037).abs() < 1e-3,
+            "pref decay: expected ~0.2037, got {stored_conf}"
+        );
+    }
+
+    #[test]
+    fn decay_memories_pref_hard_fade_exemption() {
+        let conn = open_db();
+
+        let mut pref = Memory::new(
+            MemoryType::Preference,
+            "topic-pref-fade".to_string(),
+            "content".to_string(),
+        );
+        pref.confidence = 0.9;
+        let pref_id = pref.id.clone();
+        remember_raw(&conn, &pref).unwrap();
+
+        let now_secs = current_epoch_secs();
+        let fifty_eight_days_ago =
+            forge_core::time::epoch_to_iso((now_secs - 58.0 * 86400.0) as u64);
+        conn.execute(
+            "UPDATE memory SET created_at = ?1 WHERE id = ?2",
+            params![fifty_eight_days_ago, pref_id],
+        )
+        .unwrap();
+
+        decay_memories(&conn, 100, 14.0).unwrap();
+
+        let (status, conf): (String, f64) = conn
+            .query_row(
+                "SELECT status, confidence FROM memory WHERE id = ?1",
+                params![pref_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            status, "active",
+            "pref must stay active despite low confidence"
+        );
+        assert!(conf < 0.1, "pref confidence should be decayed: {conf}");
+    }
+
+    #[test]
+    fn decay_memories_non_pref_uses_existing_formula() {
+        let conn = open_db();
+
+        let mut lesson = Memory::new(
+            MemoryType::Lesson,
+            "topic-non-pref-decay".to_string(),
+            "content".to_string(),
+        );
+        lesson.confidence = 0.9;
+        let lesson_id = lesson.id.clone();
+        remember_raw(&conn, &lesson).unwrap();
+
+        let now_secs = current_epoch_secs();
+        let thirty_days_ago = forge_core::time::epoch_to_iso((now_secs - 30.0 * 86400.0) as u64);
+        conn.execute(
+            "UPDATE memory SET accessed_at = ?1 WHERE id = ?2",
+            params![thirty_days_ago, lesson_id],
+        )
+        .unwrap();
+
+        decay_memories(&conn, 100, 14.0).unwrap();
+
+        let stored_conf: f64 = conn
+            .query_row(
+                "SELECT confidence FROM memory WHERE id = ?1",
+                params![lesson_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // Non-pref: 0.9 * exp(-0.03 * 30) ≈ 0.9 * 0.4066 ≈ 0.366
+        assert!(
+            (stored_conf - 0.366).abs() < 1e-2,
+            "lesson decay: expected ~0.366, got {stored_conf}"
+        );
+    }
+
+    #[test]
+    fn decay_memories_pref_uses_reaffirmed_at() {
+        let conn = open_db();
+
+        let mut pref = Memory::new(
+            MemoryType::Preference,
+            "topic-pref-reaffirmed-decay".to_string(),
+            "content".to_string(),
+        );
+        pref.confidence = 0.9;
+        let pref_id = pref.id.clone();
+        remember_raw(&conn, &pref).unwrap();
+
+        let now_secs = current_epoch_secs();
+        let one_eighty_days_ago =
+            forge_core::time::epoch_to_iso((now_secs - 180.0 * 86400.0) as u64);
+        let two_days_ago = forge_core::time::epoch_to_iso((now_secs - 2.0 * 86400.0) as u64);
+        conn.execute(
+            "UPDATE memory SET created_at = ?1, reaffirmed_at = ?2 WHERE id = ?3",
+            params![one_eighty_days_ago, two_days_ago, pref_id],
+        )
+        .unwrap();
+
+        decay_memories(&conn, 100, 14.0).unwrap();
+
+        let stored_conf: f64 = conn
+            .query_row(
+                "SELECT confidence FROM memory WHERE id = ?1",
+                params![pref_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // Anchor = reaffirmed_at (2 days ago), NOT created_at (180 days ago).
+        // 0.9 * 2^(-2/14) ≈ 0.9 * 0.9057 ≈ 0.814
+        assert!(
+            (stored_conf - 0.814).abs() < 1e-2,
+            "reaffirmed pref decay: expected ~0.814, got {stored_conf}"
         );
     }
 }

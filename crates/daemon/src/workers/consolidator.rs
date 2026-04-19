@@ -104,7 +104,11 @@ pub fn run_all_phases(
     }
 
     // Phase 4: Decay (bounded by batch_limit)
-    match ops::decay_memories(conn, config.batch_limit) {
+    let preference_half_life_days = crate::config::load_config()
+        .recall
+        .validated()
+        .preference_half_life_days;
+    match ops::decay_memories(conn, config.batch_limit, preference_half_life_days) {
         Ok((_decayed, faded)) => {
             stats.faded = faded;
             if faded > 0 {
