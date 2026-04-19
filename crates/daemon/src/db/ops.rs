@@ -6177,9 +6177,10 @@ mod tests {
         remember_raw(&conn, &dec).unwrap();
         let dec_id = dec.id.clone();
 
-        // Backdate both so the 60s gate lets the decision through
+        // Backdate both with relative datetime so the 60s gate lets the decision through.
+        // Use relative datetime instead of a magic wall-clock constant.
         conn.execute(
-            "UPDATE memory SET accessed_at = '2026-01-01 00:00:00' WHERE id IN (?1, ?2)",
+            "UPDATE memory SET accessed_at = datetime('now', '-2 hours') WHERE id IN (?1, ?2)",
             params![pref_id, dec_id],
         )
         .unwrap();
@@ -6231,12 +6232,20 @@ mod tests {
         remember_raw(&conn, &dec).unwrap();
         let dec_id = dec.id.clone();
 
-        // First touch: as decision — should update
+        // First touch: as decision — should update.
+        // Use relative datetime instead of a magic wall-clock constant.
         conn.execute(
-            "UPDATE memory SET accessed_at = '2026-01-01 00:00:00' WHERE id = ?1",
+            "UPDATE memory SET accessed_at = datetime('now', '-2 hours') WHERE id = ?1",
             params![dec_id],
         )
         .unwrap();
+        let before_first: String = conn
+            .query_row(
+                "SELECT accessed_at FROM memory WHERE id = ?1",
+                params![dec_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         touch(&conn, &[dec_id.as_str()]);
         let after_first: String = conn
             .query_row(
@@ -6246,16 +6255,24 @@ mod tests {
             )
             .unwrap();
         assert_ne!(
-            after_first, "2026-01-01 00:00:00",
+            after_first, before_first,
             "first touch (decision) should update accessed_at"
         );
 
-        // Convert to preference, reset accessed_at, touch again — should NOT update
+        // Convert to preference, reset accessed_at, touch again — should NOT update.
+        // Use relative datetime instead of a magic wall-clock constant.
         conn.execute(
-            "UPDATE memory SET memory_type = 'preference', accessed_at = '2026-01-01 00:00:00' WHERE id = ?1",
+            "UPDATE memory SET memory_type = 'preference', accessed_at = datetime('now', '-2 hours') WHERE id = ?1",
             params![dec_id],
         )
         .unwrap();
+        let before_second: String = conn
+            .query_row(
+                "SELECT accessed_at FROM memory WHERE id = ?1",
+                params![dec_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         touch(&conn, &[dec_id.as_str()]);
         let after_second: String = conn
             .query_row(
@@ -6265,7 +6282,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            after_second, "2026-01-01 00:00:00",
+            after_second, before_second,
             "second touch (now preference) must NOT update accessed_at"
         );
     }

@@ -5,6 +5,13 @@
 //! to writer_tx, trigger Recall, drain all TouchMemories commands, simulate
 //! what WriterActor does (call ops::touch directly on same conn), then assert
 //! pref accessed_at unchanged and decision accessed_at changed.
+//!
+//! NOTE: A CompileContext touch-exemption test is deferred until T13 lands
+//! the <preferences> XML section. Currently compile_dynamic_suffix does
+//! not include preferences in ctx_touched_ids (only decisions+lessons),
+//! so any test asserting "preference accessed_at unchanged" passes
+//! vacuously. T13 will add prefs to the touched set, at which point a
+//! touch_exemption_compile_context.rs test becomes meaningful.
 
 use forge_core::protocol::*;
 use forge_core::types::memory::{Memory, MemoryType};
@@ -52,12 +59,31 @@ fn touch_exemption_recall_preference_unchanged() {
     let dec_id = dec.id.clone();
     ops::remember_raw(&state.conn, &dec).unwrap();
 
-    // Backdate both so the 60s gate lets the decision through
+    // Backdate both with relative datetime so the 60s gate lets the decision through.
+    // Use relative datetime instead of a magic wall-clock constant.
     state
         .conn
         .execute(
-            "UPDATE memory SET accessed_at = '2026-01-01 00:00:00' WHERE id IN (?1, ?2)",
+            "UPDATE memory SET accessed_at = datetime('now', '-2 hours') WHERE id IN (?1, ?2)",
             params![pref_id, dec_id],
+        )
+        .unwrap();
+
+    // Capture before values via SELECT so we can compare without a literal date
+    let pref_before: String = state
+        .conn
+        .query_row(
+            "SELECT accessed_at FROM memory WHERE id = ?1",
+            params![pref_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let dec_before: String = state
+        .conn
+        .query_row(
+            "SELECT accessed_at FROM memory WHERE id = ?1",
+            params![dec_id],
+            |r| r.get(0),
         )
         .unwrap();
 
@@ -81,11 +107,33 @@ fn touch_exemption_recall_preference_unchanged() {
 
     // Drain the touch IDs and simulate what WriterActor does
     let touch_ids: Vec<String> = drain_touch_ids(&mut rx);
+
+    // Assert: handler actually sent TouchMemories command (not silent no-op)
+    assert!(
+        !touch_ids.is_empty(),
+        "handler must have sent TouchMemories with non-empty ids"
+    );
+
+    // Assert: preference ID WAS in the touch set (handler doesn't filter; SQL does).
+    // This catches a bug where the exemption gets moved from ops.rs to handler.rs incorrectly.
+    assert!(
+        touch_ids.iter().any(|id| id == &pref_id),
+        "preference ID should be in touch_ids (handler doesn't filter; SQL does); got: {:?}",
+        touch_ids
+    );
+
+    // Assert: decision ID was also in the touch set
+    assert!(
+        touch_ids.iter().any(|id| id == &dec_id),
+        "decision ID should be in touch_ids; got: {:?}",
+        touch_ids
+    );
+
     // Apply ops::touch() on same conn — this is what WriterActor would do
     let id_refs: Vec<&str> = touch_ids.iter().map(|s| s.as_str()).collect();
     ops::touch(&state.conn, &id_refs);
 
-    // Preference must NOT have been touched
+    // Read back after values
     let pref_after: String = state
         .conn
         .query_row(
@@ -94,8 +142,24 @@ fn touch_exemption_recall_preference_unchanged() {
             |r| r.get(0),
         )
         .unwrap();
+    let dec_after: String = state
+        .conn
+        .query_row(
+            "SELECT accessed_at FROM memory WHERE id = ?1",
+            params![dec_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    // Preference must NOT have been touched
     assert_eq!(
-        pref_after, "2026-01-01 00:00:00",
+        pref_before, pref_after,
         "preference accessed_at must NOT change after Recall (touch exemption)"
+    );
+
+    // Positive control: decision accessed_at MUST have been updated
+    assert_ne!(
+        dec_before, dec_after,
+        "decision accessed_at MUST change after Recall (positive control)"
     );
 }
