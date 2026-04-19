@@ -1114,13 +1114,52 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        // Phase 2A-4b: ComputeRecencyFactor handler — wired in T12.
+        // Phase 2A-4b: ComputeRecencyFactor handler — T12.
         #[cfg(feature = "bench")]
-        Request::ComputeRecencyFactor { memory_id } => Response::Error {
-            message: format!(
-                "compute_recency_factor not yet implemented for memory_id={memory_id}"
-            ),
-        },
+        Request::ComputeRecencyFactor { memory_id } => {
+            let fetched = match ops::fetch_memory_by_id(&state.conn, &memory_id) {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    return Response::Error {
+                        message: format!("memory not found: {memory_id}"),
+                    };
+                }
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("fetch_memory_by_id failed: {e}"),
+                    };
+                }
+            };
+            let half_life = crate::config::load_config()
+                .recall
+                .validated()
+                .preference_half_life_days;
+            // Capture a single now_secs used for both days_since_anchor and factor,
+            // guaranteeing bit-exact parity between the two derived values.
+            let now_secs = ops::current_epoch_secs();
+            // Mirror anchor-selection logic from ops::recency_factor.
+            let anchor = if fetched.memory_type == forge_core::types::memory::MemoryType::Preference
+            {
+                match fetched.reaffirmed_at.as_deref() {
+                    Some(s) if !s.is_empty() => s.to_string(),
+                    _ => fetched.created_at.clone(),
+                }
+            } else {
+                fetched.created_at.clone()
+            };
+            let anchor_secs = ops::parse_timestamp_to_epoch(&anchor).unwrap_or(0.0);
+            let days_since_anchor = ((now_secs - anchor_secs) / 86400.0).max(0.0);
+            // Call the canonical formula — same now_secs → bit-exact.
+            let factor = ops::recency_factor(&fetched, half_life, now_secs);
+            Response::Ok {
+                data: ResponseData::RecencyFactor {
+                    memory_id,
+                    factor,
+                    days_since_anchor,
+                    anchor,
+                },
+            }
+        }
 
         Request::HealthByProject => match ops::health_by_project(&state.conn) {
             Ok(projects) => {
@@ -12754,6 +12793,154 @@ mod tests {
         assert!(
             attempt.is_err(),
             "no event should be emitted on error path; got: {attempt:?}"
+        );
+    }
+
+    // ── Phase 2A-4b T12: ComputeRecencyFactor handler tests ────────────────────
+
+    /// Bit-exact parity: handler's returned `factor` == ops::recency_factor
+    /// called with the same now_secs. Achieved by re-deriving factor from
+    /// the `days_since_anchor` the handler returned, which was computed from
+    /// the same now_secs snapshot inside the handler.
+    #[cfg(feature = "bench")]
+    #[test]
+    fn compute_recency_factor_bit_exact_matches_ops_recency_factor_for_preference() {
+        use crate::db::ops::{parse_timestamp_to_epoch, recency_factor, remember_raw};
+        use forge_core::types::memory::MemoryType;
+
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Seed a preference backdated 30 days so the factor is meaningfully < 1.0.
+        let now_secs = ops::current_epoch_secs();
+        let created_30d_ago = forge_core::time::epoch_to_iso((now_secs - 30.0 * 86400.0) as u64);
+
+        let mut pref = forge_core::types::Memory::new(
+            MemoryType::Preference,
+            "topic-recency-parity-pref".to_string(),
+            "content".to_string(),
+        );
+        pref.confidence = 0.9;
+        let pref_id = pref.id.clone();
+        remember_raw(&state.conn, &pref).unwrap();
+        // Backdate created_at so the age is ~30 days.
+        state
+            .conn
+            .execute(
+                "UPDATE memory SET created_at = ?1 WHERE id = ?2",
+                rusqlite::params![created_30d_ago, pref_id],
+            )
+            .unwrap();
+
+        // Call via handler → get factor + anchor + days_since_anchor.
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ComputeRecencyFactor {
+                memory_id: pref_id.clone(),
+            },
+        );
+        let (value_via_handler, days_via_handler, anchor_via_handler) = match resp {
+            Response::Ok {
+                data:
+                    ResponseData::RecencyFactor {
+                        factor,
+                        days_since_anchor,
+                        anchor,
+                        ..
+                    },
+            } => (factor, days_since_anchor, anchor),
+            other => panic!("expected RecencyFactor, got: {other:?}"),
+        };
+
+        // Verify factor > 0 and < 1 (backdated 30 days, not fresh).
+        assert!(
+            value_via_handler > 0.0 && value_via_handler < 1.0,
+            "backdated pref factor should be in (0,1), got: {value_via_handler}"
+        );
+
+        // Bit-exact parity: reconstruct factor from the handler's own days_since_anchor.
+        // This avoids a second clock call and proves the formula is applied consistently.
+        let half_life = crate::config::load_config()
+            .recall
+            .validated()
+            .preference_half_life_days;
+        let ground_truth_factor = 2_f64.powf(-days_via_handler / half_life.max(1.0));
+        assert_eq!(
+            value_via_handler.to_bits(),
+            ground_truth_factor.to_bits(),
+            "handler factor {value_via_handler} must bit-equal 2^(-days/half_life) {ground_truth_factor}"
+        );
+
+        // Also verify anchor parses correctly (not corrupt).
+        let anchor_secs = parse_timestamp_to_epoch(&anchor_via_handler);
+        assert!(
+            anchor_secs.is_some(),
+            "handler anchor should be parseable; got: {anchor_via_handler}"
+        );
+
+        // Confirm ops::recency_factor with anchor-derived days yields same bits.
+        let anchor_secs = anchor_secs.unwrap();
+        let fetched = ops::fetch_memory_by_id(&state.conn, &pref_id)
+            .unwrap()
+            .unwrap();
+        // Use now such that days == days_via_handler exactly.
+        let reconstructed_now = anchor_secs + days_via_handler * 86400.0;
+        let via_ops = recency_factor(&fetched, half_life, reconstructed_now);
+        assert_eq!(
+            value_via_handler.to_bits(),
+            via_ops.to_bits(),
+            "handler value {value_via_handler} must bit-equal ops::recency_factor {via_ops}"
+        );
+    }
+
+    /// Fresh preference (created right now) should return factor ~1.0.
+    #[cfg(feature = "bench")]
+    #[test]
+    fn compute_recency_factor_returns_1_0_for_fresh_preference() {
+        use forge_core::types::memory::MemoryType;
+
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::Memory::new(
+            MemoryType::Preference,
+            "topic-recency-parity-fresh".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        ops::remember_raw(&state.conn, &pref).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ComputeRecencyFactor { memory_id: pref_id },
+        );
+        let value = match resp {
+            Response::Ok {
+                data: ResponseData::RecencyFactor { factor, .. },
+            } => factor,
+            other => panic!("expected RecencyFactor, got: {other:?}"),
+        };
+
+        // Fresh memory → age ~0 → factor ~1.0. Allow <1 s clock drift.
+        assert!(
+            value > 0.99 && value <= 1.0,
+            "fresh pref factor should be ~1.0, got: {value}"
+        );
+    }
+
+    /// Missing memory_id → Error response.
+    #[cfg(feature = "bench")]
+    #[test]
+    fn compute_recency_factor_rejects_missing_memory() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ComputeRecencyFactor {
+                memory_id: "does-not-exist".to_string(),
+            },
+        );
+        assert!(
+            matches!(resp, Response::Error { .. }),
+            "missing id should return Error, got: {resp:?}"
         );
     }
 }
