@@ -1025,9 +1025,64 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         // Phase 2A-4b: ReaffirmPreference handler — wired in T9.
-        Request::ReaffirmPreference { memory_id } => Response::Error {
-            message: format!("reaffirm_preference not yet implemented for memory_id={memory_id}"),
-        },
+        Request::ReaffirmPreference { memory_id } => {
+            let now = forge_core::time::now_iso();
+
+            // Atomic UPDATE with RETURNING: validates type, status, and flipped state in one shot.
+            let updated: Result<String, rusqlite::Error> = state.conn.query_row(
+                "UPDATE memory
+                   SET reaffirmed_at = ?1
+                 WHERE id = ?2
+                   AND memory_type = 'preference'
+                   AND status = 'active'
+                   AND valence_flipped_at IS NULL
+                 RETURNING reaffirmed_at",
+                rusqlite::params![now, memory_id],
+                |row| row.get::<_, String>(0),
+            );
+
+            match updated {
+                Ok(reaffirmed_at) => Response::Ok {
+                    data: ResponseData::PreferenceReaffirmed {
+                        memory_id: memory_id.clone(),
+                        reaffirmed_at,
+                    },
+                },
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    // Disambiguate failure cause via best-effort diagnostic read.
+                    let diag = state.conn.query_row(
+                        "SELECT memory_type, status, valence_flipped_at FROM memory WHERE id = ?1",
+                        rusqlite::params![&memory_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                            ))
+                        },
+                    );
+                    let msg = match diag {
+                        Err(rusqlite::Error::QueryReturnedNoRows) => {
+                            format!("memory not found: {memory_id}")
+                        }
+                        Ok((mem_type, _, _)) if mem_type != "preference" => {
+                            format!("memory_type must be preference for reaffirm (got: {mem_type})")
+                        }
+                        Ok((_, _, Some(_))) => {
+                            format!("cannot reaffirm flipped memory: {memory_id}")
+                        }
+                        Ok((_, status, _)) => {
+                            format!("memory is not active (status: {status})")
+                        }
+                        Err(e) => format!("reaffirm failed: {e}"),
+                    };
+                    Response::Error { message: msg }
+                }
+                Err(e) => Response::Error {
+                    message: format!("reaffirm failed: {e}"),
+                },
+            }
+        }
 
         // Phase 2A-4b: ComputeRecencyFactor handler — wired in T12.
         #[cfg(feature = "bench")]
@@ -12018,5 +12073,185 @@ mod tests {
             .expect("new_id should be string");
         assert!(!new_id_val.is_empty());
         assert_ne!(new_id_val, "01PREF");
+    }
+
+    // ── Phase 2A-4b T9: ReaffirmPreference handler tests ────────────────────
+
+    #[test]
+    fn reaffirm_preference_happy_path_updates_reaffirmed_at() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-happy".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        // Backdate reaffirmed_at to a known value so we can verify it changed.
+        state
+            .conn
+            .execute(
+                "UPDATE memory SET reaffirmed_at = '2026-01-01 00:00:00' WHERE id = ?1",
+                rusqlite::params![&pref_id],
+            )
+            .unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: pref_id.clone(),
+            },
+        );
+
+        match resp {
+            forge_core::protocol::Response::Ok {
+                data:
+                    forge_core::protocol::ResponseData::PreferenceReaffirmed {
+                        memory_id,
+                        reaffirmed_at,
+                    },
+            } => {
+                assert_eq!(memory_id, pref_id);
+                assert_ne!(
+                    reaffirmed_at, "2026-01-01 00:00:00",
+                    "reaffirmed_at should be updated"
+                );
+            }
+            other => panic!("expected PreferenceReaffirmed, got: {other:?}"),
+        }
+
+        // Verify DB was updated.
+        let actual: String = state
+            .conn
+            .query_row(
+                "SELECT reaffirmed_at FROM memory WHERE id = ?1",
+                rusqlite::params![&pref_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(actual, "2026-01-01 00:00:00");
+    }
+
+    #[test]
+    fn reaffirm_preference_rejects_non_preference() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let lesson = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Lesson,
+            "topic-reaffirm-wrong-type".to_string(),
+            "content".to_string(),
+        );
+        let lesson_id = lesson.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &lesson).unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: lesson_id,
+            },
+        );
+
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("must be preference"),
+                    "error should mention preference requirement: {message}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reaffirm_preference_rejects_missing_memory() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference {
+                memory_id: "nonexistent-01J".to_string(),
+            },
+        );
+
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("not found") || message.contains("does not exist"),
+                    "error should mention not-found: {message}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reaffirm_preference_rejects_superseded_memory() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-superseded".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        state
+            .conn
+            .execute(
+                "UPDATE memory SET status = 'superseded' WHERE id = ?1",
+                rusqlite::params![&pref_id],
+            )
+            .unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference { memory_id: pref_id },
+        );
+
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.contains("superseded") || message.contains("not active"),
+                    "error should mention superseded/inactive: {message}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reaffirm_preference_rejects_flipped_memory() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let pref = forge_core::types::memory::Memory::new(
+            forge_core::types::MemoryType::Preference,
+            "topic-reaffirm-flipped".to_string(),
+            "content".to_string(),
+        );
+        let pref_id = pref.id.clone();
+        crate::db::ops::remember_raw(&state.conn, &pref).unwrap();
+
+        state
+            .conn
+            .execute(
+                "UPDATE memory SET valence_flipped_at = '2026-04-18 12:00:00', status = 'superseded' WHERE id = ?1",
+                rusqlite::params![&pref_id],
+            )
+            .unwrap();
+
+        let resp = handle_request(
+            &mut state,
+            forge_core::protocol::Request::ReaffirmPreference { memory_id: pref_id },
+        );
+
+        match resp {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(!message.is_empty(), "error message should not be empty");
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
     }
 }
