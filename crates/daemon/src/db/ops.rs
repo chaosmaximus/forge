@@ -108,8 +108,8 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
     } else {
         // Insert new
         conn.execute(
-            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants, organization_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants, organization_id, reaffirmed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 memory.id, mt, memory.title, memory.content,
                 memory.confidence, status,
@@ -120,6 +120,7 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
                 memory.session_id, memory.access_count as i64,
                 alternatives_json, participants_json,
                 org_id,
+                memory.reaffirmed_at,
             ],
         )?;
     }
@@ -139,8 +140,8 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
     let org_id = memory.organization_id.as_deref().unwrap_or("default");
 
     conn.execute(
-        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants, organization_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants, organization_id, reaffirmed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             memory.id, mt, memory.title, memory.content,
             memory.confidence, status,
@@ -151,6 +152,7 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
             memory.session_id, memory.access_count as i64,
             alternatives_json, participants_json,
             org_id,
+            memory.reaffirmed_at,
         ],
     )?;
     Ok(())
@@ -180,7 +182,7 @@ const MEMORY_ROW_COLUMNS: &str =
      created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, \
      session_id, access_count, COALESCE(activation_level, 0.0), \
      COALESCE(alternatives, '[]'), COALESCE(participants, '[]'), \
-     organization_id, superseded_by, valence_flipped_at";
+     organization_id, superseded_by, valence_flipped_at, reaffirmed_at";
 
 /// Row mapper for any SELECT that uses `MEMORY_ROW_COLUMNS`. Shared between
 /// `fetch_memory_by_id` and `list_flipped` (and any future single-statement loaders)
@@ -230,6 +232,7 @@ fn map_memory_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
         organization_id: row.get(19)?,
         superseded_by: row.get(20)?,
         valence_flipped_at: row.get(21)?,
+        reaffirmed_at: row.get(22)?,
     })
 }
 
@@ -1044,12 +1047,12 @@ pub fn export_memories_org(
 ) -> rusqlite::Result<Vec<Memory>> {
     let (sql, use_org) = match org_id {
         Some(_) => (
-            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id, superseded_by, valence_flipped_at
+            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id, superseded_by, valence_flipped_at, reaffirmed_at
              FROM memory WHERE status = 'active' AND COALESCE(organization_id, 'default') = ?1 ORDER BY created_at DESC",
             true,
         ),
         None => (
-            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id, superseded_by, valence_flipped_at
+            "SELECT id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id, superseded_by, valence_flipped_at, reaffirmed_at
              FROM memory WHERE status = 'active' ORDER BY created_at DESC",
             false,
         ),
@@ -1091,6 +1094,7 @@ pub fn export_memories_org(
             organization_id: row.get::<_, Option<String>>(17)?,
             superseded_by: row.get::<_, Option<String>>(18)?,
             valence_flipped_at: row.get::<_, Option<String>>(19)?,
+            reaffirmed_at: row.get::<_, Option<String>>(20)?,
         })
     };
     if use_org {
@@ -1769,7 +1773,7 @@ pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Ve
     let mut stmt = conn.prepare(
         "SELECT id, memory_type, title, content, confidence, status, project, tags,
                 created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, COALESCE(activation_level, 0.0), organization_id,
-                superseded_by, valence_flipped_at
+                superseded_by, valence_flipped_at, reaffirmed_at
          FROM memory WHERE status = 'active' AND access_count >= 5
          ORDER BY access_count DESC LIMIT 5"
     )?;
@@ -1808,6 +1812,7 @@ pub fn find_reconsolidation_candidates(conn: &Connection) -> rusqlite::Result<Ve
             organization_id: row.get::<_, Option<String>>(17)?,
             superseded_by: row.get::<_, Option<String>>(18)?,
             valence_flipped_at: row.get::<_, Option<String>>(19)?,
+            reaffirmed_at: row.get::<_, Option<String>>(20)?,
         })
     })?;
     rows.collect()
@@ -5904,5 +5909,42 @@ mod tests {
 
         let flipped = list_flipped(&conn, None, 2).unwrap();
         assert_eq!(flipped.len(), 2);
+    }
+
+    #[test]
+    fn remember_upsert_does_not_implicitly_reaffirm() {
+        let conn = open_db();
+
+        let mut m = Memory::new(
+            MemoryType::Preference,
+            "prefer-vim".to_string(),
+            "yes".to_string(),
+        );
+        m.reaffirmed_at = Some("2026-01-01 00:00:00".to_string());
+
+        remember(&conn, &m).unwrap();
+
+        // Second remember (same title+type+project+org) triggers UPSERT UPDATE branch
+        let m2 = Memory::new(
+            MemoryType::Preference,
+            "prefer-vim".to_string(),
+            "yes again".to_string(),
+        );
+        // m2.reaffirmed_at is None — UPSERT must preserve stored value
+        remember(&conn, &m2).unwrap();
+
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT reaffirmed_at FROM memory WHERE title = 'prefer-vim'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            stored,
+            Some("2026-01-01 00:00:00".to_string()),
+            "UPSERT must preserve reaffirmed_at — no implicit reaffirmation per spec v3"
+        );
     }
 }

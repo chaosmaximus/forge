@@ -232,7 +232,7 @@ fn build_export_query(project: Option<&str>, since: Option<&str>) -> (String, Ve
                        created_at, accessed_at, valence, intensity, hlc_timestamp, node_id,
                        session_id, access_count, COALESCE(activation_level, 0.0),
                        COALESCE(alternatives, '[]'), COALESCE(participants, '[]'),
-                       organization_id, superseded_by, valence_flipped_at
+                       organization_id, superseded_by, valence_flipped_at, reaffirmed_at
                 FROM memory WHERE status = 'active'";
 
     let mut clauses = String::from(base);
@@ -298,6 +298,7 @@ fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         organization_id: row.get::<_, Option<String>>(19).unwrap_or(None),
         superseded_by: row.get::<_, Option<String>>(20)?,
         valence_flipped_at: row.get::<_, Option<String>>(21)?,
+        reaffirmed_at: row.get::<_, Option<String>>(22)?,
     })
 }
 
@@ -488,7 +489,8 @@ pub fn sync_import(
                     if remote_mem.hlc_timestamp > existing_hlc {
                         conn.execute(
                             "UPDATE memory SET content = ?1, confidence = MAX(confidence, ?2),
-                             accessed_at = ?3, hlc_timestamp = ?4, node_id = ?5
+                             accessed_at = ?3, hlc_timestamp = ?4, node_id = ?5,
+                             reaffirmed_at = COALESCE(?7, reaffirmed_at)
                              WHERE id = ?6",
                             params![
                                 remote_mem.content,
@@ -497,6 +499,7 @@ pub fn sync_import(
                                 remote_mem.hlc_timestamp,
                                 remote_mem.node_id,
                                 existing_id,
+                                remote_mem.reaffirmed_at,
                             ],
                         )?;
                         imported += 1;
@@ -939,6 +942,7 @@ mod tests {
             organization_id: None,
             superseded_by: None,
             valence_flipped_at: None,
+            reaffirmed_at: None,
         })
         .unwrap();
 
@@ -982,6 +986,7 @@ mod tests {
             organization_id: None,
             superseded_by: None,
             valence_flipped_at: None,
+            reaffirmed_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1025,6 +1030,7 @@ mod tests {
             organization_id: None,
             superseded_by: None,
             valence_flipped_at: None,
+            reaffirmed_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1077,6 +1083,7 @@ mod tests {
             organization_id: None,
             superseded_by: None,
             valence_flipped_at: None,
+            reaffirmed_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1139,6 +1146,7 @@ mod tests {
             organization_id: None,
             superseded_by: None,
             valence_flipped_at: None,
+            reaffirmed_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1183,6 +1191,7 @@ mod tests {
             organization_id: None,
             superseded_by: None,
             valence_flipped_at: None,
+            reaffirmed_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
         sync_import(&conn, &[line], "local1").unwrap();
@@ -1322,6 +1331,7 @@ mod tests {
             organization_id: None,
             superseded_by: None,
             valence_flipped_at: None,
+            reaffirmed_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 
@@ -1387,6 +1397,7 @@ mod tests {
             organization_id: None,
             superseded_by: None,
             valence_flipped_at: None,
+            reaffirmed_at: None,
         };
         let line = serde_json::to_string(&remote).unwrap();
 

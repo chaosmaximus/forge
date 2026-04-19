@@ -923,6 +923,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 organization_id: old.organization_id.clone(),
                 superseded_by: None,
                 valence_flipped_at: None,
+                reaffirmed_at: None,
             };
 
             // 6. Atomic transaction: INSERT new + UPDATE+edge via supersede_memory_impl.

@@ -67,6 +67,12 @@ pub struct Memory {
     /// Format matches forge_core::time::now_iso(): "YYYY-MM-DD HH:MM:SS".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valence_flipped_at: Option<String>,
+    /// Phase 2A-4b: ISO timestamp of the user/agent-controlled reaffirmation
+    /// (only set on preferences via Request::ReaffirmPreference). When Some,
+    /// recall uses this as the recency anchor; when None, falls back to
+    /// created_at. NEVER auto-updated by `touch()` or implicit upsert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reaffirmed_at: Option<String>,
 }
 
 fn default_valence() -> String {
@@ -104,6 +110,7 @@ impl Memory {
             organization_id: None,
             superseded_by: None,
             valence_flipped_at: None,
+            reaffirmed_at: None,
         }
     }
 
@@ -301,6 +308,50 @@ mod tests {
         assert!(
             !json.contains("valence_flipped_at"),
             "should omit valence_flipped_at when None; json: {json}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod test_reaffirmed_at {
+    use super::*;
+
+    #[test]
+    fn memory_new_initializes_reaffirmed_at_none() {
+        let m = Memory::new(
+            MemoryType::Preference,
+            "test".to_string(),
+            "content".to_string(),
+        );
+        assert_eq!(m.reaffirmed_at, None);
+    }
+
+    #[test]
+    fn memory_serde_roundtrip_with_reaffirmed_at_some() {
+        let mut m = Memory::new(
+            MemoryType::Preference,
+            "test".to_string(),
+            "content".to_string(),
+        );
+        m.reaffirmed_at = Some("2026-04-19 12:00:00".to_string());
+
+        let json = serde_json::to_string(&m).unwrap();
+        let back: Memory = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.reaffirmed_at, Some("2026-04-19 12:00:00".to_string()));
+    }
+
+    #[test]
+    fn memory_serde_skips_reaffirmed_at_when_none() {
+        let m = Memory::new(
+            MemoryType::Preference,
+            "test".to_string(),
+            "content".to_string(),
+        );
+
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("reaffirmed_at"),
+            "None reaffirmed_at should be skipped from serialization; got: {json}"
         );
     }
 }
