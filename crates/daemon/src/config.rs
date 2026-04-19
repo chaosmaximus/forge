@@ -2362,5 +2362,26 @@ heartbeat_timeout_secs = 45
             ..RecallConfig::default()
         };
         assert_eq!(cfg.validated().preference_half_life_days, 30.0);
+
+        // Exact boundary preservation
+        let cfg = RecallConfig {
+            preference_half_life_days: 1.0,
+            ..RecallConfig::default()
+        };
+        assert_eq!(
+            cfg.validated().preference_half_life_days,
+            1.0,
+            "lower boundary 1.0 must preserve"
+        );
+
+        let cfg = RecallConfig {
+            preference_half_life_days: 365.0,
+            ..RecallConfig::default()
+        };
+        assert_eq!(
+            cfg.validated().preference_half_life_days,
+            365.0,
+            "upper boundary 365.0 must preserve"
+        );
     }
 }
