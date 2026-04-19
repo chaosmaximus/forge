@@ -1,15 +1,6 @@
-//! Smoke test verifying the `bench` Cargo feature compiles and gates Request
-//! variants properly. Exercises the gate by referencing the bench-gated
-//! variant under #[cfg(feature = "bench")].
-
-#[cfg(feature = "bench")]
-#[test]
-fn bench_feature_gate_exposes_compute_recency_factor() {
-    // The Request::ComputeRecencyFactor variant must exist when the bench
-    // feature is enabled. This test only compiles under --features bench.
-    // NOTE: Variant doesn't exist yet (T5 adds it). This test will compile
-    // only after T5 lands. For now we only verify the default path.
-}
+//! Smoke test verifying the `bench` Cargo feature is off by default.
+//! A proper compile-check assertion for bench-gated Request variants will be
+//! added in T5 when Request::ComputeRecencyFactor ships.
 
 #[cfg(not(feature = "bench"))]
 #[test]
