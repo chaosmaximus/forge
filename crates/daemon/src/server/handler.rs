@@ -476,6 +476,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             };
             // TODO: pass _org_id to recall functions when they are updated to accept org_id: Option<&str>
 
+            let preference_half_life_days = crate::config::load_config()
+                .recall
+                .validated()
+                .preference_half_life_days;
+
             let results = match layer.as_deref() {
                 // "experience" → only memory table (hybrid_recall, no manas_recall)
                 Some("experience") => hybrid_recall(
@@ -486,6 +491,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     project.as_deref(),
                     lim,
                     include_flipped.unwrap_or(false),
+                    preference_half_life_days,
                 ),
                 // "declared" → only declared knowledge
                 Some("declared") => {
@@ -640,6 +646,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         project.as_deref(),
                         lim,
                         include_flipped.unwrap_or(false),
+                        preference_half_life_days,
                     );
                     // Cross-layer search (only if no type filter)
                     if memory_type.is_none() {
@@ -3218,6 +3225,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::BatchRecall { queries } => {
+            let batch_half_life = crate::config::load_config()
+                .recall
+                .validated()
+                .preference_half_life_days;
             let mut all_results = Vec::new();
             let mut all_touch_ids = Vec::new();
             for q in &queries {
@@ -3231,6 +3242,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     None,
                     lim,
                     false,
+                    batch_half_life,
                 );
                 for r in &results {
                     all_touch_ids.push(r.memory.id.clone());

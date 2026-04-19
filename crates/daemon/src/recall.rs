@@ -104,6 +104,26 @@ fn query_edges_for_memory(conn: &Connection, memory_id: &str) -> Vec<MemoryEdge>
     }
 }
 
+/// Apply type-dispatched post-RRF recency factor to each result's score.
+///
+/// Preferences use a half-life formula anchored on `reaffirmed_at` / `created_at`:
+/// `factor = 2^(-days_since_anchor / half_life)`.
+/// Non-preferences use an exponential decay: `factor = exp(-0.1 × days_since_created)`.
+///
+/// This replaces the prior `result.score *= 1.0 + recency_boost * 0.5` additive envelope.
+/// See master §5 2A-4b.
+pub(crate) fn apply_type_dispatched_recency(
+    results: &mut [MemoryResult],
+    preference_half_life_days: f64,
+) {
+    let now_secs = crate::db::ops::current_epoch_secs();
+    for result in results.iter_mut() {
+        let factor =
+            crate::db::ops::recency_factor(&result.memory, preference_half_life_days, now_secs);
+        result.score *= factor;
+    }
+}
+
 /// Hybrid recall combining BM25 full-text search, vector similarity search,
 /// and graph expansion via Reciprocal Rank Fusion.
 ///
@@ -118,6 +138,7 @@ fn query_edges_for_memory(conn: &Connection, memory_id: &str) -> Vec<MemoryEdge>
 /// 6. Filter by memory_type if specified
 /// 7. Touch accessed_at for returned IDs
 /// 8. Return Vec<MemoryResult> with score and source="hybrid"
+#[allow(clippy::too_many_arguments)]
 pub fn hybrid_recall(
     conn: &Connection,
     query: &str,
@@ -126,6 +147,7 @@ pub fn hybrid_recall(
     project: Option<&str>,
     limit: usize,
     include_flipped: bool,
+    preference_half_life_days: f64,
 ) -> Vec<MemoryResult> {
     hybrid_recall_scoped(
         conn,
@@ -136,6 +158,7 @@ pub fn hybrid_recall(
         limit,
         None,
         include_flipped,
+        preference_half_life_days,
     )
 }
 
@@ -154,6 +177,7 @@ pub fn hybrid_recall_scoped(
     limit: usize,
     reality_id: Option<&str>,
     include_flipped: bool,
+    preference_half_life_days: f64,
 ) -> Vec<MemoryResult> {
     hybrid_recall_scoped_org(
         conn,
@@ -165,6 +189,7 @@ pub fn hybrid_recall_scoped(
         reality_id,
         None,
         include_flipped,
+        preference_half_life_days,
     )
 }
 
@@ -185,6 +210,7 @@ pub fn hybrid_recall_scoped_org(
     reality_id: Option<&str>,
     org_id: Option<&str>,
     include_flipped: bool,
+    preference_half_life_days: f64,
 ) -> Vec<MemoryResult> {
     let mut ranked_lists: Vec<Vec<(String, f64)>> = Vec::new();
 
@@ -373,17 +399,9 @@ pub fn hybrid_recall_scoped_org(
         result.edges = query_edges_for_memory(conn, &result.memory.id);
     }
 
-    // Temporal recency boost: recent memories get up to 1.5x score
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as f64;
-    for result in &mut results {
-        let created_secs = ops::parse_timestamp_to_epoch(&result.memory.created_at).unwrap_or(0.0);
-        let days_old = (now_secs - created_secs).max(0.0) / 86400.0;
-        let recency_boost = (-0.1 * days_old).exp();
-        result.score *= 1.0 + recency_boost * 0.5;
-    }
+    // Post-RRF type-dispatched recency factor (master §5 2A-4b).
+    // Replaces the old `1.0 + recency_boost * 0.5` additive envelope.
+    apply_type_dispatched_recency(&mut results, preference_half_life_days);
     results.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -1978,7 +1996,16 @@ mod tests {
         );
         ops::remember(&conn, &m).unwrap();
 
-        let results = hybrid_recall(&conn, "JWT authentication", None, None, None, 10, false);
+        let results = hybrid_recall(
+            &conn,
+            "JWT authentication",
+            None,
+            None,
+            None,
+            10,
+            false,
+            14.0,
+        );
 
         assert!(!results.is_empty(), "should find at least one result");
         assert!(
@@ -2008,7 +2035,7 @@ mod tests {
         // Use a slightly different embedding as the query
         let query_emb: Vec<f32> = (0..dim).map(|j| (j as f32 * 0.001 + 0.01).sin()).collect();
 
-        let results = hybrid_recall(&conn, "JWT", Some(&query_emb), None, None, 10, false);
+        let results = hybrid_recall(&conn, "JWT", Some(&query_emb), None, None, 10, false, 14.0);
 
         assert!(
             !results.is_empty(),
@@ -2041,7 +2068,16 @@ mod tests {
 
         // Recall "JWT" — should find A directly via BM25
         // B should appear in results via graph expansion (1-hop neighbor of A)
-        let results = hybrid_recall(&conn, "JWT authentication", None, None, None, 10, false);
+        let results = hybrid_recall(
+            &conn,
+            "JWT authentication",
+            None,
+            None,
+            None,
+            10,
+            false,
+            14.0,
+        );
 
         assert!(!results.is_empty(), "should find at least one result");
 
@@ -2075,6 +2111,7 @@ mod tests {
             None,
             10,
             false,
+            14.0,
         );
 
         assert!(
@@ -2136,6 +2173,7 @@ mod tests {
             None,
             10,
             false,
+            14.0,
         );
         assert!(!results.is_empty());
         assert_eq!(results[0].memory.id, mem_id);
@@ -3284,7 +3322,7 @@ mod tests {
         ops::remember(&conn, &m2).unwrap();
         ops::store_edge(&conn, &m1_id, &m2_id, "related_to", "{}").unwrap();
 
-        let results = hybrid_recall(&conn, "Rust daemon", None, None, None, 10, false);
+        let results = hybrid_recall(&conn, "Rust daemon", None, None, None, 10, false, 14.0);
         assert!(!results.is_empty(), "should find at least one result");
 
         // Find the result for m1 and check it has edges
@@ -3322,7 +3360,7 @@ mod tests {
         ops::remember(&conn, &m2).unwrap();
         ops::store_edge(&conn, &m1_id, &m2_id, "supports", "{}").unwrap();
 
-        let results = hybrid_recall(&conn, "SQLite FTS5", None, None, None, 10, false);
+        let results = hybrid_recall(&conn, "SQLite FTS5", None, None, None, 10, false, 14.0);
         // m2 should show up and have an edge back to m1
         let fts_result = results.iter().find(|r| r.memory.id == m2_id);
         if let Some(fts_result) = fts_result {
@@ -3345,7 +3383,7 @@ mod tests {
         );
         ops::remember(&conn, &m).unwrap();
 
-        let results = hybrid_recall(&conn, "PostgreSQL", None, None, None, 10, false);
+        let results = hybrid_recall(&conn, "PostgreSQL", None, None, None, 10, false, 14.0);
         assert!(!results.is_empty(), "should find result");
         assert!(
             results[0].edges.is_empty(),
@@ -3680,6 +3718,7 @@ mod tests {
             10,
             Some("reality-A"),
             false,
+            14.0,
         );
         assert!(!results.is_empty(), "should find universal memory");
         // Universal weight = 1.0, so score should be unchanged (no reduction)
@@ -3709,6 +3748,7 @@ mod tests {
             10,
             Some("reality-A"),
             false,
+            14.0,
         );
         assert!(!results.is_empty(), "should find same-reality memory");
         // Same reality → weight 1.0, score preserved
@@ -3740,6 +3780,7 @@ mod tests {
             10,
             Some("reality-A"),
             false,
+            14.0,
         );
         // Memory has reality_id="reality-B" which doesn't match "reality-A" → filtered out
         assert!(
@@ -3777,6 +3818,7 @@ mod tests {
             10,
             Some("reality-A"),
             false,
+            14.0,
         );
         assert!(results.len() >= 2, "should find both memories");
 
@@ -3878,6 +3920,7 @@ mod tests {
             None,
             10,
             false,
+            14.0,
         );
         assert!(
             !results.is_empty(),
@@ -3919,6 +3962,7 @@ mod tests {
             None,
             10,
             false,
+            14.0,
         );
         for r in &results {
             assert_ne!(
@@ -4090,7 +4134,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let results = hybrid_recall(&conn, "tabs flipping", None, None, None, 10, false);
+        let results = hybrid_recall(&conn, "tabs flipping", None, None, None, 10, false, 14.0);
         assert!(
             !results.iter().any(|r| r.memory.id == "01F"),
             "flipped preference surfaced when include_flipped=false"
@@ -4107,7 +4151,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let results = hybrid_recall(&conn, "tabs flipping", None, None, None, 10, true);
+        let results = hybrid_recall(&conn, "tabs flipping", None, None, None, 10, true, 14.0);
         assert!(
             results.iter().any(|r| r.memory.id == "01F"),
             "flipped preference NOT surfaced when include_flipped=true"
@@ -4125,7 +4169,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let results = hybrid_recall(&conn, "migrate auth", None, None, None, 10, true);
+        let results = hybrid_recall(&conn, "migrate auth", None, None, None, 10, true, 14.0);
         assert!(
             !results.iter().any(|r| r.memory.id == "01D"),
             "non-preference superseded should NOT be surfaced by include_flipped"
@@ -4267,6 +4311,89 @@ mod tests {
         assert!(
             !suffix.contains("<preferences-flipped>"),
             "section should be omitted entirely when only orphans exist; suffix: {suffix}"
+        );
+    }
+
+    // ── T8: apply_type_dispatched_recency unit test ──
+
+    #[test]
+    fn hybrid_recall_uses_type_dispatched_recency_factor() {
+        use crate::db::ops::{current_epoch_secs, recency_factor};
+        use forge_core::protocol::MemoryResult;
+        use forge_core::types::MemoryType;
+
+        // Build two Memory structs in-memory with created_at set 30 days in the past.
+        // No DB needed — apply_type_dispatched_recency is a pure in-memory operation.
+        let now_secs = current_epoch_secs();
+        let thirty_days_ago_secs = now_secs - 30.0 * 86400.0;
+        let thirty_days_ago = forge_core::time::epoch_to_iso(thirty_days_ago_secs as u64);
+
+        let mut pref = forge_core::types::Memory::new(
+            MemoryType::Preference,
+            "test-topic-t8-recency-pref",
+            "prefer rust",
+        );
+        pref.confidence = 0.9;
+        pref.created_at = thirty_days_ago.clone();
+        let pref_id = pref.id.clone();
+
+        let mut lesson = forge_core::types::Memory::new(
+            MemoryType::Lesson,
+            "test-topic-t8-recency-lesson",
+            "learned rust",
+        );
+        lesson.confidence = 0.9;
+        lesson.created_at = thirty_days_ago.clone();
+        let lesson_id = lesson.id.clone();
+
+        // Build synthetic MemoryResult vec with score = 1.0 and call the helper directly.
+        let mut results = vec![
+            MemoryResult {
+                memory: pref.clone(),
+                score: 1.0,
+                source: "test".to_string(),
+                edges: Vec::new(),
+            },
+            MemoryResult {
+                memory: lesson.clone(),
+                score: 1.0,
+                source: "test".to_string(),
+                edges: Vec::new(),
+            },
+        ];
+        apply_type_dispatched_recency(&mut results, 14.0);
+
+        let pref_score = results
+            .iter()
+            .find(|r| r.memory.id == pref_id)
+            .unwrap()
+            .score;
+        let lesson_score = results
+            .iter()
+            .find(|r| r.memory.id == lesson_id)
+            .unwrap()
+            .score;
+
+        // Recompute expected factors independently (using same now_secs baseline).
+        let sample_now = current_epoch_secs();
+        let expected_pref = recency_factor(&pref, 14.0, sample_now);
+        let expected_lesson = recency_factor(&lesson, 14.0, sample_now);
+
+        // Tolerance 5e-3 absorbs the sub-second clock delta between the two now_secs calls.
+        assert!(
+            (pref_score - expected_pref).abs() < 5e-3,
+            "pref score expected ~{expected_pref:.6}, got {pref_score:.6}"
+        );
+        assert!(
+            (lesson_score - expected_lesson).abs() < 5e-3,
+            "lesson score expected ~{expected_lesson:.6}, got {lesson_score:.6}"
+        );
+
+        // Sanity: pref (half-life formula, 2^(-30/14) ≈ 0.226) > lesson (exp(-3.0) ≈ 0.050)
+        assert!(
+            pref_score > lesson_score,
+            "preference score ({pref_score:.6}) should exceed lesson score ({lesson_score:.6}) \
+             because half-life formula decays slower than exp(-0.1*days)"
         );
     }
 }
