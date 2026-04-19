@@ -42,7 +42,7 @@ pub fn timestamp_now() -> String {
 }
 
 /// Convert epoch seconds to ISO 8601 string.
-fn epoch_to_iso(secs: u64) -> String {
+pub fn epoch_to_iso(secs: u64) -> String {
     let days_since_epoch = secs / 86400;
     let time_of_day = secs % 86400;
 

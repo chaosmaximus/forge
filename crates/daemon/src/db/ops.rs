@@ -828,6 +828,56 @@ pub fn health_org(conn: &Connection, org_id: Option<&str>) -> rusqlite::Result<H
     })
 }
 
+/// Returns the post-RRF recency multiplier for a memory.
+///
+/// Type-dispatched:
+/// * Preferences: `2^(-days_since_pref_age / half_life)` where
+///   `days_since_pref_age = now - coalesce(reaffirmed_at, created_at)`.
+/// * Non-preferences: `exp(-0.1 * days_since_created)`.
+///
+/// **Scope:** consumed by recall.rs post-RRF ranking AND by the bench-only
+/// `Request::ComputeRecencyFactor`. NOT consumed by `decay_memories` — that
+/// helper has different constants/anchors for non-preferences and uses its
+/// own inline type-dispatch.
+///
+/// `now_secs` is passed in (not read from SystemTime) so the parity test
+/// can freeze time and assert bit-exact equality between handler and direct
+/// helper invocation. Production callers pass `current_epoch_secs()`.
+pub fn recency_factor(memory: &Memory, preference_half_life_days: f64, now_secs: f64) -> f64 {
+    // Anchor selection — for prefs: reaffirmed_at (if Some AND non-empty), else
+    // created_at. Empty-string Some("") treated as None (corrupt row defense).
+    let anchor_str = if memory.memory_type == MemoryType::Preference {
+        match memory.reaffirmed_at.as_deref() {
+            Some(s) if !s.is_empty() => s,
+            _ => memory.created_at.as_str(),
+        }
+    } else {
+        memory.created_at.as_str()
+    };
+
+    // Parse failures: anchor_secs = 0 → days huge → factor → 0. Defends
+    // against silent boost of corrupt rows (don't return now_secs).
+    let anchor_secs = parse_timestamp_to_epoch(anchor_str).unwrap_or(0.0);
+
+    // Clock skew clamp: anchor in future → days = 0 → factor = 1.
+    let days = ((now_secs - anchor_secs) / 86400.0).max(0.0);
+
+    if memory.memory_type == MemoryType::Preference {
+        let half_life = preference_half_life_days.max(1.0);
+        2_f64.powf(-days / half_life)
+    } else {
+        (-0.1_f64 * days).exp()
+    }
+}
+
+/// Returns current epoch in seconds (f64). Production helper for recency_factor.
+pub fn current_epoch_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
 /// Mark memories as "faded" when their effective confidence drops below 0.1.
 ///
 /// Effective confidence is computed as: stored_confidence * exp(-0.03 * days_since_accessed).
@@ -5973,5 +6023,139 @@ mod tests {
             Some("2026-01-01 00:00:00".to_string()),
             "UPSERT must preserve reaffirmed_at — no implicit reaffirmation per spec v3"
         );
+    }
+
+    #[test]
+    fn recency_factor_pref_at_known_days() {
+        let now = 1_700_000_000.0_f64;
+        let half_life = 14.0_f64;
+
+        fn make_pref(created_offset_days: f64, now: f64) -> Memory {
+            let created_secs = now - (created_offset_days * 86400.0);
+            let mut m = Memory::new(
+                MemoryType::Preference,
+                "topic".to_string(),
+                "content".to_string(),
+            );
+            m.created_at = forge_core::time::epoch_to_iso(created_secs as u64);
+            m
+        }
+
+        let one = recency_factor(&make_pref(1.0, now), half_life, now);
+        let fourteen = recency_factor(&make_pref(14.0, now), half_life, now);
+        let ninety = recency_factor(&make_pref(90.0, now), half_life, now);
+        let one_eighty = recency_factor(&make_pref(180.0, now), half_life, now);
+
+        assert!((one - 0.9517).abs() < 1e-4, "1d factor: {one}");
+        assert!((fourteen - 0.5000).abs() < 1e-4, "14d factor: {fourteen}");
+        assert!((ninety - 0.01161).abs() < 1e-4, "90d factor: {ninety}");
+        assert!(
+            (one_eighty - 0.0001348).abs() < 1e-4,
+            "180d factor: {one_eighty}"
+        );
+    }
+
+    #[test]
+    fn recency_factor_non_pref_at_known_days() {
+        let now = 1_700_000_000.0_f64;
+
+        fn make_lesson(created_offset_days: f64, now: f64) -> Memory {
+            let created_secs = now - (created_offset_days * 86400.0);
+            let mut m = Memory::new(
+                MemoryType::Lesson,
+                "topic".to_string(),
+                "content".to_string(),
+            );
+            m.created_at = forge_core::time::epoch_to_iso(created_secs as u64);
+            m
+        }
+
+        let one = recency_factor(&make_lesson(1.0, now), 14.0, now);
+        let ten = recency_factor(&make_lesson(10.0, now), 14.0, now);
+        let thirty = recency_factor(&make_lesson(30.0, now), 14.0, now);
+
+        assert!((one - 0.9048).abs() < 1e-3, "1d non-pref: {one}");
+        assert!((ten - 0.3679).abs() < 1e-3, "10d non-pref: {ten}");
+        assert!((thirty - 0.04979).abs() < 1e-3, "30d non-pref: {thirty}");
+    }
+
+    #[test]
+    fn recency_factor_reaffirmed_overrides_created_at() {
+        let now = 1_700_000_000.0_f64;
+
+        let mut m = Memory::new(
+            MemoryType::Preference,
+            "topic".to_string(),
+            "content".to_string(),
+        );
+        m.created_at = forge_core::time::epoch_to_iso((now - 100.0 * 86400.0) as u64);
+        m.reaffirmed_at = Some(forge_core::time::epoch_to_iso((now - 2.0 * 86400.0) as u64));
+
+        let factor = recency_factor(&m, 14.0, now);
+        assert!(
+            (factor - 0.9048).abs() < 1e-3,
+            "reaffirmed factor: {factor}"
+        );
+    }
+
+    #[test]
+    fn recency_factor_clock_skew_clamps_to_one() {
+        let now = 1_700_000_000.0_f64;
+        let future_secs = now + 86400.0;
+
+        let mut m = Memory::new(
+            MemoryType::Preference,
+            "topic".to_string(),
+            "content".to_string(),
+        );
+        m.created_at = forge_core::time::epoch_to_iso(future_secs as u64);
+
+        let factor = recency_factor(&m, 14.0, now);
+        assert_eq!(factor, 1.0, "future anchor → factor = 1.0");
+    }
+
+    #[test]
+    fn recency_factor_empty_string_reaffirmed_falls_back() {
+        let now = 1_700_000_000.0_f64;
+        let mut m = Memory::new(
+            MemoryType::Preference,
+            "topic".to_string(),
+            "content".to_string(),
+        );
+        m.created_at = forge_core::time::epoch_to_iso((now - 1.0 * 86400.0) as u64);
+        m.reaffirmed_at = Some("".to_string());
+
+        let factor = recency_factor(&m, 14.0, now);
+        assert!(
+            (factor - 0.9517).abs() < 1e-3,
+            "empty reaffirmed should fall back: {factor}"
+        );
+    }
+
+    #[test]
+    fn recency_factor_unparseable_anchor_yields_floor() {
+        let now = 1_700_000_000.0_f64;
+        let mut m = Memory::new(
+            MemoryType::Preference,
+            "topic".to_string(),
+            "content".to_string(),
+        );
+        m.created_at = "garbage-not-a-date".to_string();
+        m.reaffirmed_at = None;
+
+        let factor = recency_factor(&m, 14.0, now);
+        assert!(
+            factor < 1e-100,
+            "unparseable anchor → factor → 0; got: {factor}"
+        );
+    }
+
+    #[test]
+    fn current_epoch_secs_is_monotonic_and_recent() {
+        let t1 = current_epoch_secs();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let t2 = current_epoch_secs();
+        assert!(t2 > t1, "monotonic: {t1} → {t2}");
+        assert!(t1 > 1_700_000_000.0, "epoch_secs should be 2024+");
     }
 }
