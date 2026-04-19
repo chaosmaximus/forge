@@ -1213,10 +1213,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 20 (was 19; +1 Version)
         let unit_count = 20;
-        // Parameterized variants: 99 (was 97; +2 FlipPreference, ListFlipped)
-        let param_count = 99;
-        // Total: 119
-        let expected_total = 119;
+        // Parameterized variants: 101 (was 99; +2 ReaffirmPreference, ComputeRecencyFactor)
+        let param_count = 101;
+        // Total: 121
+        let expected_total = 121;
 
         assert_eq!(
             unit_count + param_count,
@@ -1436,6 +1436,12 @@ mod tests {
                 Request::ListFlipped {
                     agent: None,
                     limit: None,
+                },
+                Request::ReaffirmPreference {
+                    memory_id: "01HXXX".into(),
+                },
+                Request::ComputeRecencyFactor {
+                    memory_id: "01HXXX".into(),
                 },
                 Request::ListIdentity { agent: "a".into() },
                 Request::DeactivateIdentity { id: "i".into() },
@@ -1939,5 +1945,54 @@ mod tests {
         assert!(json.contains("\"timestamp\":\"2026-04-15T00:00:00Z\""));
         let decoded: Response = serde_json::from_str(&json).expect("decode response");
         assert_eq!(resp, decoded);
+    }
+
+    // ────────────────────────────────────────────────────────
+    // Phase 2A-4b: ReaffirmPreference + ComputeRecencyFactor
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn request_reaffirm_preference_serde_roundtrip() {
+        let req = Request::ReaffirmPreference {
+            memory_id: "01HXXX".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, Request::ReaffirmPreference { .. }));
+        assert!(
+            json.contains("\"method\":\"reaffirm_preference\""),
+            "expected reaffirm_preference method tag, got: {json}"
+        );
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn request_compute_recency_factor_serde_roundtrip() {
+        let req = Request::ComputeRecencyFactor {
+            memory_id: "01HXXX".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, Request::ComputeRecencyFactor { .. }));
+        assert!(
+            json.contains("\"method\":\"compute_recency_factor\""),
+            "expected compute_recency_factor method tag, got: {json}"
+        );
+    }
+
+    #[test]
+    fn response_preference_reaffirmed_serde_roundtrip() {
+        use crate::protocol::response::ResponseData;
+        let r = ResponseData::PreferenceReaffirmed {
+            memory_id: "01HXXX".to_string(),
+            reaffirmed_at: "2026-04-19 12:00:00".to_string(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let parsed: ResponseData = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, ResponseData::PreferenceReaffirmed { .. }));
+        assert!(
+            json.contains("\"kind\":\"preference_reaffirmed\""),
+            "expected preference_reaffirmed kind tag, got: {json}"
+        );
     }
 }

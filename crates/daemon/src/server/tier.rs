@@ -293,6 +293,11 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
 
         // === Phase 2A-4a: valence flipping (always allowed — no tier gate) ===
         Request::FlipPreference { .. } | Request::ListFlipped { .. } => None,
+
+        // === Phase 2A-4b: preference reaffirm + recency (always allowed — no tier gate) ===
+        Request::ReaffirmPreference { .. } => None,
+        #[cfg(feature = "bench")]
+        Request::ComputeRecencyFactor { .. } => None,
     }
 }
 

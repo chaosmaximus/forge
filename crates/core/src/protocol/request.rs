@@ -94,6 +94,20 @@ pub enum Request {
         #[serde(default)]
         limit: Option<usize>,
     },
+    /// Phase 2A-4b: reaffirm an existing preference's recency anchor.
+    /// Sets `reaffirmed_at = now_iso()`. Validates memory_type='preference',
+    /// status='active', cross-org. TOCTOU-safe via in-SQL preconditions and
+    /// RETURNING + discriminating SELECT on 0-row result.
+    ReaffirmPreference {
+        memory_id: String,
+    },
+    /// Phase 2A-4b (bench/test only): compute the post-RRF recency multiplier
+    /// for a memory. Bypasses BM25/vector/RRF/graph for direct formula testing
+    /// in 2A-4d Dim 6a.
+    #[cfg(any(test, feature = "bench"))]
+    ComputeRecencyFactor {
+        memory_id: String,
+    },
     Health,
     /// Health counts grouped by project
     HealthByProject,
@@ -289,7 +303,8 @@ pub enum Request {
         #[serde(default)]
         static_only: Option<bool>,
         /// Layer names to exclude from the dynamic suffix.
-        /// Valid names: "decisions", "lessons", "skills", "perceptions", "working_set", "active_sessions".
+        /// Valid names: "decisions", "lessons", "skills", "perceptions", "working_set", "active_sessions",
+        /// "agents" (2A-4a), "preferences" (2A-4b NEW), "preferences_flipped" (2A-4a).
         /// Excluded layers emit empty self-closing tags to maintain XML structure stability for KV-cache.
         #[serde(default)]
         excluded_layers: Option<Vec<String>>,

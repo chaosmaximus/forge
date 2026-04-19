@@ -1017,6 +1017,19 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // Phase 2A-4b: ReaffirmPreference handler — wired in T9.
+        Request::ReaffirmPreference { memory_id } => Response::Error {
+            message: format!("reaffirm_preference not yet implemented for memory_id={memory_id}"),
+        },
+
+        // Phase 2A-4b: ComputeRecencyFactor handler — wired in T12.
+        #[cfg(feature = "bench")]
+        Request::ComputeRecencyFactor { memory_id } => Response::Error {
+            message: format!(
+                "compute_recency_factor not yet implemented for memory_id={memory_id}"
+            ),
+        },
+
         Request::HealthByProject => match ops::health_by_project(&state.conn) {
             Ok(projects) => {
                 let project_data: std::collections::HashMap<

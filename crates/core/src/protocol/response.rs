@@ -107,6 +107,19 @@ pub enum ResponseData {
     FlippedList {
         items: Vec<FlippedMemory>,
     },
+    /// Phase 2A-4b: ReaffirmPreference success response.
+    PreferenceReaffirmed {
+        memory_id: String,
+        reaffirmed_at: String,
+    },
+    /// Phase 2A-4b (bench/test only): ComputeRecencyFactor success response.
+    #[cfg(any(test, feature = "bench"))]
+    RecencyFactor {
+        memory_id: String,
+        factor: f64,
+        days_since_anchor: f64,
+        anchor: String,
+    },
     Health {
         decisions: usize,
         lessons: usize,

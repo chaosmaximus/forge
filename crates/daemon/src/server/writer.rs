@@ -53,7 +53,7 @@ pub enum WriteCommand {
 /// emit broadcast events, but those don't mutate the database — they're
 /// fire-and-forget notifications.
 pub fn is_read_only(req: &Request) -> bool {
-    matches!(
+    let base = matches!(
         req,
         Request::Health
             | Request::HealthByProject
@@ -119,6 +119,7 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::GetHudConfig { .. }
             | Request::ExportHudConfig { .. }
             | Request::ListFlipped { .. } // Phase 2A-4a: read-only listing of flipped preferences
+                                          // NOTE: ReaffirmPreference is a WRITE — updates reaffirmed_at column
                                           // NOTE: SetHudConfig is a write — modifies config_scope table
                                           // NOTE: HealingRun is a write — triggers healing cycle
                                           // NOTE: AckNotification, DismissNotification, ActOnNotification are writes
@@ -128,7 +129,15 @@ pub fn is_read_only(req: &Request) -> bool {
                                           // NOTE: SpawnAgent, UpdateAgentStatus, RetireAgent, CreateTeam, SetTeamOrchestrator are writes
                                           // NOTE: SkillsInstall, SkillsUninstall, SkillsRefresh are writes
                                           // NOTE: FlipPreference is a write — modifies memory state
-    )
+    );
+    // Phase 2A-4b: ComputeRecencyFactor is bench-only and is READ-ONLY
+    // (pure formula computation, no DB writes). Gated separately because
+    // cfg attributes cannot appear inside matches!() pattern position.
+    // Uses feature = "bench" (not any(test,...)) since forge-core's variant
+    // is only available when the bench feature propagates from forge-daemon.
+    #[cfg(feature = "bench")]
+    let base = base || matches!(req, Request::ComputeRecencyFactor { .. });
+    base
 }
 
 /// Derive a short request type name from a Request variant for audit logging.
