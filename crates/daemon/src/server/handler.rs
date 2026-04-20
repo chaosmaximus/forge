@@ -1124,6 +1124,40 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             success,
             user_correction_flag,
         } => {
+            // Validation — fail-fast before any DB touch.
+            fn has_control_char(s: &str) -> bool {
+                s.chars().any(|c| (c as u32) < 0x20 && c != '\t')
+            }
+            if tool_name.trim().is_empty() {
+                return Response::Error {
+                    message: "empty_field: tool_name".to_string(),
+                };
+            }
+            if agent.trim().is_empty() {
+                return Response::Error {
+                    message: "empty_field: agent".to_string(),
+                };
+            }
+            if has_control_char(&session_id) {
+                return Response::Error {
+                    message: "invalid_field: session_id: control_character".to_string(),
+                };
+            }
+            if has_control_char(&agent) {
+                return Response::Error {
+                    message: "invalid_field: agent: control_character".to_string(),
+                };
+            }
+            if has_control_char(&tool_name) {
+                return Response::Error {
+                    message: "invalid_field: tool_name: control_character".to_string(),
+                };
+            }
+            if tool_result_summary.len() > 65536 {
+                return Response::Error {
+                    message: "payload_too_large: tool_result_summary: 65536".to_string(),
+                };
+            }
             let id = ulid::Ulid::new().to_string();
             let created_at = forge_core::time::now_iso();
             let canonical = match serde_json::to_string(&tool_args) {
@@ -1134,6 +1168,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     };
                 }
             };
+            if canonical.len() > 65536 {
+                return Response::Error {
+                    message: "payload_too_large: tool_args: 65536".to_string(),
+                };
+            }
 
             let rows = state.conn.execute(
                 "INSERT INTO session_tool_call
@@ -13206,5 +13245,257 @@ mod tests {
         assert_eq!(success, 0);
         assert_eq!(correction, 1);
         assert_eq!(org, "acme");
+    }
+
+    // ── Phase 2A-4c1 T6: RecordToolUse validation tests ─────────────────────
+
+    #[test]
+    fn record_tool_use_rejects_empty_tool_name() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+                [],
+            )
+            .unwrap();
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "a".to_string(),
+            tool_name: "".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Error { message } => {
+                assert_eq!(message, "empty_field: tool_name")
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_tool_use_rejects_whitespace_only_tool_name() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+                [],
+            )
+            .unwrap();
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "a".to_string(),
+            tool_name: "   \t  ".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        assert!(matches!(
+            crate::server::handler::handle_request(&mut state, req),
+            forge_core::protocol::Response::Error { ref message }
+                if message == "empty_field: tool_name"
+        ));
+    }
+
+    #[test]
+    fn record_tool_use_rejects_empty_agent() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+                [],
+            )
+            .unwrap();
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "".to_string(),
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        assert!(matches!(
+            crate::server::handler::handle_request(&mut state, req),
+            forge_core::protocol::Response::Error { ref message }
+                if message == "empty_field: agent"
+        ));
+    }
+
+    #[test]
+    fn record_tool_use_rejects_control_character_in_session_id() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "abc\0xyz".to_string(),
+            agent: "a".to_string(),
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        assert!(matches!(
+            crate::server::handler::handle_request(&mut state, req),
+            forge_core::protocol::Response::Error { ref message }
+                if message == "invalid_field: session_id: control_character"
+        ));
+    }
+
+    #[test]
+    fn record_tool_use_rejects_tool_args_over_64kb() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+                [],
+            )
+            .unwrap();
+        let big: String = "A".repeat(70_000);
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "a".to_string(),
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({"x": big}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        assert!(matches!(
+            crate::server::handler::handle_request(&mut state, req),
+            forge_core::protocol::Response::Error { ref message }
+                if message == "payload_too_large: tool_args: 65536"
+        ));
+    }
+
+    #[test]
+    fn record_tool_use_rejects_tool_result_summary_over_64kb() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+                [],
+            )
+            .unwrap();
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "a".to_string(),
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: "B".repeat(70_000),
+            success: true,
+            user_correction_flag: false,
+        };
+        assert!(matches!(
+            crate::server::handler::handle_request(&mut state, req),
+            forge_core::protocol::Response::Error { ref message }
+                if message == "payload_too_large: tool_result_summary: 65536"
+        ));
+    }
+
+    #[test]
+    fn record_tool_use_accepts_unicode_in_tool_name_and_agent() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'claude-code', '2026-04-19 10:00:00', 'active', 'default')",
+                [],
+            )
+            .unwrap();
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "αβγ-😀".to_string(),
+            tool_name: "Чтение".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        let resp = crate::server::handler::handle_request(&mut state, req);
+        assert!(
+            matches!(resp, forge_core::protocol::Response::Ok { .. }),
+            "unicode strings without control chars must be accepted, got {resp:?}"
+        );
+    }
+
+    #[test]
+    fn record_tool_use_rejects_session_deleted_between_validate_and_execute() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+                [],
+            )
+            .unwrap();
+        state
+            .conn
+            .execute("DELETE FROM session WHERE id = 'S'", [])
+            .unwrap();
+
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "a".to_string(),
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        let resp = crate::server::handler::handle_request(&mut state, req);
+        assert!(
+            matches!(
+                resp,
+                forge_core::protocol::Response::Error { ref message }
+                    if message.starts_with("unknown_session: ")
+            ),
+            "expected unknown_session error, got {resp:?}"
+        );
+        // Atomic INSERT-SELECT proves no orphan.
+        let count: i64 = state
+            .conn
+            .query_row("SELECT COUNT(*) FROM session_tool_call", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "no row should be inserted when session is missing"
+        );
+    }
+
+    #[test]
+    fn record_tool_use_rejects_unknown_session() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "NONEXISTENT".to_string(),
+            agent: "a".to_string(),
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(message.starts_with("unknown_session: "), "got {message}")
+            }
+            other => panic!("got {other:?}"),
+        }
     }
 }
