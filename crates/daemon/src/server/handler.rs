@@ -1114,10 +1114,63 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        // Phase 2A-4c1: RecordToolUse handler stub — wired in T5.
-        Request::RecordToolUse { .. } => Response::Error {
-            message: "unimplemented: record_tool_use (T5)".to_string(),
-        },
+        // Phase 2A-4c1: RecordToolUse handler — atomic INSERT…SELECT (T5).
+        Request::RecordToolUse {
+            session_id,
+            agent,
+            tool_name,
+            tool_args,
+            tool_result_summary,
+            success,
+            user_correction_flag,
+        } => {
+            let id = ulid::Ulid::new().to_string();
+            let created_at = forge_core::time::now_iso();
+            let canonical = match serde_json::to_string(&tool_args) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("internal_error: serde_json::to_string failed: {e}"),
+                    };
+                }
+            };
+
+            let rows = state.conn.execute(
+                "INSERT INTO session_tool_call
+                    (id, session_id, agent, tool_name, tool_args, tool_result_summary,
+                     success, user_correction_flag, organization_id, created_at)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                        COALESCE(s.organization_id, 'default'), ?9
+                 FROM session s
+                 WHERE s.id = ?2",
+                rusqlite::params![
+                    id,
+                    session_id,
+                    agent,
+                    tool_name,
+                    canonical,
+                    tool_result_summary,
+                    success as i64,
+                    user_correction_flag as i64,
+                    created_at,
+                ],
+            );
+
+            match rows {
+                Ok(1) => Response::Ok {
+                    data: forge_core::protocol::ResponseData::ToolCallRecorded { id, created_at },
+                },
+                Ok(0) => Response::Error {
+                    message: format!("unknown_session: {session_id}"),
+                },
+                Ok(n) => Response::Error {
+                    message: format!("internal_error: INSERT affected {n} rows (expected 1)"),
+                },
+                Err(e) => Response::Error {
+                    message: format!("internal_error: {e}"),
+                },
+            }
+        }
 
         // Phase 2A-4c1: ListToolCalls handler stub — wired in T8.
         Request::ListToolCalls { .. } => Response::Error {
@@ -13040,5 +13093,118 @@ mod tests {
             }
             other => panic!("expected CompiledContext, got: {other:?}"),
         }
+    }
+
+    // ── Phase 2A-4c1 T5: RecordToolUse handler tests ────────────────────────
+
+    #[test]
+    fn record_tool_use_happy_path_returns_id_and_created_at() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Seed a session with organization_id = 'acme' (NOT 'default').
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('SESS1', 'claude-code', '2026-04-19 10:00:00', 'active', 'acme')",
+                [],
+            )
+            .unwrap();
+
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "SESS1".to_string(),
+            agent: "claude-code".to_string(),
+            tool_name: "Read".to_string(),
+            tool_args: serde_json::json!({"file_path": "/tmp/a"}),
+            tool_result_summary: "ok".to_string(),
+            success: true,
+            user_correction_flag: false,
+        };
+        let resp = handle_request(&mut state, req);
+        match resp {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::ToolCallRecorded { id, created_at },
+            } => {
+                assert_eq!(id.len(), 26, "ULID is 26 chars");
+                assert!(!created_at.is_empty(), "created_at present");
+
+                // Verify row persisted with the TARGET SESSION's org ('acme'), not the caller default.
+                let org: String = state
+                    .conn
+                    .query_row(
+                        "SELECT organization_id FROM session_tool_call WHERE id = ?1",
+                        rusqlite::params![id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    org, "acme",
+                    "organization_id is sourced from target session, not default"
+                );
+            }
+            other => panic!("expected ToolCallRecorded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_tool_use_persists_all_fields_roundtrip_via_direct_select() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'claude-code', '2026-04-19 10:00:00', 'active', 'acme')",
+                [],
+            )
+            .unwrap();
+
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "claude-code".to_string(),
+            tool_name: "Bash".to_string(),
+            tool_args: serde_json::json!({"cmd": "ls"}),
+            tool_result_summary: "ok".to_string(),
+            success: false,
+            user_correction_flag: true,
+        };
+        let _ = handle_request(&mut state, req);
+
+        let (agent, tool, args, summary, success, correction, org): (
+            String,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            String,
+        ) = state
+            .conn
+            .query_row(
+                "SELECT agent, tool_name, tool_args, tool_result_summary, success,
+                        user_correction_flag, organization_id
+                 FROM session_tool_call LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(agent, "claude-code");
+        assert_eq!(tool, "Bash");
+        assert_eq!(args, r#"{"cmd":"ls"}"#);
+        assert_eq!(summary, "ok");
+        assert_eq!(success, 0);
+        assert_eq!(correction, 1);
+        assert_eq!(org, "acme");
     }
 }
