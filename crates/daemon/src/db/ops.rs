@@ -1,4 +1,4 @@
-use forge_core::types::{CodeFile, CodeSymbol, Memory, MemoryStatus, MemoryType};
+use forge_core::types::{CodeFile, CodeSymbol, Memory, MemoryStatus, MemoryType, ToolCallRow};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 
@@ -3259,6 +3259,73 @@ pub fn ensure_defaults(conn: &Connection) -> rusqlite::Result<()> {
         .unwrap_or_else(|_| "local".to_string());
     create_default_user(conn, &username)?;
     Ok(())
+}
+
+/// Return tool-call rows for a session, newest first.
+///
+/// Rows are ordered `created_at DESC, id DESC` so ULID tiebreaking preserves
+/// sub-second monotonicity even when multiple calls share the same timestamp.
+/// Pass `agent_filter = Some("…")` to scope to a single agent.
+/// `limit` is forwarded directly to SQL; pass `usize::MAX` for "no limit".
+pub fn list_tool_calls(
+    conn: &rusqlite::Connection,
+    organization_id: &str,
+    session_id: &str,
+    agent_filter: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<ToolCallRow>> {
+    use rusqlite::types::ToSql;
+
+    let (sql, boxed_params): (&'static str, Vec<Box<dyn ToSql>>) = match agent_filter {
+        Some(agent) => (
+            "SELECT id, session_id, agent, tool_name, tool_args, tool_result_summary,
+                    success, user_correction_flag, created_at
+             FROM session_tool_call
+             WHERE organization_id = ?1 AND session_id = ?2 AND agent = ?3
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?4",
+            vec![
+                Box::new(organization_id.to_string()),
+                Box::new(session_id.to_string()),
+                Box::new(agent.to_string()),
+                Box::new(limit as i64),
+            ],
+        ),
+        None => (
+            "SELECT id, session_id, agent, tool_name, tool_args, tool_result_summary,
+                    success, user_correction_flag, created_at
+             FROM session_tool_call
+             WHERE organization_id = ?1 AND session_id = ?2
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?3",
+            vec![
+                Box::new(organization_id.to_string()),
+                Box::new(session_id.to_string()),
+                Box::new(limit as i64),
+            ],
+        ),
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let params_refs: Vec<&dyn ToSql> = boxed_params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        let tool_args_text: String = row.get(4)?;
+        let tool_args: serde_json::Value = serde_json::from_str(&tool_args_text).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        Ok(ToolCallRow {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            agent: row.get(2)?,
+            tool_name: row.get(3)?,
+            tool_args,
+            tool_result_summary: row.get(5)?,
+            success: row.get::<_, i64>(6)? != 0,
+            user_correction_flag: row.get::<_, i64>(7)? != 0,
+            created_at: row.get(8)?,
+        })
+    })?;
+    rows.collect()
 }
 
 #[cfg(test)]
@@ -6734,5 +6801,227 @@ mod tests {
 
         let results = list_active_preferences(&conn, "default", 5).unwrap();
         assert_eq!(results.len(), 5);
+    }
+
+    // ── list_tool_calls L1 tests ─────────────────────────────────────────────
+
+    #[test]
+    fn list_tool_calls_orders_newest_first_with_id_tiebreaker() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('SESS1', 'claude-code', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+
+        for id in ["01A", "01B", "01C"] {
+            conn.execute(
+                &format!(
+                    "INSERT INTO session_tool_call VALUES
+                ('{id}', 'SESS1', 'claude-code', 'Read', '{{}}', 'ok', 1, 0, 'default',
+                 '2026-04-19 12:00:00')"
+                ),
+                [],
+            )
+            .unwrap();
+        }
+
+        let rows = crate::db::ops::list_tool_calls(&conn, "default", "SESS1", None, 10).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["01C", "01B", "01A"],
+            "must order by created_at DESC, id DESC"
+        );
+    }
+
+    #[test]
+    fn list_tool_calls_respects_limit() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+        for i in 0..5 {
+            conn.execute(
+                &format!(
+                    "INSERT INTO session_tool_call VALUES
+                ('ID{i}', 'S', 'a', 'T', '{{}}', '', 1, 0, 'default',
+                 '2026-04-19 12:00:00')"
+                ),
+                [],
+            )
+            .unwrap();
+        }
+        let rows = crate::db::ops::list_tool_calls(&conn, "default", "S", None, 3).unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn list_tool_calls_filters_by_agent() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+            ('A', 'S', 'alice', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+            ('B', 'S', 'bob', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:00')",
+            [],
+        )
+        .unwrap();
+        let rows =
+            crate::db::ops::list_tool_calls(&conn, "default", "S", Some("alice"), 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].agent, "alice");
+    }
+
+    #[test]
+    fn list_tool_calls_returns_empty_when_org_mismatch() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+            ('A', 'S', 'a', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:00')",
+            [],
+        )
+        .unwrap();
+        let rows = crate::db::ops::list_tool_calls(&conn, "other_org", "S", None, 10).unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn list_tool_calls_returns_empty_when_session_mismatch() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+            ('A', 'S', 'a', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:00')",
+            [],
+        )
+        .unwrap();
+        let rows = crate::db::ops::list_tool_calls(&conn, "default", "OTHER", None, 10).unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn list_tool_calls_persists_user_correction_flag_true_and_false() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+            ('A', 'S', 'a', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+            ('B', 'S', 'a', 'T', '{}', '', 1, 1, 'default', '2026-04-19 12:00:01')",
+            [],
+        )
+        .unwrap();
+        let rows = crate::db::ops::list_tool_calls(&conn, "default", "S", None, 10).unwrap();
+        let flags: Vec<bool> = rows.iter().map(|r| r.user_correction_flag).collect();
+        assert_eq!(
+            flags,
+            vec![true, false],
+            "DESC by created_at: B (flag=true) then A (flag=false)"
+        );
+    }
+
+    #[test]
+    fn list_tool_calls_handles_concurrent_inserts_during_read_snapshot() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+            ('A', 'S', 'a', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:00')",
+            [],
+        )
+        .unwrap();
+
+        let tx = conn.unchecked_transaction().unwrap();
+        let rows_before = crate::db::ops::list_tool_calls(&tx, "default", "S", None, 10).unwrap();
+        assert_eq!(rows_before.len(), 1);
+        tx.commit().unwrap();
+
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+            ('B', 'S', 'a', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:05')",
+            [],
+        )
+        .unwrap();
+        let rows_after = crate::db::ops::list_tool_calls(&conn, "default", "S", None, 10).unwrap();
+        assert_eq!(rows_after.len(), 2);
+    }
+
+    #[test]
+    fn list_tool_calls_propagates_corrupt_tool_args_as_conversion_error() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+            ('A', 'S', 'a', 'T', 'not json', '', 1, 0, 'default', '2026-04-19 12:00:00')",
+            [],
+        )
+        .unwrap();
+        let err = crate::db::ops::list_tool_calls(&conn, "default", "S", None, 10).unwrap_err();
+        assert!(
+            matches!(err, rusqlite::Error::FromSqlConversionFailure(_, _, _)),
+            "expected FromSqlConversionFailure, got {err:?}"
+        );
     }
 }
