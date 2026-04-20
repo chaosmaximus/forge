@@ -757,7 +757,12 @@ mod tests {
         );
     }
 
+    // Serialized because the test mutates the process-global
+    // `FORGE_SKILLS_DIR` env var. Any other test in this binary that reads or
+    // writes the same var must also carry `#[serial_test::serial]` so the two
+    // don't race — `cargo test` runs unit tests in parallel by default.
     #[test]
+    #[serial_test::serial]
     fn test_resolve_skills_dir_cascade() {
         let tmp = TempDir::new().unwrap();
         let forge_home = tmp.path().join("home");
@@ -765,8 +770,10 @@ mod tests {
         std::fs::create_dir_all(&forge_home).unwrap();
         std::fs::create_dir_all(&cwd).unwrap();
 
-        // Guarantee no env leakage from the parent process.
-        // SAFETY: test module runs single-threaded per test; nothing else touches this var.
+        // SAFETY: `#[serial_test::serial]` holds a process-wide test lock, so
+        // no other serialized test mutates env while this block runs. No
+        // non-serial test in this crate reads or writes `FORGE_SKILLS_DIR`
+        // (grep to verify before adding one).
         unsafe { std::env::remove_var("FORGE_SKILLS_DIR") };
 
         // Rung 4: cwd/skills when nothing else is configured and no forge_home/skills exists.
@@ -786,7 +793,7 @@ mod tests {
         assert_eq!(resolved, Path::new("/from/config"));
 
         // Rung 1: env var beats everything.
-        // SAFETY: same justification as above.
+        // SAFETY: see above.
         unsafe { std::env::set_var("FORGE_SKILLS_DIR", "/from/env") };
         let resolved = resolve_skills_dir(&forge_home, Some("/from/config"), &cwd);
         assert_eq!(resolved, Path::new("/from/env"));
