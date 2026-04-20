@@ -3261,12 +3261,12 @@ pub fn ensure_defaults(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Return tool-call rows for a session, newest first.
+/// List tool-call rows for `session_id` in the given `organization_id`, ordered
+/// by `created_at DESC, id DESC`. Optionally filter by `agent`. Up to `limit`
+/// rows are returned (caller enforces any upper bound).
 ///
-/// Rows are ordered `created_at DESC, id DESC` so ULID tiebreaking preserves
-/// sub-second monotonicity even when multiple calls share the same timestamp.
-/// Pass `agent_filter = Some("…")` to scope to a single agent.
-/// `limit` is forwarded directly to SQL; pass `usize::MAX` for "no limit".
+/// Returns `rusqlite::Error::FromSqlConversionFailure` if any stored
+/// `tool_args` is not valid JSON.
 pub fn list_tool_calls(
     conn: &rusqlite::Connection,
     organization_id: &str,
@@ -6806,36 +6806,78 @@ mod tests {
     // ── list_tool_calls L1 tests ─────────────────────────────────────────────
 
     #[test]
-    fn list_tool_calls_orders_newest_first_with_id_tiebreaker() {
-        crate::db::vec::init_sqlite_vec();
+    fn list_tool_calls_orders_by_created_at_desc_primary() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::vec::init_sqlite_vec();
         crate::db::schema::create_schema(&conn).unwrap();
-
         conn.execute(
             "INSERT INTO session (id, agent, started_at, status, organization_id)
              VALUES ('SESS1', 'claude-code', '2026-04-19 10:00:00', 'active', 'default')",
             [],
         )
         .unwrap();
+        // Three rows with DIFFERENT created_at — primary sort must win.
+        // Note IDs are intentionally NOT in the same lexicographic order as timestamps
+        // so that id DESC alone cannot produce the expected order.
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+                ('02A', 'SESS1', 'a', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+                ('02C', 'SESS1', 'a', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tool_call VALUES
+                ('02B', 'SESS1', 'a', 'T', '{}', '', 1, 0, 'default', '2026-04-19 12:00:02')",
+            [],
+        )
+        .unwrap();
 
+        let rows = crate::db::ops::list_tool_calls(&conn, "default", "SESS1", None, 10).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        // By created_at DESC: 12:00:02 first (02B), then 12:00:01 (02C), then 12:00:00 (02A).
+        // If ordering were id DESC alone, the result would be [02C, 02B, 02A] — different.
+        assert_eq!(
+            ids,
+            vec!["02B", "02C", "02A"],
+            "primary sort is created_at DESC, not id DESC"
+        );
+    }
+
+    #[test]
+    fn list_tool_calls_tiebreaks_identical_created_at_by_id_desc() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::vec::init_sqlite_vec();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('SESS1', 'claude-code', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+        // Three rows with IDENTICAL created_at — tiebreaker id DESC must decide.
         for id in ["01A", "01B", "01C"] {
             conn.execute(
                 &format!(
                     "INSERT INTO session_tool_call VALUES
-                ('{id}', 'SESS1', 'claude-code', 'Read', '{{}}', 'ok', 1, 0, 'default',
+                ('{id}', 'SESS1', 'a', 'T', '{{}}', '', 1, 0, 'default',
                  '2026-04-19 12:00:00')"
                 ),
                 [],
             )
             .unwrap();
         }
-
         let rows = crate::db::ops::list_tool_calls(&conn, "default", "SESS1", None, 10).unwrap();
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(
             ids,
             vec!["01C", "01B", "01A"],
-            "must order by created_at DESC, id DESC"
+            "identical timestamps tiebreak by id DESC"
         );
     }
 
@@ -6969,7 +7011,7 @@ mod tests {
     }
 
     #[test]
-    fn list_tool_calls_handles_concurrent_inserts_during_read_snapshot() {
+    fn list_tool_calls_sees_rows_inserted_after_prior_commit() {
         crate::db::vec::init_sqlite_vec();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::schema::create_schema(&conn).unwrap();
