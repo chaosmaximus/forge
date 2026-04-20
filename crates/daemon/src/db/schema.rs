@@ -1434,6 +1434,30 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_team_name_org ON team(name, organization_id);",
     )?;
 
+    // ── Phase 2A-4c1: Tool-Use Recording ──
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS session_tool_call (
+            id                    TEXT PRIMARY KEY,
+            session_id            TEXT NOT NULL,
+            agent                 TEXT NOT NULL,
+            tool_name             TEXT NOT NULL,
+            tool_args             TEXT NOT NULL,
+            tool_result_summary   TEXT NOT NULL,
+            success               INTEGER NOT NULL,
+            user_correction_flag  INTEGER NOT NULL DEFAULT 0,
+            organization_id       TEXT NOT NULL DEFAULT 'default',
+            created_at            TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_tool_session
+            ON session_tool_call (session_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_session_tool_name_agent
+            ON session_tool_call (agent, tool_name);
+        CREATE INDEX IF NOT EXISTS idx_session_tool_org_session_created
+            ON session_tool_call (organization_id, session_id, created_at DESC);
+    ",
+    )?;
+
     Ok(())
 }
 
@@ -2157,5 +2181,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn session_tool_call_table_and_three_indexes_exist_after_migration() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // Table present
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_tool_call'",
+                [], |row| row.get(0),
+            ).unwrap();
+        assert_eq!(count, 1, "session_tool_call table should exist");
+
+        // Three indexes present
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='session_tool_call'
+             ORDER BY name",
+            )
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            names.contains(&"idx_session_tool_name_agent".to_string()),
+            "missing idx_session_tool_name_agent; got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"idx_session_tool_org_session_created".to_string()),
+            "missing idx_session_tool_org_session_created; got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"idx_session_tool_session".to_string()),
+            "missing idx_session_tool_session; got {:?}",
+            names
+        );
     }
 }
