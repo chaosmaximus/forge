@@ -230,6 +230,44 @@ fn send_touch(
     }
 }
 
+/// Record a proactive-context injection via the writer channel (#45 — SP1 Fix 2).
+///
+/// No-op when the writer channel is unavailable, session_id is empty, or
+/// `proactive_context` produces 0 chars (prevents noise rows for empty-injection
+/// hooks — common for PostBashCheck on fresh DBs since bootstrap relevance is
+/// 0.1 for all knowledge types, below the 0.3 threshold).
+///
+/// Mirrors the CompileContext RecordInjection pattern (~handler.rs:2762) but
+/// with `context_type = "proactive"` so downstream analytics can split
+/// effectiveness by source (proactive hooks vs. SessionStart full context).
+fn record_proactive_injection(
+    writer_tx: Option<&tokio::sync::mpsc::Sender<super::writer::WriteCommand>>,
+    session_id: &str,
+    hook_event: &str,
+    proactive_context: &[forge_core::protocol::response::ProactiveInjection],
+) {
+    let Some(tx) = writer_tx else { return };
+    if session_id.is_empty() {
+        return;
+    }
+    let chars: usize = proactive_context.iter().map(|i| i.content.len()).sum();
+    if chars == 0 {
+        return;
+    }
+    let summary = proactive_context
+        .iter()
+        .map(|i| format!("{}:{}", i.knowledge_type, i.content.len()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let _ = tx.try_send(super::writer::WriteCommand::RecordInjection {
+        session_id: session_id.to_string(),
+        hook_event: hook_event.to_string(),
+        context_type: "proactive".to_string(),
+        content_summary: summary,
+        chars_injected: chars,
+    });
+}
+
 pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
     match request {
         Request::Remember {
@@ -2090,6 +2128,17 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 None,
             );
 
+            // Record injection for observability (#45) — route through writer
+            // channel since this handler runs on a read-only connection.
+            let sid =
+                crate::sessions::get_active_session_id(&state.conn, "cli").unwrap_or_default();
+            record_proactive_injection(
+                state.writer_tx.as_ref(),
+                &sid,
+                "PreBashCheck",
+                &proactive_context,
+            );
+
             Response::Ok {
                 data: ResponseData::PreBashChecked {
                     safe: result.safe,
@@ -2107,6 +2156,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 &state.conn,
                 crate::proactive::HOOK_POST_BASH,
                 None,
+            );
+
+            // Record injection for observability (#45) — helper no-ops when
+            // chars_injected is 0 (common on fresh DBs: PostBashCheck relevance
+            // is 0.1 for all knowledge types, below 0.3 threshold).
+            let sid =
+                crate::sessions::get_active_session_id(&state.conn, "cli").unwrap_or_default();
+            record_proactive_injection(
+                state.writer_tx.as_ref(),
+                &sid,
+                "PostBashCheck",
+                &proactive_context,
             );
 
             Response::Ok {
@@ -2140,6 +2201,16 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 &state.conn,
                 crate::proactive::HOOK_POST_EDIT,
                 None,
+            );
+
+            // Record injection for observability (#45).
+            let sid =
+                crate::sessions::get_active_session_id(&state.conn, "cli").unwrap_or_default();
+            record_proactive_injection(
+                state.writer_tx.as_ref(),
+                &sid,
+                "PostEditCheck",
+                &proactive_context,
             );
 
             Response::Ok {
