@@ -292,6 +292,70 @@ pub fn refresh_skills(conn: &Connection, dir: &Path) -> Result<usize, String> {
     index_skills_directory(conn, dir)
 }
 
+/// Auto-populate the skill registry on daemon boot.
+///
+/// Fix #55: the populator already worked, but nothing invoked it at startup,
+/// so `forge-next skills-list` returned `count: 0` on a fresh daemon. This is
+/// the boot-time wrapper wired in from `main.rs`.
+///
+/// Critically this does **NOT** delegate to [`refresh_skills`]: that function
+/// begins with `DELETE FROM skill_registry`, which would wipe per-project
+/// `installed_for_project` state on every daemon restart (rows are reinserted
+/// with that column NULL). Instead this path calls [`index_skills_directory`]
+/// directly, which is pure idempotent upsert — the `ON CONFLICT` clause in
+/// `upsert_skill` leaves `installed_for_project` untouched. Trade-off: a
+/// skill deleted from disk is not evicted at boot; callers can still run
+/// `RefreshSkillsIndex` for the clear-and-rebuild semantics.
+///
+/// Semantics (spec §5.2):
+/// * If `skills_dir` is not an existing directory, returns `Ok(0)` — the
+///   daemon must still boot; callers log a note and move on. Checking
+///   `is_dir()` (not just `exists()`) means a stray file at that path
+///   short-circuits before any write.
+/// * Otherwise upserts every `SKILL.md` found under the directory tree.
+///   Errors propagate so the caller can log them; already-indexed rows
+///   survive partial failures.
+pub fn auto_populate_on_start(conn: &Connection, skills_dir: &Path) -> Result<usize, String> {
+    if !skills_dir.is_dir() {
+        return Ok(0);
+    }
+    index_skills_directory(conn, skills_dir)
+}
+
+/// Resolve the directory used by daemon boot to seed the skill registry.
+///
+/// Cascade (spec §3.1):
+/// 1. `FORGE_SKILLS_DIR` env var — explicit override. Empty string treated
+///    as unset (mirrors `forge_core::forge_dir`'s handling of `FORGE_DIR`).
+/// 2. `config_skills_dir` — the `skills_directory` field from `config.toml`,
+///    passed through as `Some(&str)`. Empty string treated as unset.
+/// 3. `{forge_home}/skills` — user-global install location, if it exists.
+/// 4. `{cwd}/skills` — project-local fallback.
+///
+/// The returned path is not validated; `auto_populate_on_start` short-circuits
+/// when the directory is missing.
+pub fn resolve_skills_dir(
+    forge_home: &Path,
+    config_skills_dir: Option<&str>,
+    cwd: &Path,
+) -> std::path::PathBuf {
+    if let Ok(env_dir) = std::env::var("FORGE_SKILLS_DIR") {
+        if !env_dir.is_empty() {
+            return std::path::PathBuf::from(env_dir);
+        }
+    }
+    if let Some(cfg) = config_skills_dir {
+        if !cfg.is_empty() {
+            return std::path::PathBuf::from(cfg);
+        }
+    }
+    let home_skills = forge_home.join("skills");
+    if home_skills.is_dir() {
+        return home_skills;
+    }
+    cwd.join("skills")
+}
+
 // ── Internal helpers ──
 
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillEntry> {
@@ -599,5 +663,133 @@ mod tests {
         let conn = setup_db();
         let result = index_skills_directory(&conn, Path::new("/tmp/nonexistent_skills_dir_xyz"));
         assert!(result.is_err());
+    }
+
+    // ── Fix #55 regression: auto_populate_on_start ──
+    //
+    // Daemon startup must populate the skill_registry so `forge-next skills-list`
+    // returns a non-zero count on a fresh daemon. Two properties matter:
+    //   1. Happy path: a valid directory indexes every fixture and list_skills
+    //      returns them.
+    //   2. Missing directory: returns Ok(0) rather than erroring, so boot
+    //      proceeds with an empty registry (spec §5.2).
+
+    #[test]
+    fn test_auto_populate_on_start_indexes_fixtures() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+
+        create_skill_md(tmp.path(), "auto-a", "auto skill A", Some("test"));
+        create_skill_md(tmp.path(), "auto-b", "auto skill B", Some("test"));
+
+        let n = auto_populate_on_start(&conn, tmp.path()).unwrap();
+        assert_eq!(n, 2, "auto_populate_on_start returns count indexed");
+
+        let listed = list_skills(&conn, None, None, 100).unwrap();
+        assert_eq!(listed.len(), 2, "list_skills should return both fixtures");
+        let names: Vec<String> = listed.iter().map(|s| s.name.clone()).collect();
+        assert!(names.contains(&"auto-a".to_string()));
+        assert!(names.contains(&"auto-b".to_string()));
+    }
+
+    #[test]
+    fn test_auto_populate_on_start_missing_dir_returns_zero() {
+        let conn = setup_db();
+        // Explicitly nonexistent path — must NOT error, must return Ok(0).
+        let missing = Path::new("/tmp/forge_skills_dir_does_not_exist_xyz_55");
+        assert!(!missing.exists(), "test precondition: path must not exist");
+
+        let n = auto_populate_on_start(&conn, missing).unwrap();
+        assert_eq!(n, 0, "missing skills dir must return Ok(0), not an error");
+
+        let listed = list_skills(&conn, None, None, 100).unwrap();
+        assert!(
+            listed.is_empty(),
+            "registry stays empty when skills dir is missing"
+        );
+    }
+
+    #[test]
+    fn test_auto_populate_on_start_path_is_file_returns_zero() {
+        // A stray file at the configured path must NOT trigger a DB wipe or
+        // crash — it must return Ok(0) just like a missing path.
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let bogus = tmp.path().join("skills_not_a_dir");
+        std::fs::write(&bogus, "oops").unwrap();
+
+        let n = auto_populate_on_start(&conn, &bogus).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_auto_populate_on_start_preserves_installed_for_project() {
+        // Regression: daemon restart must not wipe per-project install state.
+        // Seed a skill, install it for a project, then run auto_populate_on_start
+        // again (simulating reboot). The `installed_for_project` column must
+        // survive the re-index because we use upsert-on-conflict, not DELETE.
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+
+        create_skill_md(
+            tmp.path(),
+            "sticky-skill",
+            "should survive restart",
+            Some("engineering"),
+        );
+
+        // First boot indexes the skill, then a client installs it.
+        let n1 = auto_populate_on_start(&conn, tmp.path()).unwrap();
+        assert_eq!(n1, 1);
+        install_skill(&conn, "sticky-skill", "my-project").unwrap();
+        let before = skill_info(&conn, "sticky-skill", None).unwrap().unwrap();
+        assert_eq!(before.installed_for_project.as_deref(), Some("my-project"));
+
+        // Second boot (simulated daemon restart) must preserve the install.
+        let n2 = auto_populate_on_start(&conn, tmp.path()).unwrap();
+        assert_eq!(n2, 1, "second boot re-indexes the same skill");
+
+        let after = skill_info(&conn, "sticky-skill", None).unwrap().unwrap();
+        assert_eq!(
+            after.installed_for_project.as_deref(),
+            Some("my-project"),
+            "installed_for_project MUST survive daemon restart (#55 regression)"
+        );
+    }
+
+    #[test]
+    fn test_resolve_skills_dir_cascade() {
+        let tmp = TempDir::new().unwrap();
+        let forge_home = tmp.path().join("home");
+        let cwd = tmp.path().join("cwd");
+        std::fs::create_dir_all(&forge_home).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        // Guarantee no env leakage from the parent process.
+        // SAFETY: test module runs single-threaded per test; nothing else touches this var.
+        unsafe { std::env::remove_var("FORGE_SKILLS_DIR") };
+
+        // Rung 4: cwd/skills when nothing else is configured and no forge_home/skills exists.
+        let resolved = resolve_skills_dir(&forge_home, None, &cwd);
+        assert_eq!(resolved, cwd.join("skills"));
+
+        // Rung 3: forge_home/skills wins once it exists on disk.
+        std::fs::create_dir_all(forge_home.join("skills")).unwrap();
+        let resolved = resolve_skills_dir(&forge_home, None, &cwd);
+        assert_eq!(resolved, forge_home.join("skills"));
+
+        // Rung 2: config value overrides forge_home/skills even if the home
+        // directory has skills; empty string is treated as unset.
+        let resolved = resolve_skills_dir(&forge_home, Some(""), &cwd);
+        assert_eq!(resolved, forge_home.join("skills"));
+        let resolved = resolve_skills_dir(&forge_home, Some("/from/config"), &cwd);
+        assert_eq!(resolved, Path::new("/from/config"));
+
+        // Rung 1: env var beats everything.
+        // SAFETY: same justification as above.
+        unsafe { std::env::set_var("FORGE_SKILLS_DIR", "/from/env") };
+        let resolved = resolve_skills_dir(&forge_home, Some("/from/config"), &cwd);
+        assert_eq!(resolved, Path::new("/from/env"));
+        unsafe { std::env::remove_var("FORGE_SKILLS_DIR") };
     }
 }

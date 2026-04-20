@@ -244,6 +244,36 @@ async fn main() {
         }
     }
 
+    // #55 — auto-populate skill_registry on boot so `forge-next skills-list`
+    // returns a non-zero count without requiring an explicit RefreshSkillsIndex
+    // request. Path cascade (spec §3.1) lives in `skills::resolve_skills_dir`:
+    // FORGE_SKILLS_DIR env → config.skills_directory → {forge_dir}/skills → cwd/skills.
+    // If the resolved directory is missing, auto_populate_on_start returns
+    // Ok(0) and the daemon boots with an empty registry.
+    let boot_config = forge_daemon::config::load_config();
+    let forge_home = std::path::PathBuf::from(forge_dir());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let skills_dir = forge_daemon::skills::resolve_skills_dir(
+        &forge_home,
+        Some(boot_config.skills_directory.as_str()),
+        &cwd,
+    );
+
+    match forge_daemon::skills::auto_populate_on_start(&worker_state.conn, &skills_dir) {
+        Ok(n) if n > 0 => {
+            tracing::info!(skills = n, path = %skills_dir.display(), "skill registry populated on boot")
+        }
+        Ok(_) => tracing::info!(
+            path = %skills_dir.display(),
+            "skill directory empty or missing — skill registry not populated"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            path = %skills_dir.display(),
+            "skill auto-index failed; call RefreshSkillsIndex to retry"
+        ),
+    }
+
     // Extract shared resources BEFORE wrapping in Arc<Mutex>.
     // These are shared between the socket handler (read path), writer actor,
     // and workers so they all see the same events and HLC.
