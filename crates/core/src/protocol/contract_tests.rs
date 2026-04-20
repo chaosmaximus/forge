@@ -1213,10 +1213,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 20 (was 19; +1 Version)
         let unit_count = 20;
-        // Parameterized variants: 101 (was 99; +2 ReaffirmPreference, ComputeRecencyFactor)
-        let param_count = 101;
-        // Total: 121
-        let expected_total = 121;
+        // Parameterized variants: 103 (was 101; +2 RecordToolUse, ListToolCalls)
+        let param_count = 103;
+        // Total: 123
+        let expected_total = 123;
 
         assert_eq!(
             unit_count + param_count,
@@ -1442,6 +1442,20 @@ mod tests {
                 },
                 Request::ComputeRecencyFactor {
                     memory_id: "01HXXX".into(),
+                },
+                Request::RecordToolUse {
+                    session_id: "S".into(),
+                    agent: "a".into(),
+                    tool_name: "T".into(),
+                    tool_args: serde_json::json!({}),
+                    tool_result_summary: "ok".into(),
+                    success: true,
+                    user_correction_flag: false,
+                },
+                Request::ListToolCalls {
+                    session_id: "S".into(),
+                    agent: None,
+                    limit: None,
                 },
                 Request::ListIdentity { agent: "a".into() },
                 Request::DeactivateIdentity { id: "i".into() },
@@ -1994,5 +2008,133 @@ mod tests {
             json.contains("\"kind\":\"preference_reaffirmed\""),
             "expected preference_reaffirmed kind tag, got: {json}"
         );
+    }
+
+    // ────────────────────────────────────────────────────────
+    // Phase 2A-4c1: RecordToolUse / ListToolCalls / Response variants
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn record_tool_use_roundtrip_all_fields() {
+        let req = Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "a".to_string(),
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({"k": 1}),
+            tool_result_summary: "ok".to_string(),
+            success: true,
+            user_correction_flag: true,
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert_eq!(req, back);
+    }
+
+    #[test]
+    fn record_tool_use_defaults_when_optional_fields_omitted() {
+        // Request uses #[serde(tag = "method", content = "params", rename_all = "snake_case")]
+        // so the JSON uses "method" as the tag key.
+        let minimal_json = r#"{"method":"record_tool_use","params":{"session_id":"S","agent":"a","tool_name":"T","success":true}}"#;
+        let req: Request =
+            serde_json::from_str(minimal_json).expect("default-filled deserialise must work");
+        if let Request::RecordToolUse {
+            tool_args,
+            tool_result_summary,
+            user_correction_flag,
+            ..
+        } = req
+        {
+            assert_eq!(tool_args, serde_json::Value::Object(serde_json::Map::new()));
+            assert_eq!(tool_result_summary, "");
+            assert!(!user_correction_flag);
+        } else {
+            panic!("wrong Request variant");
+        }
+    }
+
+    #[test]
+    fn list_tool_calls_roundtrip_required_only() {
+        let req = Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: None,
+            limit: None,
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert_eq!(req, back);
+    }
+
+    #[test]
+    fn list_tool_calls_roundtrip_all_fields() {
+        let req = Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: Some("a".to_string()),
+            limit: Some(100),
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert_eq!(req, back);
+    }
+
+    #[test]
+    fn tool_call_recorded_response_roundtrip() {
+        use crate::protocol::response::{Response, ResponseData};
+        let resp = Response::Ok {
+            data: ResponseData::ToolCallRecorded {
+                id: "01K".to_string(),
+                created_at: "2026-04-19 12:00:00".to_string(),
+            },
+        };
+        let s = serde_json::to_string(&resp).unwrap();
+        let back: Response = serde_json::from_str(&s).unwrap();
+        assert_eq!(resp, back);
+    }
+
+    #[test]
+    fn tool_call_list_response_roundtrip_empty_and_three() {
+        use crate::protocol::response::{Response, ResponseData};
+        use crate::types::ToolCallRow;
+        let row = ToolCallRow {
+            id: "1".to_string(),
+            session_id: "S".to_string(),
+            agent: "a".to_string(),
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: "".to_string(),
+            success: true,
+            user_correction_flag: false,
+            created_at: "2026-04-19 12:00:00".to_string(),
+        };
+        for rows in [vec![], vec![row.clone(), row.clone(), row.clone()]] {
+            let resp = Response::Ok {
+                data: ResponseData::ToolCallList {
+                    calls: rows.clone(),
+                },
+            };
+            let s = serde_json::to_string(&resp).unwrap();
+            let back: Response = serde_json::from_str(&s).unwrap();
+            assert_eq!(resp, back);
+        }
+    }
+
+    #[test]
+    fn response_error_roundtrips_with_all_six_prefixes() {
+        use crate::protocol::response::Response;
+        let prefixes = [
+            "unknown_session: 01K...",
+            "payload_too_large: tool_args: 65536",
+            "limit_too_large: requested 1000, max 500",
+            "empty_field: tool_name",
+            "invalid_field: session_id: control_character",
+            "internal_error: db locked",
+        ];
+        for p in prefixes {
+            let resp = Response::Error {
+                message: p.to_string(),
+            };
+            let s = serde_json::to_string(&resp).unwrap();
+            let back: Response = serde_json::from_str(&s).unwrap();
+            assert_eq!(resp, back);
+        }
     }
 }

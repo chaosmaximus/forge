@@ -1114,6 +1114,16 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // Phase 2A-4c1: RecordToolUse handler stub — wired in T5.
+        Request::RecordToolUse { .. } => Response::Error {
+            message: "unimplemented: record_tool_use (T5)".to_string(),
+        },
+
+        // Phase 2A-4c1: ListToolCalls handler stub — wired in T8.
+        Request::ListToolCalls { .. } => Response::Error {
+            message: "unimplemented: list_tool_calls (T8)".to_string(),
+        },
+
         // Phase 2A-4b: ComputeRecencyFactor handler — T12.
         #[cfg(feature = "bench")]
         Request::ComputeRecencyFactor { memory_id } => {

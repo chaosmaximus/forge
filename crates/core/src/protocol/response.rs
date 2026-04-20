@@ -112,6 +112,15 @@ pub enum ResponseData {
         memory_id: String,
         reaffirmed_at: String,
     },
+    /// Phase 2A-4c1: RecordToolUse success response.
+    ToolCallRecorded {
+        id: String,
+        created_at: String,
+    },
+    /// Phase 2A-4c1: ListToolCalls success response.
+    ToolCallList {
+        calls: Vec<crate::types::ToolCallRow>,
+    },
     /// Phase 2A-4b (bench/test only): ComputeRecencyFactor success response.
     #[cfg(any(test, feature = "bench"))]
     RecencyFactor {

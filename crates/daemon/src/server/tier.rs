@@ -298,6 +298,9 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         Request::ReaffirmPreference { .. } => None,
         #[cfg(feature = "bench")]
         Request::ComputeRecencyFactor { .. } => None,
+
+        // === Phase 2A-4c1: tool use recording (always allowed — no tier gate) ===
+        Request::RecordToolUse { .. } | Request::ListToolCalls { .. } => None,
     }
 }
 

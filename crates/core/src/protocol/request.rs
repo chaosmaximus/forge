@@ -1,6 +1,10 @@
 use crate::types::memory::MemoryType;
 use serde::{Deserialize, Serialize};
 
+fn default_empty_args() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
 /// A single finding from an evaluator review.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EvaluationFinding {
@@ -100,6 +104,30 @@ pub enum Request {
     /// RETURNING + discriminating SELECT on 0-row result.
     ReaffirmPreference {
         memory_id: String,
+    },
+    /// Phase 2A-4c1: record a tool invocation for a session.
+    /// Stores tool_name, args, result summary, success flag, and optional
+    /// user correction flag. session_id is REQUIRED (target-session org safety, spec §10).
+    RecordToolUse {
+        session_id: String,
+        agent: String,
+        tool_name: String,
+        #[serde(default = "default_empty_args")]
+        tool_args: serde_json::Value,
+        #[serde(default)]
+        tool_result_summary: String,
+        success: bool,
+        #[serde(default)]
+        user_correction_flag: bool,
+    },
+    /// Phase 2A-4c1: list tool calls for a session, optionally filtered by agent.
+    /// session_id is REQUIRED (target-session org safety, spec §10).
+    ListToolCalls {
+        session_id: String,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
     },
     /// Phase 2A-4b (bench/test only): compute the post-RRF recency multiplier
     /// for a memory. Bypasses BM25/vector/RRF/graph for direct formula testing
