@@ -5,7 +5,7 @@
 **Parent master:** `docs/benchmarks/forge-identity-master-design.md` v6a §5 2A-4c1, §13 resolution index
 **Prior phase:** 2A-4b Recency-weighted Preference Decay shipped on 2026-04-19 (HEAD `21aa115`).
 **Follow-on phase:** 2A-4c2 Phase 23 Behavioral Skill Inference (consolidator + `<skills>` renderer + canonical fingerprint).
-**Spec version:** v2 — incorporates Claude + Codex adversarial review findings (v1 commit `ceea810`)
+**Spec version:** v3 — incorporates Claude second-pass review fixes (v2 commit `1ad3deb`, v1 commit `ceea810`)
 
 ## 1. Goal
 
@@ -96,7 +96,7 @@ DROP INDEX IF EXISTS idx_session_tool_session;
 DROP TABLE IF EXISTS session_tool_call;
 ```
 
-Validated by `test_session_tool_call_rollback_recipe_works` against a populated test database (§7 T12).
+Validated by `test_session_tool_call_rollback_recipe_works` against a populated test database (§7 T11).
 
 ## 4. Protocol
 
@@ -188,7 +188,7 @@ All validation failures return `Response::Error { message: String }`. Messages f
 | Error code prefix | Human detail | Triggered by |
 |------------------|--------------|--------------|
 | `unknown_session:` | `<session_id>` | `RecordToolUse`, `ListToolCalls` — session row does not exist OR exists but `INSERT ... SELECT FROM session WHERE id=? AND organization_id=?` returned 0 rows. |
-| `payload_too_large:` | `<field>: <max_bytes>` | `RecordToolUse` — `tool_args` serialized > 65536 bytes OR `tool_result_summary` > 65536 bytes. |
+| `payload_too_large:` | `<field>: <max_bytes>` | `RecordToolUse` — `tool_args` serialized > 65536 UTF-8 bytes OR `tool_result_summary` > 65536 UTF-8 bytes. Size is measured in bytes, NOT chars. |
 | `limit_too_large:` | `requested <n>, max <m>` | `ListToolCalls` — `limit > 500`. |
 | `empty_field:` | `<field>` | `RecordToolUse` — `tool_name` or `agent` is empty after trimming, or contains only whitespace. |
 | `invalid_field:` | `<field>: <reason>` | `RecordToolUse` — `tool_name`, `agent`, or `session_id` contains a `\0` or other non-printable control character (codex MEDIUM #8). |
@@ -220,8 +220,11 @@ Step 1. Validate strings (pre-DB):
     c. if any of (session_id, tool_name, agent) contains '\0' or any ch < 0x20 (other than '\t')
                                                 → "invalid_field: <field>: control_character"
     d. canonical = serde_json::to_string(&tool_args)?;
-       if canonical.len() > 65536              → "payload_too_large: tool_args: 65536"
-    e. if tool_result_summary.len() > 65536    → "payload_too_large: tool_result_summary: 65536"
+       if canonical.len() > 65536 (UTF-8 byte count of the serialized form)
+                                                → "payload_too_large: tool_args: 65536"
+    e. if tool_result_summary.len() > 65536 (UTF-8 byte count, not char count — non-ASCII
+       characters consume more than one byte each)
+                                                → "payload_too_large: tool_result_summary: 65536"
 
 Step 2. Generate id + timestamp:
     let id = ulid::Ulid::new().to_string();
@@ -423,7 +426,7 @@ A JSON-parse failure on a stored row (corruption) propagates as `rusqlite::Error
 
 **Total: 37 tests** (up from 31 in v1; Codex/Claude HIGH coverage gaps closed).
 
-### 7.4 Live-daemon dogfood (T13 results doc)
+### 7.4 Live-daemon dogfood (T12 results doc)
 
 Default daemon port is **8420** (`crates/daemon/src/config.rs:90`, `CLAUDE.md`). 2A-4b results doc used `8430` for a custom-port dogfood; this spec uses the canonical default.
 
@@ -481,8 +484,8 @@ curl -sS -X POST $DAEMON -d '{
 |------|---------------------|
 | `session_id` not in `session` table | `Error { message: "unknown_session: <session_id>" }` |
 | Session deleted between client send and daemon execute | `Error { message: "unknown_session: <session_id>" }` (atomic INSERT-SELECT proves no orphan) |
-| `tool_args` > 64 KB serialized | `Error { message: "payload_too_large: tool_args: 65536" }` |
-| `tool_result_summary` > 64 KB | `Error { message: "payload_too_large: tool_result_summary: 65536" }` |
+| `tool_args` > 65536 bytes after `serde_json::to_string` (UTF-8 byte count) | `Error { message: "payload_too_large: tool_args: 65536" }` |
+| `tool_result_summary` > 65536 UTF-8 bytes (not chars — Unicode > 1 byte/codepoint counts) | `Error { message: "payload_too_large: tool_result_summary: 65536" }` |
 | Empty `tool_name` | `Error { message: "empty_field: tool_name" }` |
 | Whitespace-only `tool_name` | `Error { message: "empty_field: tool_name" }` |
 | Empty `agent` | `Error { message: "empty_field: agent" }` |
@@ -524,7 +527,7 @@ curl -sS -X POST $DAEMON -d '{
 
 **Emission timing:** ONLY after the atomic INSERT-SELECT confirms `rows_affected == 1`. Validation errors and `unknown_session` paths do NOT emit.
 
-**Drop behavior — non-authoritative.** If the broadcast channel is full, `events::emit` silently drops (existing `let _ = tx.send(...)` pattern at `events.rs:24`). Subscribers that fall behind lose events; subsequent events continue to broadcast. **Events are non-authoritative — the `session_tool_call` table is the source of truth.** Any consumer that needs guaranteed completeness MUST reconcile via `ListToolCalls`. This is documented in the results doc (T13).
+**Drop behavior — non-authoritative.** If the broadcast channel is full, `events::emit` silently drops (existing `let _ = tx.send(...)` pattern at `events.rs:24`). Subscribers that fall behind lose events; subsequent events continue to broadcast. **Events are non-authoritative — the `session_tool_call` table is the source of truth.** Any consumer that needs guaranteed completeness MUST reconcile via `ListToolCalls`. This is documented in the results doc (T12).
 
 **Cross-org broadcast caveat.** The broadcast channel is NOT org-scoped — `tool_use_recorded` events are visible to all subscribers regardless of `organization_id`. The event payload includes `session_id`, which a subscriber could correlate back to an org via `ListSession` or DB inspection. This matches the existing `memory_created` precedent and is a known limitation of the fire-and-forget broadcast model.
 
@@ -616,29 +619,30 @@ Master §13 line 305 explicitly defers this decision to c2: when Phase 23 reads 
 
 A misbehaving caller can flood `RecordToolUse` calls. The 256-slot broadcast channel will drop events, but the underlying INSERTs will succeed and consume disk. Rate limiting is out of scope for c1 + c2 + c3; it is a deployment-layer concern.
 
-## 12. TDD task sequence (13 tasks)
+## 12. TDD task sequence (12 tasks)
+
+v3 folds v2's thin standalone "default_empty_args helper" task into the protocol bundle task (Claude v2-review NEW LOW #4 — cleaner boundary); total drops from 13 to 12 tasks.
 
 | Task | Scope | Files |
 |------|-------|-------|
 | **T1** | `ToolCallRow` type + `core::types::tool_call` module + re-export + roundtrip serde test | `crates/core/src/types/tool_call.rs` (new), `crates/core/src/types/mod.rs`, `crates/core/src/lib.rs` |
 | **T2** | Schema migration — `session_tool_call` table + 3 indexes (idempotent) | `crates/daemon/src/db/schema.rs` |
-| **T3** | (DELETED — `ops::record_tool_use` removed; INSERT-SELECT inlined in T6 handler) — slot reused for: `default_empty_args` helper in `request.rs` + serde-default round-trip tests | `crates/core/src/protocol/request.rs` |
-| **T4** | `ops::list_tool_calls` + 8 L1 tests | `crates/daemon/src/db/ops.rs` |
-| **T5** | Protocol bundle — `Request::RecordToolUse` + `Request::ListToolCalls` + `ResponseData::ToolCallRecorded` + `ResponseData::ToolCallList` + 8 contract tests + handler stub arms returning `Response::Error { message: "unimplemented" }` (Claude HIGH #7 — keep code compilable through to T6) | `crates/core/src/protocol/{request,response,contract_tests}.rs`, `crates/daemon/src/server/handler.rs` (stub arms) |
-| **T6** | `handle_record_tool_use` — atomic INSERT-SELECT + happy path + persistence test (1 test) | `crates/daemon/src/server/handler.rs` |
-| **T7** | `handle_record_tool_use` validation — 8 error paths (unknown session, deleted-mid-call, args/result too large, empty/whitespace name+agent, control chars in session_id/agent/tool_name, unicode-accepted affirmative) | `crates/daemon/src/server/handler.rs` |
-| **T8** | `handle_record_tool_use` event emission — `tool_use_recorded` post-INSERT-success only (3 tests: emitted-on-success, NOT-emitted-on-validation-error, NOT-emitted-on-unknown-session) | `crates/daemon/src/server/handler.rs` |
-| **T9** | `handle_list_tool_calls` happy path + transaction-wrapped read + filter + limit + ordering + tiebreaker (5 tests) | `crates/daemon/src/server/handler.rs` |
-| **T10** | `handle_list_tool_calls` validation + target-session-org behavior (6 tests: limit_too_large, unknown_session, control_char in session_id, control_char in agent_filter, target-session-org-only-rows, no-leak-other-sessions-same-org) | `crates/daemon/src/server/handler.rs` |
-| **T11** | Integration test `record_tool_use_flow.rs` (NEW) + `record_tool_use_writes_target_session_org_id_not_caller_org_id` | `crates/daemon/tests/record_tool_use_flow.rs` |
-| **T12** | Schema rollback recipe test against populated DB | `crates/daemon/src/db/schema.rs` |
-| **T13** | Live-daemon dogfood (port 8420) + results doc | `docs/benchmarks/results/forge-tool-use-recording-2026-04-19.md` |
+| **T3** | `ops::list_tool_calls` + 8 L1 tests | `crates/daemon/src/db/ops.rs` |
+| **T4** | Protocol bundle — `Request::RecordToolUse` (with `default_empty_args` helper + `#[serde(default)]`) + `Request::ListToolCalls` + `ResponseData::ToolCallRecorded` + `ResponseData::ToolCallList` + 8 contract tests + handler stub arms returning `Response::Error { message: "unimplemented" }` (Claude HIGH #7 — keep code compilable through to T5) | `crates/core/src/protocol/{request,response,contract_tests}.rs`, `crates/daemon/src/server/handler.rs` (stub arms) |
+| **T5** | `handle_record_tool_use` — atomic INSERT-SELECT + happy path + persistence test (1 test) | `crates/daemon/src/server/handler.rs` |
+| **T6** | `handle_record_tool_use` validation — 8 error paths (unknown session, deleted-mid-call, args/result too large, empty/whitespace name+agent, control chars in session_id/agent/tool_name, unicode-accepted affirmative) | `crates/daemon/src/server/handler.rs` |
+| **T7** | `handle_record_tool_use` event emission — `tool_use_recorded` post-INSERT-success only (3 tests: emitted-on-success, NOT-emitted-on-validation-error, NOT-emitted-on-unknown-session) | `crates/daemon/src/server/handler.rs` |
+| **T8** | `handle_list_tool_calls` happy path + transaction-wrapped read + filter + limit + ordering + tiebreaker (5 tests) | `crates/daemon/src/server/handler.rs` |
+| **T9** | `handle_list_tool_calls` validation + target-session-org behavior (6 tests: limit_too_large, unknown_session, control_char in session_id, control_char in agent_filter, target-session-org-only-rows, no-leak-other-sessions-same-org) | `crates/daemon/src/server/handler.rs` |
+| **T10** | Integration test `record_tool_use_flow.rs` (NEW) + `record_tool_use_writes_target_session_org_id_not_caller_org_id` | `crates/daemon/tests/record_tool_use_flow.rs` |
+| **T11** | Schema rollback recipe test against populated DB | `crates/daemon/src/db/schema.rs` |
+| **T12** | Live-daemon dogfood (port 8420) + results doc | `docs/benchmarks/results/forge-tool-use-recording-2026-04-19.md` |
 
 Per-task discipline (inherited from 2A-4a/4b):
 
 - TDD RED → GREEN → REFACTOR.
 - Each task: `cargo fmt` + `cargo clippy --workspace -- -W clippy::all -D warnings` + `cargo test --workspace` clean.
-- T5 specifically includes the handler-stub arms so the workspace stays compilable between T5 and T10 — no `todo!()` or feature-gate hacks needed (Claude HIGH #7 fix).
+- T4 specifically includes the handler-stub arms so the workspace stays compilable between T4 and T9 — no `todo!()` or feature-gate hacks needed (Claude HIGH #7 fix).
 - Commit after each GREEN. Review-fix commits tagged to the same task.
 - Per-task subagent dispatch: implementer + parallel spec-reviewer + code-quality-reviewer + Codex CLI reviewer.
 
@@ -663,10 +667,10 @@ Per-task discipline (inherited from 2A-4a/4b):
 ## 14. Success criteria
 
 1. All 37 tests in §7 pass (~1294 + 37 = ~1331 lib + workspace tests green).
-2. `cargo clippy --workspace -- -W clippy::all -D warnings` — 0 warnings at every commit boundary (T1 through T13).
+2. `cargo clippy --workspace -- -W clippy::all -D warnings` — 0 warnings at every commit boundary (T1 through T12).
 3. `cargo fmt --all` — clean.
-4. Live-daemon dogfood (T13) — all 5 curl steps behave as specified in §7.4 against port 8420.
-5. Rollback recipe (T12) executes cleanly on a populated test database.
+4. Live-daemon dogfood (T12) — all 5 curl steps behave as specified in §7.4 against port 8420.
+5. Rollback recipe (T11) executes cleanly on a populated test database.
 6. Target-session org test (L2 #15 + L3 #28) — written row's `organization_id` matches target session's org.
 7. No-orphan-write test (L2 #6) — session deleted between client send and daemon execute → `unknown_session` error AND no row inserted (atomic INSERT-SELECT proof).
 8. No-cross-session-leak test (L2 #26) — listing session A in org X does not return rows for session B in org X.
@@ -675,7 +679,9 @@ Per-task discipline (inherited from 2A-4a/4b):
 11. Master §6 Schema assertions 5 and 7 verifiable post-merge:
     - Assertion 5: `Request::RecordToolUse`, `Request::ListToolCalls` variants exist (post 2A-4c1) ✓
     - Assertion 7: `session_tool_call` table exists with specified columns and per-session/per-agent indexes (non-unique — tool calls can repeat) (post 2A-4c1) ✓
-12. Spec doc committed before implementation starts (2A-4a/4b precedent — v2 commit replaces v1 commit `ceea810`).
+12. Spec doc committed before implementation starts (2A-4a/4b precedent — v3 commit replaces v2 commit `1ad3deb` which replaced v1 commit `ceea810`).
+
+**Known untested path** (accepted risk, Claude v2-review NEW LOW #2): the `internal_error: <sanitized>` handler branch for non-`QueryReturnedNoRows` rusqlite errors (DB locked, IO fault, schema corruption) is not directly exercised in the test suite — these faults are hard to inject without mocking. The path is tested indirectly at dogfood level; if regression tooling (e.g., `faultinject`) lands in a later phase, add a targeted test then.
 
 ## 15. Key code locations (from exploration)
 
@@ -701,4 +707,5 @@ Per-task discipline (inherited from 2A-4a/4b):
 | Version | Date | Change |
 |---------|------|--------|
 | v1 | 2026-04-19 | Initial design, pre-adversarial-review. Commit `ceea810`. |
-| v2 | 2026-04-19 | Adversarial-review pass (Claude + Codex). Major revisions: (a) reframed "cross-org scoping" as honest "target-session org consistency" (Codex BLOCKER #1, Claude BLOCKER #2); (b) atomic INSERT-SELECT eliminates TOCTOU race (Codex BLOCKER #2); (c) dropped typed `HandlerError` enum + `errors.rs` references (don't exist) — now `Response::Error { message: String }` with documented `<error_code>:` prefix convention (Claude+Codex BLOCKER #1); (d) Response shape uses `ResponseData::ToolCallRecorded`/`ToolCallList` (Codex HIGH #5); (e) port 8420 (was 8430; Claude HIGH #4); (f) added `#[serde(default = "default_empty_args")]` for tool_args (Claude HIGH #5); (g) `get_session_org_id_strict` distinguishes `QueryReturnedNoRows` from other rusqlite errors (Claude HIGH #6); (h) T5 includes handler stubs to keep code compilable (Claude HIGH #7); (i) added 3rd query-serving index (Codex MEDIUM #10); (j) added concurrency tests + control-character tests + atomic-insert-rejects-deleted-session test (Codex HIGH #7, MEDIUM #8); (k) added `ORDER BY created_at DESC, id DESC` tiebreaker for sub-second monotonicity (Codex MEDIUM #9); (l) removed broken pagination claim (Codex MEDIUM #9); (m) §11 expanded with limitations §11.4 NULL org legacy, §11.7 row-vs-session correction semantics (master §13 item 3 unresolved → c2), §11.8 wall-clock not monotonic, §11.9 event broadcast unfiltered, §11.10 no rate limit; (n) test count 31 → 37; (o) success criteria reworded for accuracy (no more "rejects cross-org" claim — now "writes target-session org id" + "no-cross-session-leak"). |
+| v2 | 2026-04-19 | Adversarial-review pass (Claude + Codex). Major revisions: (a) reframed "cross-org scoping" as honest "target-session org consistency" (Codex BLOCKER #1, Claude BLOCKER #2); (b) atomic INSERT-SELECT eliminates TOCTOU race (Codex BLOCKER #2); (c) dropped typed `HandlerError` enum + `errors.rs` references (don't exist) — now `Response::Error { message: String }` with documented `<error_code>:` prefix convention (Claude+Codex BLOCKER #1); (d) Response shape uses `ResponseData::ToolCallRecorded`/`ToolCallList` (Codex HIGH #5); (e) port 8420 (was 8430; Claude HIGH #4); (f) added `#[serde(default = "default_empty_args")]` for tool_args (Claude HIGH #5); (g) `get_session_org_id_strict` distinguishes `QueryReturnedNoRows` from other rusqlite errors (Claude HIGH #6); (h) T5 includes handler stubs to keep code compilable (Claude HIGH #7); (i) added 3rd query-serving index (Codex MEDIUM #10); (j) added concurrency tests + control-character tests + atomic-insert-rejects-deleted-session test (Codex HIGH #7, MEDIUM #8); (k) added `ORDER BY created_at DESC, id DESC` tiebreaker for sub-second monotonicity (Codex MEDIUM #9); (l) removed broken pagination claim (Codex MEDIUM #9); (m) §11 expanded with limitations §11.4 NULL org legacy, §11.7 row-vs-session correction semantics (master §13 item 3 unresolved → c2), §11.8 wall-clock not monotonic, §11.9 event broadcast unfiltered, §11.10 no rate limit; (n) test count 31 → 37; (o) success criteria reworded for accuracy (no more "rejects cross-org" claim — now "writes target-session org id" + "no-cross-session-leak"). Commit `1ad3deb`. |
+| v3 | 2026-04-20 | Second-pass adversarial-review fixes from Claude (Codex second-pass was killed after hanging 11+ hrs; Claude verified ALL 23 v1 findings as PASS and flagged only minor follow-ups). Changes: (a) clarified `.len()` as **UTF-8 byte count** (not char count) at §5.1 Step 1d-1e + §8 table + §4.5 error-prefix docs — Claude NEW MEDIUM #1; (b) folded thin v2 T3 ("default_empty_args helper standalone") into T4 protocol bundle for cleaner task boundary — Claude NEW LOW #4; task count 13 → 12 with renumbering throughout §12 + §14; (c) added §14 "Known untested path" note acknowledging that the `internal_error:` rusqlite-fault branch is tested only at dogfood level (accepted gap — Claude NEW LOW #2). No scope or architectural changes. |
