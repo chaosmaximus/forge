@@ -787,6 +787,7 @@ mod tests {
                             },
                             content: line.to_string(),
                             has_tool_use: false,
+                            tool_names: Vec::new(),
                             timestamp: "2026-04-04T12:00:00Z".to_string(),
                             extracted: false,
                         });
@@ -839,6 +840,7 @@ mod tests {
                 role: "user".to_string(),
                 content: "How do I build a REST API in Rust?".to_string(),
                 has_tool_use: false,
+                tool_names: Vec::new(),
                 timestamp: "2026-04-04T12:00:00Z".to_string(),
                 extracted: false,
             },
@@ -848,6 +850,7 @@ mod tests {
                 role: "assistant".to_string(),
                 content: "I can help you with that...".to_string(),
                 has_tool_use: true,
+                tool_names: Vec::new(),
                 timestamp: "2026-04-04T12:00:01Z".to_string(),
                 extracted: false,
             },

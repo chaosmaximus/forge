@@ -37,6 +37,7 @@ pub fn parse_transcript(content: &str) -> Vec<ConversationChunk> {
             .clone()
             .unwrap_or_else(|| format!("chunk-{counter}"));
         let has_tool_use = tl.has_tool_use();
+        let tool_names = tl.tool_names();
 
         chunks.push(ConversationChunk {
             id,
@@ -44,6 +45,7 @@ pub fn parse_transcript(content: &str) -> Vec<ConversationChunk> {
             role: line_type,
             content: text,
             has_tool_use,
+            tool_names,
             timestamp: tl.timestamp.unwrap_or_default(),
             extracted: false,
         });
@@ -118,6 +120,7 @@ mod tests {
         assert_eq!(chunks[1].role, "assistant");
         assert!(chunks[1].content.contains("JWT authentication"));
         assert!(chunks[1].has_tool_use);
+        assert_eq!(chunks[1].tool_names, vec!["Read".to_string()]);
         assert_eq!(chunks[1].id, "a1");
 
         // Third chunk: assistant text-only

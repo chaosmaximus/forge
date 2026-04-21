@@ -79,6 +79,32 @@ impl ClineAdapter {
             false
         }
     }
+
+    /// Extract names of all tool_use blocks in a content value. Order-preserving,
+    /// duplicates included. Returns empty vec when content is not an array or
+    /// contains no tool_use blocks.
+    fn tool_names(content: &serde_json::Value) -> Vec<String> {
+        let serde_json::Value::Array(blocks) = content else {
+            return Vec::new();
+        };
+        blocks
+            .iter()
+            .filter_map(|block| {
+                let is_tool_use = block
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|t| t == "tool_use");
+                if !is_tool_use {
+                    return None;
+                }
+                block
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .collect()
+    }
 }
 
 impl AgentAdapter for ClineAdapter {
@@ -126,6 +152,7 @@ impl AgentAdapter for ClineAdapter {
             };
 
             let tool_use = Self::has_tool_use(content_val);
+            let tool_names = Self::tool_names(content_val);
 
             chunks.push(ConversationChunk {
                 id: format!("cline-{index}"),
@@ -133,6 +160,7 @@ impl AgentAdapter for ClineAdapter {
                 role: role.to_string(),
                 content: text,
                 has_tool_use: tool_use,
+                tool_names,
                 timestamp: String::new(),
                 extracted: false,
             });
@@ -226,11 +254,13 @@ mod tests {
         assert_eq!(chunks[0].role, "assistant");
         assert_eq!(chunks[0].content, "Let me read that file.");
         assert!(chunks[0].has_tool_use);
+        assert_eq!(chunks[0].tool_names, vec!["Read".to_string()]);
 
         assert_eq!(chunks[1].id, "cline-1");
         assert_eq!(chunks[1].role, "user");
         assert_eq!(chunks[1].content, "Here is the file content.");
         assert!(!chunks[1].has_tool_use);
+        assert!(chunks[1].tool_names.is_empty());
     }
 
     #[test]

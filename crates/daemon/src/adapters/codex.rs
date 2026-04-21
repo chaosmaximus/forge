@@ -34,14 +34,15 @@ struct CodexPayload {
     content: serde_json::Value,
 }
 
-/// Extract text and tool_use info from a Codex payload content field.
+/// Extract text, tool_use flag, and tool names from a Codex payload content field.
 /// Content can be a plain string or an array of content blocks.
-fn extract_content(content: &serde_json::Value) -> (String, bool) {
+fn extract_content(content: &serde_json::Value) -> (String, bool, Vec<String>) {
     match content {
-        serde_json::Value::String(s) => (s.clone(), false),
+        serde_json::Value::String(s) => (s.clone(), false, Vec::new()),
         serde_json::Value::Array(blocks) => {
             let mut texts = Vec::new();
             let mut has_tool_use = false;
+            let mut tool_names = Vec::new();
 
             for block in blocks {
                 let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -54,14 +55,19 @@ fn extract_content(content: &serde_json::Value) -> (String, bool) {
                     }
                     "tool_use" | "function_call" => {
                         has_tool_use = true;
+                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                            if !name.is_empty() {
+                                tool_names.push(name.to_string());
+                            }
+                        }
                     }
                     _ => {}
                 }
             }
 
-            (texts.join("\n"), has_tool_use)
+            (texts.join("\n"), has_tool_use, tool_names)
         }
-        _ => (String::new(), false),
+        _ => (String::new(), false, Vec::new()),
     }
 }
 
@@ -100,7 +106,7 @@ fn parse_codex_transcript(content: &str) -> Vec<ConversationChunk> {
             _ => continue,
         };
 
-        let (text, has_tool_use) = extract_content(&payload.content);
+        let (text, has_tool_use, tool_names) = extract_content(&payload.content);
 
         // Skip empty content
         if text.trim().is_empty() {
@@ -114,6 +120,7 @@ fn parse_codex_transcript(content: &str) -> Vec<ConversationChunk> {
             role,
             content: text,
             has_tool_use,
+            tool_names,
             timestamp: codex_line.timestamp.unwrap_or_default(),
             extracted: false,
         });
@@ -236,6 +243,7 @@ mod tests {
         assert_eq!(chunks[1].role, "assistant");
         assert!(chunks[1].content.contains("I'll create the REST API"));
         assert!(chunks[1].has_tool_use);
+        assert_eq!(chunks[1].tool_names, vec!["write_file".to_string()]);
         assert_eq!(chunks[1].timestamp, "2026-04-03T10:00:03Z");
 
         // Third: assistant text-only

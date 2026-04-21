@@ -293,17 +293,16 @@ async fn process_file(
                 ) {
                     eprintln!("[extractor] failed to increment tool_use_count: {e}");
                 }
-                // #54: also increment per-tool counters by scanning chunk
-                // content for inline <tool_use name="X"> markers. Today's
-                // adapters strip tool_use blocks at parse time, so this is a
-                // no-op for Claude/Codex/Cline JSONL; it remains wired in for
-                // future hook-driven ingestion (Phase 2A-4c2) that preserves
-                // raw tool_use markers in chunk text.
+                // #54 Layer 1: increment per-tool counters from structured
+                // `tool_names` populated by adapters at parse time. Adapters
+                // previously stripped <tool_use> markers and only set
+                // `has_tool_use: bool`, so the earlier transcript-scan approach
+                // was a no-op for Claude/Codex/Cline JSONL. With `tool_names`
+                // populated, we iterate the vec directly and let
+                // `record_tool_names` handle the three-slug candidate lookup.
                 for chunk in &chunks {
-                    if chunk.has_tool_use {
-                        if let Err(e) =
-                            record_tool_uses_from_transcript(&locked.conn, &chunk.content)
-                        {
+                    if !chunk.tool_names.is_empty() {
+                        if let Err(e) = record_tool_names(&locked.conn, &chunk.tool_names) {
                             tracing::warn!(
                                 error = %e,
                                 "per-tool counter update failed for chunk"
@@ -866,10 +865,11 @@ fn emit_extraction_metric(
 /// openings. Order-preserving; duplicates included (two Bash calls → two entries).
 ///
 /// Used by `record_tool_uses_from_transcript` to drive per-tool counter
-/// increments (SESSION-GAPS #54). Today's adapters strip tool_use blocks into
-/// `ConversationChunk.has_tool_use` and lose the name — this helper fires when
-/// future adapters (e.g., raw hook-driven ingestion from Phase 2A-4c2) or
-/// inline-XML transcripts preserve the `<tool_use name="...">` shape.
+/// increments from raw-XML transcripts. The production hot path today reads
+/// `ConversationChunk.tool_names` (#54 Layer 1) and calls `record_tool_names`
+/// directly — this regex scanner remains for test fixtures and for any future
+/// adapter that preserves inline `<tool_use name="...">` markers in chunk text.
+#[cfg(test)]
 fn parse_tool_names(transcript: &str) -> Vec<String> {
     let mut out = Vec::new();
     let pat = "<tool_use name=\"";
@@ -909,13 +909,28 @@ fn parse_tool_names(transcript: &str) -> Vec<String> {
 /// tried against all three candidates in order; the first match increments.
 /// If more than one row happens to exist, only the first is incremented —
 /// avoids double-counting a single tool_use.
+#[cfg(test)]
 pub(crate) fn record_tool_uses_from_transcript(
     conn: &rusqlite::Connection,
     transcript: &str,
 ) -> rusqlite::Result<usize> {
     let names = parse_tool_names(transcript);
+    record_tool_names(conn, &names)
+}
+
+/// Increment the registry counter (`tool.use_count`) for each of `names`.
+/// Shares the three-slug candidate lookup with `record_tool_uses_from_transcript`.
+///
+/// This is the preferred path (#54 Layer 1): adapters populate
+/// `ConversationChunk.tool_names` at parse time, so the extractor passes that
+/// vec in directly instead of regex-scanning `content`. The transcript-scan
+/// variant remains for backward compatibility (raw-XML transcripts, tests).
+pub(crate) fn record_tool_names(
+    conn: &rusqlite::Connection,
+    names: &[String],
+) -> rusqlite::Result<usize> {
     let mut incremented = 0usize;
-    for name in &names {
+    for name in names {
         let lower = name.to_lowercase();
         let candidates = [
             lower.clone(),
@@ -997,6 +1012,7 @@ mod tests {
             role: "assistant".into(),
             content: "running tool".into(),
             has_tool_use: true,
+            tool_names: Vec::new(),
             timestamp: "2026-04-03T12:00:00Z".into(),
             extracted: false,
         };
@@ -1015,6 +1031,7 @@ mod tests {
             role: "assistant".into(),
             content: "considering options".into(),
             has_tool_use: false,
+            tool_names: Vec::new(),
             timestamp: "2026-04-03T12:00:01Z".into(),
             extracted: false,
         };
@@ -1033,6 +1050,7 @@ mod tests {
             role: "user".into(),
             content: "please help".into(),
             has_tool_use: false,
+            tool_names: Vec::new(),
             timestamp: "2026-04-03T12:00:02Z".into(),
             extracted: false,
         };
@@ -1386,6 +1404,40 @@ Final text.
             .unwrap();
         assert_eq!(bash, 1);
         assert_eq!(read, 1);
+    }
+
+    /// #54 Layer 1 — `record_tool_names` is the hot path the extractor now
+    /// calls. Given a seeded registry and a Vec of names (mirroring
+    /// `ConversationChunk.tool_names`), it must increment the correct rows
+    /// under the `claude:<name>` prefix.
+    #[test]
+    fn test_record_tool_names_increments_from_chunk_vec() {
+        let conn = make_tool_conn();
+        let inserted = crate::db::manas::seed_claude_builtins(&conn).unwrap();
+        assert_eq!(inserted, 11);
+
+        // Simulate what adapters now populate into ConversationChunk.tool_names
+        // for an assistant turn with two Bash calls and one Read call.
+        let tool_names = vec!["Bash".to_string(), "Read".to_string(), "Bash".to_string()];
+        let n = super::record_tool_names(&conn, &tool_names).unwrap();
+        assert_eq!(n, 3, "all 3 names are seeded under claude:<lower> prefix");
+
+        let bash: i64 = conn
+            .query_row(
+                "SELECT use_count FROM tool WHERE id='claude:bash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let read: i64 = conn
+            .query_row(
+                "SELECT use_count FROM tool WHERE id='claude:read'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bash, 2, "two Bash entries → use_count = 2");
+        assert_eq!(read, 1, "one Read entry → use_count = 1");
     }
 
     // ----- SP1 #53: extraction metric emit via writer channel -----
