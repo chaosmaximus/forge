@@ -41,6 +41,17 @@ pub enum WriteCommand {
         content_summary: String,
         chars_injected: usize,
     },
+    /// Fire-and-forget: record one extraction metric (success or error).
+    /// Sent from the background extractor so that `forge-next stats` reads a
+    /// live counter instead of zero. SP1 #53.
+    RecordExtraction {
+        session_id: String,
+        memories_created: usize,
+        tokens_in: u64,
+        tokens_out: u64,
+        cost_cents: u64,
+        error: Option<String>,
+    },
 }
 
 /// Returns true if the request is read-only (no DB mutations).
@@ -223,6 +234,28 @@ impl WriterActor {
                         &context_type,
                         &content_summary,
                         chars_injected,
+                    );
+                }
+                WriteCommand::RecordExtraction {
+                    session_id,
+                    memories_created,
+                    tokens_in,
+                    tokens_out,
+                    cost_cents,
+                    error,
+                } => {
+                    // Fire-and-forget: record one extraction metric row. The
+                    // background extractor runs on a shared Arc<Mutex<DaemonState>>
+                    // but its writes must go through the writer actor so that
+                    // `forge-next stats` reads a live `extraction` counter.
+                    let _ = crate::db::metrics::record_extraction(
+                        &self.state.conn,
+                        &session_id,
+                        memories_created,
+                        tokens_in,
+                        tokens_out,
+                        cost_cents,
+                        error.as_deref(),
                     );
                 }
                 WriteCommand::Raw { request, reply } => {

@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, watch, Mutex};
 /// Extraction is debounced: collects file change events and waits for a 30-second
 /// activity gap before calling the LLM. This prevents wasting API credits during
 /// active editing sessions where the transcript changes every few seconds.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_extractor(
     mut file_rx: mpsc::Receiver<PathBuf>,
     state: Arc<Mutex<crate::server::handler::DaemonState>>,
@@ -30,6 +31,7 @@ pub async fn run_extractor(
     mut shutdown_rx: watch::Receiver<bool>,
     db_path: String,
     debounce_secs: u64,
+    writer_tx: Option<mpsc::Sender<crate::server::WriteCommand>>,
 ) {
     let mut offsets: HashMap<PathBuf, usize> = HashMap::new();
     let mut pending: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
@@ -51,7 +53,7 @@ pub async fn run_extractor(
                 if *shutdown_rx.borrow() {
                     // Process any pending files before shutdown
                     for path in pending.drain() {
-                        let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters, &db_path).await;
+                        let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters, &db_path, writer_tx.as_ref()).await;
                     }
                     eprintln!("[extractor] shutdown received");
                     return;
@@ -74,7 +76,7 @@ pub async fn run_extractor(
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
                         for path in pending.drain() {
-                            let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters, &db_path).await;
+                            let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters, &db_path, writer_tx.as_ref()).await;
                         }
                         eprintln!("[extractor] shutdown received during debounce");
                         return;
@@ -98,6 +100,7 @@ pub async fn run_extractor(
                     &config,
                     &agent_adapters,
                     &db_path,
+                    writer_tx.as_ref(),
                 )
                 .await
                 {
@@ -120,6 +123,7 @@ async fn process_file(
     _config: &ForgeConfig,
     agent_adapters: &[Box<dyn AgentAdapter>],
     db_path: &str,
+    writer_tx: Option<&mpsc::Sender<crate::server::WriteCommand>>,
 ) -> Result<(), String> {
     let total_start = std::time::Instant::now();
     // Resolve symlinks and verify the canonical path still matches an adapter.
@@ -799,6 +803,12 @@ async fn process_file(
                 "[extractor] {} memories from {} | parse: {}ms, extract: {}ms, total: {}ms, chunks: {}",
                 stored, path.display(), parse_ms, extract_ms, total_ms, chunks.len()
             );
+
+            // Tokens / cost are not yet returned by the extraction backend;
+            // pass 0 — SP1 prioritizes counter movement over token accuracy.
+            if let Some(tx) = writer_tx {
+                emit_extraction_metric(tx, &session_id, stored, 0, 0, 0, None);
+            }
             Ok(())
         }
         ExtractionResult::Unavailable(reason) => {
@@ -806,6 +816,11 @@ async fn process_file(
                 "[extractor] backend unavailable: {reason} ({}ms)",
                 total_start.elapsed().as_millis()
             );
+            // Session ID isn't computed on this branch; query_stats only
+            // reads the status flag to count errors.
+            if let Some(tx) = writer_tx {
+                emit_extraction_metric(tx, "", 0, 0, 0, 0, Some(&reason));
+            }
             Ok(())
         }
         ExtractionResult::Error(err) => {
@@ -813,9 +828,38 @@ async fn process_file(
                 "[extractor] extraction error: {err} ({}ms)",
                 total_start.elapsed().as_millis()
             );
+            if let Some(tx) = writer_tx {
+                emit_extraction_metric(tx, "", 0, 0, 0, 0, Some(&err));
+            }
             Ok(())
         }
     }
+}
+
+/// Emit a `RecordExtraction` command via the writer channel.
+///
+/// Best-effort: drops silently if the channel is full or closed. The writer
+/// actor's arm performs the actual INSERT into the `metrics` table. We use
+/// `try_send` so the extractor's hot loop is never blocked on the writer
+/// backlog — an unlikely but strictly observability-only loss is acceptable
+/// per SP1 spec §5.1.
+fn emit_extraction_metric(
+    tx: &mpsc::Sender<crate::server::WriteCommand>,
+    session_id: &str,
+    memories_created: usize,
+    tokens_in: u64,
+    tokens_out: u64,
+    cost_cents: u64,
+    error: Option<&str>,
+) {
+    let _ = tx.try_send(crate::server::WriteCommand::RecordExtraction {
+        session_id: session_id.to_string(),
+        memories_created,
+        tokens_in,
+        tokens_out,
+        cost_cents,
+        error: error.map(|s| s.to_string()),
+    });
 }
 
 /// Parse tool names from a transcript fragment. Matches `<tool_use name="X">`
@@ -1342,5 +1386,66 @@ Final text.
             .unwrap();
         assert_eq!(bash, 1);
         assert_eq!(read, 1);
+    }
+
+    // ----- SP1 #53: extraction metric emit via writer channel -----
+
+    #[test]
+    fn test_extractor_success_emits_record_extraction() {
+        use tokio::sync::mpsc;
+        let (tx, mut rx) = mpsc::channel::<crate::server::WriteCommand>(8);
+
+        super::emit_extraction_metric(&tx, "sess-1", 3, 1_000, 500, 10, None);
+
+        let cmd = rx.try_recv().expect("expected RecordExtraction in channel");
+        match cmd {
+            crate::server::WriteCommand::RecordExtraction {
+                session_id,
+                memories_created,
+                tokens_in,
+                tokens_out,
+                cost_cents,
+                error,
+            } => {
+                assert_eq!(session_id, "sess-1");
+                assert_eq!(memories_created, 3);
+                assert_eq!(tokens_in, 1_000);
+                assert_eq!(tokens_out, 500);
+                assert_eq!(cost_cents, 10);
+                assert!(error.is_none());
+            }
+            _ => panic!("expected RecordExtraction variant"),
+        }
+    }
+
+    #[test]
+    fn test_extractor_error_emits_record_extraction_with_error() {
+        use tokio::sync::mpsc;
+        let (tx, mut rx) = mpsc::channel::<crate::server::WriteCommand>(8);
+
+        super::emit_extraction_metric(&tx, "sess-2", 0, 0, 0, 0, Some("http 500"));
+
+        let cmd = rx.try_recv().expect("expected RecordExtraction in channel");
+        match cmd {
+            crate::server::WriteCommand::RecordExtraction {
+                error,
+                memories_created,
+                ..
+            } => {
+                assert_eq!(error.as_deref(), Some("http 500"));
+                assert_eq!(memories_created, 0);
+            }
+            _ => panic!("expected RecordExtraction variant"),
+        }
+    }
+
+    #[test]
+    fn test_extractor_emit_is_nonblocking_when_channel_full() {
+        use tokio::sync::mpsc;
+        // Capacity 1 + don't drain — second emit must not block nor panic.
+        let (tx, _rx) = mpsc::channel::<crate::server::WriteCommand>(1);
+        super::emit_extraction_metric(&tx, "s", 1, 0, 0, 0, None);
+        // Second call would block a `send`, but `try_send` drops silently.
+        super::emit_extraction_metric(&tx, "s", 2, 0, 0, 0, None);
     }
 }

@@ -1,6 +1,7 @@
 pub mod diagnostics;
 pub mod effectiveness;
 pub mod manas;
+pub mod metrics;
 pub mod ops;
 pub mod raw;
 pub mod schema;

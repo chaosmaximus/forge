@@ -321,20 +321,15 @@ async fn main() {
         }
     }
 
-    // Spawn background workers (they keep Arc<Mutex<DaemonState>> — unchanged)
-    let _worker_handles = forge_daemon::workers::spawn_workers(
-        Arc::clone(&state),
-        config.clone(),
-        &shutdown_tx,
-        db_path.clone(),
-        events.clone(),
-    );
-
-    // Create a SEPARATE DaemonState for the WriterActor. This is the key fix
-    // for the write timeout bug: the writer owns its own DaemonState with an
-    // independent SQLite connection, so it is NEVER blocked by workers holding
-    // the Arc<Mutex<DaemonState>> during extraction (10-30s).
-    // Both connections open the same db_path; SQLite WAL serializes writes internally.
+    // Create the writer channel + actor BEFORE spawning workers so the
+    // extractor can receive a `writer_tx` clone and emit fire-and-forget
+    // commands (e.g., `RecordExtraction` for observability).
+    //
+    // The WriterActor OWNS a SEPARATE DaemonState from the Arc<Mutex<..>>
+    // the workers hold — the key fix for the write timeout bug: the writer
+    // is never blocked by workers holding shared state during extraction
+    // (10-30s). Both connections open the same db_path; SQLite WAL
+    // serializes writes internally.
     let (write_tx, write_rx) = mpsc::channel::<forge_daemon::server::WriteCommand>(256);
     let writer_state =
         match DaemonState::new_writer(&db_path, events.clone(), Arc::clone(&hlc), started_at) {
@@ -348,6 +343,16 @@ async fn main() {
         state: writer_state,
     };
     tokio::spawn(async move { writer.run(write_rx).await });
+
+    // Spawn background workers (they keep Arc<Mutex<DaemonState>> — unchanged).
+    let _worker_handles = forge_daemon::workers::spawn_workers(
+        Arc::clone(&state),
+        config.clone(),
+        &shutdown_tx,
+        db_path.clone(),
+        events.clone(),
+        Some(write_tx.clone()),
+    );
 
     // I3: Spawn signal handler that sends on shutdown channel instead of process::exit
     let shutdown_for_signal = shutdown_tx.clone();
