@@ -230,6 +230,26 @@ fn send_touch(
     }
 }
 
+/// Resolve the session_id to attribute a proactive-hook RecordInjection to.
+///
+/// Prefers the explicit value threaded through the Request (new in SP1
+/// review-fixup). Falls back to the most recently activated session across
+/// any agent — this lets old hook clients (pre-field, deserialized as
+/// `None` via `#[serde(default)]`) still record rather than silently
+/// dropping the row the way the previous hardcoded `agent="cli"` lookup did
+/// on Claude Code sessions (which register as `agent="claude-code"`).
+fn resolve_hook_session_id(conn: &rusqlite::Connection, explicit: Option<&str>) -> String {
+    if let Some(sid) = explicit {
+        if !sid.is_empty() {
+            return sid.to_string();
+        }
+    }
+    crate::sessions::get_latest_active_session_id(conn)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
 /// Record a proactive-context injection via the writer channel (#45 — SP1 Fix 2).
 ///
 /// No-op when the writer channel is unavailable, session_id is empty, or
@@ -2104,7 +2124,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::PreBashCheck { command } => {
+        Request::PreBashCheck {
+            command,
+            session_id,
+        } => {
             let result = crate::guardrails::check::pre_bash_check(&state.conn, &command);
 
             // Emit bash_warning event when check returns unsafe
@@ -2128,10 +2151,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 None,
             );
 
-            // Record injection for observability (#45) — route through writer
-            // channel since this handler runs on a read-only connection.
-            let sid =
-                crate::sessions::get_active_session_id(&state.conn, "cli").unwrap_or_default();
+            // Record injection for observability (#45) — use explicit session_id
+            // from the Request when present; fall back to the most recently active
+            // session (any agent) so old hook clients still record.
+            let sid = resolve_hook_session_id(&state.conn, session_id.as_deref());
             record_proactive_injection(
                 state.writer_tx.as_ref(),
                 &sid,
@@ -2149,7 +2172,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::PostBashCheck { command, exit_code } => {
+        Request::PostBashCheck {
+            command,
+            exit_code,
+            session_id,
+        } => {
             let result =
                 crate::guardrails::check::post_bash_check(&state.conn, &command, exit_code);
             let proactive_context = crate::proactive::build_proactive_context(
@@ -2161,8 +2188,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // Record injection for observability (#45) — helper no-ops when
             // chars_injected is 0 (common on fresh DBs: PostBashCheck relevance
             // is 0.1 for all knowledge types, below 0.3 threshold).
-            let sid =
-                crate::sessions::get_active_session_id(&state.conn, "cli").unwrap_or_default();
+            let sid = resolve_hook_session_id(&state.conn, session_id.as_deref());
             record_proactive_injection(
                 state.writer_tx.as_ref(),
                 &sid,
@@ -2178,7 +2204,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::PostEditCheck { file } => {
+        Request::PostEditCheck { file, session_id } => {
             let result = crate::guardrails::check::post_edit_check(&state.conn, &file);
 
             // Emit event if there are any warnings worth surfacing
@@ -2204,8 +2230,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             );
 
             // Record injection for observability (#45).
-            let sid =
-                crate::sessions::get_active_session_id(&state.conn, "cli").unwrap_or_default();
+            let sid = resolve_hook_session_id(&state.conn, session_id.as_deref());
             record_proactive_injection(
                 state.writer_tx.as_ref(),
                 &sid,
@@ -6897,6 +6922,7 @@ mod tests {
             &mut state,
             Request::PostEditCheck {
                 file: "src/lib.rs".into(),
+                session_id: None,
             },
         );
         match resp {
@@ -6960,6 +6986,7 @@ mod tests {
             &mut state,
             Request::PostEditCheck {
                 file: "src/auth.rs".into(),
+                session_id: None,
             },
         );
         match &resp {
@@ -8567,6 +8594,7 @@ mod tests {
             &mut state,
             Request::PostEditCheck {
                 file: "src/auth.rs".into(),
+                session_id: None,
             },
         );
         match resp {

@@ -106,7 +106,7 @@ if let Some(tx) = &state.writer_tx {
         .join(",");
     let _ = tx.try_send(WriteCommand::RecordInjection {
         session_id: session_id.clone(),
-        hook_event: "PreBashChecked".to_string(),  // site-specific: PreBashChecked / PostBashCheck / PostEditCheck
+        hook_event: "PreBashCheck".to_string(),  // site-specific: PreBashCheck / PostBashCheck / PostEditCheck
         context_type: "proactive".to_string(),
         content_summary: summary,
         chars_injected: chars,
@@ -189,7 +189,7 @@ daemon start
 ### 4.2 — #45 proactive injection
 
 ```
-Claude Code hook (PreBashChecked/PostBashCheck/PostEditCheck)
+Claude Code hook (PreBashCheck/PostBashCheck/PostEditCheck)
   → HTTP /api handler
   → build_proactive_context() returns Vec<ProactiveInjection>
   → tx.try_send(WriteCommand::RecordInjection { context_type: "proactive", ... })  ← NEW
@@ -270,7 +270,7 @@ Each commit adds a failing test → implementation until test passes → refacto
 | Fix | Test file | Test name | Assertion |
 |---|---|---|---|
 | #55 | `skills.rs` `#[cfg(test)]` | `test_auto_populate_skill_registry_on_init` | After init with tempdir of 3 fixture skills, `list_skills().count == 3` |
-| #45 | `handler.rs` `#[cfg(test)]` | `test_proactive_context_records_injection` | Driving PreBashChecked handler in test harness → `context_effectiveness` row with `context_type='proactive'` |
+| #45 | `handler.rs` `#[cfg(test)]` | `test_proactive_context_records_injection` | Driving PreBashCheck handler in test harness → `context_effectiveness` row with `context_type='proactive'` |
 | #54 | `extractor.rs` `#[cfg(test)]` | `test_extractor_records_per_tool_use_counter` | Sample transcript with 3 tool_use blocks (Bash, Read, Edit) → each tool's `use_count` incremented |
 | #53 | `extractor.rs` + `writer.rs` `#[cfg(test)]` | `test_extraction_success_records_metric` + `test_extraction_error_records_metric` | Both paths write `metrics` row with `metric_type='extraction'`; error row carries error in meta |
 

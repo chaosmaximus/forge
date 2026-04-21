@@ -434,7 +434,12 @@ pub async fn check(file: String, action: String) {
 
 /// Post-edit check — surface callers, lessons, and warnings after a file edit.
 pub async fn post_edit_check(file: String) {
-    match client::send(&Request::PostEditCheck { file: file.clone() }).await {
+    match client::send(&Request::PostEditCheck {
+        file: file.clone(),
+        session_id: None,
+    })
+    .await
+    {
         Ok(Response::Ok {
             data:
                 ResponseData::PostEditChecked {
@@ -551,6 +556,7 @@ pub async fn blast_radius(file: String) {
 pub async fn pre_bash_check(command: String) {
     match client::send(&Request::PreBashCheck {
         command: command.clone(),
+        session_id: None,
     })
     .await
     {
@@ -597,6 +603,7 @@ pub async fn post_bash_check(command: String, exit_code: i32) {
     match client::send(&Request::PostBashCheck {
         command: command.clone(),
         exit_code,
+        session_id: None,
     })
     .await
     {

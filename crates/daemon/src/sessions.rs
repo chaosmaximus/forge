@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -144,6 +144,22 @@ pub fn get_active_session_id(conn: &Connection, agent: &str) -> rusqlite::Result
         params![agent],
         |row| row.get(0),
     )
+}
+
+/// Return the session_id of the most recently activated session, regardless
+/// of agent. Returns `None` if no session is active.
+///
+/// Used as a best-effort fallback by hook handlers whose Request variants
+/// did not carry an explicit session_id (old clients, CLI convenience).
+/// Added in SP1 review-fixup after the hardcoded `get_active_session_id(_, "cli")`
+/// path was found to miss real Claude Code sessions (agent="claude-code").
+pub fn get_latest_active_session_id(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT id FROM session WHERE status = 'active' ORDER BY started_at DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
 }
 
 /// Save working set (files touched + memories created) for a session.
@@ -719,6 +735,38 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_schema(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn test_get_latest_active_session_id_returns_most_recent() {
+        let conn = setup();
+
+        // No active sessions → None.
+        assert_eq!(get_latest_active_session_id(&conn).unwrap(), None);
+
+        register_session(&conn, "sess-1", "cli", None, None, None, None).unwrap();
+        // Ensure distinct started_at (SQLite datetime('now') has 1s resolution
+        // in some builds; tick the clock explicitly so the ORDER BY is
+        // deterministic on all platforms).
+        conn.execute(
+            "UPDATE session SET started_at = datetime('now', '-10 seconds') WHERE id = 'sess-1'",
+            [],
+        )
+        .unwrap();
+        register_session(&conn, "sess-2", "claude-code", None, None, None, None).unwrap();
+
+        assert_eq!(
+            get_latest_active_session_id(&conn).unwrap(),
+            Some("sess-2".to_string()),
+            "the most recently started active session should win, regardless of agent"
+        );
+
+        // Ending the most-recent one falls back to the older active session.
+        end_session(&conn, "sess-2").unwrap();
+        assert_eq!(
+            get_latest_active_session_id(&conn).unwrap(),
+            Some("sess-1".to_string()),
+        );
     }
 
     #[test]

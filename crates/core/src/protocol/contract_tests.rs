@@ -172,12 +172,14 @@ mod tests {
                 "post_edit_check",
                 Request::PostEditCheck {
                     file: "src/main.rs".into(),
+                    session_id: None,
                 },
             ),
             (
                 "pre_bash_check",
                 Request::PreBashCheck {
                     command: "rm -rf /tmp/test".into(),
+                    session_id: None,
                 },
             ),
             (
@@ -185,6 +187,7 @@ mod tests {
                 Request::PostBashCheck {
                     command: "cargo test".into(),
                     exit_code: 1,
+                    session_id: None,
                 },
             ),
             (
@@ -1326,13 +1329,18 @@ mod tests {
                     file: "f".into(),
                     action: "a".into(),
                 },
-                Request::PostEditCheck { file: "f".into() },
+                Request::PostEditCheck {
+                    file: "f".into(),
+                    session_id: None,
+                },
                 Request::PreBashCheck {
                     command: "ls".into(),
+                    session_id: None,
                 },
                 Request::PostBashCheck {
                     command: "cargo test".into(),
                     exit_code: 1,
+                    session_id: None,
                 },
                 Request::BlastRadius { file: "f".into() },
                 Request::RegisterSession {
@@ -1991,6 +1999,95 @@ mod tests {
         assert!(
             json.contains("\"method\":\"compute_recency_factor\""),
             "expected compute_recency_factor method tag, got: {json}"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────
+    // SP1 review-fixup: session_id on proactive-hook Request variants.
+    // Verify:
+    //   a) explicit session_id round-trips,
+    //   b) omitting the field decodes to None (backwards-compat via #[serde(default)]).
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn pre_bash_check_with_explicit_session_id_roundtrips() {
+        let req = Request::PreBashCheck {
+            command: "cargo test".into(),
+            session_id: Some("sess-xyz".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains("\"session_id\":\"sess-xyz\""),
+            "explicit session_id must serialize, got: {json}"
+        );
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, req);
+    }
+
+    #[test]
+    fn pre_bash_check_without_session_id_decodes_to_none() {
+        // Old clients (pre-SP1-fixup) send only `command`. Ensure we still
+        // accept that payload and deserialize session_id to None.
+        let legacy = r#"{"method":"pre_bash_check","params":{"command":"ls"}}"#;
+        let parsed: Request = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            parsed,
+            Request::PreBashCheck {
+                command: "ls".into(),
+                session_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn post_bash_check_with_explicit_session_id_roundtrips() {
+        let req = Request::PostBashCheck {
+            command: "cargo build".into(),
+            exit_code: 1,
+            session_id: Some("sess-xyz".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"session_id\":\"sess-xyz\""));
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, req);
+    }
+
+    #[test]
+    fn post_bash_check_without_session_id_decodes_to_none() {
+        let legacy = r#"{"method":"post_bash_check","params":{"command":"ls","exit_code":0}}"#;
+        let parsed: Request = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            parsed,
+            Request::PostBashCheck {
+                command: "ls".into(),
+                exit_code: 0,
+                session_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn post_edit_check_with_explicit_session_id_roundtrips() {
+        let req = Request::PostEditCheck {
+            file: "src/main.rs".into(),
+            session_id: Some("sess-xyz".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"session_id\":\"sess-xyz\""));
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, req);
+    }
+
+    #[test]
+    fn post_edit_check_without_session_id_decodes_to_none() {
+        let legacy = r#"{"method":"post_edit_check","params":{"file":"f.rs"}}"#;
+        let parsed: Request = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            parsed,
+            Request::PostEditCheck {
+                file: "f.rs".into(),
+                session_id: None,
+            }
         );
     }
 

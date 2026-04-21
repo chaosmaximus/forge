@@ -344,15 +344,18 @@ mod tests {
 
         assert!(is_read_only(&Request::PreBashCheck {
             command: "ls".into(),
+            session_id: None,
         }));
 
         assert!(is_read_only(&Request::PostBashCheck {
             command: "ls".into(),
             exit_code: 0,
+            session_id: None,
         }));
 
         assert!(is_read_only(&Request::PostEditCheck {
             file: "f.rs".into(),
+            session_id: None,
         }));
 
         assert!(is_read_only(&Request::BlastRadius {

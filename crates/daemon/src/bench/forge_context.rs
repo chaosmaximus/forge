@@ -581,6 +581,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
             dimension: Dimension::Guardrails,
             request: Request::PostEditCheck {
                 file: file.to_string(),
+                session_id: None,
             },
             expected,
         });
@@ -624,6 +625,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
             dimension: Dimension::Guardrails,
             request: Request::PreBashCheck {
                 command: cmd.to_string(),
+                session_id: None,
             },
             expected,
         });
@@ -1561,6 +1563,7 @@ mod tests {
             &mut state,
             Request::PostEditCheck {
                 file: "src/auth/middleware.rs".to_string(),
+                session_id: None,
             },
         );
         let items = extract_result_items(&resp);
@@ -1578,6 +1581,7 @@ mod tests {
             &mut state,
             Request::PreBashCheck {
                 command: "cargo test".to_string(),
+                session_id: None,
             },
         );
         let items = extract_result_items(&resp);

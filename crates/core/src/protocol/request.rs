@@ -180,15 +180,25 @@ pub enum Request {
     /// Pre-bash check: warn about destructive commands, surface relevant skills/lessons
     PreBashCheck {
         command: String,
+        /// Optional session_id for proactive-injection recording. When omitted,
+        /// the handler falls back to `get_latest_active_session_id` (best-effort).
+        /// Field added in SP1 review-fixup after the hardcoded agent="cli" lookup
+        /// was found to miss Claude Code sessions (which register as "claude-code").
+        #[serde(default)]
+        session_id: Option<String>,
     },
     /// Post-bash check: on failure, surface relevant lessons and skills
     PostBashCheck {
         command: String,
         exit_code: i32,
+        #[serde(default)]
+        session_id: Option<String>,
     },
     /// Post-edit check: surface callers, lessons, and patterns after a file edit
     PostEditCheck {
         file: String,
+        #[serde(default)]
+        session_id: Option<String>,
     },
     /// Blast radius analysis: what is the impact of changing this file?
     BlastRadius {
