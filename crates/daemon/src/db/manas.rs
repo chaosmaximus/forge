@@ -537,6 +537,52 @@ pub fn detect_and_store_tools(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(found)
 }
 
+/// Seed Claude Code builtin tools into the `tool` registry.
+///
+/// Closes SESSION-GAPS #54 Layer 2: `record_tool_uses_from_transcript` needs
+/// these rows to exist before it can increment `use_count` for hook-driven or
+/// raw-transcript tool_use observations (e.g., `<tool_use name="Bash">`).
+///
+/// Uses `INSERT OR IGNORE` so reboots never duplicate rows nor reset the
+/// `use_count` of already-seeded builtins — unlike `store_tool`'s
+/// ON CONFLICT DO UPDATE upsert, which would clobber accumulated counters.
+/// Returns the number of newly inserted rows (0 on subsequent boots).
+pub fn seed_claude_builtins(conn: &Connection) -> rusqlite::Result<usize> {
+    const CLAUDE_BUILTINS: &[&str] = &[
+        "Bash",
+        "Read",
+        "Edit",
+        "Write",
+        "Grep",
+        "Glob",
+        "Task",
+        "TodoWrite",
+        "WebFetch",
+        "WebSearch",
+        "NotebookEdit",
+    ];
+
+    let now = now_iso();
+    let mut inserted = 0usize;
+    for name in CLAUDE_BUILTINS {
+        let id = format!("claude:{}", name.to_lowercase());
+        let rows = conn.execute(
+            "INSERT OR IGNORE INTO tool
+             (id, name, kind, capabilities, config, health, last_used, use_count, discovered_at)
+             VALUES (?1, ?2, ?3, '[]', NULL, ?4, NULL, 0, ?5)",
+            params![
+                id,
+                *name,
+                tool_kind_str(&ToolKind::Builtin),
+                tool_health_str(&ToolHealth::Healthy),
+                now,
+            ],
+        )?;
+        inserted += rows;
+    }
+    Ok(inserted)
+}
+
 /// Get a set of available tool names for skill validation.
 pub fn available_tool_names(
     conn: &Connection,
@@ -2919,6 +2965,58 @@ mod tests {
 
         let tools = list_tools(&conn, None).unwrap();
         assert_eq!(tools.len(), found1);
+    }
+
+    #[test]
+    fn test_seed_claude_builtins() {
+        let conn = open_db();
+
+        // First seed: should insert all 11 builtins.
+        let inserted1 = seed_claude_builtins(&conn).unwrap();
+        assert_eq!(inserted1, 11, "first seed inserts all 11 Claude builtins");
+
+        let builtins = list_tools(&conn, Some(&ToolKind::Builtin)).unwrap();
+        assert_eq!(builtins.len(), 11);
+
+        // Verify IDs use the claude:<lowercase-name> convention.
+        let expected_ids = [
+            "claude:bash",
+            "claude:read",
+            "claude:edit",
+            "claude:write",
+            "claude:grep",
+            "claude:glob",
+            "claude:task",
+            "claude:todowrite",
+            "claude:webfetch",
+            "claude:websearch",
+            "claude:notebookedit",
+        ];
+        let mut actual_ids: Vec<String> = builtins.iter().map(|t| t.id.clone()).collect();
+        actual_ids.sort();
+        let mut expected_sorted: Vec<String> = expected_ids.iter().map(|s| s.to_string()).collect();
+        expected_sorted.sort();
+        assert_eq!(actual_ids, expected_sorted);
+
+        // Simulate accumulated usage on one row; re-seed must NOT reset it.
+        record_tool_use(&conn, "claude:bash").unwrap();
+        record_tool_use(&conn, "claude:bash").unwrap();
+
+        // Second seed: idempotent — inserts 0 new rows, preserves counters.
+        let inserted2 = seed_claude_builtins(&conn).unwrap();
+        assert_eq!(inserted2, 0, "re-seeding is idempotent (no new inserts)");
+
+        let builtins_after = list_tools(&conn, Some(&ToolKind::Builtin)).unwrap();
+        assert_eq!(builtins_after.len(), 11, "still exactly 11 builtins");
+
+        let bash = builtins_after
+            .iter()
+            .find(|t| t.id == "claude:bash")
+            .expect("claude:bash row");
+        assert_eq!(
+            bash.use_count, 2,
+            "re-seed must not clobber accumulated use_count"
+        );
     }
 
     #[test]

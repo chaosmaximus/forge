@@ -54,6 +54,14 @@ impl DaemonState {
         // Best-effort: detect and store available CLI tools
         let tools_discovered = crate::db::manas::detect_and_store_tools(&conn).unwrap_or(0);
 
+        // Best-effort: seed Claude Code builtins (Bash/Read/Edit/etc.) into the
+        // tool registry so record_tool_uses_from_transcript has rows to
+        // increment. Idempotent via INSERT OR IGNORE; accumulated use_count
+        // is preserved across reboots. Closes SESSION-GAPS #54 Layer 2.
+        if let Err(e) = crate::db::manas::seed_claude_builtins(&conn) {
+            eprintln!("[daemon] WARN: failed to seed Claude builtins: {e}");
+        }
+
         // Prune low-quality skills (no steps, short descriptions, status-like names)
         match crate::db::manas::prune_junk_skills(&conn) {
             Ok(n) if n > 0 => eprintln!("[daemon] pruned {n} junk skills"),

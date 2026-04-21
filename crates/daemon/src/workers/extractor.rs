@@ -858,9 +858,13 @@ fn parse_tool_names(transcript: &str) -> Vec<String> {
 /// when third-party tools appear in transcripts. Returns the number of
 /// successful increments.
 ///
-/// Slug convention: tool names are lowercased before registry lookup (e.g.,
-/// `"Bash"` → `"bash"`). If the registry ever diverges from this convention,
-/// this helper will silently miss matches — revisit alongside tool discovery.
+/// Slug convention (SESSION-GAPS #54 Layer 2 fixup): the tool registry uses
+/// multiple ID prefixes — bare slug for legacy/test rows, `cli:<name>` for
+/// tools discovered by `detect_and_store_tools`, and `claude:<name>` for
+/// Claude Code builtins seeded by `seed_claude_builtins`. Each observation is
+/// tried against all three candidates in order; the first match increments.
+/// If more than one row happens to exist, only the first is incremented —
+/// avoids double-counting a single tool_use.
 pub(crate) fn record_tool_uses_from_transcript(
     conn: &rusqlite::Connection,
     transcript: &str,
@@ -868,13 +872,29 @@ pub(crate) fn record_tool_uses_from_transcript(
     let names = parse_tool_names(transcript);
     let mut incremented = 0usize;
     for name in &names {
-        let tool_id = name.to_lowercase();
-        match crate::db::manas::record_tool_use(conn, &tool_id) {
-            Ok(true) => incremented += 1,
-            Ok(false) => {
-                tracing::debug!(tool = %tool_id, "tool not in registry — skipping counter")
+        let lower = name.to_lowercase();
+        let candidates = [
+            lower.clone(),
+            format!("cli:{lower}"),
+            format!("claude:{lower}"),
+        ];
+        let mut matched = false;
+        for cand in &candidates {
+            match crate::db::manas::record_tool_use(conn, cand) {
+                Ok(true) => {
+                    incremented += 1;
+                    matched = true;
+                    break;
+                }
+                Ok(false) => continue,
+                Err(e) => {
+                    tracing::warn!(error = %e, tool = %cand, "record_tool_use failed");
+                    break;
+                }
             }
-            Err(e) => tracing::warn!(error = %e, tool = %tool_id, "record_tool_use failed"),
+        }
+        if !matched {
+            tracing::debug!(tool = %name, "tool not in registry — skipping counter");
         }
     }
     Ok(incremented)
@@ -1197,13 +1217,11 @@ Final text.
         assert!(super::parse_tool_names(empty_name).is_empty());
     }
 
-    #[test]
-    fn test_extractor_records_per_tool_use_counter() {
-        use rusqlite::Connection;
-        let conn = Connection::open_in_memory().unwrap();
-        // Minimal `tool` table — avoids pulling the full schema (which needs
-        // the sqlite-vec extension loaded). Mirror the columns in
-        // crates/daemon/src/db/schema.rs at time of writing.
+    /// Minimal in-memory `tool` table for extractor tests. Avoids pulling the
+    /// full schema (which needs the sqlite-vec extension loaded). Mirrors the
+    /// columns in `crates/daemon/src/db/schema.rs`.
+    fn make_tool_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE tool (
                 id TEXT PRIMARY KEY,
@@ -1218,6 +1236,12 @@ Final text.
             );",
         )
         .unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_extractor_records_per_tool_use_counter() {
+        let conn = make_tool_conn();
 
         // Seed the tool table with 3 known tools
         for (id, name) in [("bash", "Bash"), ("read", "Read"), ("edit", "Edit")] {
@@ -1260,5 +1284,63 @@ Final text.
         assert_eq!(read_count, 1, "Read should be incremented to 1");
         assert_eq!(edit_count, 0, "Edit was not in transcript — should stay 0");
         // "Ghost" was not in registry — should be silently skipped (debug-level log)
+    }
+
+    /// Dual-slug lookup: rows seeded under the `cli:<name>` prefix (as
+    /// `detect_and_store_tools` does) must still match a bare `<tool_use
+    /// name="git">` observation. Pre-fixup behaviour would have missed every
+    /// CLI-prefixed row.
+    #[test]
+    fn test_record_tool_uses_matches_cli_prefix_slug() {
+        let conn = make_tool_conn();
+        conn.execute(
+            "INSERT INTO tool (id, name, kind, use_count, discovered_at)
+             VALUES ('cli:git', 'git', 'cli', 0, '2026-04-21T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let transcript = r#"<tool_use name="git"></tool_use>"#;
+        let n = super::record_tool_uses_from_transcript(&conn, transcript).unwrap();
+        assert_eq!(n, 1, "bare 'git' observation must match 'cli:git' row");
+
+        let c: i64 = conn
+            .query_row("SELECT use_count FROM tool WHERE id='cli:git'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(c, 1);
+    }
+
+    /// Claude Code builtins seeded under `claude:<name>` must match
+    /// `<tool_use name="Bash">` / `<tool_use name="Read">` observations.
+    /// Exercises the new seeder + the dual-lookup end-to-end.
+    #[test]
+    fn test_record_tool_uses_matches_claude_prefix_slug_after_seeding() {
+        let conn = make_tool_conn();
+
+        let inserted = crate::db::manas::seed_claude_builtins(&conn).unwrap();
+        assert_eq!(inserted, 11, "seeder registered all 11 Claude builtins");
+
+        let transcript = r#"<tool_use name="Bash"></tool_use><tool_use name="Read"></tool_use>"#;
+        let n = super::record_tool_uses_from_transcript(&conn, transcript).unwrap();
+        assert_eq!(n, 2);
+
+        let bash: i64 = conn
+            .query_row(
+                "SELECT use_count FROM tool WHERE id='claude:bash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let read: i64 = conn
+            .query_row(
+                "SELECT use_count FROM tool WHERE id='claude:read'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bash, 1);
+        assert_eq!(read, 1);
     }
 }
