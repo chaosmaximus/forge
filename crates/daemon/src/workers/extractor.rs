@@ -289,6 +289,24 @@ async fn process_file(
                 ) {
                     eprintln!("[extractor] failed to increment tool_use_count: {e}");
                 }
+                // #54: also increment per-tool counters by scanning chunk
+                // content for inline <tool_use name="X"> markers. Today's
+                // adapters strip tool_use blocks at parse time, so this is a
+                // no-op for Claude/Codex/Cline JSONL; it remains wired in for
+                // future hook-driven ingestion (Phase 2A-4c2) that preserves
+                // raw tool_use markers in chunk text.
+                for chunk in &chunks {
+                    if chunk.has_tool_use {
+                        if let Err(e) =
+                            record_tool_uses_from_transcript(&locked.conn, &chunk.content)
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "per-tool counter update failed for chunk"
+                            );
+                        }
+                    }
+                }
                 drop(locked);
             }
         }
@@ -800,6 +818,68 @@ async fn process_file(
     }
 }
 
+/// Parse tool names from a transcript fragment. Matches `<tool_use name="X">`
+/// openings. Order-preserving; duplicates included (two Bash calls → two entries).
+///
+/// Used by `record_tool_uses_from_transcript` to drive per-tool counter
+/// increments (SESSION-GAPS #54). Today's adapters strip tool_use blocks into
+/// `ConversationChunk.has_tool_use` and lose the name — this helper fires when
+/// future adapters (e.g., raw hook-driven ingestion from Phase 2A-4c2) or
+/// inline-XML transcripts preserve the `<tool_use name="...">` shape.
+fn parse_tool_names(transcript: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let pat = "<tool_use name=\"";
+    let mut i = 0usize;
+    while i < transcript.len() {
+        let Some(off) = transcript[i..].find(pat) else {
+            break;
+        };
+        let start = i + off + pat.len();
+        if start >= transcript.len() {
+            break;
+        }
+        let Some(end_off) = transcript[start..].find('"') else {
+            // No closing quote — malformed; stop scanning to avoid infinite loop.
+            break;
+        };
+        let name = &transcript[start..start + end_off];
+        if !name.is_empty() {
+            out.push(name.to_string());
+        }
+        // Advance past the closing quote we consumed.
+        i = start + end_off + 1;
+    }
+    out
+}
+
+/// For each tool name found in the transcript, increment the registry counter
+/// (`tool.use_count`) via `db::manas::record_tool_use`. Unknown names (not in
+/// the `tool` table) are logged at debug level and skipped — avoids log spam
+/// when third-party tools appear in transcripts. Returns the number of
+/// successful increments.
+///
+/// Slug convention: tool names are lowercased before registry lookup (e.g.,
+/// `"Bash"` → `"bash"`). If the registry ever diverges from this convention,
+/// this helper will silently miss matches — revisit alongside tool discovery.
+pub(crate) fn record_tool_uses_from_transcript(
+    conn: &rusqlite::Connection,
+    transcript: &str,
+) -> rusqlite::Result<usize> {
+    let names = parse_tool_names(transcript);
+    let mut incremented = 0usize;
+    for name in &names {
+        let tool_id = name.to_lowercase();
+        match crate::db::manas::record_tool_use(conn, &tool_id) {
+            Ok(true) => incremented += 1,
+            Ok(false) => {
+                tracing::debug!(tool = %tool_id, "tool not in registry — skipping counter")
+            }
+            Err(e) => tracing::warn!(error = %e, tool = %tool_id, "record_tool_use failed"),
+        }
+    }
+    Ok(incremented)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1067,5 +1147,118 @@ mod tests {
         // Case 3: Empty buffer
         let buf: &[u8] = &[];
         assert!(buf.is_empty(), "empty buffer handled by early return");
+    }
+
+    // ===== #54: Per-tool use_count increment =====
+
+    #[test]
+    fn test_parse_tool_names_from_transcript_chunk() {
+        // Arrange: a transcript fragment with 3 tool uses
+        let transcript = r#"
+Some text here.
+<tool_use name="Bash">
+{"command": "ls"}
+</tool_use>
+More text.
+<tool_use name="Read">
+{"file_path": "/tmp/a"}
+</tool_use>
+<tool_use name="Edit">
+{"file_path": "/tmp/a", "old_string": "x", "new_string": "y"}
+</tool_use>
+Final text.
+"#;
+
+        // Act
+        let names = super::parse_tool_names(transcript);
+
+        // Assert
+        assert_eq!(
+            names,
+            vec!["Bash".to_string(), "Read".to_string(), "Edit".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_tool_names_handles_empty_and_malformed() {
+        // Empty input — no panic
+        assert!(super::parse_tool_names("").is_empty());
+
+        // No tool_use tags — empty vec
+        assert!(super::parse_tool_names("just some prose").is_empty());
+
+        // Malformed: opening pattern without closing quote — must not infinite-loop
+        let malformed = r#"<tool_use name="Unclosed"#;
+        let names = super::parse_tool_names(malformed);
+        assert!(names.is_empty());
+
+        // Empty name="" is skipped
+        let empty_name = r#"<tool_use name="">"#;
+        assert!(super::parse_tool_names(empty_name).is_empty());
+    }
+
+    #[test]
+    fn test_extractor_records_per_tool_use_counter() {
+        use rusqlite::Connection;
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal `tool` table — avoids pulling the full schema (which needs
+        // the sqlite-vec extension loaded). Mirror the columns in
+        // crates/daemon/src/db/schema.rs at time of writing.
+        conn.execute_batch(
+            "CREATE TABLE tool (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                capabilities TEXT NOT NULL DEFAULT '[]',
+                config TEXT,
+                health TEXT NOT NULL DEFAULT 'unknown',
+                last_used TEXT,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                discovered_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        // Seed the tool table with 3 known tools
+        for (id, name) in [("bash", "Bash"), ("read", "Read"), ("edit", "Edit")] {
+            conn.execute(
+                "INSERT INTO tool (id, name, kind, discovered_at) VALUES (?1, ?2, 'Cli', '2026-04-20T00:00:00Z')",
+                rusqlite::params![id, name],
+            )
+            .unwrap();
+        }
+
+        // Transcript with 2 Bash uses + 1 Read + 1 unknown "Ghost"
+        let transcript = r#"
+<tool_use name="Bash"></tool_use>
+<tool_use name="Bash"></tool_use>
+<tool_use name="Read"></tool_use>
+<tool_use name="Ghost"></tool_use>
+"#;
+
+        // Act
+        let incremented = super::record_tool_uses_from_transcript(&conn, transcript).unwrap();
+        assert_eq!(incremented, 3, "3 of 4 names match the registry");
+
+        // Assert per-tool counters
+        let bash_count: i64 = conn
+            .query_row("SELECT use_count FROM tool WHERE id = 'bash'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let read_count: i64 = conn
+            .query_row("SELECT use_count FROM tool WHERE id = 'read'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let edit_count: i64 = conn
+            .query_row("SELECT use_count FROM tool WHERE id = 'edit'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(bash_count, 2, "Bash should be incremented to 2");
+        assert_eq!(read_count, 1, "Read should be incremented to 1");
+        assert_eq!(edit_count, 0, "Edit was not in transcript — should stay 0");
+        // "Ghost" was not in registry — should be silently skipped (debug-level log)
     }
 }
