@@ -300,14 +300,13 @@ async fn process_file(
                 // was a no-op for Claude/Codex/Cline JSONL. With `tool_names`
                 // populated, we iterate the vec directly and let
                 // `record_tool_names` handle the three-slug candidate lookup.
+                // `record_tool_names` is a no-op on empty slices, so no guard needed.
                 for chunk in &chunks {
-                    if !chunk.tool_names.is_empty() {
-                        if let Err(e) = record_tool_names(&locked.conn, &chunk.tool_names) {
-                            tracing::warn!(
-                                error = %e,
-                                "per-tool counter update failed for chunk"
-                            );
-                        }
+                    if let Err(e) = record_tool_names(&locked.conn, &chunk.tool_names) {
+                        tracing::warn!(
+                            error = %e,
+                            "per-tool counter update failed for chunk"
+                        );
                     }
                 }
                 drop(locked);

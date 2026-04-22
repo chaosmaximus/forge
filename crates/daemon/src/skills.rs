@@ -34,14 +34,19 @@ pub fn parse_skill_frontmatter(path: &Path) -> Option<SkillEntry> {
     let mut description = String::new();
     let mut category = String::from("general");
 
+    // Strip YAML quotes (single or double) from a frontmatter value.
+    fn unquote(val: &str) -> String {
+        val.trim().trim_matches('"').trim_matches('\'').to_string()
+    }
+
     for line in frontmatter.lines() {
         let line = line.trim();
         if let Some(val) = line.strip_prefix("name:") {
-            name = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
+            name = Some(unquote(val));
         } else if let Some(val) = line.strip_prefix("description:") {
-            description = val.trim().trim_matches('"').trim_matches('\'').to_string();
+            description = unquote(val);
         } else if let Some(val) = line.strip_prefix("category:") {
-            category = val.trim().trim_matches('"').trim_matches('\'').to_string();
+            category = unquote(val);
         }
     }
 
@@ -344,10 +349,8 @@ pub fn resolve_skills_dir(
             return std::path::PathBuf::from(env_dir);
         }
     }
-    if let Some(cfg) = config_skills_dir {
-        if !cfg.is_empty() {
-            return std::path::PathBuf::from(cfg);
-        }
+    if let Some(cfg) = config_skills_dir.filter(|s| !s.is_empty()) {
+        return std::path::PathBuf::from(cfg);
     }
     let home_skills = forge_home.join("skills");
     if home_skills.is_dir() {
@@ -373,11 +376,8 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillEntry> {
 fn collect_rows(
     rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<SkillEntry>>,
 ) -> Result<Vec<SkillEntry>, String> {
-    let mut results = Vec::new();
-    for row in rows {
-        results.push(row.map_err(|e| format!("row error: {e}"))?);
-    }
-    Ok(results)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| format!("row error: {e}"))
 }
 
 #[cfg(test)]

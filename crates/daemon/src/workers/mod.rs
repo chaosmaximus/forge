@@ -121,9 +121,8 @@ pub fn spawn_workers(
     });
 
     let extractor_debounce = worker_intervals.extraction_debounce_secs;
-    // Move the writer handle into the extractor (the only consumer today).
-    // If future workers need to emit writer commands, clone here instead.
-    let extractor_writer_tx = writer_tx;
+    // `writer_tx` is moved into the extractor (the only consumer today).
+    // If future workers need to emit writer commands, clone before this move.
     let extractor_handle = tokio::spawn(async move {
         extractor::run_extractor(
             file_rx,
@@ -133,7 +132,7 @@ pub fn spawn_workers(
             extractor_shutdown,
             extractor_db_path,
             extractor_debounce,
-            extractor_writer_tx,
+            writer_tx,
         )
         .await;
     });

@@ -55,10 +55,12 @@ fn extract_content(content: &serde_json::Value) -> (String, bool, Vec<String>) {
                     }
                     "tool_use" | "function_call" => {
                         has_tool_use = true;
-                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                            if !name.is_empty() {
-                                tool_names.push(name.to_string());
-                            }
+                        if let Some(name) = block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                        {
+                            tool_names.push(name.to_string());
                         }
                     }
                     _ => {}

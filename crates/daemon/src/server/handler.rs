@@ -247,10 +247,8 @@ fn send_touch(
 /// dropping the row the way the previous hardcoded `agent="cli"` lookup did
 /// on Claude Code sessions (which register as `agent="claude-code"`).
 fn resolve_hook_session_id(conn: &rusqlite::Connection, explicit: Option<&str>) -> String {
-    if let Some(sid) = explicit {
-        if !sid.is_empty() {
-            return sid.to_string();
-        }
+    if let Some(sid) = explicit.filter(|s| !s.is_empty()) {
+        return sid.to_string();
     }
     crate::sessions::get_latest_active_session_id(conn)
         .ok()

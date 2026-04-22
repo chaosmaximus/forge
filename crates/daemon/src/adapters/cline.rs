@@ -89,14 +89,8 @@ impl ClineAdapter {
         };
         blocks
             .iter()
+            .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
             .filter_map(|block| {
-                let is_tool_use = block
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|t| t == "tool_use");
-                if !is_tool_use {
-                    return None;
-                }
                 block
                     .get("name")
                     .and_then(|v| v.as_str())
