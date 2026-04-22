@@ -17,10 +17,6 @@ pub struct DaemonState {
     /// Channel to send edited file paths to the diagnostics worker.
     /// Set after worker spawn; None before that.
     pub diagnostics_tx: Option<tokio::sync::mpsc::Sender<String>>,
-    /// Channel that feeds transcript paths into the extractor worker — same
-    /// sender the watcher uses. Set in `spawn_workers` so `Request::ForceExtract`
-    /// can actually enqueue pending files instead of only counting them.
-    pub extractor_tx: Option<tokio::sync::mpsc::Sender<std::path::PathBuf>>,
     /// Writer actor channel for fire-and-forget writes from the read-only path.
     /// Set on reader states created by the socket handler; None on writer/test states.
     pub writer_tx: Option<tokio::sync::mpsc::Sender<super::writer::WriteCommand>>,
@@ -123,7 +119,6 @@ impl DaemonState {
             started_at: Instant::now(),
             hlc: Arc::new(hlc),
             diagnostics_tx: None,
-            extractor_tx: None,
             writer_tx: None,
             raw_embedder: None,
         })
@@ -161,7 +156,6 @@ impl DaemonState {
             hlc,
             started_at,
             diagnostics_tx: None,
-            extractor_tx: None,
             writer_tx: None,
             raw_embedder: None,
         })
@@ -197,7 +191,6 @@ impl DaemonState {
             hlc,
             started_at,
             diagnostics_tx: None,
-            extractor_tx: None,
             writer_tx,
             raw_embedder: None,
         })
@@ -3421,7 +3414,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     continue;
                 }
                 files_queued += 1;
-                if let Some(tx) = state.extractor_tx.as_ref() {
+                if let Some(tx) = crate::extractor_queue::GLOBAL_EXTRACTOR_TX.get() {
                     match tx.try_send(path.clone()) {
                         Ok(()) => files_enqueued += 1,
                         Err(_) => enqueue_errors += 1,

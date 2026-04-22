@@ -10,6 +10,7 @@ pub mod db;
 pub mod embed;
 pub mod events;
 pub mod extraction;
+pub mod extractor_queue;
 pub mod guardrails;
 pub mod hud_config;
 pub mod lsp;
