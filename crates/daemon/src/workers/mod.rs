@@ -81,6 +81,18 @@ pub fn spawn_workers(
 
     let (file_tx, file_rx) = mpsc::channel::<std::path::PathBuf>(100);
 
+    // Plumb a clone of `file_tx` into DaemonState so `Request::ForceExtract`
+    // can enqueue files directly into the extractor instead of only counting
+    // them. Brief lock; held only for the assignment.
+    {
+        let state_for_tx = Arc::clone(&state);
+        let file_tx_clone = file_tx.clone();
+        tokio::spawn(async move {
+            let mut locked = state_for_tx.lock().await;
+            locked.extractor_tx = Some(file_tx_clone);
+        });
+    }
+
     let watcher_shutdown = shutdown_tx.subscribe();
     let extractor_shutdown = shutdown_tx.subscribe();
     let embedder_shutdown = shutdown_tx.subscribe();

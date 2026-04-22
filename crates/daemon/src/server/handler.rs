@@ -17,6 +17,10 @@ pub struct DaemonState {
     /// Channel to send edited file paths to the diagnostics worker.
     /// Set after worker spawn; None before that.
     pub diagnostics_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    /// Channel that feeds transcript paths into the extractor worker — same
+    /// sender the watcher uses. Set in `spawn_workers` so `Request::ForceExtract`
+    /// can actually enqueue pending files instead of only counting them.
+    pub extractor_tx: Option<tokio::sync::mpsc::Sender<std::path::PathBuf>>,
     /// Writer actor channel for fire-and-forget writes from the read-only path.
     /// Set on reader states created by the socket handler; None on writer/test states.
     pub writer_tx: Option<tokio::sync::mpsc::Sender<super::writer::WriteCommand>>,
@@ -119,6 +123,7 @@ impl DaemonState {
             started_at: Instant::now(),
             hlc: Arc::new(hlc),
             diagnostics_tx: None,
+            extractor_tx: None,
             writer_tx: None,
             raw_embedder: None,
         })
@@ -156,6 +161,7 @@ impl DaemonState {
             hlc,
             started_at,
             diagnostics_tx: None,
+            extractor_tx: None,
             writer_tx: None,
             raw_embedder: None,
         })
@@ -191,6 +197,7 @@ impl DaemonState {
             hlc,
             started_at,
             diagnostics_tx: None,
+            extractor_tx: None,
             writer_tx,
             raw_embedder: None,
         })
@@ -3402,17 +3409,29 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let adapters_list = crate::adapters::detect_adapters();
             let all_files = crate::bootstrap::scan_transcripts(&adapters_list);
             let mut files_queued = 0usize;
+            let mut files_enqueued = 0usize;
+            let mut enqueue_errors = 0usize;
             for (path, _adapter) in &all_files {
                 let hash = match crate::bootstrap::compute_content_hash(path) {
                     Ok(h) => h,
                     Err(_) => continue,
                 };
                 let (needs_work, _) = crate::bootstrap::needs_processing(&state.conn, path, &hash);
-                if needs_work {
-                    files_queued += 1;
+                if !needs_work {
+                    continue;
+                }
+                files_queued += 1;
+                if let Some(tx) = state.extractor_tx.as_ref() {
+                    match tx.try_send(path.clone()) {
+                        Ok(()) => files_enqueued += 1,
+                        Err(_) => enqueue_errors += 1,
+                    }
                 }
             }
-            eprintln!("[extract] force-extract: {files_queued} files need processing");
+            eprintln!(
+                "[extract] force-extract: {files_queued} files need processing, \
+                 {files_enqueued} enqueued, {enqueue_errors} drop(full/closed)"
+            );
             Response::Ok {
                 data: ResponseData::ExtractionTriggered { files_queued },
             }
