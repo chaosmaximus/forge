@@ -84,9 +84,20 @@ pub fn spawn_workers(
     // Expose a clone globally so `Request::ForceExtract` (running on per-request
     // read-only DaemonState instances created by socket/http handlers) can
     // reach the same queue the watcher feeds. OnceLock.set returns Err on a
-    // second attempt; we ignore — daemon startup should run `spawn_workers`
-    // once.
-    let _ = crate::extractor_queue::GLOBAL_EXTRACTOR_TX.set(file_tx.clone());
+    // second attempt — the daemon contract is that `spawn_workers` runs exactly
+    // once per process, so a second call indicates a misconfiguration. Log at
+    // warn so the silent-discard failure mode is visible in daemon.log instead
+    // of being swallowed.
+    if crate::extractor_queue::GLOBAL_EXTRACTOR_TX
+        .set(file_tx.clone())
+        .is_err()
+    {
+        tracing::warn!(
+            "GLOBAL_EXTRACTOR_TX already initialized — second spawn_workers call; \
+             ForceExtract will route to the first daemon's channel. \
+             Only call spawn_workers once per process."
+        );
+    }
 
     let watcher_shutdown = shutdown_tx.subscribe();
     let extractor_shutdown = shutdown_tx.subscribe();

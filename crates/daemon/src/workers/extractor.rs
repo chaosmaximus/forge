@@ -284,7 +284,14 @@ async fn process_file(
                 sid
             };
             if !session_id.is_empty() {
-                // Write: brief lock for the UPDATE
+                // Flatten all tool_names across chunks BEFORE taking the write lock
+                // so we hold the lock for exactly two consecutive writes (increment +
+                // record_tool_names), not N*k scattered writes across the chunk loop.
+                let all_tool_names: Vec<String> = chunks
+                    .iter()
+                    .flat_map(|c| c.tool_names.iter().cloned())
+                    .collect();
+                // Write: brief lock for UPDATE + per-tool counter pass
                 let locked = state.lock().await;
                 if let Err(e) = crate::sessions::increment_tool_use_count(
                     &locked.conn,
@@ -297,17 +304,13 @@ async fn process_file(
                 // `tool_names` populated by adapters at parse time. Adapters
                 // previously stripped <tool_use> markers and only set
                 // `has_tool_use: bool`, so the earlier transcript-scan approach
-                // was a no-op for Claude/Codex/Cline JSONL. With `tool_names`
-                // populated, we iterate the vec directly and let
-                // `record_tool_names` handle the three-slug candidate lookup.
-                // `record_tool_names` is a no-op on empty slices, so no guard needed.
-                for chunk in &chunks {
-                    if let Err(e) = record_tool_names(&locked.conn, &chunk.tool_names) {
-                        tracing::warn!(
-                            error = %e,
-                            "per-tool counter update failed for chunk"
-                        );
-                    }
+                // was a no-op for Claude/Codex/Cline JSONL.
+                if let Err(e) = record_tool_names(&locked.conn, &all_tool_names) {
+                    tracing::warn!(
+                        error = %e,
+                        count = all_tool_names.len(),
+                        "per-tool counter update failed"
+                    );
                 }
                 drop(locked);
             }
@@ -323,8 +326,13 @@ async fn process_file(
         .into_iter()
         .rev()
         .collect();
+    // Skip tool-only chunks (empty content, has_tool_use=true) — they carry no
+    // text for the LLM to extract from, so including them dilutes the prompt.
+    // The tool-name side of the ledger is already recorded in the per-tool
+    // counter pass above; the text-extraction path only needs real turns.
     let combined_text: String = recent_chunks
         .iter()
+        .filter(|c| !c.content.is_empty())
         .map(|c| format!("[{}] {}", c.role, c.content))
         .collect::<Vec<_>>()
         .join("\n\n");

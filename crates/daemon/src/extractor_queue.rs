@@ -7,7 +7,14 @@
 //! go through the shared Arc<Mutex<DaemonState>> (defeats the read-mutex-
 //! free path).
 //!
-//! Set-once semantics: a second `set` call returns Err and is ignored.
+//! # Single-init contract
+//!
+//! This static is process-wide. The daemon contract is that `spawn_workers`
+//! runs **exactly once per process**; a second call is treated as a
+//! misconfiguration and logged at `warn` (see `workers::spawn_workers`).
+//! Integration tests that want to spin up multiple daemons in one process
+//! cannot use this static — they must share the sender directly or restart
+//! the process between runs.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
