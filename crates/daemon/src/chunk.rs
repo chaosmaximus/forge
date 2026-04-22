@@ -25,10 +25,18 @@ pub fn parse_transcript(content: &str) -> Vec<ConversationChunk> {
             _ => continue,
         };
 
-        // Extract text content; skip if none or empty after trim
-        let text = match tl.text_content() {
-            Some(t) if !t.trim().is_empty() => t,
-            _ => continue,
+        // Extract text content + tool-use signal. Keep tool-only turns (no text
+        // but has_tool_use=true) so the per-tool counter path (#54 Layer 1)
+        // can attribute their tool_names. Previously we skipped these and the
+        // counter stayed dark on real Claude Code transcripts where assistant
+        // tool calls come back as pure tool_use blocks with no accompanying
+        // text. Retains the skip for truly-empty lines (no text AND no tool).
+        let has_tool_use = tl.has_tool_use();
+        let text_opt = tl.text_content().filter(|t| !t.trim().is_empty());
+        let text = match (text_opt, has_tool_use) {
+            (Some(t), _) => t,
+            (None, true) => String::new(),
+            (None, false) => continue,
         };
 
         counter += 1;
@@ -36,7 +44,6 @@ pub fn parse_transcript(content: &str) -> Vec<ConversationChunk> {
             .uuid
             .clone()
             .unwrap_or_else(|| format!("chunk-{counter}"));
-        let has_tool_use = tl.has_tool_use();
         let tool_names = tl.tool_names();
 
         chunks.push(ConversationChunk {

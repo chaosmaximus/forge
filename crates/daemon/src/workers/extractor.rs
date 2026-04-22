@@ -925,10 +925,11 @@ pub(crate) fn record_tool_uses_from_transcript(
 /// `ConversationChunk.tool_names` at parse time, so the extractor passes that
 /// vec in directly instead of regex-scanning `content`. The transcript-scan
 /// variant remains for backward compatibility (raw-XML transcripts, tests).
-pub(crate) fn record_tool_names(
-    conn: &rusqlite::Connection,
-    names: &[String],
-) -> rusqlite::Result<usize> {
+///
+/// Visibility: `pub` so integration tests under `crates/daemon/tests/` (which
+/// compile as separate crates) can drive the exact three-slug lookup used at
+/// runtime. This is the public contract of Layer 1.
+pub fn record_tool_names(conn: &rusqlite::Connection, names: &[String]) -> rusqlite::Result<usize> {
     let mut incremented = 0usize;
     for name in names {
         let lower = name.to_lowercase();
