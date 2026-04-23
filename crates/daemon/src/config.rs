@@ -87,6 +87,12 @@ fn default_10_u64() -> u64 {
 fn default_3600_u64() -> u64 {
     3600
 }
+fn default_30_u32() -> u32 {
+    30
+}
+fn default_1_f64() -> f64 {
+    1.0
+}
 fn default_8420_u16() -> u16 {
     8420
 }
@@ -447,6 +453,14 @@ pub struct ConsolidationConfig {
     pub batch_limit: usize,
     #[serde(default = "default_50_usize")]
     pub reweave_limit: usize,
+
+    // Phase 23 behavioral skill inference (2A-4c2).
+    #[serde(default = "default_3_usize")]
+    pub skill_inference_min_sessions: usize,
+    #[serde(default = "default_30_u32")]
+    pub skill_inference_window_days: u32,
+    #[serde(default = "default_1_f64")]
+    pub skill_inference_tool_name_similarity_threshold: f64,
 }
 
 impl Default for ConsolidationConfig {
@@ -454,6 +468,9 @@ impl Default for ConsolidationConfig {
         Self {
             batch_limit: 200,
             reweave_limit: 50,
+            skill_inference_min_sessions: 3,
+            skill_inference_window_days: 30,
+            skill_inference_tool_name_similarity_threshold: 1.0,
         }
     }
 }
@@ -911,6 +928,11 @@ impl ConsolidationConfig {
         Self {
             batch_limit: self.batch_limit.clamp(1, 1000),
             reweave_limit: self.reweave_limit.clamp(1, 500),
+            skill_inference_min_sessions: self.skill_inference_min_sessions.clamp(1, 20),
+            skill_inference_window_days: self.skill_inference_window_days.clamp(1, 365),
+            skill_inference_tool_name_similarity_threshold: self
+                .skill_inference_tool_name_similarity_threshold
+                .clamp(0.0, 1.0),
         }
     }
 }
@@ -2382,6 +2404,67 @@ heartbeat_timeout_secs = 45
             cfg.validated().preference_half_life_days,
             365.0,
             "upper boundary 365.0 must preserve"
+        );
+    }
+
+    // ── Phase 2A-4c2 T2: skill inference config validator tests ──────────────
+
+    #[test]
+    fn consolidation_config_default_skill_inference_values() {
+        let cfg = ConsolidationConfig::default();
+        assert_eq!(cfg.skill_inference_min_sessions, 3);
+        assert_eq!(cfg.skill_inference_window_days, 30);
+        assert!((cfg.skill_inference_tool_name_similarity_threshold - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn consolidation_config_validated_clamps_min_sessions_in_range() {
+        let mut cfg = ConsolidationConfig::default();
+        cfg.skill_inference_min_sessions = 0;
+        assert_eq!(
+            cfg.validated().skill_inference_min_sessions,
+            1,
+            "0 clamps to range min 1"
+        );
+
+        cfg.skill_inference_min_sessions = 50;
+        assert_eq!(
+            cfg.validated().skill_inference_min_sessions,
+            20,
+            "50 clamps to range max 20"
+        );
+
+        cfg.skill_inference_min_sessions = 5;
+        assert_eq!(
+            cfg.validated().skill_inference_min_sessions,
+            5,
+            "in-range value preserved"
+        );
+    }
+
+    #[test]
+    fn consolidation_config_validated_clamps_window_days_in_range() {
+        let mut cfg = ConsolidationConfig::default();
+        cfg.skill_inference_window_days = 0;
+        assert_eq!(cfg.validated().skill_inference_window_days, 1);
+        cfg.skill_inference_window_days = 400;
+        assert_eq!(cfg.validated().skill_inference_window_days, 365);
+    }
+
+    #[test]
+    fn consolidation_config_validated_clamps_similarity_threshold() {
+        let mut cfg = ConsolidationConfig::default();
+        cfg.skill_inference_tool_name_similarity_threshold = -1.0;
+        assert_eq!(
+            cfg.validated()
+                .skill_inference_tool_name_similarity_threshold,
+            0.0
+        );
+        cfg.skill_inference_tool_name_similarity_threshold = 2.5;
+        assert_eq!(
+            cfg.validated()
+                .skill_inference_tool_name_similarity_threshold,
+            1.0
         );
     }
 }

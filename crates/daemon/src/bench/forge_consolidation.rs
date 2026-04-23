@@ -2837,6 +2837,7 @@ pub fn run(config: ConsolidationBenchConfig) -> Result<ConsolidationScore, Strin
     let cons_config = crate::config::ConsolidationConfig {
         batch_limit: 500,
         reweave_limit: 100,
+        ..Default::default()
     };
     let stats = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
     let _ = stats;
@@ -4149,6 +4150,7 @@ mod tests {
         let cons_config = crate::config::ConsolidationConfig {
             batch_limit: 500,
             reweave_limit: 100,
+            ..Default::default()
         };
         let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
         let heal_count: i64 = state
@@ -4201,6 +4203,7 @@ mod tests {
         let cons_config = crate::config::ConsolidationConfig {
             batch_limit: 500,
             reweave_limit: 100,
+            ..Default::default()
         };
         let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
         let score = audit_reweave(&state.conn, &dataset).unwrap();
@@ -4248,6 +4251,7 @@ mod tests {
         let cons_config = crate::config::ConsolidationConfig {
             batch_limit: 500,
             reweave_limit: 100,
+            ..Default::default()
         };
         let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
         let score = audit_lifecycle(&state.conn, &dataset).unwrap();
