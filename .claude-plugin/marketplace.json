@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "forge-marketplace",
+  "version": "0.4.0",
+  "description": "Forge: Cognitive infrastructure for AI agents. 8-layer memory, proactive perception, identity, guardrails.",
+  "owner": {
+    "name": "Forge Contributors",
+    "email": ""
+  },
+  "plugins": [
+    {
+      "name": "forge",
+      "description": "The operating system for AI agents. 8-layer memory, proactive perception, identity, guardrails. One daemon — any agent, any domain.",
+      "version": "0.4.0",
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}

@@ -8,6 +8,7 @@ set -euo pipefail
 TARGET="${1:?usage: migrate-scrub.sh <target-dir>}"
 WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
 LEXICON="$WORKSPACE/scripts/migrate-lexicon.txt"
+ALLOWLIST="$WORKSPACE/scripts/migrate-scrub-allowlist.txt"
 
 if [ ! -d "$TARGET" ]; then
     echo "ERROR: target is not a directory: $TARGET" >&2
@@ -16,16 +17,40 @@ fi
 
 hits=0
 
+# Returns 0 (allowed) if the file path matches any allowlist glob.
+# Usage: is_allowed "<abs-path-or-relative>"
+is_allowed() {
+    local f="$1" glob
+    [ -f "$ALLOWLIST" ] || return 1
+    while IFS= read -r glob; do
+        case "$glob" in ''|'#'*) continue ;; esac
+        # Match glob against any suffix of the path so callers can use
+        # relative-to-target patterns (e.g. skills/forge-security/**).
+        case "$f" in
+            */$glob|$glob|*/${glob%/**}/*|${glob%/**}/*) return 0 ;;
+        esac
+    done < "$ALLOWLIST"
+    return 1
+}
+
 # --- Text scan ---
 if [ -f "$LEXICON" ]; then
     active_lexicon=$(mktemp)
     grep -Ev '^\s*(#|$)' "$LEXICON" > "$active_lexicon"
     if [ -s "$active_lexicon" ]; then
         mapfile -t text_hits < <(grep -rIlFf "$active_lexicon" "$TARGET" 2>/dev/null || true)
-        if [ "${#text_hits[@]}" -gt 0 ]; then
+        filtered_hits=()
+        for f in "${text_hits[@]}"; do
+            if is_allowed "$f"; then
+                echo "  [allowlisted] $f" >&2
+                continue
+            fi
+            filtered_hits+=("$f")
+        done
+        if [ "${#filtered_hits[@]}" -gt 0 ]; then
             echo "LEAK [text]: files matching lexicon:" >&2
-            for f in "${text_hits[@]}"; do echo "  $f" >&2; done
-            hits=$((hits + ${#text_hits[@]}))
+            for f in "${filtered_hits[@]}"; do echo "  $f" >&2; done
+            hits=$((hits + ${#filtered_hits[@]}))
         fi
     fi
     rm -f "$active_lexicon"

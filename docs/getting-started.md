@@ -281,3 +281,43 @@ Memory sync respects cross-tier sync policies: decisions and lessons propagate f
 
 - [Cloud Deployment](cloud-deployment.md) -- deploy Forge to Kubernetes for team-wide shared memory
 - [Agent Development](agent-development.md) -- build custom AI agents that connect to Forge
+
+## Installing the Claude Code Plugin
+
+Forge ships a Claude Code plugin (manifest in `.claude-plugin/`) that registers
+hooks, skills, and subagents so Claude Code sessions automatically register
+with the running daemon, stream memory writes, and surface matching skills in
+context.
+
+### Option A: Symlink-install from a local clone (fastest for development)
+
+```bash
+git clone https://github.com/chaosmaximus/forge.git
+mkdir -p ~/.claude/plugins
+ln -snf "$PWD/forge" ~/.claude/plugins/forge
+```
+
+### Option B: Marketplace install
+
+From a Claude Code session, invoke the plugin marketplace and install the
+`forge` plugin. (Full marketplace publication lands in 2P-1b — until then use
+Option A.)
+
+### Verify hooks fire
+
+Start the daemon in one terminal:
+
+```bash
+forge-daemon
+```
+
+Open a new Claude Code session. You should see the daemon log a
+`register_session` entry within a few seconds — this confirms
+`scripts/hooks/session-start.sh` executed. Ask Claude any question, then:
+
+```bash
+forge-next recall "<any keyword from your prompt>"
+```
+
+You should see at least one memory whose `session_id` matches the session you
+just opened. If not, run `forge-next doctor` and check the "Hook" health row.

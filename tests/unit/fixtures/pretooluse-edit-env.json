@@ -1,0 +1,1 @@
+{"tool_name":"Edit","tool_input":{"file_path":"/tmp/project/.env","old_string":"SECRET=old","new_string":"SECRET=new"}}

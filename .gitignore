@@ -29,6 +29,9 @@ __pycache__/
 # ── Dev toolchain artifacts (populated by scripts/setup-dev-env.sh) ─
 .tools/
 
+# ── Codex plugin side-effect — empty state file written by the Codex harness ──
+.codex
+
 # ── Bench artifacts (per-run; raw artifacts are not checked in,
 #    only the curated Markdown summaries under docs/benchmarks/results/) ──
 bench_results/

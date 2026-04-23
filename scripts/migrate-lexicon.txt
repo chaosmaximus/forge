@@ -17,11 +17,14 @@ NO PERMISSION IS GRANTED
 Proprietary License
 
 # --- Commercial / paid-tier markers ---
-stripe.com
-sk_live_
-pk_live_
-price_1
+# NOTE: raw Stripe prefixes (sk_live_, pk_live_, price_1) are NOT in this
+# lexicon because the forge-security skill legitimately documents them as
+# patterns it scans for. Actual leaked Stripe keys in migrated code are
+# forge-security's job at runtime. Lexicon catches brand/commercial-domain
+# leaks only.
 .bhairavi.tech/pricing
+bhairavi.tech/billing
+bhairavi.tech/subscription
 
 # --- Internal infra URLs ---
 .bhairavi.internal

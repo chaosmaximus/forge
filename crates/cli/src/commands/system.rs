@@ -65,6 +65,18 @@ pub async fn doctor() {
             if !checks.is_empty() {
                 println!();
                 println!("Health Checks:");
+                // 2P-1a restoration: surface the Hook health row explicitly
+                // when it's present so users can tell if session-start.sh
+                // has registered within the daemon's freshness window.
+                if let Some(hook) = checks.iter().find(|c| c.name.eq_ignore_ascii_case("hook")) {
+                    let indicator = match hook.status.as_str() {
+                        "ok" => "[OK]",
+                        "warn" => "[WARN]",
+                        "error" => "[ERROR]",
+                        _ => "[?]",
+                    };
+                    println!("  {} Hook: {}", indicator, hook.message);
+                }
                 for check in &checks {
                     let indicator = match check.status.as_str() {
                         "ok" => "[OK]",

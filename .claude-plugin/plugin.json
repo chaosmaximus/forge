@@ -1,0 +1,17 @@
+{
+  "name": "forge",
+  "version": "0.4.0",
+  "description": "The operating system for AI agents. 8-layer memory, proactive perception, identity, guardrails. One daemon — any agent, any domain. Auto-installs on first use.",
+  "author": { "name": "Forge Contributors" },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/chaosmaximus/forge",
+  "keywords": ["memory", "knowledge-graph", "guardrails", "local-first", "agent-os", "manas"],
+  "agents": [
+    "./agents/forge-planner.md",
+    "./agents/forge-generator.md",
+    "./agents/forge-evaluator.md"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": {}
+}

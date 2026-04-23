@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# restore-test-hook-e2e.patch
+#
+# Phase 2P-1a T3a leaves the creation of new Rust test files to the human
+# reviewer. This stub describes the intended shape of
+# `crates/daemon/tests/test_hook_e2e.rs`, which the 2026-04-12 split
+# deleted. Apply with:
+#
+#   git apply scripts/restore-test-hook-e2e.patch
+#
+# The test spins up a daemon on an ephemeral port, POSTs a synthesised
+# `register_session` payload identical to what `scripts/hooks/session-start.sh`
+# would emit, then verifies:
+#   (a) the daemon responds 200 with a session id,
+#   (b) a subsequent `recall` query with the matching `session_id` returns
+#       at least one memory written via a `record` call bracketed by the
+#       session window,
+#   (c) the Doctor response's `checks` vector contains a "Hook" entry
+#       with status "ok".
+#
+# Skeleton (not applied automatically — human review required):
+#
+#   #[tokio::test]
+#   async fn hook_session_start_end_to_end() {
+#       let daemon = spawn_test_daemon().await;
+#       let session_id = daemon.register_session(session_start_payload()).await.unwrap();
+#       daemon.record(memory_in_session(&session_id)).await.unwrap();
+#       let hits = daemon.recall("<keyword>", Some(&session_id)).await.unwrap();
+#       assert!(!hits.is_empty(), "recall should return memories for the session");
+#       let doctor = daemon.doctor().await.unwrap();
+#       assert!(doctor.checks.iter().any(|c| c.name.eq_ignore_ascii_case("hook") && c.status == "ok"));
+#   }

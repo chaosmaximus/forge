@@ -1,0 +1,92 @@
+# {{PROJECT_NAME}}
+
+## Forge-Powered Project
+
+This project uses [Forge](https://forgeai.dev) for persistent memory, proactive context, and agent coordination. Forge runs alongside your AI assistant and handles context management automatically — you don't need to explain your project from scratch each session.
+
+### What Forge Provides Automatically
+
+- **Session memory**: Forge remembers decisions, lessons, and patterns across sessions
+- **Blast radius**: Before editing any file, Forge shows what depends on it
+- **Proactive context**: Anti-patterns, test reminders, and relevant decisions surface at the right moment
+- **Agent teams**: For multi-file tasks, Forge coordinates planner → generator → evaluator agents
+
+### How to Work With Forge
+
+**Start of session**: Forge injects relevant context automatically via hooks. You'll see decisions, lessons, and working set from prior sessions. No need to re-explain the project.
+
+**During development**: Use Forge skills for structured workflows:
+```
+forge:forge          — Auto-detects task type and routes to the right workflow
+forge:forge-feature  — Modify existing code (explore → plan → build → review)
+forge:forge-think    — Requirements discovery and BDD specs
+forge:forge-review   — Code review (standard or adversarial)
+forge:forge-ship     — Final verification and PR creation
+```
+
+**Storing decisions**: When you make an architectural choice, store it:
+```bash
+forge-next remember --type decision --title "Why we chose X" --content "Because Y and Z"
+```
+
+**Checking context**: See what Forge knows about the project:
+```bash
+forge-next recall "relevant topic" --project {{PROJECT_NAME}} --limit 5
+forge-next blast-radius --file path/to/file
+```
+
+---
+
+## Project Overview
+
+<!-- Keep this section under 100 lines. Forge handles detailed context injection. -->
+
+{{PROJECT_DESCRIPTION}}
+
+### Architecture
+
+<!-- High-level only. Forge learns detailed architecture from the code graph. -->
+
+{{ARCHITECTURE_OVERVIEW}}
+
+### Key Conventions
+
+<!-- Only conventions that Forge can't detect from code patterns. -->
+
+{{CONVENTIONS}}
+
+### Development Commands
+
+```bash
+# Test
+{{TEST_COMMAND}}
+
+# Lint
+{{LINT_COMMAND}}
+
+# Build
+{{BUILD_COMMAND}}
+
+# Run
+{{RUN_COMMAND}}
+```
+
+### File Structure
+
+```
+{{FILE_STRUCTURE}}
+```
+
+---
+
+## What NOT to Put Here
+
+Forge manages these automatically — putting them here wastes context tokens:
+
+- **Endpoint lists** — Forge indexes symbols and builds a code graph
+- **Database schemas** — Forge detects these from migration files and ORM models
+- **Deployment details** — Store as a Forge decision: `forge-next remember --type decision --title "Deployment process" --content "..."`
+- **Historical decisions** — Already in Forge memory from prior sessions
+- **Team conventions** — Store as a Forge protocol: `forge-next remember --type protocol --title "PR review process" --content "..."`
+
+The goal: this file should be under 150 lines. Everything else lives in Forge's memory and surfaces when relevant.

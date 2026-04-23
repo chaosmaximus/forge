@@ -725,10 +725,37 @@ if [ "$MODE" = "dry-run" ]; then
     log "skipping scrub invocation in dry-run (target may be empty or stale)"
     scrub_rc=0
 else
-    set +e
-    "$SCRUB_SCRIPT" "$REPO_ROOT"
-    scrub_rc=$?
-    set -e
+    # Scan only the migrated paths under REPO_ROOT — scanning the whole
+    # workspace would flag legitimate pre-existing content (target/ build
+    # artifacts, tests/fixtures/scrub/ deliberate leaks, .tools/ toolchain
+    # downloads). Loop per-path, aggregate exit codes.
+    scrub_rc=0
+    for p in "${MIGRATE_PATHS[@]}"; do
+        target="$REPO_ROOT/$p"
+        [ -e "$target" ] || continue
+        # For file targets, scan the containing dir non-recursively via a
+        # temp wrapper; scrub script expects a dir. Cheapest: scan the
+        # parent dir but restrict find depth via a small adapter here.
+        if [ -d "$target" ]; then
+            set +e
+            "$SCRUB_SCRIPT" "$target"
+            rc=$?
+            set -e
+        else
+            # Single-file target: stage it into a tmpdir and scan that.
+            stage_dir="$(mktemp -d)"
+            # Preserve the relative name so error messages stay interpretable.
+            cp --parents -- "$p" "$stage_dir/" 2>/dev/null || cp -- "$target" "$stage_dir/$(basename "$p")"
+            set +e
+            "$SCRUB_SCRIPT" "$stage_dir"
+            rc=$?
+            set -e
+            rm -rf -- "$stage_dir"
+        fi
+        if [ "$rc" -ne 0 ]; then
+            scrub_rc="$rc"
+        fi
+    done
 fi
 
 if [ "$scrub_rc" -ne 0 ]; then

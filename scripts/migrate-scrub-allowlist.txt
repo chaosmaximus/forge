@@ -1,0 +1,9 @@
+# Paths relative to the scrub target that are ALLOWED to contain lexicon
+# matches (e.g. a security scanner's documentation of what patterns it
+# detects). One glob per line, `#` for comments. Consumed by
+# scripts/migrate-scrub.sh.
+
+# forge-security skill documents every secret pattern the scanner detects —
+# AKIA, ghp_, gho_, BEGIN PRIVATE KEY, etc. Those are not leaks.
+skills/forge-security/SKILL.md
+skills/forge-security/**
