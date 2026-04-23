@@ -148,6 +148,7 @@ pub fn generate_skills(
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         });
     }
 
@@ -175,6 +176,7 @@ pub fn generate_skills(
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         });
     }
 
@@ -201,6 +203,7 @@ pub fn generate_skills(
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         });
     }
 

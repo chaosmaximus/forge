@@ -586,6 +586,7 @@ fn test_manas_health_after_mass_insert() {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         manas::store_skill(&state.conn, &skill).unwrap();
     }
@@ -873,6 +874,7 @@ fn test_skill_version_tracking() {
         user_specific: false,
         observed_count: 1,
         correlation_ids: vec![],
+        ..Default::default()
     };
     manas::store_skill(&conn, &skill_v1).unwrap();
 
@@ -893,6 +895,7 @@ fn test_skill_version_tracking() {
         user_specific: false,
         observed_count: 1,
         correlation_ids: vec![],
+        ..Default::default()
     };
     manas::store_skill(&conn, &skill_v2).unwrap();
 
@@ -1067,6 +1070,7 @@ fn test_manas_health_includes_all_layers() {
         user_specific: false,
         observed_count: 1,
         correlation_ids: vec![],
+        ..Default::default()
     };
     manas::store_skill(&state.conn, &skill).unwrap();
 

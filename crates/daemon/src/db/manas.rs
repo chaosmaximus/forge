@@ -771,14 +771,14 @@ pub fn correlate_skill(
 pub fn list_skills(conn: &Connection, domain_filter: Option<&str>) -> rusqlite::Result<Vec<Skill>> {
     if let Some(d) = domain_filter {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids, inferred_at, inferred_from
              FROM skill WHERE domain = ?1 ORDER BY name"
         )?;
         let rows = stmt.query_map(params![d], row_to_skill)?;
         rows.collect()
     } else {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids, inferred_at, inferred_from
              FROM skill ORDER BY name"
         )?;
         let rows = stmt.query_map([], row_to_skill)?;
@@ -812,6 +812,10 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
         user_specific: row.get::<_, i32>(12).unwrap_or(0) != 0,
         observed_count: row.get::<_, i32>(13).unwrap_or(1) as u32,
         correlation_ids,
+        inferred_at: row.get::<_, Option<String>>(15).unwrap_or(None),
+        inferred_from: row
+            .get::<_, String>(16)
+            .unwrap_or_else(|_| "[]".to_string()),
     })
 }
 
@@ -825,7 +829,7 @@ pub fn search_skills(
     let search = format!("%{query}%");
     if let Some(proj) = project {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids, inferred_at, inferred_from
              FROM skill WHERE (name LIKE ?1 OR description LIKE ?1 OR domain LIKE ?1)
              AND (project = ?2 OR project IS NULL OR project = '')
              ORDER BY success_count DESC LIMIT 5"
@@ -834,7 +838,7 @@ pub fn search_skills(
         rows.collect()
     } else {
         let mut stmt = conn.prepare(
-            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids
+            "SELECT id, name, domain, description, steps, success_count, fail_count, last_used, source, version, project, skill_type, user_specific, observed_count, correlation_ids, inferred_at, inferred_from
              FROM skill WHERE name LIKE ?1 OR description LIKE ?1 OR domain LIKE ?1
              ORDER BY success_count DESC LIMIT 5"
         )?;
@@ -2269,6 +2273,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         let skill2 = Skill {
             id: "s2".into(),
@@ -2286,6 +2291,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &skill1).unwrap();
         store_skill(&conn, &skill2).unwrap();
@@ -2327,6 +2333,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -2365,6 +2372,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -2403,6 +2411,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &junk).unwrap();
 
@@ -2425,6 +2434,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &good).unwrap();
 
@@ -2458,6 +2468,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &proven).unwrap();
 

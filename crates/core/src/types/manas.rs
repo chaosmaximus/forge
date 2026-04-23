@@ -76,6 +76,12 @@ pub struct Skill {
     /// IDs of correlated memories (identity facets, decisions, patterns)
     #[serde(default)]
     pub correlation_ids: Vec<String>,
+    /// ISO-8601 timestamp when this skill was inferred by Phase 23 (None for legacy skills)
+    #[serde(default)]
+    pub inferred_at: Option<String>,
+    /// JSON array of session_ids whose transcripts contributed to inference
+    #[serde(default = "default_inferred_from")]
+    pub inferred_from: String,
 }
 
 fn default_skill_type() -> String {
@@ -84,6 +90,10 @@ fn default_skill_type() -> String {
 
 fn default_observed_count() -> u32 {
     1
+}
+
+fn default_inferred_from() -> String {
+    "[]".to_string()
 }
 
 impl Default for Skill {
@@ -104,6 +114,8 @@ impl Default for Skill {
             user_specific: false,
             observed_count: 1,
             correlation_ids: Vec::new(),
+            inferred_at: None,
+            inferred_from: "[]".to_string(),
         }
     }
 }
@@ -303,6 +315,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         let json = serde_json::to_string(&skill).expect("serialize Skill");
         let restored: Skill = serde_json::from_str(&json).expect("deserialize Skill");
@@ -338,6 +351,7 @@ mod tests {
             user_specific: true,
             observed_count: 3,
             correlation_ids: vec!["identity-abc".into(), "decision-xyz".into()],
+            ..Default::default()
         };
         let json = serde_json::to_string(&skill).expect("serialize behavioral Skill");
         let restored: Skill = serde_json::from_str(&json).expect("deserialize behavioral Skill");

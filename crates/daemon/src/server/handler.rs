@@ -8419,6 +8419,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         crate::db::manas::store_skill(&state.conn, &skill).unwrap();
 

@@ -1055,7 +1055,7 @@ pub fn compile_dynamic_suffix(
             .unwrap_or_default()
             .into_iter()
             .filter(|s| {
-                s.success_count > 0
+                (s.success_count > 0 || s.inferred_at.is_some())
                     && (s.project.is_none()
                         || s.project.as_deref() == Some("")
                         || s.project.as_deref() == project)
@@ -1114,12 +1114,27 @@ pub fn compile_dynamic_suffix(
                 "<skills hint=\"use 'forge recall --layer skill &lt;keyword&gt;' for full steps\">",
             );
             for s in &active_skills {
-                let entry = format!(
-                    "\n  <skill domain=\"{}\" uses=\"{}\">{}</skill>",
-                    xml_escape(&s.domain),
-                    s.success_count,
-                    xml_escape(&s.name)
-                );
+                let entry = if s.inferred_at.is_some() {
+                    // Phase 23 row — show inferred_sessions instead of uses.
+                    let sessions: usize =
+                        match serde_json::from_str::<serde_json::Value>(&s.inferred_from) {
+                            Ok(serde_json::Value::Array(a)) => a.len(),
+                            _ => 0,
+                        };
+                    format!(
+                        "\n  <skill domain=\"{}\" inferred_sessions=\"{}\">{}</skill>",
+                        xml_escape(&s.domain),
+                        sessions,
+                        xml_escape(&s.name)
+                    )
+                } else {
+                    format!(
+                        "\n  <skill domain=\"{}\" uses=\"{}\">{}</skill>",
+                        xml_escape(&s.domain),
+                        s.success_count,
+                        xml_escape(&s.name)
+                    )
+                };
                 if used + skill_xml.len() + entry.len() < budget {
                     skill_xml.push_str(&entry);
                 }
@@ -2319,6 +2334,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -2357,6 +2373,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -2728,6 +2745,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -2774,6 +2792,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -2820,6 +2839,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         crate::db::manas::store_skill(&conn, &skill).unwrap();
 
@@ -4444,6 +4464,125 @@ mod tests {
             pref_score > lesson_score,
             "preference score ({pref_score:.6}) should exceed lesson score ({lesson_score:.6}) \
              because half-life formula decays slower than exp(-0.1*days)"
+        );
+    }
+
+    // ── Phase 2A-4c2 T7: skills renderer dual-gate + inferred_sessions ───────
+
+    fn seed_schema_t7(conn: &Connection) {
+        crate::db::vec::init_sqlite_vec();
+        crate::db::schema::create_schema(conn).unwrap();
+    }
+
+    /// Returns the <skills>...</skills> XML substring (or "<skills/>" sentinel)
+    /// from the full compile_dynamic_suffix output.
+    fn render_skills_section(conn: &Connection, project: Option<&str>) -> String {
+        let (suffix, _) = compile_dynamic_suffix(
+            conn,
+            "claude-code",
+            project,
+            &crate::config::ContextConfig::default(),
+            &[],
+            None,
+            None,
+            None,
+        );
+        // Extract from first occurrence of "<skills" to the matching "</skills>" or "<skills/>"
+        if let Some(start) = suffix.find("<skills") {
+            let tail = &suffix[start..];
+            if tail.starts_with("<skills/>") {
+                return "<skills/>".to_string();
+            }
+            if let Some(end_offset) = tail.find("</skills>") {
+                return tail[..end_offset + "</skills>".len()].to_string();
+            }
+        }
+        String::new()
+    }
+
+    #[test]
+    fn skills_renderer_includes_success_count_rows() {
+        let conn = setup();
+        seed_schema_t7(&conn);
+        conn.execute(
+            "INSERT INTO skill (id, name, domain, description, steps, source, success_count)
+             VALUES ('s1', 'Use Cargo', 'shell', '', '[]', 'legacy', 1)",
+            [],
+        )
+        .unwrap();
+        let xml = render_skills_section(&conn, None);
+        assert!(
+            xml.contains("uses=\"1\"") && xml.contains("Use Cargo"),
+            "legacy success_count row must render with uses= attribute; got {xml}"
+        );
+    }
+
+    #[test]
+    fn skills_renderer_includes_inferred_rows() {
+        let conn = setup();
+        seed_schema_t7(&conn);
+        conn.execute(
+            "INSERT INTO skill
+             (id, name, domain, description, steps, source, agent, fingerprint,
+              inferred_from, inferred_at, success_count)
+             VALUES ('s2', 'Inferred: Read+Edit+Bash [deadbeef]', 'file-ops', '', '[]',
+                     'inferred', 'claude-code', 'deadbeefcafe',
+                     '[\"SA\",\"SB\",\"SC\"]', '2026-04-23T10:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        let xml = render_skills_section(&conn, None);
+        assert!(
+            xml.contains("inferred_sessions=\"3\"") && xml.contains("Inferred: Read+Edit+Bash"),
+            "Phase 23 row must render with inferred_sessions= attribute; got {xml}"
+        );
+    }
+
+    #[test]
+    fn skills_renderer_excludes_zero_success_zero_inferred() {
+        let conn = setup();
+        seed_schema_t7(&conn);
+        conn.execute(
+            "INSERT INTO skill (id, name, domain, description, steps, source, success_count)
+             VALUES ('s3', 'Orphan skill', 'general', '', '[]', 'legacy', 0)",
+            [],
+        )
+        .unwrap();
+        let xml = render_skills_section(&conn, None);
+        assert!(
+            !xml.contains("Orphan skill"),
+            "row with success_count=0 AND inferred_at=NULL must NOT render; got {xml}"
+        );
+    }
+
+    #[test]
+    fn skills_renderer_mixed_attributes_coexist() {
+        let conn = setup();
+        seed_schema_t7(&conn);
+        conn.execute(
+            "INSERT INTO skill (id, name, domain, description, steps, source, success_count)
+             VALUES ('s1', 'Legacy skill', 'shell', '', '[]', 'legacy', 2)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO skill
+             (id, name, domain, description, steps, source, agent, fingerprint,
+              inferred_from, inferred_at, success_count)
+             VALUES ('s2', 'Inferred: Read [cafe1234]', 'file-ops', '', '[]',
+                     'inferred', 'claude-code', 'cafe1234babe',
+                     '[\"SA\",\"SB\",\"SC\"]', '2026-04-23T10:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        let xml = render_skills_section(&conn, None);
+        assert!(
+            xml.contains("uses=\"2\""),
+            "legacy row keeps uses= attribute"
+        );
+        assert!(
+            xml.contains("inferred_sessions=\"3\""),
+            "inferred row gets inferred_sessions= attribute"
         );
     }
 }

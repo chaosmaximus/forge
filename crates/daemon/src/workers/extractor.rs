@@ -479,6 +479,7 @@ async fn process_file(
                                 user_specific: true,
                                 observed_count: 1,
                                 correlation_ids: vec![],
+                                ..Default::default()
                             };
 
                             // Check for existing behavioral skill with similar name (observation counting)
@@ -585,6 +586,7 @@ async fn process_file(
                                 user_specific: false,
                                 observed_count: 1,
                                 correlation_ids: vec![],
+                                ..Default::default()
                             };
 
                             if let Err(e) = crate::db::manas::store_skill(&locked.conn, &skill) {

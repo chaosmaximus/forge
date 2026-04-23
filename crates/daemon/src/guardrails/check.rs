@@ -912,6 +912,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -944,6 +945,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -1173,6 +1175,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -1226,6 +1229,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -1307,6 +1311,7 @@ mod tests {
             user_specific: false,
             observed_count: 1,
             correlation_ids: vec![],
+            ..Default::default()
         };
         store_skill(&conn, &skill).unwrap();
 
@@ -1354,6 +1359,7 @@ mod tests {
                 user_specific: false,
                 observed_count: 1,
                 correlation_ids: vec![],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1376,6 +1382,7 @@ mod tests {
                 user_specific: false,
                 observed_count: 1,
                 correlation_ids: vec![],
+                ..Default::default()
             },
         )
         .unwrap();
