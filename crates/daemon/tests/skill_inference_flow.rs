@@ -23,7 +23,10 @@ fn register(state: &mut DaemonState, id: &str, agent: &str, project: &str) {
             current_task: None,
         },
     );
-    assert!(matches!(resp, Response::Ok { .. }), "register failed: {resp:?}");
+    assert!(
+        matches!(resp, Response::Ok { .. }),
+        "register failed: {resp:?}"
+    );
 }
 
 fn record(state: &mut DaemonState, session: &str, tool: &str, args: serde_json::Value) {
@@ -79,14 +82,24 @@ fn skill_inference_end_to_end_via_protocol() {
     let mut state = fresh_state();
     for sid in ["SA", "SB", "SC"] {
         register(&mut state, sid, "claude-code", "proj");
-        record(&mut state, sid, "Read", serde_json::json!({"file_path": "/a"}));
+        record(
+            &mut state,
+            sid,
+            "Read",
+            serde_json::json!({"file_path": "/a"}),
+        );
         record(
             &mut state,
             sid,
             "Edit",
             serde_json::json!({"file_path": "/a", "old_string": "x", "new_string": "y"}),
         );
-        record(&mut state, sid, "Bash", serde_json::json!({"cmd": "cargo test"}));
+        record(
+            &mut state,
+            sid,
+            "Bash",
+            serde_json::json!({"cmd": "cargo test"}),
+        );
     }
 
     force_consolidate(&mut state);
@@ -107,14 +120,24 @@ fn skill_inference_does_not_emit_for_two_sessions() {
     let mut state = fresh_state();
     for sid in ["SA", "SB"] {
         register(&mut state, sid, "claude-code", "proj");
-        record(&mut state, sid, "Read", serde_json::json!({"file_path": "/a"}));
+        record(
+            &mut state,
+            sid,
+            "Read",
+            serde_json::json!({"file_path": "/a"}),
+        );
         record(
             &mut state,
             sid,
             "Edit",
             serde_json::json!({"file_path": "/a", "old_string": "x", "new_string": "y"}),
         );
-        record(&mut state, sid, "Bash", serde_json::json!({"cmd": "cargo test"}));
+        record(
+            &mut state,
+            sid,
+            "Bash",
+            serde_json::json!({"cmd": "cargo test"}),
+        );
     }
 
     force_consolidate(&mut state);
