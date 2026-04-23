@@ -42,8 +42,10 @@ impl TestDaemon {
             .spawn()
             .unwrap_or_else(|e| panic!("failed to start daemon at {daemon_bin}: {e}"));
 
-        // Wait for socket to appear (up to 5 seconds)
-        for _ in 0..50 {
+        // Wait for socket to appear (up to 30 seconds — release daemons bind
+        // in <1s, but cold debug builds can take ~10-15s due to SQLite migrate
+        // + worker spawn + ORT dynamic link).
+        for _ in 0..300 {
             if socket_path.exists() {
                 // Small extra delay for the daemon to fully bind
                 std::thread::sleep(Duration::from_millis(100));
@@ -62,7 +64,7 @@ impl TestDaemon {
         // zombie_processes lint is satisfied and no orphan daemon remains.
         let _ = process.kill();
         let _ = process.wait();
-        panic!("daemon did not create socket within 5 seconds");
+        panic!("daemon did not create socket within 30 seconds");
     }
 
     /// Send a JSON request and receive a JSON response.
@@ -112,20 +114,25 @@ fn find_daemon_binary() -> String {
         "target/debug/forge-daemon",
         "../target/release/forge-daemon",
         "../../target/release/forge-daemon",
+        "../../target/debug/forge-daemon",
     ];
     for c in &candidates {
         if std::path::Path::new(c).exists() {
             return c.to_string();
         }
     }
-    // Try from workspace root
-    let workspace = std::env::var("CARGO_MANIFEST_DIR")
-        .map(|d| PathBuf::from(d).join("../../target/release/forge-daemon"))
-        .unwrap_or_default();
-    if workspace.exists() {
-        return workspace.to_string_lossy().to_string();
+    if let Ok(d) = std::env::var("CARGO_MANIFEST_DIR") {
+        for sub in &[
+            "../../target/release/forge-daemon",
+            "../../target/debug/forge-daemon",
+        ] {
+            let p = PathBuf::from(&d).join(sub);
+            if p.exists() {
+                return p.to_string_lossy().to_string();
+            }
+        }
     }
-    panic!("forge-daemon binary not found — run `cargo build --release -p forge-daemon` first");
+    panic!("forge-daemon binary not found — run `cargo build -p forge-daemon` (debug) or `cargo build --release -p forge-daemon` first");
 }
 
 #[test]

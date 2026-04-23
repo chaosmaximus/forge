@@ -26,6 +26,9 @@ __pycache__/
 .claude/
 .serena/
 
+# ── Dev toolchain artifacts (populated by scripts/setup-dev-env.sh) ─
+.tools/
+
 # ── Bench artifacts (per-run; raw artifacts are not checked in,
 #    only the curated Markdown summaries under docs/benchmarks/results/) ──
 bench_results/

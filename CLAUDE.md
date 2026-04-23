@@ -34,6 +34,16 @@ tests/             — Integration test scripts
 
 ## Development Workflow
 
+**First-time setup on Linux hosts with glibc <2.38** (Ubuntu 22.04 LTS, Debian 12, etc.):
+
+```bash
+sudo apt-get install -y pkg-config libssl-dev
+bash scripts/setup-dev-env.sh   # downloads ONNX Runtime to .tools/
+```
+
+`.cargo/config.toml` wires the downloaded ORT into every cargo invocation — no
+manual env exports needed. macOS and glibc ≥2.38 Linux hosts can skip this.
+
 ```bash
 # Build + test everything
 cargo build --workspace

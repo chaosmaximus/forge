@@ -1,0 +1,19 @@
+# Dev environment — ORT (ONNX Runtime) linkage for forge-daemon.
+#
+# Why: the pyke.io prebuilt ONNX Runtime binary (ort-sys 2.0.0-rc.11 default) is
+# built against glibc ≥2.38. Linux hosts on glibc <2.38 (e.g. Ubuntu 22.04 LTS,
+# Debian 12) fail linking on `__isoc23_strtol` and friends.
+#
+# Fix: `scripts/setup-dev-env.sh` downloads Microsoft's manylinux_2_17 ORT build
+# to `.tools/`; `[env]` below points ort-sys at it for the link step, and the
+# `scripts/with-ort.sh` cargo runner injects it into LD_LIBRARY_PATH at exec time
+# (cargo's own `[env]` LD_LIBRARY_PATH is overridden by cargo's internal dyld
+# paths, so a runner is the only reliable way to reach spawned subprocesses).
+#
+# `force = false` lets contributors override without editing this file.
+[env]
+ORT_LIB_LOCATION        = { value = ".tools/onnxruntime-linux-x64-1.23.0/lib", relative = true, force = false }
+ORT_PREFER_DYNAMIC_LINK = { value = "1", force = false }
+
+[target.'cfg(target_os = "linux")']
+runner = "scripts/with-ort.sh"
