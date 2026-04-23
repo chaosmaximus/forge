@@ -1,0 +1,45 @@
+# Forge public-repo migration scrub lexicon.
+# One pattern per line. Lines starting with '#' are comments.
+# Consumed by scripts/migrate-scrub.sh (text scan via grep -F on non-'#' lines).
+# Extensible — add new leak patterns discovered during T1 inventory or review.
+
+# --- Brand ---
+Bhairavi Tech
+bhairavi.tech
+forge.bhairavi.tech
+support@bhairavi.tech
+@bhairavi.tech
+
+# --- License strings that should not land in Apache-2.0 public files ---
+"license": "Proprietary"
+All rights reserved
+NO PERMISSION IS GRANTED
+Proprietary License
+
+# --- Commercial / paid-tier markers ---
+stripe.com
+sk_live_
+pk_live_
+price_1
+.bhairavi.tech/pricing
+
+# --- Internal infra URLs ---
+.bhairavi.internal
+linear.app/bhairavi
+notion.so/bhairavi
+.slack.com/T
+
+# --- Cloud / secret fragments (catch accidental paste) ---
+AKIA
+ghp_
+gho_
+ghs_
+glpat-
+BEGIN PRIVATE KEY
+BEGIN RSA PRIVATE KEY
+BEGIN OPENSSH PRIVATE KEY
+
+# --- Internal path leaks ---
+forge-app-private/
+/Users/dsskonuru/
+/Users/konurud/

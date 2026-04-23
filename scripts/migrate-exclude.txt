@@ -1,0 +1,34 @@
+# rsync --exclude-from for scripts/migrate-copy.sh
+# Anchored relative to forge-app root. Covers everything classified as
+# STAYS PRIVATE or DELETE in docs/superpowers/plans/2P-1a-inventory.md.
+
+# Stays-private top-level
+/app/
+/archive/
+/product/
+/docs/site/
+/docs/blog/
+/docs/plans/
+/docs/specs/
+/docs/superpowers/
+/docs/archive/
+/CLAUDE.md
+/HANDOFF.md
+/STATE.md
+/INSIGHTS.txt
+/README.md
+/LICENSE
+/package.json
+/package-lock.json
+/.gitignore
+
+# DELETE — redundant duplicate
+/marketplace.json
+
+# Stays-private subpaths inside migrate-candidate dirs
+/scripts/upload-release.sh
+/scripts/teammate-idle-checkpoint.sh
+
+# Git metadata never crosses
+/.git/
+/.github/
