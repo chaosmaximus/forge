@@ -17,6 +17,7 @@ pub mod extractor;
 pub mod indexer;
 pub mod perception;
 pub mod reaper;
+pub mod skill_inference;
 pub mod watcher;
 
 use crate::adapters;
