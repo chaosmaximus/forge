@@ -2253,6 +2253,28 @@ mod tests {
             .unwrap();
         }
 
+        // Pre-assertion: the forward migration must leave all 3 indexes present
+        // before the rollback runs. Without this, a regression that removed the
+        // `CREATE INDEX IF NOT EXISTS` lines from `create_schema` would let the
+        // `DROP INDEX IF EXISTS` below silently no-op and the post-rollback
+        // `idx_count == 0` assertion would pass vacuously.
+        let idx_count_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name IN (
+                     'idx_session_tool_session',
+                     'idx_session_tool_name_agent',
+                     'idx_session_tool_org_session_created'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            idx_count_before, 3,
+            "all 3 indexes must exist before rollback executes — forward migration regression"
+        );
+
         conn.execute_batch(
             "
             DROP INDEX IF EXISTS idx_session_tool_org_session_created;

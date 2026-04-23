@@ -294,6 +294,14 @@ fn record_proactive_injection(
     });
 }
 
+/// Reject ASCII control characters (any codepoint < 0x20) except `\t`.
+/// Shared by all Request arms that accept user-supplied identifier strings
+/// (session_id, agent, tool_name, etc.) — the policy is a single source of
+/// truth so a future expansion (e.g., DEL 0x7F) updates every arm at once.
+fn has_control_char(s: &str) -> bool {
+    s.chars().any(|c| (c as u32) < 0x20 && c != '\t')
+}
+
 pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
     match request {
         Request::Remember {
@@ -1188,10 +1196,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             success,
             user_correction_flag,
         } => {
-            // Validation — fail-fast before any DB touch.
-            fn has_control_char(s: &str) -> bool {
-                s.chars().any(|c| (c as u32) < 0x20 && c != '\t')
-            }
+            // Validation — fail-fast before any DB touch. `has_control_char`
+            // is defined at module scope so all Request arms share one policy.
             if tool_name.trim().is_empty() {
                 return Response::Error {
                     message: "empty_field: tool_name".to_string(),
@@ -1298,10 +1304,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             agent,
             limit,
         } => {
-            fn has_control_char(s: &str) -> bool {
-                s.chars().any(|c| (c as u32) < 0x20 && c != '\t')
-            }
-
+            // `has_control_char` is defined at module scope — one policy
+            // shared across RecordToolUse and ListToolCalls arms.
             if has_control_char(&session_id) {
                 return Response::Error {
                     message: "invalid_field: session_id: control_character".to_string(),
@@ -1325,8 +1329,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 Some(n) => n,
             };
 
-            // Snapshot transaction: derive caller_org from target session,
-            // then list within the same transaction for consistent reads.
+            // Snapshot transaction: derive target_session_org from the target
+            // session row, then list within the same transaction for a
+            // consistent read. Per spec §10.2–10.3: this is "target-session
+            // org consistency", NOT a cross-caller isolation guarantee — no
+            // authenticated caller context exists in this phase.
             let tx = match state.conn.unchecked_transaction() {
                 Ok(t) => t,
                 Err(e) => {
@@ -1336,7 +1343,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             };
 
-            let caller_org: String = match tx.query_row(
+            let target_session_org: String = match tx.query_row(
                 "SELECT COALESCE(organization_id, 'default') FROM session WHERE id = ?1",
                 rusqlite::params![&session_id],
                 |row| row.get::<_, String>(0),
@@ -1356,7 +1363,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             let rows = match crate::db::ops::list_tool_calls(
                 &tx,
-                &caller_org,
+                &target_session_org,
                 &session_id,
                 agent.as_deref(),
                 effective_limit,
@@ -14045,6 +14052,13 @@ mod tests {
 
     #[test]
     fn list_tool_calls_returns_only_target_session_org_rows() {
+        // The row with organization_id = 'other_org' is injected directly via
+        // raw SQL. The normal RecordToolUse write path atomically copies org
+        // from the session row (spec §5.2 atomic INSERT-SELECT), making this
+        // state unreachable via the API. This test pins the
+        // `WHERE organization_id = ?` filter in ops::list_tool_calls SQL —
+        // without it, a bug that removed the org filter would not be caught
+        // by the session-scope tests below.
         let mut state = DaemonState::new(":memory:").unwrap();
         state
             .conn
@@ -14087,7 +14101,12 @@ mod tests {
     }
 
     #[test]
-    fn list_tool_calls_does_not_leak_other_sessions_in_same_org() {
+    fn list_tool_calls_session_id_scope_excludes_sibling_sessions_within_same_org() {
+        // Both sessions are in 'acme', so the `WHERE organization_id = ?`
+        // filter matches both rows — the `AND session_id = ?` predicate is
+        // what excludes SB's row. This test pins the session_id scoping,
+        // NOT org isolation (that's covered by
+        // `list_tool_calls_returns_only_target_session_org_rows` above).
         let mut state = DaemonState::new(":memory:").unwrap();
         state
             .conn
