@@ -2225,4 +2225,66 @@ mod tests {
             names
         );
     }
+
+    // ── Phase 2A-4c1 T11: documented rollback-recipe validation ──────────────
+
+    #[test]
+    fn test_session_tool_call_rollback_recipe_works_on_populated_db() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+            [],
+        )
+        .unwrap();
+
+        for i in 0..5 {
+            conn.execute(
+                &format!(
+                    "INSERT INTO session_tool_call VALUES
+                        ('ID{i}', 'S', 'a', 'T', '{{}}', 'ok', 1, 0, 'default',
+                         '2026-04-19 12:00:00')"
+                ),
+                [],
+            )
+            .unwrap();
+        }
+
+        conn.execute_batch(
+            "
+            DROP INDEX IF EXISTS idx_session_tool_org_session_created;
+            DROP INDEX IF EXISTS idx_session_tool_name_agent;
+            DROP INDEX IF EXISTS idx_session_tool_session;
+            DROP TABLE IF EXISTS session_tool_call;
+            ",
+        )
+        .unwrap();
+
+        let row_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='session_tool_call'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(row_count, 0, "session_tool_call table should be dropped");
+
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name IN (
+                     'idx_session_tool_session',
+                     'idx_session_tool_name_agent',
+                     'idx_session_tool_org_session_created'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 0, "all 3 indexes should be dropped");
+    }
 }
