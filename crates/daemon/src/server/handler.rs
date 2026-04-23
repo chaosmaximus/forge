@@ -1260,9 +1260,26 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             );
 
             match rows {
-                Ok(1) => Response::Ok {
-                    data: forge_core::protocol::ResponseData::ToolCallRecorded { id, created_at },
-                },
+                Ok(1) => {
+                    crate::events::emit(
+                        &state.events,
+                        "tool_use_recorded",
+                        serde_json::json!({
+                            "id":         id.clone(),
+                            "session_id": session_id,
+                            "agent":      agent,
+                            "tool_name":  tool_name,
+                            "success":    success,
+                            "created_at": created_at.clone(),
+                        }),
+                    );
+                    Response::Ok {
+                        data: forge_core::protocol::ResponseData::ToolCallRecorded {
+                            id,
+                            created_at,
+                        },
+                    }
+                }
                 Ok(0) => Response::Error {
                     message: format!("unknown_session: {session_id}"),
                 },
@@ -13614,5 +13631,97 @@ mod tests {
             }
             other => panic!("got {other:?}"),
         }
+    }
+
+    // ── Phase 2A-4c1 T7: event emission tests ────────────────────────────────
+
+    #[test]
+    fn record_tool_use_emits_tool_use_recorded_event_only_after_insert_succeeds() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'claude-code', '2026-04-19 10:00:00', 'active', 'default')",
+                [],
+            )
+            .unwrap();
+
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "claude-code".to_string(),
+            tool_name: "Read".to_string(),
+            tool_args: serde_json::json!({"file_path": "/tmp/a"}),
+            tool_result_summary: "ok".to_string(),
+            success: true,
+            user_correction_flag: false,
+        };
+        let _ = crate::server::handler::handle_request(&mut state, req);
+
+        let event = rx.try_recv().expect("event must be emitted");
+        assert_eq!(event.event, "tool_use_recorded");
+        let data = &event.data;
+        assert!(data.get("id").is_some());
+        assert_eq!(data.get("session_id").and_then(|v| v.as_str()), Some("S"));
+        assert_eq!(
+            data.get("agent").and_then(|v| v.as_str()),
+            Some("claude-code")
+        );
+        assert_eq!(data.get("tool_name").and_then(|v| v.as_str()), Some("Read"));
+        assert_eq!(data.get("success").and_then(|v| v.as_bool()), Some(true));
+        assert!(data.get("created_at").and_then(|v| v.as_str()).is_some());
+        assert!(
+            data.get("tool_args").is_none(),
+            "tool_args MUST NOT be in event"
+        );
+        assert!(
+            data.get("tool_result_summary").is_none(),
+            "summary MUST NOT be in event"
+        );
+        assert!(
+            data.get("user_correction_flag").is_none(),
+            "correction_flag MUST NOT be in event"
+        );
+    }
+
+    #[test]
+    fn record_tool_use_does_not_emit_event_on_validation_error() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "S".to_string(),
+            agent: "".to_string(), // invalid — triggers empty_field: agent
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        let _ = crate::server::handler::handle_request(&mut state, req);
+        assert!(
+            rx.try_recv().is_err(),
+            "no event should be emitted on validation error"
+        );
+    }
+
+    #[test]
+    fn record_tool_use_does_not_emit_event_on_unknown_session() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let mut rx = state.events.subscribe();
+        let req = forge_core::protocol::Request::RecordToolUse {
+            session_id: "NONEXISTENT".to_string(),
+            agent: "a".to_string(),
+            tool_name: "T".to_string(),
+            tool_args: serde_json::json!({}),
+            tool_result_summary: String::new(),
+            success: true,
+            user_correction_flag: false,
+        };
+        let _ = crate::server::handler::handle_request(&mut state, req);
+        assert!(
+            rx.try_recv().is_err(),
+            "no event should be emitted when session is unknown"
+        );
     }
 }
