@@ -1680,6 +1680,39 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             });
 
+            // 6. Plugin hooks installed (Claude Code plugin surface check — 2P-1a).
+            //    Looks for a plugin hooks.json at the canonical install path(s).
+            //    If present, reports OK + event count. Not fatal if absent — a
+            //    daemon user without the plugin is a valid configuration.
+            let hook_paths = [
+                std::env::var("HOME").ok().map(|h| {
+                    std::path::PathBuf::from(h).join(".claude/plugins/forge/hooks/hooks.json")
+                }),
+                std::env::var("CLAUDE_PLUGIN_ROOT")
+                    .ok()
+                    .map(|r| std::path::PathBuf::from(r).join("hooks/hooks.json")),
+            ];
+            let hook_file = hook_paths.iter().flatten().find(|p| p.exists());
+            checks.push(match hook_file {
+                Some(p) => {
+                    let event_count: usize = std::fs::read_to_string(p)
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| v.get("hooks").and_then(|h| h.as_object()).map(|o| o.len()))
+                        .unwrap_or(0);
+                    forge_core::protocol::HealthCheck {
+                        name: "hook".into(),
+                        status: "ok".into(),
+                        message: format!("plugin hooks installed ({event_count} events)"),
+                    }
+                }
+                None => forge_core::protocol::HealthCheck {
+                    name: "hook".into(),
+                    status: "warn".into(),
+                    message: "plugin hooks.json not found — install from chaosmaximus/forge marketplace or symlink hooks/hooks.json into ~/.claude/plugins/forge/".into(),
+                },
+            });
+
             let raw_doc_count = crate::db::raw::count_documents(&state.conn).unwrap_or(0);
             let raw_chunk_count = crate::db::raw::count_chunks(&state.conn).unwrap_or(0);
             let active_session_count =
