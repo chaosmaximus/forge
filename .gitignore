@@ -29,4 +29,5 @@ __pycache__/
 # ── Bench artifacts (per-run; raw artifacts are not checked in,
 #    only the curated Markdown summaries under docs/benchmarks/results/) ──
 bench_results/
+bench_results_*/
 .fastembed_cache/
