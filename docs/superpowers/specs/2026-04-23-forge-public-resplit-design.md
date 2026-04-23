@@ -1,222 +1,269 @@
 # Forge Public Re-Split + Plugin Re-Merge — Phase 2P-1 Design
 
+**Version:** v2 (2026-04-23, after adversarial reviews from Claude code-reviewer + Codex rescue; v1 graded C/D for history-preservation risk + under-specified audit/acceptance).
 **Phase:** 2P-1 (Packaging stream — sibling to 2A-4, not inside it)
 **Date:** 2026-04-23
 **Parent motivation:** conversation with user 2026-04-23 (see `HANDOFF.md` §Lifted constraints); the 2026-04-12 split (commits `ef14b60` / `2084c41` / `1a30550`) moved the plugin, hooks, skills, and agent teams to the private `forge-app` repo alongside the Tauri GUI and commercial bits. That is misaligned with the intended "open core daemon + commercial GUI" model: the plugin/hooks/skills are the agent-side SDK that makes the daemon usable, not part of the GUI.
 **Prerequisite:** 2A-4c2 T1-T8 shipped (through commit `7d1ef2c`), `chore(dev-env)` wired (`729f2d4`), ban-lift + harness-philosophy docs landed (`5d25256`).
-**Target milestone:** public `chaosmaximus/forge` repo exposes the full agent-facing Forge surface — daemon + CLI + HUD + plugin manifest + marketplace entry + hooks + skills + agent teams + Homebrew formula + install script — so a fresh `git clone` + two commands yields a working, agent-wired Forge.
+**Target milestone:** public `chaosmaximus/forge` exposes the full agent-facing Forge surface — daemon + CLI + HUD + plugin + marketplace entry + hooks + skills + agent teams + Homebrew formula + install script — so a fresh `git clone` + two commands yields a working, agent-wired Forge.
 
 ## Summary
 
-Undo the half of the 2026-04-12 split that should not have happened. Migrate the plugin (`plugin.json`, `marketplace.json`), hooks (`hooks/`, hook scripts), skills (15+ `forge-*` skills), agent team definitions (`forge-planner`, `forge-generator`, `forge-evaluator`), templates, and Homebrew formula from the private `forge-app` repo into public `chaosmaximus/forge`. Keep only the Tauri desktop app (`app/`), commercial licensing/Stripe code, and internal product/engineering docs private.
+Undo the half of the 2026-04-12 split that should not have happened. Migrate the plugin manifest, hooks, skills (15+ `forge-*`), agent team definitions, templates, and Homebrew formula from private `forge-app` into public `chaosmaximus/forge`. Keep only the Tauri desktop app, licensing/Stripe, and internal product docs private.
 
-Each layer gets a **skill-creator-grade audit** (state-of-the-art skill and hook authoring) and an **adversarial subagent review pass** (Claude `code-reviewer` + Codex CLI) before merging to public master. A **harness-sync contract** (new, per CLAUDE.md): every daemon endpoint referenced by a plugin / hook / skill / agent MD must have either a contract test in `crates/daemon/tests/` or a doc cross-reference in `docs/api-reference.md`, enforced by a new CI check.
+**Migration method:** plain file copy (`cp -a` / `rsync`). No `git subtree`, no history import, no author rewrites. Each migrated layer lands as a single new commit on public master, authored normally (daemon-team authors + Claude co-author trailer). Rationale: forge-app's history contains commit messages, author emails, GPG signatures, and cross-layer commits touching private files. Importing any of that creates leak risk that no grep lexicon can fully cover. A clean copy is both safer and what the user asked for.
 
-**Scope cap:** this phase is about *the re-split and audit*, not about new product features. Any changes to daemon behavior surface in 2A-4 phases. Exception: restore the four things the original split deleted that were *not* proprietary (`scripts/install.sh`, `getting-started.md` Claude Code hook section, `doctor`'s Hook health check, `test_hook_e2e.rs`, CI plugin validation).
+**Harness-sync contract (new CLAUDE.md philosophy made testable):** every daemon endpoint referenced by any hook/skill/agent/doc must either have a contract test in `crates/daemon/tests/` or a doc cross-reference in `docs/api-reference.md`. Enforced by a new CI check (§4).
 
-**Explicit non-goals:** no daemon feature work; no changes to 2A-4c2 / 2A-4d scope; no re-architecture of skills (audit may rewrite them for quality, but the agent-facing semantics stay stable); no opening the Tauri app source; no changes to pricing/licensing surface (the gate stays in the private app).
+**Audit contract:** each layer gets a `skill-creator` rubric pass + two adversarial subagent reviews (Claude code-reviewer + Codex rescue); passes are **evidence-gated, not vibes-gated** — reviewers produce a machine-parseable findings file (`docs/superpowers/reviews/2P-1-<layer>.yaml`) with a fixed severity vocabulary, and the layer does not merge unless HIGH/CRITICAL count is 0 in both files (§3).
+
+**Scope cap:** this phase is packaging + one small-but-acknowledged new feature (the harness-sync CI check). No new daemon endpoints, no 2A-4 scope bleed. Explicitly restored from the 2026-04-12 deletion: `scripts/install.sh`, Claude Code hook section of `docs/getting-started.md`, `doctor`'s Hook health check, `crates/daemon/tests/test_hook_e2e.rs`. Explicitly new-and-justified: `scripts/check-harness-sync.sh` + CI wiring + plugin manifest / marketplace JSON-schema validation + shellcheck + markdownlint (framed as "new gating accompanying the re-introduction of plugin surface," not as restoration).
+
+**Explicit non-goals:** public Tauri app; licensing/Stripe/tier enforcement; any new daemon endpoints; re-architecture of skills (audit may rewrite for quality, agent-facing semantics preserved); Windows plugin support (Linux + macOS only for 2P-1); automatic skill generation from daemon metadata; opening `product/engineering/` internal docs.
 
 ## 1. Architecture — after re-split
 
 ```
 public chaosmaximus/forge (Apache-2.0)
-├── crates/            — daemon, cli, core, hud       (unchanged)
-├── .claude-plugin/    — plugin.json, marketplace.json (NEW public)
-├── agents/            — forge-planner, -generator, -evaluator (NEW public)
-├── hooks/             — hooks.json (NEW public)
+├── crates/            — daemon, cli, core, hud (unchanged)
+├── .claude-plugin/    — plugin.json, marketplace.json                     (NEW public)
+├── agents/            — forge-planner, -generator, -evaluator             (NEW public)
+├── hooks/             — hooks.json                                         (NEW public)
 ├── scripts/           — install.sh, setup-dev-env.sh, with-ort.sh,
 │                        post-edit-format.sh, session-{start,end}.sh,
-│                        protect-sensitive-files.sh, task-completed-gate.sh
-│                                                     (install.sh + hook scripts NEW public)
-├── skills/            — forge-{new,feature,tdd,ship,review,security,
-│                        debug,migrate,research,setup,think,verify,
-│                        handoff,agents,build-workflow} (NEW public, 15+)
-├── templates/         — greenfield/existing project scaffolds (NEW public)
-├── Formula/           — Homebrew formula (NEW public)
-├── mcp-servers/       — forge-graph MCP (moving public if still present
-│                        in forge-app — TBD during T1 survey)
-├── docs/              — daemon docs + restored Claude Code hook section,
-│                        plus new docs/plugin/ covering skill/hook authoring
+│                        protect-sensitive-files.sh, task-completed-gate.sh (install.sh
+│                        + hook scripts NEW public)
+├── skills/            — forge-{new,feature,tdd,ship,review,security,debug,
+│                        migrate,research,setup,think,verify,handoff,agents,
+│                        build-workflow}                                    (NEW public, 15+)
+├── templates/         — greenfield/existing project scaffolds              (NEW public)
+├── Formula/           — Homebrew formula                                   (NEW public)
+├── mcp-servers/       — forge-graph MCP (iff still in forge-app at T1)    (conditional)
+├── docs/              — daemon docs + restored Claude Code hook section +
+│                        new docs/plugin/ (skill/hook authoring guide)
 ├── tests/             — test_hook_e2e.rs restored
-└── .github/workflows/ — CI: cargo + plugin validation + marketplace lint
+└── .github/workflows/ — CI: cargo + plugin validation + marketplace lint +
+                          shellcheck + markdownlint + check-harness-sync.sh
 
-private chaosmaximus/forge-app (proprietary)
+private chaosmaximus/forge-app (proprietary, post-2P-1 allowlist)
 ├── app/               — Tauri desktop (SolidJS, Cortex 3D, xterm)
 ├── licensing/         — Stripe, tier enforcement, license-check server
 ├── product/           — engineering handoffs, SESSION-GAPS, strategy docs
 └── archive/           — historical / superseded material
 ```
 
-The **harness** is the shaded rectangle in the public repo — daemon, plugin, hooks, skills, agents. All five layers live in one repo, version together, and ship together. The Tauri app becomes what it should have always been: a GUI client for the harness, not a wrapper that carries half of it.
-
 ## 2. Migration mechanics
 
-### 2.1 History-preserving subtree split
+### 2.1 Plain copy (no history import)
 
-For each layer being migrated, use `git subtree split` on the private `forge-app` repo to produce a commit stream isolated to that directory, then `git subtree add` (or `git fetch` + `git cherry-pick`) into public `forge`. This preserves per-file history (who changed the skill, why, when) — critical for the adversarial review pass that inspects rationale.
+For each layer L:
 
-```bash
-# inside forge-app
-git subtree split --prefix=skills --branch=split-skills
-git subtree split --prefix=agents --branch=split-agents
-# …etc per layer
+1. `rsync -a --delete-excluded --exclude-from=scripts/migrate-exclude.txt forge-app/<L>/ forge/<L>/`
+2. Run scrub gate (§2.2) over the newly-copied tree. Fail-closed on any match.
+3. Stage + commit: `git add <L> && git commit -m "feat(2P-1 T<N>): migrate <L> from forge-app (plain copy)"`
 
-# inside forge (public)
-git fetch ../forge-app split-skills
-git merge --allow-unrelated-histories split-skills
-```
+No `--graft`, no `subtree split`, no author rewrites. History on public master is clean and linear. forge-app history stays where it is — anyone wanting to trace "when did this skill get added?" can follow a cross-reference in the migration commit message (`Original forge-app path: <L>/ as of forge-app@<sha>`) to the private repo if they have access.
 
-Per-layer (one PR per layer, *not* one mega-PR) to keep diffs reviewable.
+### 2.2 Proprietary scrub gate (`scripts/migrate-scrub.sh`)
 
-### 2.2 Proprietary scrub
+The scrub runs over **file content + binary metadata + filenames**. Because history is not imported, commit messages and author emails are out of scope.
 
-Before each layer's merge, sweep for:
+- **Text scan** (`grep -rIF --files-with-matches -f lexicon.txt`):
+  - Brand: `Bhairavi Tech`, `forge.bhairavi.tech`, `support@bhairavi.tech`, `@bhairavi.tech`
+  - License: `"license": "Proprietary"`, `All rights reserved`
+  - Author strings: `Bhairavi Tech`, `konurud@` in author fields (ok in git authorship of the copy's commit, not in file content)
+  - Pricing / Stripe: `stripe.com`, `price_`, `sk_live_`, `pk_live_`, `.bhairavi.tech/pricing`
+  - Internal URLs: `*.internal`, Notion/Linear/Slack invite URL patterns (`*.slack.com/T[A-Z0-9]+`, `linear.app/<workspace>`, `notion.so/<workspace>`), GitHub URLs pointing at private orgs
+  - Cloud IDs: AWS account IDs (12-digit near `arn:aws`), S3 bucket names matching the org prefix, GPG key IDs
+  - Internal path leaks: `forge-app-private/`, absolute paths containing `/home/<user>/` or `/Users/<user>/`
+- **Binary asset scan**: `exiftool` EXIF/author strip on all `*.png`, `*.jpg`, `*.ico`, `*.pdf`; `strings <blob> | grep -f lexicon` on font blobs.
+- **Filename scan**: no files matching `*SESSION-GAPS*`, `*STRATEGY*`, `*PRICING*`, `*-private.*`, `*.env`, `*.env.local`.
+- **Exit code 0 iff all scans return 0 matches.** One match = pipeline stops, layer does not commit.
 
-- **Brand**: "Bhairavi Tech", "forge.bhairavi.tech", `support@bhairavi.tech`
-- **License tags**: `"license": "Proprietary"` in JSON → `"Apache-2.0"`
-- **Author**: `Bhairavi Tech` → `Forge Contributors`
-- **Paid-tier references**: any pricing / Stripe / tier-upgrade URLs (same class of leak caught by `1a30550`)
-- **Internal paths**: references to `forge-app-private/product/...` rewritten or dropped
-
-Enforced by a grep gate in the migration script (fail-closed if any match found). Same lexicon CI uses for release artifacts.
+Lexicon lives at `scripts/migrate-lexicon.txt`; can be extended during T1 survey as contributors surface new patterns.
 
 ### 2.3 License retarget
 
-Plugin manifest (`plugin.json`) and marketplace entry move from Proprietary → Apache-2.0. The underlying assets (hook shell scripts, skill MDs, agent MDs) are Apache-2.0 by inheritance. Headers added where absent.
+Plugin manifest (`plugin.json`) and marketplace entry move from Proprietary → Apache-2.0. Underlying assets (hook scripts, skill MDs, agent MDs) are Apache-2.0 by inheritance; SPDX-License-Identifier headers added to every text file missing one.
+
+**Decision dependency (was Codex CRITICAL #3):** the relicensing is valid **only if** all migrated assets are confirmed non-proprietary by the T1 inventory. Any skill/agent/hook flagged as commercially differentiated during T1 stays in `forge-app` and is excluded from its layer's migration. Relicensing of the migrated subset can then proceed safely.
 
 ### 2.4 Restoration of artifacts deleted in 2026-04-12 split
 
-Per commit `1a30550` and `2084c41`, the split deleted four non-proprietary items that should come back:
+Per `1a30550` and `2084c41`, four non-proprietary artifacts come back:
 
-1. **`scripts/install.sh`** — rewritten to point at public release artifacts (GitHub releases) instead of `forge.bhairavi.tech`.
-2. **`docs/getting-started.md` Claude Code hook integration section** — describes how to install the plugin + wire hooks to the daemon.
-3. **`doctor`'s Hook health check** in `crates/cli/src/commands/system.rs` — checks that `hooks.json` is present and hook scripts are executable.
-4. **`crates/daemon/tests/test_hook_e2e.rs`** — end-to-end tests that invoke hook scripts against a running daemon.
-5. **CI plugin validation step** — JSON-schema check on `plugin.json`, marketplace-schema check on `marketplace.json`, bats/shellcheck on hook scripts.
+1. `scripts/install.sh` — rewritten to point at public GitHub release artifacts, not `forge.bhairavi.tech`.
+2. `docs/getting-started.md` Claude Code hook integration section.
+3. `doctor`'s Hook health check in `crates/cli/src/commands/system.rs`.
+4. `crates/daemon/tests/test_hook_e2e.rs`.
 
-Each restoration is a separate commit within the corresponding layer's task.
+Plus one new-and-explicit gating step (called out as new, not disguised as restoration):
 
-## 3. Per-layer audit contract (state-of-the-art authoring)
+5. **CI plugin validation** — JSON-schema checks on `plugin.json` + `marketplace.json`, shellcheck on hook scripts, markdownlint on skill MDs. New gating, introduced alongside the re-introduction of the plugin surface.
 
-Each layer gets two required passes before merging to public master:
+## 3. Per-layer audit contract (enforceable)
 
-### 3.1 skill-creator pass (for skills + agent MDs)
+### 3.1 skill-creator rubric pass
 
-Invoke the `skill-creator` skill on every `forge-*/SKILL.md` and every `agents/forge-*.md`. The skill evaluates:
+Invoke the `skill-creator` skill on every `skills/forge-*/SKILL.md` and every `agents/forge-*.md`. Required output: `docs/superpowers/reviews/2P-1-<layer>-skill-creator.yaml` with keys:
 
-- Trigger clarity (description field surfaces the skill reliably for the intended user intent, doesn't over-trigger on adjacent intents)
-- Prereq/precondition explicitness
-- Examples that cover happy path + one failure mode
-- Workflow commands are copy-pasteable and idempotent
-- No stale references to proprietary paths, removed endpoints, or private-repo files
-- Matches the style of official Claude Code skills (structure, headings, length)
+```yaml
+layer: skills
+artifacts:
+  - path: skills/forge-new/SKILL.md
+    trigger_clarity: pass | flag | fail
+    prereqs_explicit: pass | flag | fail
+    examples_coverage: pass | flag | fail
+    commands_idempotent: pass | flag | fail
+    style_alignment: pass | flag | fail
+    findings: [ {severity: LOW|MEDIUM|HIGH|CRITICAL, note: "..."} ]
+overall: pass | fail
+```
 
-Findings become fixup commits within the layer's task (not separate). A skill doesn't merge until skill-creator gives it a passing grade.
+"pass" = no HIGH or CRITICAL findings. Fixup commits close out HIGH/CRITICAL. File is machine-parseable and checked in.
 
 ### 3.2 Adversarial subagent review pass
 
-Per each layer, dispatch in parallel:
+Two independent subagents per layer, **inverted prompts**:
 
-- **Claude `code-reviewer` subagent** — on the full layer diff, asked to find: proprietary leaks, security issues (unvetted `eval` in hooks, command injection, secret exposure), harness-sync gaps, staleness (references to daemon features that no longer exist at the noted versions).
-- **Codex CLI rescue subagent** (`codex:rescue`) — same diff, independent model, same prompts.
+- **Claude `code-reviewer`-style (general-purpose agent)**: "assume the migration is good; find what breaks if a user relies on it." (Defend → attack)
+- **`codex:codex-rescue`**: "assume the migration is bad; find the leak/break first." (Attack → defend)
 
-Both subagents' findings become fixup commits. A layer doesn't merge until both reviews pass with no HIGH/CRITICAL outstanding.
+Each produces `docs/superpowers/reviews/2P-1-<layer>-<reviewer>.yaml` using the same severity vocabulary. Layer merge is gated on `HIGH/CRITICAL count == 0` in both files. The gate is enforced by `scripts/check-review-artifacts.sh` wired into CI.
 
 ### 3.3 Contract tests
 
-Hook scripts and the plugin manifest reference daemon endpoints (e.g., `session-start.sh` calls `POST /api` with `{"method":"register_session",...}`). For each such call:
+Every daemon endpoint referenced by a hook/skill/agent/doc gets either a contract test in `crates/daemon/tests/test_hook_e2e.rs` (or sibling) or a doc cross-reference in `docs/api-reference.md`. Enforced by §4.
 
-- Either add a test in `crates/daemon/tests/test_hook_e2e.rs` that exercises the hook against a live daemon instance
-- Or add a doc cross-reference in `docs/api-reference.md` pointing from the endpoint to the hook/skill that calls it
+## 4. Harness-sync contract (CI-enforced, scope clarified)
 
-CI enforces this via a new check (see §4).
+**Honest scope**: this IS new feature work, not "packaging only." It is in-scope for 2P-1 because without it the re-introduced plugin surface will drift from the daemon within weeks. Acknowledging the scope expansion openly beats smuggling it in.
 
-## 4. Harness-sync contract (CI-enforced)
+`scripts/check-harness-sync.sh` scans for *every* way a daemon surface gets referenced:
 
-**Rule** (from CLAUDE.md philosophy section): daemon changes must propagate to the layers that reference them. To make this non-optional:
+- **JSON method literals** in hook scripts, agent MDs, skill MDs, templates, docs: `"method"\s*:\s*"(?P<m>[a-z_]+)"`
+- **Rust test/fixture JSON**: `serde_json::json!\(\s*\{\s*"method"\s*:\s*"(?P<m>[a-z_]+)"` and variants with `"method": name_var`
+- **CLI subcommand references**: `forge-next\s+(?P<sub>[a-z-]+)` in docs and skill MDs cross-referenced against `forge-cli`'s subcommand list
+- **Rustdoc / prose references to `Request::<Variant>`**: `Request::(?P<v>[A-Z][A-Za-z_]+)` in any `.rs` or `.md` file
 
-- Add `scripts/check-harness-sync.sh` that scans `hooks/`, `skills/`, `agents/`, `docs/` for references to daemon protocol methods (`"method":"<name>"`) and cross-checks against `crates/core/src/protocol/request.rs` variants. Fails if:
-  - A method name in a hook/skill/doc doesn't match any `Request::` variant.
-  - A `Request::` variant added in the last 10 commits has no corresponding hook/skill/doc reference (warning, not fail — not every endpoint needs a hook).
-  - A `Request::` variant removed/renamed still has references.
-- Wire the check into CI (`.github/workflows/ci.yml`) as a required step.
+Cross-checked against the authoritative list of `Request::` variants in `crates/core/src/protocol/request.rs` and `forge-cli`'s clap derive. Failure modes:
 
-This is the mechanism that turns the philosophy statement into a testable invariant.
+- Method/CLI-subcommand referenced that does not exist → **FAIL**.
+- `Request::` variant added in-tree with no reference in hooks/skills/docs after 14 days → **WARN** (opt-out via `// harness-sync: unreferenced-ok` comment on the variant).
+- `Request::` variant removed/renamed with stale references → **FAIL** until references updated, or variant marked `#[deprecated]` with a grace-window in its rustdoc.
+
+**Rollout**: CI check runs in `warn-only` mode starting at T3 merge, flips to `fail-closed` only at T10 merge (after T3-T9 layers are all present and synced). This prevents T3-T9 intermediate merges from failing CI on layers that are not yet migrated.
 
 ## 5. Task decomposition
 
-| Task | Scope | Dep | Notes |
-|------|-------|-----|-------|
-| **T1** | **Survey + scope lock** — catalog every file in private `forge-app` that's a candidate for public migration; confirm with user which stay/go; produce `docs/superpowers/plans/2P-1-inventory.md` as the source of truth. | — | No code changes. |
-| **T2** | **Migration tooling** — write `scripts/migrate-from-forge-app.sh` using `git subtree split`; includes the proprietary-scrub grep gate; dry-run mode prints diff stats without committing. | T1 | |
-| **T3** | **Plugin manifest layer** — migrate `.claude-plugin/{plugin.json, marketplace.json}`, retarget license + owner + homepage, marketplace schema validation, proprietary scrub, adversarial review. | T2 | First real layer. Smallest. |
-| **T4** | **Hooks layer** — migrate `hooks/hooks.json` + all hook shell scripts; shellcheck + bats tests; contract-test each daemon endpoint touched; adversarial review. | T3 | |
-| **T5** | **Skills layer** — migrate `skills/forge-*` (15+ skills); run skill-creator pass on every SKILL.md; fixup commits per skill; adversarial review. | T3 | Largest layer by file count. Splits naturally into groups if review is too big for one PR (e.g. T5a = forge-new/feature/ship, T5b = forge-tdd/review/security, T5c = forge-debug/migrate/research, T5d = forge-setup/think/verify, T5e = forge-handoff/agents/build-workflow). |
-| **T6** | **Agent teams layer** — migrate `agents/forge-{planner,generator,evaluator}.md`; skill-creator pass; adversarial review. | T3 | |
-| **T7** | **Templates + Homebrew** — migrate `templates/` and `Formula/`; Formula rewrites download URL to public GitHub releases. | T3 | |
-| **T8** | **Restore deleted artifacts** — `scripts/install.sh`, `docs/getting-started.md` Claude Code section, `doctor` Hook check in `crates/cli/src/commands/system.rs`, `crates/daemon/tests/test_hook_e2e.rs`. | T4 | `test_hook_e2e.rs` needs the hook scripts from T4 present. |
-| **T9** | **forge-graph MCP** *(conditional)* — if still present in `forge-app`, migrate the MCP server into public `mcp-servers/`. If not present, skip and note in inventory. | T1 | Gated on T1 survey finding. |
-| **T10** | **Harness-sync CI check** — add `scripts/check-harness-sync.sh`, wire into `.github/workflows/ci.yml`. | T3-T6 | Depends on the layers being in-repo to have anything to scan. |
-| **T11** | **CI plugin validation** — `plugin.json` + `marketplace.json` schema checks, shellcheck on hook scripts, markdownlint on skill MDs. | T4, T5 | |
-| **T12** | **Lift forge-app private references in daemon tree** — sweep `docs/superpowers/specs/` and `docs/superpowers/plans/` for `forge-app-private` mentions and rewrite to `forge/<path>` (public now) or drop if stale. | T5 | |
-| **T13** | **Adversarial review on the full re-split diff** — Claude `code-reviewer` + Codex CLI on the entire accumulated T3-T12 diff, one more time, to catch cross-layer issues missed in per-layer reviews. | T3-T12 | Gate before T14. |
-| **T14** | **Dogfood + results doc** — install the new public plugin on this cloud box, wire hooks to a running local daemon, run one agent session through it, verify session data lands in the daemon, write `docs/benchmarks/results/forge-public-resplit-2026-04-XX.md`. | T13 | |
+| Task | Scope | Deps | Notes |
+|------|-------|------|-------|
+| **T1** | **Inventory + scope lock**: catalog every file in private `forge-app`; each marked migrate / stays-private / delete. Commercially-differentiated check (Codex §2.3): any skill/agent flagged stays private. Output: `docs/superpowers/plans/2P-1-inventory.md`. **Must be locked (user-signed) before T3.** | — | No code changes. |
+| **T2** | **Migration tooling**: `scripts/migrate-scrub.sh` + `scripts/migrate-lexicon.txt` + `scripts/check-review-artifacts.sh`; no actual migration yet. Includes dry-run mode; tested on known-leaky fixture. | T1 | |
+| **T3** | **Plugin manifest layer**: copy `.claude-plugin/{plugin.json, marketplace.json}`, retarget license + owner + homepage, marketplace schema validation, adversarial review + skill-creator (n/a for JSON — just human rubric). | T2 | Smallest layer. |
+| **T4** | **Hooks layer**: copy `hooks/hooks.json` + hook shell scripts; shellcheck; contract-test per daemon endpoint touched; adversarial review. | T3 | |
+| **T5** | **Skills layer**: copy `skills/forge-*` (subset confirmed non-commercial in T1); skill-creator pass per SKILL.md; adversarial review. Split into **≤ 800 LoC review chunks** T5a/T5b/... (hard threshold, not "if too big"). | T3 | |
+| **T6** | **Agent teams layer**: copy `agents/forge-{planner,generator,evaluator}.md`; skill-creator pass; adversarial review. | T3 | |
+| **T7** | **Templates + Homebrew**: copy `templates/` and `Formula/`; Formula download URL rewritten to public GitHub release. | T3 | |
+| **T8** | **Restore deleted artifacts**: `scripts/install.sh`, `docs/getting-started.md` hook section, `doctor` Hook check, `crates/daemon/tests/test_hook_e2e.rs`. Depends on T4 (hook scripts present) AND T5 (skills present — `test_hook_e2e.rs` exercises skill→hook→daemon flow). | T4, T5 | |
+| **T9** | **forge-graph MCP** *(conditional on T1)*: migrate if still in forge-app. | T1, T2 | |
+| **T10** | **Harness-sync CI** (wire `scripts/check-harness-sync.sh` into CI, **flip warn-only → fail-closed in this task**). | T3-T9 | |
+| **T11** | **CI plugin validation**: schema + shellcheck + markdownlint as required CI steps. | T3, T4, T5 | |
+| **T12** | **Prune private repo**: in `forge-app`, delete the migrated paths; verify `forge-app` CI still green; commit as `chore(split): forge-app post-migration pruning`. **Owns acceptance criterion §10.6.** | T3-T9 | |
+| **T13** | **Lift `forge-app-private` references** from `docs/superpowers/specs/` and `docs/superpowers/plans/` in public repo. Runs **before** T14. | T5 | |
+| **T14** | **Holistic adversarial review** on the full T3-T13 diff: Claude code-reviewer + Codex rescue with inverted prompts. | T3-T13 | Gate before T15. |
+| **T15** | **Dogfood + results doc** (expanded per §7). | T14 | |
+| **T16** | **Rollback playbook**: `docs/operations/2P-1-rollback.md` — if a CRITICAL issue surfaces post-ship, how to back out (which commits to revert, how to restore forge-app, how to re-issue a marketplace patch). Ships **before** T15 so T15 dogfood validates rollback path lightly. | T14 | |
 
-## 6. Adversarial-review checkpoints (recap)
+## 6. Adversarial-review checkpoints
 
-- **Before T2** (migration tooling): review the scrub gate logic and the subtree-split approach.
-- **Per-layer** (T3-T12): Claude code-reviewer + Codex CLI, HIGH/CRITICAL must be zero.
-- **Post-T12** (T13): holistic review across all layers + final proprietary-leak sweep.
+- **Before T2**: review of migration tooling + scrub gate logic.
+- **Per-layer** (T3-T9): two independent subagent reviews with inverted prompts; artifacts at `docs/superpowers/reviews/`.
+- **T14 holistic**: full-diff review, cross-layer issues.
 
-## 7. Dogfood plan (T14)
+## 7. Dogfood plan (T15, expanded)
 
-1. Install the plugin locally (`.claude/plugins/forge/` or marketplace install, whichever is canonical).
-2. Start `forge-daemon` in release mode.
-3. Open a fresh Claude Code session in this repo — `session-start.sh` hook should register the session with the daemon.
-4. Run one real task (e.g. "what's the status of phase 2P-1?") so skills surface in the agent's context.
-5. Post-session, query daemon: `forge-next recall "2P-1"` — should return memories written during the session.
-6. Capture traces into `docs/benchmarks/results/forge-public-resplit-2026-04-XX.md` alongside the other phase dogfood results.
+Proves the full agent-facing surface, not just a happy path:
+
+1. Fresh-clone public `forge` on Ubuntu 22.04 (glibc 2.35) + one macOS host.
+2. `scripts/setup-dev-env.sh && cargo build --release` green on both.
+3. Install plugin via **each** canonical install mode — marketplace install AND symlink install. Verify both surface the same slash commands + skills.
+4. Install homebrew formula on the macOS host; verify `forge-daemon --version` matches `cargo run --release -p forge-daemon -- --version`.
+5. Start daemon in release mode.
+6. Agent session flow:
+   - Open Claude Code session → `session-start.sh` hook registers session (verify `register_session` call landed via daemon `/api` log).
+   - Run real task ("summarize phase 2P-1 status") → `<skills>` context includes `forge-handoff` skill.
+   - Post-edit hook fires after a code edit → daemon sees `record_tool_use` row.
+   - `session-end.sh` hook → daemon sees session closed.
+7. `forge-next recall "2P-1"` returns ≥ 1 memory with `session_id` matching step 6's session.
+8. `doctor` output shows Hook health check passing.
+9. **Negative test**: stop daemon mid-session → verify hooks degrade gracefully (non-zero exit from hook script is tolerated by Claude Code, no session wedge).
+10. **Parallel-session test**: two Claude Code sessions share one daemon → `register_session` × 2, neither wedges the other.
+11. Results doc at `docs/benchmarks/results/forge-public-resplit-2026-05-XX.md` (precise date at ship time).
 
 ## 8. Risks & mitigations
 
 | Risk | Mitigation |
 |------|-----------|
-| Proprietary material leaks into public | §2.2 scrub gate fail-closed; §3.2 adversarial review; §6 post-T12 full-diff sweep. |
-| Git-subtree preserves commits that reference private files | §2.2 grep gate scans commit messages too, not just file content; rewrite-on-merge where needed. |
-| Plugin skills break existing user workflows | Skills are currently inaccessible (ban + private repo), so this migration is greenfield from the public-consumer POV. No backward-compat obligation. |
-| CI harness-sync check is noisy and slows development | Scoped to *referenced* methods only; unreferenced new endpoints are warnings not failures; opt-in `force=false` style. |
-| Dogfood finds the plugin/daemon are still out of sync | T14 is the proof point; any desync becomes T15+ follow-up tasks. |
-| Migration takes longer than 2A-4d timeline allows | 2A-4d depends on 2A-4c2 + 2A-4d intrinsics, not on 2P-1. They can interleave. 2P-1 is scoped to packaging/plumbing only. |
+| Proprietary leak via file content | §2.2 fail-closed scrub on text + binary metadata. |
+| Proprietary leak via binary assets | exiftool + strings scan in §2.2. |
+| Commercial-skill accidentally migrated | §2.3 dependency on T1 inventory lock. |
+| Harness-sync false positives / negatives | §4 explicit scope (JSON + Rust + CLI + rustdoc); opt-out annotation; rename grace-window. |
+| CI stays red during T3-T9 migrations | §4 `warn-only` mode through T3-T9, `fail-closed` only at T10. |
+| Marketplace listing collision (public plugin.name == private plugin.name) | T3 renames public plugin slug or bumps major version; marketplace resubmission task. |
+| 2A-4d development during 2P-1 drifts new endpoints away from newly-migrated harness | Interlock protocol: any 2A-4d PR touching `crates/core/src/protocol/request.rs` must bump a sync version in `.claude-plugin/plugin.json` and update relevant hook/skill refs in the **same PR**. Enforced by §4 CI check (in `warn-only` during overlap, `fail-closed` after). |
+| forge-app CI broken post-pruning | T12 acceptance includes "forge-app CI green at the pruned state". |
+| User who sideloaded private plugin pre-ban-lift has stale copy | T15 results doc includes a short "migration note for sideload users" section. |
+| Rollback if CRITICAL surfaces post-ship | T16 playbook exists and is exercised in T15. |
 
 ## 9. Out of scope
 
-- Public Tauri app. Stays private for commercial reasons.
-- Licensing / Stripe / tier enforcement. Stays private.
-- Any new daemon endpoints. Feature work is 2A-4 stream.
-- Re-architecture of skills. Audit may rewrite for quality; agent-facing semantics preserved.
-- iOS / Android / Windows plugin support. Linux + macOS only for T14.
-- Automatic skill generation from daemon metadata (a sp2-era idea).
-- A "forge app" as a Claude Code agent-orchestration surface beyond what's in `agents/forge-{planner,generator,evaluator}.md`.
+- Public Tauri app; licensing/Stripe/tier enforcement.
+- New daemon endpoints (belong to 2A-4 stream).
+- Re-architecture of skills (audit may rewrite for quality; agent-facing semantics preserved).
+- Windows plugin support.
+- Automatic skill generation from daemon metadata.
+- Plugin internationalization / non-English skill variants.
 
-## 10. Acceptance criteria
+## 10. Acceptance criteria (objectively verifiable)
 
-Phase 2P-1 is shipped when:
+Phase 2P-1 is shipped when ALL are true:
 
-1. Public `chaosmaximus/forge` at some commit `X` has all layers migrated and passing T13 adversarial review.
-2. `cargo test --workspace` is green at commit `X` (inherits from 2A-4c2 contract).
-3. `scripts/check-harness-sync.sh` passes in CI at commit `X`.
-4. `scripts/setup-dev-env.sh && cargo test --workspace` works from a fresh clone of public `forge` on Ubuntu 22.04 / glibc 2.35 (the 2026-04-23 cloud-session reproducer).
-5. Dogfood results doc at `docs/benchmarks/results/forge-public-resplit-2026-04-XX.md` records: live daemon + plugin install + one full agent session + memories recalled successfully.
-6. Private `forge-app` at commit `Y ≥ X` is reduced to just `app/` + `licensing/` + `product/` + `archive/`; no plugin-ish files remain.
-7. HANDOFF.md gets a new "Lifted constraints" entry noting the completion.
+1. A specific commit SHA (recorded in `HANDOFF.md`) on public `master` contains all layers migrated per T1 inventory; at that SHA, T3-T16 have all landed.
+2. `cargo test --workspace` green at the SHA (1700+ passed, 0 failed).
+3. `scripts/check-harness-sync.sh` passes in `fail-closed` mode at the SHA.
+4. `scripts/setup-dev-env.sh && cargo test --workspace` green from a fresh clone of public `forge` on **both** Ubuntu 22.04 (glibc 2.35) **and** macOS (latest stable, ARM or x86 per host availability).
+5. Dogfood results doc at `docs/benchmarks/results/forge-public-resplit-2026-05-XX.md` records, for the two canonical install modes × two OSes: `register_session` observed, `<skills>` rendered with ≥ 1 `forge-*` skill, `record_tool_use` observed, `session-end` observed, `forge-next recall "<phase tag>"` returns ≥ 1 memory where `session_id` matches the session from the run.
+6. Private `forge-app` at commit `≥ SHA` contains ONLY these top-level paths: `app/`, `licensing/`, `product/`, `archive/`, `README.md`, `CLAUDE.md`, `LICENSE`, `.git*`, `Cargo.toml`/`package.json` etc. required for Tauri build. No `plugin.json`, `marketplace.json`, `agents/`, `hooks/`, `skills/`, `templates/`, `Formula/`, `.claude-plugin/`.
+7. `forge-app` CI green at its post-pruning SHA.
+8. `HANDOFF.md` §Lifted constraints has a new entry dated at ship time noting 2P-1 completion, citing the public SHA + forge-app SHA.
+9. `docs/operations/2P-1-rollback.md` exists and has been walked through in a tabletop exercise during T15.
+10. A short migration note for sideload users is present in T15 results doc.
 
-## 11. Open questions (to resolve during T1 survey)
+## 11. Open questions (T1 survey must resolve; NONE carry past T1 lock)
 
-- **Q1**: Is `forge-graph` MCP server still in `forge-app`? (The v0.2.0 commit thread suggests yes, but it may have been moved or deprecated.) Answer determines T9 go/no-go.
-- **Q2**: Are any of the 15+ `forge-*` skills commercially differentiated (e.g. contain proprietary benchmarks, enterprise-only workflows)? If yes, those stay private; revise T5 scope.
-- **Q3**: Does `scripts/install.sh` need to be different on Linux vs. macOS (brew vs. curl | sh)? Resolve during T8.
-- **Q4**: Does the harness-sync check (T10) need to also scan for references to CLI subcommands (not just daemon protocol methods)? Likely yes, but out of scope for 2P-1 unless T14 dogfood surfaces drift.
+- **Q1**: `forge-graph` MCP server still in `forge-app`? — resolves T9 go/no-go.
+- **Q2**: any `forge-*` skills commercially differentiated / contain proprietary benchmarks? — resolves T5 scope.
+- **Q3**: `scripts/install.sh` per-OS variation strategy — resolves T8 scope.
+- **Q4**: CLI subcommand references — do skills call `forge-next` subcommands? (If yes, widen §4 scope to include those; already budgeted in the regex list above.)
+- **Q5**: GitHub Actions secrets in `forge-app` workflows that don't exist in public — if T7 or T11 imports those workflows, document which secrets need to be created in public org before the workflow is enabled.
+- **Q6**: Marketplace listing — does Anthropic's Claude Code marketplace require a new submission for the renamed/relicensed public plugin, or is a version bump on the existing listing sufficient? (Out-of-band answer from user or Anthropic docs.)
+- **Q7**: Submodules / Git LFS in forge-app — any? If yes, they cannot cross the copy without additional steps; decide migrate vs. skip in T1.
 
 ---
 
-Locked when T1 survey completes. Ready for adversarial review on design before moving to the execution plan.
+**Changelog from v1:**
+- §2.1: `git subtree split` → plain copy. Drops every history-preservation risk (orphan commits, bisectability loss, author-email leak, commit-message leak, GPG signature loss).
+- §2.2: scrub lexicon expanded (internal URLs, cloud IDs, GPG, Slack/Linear/Notion patterns); adds binary-asset exif + strings scan; adds filename scan.
+- §2.3: license retarget now explicitly gated on T1 inventory.
+- §2.4: typo fix (five items, not "four"); new §2.4.5 framed honestly as new gating.
+- §3.1 + §3.2: audit rubrics are evidence-gated (machine-parseable YAML artifacts), not vibes-gated. CI `scripts/check-review-artifacts.sh` enforces HIGH/CRITICAL == 0.
+- §3.2: inverted prompts between Claude + Codex subagents (attack vs defend) to preserve independence.
+- §4: scope widened (JSON + Rust fixtures + CLI subcommands + rustdoc); rename-vs-delete handled via `#[deprecated]` grace window + opt-out annotation; `warn-only → fail-closed` transition explicit at T10.
+- §5: hard 800 LoC threshold for T5 grouping; T8 deps now include T5; T12 (forge-app pruning) added as real task owning §10.6; T13 moves before T14; T16 rollback playbook added.
+- §7: dogfood expanded to two OSes, two install modes, session-end, negative test, parallel-session test, specific recall assertion.
+- §8: added risks — marketplace collision, 2A-4d interlock, forge-app CI, sideload-user migration, rollback.
+- §10: removed "some commit X" variable; added macOS; made recall assertion specific; added explicit allowlist for forge-app; added forge-app CI criterion; added migration-note criterion; added rollback tabletop criterion.
+- §11: all questions tagged T1-lockable; none carry past T1.
+
+Ready for a second adversarial review pass on v2, or (if the changes land the grade) move to the execution plan at `docs/superpowers/plans/2026-04-23-forge-public-resplit.md`.
