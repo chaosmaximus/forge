@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-feature
 description: "Use when adding features, fixing bugs, refactoring, or modifying code in an existing codebase. Explores the codebase using Forge memory (recall, blast-radius), plans changes with user approval, builds with tests, and reviews. Example triggers: 'add a login page', 'fix the auth bug', 'refactor the API layer', 'update the database schema', 'implement the new feature from the spec'."

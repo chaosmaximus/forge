@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-research
 description: "Autonomous research loop — explore a topic with bounded iterations, git-backed experiments. Use when user says 'research this', 'investigate how X works', 'explore the codebase', 'understand this module', 'do a deep dive on', or needs bounded autonomous exploration of a technical topic."

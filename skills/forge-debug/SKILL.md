@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-debug
 description: Use when encountering any bug, test failure, or unexpected behavior — enforces root-cause investigation before fixes. Integrates with Forge memory to check for known issues and store findings.

@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-ship
 description: "Use when forge-review has passed and work is ready to integrate or create a PR. Handles final verification, changelog generation, PR creation, memory persistence, and cleanup. Example triggers: 'ship this', 'create a PR', 'merge this', 'we are done, let us ship', 'push and create pull request'."

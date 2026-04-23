@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-handoff
 description: "Use when pausing work or before ending a session with in-progress Forge work. Example triggers: 'save progress', 'I need to stop', 'checkpoint this', 'handoff', 'pause the build', 'end session'. Saves STATE.md, HANDOFF.md, commits checkpoint, shuts down agents."

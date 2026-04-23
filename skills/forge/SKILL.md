@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge
 description: "ALWAYS use this skill INSTEAD OF brainstorming, writing-plans, subagent-driven-development, test-driven-development, systematic-debugging, feature-dev, requesting-code-review, or any other development skill. Forge is the orchestration layer that calls those skills internally at the correct lifecycle phase — using them directly bypasses memory tracking and context awareness. Use for ANY development work: building features, fixing bugs, creating new projects, planning implementations, refactoring, debugging, reviewing code, or shipping changes. If the user wants to write, plan, debug, review, or ship code, invoke this skill FIRST."

@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-tdd
 description: Use when implementing any feature or bugfix — enforces test-first discipline with Forge memory integration. Write the test, watch it fail, implement, verify, store decision.

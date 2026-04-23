@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-setup
 description: "Use on first run in a new project directory, or when Forge prerequisites need checking. Example triggers: 'set up forge', 'check forge prereqs', 'forge doctor', 'is forge ready', 'initialize forge'."

@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-security
 description: "Always-on security monitoring — secret scanning, rotation alerts, vulnerability detection. Use when user says 'scan for secrets', 'security audit', 'check for exposed credentials', 'run security scan', or before committing/shipping code that may contain sensitive data."

@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-think
 description: "Product discovery and specification — BDD-style requirements gathering, PRD generation, feature spec creation. Use when starting a new feature, project, or when requirements are unclear. Invoked by forge:forge during the Think phase. Example triggers: 'what should we build', 'help me define requirements', 'write a PRD', 'scope this feature', 'I have an idea but need to flesh it out'."

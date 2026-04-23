@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-new
 description: "Use when building a new project from scratch in an empty or near-empty directory. Example triggers: 'new project', 'start from scratch', 'build a new app', 'create a new service', 'greenfield build'. Guides through PRD, design, agent team build, review, and ship."

@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-verify
 description: Use before claiming work is complete — requires running verification commands and confirming output. Evidence before assertions. Integrates with Forge doctor and live UAT.

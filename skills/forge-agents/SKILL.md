@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-agents
 description: "View detailed status of running and recent Forge agents — tool calls, files touched, recent activity timeline. Use when user asks 'show agents', 'agent status', 'what are the agents doing', 'how is the build going', or wants to see forge-planner/forge-generator/forge-evaluator progress."

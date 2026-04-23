@@ -70,3 +70,33 @@ jobs:
 
       - name: Run hud tests
         run: cargo test -p forge-hud
+
+  plugin-surface:
+    name: Plugin surface (schema + shellcheck + skills + agents)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y jq shellcheck
+
+      - name: Validate plugin.json
+        run: bash tests/static/validate-plugin.sh
+
+      - name: Validate hooks.json
+        run: bash tests/static/validate-hooks.sh
+
+      - name: Validate skills (frontmatter + description + structure)
+        run: bash tests/static/validate-skills.sh
+
+      - name: Validate agents (frontmatter + tools)
+        run: bash tests/static/validate-agents.sh
+
+      - name: Validate agent-tools (CLI-first, no MCP refs)
+        run: bash tests/static/validate-agent-tools.sh
+
+      - name: Shellcheck hooks + migration scripts
+        run: bash tests/static/run-shellcheck.sh
+
+      - name: Scrub fixture tests
+        run: bash tests/scripts/test-migrate-scrub.sh

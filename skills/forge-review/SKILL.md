@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-review
 description: "Use after forge-build completes all waves, before merging or shipping any code. Example triggers: 'review the code', 'check my changes', 'run code review', 'evaluate this changeset', 'is this ready to merge'. Runs evaluator + optional Codex adversarial review."

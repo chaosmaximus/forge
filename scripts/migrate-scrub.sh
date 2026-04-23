@@ -26,8 +26,10 @@ is_allowed() {
         case "$glob" in ''|'#'*) continue ;; esac
         # Match glob against any suffix of the path so callers can use
         # relative-to-target patterns (e.g. skills/forge-security/**).
+        # shellcheck disable=SC2254  # glob + variable expansion is intentional
         case "$f" in
-            */$glob|$glob|*/${glob%/**}/*|${glob%/**}/*) return 0 ;;
+            */"$glob"|"$glob") return 0 ;;
+            *"/${glob%/**}/"*|"${glob%/**}/"*) return 0 ;;
         esac
     done < "$ALLOWLIST"
     return 1

@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
 ---
 name: forge-migrate
 description: "Use when adopting existing code into a new workspace, migrating prototypes, or integrating code from another project. Skips discovery/PRD — goes straight to analysis, copy, and integration testing. Example triggers: 'migrate this code', 'adopt this prototype', 'bring this into the workspace', 'copy and integrate'."
