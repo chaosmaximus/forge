@@ -44,6 +44,7 @@ pub struct ConsolidationStats {
     pub reweaved: usize,
     pub scored: usize,
     pub protocols_extracted: usize,
+    pub skills_inferred: usize,
     pub antipatterns_tagged: usize,
     pub healed_superseded: usize,
     pub healed_faded: usize,
@@ -279,6 +280,18 @@ pub fn run_all_phases(
     stats.protocols_extracted = protocols;
     if protocols > 0 {
         eprintln!("[consolidator] extracted {protocols} protocols from behavior patterns");
+    }
+
+    // Phase 23: Behavioral skill inference — elevate recurring clean tool-use
+    // patterns from session_tool_call to the skill table.
+    let skills_inferred = infer_skills_from_behavior(
+        conn,
+        config.skill_inference_min_sessions,
+        config.skill_inference_window_days,
+    );
+    stats.skills_inferred = skills_inferred;
+    if skills_inferred > 0 {
+        eprintln!("[consolidator] inferred {skills_inferred} skills from tool-use patterns");
     }
 
     // Phase 18: Anti-pattern tagging — tag lessons with negative signals
