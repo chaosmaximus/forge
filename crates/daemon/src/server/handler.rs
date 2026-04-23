@@ -1292,10 +1292,93 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        // Phase 2A-4c1: ListToolCalls handler stub — wired in T8.
-        Request::ListToolCalls { .. } => Response::Error {
-            message: "unimplemented: list_tool_calls (T8)".to_string(),
-        },
+        // Phase 2A-4c1 T8: ListToolCalls — snapshot-consistent read.
+        Request::ListToolCalls {
+            session_id,
+            agent,
+            limit,
+        } => {
+            fn has_control_char(s: &str) -> bool {
+                s.chars().any(|c| (c as u32) < 0x20 && c != '\t')
+            }
+
+            if has_control_char(&session_id) {
+                return Response::Error {
+                    message: "invalid_field: session_id: control_character".to_string(),
+                };
+            }
+            if let Some(ref a) = agent {
+                if has_control_char(a) {
+                    return Response::Error {
+                        message: "invalid_field: agent: control_character".to_string(),
+                    };
+                }
+            }
+            let effective_limit: usize = match limit {
+                None => 50,
+                Some(0) => 50,
+                Some(n) if n > 500 => {
+                    return Response::Error {
+                        message: format!("limit_too_large: requested {n}, max 500"),
+                    };
+                }
+                Some(n) => n,
+            };
+
+            // Snapshot transaction: derive caller_org from target session,
+            // then list within the same transaction for consistent reads.
+            let tx = match state.conn.unchecked_transaction() {
+                Ok(t) => t,
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("internal_error: {e}"),
+                    }
+                }
+            };
+
+            let caller_org: String = match tx.query_row(
+                "SELECT COALESCE(organization_id, 'default') FROM session WHERE id = ?1",
+                rusqlite::params![&session_id],
+                |row| row.get::<_, String>(0),
+            ) {
+                Ok(s) => s,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    return Response::Error {
+                        message: format!("unknown_session: {session_id}"),
+                    };
+                }
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("internal_error: {e}"),
+                    };
+                }
+            };
+
+            let rows = match crate::db::ops::list_tool_calls(
+                &tx,
+                &caller_org,
+                &session_id,
+                agent.as_deref(),
+                effective_limit,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("internal_error: {e}"),
+                    }
+                }
+            };
+
+            if let Err(e) = tx.commit() {
+                return Response::Error {
+                    message: format!("internal_error: {e}"),
+                };
+            }
+
+            Response::Ok {
+                data: forge_core::protocol::ResponseData::ToolCallList { calls: rows },
+            }
+        }
 
         // Phase 2A-4b: ComputeRecencyFactor handler — T12.
         #[cfg(feature = "bench")]
@@ -13723,5 +13806,176 @@ mod tests {
             rx.try_recv().is_err(),
             "no event should be emitted when session is unknown"
         );
+    }
+
+    // ── Phase 2A-4c1 T8: ListToolCalls happy-path tests ──────────────────────
+
+    fn seed_session_s(state: &DaemonState) {
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'default')",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn list_tool_calls_happy_path_returns_newest_first() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        seed_session_s(&state);
+        for (i, id) in ["01A", "01B", "01C"].iter().enumerate() {
+            state
+                .conn
+                .execute(
+                    &format!(
+                        "INSERT INTO session_tool_call VALUES ('{id}', 'S', 'a', 'T', '{{}}', '', \
+                         1, 0, 'default', '2026-04-19 12:00:0{i}')"
+                    ),
+                    [],
+                )
+                .unwrap();
+        }
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: None,
+            limit: None,
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::ToolCallList { calls },
+            } => {
+                let ids: Vec<&str> = calls.iter().map(|c| c.id.as_str()).collect();
+                assert_eq!(ids, vec!["01C", "01B", "01A"]);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_tool_calls_defaults_limit_to_50_when_none() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        seed_session_s(&state);
+        for i in 0..60 {
+            state
+                .conn
+                .execute(
+                    &format!(
+                        "INSERT INTO session_tool_call VALUES ('ID{i:03}', 'S', 'a', 'T', '{{}}', \
+                         '', 1, 0, 'default', '2026-04-19 12:00:00')"
+                    ),
+                    [],
+                )
+                .unwrap();
+        }
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: None,
+            limit: None,
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::ToolCallList { calls },
+            } => assert_eq!(calls.len(), 50),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_tool_calls_treats_limit_zero_as_default_50() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        seed_session_s(&state);
+        for i in 0..60 {
+            state
+                .conn
+                .execute(
+                    &format!(
+                        "INSERT INTO session_tool_call VALUES ('ID{i:03}', 'S', 'a', 'T', '{{}}', \
+                         '', 1, 0, 'default', '2026-04-19 12:00:00')"
+                    ),
+                    [],
+                )
+                .unwrap();
+        }
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: None,
+            limit: Some(0),
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::ToolCallList { calls },
+            } => assert_eq!(calls.len(), 50, "limit=0 treated as default 50"),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_tool_calls_agent_filter_narrows_result() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        seed_session_s(&state);
+        state
+            .conn
+            .execute(
+                "INSERT INTO session_tool_call VALUES ('A', 'S', 'alice', 'T', '{}', '', 1, 0, \
+                 'default', '2026-04-19 12:00:00')",
+                [],
+            )
+            .unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session_tool_call VALUES ('B', 'S', 'bob', 'T', '{}', '', 1, 0, \
+                 'default', '2026-04-19 12:00:00')",
+                [],
+            )
+            .unwrap();
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: Some("alice".to_string()),
+            limit: None,
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::ToolCallList { calls },
+            } => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].agent, "alice");
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_tool_calls_handler_tiebreaks_identical_created_at_by_id_desc() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        seed_session_s(&state);
+        for id in ["01A", "01B", "01C"] {
+            state
+                .conn
+                .execute(
+                    &format!(
+                        "INSERT INTO session_tool_call VALUES ('{id}', 'S', 'a', 'T', '{{}}', '', \
+                         1, 0, 'default', '2026-04-19 12:00:00')"
+                    ),
+                    [],
+                )
+                .unwrap();
+        }
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: None,
+            limit: None,
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::ToolCallList { calls },
+            } => {
+                let ids: Vec<&str> = calls.iter().map(|c| c.id.as_str()).collect();
+                assert_eq!(ids, vec!["01C", "01B", "01A"], "tiebreak by id DESC");
+            }
+            other => panic!("got {other:?}"),
+        }
     }
 }
