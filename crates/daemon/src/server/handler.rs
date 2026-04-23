@@ -13978,4 +13978,162 @@ mod tests {
             other => panic!("got {other:?}"),
         }
     }
+
+    // ── Phase 2A-4c1 T9: ListToolCalls validation + target-session-org ───────
+
+    #[test]
+    fn list_tool_calls_rejects_limit_over_500() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        seed_session_s(&state);
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: None,
+            limit: Some(1000),
+        };
+        assert!(matches!(
+            crate::server::handler::handle_request(&mut state, req),
+            forge_core::protocol::Response::Error { ref message }
+                if message == "limit_too_large: requested 1000, max 500"
+        ));
+    }
+
+    #[test]
+    fn list_tool_calls_rejects_unknown_session() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "NONEXISTENT".to_string(),
+            agent: None,
+            limit: None,
+        };
+        assert!(matches!(
+            crate::server::handler::handle_request(&mut state, req),
+            forge_core::protocol::Response::Error { ref message }
+                if message.starts_with("unknown_session: ")
+        ));
+    }
+
+    #[test]
+    fn list_tool_calls_rejects_control_character_in_session_id() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "abc\0xyz".to_string(),
+            agent: None,
+            limit: None,
+        };
+        assert!(matches!(
+            crate::server::handler::handle_request(&mut state, req),
+            forge_core::protocol::Response::Error { ref message }
+                if message == "invalid_field: session_id: control_character"
+        ));
+    }
+
+    #[test]
+    fn list_tool_calls_rejects_control_character_in_agent_filter() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        seed_session_s(&state);
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: Some("bad\0agent".to_string()),
+            limit: None,
+        };
+        assert!(matches!(
+            crate::server::handler::handle_request(&mut state, req),
+            forge_core::protocol::Response::Error { ref message }
+                if message == "invalid_field: agent: control_character"
+        ));
+    }
+
+    #[test]
+    fn list_tool_calls_returns_only_target_session_org_rows() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('S', 'a', '2026-04-19 10:00:00', 'active', 'acme')",
+                [],
+            )
+            .unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session_tool_call VALUES ('A', 'S', 'a', 'T', '{}', '', 1, 0, 'acme', \
+                 '2026-04-19 12:00:00')",
+                [],
+            )
+            .unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session_tool_call VALUES ('B', 'S', 'a', 'T', '{}', '', 1, 0, \
+                 'other_org', '2026-04-19 12:00:00')",
+                [],
+            )
+            .unwrap();
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "S".to_string(),
+            agent: None,
+            limit: None,
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::ToolCallList { calls },
+            } => {
+                let ids: Vec<&str> = calls.iter().map(|c| c.id.as_str()).collect();
+                assert_eq!(ids, vec!["A"], "only target-session-org rows surface");
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_tool_calls_does_not_leak_other_sessions_in_same_org() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('SA', 'a', '2026-04-19 10:00:00', 'active', 'acme')",
+                [],
+            )
+            .unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session (id, agent, started_at, status, organization_id)
+                 VALUES ('SB', 'a', '2026-04-19 10:00:00', 'active', 'acme')",
+                [],
+            )
+            .unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session_tool_call VALUES ('A', 'SA', 'a', 'T', '{}', '', 1, 0, \
+                 'acme', '2026-04-19 12:00:00')",
+                [],
+            )
+            .unwrap();
+        state
+            .conn
+            .execute(
+                "INSERT INTO session_tool_call VALUES ('B', 'SB', 'a', 'T', '{}', '', 1, 0, \
+                 'acme', '2026-04-19 12:00:00')",
+                [],
+            )
+            .unwrap();
+        let req = forge_core::protocol::Request::ListToolCalls {
+            session_id: "SA".to_string(),
+            agent: None,
+            limit: None,
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::ToolCallList { calls },
+            } => {
+                let ids: Vec<&str> = calls.iter().map(|c| c.id.as_str()).collect();
+                assert_eq!(ids, vec!["A"], "listing session SA must not leak SB's rows");
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
 }
