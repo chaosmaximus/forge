@@ -1387,6 +1387,28 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // Phase 2A-4c2 T6: ProbePhase — consolidator phase introspection.
+        #[cfg(feature = "bench")]
+        Request::ProbePhase { phase_name } => {
+            let order = crate::workers::consolidator::PHASE_ORDER;
+            match order.iter().position(|(n, _)| *n == phase_name) {
+                Some(pos) => {
+                    let (_, phase_number) = order[pos];
+                    let executed_after: Vec<String> =
+                        order[..pos].iter().map(|(n, _)| (*n).to_string()).collect();
+                    Response::Ok {
+                        data: forge_core::protocol::ResponseData::PhaseProbe {
+                            executed_at_phase_index: phase_number,
+                            executed_after,
+                        },
+                    }
+                }
+                None => Response::Error {
+                    message: format!("unknown_phase: {phase_name}"),
+                },
+            }
+        }
+
         // Phase 2A-4b: ComputeRecencyFactor handler — T12.
         #[cfg(feature = "bench")]
         Request::ComputeRecencyFactor { memory_id } => {
@@ -13120,6 +13142,93 @@ mod tests {
             attempt.is_err(),
             "no event should be emitted on error path; got: {attempt:?}"
         );
+    }
+
+    // ── Phase 2A-4c2 T6: ProbePhase handler tests ────────────────────────────
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn probe_phase_returns_correct_index_for_infer_skills() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let req = forge_core::protocol::Request::ProbePhase {
+            phase_name: "infer_skills_from_behavior".to_string(),
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data:
+                    forge_core::protocol::ResponseData::PhaseProbe {
+                        executed_at_phase_index,
+                        ..
+                    },
+            } => {
+                assert_eq!(executed_at_phase_index, 23);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn probe_phase_executed_after_contains_extract_protocols() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let req = forge_core::protocol::Request::ProbePhase {
+            phase_name: "infer_skills_from_behavior".to_string(),
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data: forge_core::protocol::ResponseData::PhaseProbe { executed_after, .. },
+            } => {
+                assert!(
+                    executed_after.contains(&"extract_protocols".to_string()),
+                    "executed_after must contain Phase 17 (extract_protocols); got {executed_after:?}"
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn probe_phase_unknown_phase_errors() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let req = forge_core::protocol::Request::ProbePhase {
+            phase_name: "not_a_real_phase".to_string(),
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Error { message } => {
+                assert!(
+                    message.starts_with("unknown_phase: "),
+                    "expected unknown_phase: prefix, got {message}"
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn probe_phase_phase_17_executed_at_index_17() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let req = forge_core::protocol::Request::ProbePhase {
+            phase_name: "extract_protocols".to_string(),
+        };
+        match crate::server::handler::handle_request(&mut state, req) {
+            forge_core::protocol::Response::Ok {
+                data:
+                    forge_core::protocol::ResponseData::PhaseProbe {
+                        executed_at_phase_index,
+                        executed_after,
+                    },
+            } => {
+                assert_eq!(executed_at_phase_index, 17);
+                assert_eq!(
+                    executed_after,
+                    Vec::<String>::new(),
+                    "Phase 17 is the first in PHASE_ORDER — nothing before it"
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
     }
 
     // ── Phase 2A-4b T12: ComputeRecencyFactor handler tests ────────────────────

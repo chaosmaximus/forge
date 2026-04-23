@@ -26,6 +26,20 @@ use tokio::sync::{watch, Mutex};
 // Interval is now configurable via ForgeConfig.workers.consolidation_interval_secs
 // (default: 1800 = 30 minutes)
 
+/// Registry of phases the consolidator executes, in execution order.
+/// Used by `Request::ProbePhase` to answer master-design assertion 9
+/// (Phase 23 executes after Phase 17).
+///
+/// `fn_name` matches the Rust function called for that phase.
+/// `phase_number` is the 1-based doc numbering ("Phase N") — independent
+/// of array position. 2A-4c2 only requires these two entries; future
+/// assertions can extend the array without breaking anything.
+#[cfg(any(test, feature = "bench"))]
+pub const PHASE_ORDER: &[(&str, usize)] = &[
+    ("extract_protocols", 17),
+    ("infer_skills_from_behavior", 23),
+];
+
 /// Stats returned by a consolidation run.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ConsolidationStats {

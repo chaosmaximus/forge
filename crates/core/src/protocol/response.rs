@@ -129,6 +129,12 @@ pub enum ResponseData {
         days_since_anchor: f64,
         anchor: String,
     },
+    /// Response for `Request::ProbePhase`.
+    #[cfg(any(test, feature = "bench"))]
+    PhaseProbe {
+        executed_at_phase_index: usize,
+        executed_after: Vec<String>,
+    },
     Health {
         decisions: usize,
         lessons: usize,

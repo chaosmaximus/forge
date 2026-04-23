@@ -136,6 +136,13 @@ pub enum Request {
     ComputeRecencyFactor {
         memory_id: String,
     },
+    /// Probe consolidator phase execution order (test/bench-only).
+    /// Returns the phase_number (1-based doc numbering) and the list of
+    /// phase fn_names that execute before `phase_name`.
+    #[cfg(any(test, feature = "bench"))]
+    ProbePhase {
+        phase_name: String,
+    },
     Health,
     /// Health counts grouped by project
     HealthByProject,
