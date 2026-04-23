@@ -1245,6 +1245,162 @@ pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
     promoted
 }
 
+/// Phase 23: Behavioral Skill Inference — elevate recurring clean tool-use
+/// patterns from `session_tool_call` to the `skill` table.
+///
+/// Detection signal: tool-call rows with `success=1 AND user_correction_flag=0`,
+/// grouped by `(agent, session_id)`, canonicalized via
+/// `skill_inference::canonical_fingerprint`, elevated when the fingerprint
+/// appears in ≥ `min_sessions` distinct sessions within the last
+/// `window_days` days.
+///
+/// Idempotent: re-running with no new data merges `inferred_from` without
+/// creating duplicate rows (ON CONFLICT (agent, fingerprint) DO UPDATE).
+///
+/// Returns the number of rows affected (INSERTs + upsert-UPDATEs).
+pub fn infer_skills_from_behavior(
+    conn: &Connection,
+    min_sessions: usize,
+    window_days: u32,
+) -> usize {
+    use crate::workers::skill_inference::{
+        canonical_fingerprint, format_skill_name, infer_domain, ToolCall,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // Step 1: SELECT clean rows within the window.
+    let sql = format!(
+        "SELECT agent, session_id, tool_name, tool_args
+         FROM session_tool_call
+         WHERE success = 1 AND user_correction_flag = 0
+           AND created_at > datetime('now', '-{window_days} days')
+         ORDER BY agent, session_id, created_at"
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "Phase 23: prepare failed, skipping");
+            return 0;
+        }
+    };
+    let rows: Vec<(String, String, String, String)> = match stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    }) {
+        Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Phase 23: query failed, skipping");
+            return 0;
+        }
+    };
+
+    // Step 2: group by (agent, session_id), build per-session fingerprint.
+    let mut per_session: BTreeMap<(String, String), Vec<ToolCall>> = BTreeMap::new();
+    for (agent, session_id, tool_name, tool_args_json) in rows {
+        let arg_keys: Vec<String> = match serde_json::from_str::<serde_json::Value>(&tool_args_json)
+        {
+            Ok(serde_json::Value::Object(map)) => {
+                let mut ks: Vec<String> = map.keys().cloned().collect();
+                ks.sort();
+                ks
+            }
+            Ok(_) => Vec::new(),
+            Err(_) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "Phase 23: tool_args not valid JSON, skipping row"
+                );
+                continue;
+            }
+        };
+        per_session
+            .entry((agent, session_id))
+            .or_default()
+            .push(ToolCall {
+                tool_name,
+                arg_keys,
+            });
+    }
+
+    // Step 3: aggregate fingerprints across sessions.
+    //   (agent, fingerprint) -> (sessions, last-seen tool_names_sorted)
+    let mut fp_sessions: BTreeMap<(String, String), (BTreeSet<String>, Vec<String>)> =
+        BTreeMap::new();
+    for ((agent, session_id), calls) in per_session {
+        let fp = canonical_fingerprint(&calls);
+        let mut names: Vec<String> = calls.iter().map(|c| c.tool_name.clone()).collect();
+        names.sort();
+        names.dedup();
+        let entry = fp_sessions
+            .entry((agent, fp))
+            .or_insert_with(|| (BTreeSet::new(), names.clone()));
+        entry.0.insert(session_id);
+        entry.1 = names;
+    }
+
+    // Step 4: filter ≥ min_sessions + elevate.
+    let now_iso = forge_core::time::now_iso();
+    let mut affected = 0_usize;
+    for ((agent, fingerprint), (sessions, tool_names_sorted)) in fp_sessions {
+        if sessions.len() < min_sessions {
+            continue;
+        }
+        let name = format_skill_name(&tool_names_sorted, &fingerprint);
+        let domain = infer_domain(&tool_names_sorted);
+        let inferred_from = serde_json::to_string(&sessions.into_iter().collect::<Vec<String>>())
+            .unwrap_or_else(|_| "[]".to_string());
+        let id = ulid::Ulid::new().to_string();
+
+        // SQLite partial-index workaround: the unique index on (agent, fingerprint)
+        // is partial (WHERE fingerprint != ''), so ON CONFLICT(cols) DO UPDATE
+        // is not usable. Use INSERT OR IGNORE + UPDATE instead.
+        let insert_res = conn.execute(
+            "INSERT OR IGNORE INTO skill
+             (id, name, domain, description, steps, source,
+              agent, fingerprint, inferred_from, inferred_at, success_count)
+             VALUES (?1, ?2, ?3, '', '[]', 'inferred', ?4, ?5, ?6, ?7, 0)",
+            rusqlite::params![id, name, domain, agent, fingerprint, inferred_from, now_iso,],
+        );
+        match insert_res {
+            Err(e) => {
+                tracing::error!(error = %e, "Phase 23: INSERT OR IGNORE failed, skipping fingerprint");
+                continue;
+            }
+            Ok(inserted) if inserted > 0 => {
+                affected += 1;
+            }
+            Ok(_) => {
+                // Row already exists — merge inferred_from and update inferred_at.
+                let update_res = conn.execute(
+                    "UPDATE skill SET
+                        inferred_from = (
+                            SELECT json_group_array(DISTINCT value) FROM (
+                                SELECT value FROM json_each(skill.inferred_from)
+                                UNION
+                                SELECT value FROM json_each(?1)
+                            )
+                        ),
+                        inferred_at = ?2
+                     WHERE agent = ?3 AND fingerprint = ?4",
+                    rusqlite::params![inferred_from, now_iso, agent, fingerprint],
+                );
+                match update_res {
+                    Ok(n) => affected += n,
+                    Err(e) => {
+                        tracing::error!(error = %e, "Phase 23: UPDATE failed for fingerprint");
+                    }
+                }
+            }
+        }
+    }
+
+    affected
+}
+
 /// Phase 18: Anti-pattern tagging — identify lessons that describe what NOT to do.
 ///
 /// Scans lessons for negative signals ("don't", "avoid", "caused problems",
@@ -2981,6 +3137,443 @@ mod tests {
         assert!(
             edge_count >= 1,
             "should have contradicts edge after full consolidation"
+        );
+    }
+
+    // ── Phase 2A-4c2 T4: infer_skills_from_behavior tests ────────────────────
+
+    fn seed_session_tool_call_row(
+        conn: &Connection,
+        id: &str,
+        session_id: &str,
+        agent: &str,
+        tool_name: &str,
+        tool_args_json: &str,
+        success: i64,
+        corr: i64,
+        created_at_offset_days: i64,
+    ) {
+        let sql = format!(
+            "INSERT INTO session_tool_call
+             (id, session_id, agent, tool_name, tool_args, tool_result_summary,
+              success, user_correction_flag, organization_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, 'default',
+                     datetime('now', '-{days} days'))",
+            days = created_at_offset_days
+        );
+        conn.execute(
+            &sql,
+            rusqlite::params![
+                id,
+                session_id,
+                agent,
+                tool_name,
+                tool_args_json,
+                success,
+                corr
+            ],
+        )
+        .unwrap();
+    }
+
+    fn seed_session(conn: &Connection, id: &str, agent: &str) {
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES (?1, ?2, '2026-04-19 10:00:00', 'active', 'default')",
+            rusqlite::params![id, agent],
+        )
+        .unwrap();
+    }
+
+    /// Seed one session with the standard Read+Edit+Bash pattern, clean rows.
+    fn seed_clean_sess(conn: &Connection, sid: &str) {
+        seed_session(conn, sid, "claude-code");
+        seed_session_tool_call_row(
+            conn,
+            &format!("{sid}-01"),
+            sid,
+            "claude-code",
+            "Read",
+            r#"{"file_path":"/tmp/a"}"#,
+            1,
+            0,
+            0,
+        );
+        seed_session_tool_call_row(
+            conn,
+            &format!("{sid}-02"),
+            sid,
+            "claude-code",
+            "Edit",
+            r#"{"file_path":"/tmp/a","old_string":"x","new_string":"y"}"#,
+            1,
+            0,
+            0,
+        );
+        seed_session_tool_call_row(
+            conn,
+            &format!("{sid}-03"),
+            sid,
+            "claude-code",
+            "Bash",
+            r#"{"cmd":"cargo test"}"#,
+            1,
+            0,
+            0,
+        );
+    }
+
+    fn fresh_schema_conn() -> Connection {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_elevates_at_three_sessions() {
+        let conn = fresh_schema_conn();
+        seed_clean_sess(&conn, "SA");
+        seed_clean_sess(&conn, "SB");
+        seed_clean_sess(&conn, "SC");
+
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(elevated, 1, "3 matching sessions → 1 skill row elevated");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skill WHERE inferred_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let inferred_from: String = conn
+            .query_row(
+                "SELECT inferred_from FROM skill WHERE inferred_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for sid in ["SA", "SB", "SC"] {
+            assert!(
+                inferred_from.contains(&format!("\"{sid}\"")),
+                "inferred_from missing {sid}: {inferred_from}"
+            );
+        }
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_skips_at_two_sessions() {
+        let conn = fresh_schema_conn();
+        seed_clean_sess(&conn, "SA");
+        seed_clean_sess(&conn, "SB");
+
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(elevated, 0);
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skill WHERE inferred_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_skips_corrected_rows() {
+        let conn = fresh_schema_conn();
+        // SA has a correction on its Edit row — its 3-tool fingerprint won't match SB/SC's.
+        seed_session(&conn, "SA", "claude-code");
+        seed_session_tool_call_row(
+            &conn,
+            "SA-01",
+            "SA",
+            "claude-code",
+            "Read",
+            r#"{"file_path":"/a"}"#,
+            1,
+            0,
+            0,
+        );
+        seed_session_tool_call_row(
+            &conn,
+            "SA-02",
+            "SA",
+            "claude-code",
+            "Edit",
+            r#"{"file_path":"/a"}"#,
+            1,
+            1,
+            0,
+        ); // corrected
+        seed_session_tool_call_row(
+            &conn,
+            "SA-03",
+            "SA",
+            "claude-code",
+            "Bash",
+            r#"{"cmd":"x"}"#,
+            1,
+            0,
+            0,
+        );
+        seed_clean_sess(&conn, "SB");
+        seed_clean_sess(&conn, "SC");
+
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(elevated, 0, "correction taints SA's matching fingerprint");
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_skips_failed_rows() {
+        let conn = fresh_schema_conn();
+        seed_session(&conn, "SA", "claude-code");
+        seed_session_tool_call_row(
+            &conn,
+            "SA-01",
+            "SA",
+            "claude-code",
+            "Read",
+            r#"{"file_path":"/a"}"#,
+            1,
+            0,
+            0,
+        );
+        seed_session_tool_call_row(
+            &conn,
+            "SA-02",
+            "SA",
+            "claude-code",
+            "Edit",
+            r#"{"file_path":"/a"}"#,
+            0,
+            0,
+            0,
+        ); // failure
+        seed_session_tool_call_row(
+            &conn,
+            "SA-03",
+            "SA",
+            "claude-code",
+            "Bash",
+            r#"{"cmd":"x"}"#,
+            1,
+            0,
+            0,
+        );
+        seed_clean_sess(&conn, "SB");
+        seed_clean_sess(&conn, "SC");
+
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(
+            elevated, 0,
+            "failed rows drop out of clean-filter, SA fingerprint diverges"
+        );
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_skips_rows_outside_window() {
+        let conn = fresh_schema_conn();
+        seed_session(&conn, "SA", "claude-code");
+        seed_session_tool_call_row(
+            &conn,
+            "SA-01",
+            "SA",
+            "claude-code",
+            "Read",
+            r#"{"file_path":"/a"}"#,
+            1,
+            0,
+            60,
+        );
+        seed_session_tool_call_row(
+            &conn,
+            "SA-02",
+            "SA",
+            "claude-code",
+            "Edit",
+            r#"{"file_path":"/a"}"#,
+            1,
+            0,
+            60,
+        );
+        seed_session_tool_call_row(
+            &conn,
+            "SA-03",
+            "SA",
+            "claude-code",
+            "Bash",
+            r#"{"cmd":"x"}"#,
+            1,
+            0,
+            60,
+        );
+        seed_clean_sess(&conn, "SB");
+        seed_clean_sess(&conn, "SC");
+
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(
+            elevated, 0,
+            "SA outside window → only SB+SC match, below threshold"
+        );
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_merges_inferred_from_on_conflict() {
+        let conn = fresh_schema_conn();
+        seed_clean_sess(&conn, "SA");
+        seed_clean_sess(&conn, "SB");
+        seed_clean_sess(&conn, "SC");
+        assert_eq!(infer_skills_from_behavior(&conn, 3, 30), 1);
+
+        seed_clean_sess(&conn, "SD");
+        let second = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(second, 1, "upsert returns 1 affected row");
+
+        let inferred_from: String = conn
+            .query_row(
+                "SELECT inferred_from FROM skill WHERE inferred_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for sid in ["SA", "SB", "SC", "SD"] {
+            assert!(
+                inferred_from.contains(&format!("\"{sid}\"")),
+                "merged inferred_from missing {sid}: {inferred_from}"
+            );
+        }
+
+        let total_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skill WHERE inferred_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_rows, 1, "upsert must not create a duplicate row");
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_idempotent_on_rerun() {
+        let conn = fresh_schema_conn();
+        seed_clean_sess(&conn, "SA");
+        seed_clean_sess(&conn, "SB");
+        seed_clean_sess(&conn, "SC");
+        let first = infer_skills_from_behavior(&conn, 3, 30);
+        let second = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(first, 1);
+        assert_eq!(second, 1, "re-run upserts same row, no duplicate");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skill WHERE inferred_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_separates_fingerprints() {
+        let conn = fresh_schema_conn();
+        seed_clean_sess(&conn, "A1");
+        seed_clean_sess(&conn, "A2");
+        seed_clean_sess(&conn, "A3");
+        for sid in ["B1", "B2", "B3"] {
+            seed_session(&conn, sid, "claude-code");
+            seed_session_tool_call_row(
+                &conn,
+                &format!("{sid}-01"),
+                sid,
+                "claude-code",
+                "Grep",
+                r#"{"pattern":"x"}"#,
+                1,
+                0,
+                0,
+            );
+            seed_session_tool_call_row(
+                &conn,
+                &format!("{sid}-02"),
+                sid,
+                "claude-code",
+                "Write",
+                r#"{"file_path":"/tmp/z","content":"q"}"#,
+                1,
+                0,
+                0,
+            );
+        }
+
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(elevated, 2, "two distinct fingerprints each elevate");
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_separates_agents() {
+        let conn = fresh_schema_conn();
+        seed_clean_sess(&conn, "C1");
+        seed_clean_sess(&conn, "C2");
+        seed_clean_sess(&conn, "C3");
+        for sid in ["X1", "X2", "X3"] {
+            seed_session(&conn, sid, "codex-cli");
+            seed_session_tool_call_row(
+                &conn,
+                &format!("{sid}-01"),
+                sid,
+                "codex-cli",
+                "Read",
+                r#"{"file_path":"/tmp/a"}"#,
+                1,
+                0,
+                0,
+            );
+            seed_session_tool_call_row(
+                &conn,
+                &format!("{sid}-02"),
+                sid,
+                "codex-cli",
+                "Edit",
+                r#"{"file_path":"/tmp/a","old_string":"x","new_string":"y"}"#,
+                1,
+                0,
+                0,
+            );
+            seed_session_tool_call_row(
+                &conn,
+                &format!("{sid}-03"),
+                sid,
+                "codex-cli",
+                "Bash",
+                r#"{"cmd":"cargo test"}"#,
+                1,
+                0,
+                0,
+            );
+        }
+
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(
+            elevated, 2,
+            "same fingerprint on two different agents → two rows"
+        );
+
+        let rows: Vec<String> = conn
+            .prepare("SELECT agent FROM skill WHERE inferred_at IS NOT NULL ORDER BY agent")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(
+            rows,
+            vec!["claude-code".to_string(), "codex-cli".to_string()]
         );
     }
 }
