@@ -101,8 +101,12 @@ All 12 divergent commits (spec v1 + plan v1 + T1-T7 implementation + T8 WIP + cl
 - `cargo fmt --all` clean.
 - `cargo test --workspace` green after each GREEN phase of TDD.
 - Dogfood via live daemon rebuild+restart BEFORE moving to next sub-phase.
-- **DO NOT invoke any `forge:*` plugin skill or `superpowers:using-git-worktrees`** — both have historically corrupted git state by creating rogue branches / orphan commits.
+- Do NOT use git worktrees unless the user explicitly grants permission for the specific task (see CLAUDE.md "Git workflow").
 - Commit message prefixes: `feat(2A-4cX TN):`, `test(2A-4cX TN):`, `fix(2A-4cX TN):`, `chore(2A-4cX):`, `docs(2A-4cX ...):`. Co-author trailer `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
+
+## Lifted constraints (changelog)
+
+- **2026-04-23 — `forge:*` plugin skills ban lifted.** Original rule (pre-2A-4c1): "DO NOT invoke any `forge:*` plugin skill or `superpowers:using-git-worktrees` — both corrupted git state via rogue branches / orphan commits." Root cause was almost certainly the `superpowers:using-git-worktrees` interaction, not the forge plugin itself. Going forward: worktrees are off by default (see CLAUDE.md), and the `forge:*` plugin surface will be thoroughly audited + rebuilt during Phase 2P-1 using `skill-creator` + subagents to enforce best practices (state-of-the-art skill/hook/agent authoring, marketplace-compliant manifests, contract tests against the daemon API).
 
 ## What NOT to redo
 
