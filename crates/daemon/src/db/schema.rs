@@ -771,6 +771,27 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         "ALTER TABLE skill ADD COLUMN correlation_ids TEXT NOT NULL DEFAULT '[]'",
         [],
     );
+    // Phase 2A-4c2: behavioral skill inference columns (safe to re-run — ignores if already exists)
+    let _ = conn.execute(
+        "ALTER TABLE skill ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude-code'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE skill ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE skill ADD COLUMN inferred_from TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE skill ADD COLUMN inferred_at TEXT", []);
+    // Partial unique index on (agent, fingerprint) — gated on non-empty fingerprint
+    // so existing rows with default '' do not collide. Safe to re-run (IF NOT EXISTS).
+    let _ = conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_agent_fingerprint
+            ON skill(agent, fingerprint)
+            WHERE fingerprint != '';",
+    );
 
     // Cross-session awareness: track tool_use count per session (safe to re-run)
     let _ = conn.execute(
@@ -2308,5 +2329,75 @@ mod tests {
             )
             .unwrap();
         assert_eq!(idx_count, 0, "all 3 indexes should be dropped");
+    }
+
+    // ── Phase 2A-4c2 T1: skill Phase-23 columns + partial unique index ───────
+
+    #[test]
+    fn test_skill_has_phase23_columns_and_partial_unique_index() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // All 4 new columns present with correct types + NOT NULL flags.
+        let columns: Vec<(String, String, i32)> = conn
+            .prepare("PRAGMA table_info(skill)")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, String>(2)?, // type
+                    row.get::<_, i32>(3)?,    // notnull
+                ))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let col_map: std::collections::HashMap<&str, (&str, i32)> = columns
+            .iter()
+            .map(|(n, t, nn)| (n.as_str(), (t.as_str(), *nn)))
+            .collect();
+
+        assert_eq!(
+            col_map.get("agent"),
+            Some(&("TEXT", 1)),
+            "agent column must be TEXT NOT NULL"
+        );
+        assert_eq!(
+            col_map.get("fingerprint"),
+            Some(&("TEXT", 1)),
+            "fingerprint column must be TEXT NOT NULL"
+        );
+        assert_eq!(
+            col_map.get("inferred_from"),
+            Some(&("TEXT", 1)),
+            "inferred_from column must be TEXT NOT NULL"
+        );
+        assert_eq!(
+            col_map.get("inferred_at"),
+            Some(&("TEXT", 0)),
+            "inferred_at column must be TEXT NULL"
+        );
+
+        // Partial unique index present, gated on fingerprint != ''.
+        let idx_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type='index' AND name='idx_skill_agent_fingerprint'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            idx_sql.contains("UNIQUE")
+                && idx_sql.contains("agent")
+                && idx_sql.contains("fingerprint"),
+            "expected partial unique index on (agent, fingerprint); got: {idx_sql}"
+        );
+        assert!(
+            idx_sql.to_lowercase().contains("where") && idx_sql.contains("fingerprint"),
+            "expected WHERE fingerprint != '' partial predicate; got: {idx_sql}"
+        );
     }
 }
