@@ -703,3 +703,75 @@ Tier 3 shape requires a two-file update.
 
 **Why deferred:** current shim works. Reopen when Tier 3 adds a new shape.
 
+---
+
+## 2A-4d.3.1 Backlog (NEW — for Tier 3 + harness ergonomics)
+
+Tier 3 is in flight at HEAD `5d9e28c` (T1+T2+T3+T4+T5+T10). Items deferred
+during implementation:
+
+#### 1. forge-identity infra check #10 expects `<preferences>` element
+
+**Finding:** master v6 §6 assertion 10 mandates `<preferences>` always
+present in `CompileContext` XML. Current `recall.rs` omits the element on
+empty preference lists. Two unit tests in `forge_identity.rs`
+(`test_run_infrastructure_checks_all_pass_on_fresh_state`,
+`test_run_bench_infra_passes_on_fresh_state`) are `#[ignore]`d pending fix.
+
+**Fix plan:** update `recall.rs` `<preferences>` rendering to always emit
+the element (per master v6 D4 — "always emit, even empty"); un-ignore tests.
+
+**Why deferred:** daemon-layer change beyond Tier 3 bench scope.
+
+#### 2. Dim 2 disposition drift — `StepDispositionOnce` Request variant missing
+
+**Finding:** master v6 §13 D7 specifies `Request::StepDispositionOnce {
+synthetic_sessions: Vec<SessionFixture> }` to drive 1 cycle at a time. The
+variant is not yet in `crates/core/src/protocol/request.rs`. Without it
+Dim 2 cannot run; current stub returns 0.0 / pass false. The composite
+score caps at 0.85 until this is fixed.
+
+**Fix plan:** add bench-gated `StepDispositionOnce` variant + handler that
+calls into disposition worker's step function with synthetic session
+fixtures. Then implement Dim 2 body per master v6 §4 Dim 2.
+
+**Why deferred:** new Request variant + handler = T6 scope creep when
+parallel-dispatched. Best landed sequentially after Tier 3 closes.
+
+#### 3. Forge harness context-injection volume
+
+**Finding (raised 2026-04-24):** every tool call from a sub-agent triggers
+`<forge-bash-check>` (PreToolUse) + `<forge-post-edit>` (PostToolUse)
+hooks injecting "Skill: ..." and "[proactive anti_pattern] ..." nudges
+that are unrelated to the current task. SessionStart additionally injects
+~60-line `<forge-context>` block with identity facets, decisions, lessons,
+skills, agents, active-protocols, deferred-items. Over a 30-tool-call
+agent run this adds ~90+ lines of background noise that crowds out task
+instructions.
+
+**Fix plan:** add `forge-next config set context_injection.mode = off |
+session-only | full` (or per-project equivalent). When `off`, the
+SessionStart `<forge-context>` and per-tool skill nudges are suppressed.
+Default remains `full` to preserve current behavior.
+
+**Why deferred:** harness ergonomics, not Tier 3 scope. Important for
+agent reliability though — orchestration failures during 2A-4d.3 T3-T6
+parallel dispatch may have been amplified by hook noise diluting agent
+focus.
+
+#### 4. Sub-agent commit-discipline failures
+
+**Finding:** during 2A-4d.3 implementation, multiple forge-generator
+agents claimed "Committing" or "all tests green, committing" then exited
+without running `git commit`. Recovery cost was non-trivial (manual
+verification + commit). Suspect: agent narrates intent then runs out of
+budget / exits before final tool call.
+
+**Fix plan:** investigate forge-generator subagent harness — maybe the
+prompt template should explicitly require a final `git log -1 --format=%H`
+verification turn before returning. Alternatively, parent agent should
+always verify by checking git log before declaring task done (already
+how I'm working post-T3, but worth codifying).
+
+**Why deferred:** harness-layer fix; orthogonal to Tier 3 deliverables.
+
