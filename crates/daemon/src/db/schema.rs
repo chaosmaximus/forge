@@ -2400,4 +2400,89 @@ mod tests {
             "expected WHERE fingerprint != '' partial predicate; got: {idx_sql}"
         );
     }
+
+    // ── Phase 2A-4c2 T9: Phase 23 schema rollback recipe ─────────────────────
+
+    #[test]
+    fn test_skill_phase23_columns_and_index_rollback_recipe_works_on_populated_db() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // Seed a Phase 23 skill row.
+        conn.execute(
+            "INSERT INTO skill
+             (id, name, domain, description, steps, source, agent, fingerprint,
+              inferred_from, inferred_at, success_count)
+             VALUES ('s1', 'Inferred: Read+Edit+Bash [deadbeef]', 'file-ops', '', '[]',
+                     'inferred', 'claude-code', 'deadbeefcafe1234',
+                     '[\"SA\",\"SB\",\"SC\"]', '2026-04-23T10:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+
+        // Pre-assertion: the partial unique index must exist before rollback.
+        // Without this, a regression that silently removed the index creation
+        // would let the rollback's DROP IF EXISTS no-op and the post-assertion
+        // pass vacuously (per 2A-4c1 H1 precedent).
+        let idx_count_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_skill_agent_fingerprint'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            idx_count_before, 1,
+            "partial unique index must exist before rollback — forward migration regression"
+        );
+
+        // Rollback recipe (documented in spec §6 / this test's commit message).
+        // SQLite 3.35+ supports ALTER TABLE ... DROP COLUMN directly.
+        conn.execute_batch(
+            "
+            DROP INDEX IF EXISTS idx_skill_agent_fingerprint;
+            ALTER TABLE skill DROP COLUMN inferred_at;
+            ALTER TABLE skill DROP COLUMN inferred_from;
+            ALTER TABLE skill DROP COLUMN fingerprint;
+            ALTER TABLE skill DROP COLUMN agent;
+            ",
+        )
+        .unwrap();
+
+        // Post-assertions.
+        let idx_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_skill_agent_fingerprint'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_after, 0, "partial unique index should be dropped");
+
+        // None of the 4 Phase 23 columns exist in PRAGMA table_info any more.
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(skill)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for phase23_col in ["agent", "fingerprint", "inferred_from", "inferred_at"] {
+            assert!(
+                !cols.contains(&phase23_col.to_string()),
+                "column {phase23_col} must be absent after rollback"
+            );
+        }
+
+        // Legacy skill columns still present (rollback didn't damage pre-existing schema).
+        for legacy_col in ["id", "name", "domain", "description", "success_count"] {
+            assert!(
+                cols.contains(&legacy_col.to_string()),
+                "legacy column {legacy_col} must still exist"
+            );
+        }
+    }
 }
