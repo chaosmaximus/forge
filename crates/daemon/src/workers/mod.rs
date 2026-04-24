@@ -15,6 +15,7 @@ pub mod disposition;
 pub mod embedder;
 pub mod extractor;
 pub mod indexer;
+pub mod instrumentation;
 pub mod perception;
 pub mod reaper;
 pub mod skill_inference;

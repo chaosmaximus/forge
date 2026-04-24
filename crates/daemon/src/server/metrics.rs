@@ -11,7 +11,10 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use prometheus::{Histogram, HistogramOpts, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder};
+use prometheus::{
+    Histogram, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry,
+    TextEncoder,
+};
 
 use super::http::AppState;
 
@@ -26,6 +29,14 @@ pub struct ForgeMetrics {
     pub active_sessions: IntGauge,
     pub edges_total: IntGauge,
     pub embeddings_total: IntGauge,
+
+    // ── Phase 2A-4d.1 Instrumentation tier (3 new families) ──
+    /// Consolidator phase duration, labelled by phase.
+    pub phase_duration: HistogramVec,
+    /// Output-row count per phase × action (succeeded|errored).
+    pub phase_output_rows: IntCounterVec,
+    /// Row count per Manas-layer SQL table (memory, skill, edge, identity, …).
+    pub table_rows: IntGaugeVec,
 }
 
 impl Default for ForgeMetrics {
@@ -78,6 +89,33 @@ impl ForgeMetrics {
         )
         .expect("embeddings_total metric");
 
+        // ── Phase 2A-4d.1 Instrumentation — 3 new families ──
+        let phase_duration = HistogramVec::new(
+            HistogramOpts::new(
+                "forge_phase_duration_seconds",
+                "Consolidator phase duration in seconds, labelled by phase",
+            )
+            .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0]),
+            &["phase"],
+        )
+        .expect("phase_duration metric");
+        let phase_output_rows = IntCounterVec::new(
+            Opts::new(
+                "forge_phase_output_rows_total",
+                "Output rows produced per consolidator phase × action",
+            ),
+            &["phase", "action"],
+        )
+        .expect("phase_output_rows metric");
+        let table_rows = IntGaugeVec::new(
+            Opts::new(
+                "forge_table_rows",
+                "Row count per Manas-layer SQL table (gauge, not a counter)",
+            ),
+            &["table"],
+        )
+        .expect("table_rows metric");
+
         registry
             .register(Box::new(memories_total.clone()))
             .expect("register memories_total");
@@ -99,6 +137,15 @@ impl ForgeMetrics {
         registry
             .register(Box::new(embeddings_total.clone()))
             .expect("register embeddings_total");
+        registry
+            .register(Box::new(phase_duration.clone()))
+            .expect("register phase_duration");
+        registry
+            .register(Box::new(phase_output_rows.clone()))
+            .expect("register phase_output_rows");
+        registry
+            .register(Box::new(table_rows.clone()))
+            .expect("register table_rows");
 
         Self {
             registry,
@@ -109,6 +156,9 @@ impl ForgeMetrics {
             active_sessions,
             edges_total,
             embeddings_total,
+            phase_duration,
+            phase_output_rows,
+            table_rows,
         }
     }
 }
@@ -174,6 +224,29 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         "diagnostics",
     ] {
         metrics.worker_healthy.with_label_values(&[worker]).set(1);
+    }
+
+    // Phase 2A-4d.1 Instrumentation — per-table row gauges. Labels match
+    // actual SQLite table names (verified 2026-04-24 in schema.rs); adding
+    // a label that doesn't correspond to a real table would produce a
+    // perpetually-zero series that misleads operators.
+    for table in &[
+        "memory",
+        "skill",
+        "edge",
+        "identity",
+        "disposition",
+        "platform",
+        "tool",
+        "perception",
+        "declared",
+        "domain_dna",
+        "entity",
+    ] {
+        let sql = format!("SELECT COUNT(*) FROM {table}");
+        if let Ok(count) = reader.conn.query_row(&sql, [], |r| r.get::<_, i64>(0)) {
+            metrics.table_rows.with_label_values(&[table]).set(count);
+        }
     }
 }
 
@@ -278,7 +351,30 @@ mod tests {
             names.contains(&"forge_embeddings_total"),
             "missing forge_embeddings_total"
         );
-        assert_eq!(families.len(), 7, "expected exactly 7 metric families");
+        // Phase 2A-4d.1 Instrumentation — 3 new families.
+        // Initialize at least one label so the *Vec collectors appear in gather().
+        m.phase_duration
+            .with_label_values(&["phase_23_infer_skills_from_behavior"])
+            .observe(0.0);
+        m.phase_output_rows
+            .with_label_values(&["phase_23_infer_skills_from_behavior", "succeeded"])
+            .inc_by(0);
+        m.table_rows.with_label_values(&["skill"]).set(0);
+        let families = m.registry.gather();
+        let names: Vec<&str> = families.iter().map(|f| f.get_name()).collect();
+        assert!(
+            names.contains(&"forge_phase_duration_seconds"),
+            "missing forge_phase_duration_seconds"
+        );
+        assert!(
+            names.contains(&"forge_phase_output_rows_total"),
+            "missing forge_phase_output_rows_total"
+        );
+        assert!(
+            names.contains(&"forge_table_rows"),
+            "missing forge_table_rows"
+        );
+        assert_eq!(families.len(), 10, "expected exactly 10 metric families");
     }
 
     #[test]
