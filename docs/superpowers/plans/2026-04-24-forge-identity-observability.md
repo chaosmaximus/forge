@@ -1,0 +1,538 @@
+# Forge-Identity Observability — Implementation Plan (Phase 2A-4d.1, Instrumentation Tier)
+
+> **For agentic workers:** execute TDD — write the failing test first, watch it fail, implement, verify, commit. Each task commit passes `cargo fmt --all --check` + `cargo clippy --workspace -- -W clippy::all -D warnings` + `cargo test --workspace` + `scripts/check-harness-sync.sh`.
+
+**Goal:** Land Tier 1 of 2A-4d per design spec `docs/superpowers/specs/2026-04-24-forge-identity-observability-design.md` (LOCKED at `b2dfa20`). Each consolidator phase emits a structured `info_span!`, writes a versioned row to `kpi_events`, and updates 3 new Prometheus metric families. All worker `eprintln!`/`println!` converge to `tracing`.
+
+**Tech stack:** Rust workspace as-is. Existing deps: `tracing 0.1`, `tracing-subscriber 0.3`, `tracing-opentelemetry 0.28`, `opentelemetry-otlp 0.27` (tonic), `prometheus 0.13`. Zero new deps.
+
+**Design doc:** `docs/superpowers/specs/2026-04-24-forge-identity-observability-design.md` v4 LOCKED.
+
+---
+
+## File structure
+
+| File | Responsibility | Task |
+|------|----------------|------|
+| `crates/daemon/src/workers/instrumentation.rs` (CREATE) | `PhaseOutcome` struct, `PHASE_SPAN_NAMES` const, `record()` + `update_phase_metrics()` + `insert_kpi_event_row()` helpers, span-name integrity test | T2 |
+| `crates/daemon/src/workers/mod.rs` (MODIFY) | Register `pub mod instrumentation;` | T2 |
+| `crates/daemon/src/workers/consolidator.rs` (MODIFY) | Wrap 23 phase call sites in `info_span!` + `record()` per §3.1a; convert 69 `eprintln!` sites across 2 commits | T3, T6.1 |
+| `crates/daemon/src/server/metrics.rs` (MODIFY) | Add 3 new metric families: `forge_phase_duration_seconds`, `forge_phase_output_rows_total`, `forge_table_rows`; extend `refresh_gauges` | T4 |
+| `crates/daemon/src/server/http.rs` (MODIFY) | Thread `ForgeMetrics` into call-site wrapper — already stored in `AppState`, just expose via `state.metrics.as_ref()` inside `run_all_phases` entry (helper arg) | T4 |
+| `crates/daemon/src/workers/{watcher,extractor,embedder,indexer,perception,disposition,diagnostics,reaper,mod,skill_inference}.rs` (MODIFY) | Convert `eprintln!`/`println!` → `tracing` per §3.5 mapping | T6.2–T6.8 |
+| `.github/workflows/ci.yml` (MODIFY) | Add span-integrity + `tokio::spawn` prohibition guard in the `check` job | T7 |
+| `docs/architecture/README.md` (CREATE) | Gateway + index for architecture docs | T5 |
+| `docs/architecture/kpi_events-namespace.md` (CREATE) | Namespace register; claim `event_type='phase_completed'` for Tier 1 | T5 |
+| `docs/benchmarks/results/2026-04-XX-forge-identity-observability-T1-baseline.md` (CREATE) | Pre-Tier-1 baseline: cold start timings + consolidator pass duration on the deterministic harness | T10 |
+| `docs/benchmarks/results/2026-04-XX-forge-identity-observability-T1.md` (CREATE) | Post-Tier-1 results; acceptance artifact | T11 |
+
+---
+
+## Pre-implementation reconnaissance (Task 1, mandatory)
+
+Before Task 2, re-run every recon command from spec §2 and confirm results match the spec's 16 recon facts. Drift since 2026-04-24 may invalidate assumptions.
+
+**Commands:**
+
+```bash
+cd /mnt/colab-disk/DurgaSaiK/forge/forge
+
+# Fact 1: phase count
+grep -cE "^\s*// Phase [0-9]+:" crates/daemon/src/workers/consolidator.rs
+# Expected: 23
+
+# Fact 2 + 3: OTLP wiring
+grep -n "init_otlp_layer\|FORGE_OTLP" crates/daemon/src/main.rs
+# Expected: init_otlp_layer at ~91, reads FORGE_OTLP_* env vars
+
+# Fact 4: kpi_events writers
+grep -rn "INSERT INTO kpi_events" crates/
+# Expected: zero output (Tier 1 is the first writer)
+
+# Fact 5: eprintln sites
+grep -c 'eprintln!\|println!' crates/daemon/src/workers/*.rs
+
+# Fact 10: no workers/ops/ directory
+ls crates/daemon/src/workers/ops/
+# Expected: ENOENT
+
+# Fact 12: identity table shape
+grep -A5 "CREATE TABLE IF NOT EXISTS identity" crates/daemon/src/db/schema.rs
+# Expected: no updated_at column
+
+# Fact 14: decay return
+grep -B1 -A3 "fn decay_memories" crates/daemon/src/db/ops.rs
+# Expected: Result<(usize, usize)> with doc "(checked_count, faded_count)"
+
+# Fact 16: architecture dir absence
+ls docs/architecture/ 2>&1 | head -3
+# Expected: ENOENT
+```
+
+If ANY diverges from spec §2, stop and update the spec before proceeding.
+
+---
+
+## Task 2: Introduce `workers/instrumentation.rs` helper
+
+**Files:**
+- Create: `crates/daemon/src/workers/instrumentation.rs`
+- Modify: `crates/daemon/src/workers/mod.rs` (add `pub mod instrumentation;`)
+
+**Goal:** Pure helper module — no lock acquisitions, no new external deps.
+
+- [ ] **2.1. Write the failing span-integrity unit test** (in `instrumentation.rs`):
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_span_names_len_is_23() {
+        assert_eq!(PHASE_SPAN_NAMES.len(), 23);
+    }
+
+    #[test]
+    fn span_name_count_matches_phase_count_in_consolidator() {
+        let src = include_str!("consolidator.rs");
+        let count = src.matches("info_span!(\"phase_").count();
+        assert_eq!(
+            count, PHASE_SPAN_NAMES.len(),
+            "expected {} info_span!(\"phase_ calls in consolidator.rs, saw {}",
+            PHASE_SPAN_NAMES.len(), count
+        );
+    }
+}
+```
+
+- [ ] **2.2. Run test** — must fail (consolidator.rs has 0 `info_span!("phase_` calls pre-T3).
+
+- [ ] **2.3. Implement `PhaseOutcome` + `PHASE_SPAN_NAMES` + helpers:**
+
+```rust
+//! Tier 1 of Phase 2A-4d — consolidator phase instrumentation.
+//!
+//! Pure helpers. No lock acquisitions, no Arc<Mutex<DaemonState>>.
+//! Callers pass &Connection + &ForgeMetrics + &PhaseOutcome by value.
+
+use rusqlite::{params, Connection};
+use serde_json::json;
+
+use crate::server::metrics::ForgeMetrics;
+
+pub const PHASE_SPAN_NAMES: &[&str; 23] = &[
+    "phase_1_dedup_memories",
+    "phase_2_semantic_dedup",
+    "phase_3_link_memories",
+    "phase_4_decay_memories",
+    "phase_5_promote_patterns",
+    "phase_6_reconsolidate_contradicting",
+    "phase_7_merge_embedding_duplicates",
+    "phase_8_strengthen_by_access",
+    "phase_9_score_memory_quality",
+    "phase_10_entity_detection",
+    "phase_11_synthesize_contradictions",
+    "phase_12_detect_and_surface_gaps",
+    "phase_13_reweave_memories",
+    "phase_14_flip_stale_preferences",
+    "phase_15_apply_recency_decay",
+    "phase_16_compute_effectiveness",
+    "phase_17_extract_protocols",
+    "phase_18_tag_antipatterns",
+    "phase_19_emit_notifications",
+    "phase_20_record_tool_use_kpis",
+    "phase_21_run_healing_checks",
+    "phase_22_apply_quality_pressure",
+    "phase_23_infer_skills_from_behavior",
+];
+
+pub struct PhaseOutcome<'a> {
+    pub phase: &'static str,
+    pub run_id: &'a str,
+    pub correlation_id: &'a str,
+    pub trace_id: Option<&'a str>,
+    pub output_count: u64,
+    pub error_count: u64,
+    pub duration_ms: u64,
+    pub extra: serde_json::Value,
+}
+
+pub fn record(conn: &Connection, metrics: Option<&ForgeMetrics>, outcome: &PhaseOutcome) {
+    if let Some(m) = metrics {
+        update_phase_metrics(m, outcome);
+    }
+    if let Err(e) = insert_kpi_event_row(conn, outcome) {
+        tracing::warn!(error = %e, phase = outcome.phase, "kpi_events insert failed");
+    }
+}
+
+fn update_phase_metrics(metrics: &ForgeMetrics, outcome: &PhaseOutcome) {
+    metrics
+        .phase_duration
+        .with_label_values(&[outcome.phase])
+        .observe(outcome.duration_ms as f64 / 1000.0);
+    let action = if outcome.error_count == 0 { "succeeded" } else { "errored" };
+    metrics
+        .phase_output_rows
+        .with_label_values(&[outcome.phase, action])
+        .inc_by(outcome.output_count);
+}
+
+fn insert_kpi_event_row(conn: &Connection, outcome: &PhaseOutcome) -> rusqlite::Result<()> {
+    let metadata = json!({
+        "metadata_schema_version": 1,
+        "phase_name": outcome.phase,
+        "run_id": outcome.run_id,
+        "correlation_id": outcome.correlation_id,
+        "trace_id": outcome.trace_id,
+        "input_count": 0,                     // reserved; wrapper may set non-zero
+        "output_count": outcome.output_count,
+        "error_count": outcome.error_count,
+        "extra": outcome.extra,
+    });
+    let id = format!("phase-{}", ulid::Ulid::new());
+    conn.execute(
+        "INSERT INTO kpi_events (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json)
+         VALUES (?1, strftime('%s','now'), 'phase_completed', NULL, ?2, ?3, ?4, ?5)",
+        params![
+            id,
+            outcome.duration_ms as i64,
+            outcome.output_count as i64,
+            if outcome.error_count == 0 { 1_i64 } else { 0_i64 },
+            metadata.to_string(),
+        ],
+    )?;
+    Ok(())
+}
+```
+
+- [ ] **2.4. Wire module into `mod.rs`:** `pub mod instrumentation;`
+
+- [ ] **2.5. Run tests** — only `phase_span_names_len_is_23` passes; the source-scan test still fails (expected until T3 lands spans).
+
+- [ ] **2.6. Commit:**
+
+```
+feat(2A-4d.1 T2): workers::instrumentation helper + PhaseOutcome
+
+Pure helper module — PhaseOutcome struct, PHASE_SPAN_NAMES const of 23
+canonical phase identifiers, record()/update_phase_metrics()/
+insert_kpi_event_row() helpers. No lock acquisitions; accepts
+&Connection + Option<&ForgeMetrics> + &PhaseOutcome.
+
+kpi_events metadata_json is versioned (metadata_schema_version: 1) per
+spec §3.4. correlation_id (ULID) and trace_id (OTLP hex) are separate
+fields to resolve the encoding-mismatch.
+
+Span-integrity test scans consolidator.rs source for info_span!("phase_
+occurrences; currently fails (0 spans). T3 will land the spans and
+flip the test green.
+```
+
+---
+
+## Task 3: Wrap 23 phase call sites in `run_all_phases`
+
+**Files:**
+- Modify: `crates/daemon/src/workers/consolidator.rs`
+
+Per spec §3.1 + projection table §3.1a. Use templates W1/W2/W3/W4 per phase's return type.
+
+Preamble added at the top of `run_all_phases`:
+```rust
+let run_id = ulid::Ulid::new().to_string();
+let _pass_span = tracing::info_span!("consolidate_pass", run_id = %run_id, triggered_by = "scheduled").entered();
+```
+
+Each phase call site becomes (example Phase 23, W1):
+```rust
+{
+    let _span = tracing::info_span!("phase_23_infer_skills_from_behavior").entered();
+    let t0 = std::time::Instant::now();
+    let output = infer_skills_from_behavior(conn, config.skill_inference_min_sessions, config.skill_inference_window_days);
+    let outcome = PhaseOutcome {
+        phase: "phase_23_infer_skills_from_behavior",
+        run_id: &run_id,
+        correlation_id: &run_id,
+        trace_id: None, // populated by tracing-opentelemetry automatically when OTLP is on
+        output_count: output as u64,
+        error_count: 0,
+        duration_ms: t0.elapsed().as_millis() as u64,
+        extra: serde_json::json!({}),
+    };
+    crate::workers::instrumentation::record(conn, metrics, &outcome);
+    stats.skills_inferred = output;
+}
+```
+
+**`metrics: Option<&ForgeMetrics>`** is threaded as a new argument to `run_all_phases`. Callers currently: `run_consolidator` loop body + 4 test sites. Tests pass `None`.
+
+- [ ] **3.1. Add `metrics: Option<&ForgeMetrics>` param to `run_all_phases`** + update all callers (test + prod). Verify compile.
+
+- [ ] **3.2. For EACH of the 23 phases** — in phase-order — apply the right template per §3.1a. Commit NOT per phase (one commit with all 23 wraps) so the span-integrity test flips green atomically.
+
+- [ ] **3.3. Verify span-integrity test passes** (`cargo test -p forge-daemon workers::instrumentation::tests`).
+
+- [ ] **3.4. Verify one per-phase smoke test** — seed 1 memory, call `run_all_phases(&conn, &config, None)`, assert `SELECT COUNT(*) FROM kpi_events WHERE event_type='phase_completed'` == 23.
+
+- [ ] **3.5. Run full clippy + fmt + tests.** Expected: 1388 + 1 (per-phase smoke) + 2 (span-integrity) = 1391+.
+
+- [ ] **3.6. Commit:**
+
+```
+feat(2A-4d.1 T3): instrument 23 consolidator phases with info_span! + PhaseOutcome
+
+Every phase call site in run_all_phases is now wrapped in
+tracing::info_span!("phase_N_<name>") and emits a PhaseOutcome via
+workers::instrumentation::record(). Output counts follow the
+§3.1a projection table; phases that swallow errors internally
+(Phase 3, 11, 12, 13, 15, 17, 18, 19, 20, 22, 23) have error_count=0
+at the call site — documented as a known gap (R8).
+
+Span-integrity test (T2) now passes: 23 info_span! calls matching
+PHASE_SPAN_NAMES.
+
+After one force_consolidate, kpi_events has 23 rows with
+event_type='phase_completed' and metadata_schema_version: 1.
+```
+
+---
+
+## Task 4: 3 new Prometheus metric families
+
+**Files:**
+- Modify: `crates/daemon/src/server/metrics.rs`
+
+- [ ] **4.1. Write failing test** — `test_new_metric_families_registered` asserting registry contains `forge_phase_duration_seconds`, `forge_phase_output_rows_total`, `forge_table_rows`.
+
+- [ ] **4.2. Extend `ForgeMetrics`:**
+
+```rust
+pub struct ForgeMetrics {
+    // existing fields…
+    pub phase_duration: HistogramVec,      // label: phase
+    pub phase_output_rows: IntCounterVec,   // labels: phase, action
+    pub table_rows: IntGaugeVec,            // label: table
+}
+```
+
+Registration in `new()`; `buckets` per spec §3.2. Cardinality check: 80 new series.
+
+- [ ] **4.3. Extend `refresh_gauges`** to set `table_rows` from per-table `SELECT COUNT(*)`:
+
+```rust
+for (table, label) in &[
+    ("memory", "memory"), ("skill", "skill"), ("edge", "edge"),
+    ("identity", "identity"), ("disposition", "disposition"),
+    ("platform", "platform"), ("tool", "tool"),
+    ("perception", "perception"), ("declared", "declared"),
+    ("domain_dna", "domain_dna"), ("entity", "entity"),
+] {
+    if let Ok(count) = reader.conn.query_row(
+        &format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get::<_, i64>(0)
+    ) {
+        metrics.table_rows.with_label_values(&[label]).set(count);
+    }
+}
+```
+
+- [ ] **4.4. `/metrics` handler is unchanged** — `refresh_gauges` + `registry.gather()` already handles it.
+
+- [ ] **4.5. Verify tests** — new test passes; existing 6 pass.
+
+- [ ] **4.6. Commit:**
+
+```
+feat(2A-4d.1 T4): add 3 Prometheus metric families
+
+New families:
+  - forge_phase_duration_seconds (histogram, per phase)
+  - forge_phase_output_rows_total (counter, per phase × action)
+  - forge_table_rows (gauge, per sql table — no _total suffix)
+
+11 tables labeled: memory, skill, edge, identity, disposition,
+platform, tool, perception, declared, domain_dna, entity. Matches
+schema.rs.
+
+Cardinality: 23 + 46 + 11 = 80 new time series.
+
+refresh_gauges() queries each table's count on /metrics scrape.
+Histogram + counter are updated at the call-site wrapper (T3).
+```
+
+---
+
+## Task 5: `docs/architecture/` + kpi_events namespace register
+
+**Files:**
+- Create: `docs/architecture/README.md`
+- Create: `docs/architecture/kpi_events-namespace.md`
+
+- [ ] **5.1. Write the gateway:** ≤20 lines — "this directory documents cross-cutting architectural surfaces shared by multiple tiers".
+
+- [ ] **5.2. Write the namespace register:** claim `phase_completed` for Tier 1. Document the versioned `metadata_json` v1 contract. Note that Tier 2 (`/inspect`) will consume these rows, so schema evolution requires a version bump.
+
+- [ ] **5.3. Commit:**
+
+```
+docs(2A-4d.1 T5): architecture/ gateway + kpi_events namespace register
+
+Tier 1 claims event_type='phase_completed' with
+metadata_schema_version=1. Tier 2+ writers register here before writing.
+```
+
+---
+
+## Task 6: `eprintln!`/`println!` convergence (8 commits)
+
+Each sub-task is one commit. Max ≤35 sites/commit. Run clippy + fmt + tests after each.
+
+- [ ] **6.1.** `consolidator.rs` part A (lines 1–~1000, ≤35 sites).
+- [ ] **6.2.** `consolidator.rs` part B (lines ~1000–end, remaining sites).
+- [ ] **6.3.** `indexer.rs` (33 sites).
+- [ ] **6.4.** `extractor.rs` (22 sites).
+- [ ] **6.5.** `diagnostics.rs` (13 sites).
+- [ ] **6.6.** `disposition.rs` (12 sites).
+- [ ] **6.7.** `watcher.rs` + `perception.rs` + `embedder.rs` (≤26 bundled).
+- [ ] **6.8.** `reaper.rs` + `workers/mod.rs` + `skill_inference.rs` (~9 bundled).
+
+Conversion rules (stable across all commits):
+- `eprintln!("[W] X")` → `tracing::info!(target: "forge::W", "X")`
+- `eprintln!("[W] error: {e}")` → `tracing::error!(target: "forge::W", error = %e, "…")`
+- `eprintln!("[W] WARN X")` → `tracing::warn!(target: "forge::W", "X")`
+
+Commit template per sub-task:
+
+```
+chore(2A-4d.1 T6.N): convert <file> eprintln! → tracing (sites: M)
+
+Mechanical conversion per spec §3.5 mapping. No behavior change.
+Acceptance: grep 'eprintln!\|println!' <file> (excl. #[cfg(test)])
+returns 0.
+```
+
+After T6.8: final acceptance — `grep -rn 'eprintln!\|println!' crates/daemon/src/workers/*.rs | grep -v '#\[cfg(test' | wc -l` → 0.
+
+---
+
+## Task 7: CI span-integrity + tokio::spawn guard
+
+**Files:**
+- Modify: `.github/workflows/ci.yml` (the `check` job — NOT `plugin-surface`).
+
+Append step after the existing clippy step in the `check` job:
+
+```yaml
+      - name: Span integrity guard
+        run: |
+          set -euo pipefail
+          count=$(grep -c 'info_span!("phase_' crates/daemon/src/workers/consolidator.rs)
+          [ "$count" = "23" ] || { echo "span count $count != 23"; exit 1; }
+          ! grep -n 'tokio::spawn' crates/daemon/src/workers/consolidator.rs
+          ! grep -n 'tokio::spawn' crates/daemon/src/db/ops.rs
+```
+
+- [ ] **7.1.** Add step.
+- [ ] **7.2.** Verify by temporarily adding a `tokio::spawn` to a comment (not code) and confirming CI fails; revert.
+- [ ] **7.3. Commit:**
+
+```
+ci(2A-4d.1 T7): span-integrity + tokio::spawn guard on check job
+
+Fails if consolidator.rs has != 23 info_span!("phase_ calls or if any
+tokio::spawn sneaks into the phase execution surface. Keeps Tier 1's
+span attribution honest under future refactors.
+```
+
+---
+
+## Task 8: Adversarial reviews on T1–T7 diff
+
+Dispatch two subagents in parallel:
+- Claude `general-purpose` reviewer — full open-ended adversarial review of the diff.
+- Codex `codex-rescue` reviewer — second opinion, inverted prompt.
+
+Probe angles (seed):
+1. Does every phase wrapper handle its return type correctly per §3.1a?
+2. Does the span-integrity test actually catch a renamed phase?
+3. Are the 184 converted `tracing` calls leveled correctly (info/warn/error)?
+4. Does the metrics refresh query hit a non-existent table?
+5. Do any converted events leak secret-bearing context (file paths, commands) at info level?
+
+Record raw review outputs in the commit history. Address BLOCKER + HIGH in T9.
+
+---
+
+## Task 9: Address review findings
+
+One commit per finding, `fix(2A-4d.1 T9): address <severity>-<n>-<slug>`.
+
+---
+
+## Task 10: Latency baseline
+
+- [ ] **10.1.** Ensure baseline is captured BEFORE T2 lands. If T10 is being done late, revert T2–T7 temporarily on a branch to capture baseline, then replay. (Or: baseline was captured at T1/recon time per spec §3.7.)
+
+- [ ] **10.2.** Run `cargo test -p forge-daemon --test forge_consolidation_harness --release -- --test-threads=1` N=5 times. Capture consolidator pass duration per phase.
+
+- [ ] **10.3.** Compute median-of-medians (MoM) per phase.
+
+- [ ] **10.4.** Write baseline file: `docs/benchmarks/results/2026-04-XX-forge-identity-observability-T1-baseline.md`.
+
+- [ ] **10.5.** Repeat on HEAD (post-T3+T4+T6 merge). Compute deltas.
+
+- [ ] **10.6.** Verify budget (§3.7):
+  - Cold start (OTLP off) regression ≤ 20 ms.
+  - Cold start (OTLP on + local Jaeger) regression ≤ 100 ms.
+  - Steady-state CPU regression ≤ 2%.
+  - `force_consolidate` on seeded 100-memory DB regression ≤ 10 ms total.
+
+- [ ] **10.7.** Commit results doc.
+
+---
+
+## Task 11: Live-daemon dogfood + results doc
+
+- [ ] **11.1.** Rebuild release daemon at HEAD.
+- [ ] **11.2.** Spin up local Jaeger-all-in-one container: `docker run -d -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one:latest`.
+- [ ] **11.3.** Launch daemon: `FORGE_OTLP_ENABLED=true FORGE_OTLP_ENDPOINT=http://localhost:4317 FORGE_DIR=/tmp/forge-t1-dogfood /path/to/forge-daemon &`.
+- [ ] **11.4.** Seed 100 memories + 3 sessions + tool-use pattern (reuse T11 dogfood script from 2A-4c2; adapt for this tier).
+- [ ] **11.5.** Call `force_consolidate`.
+- [ ] **11.6.** Assertions:
+  - `curl $API -d '{"method":"force_consolidate"}'` returns `skills_inferred` and all other counters.
+  - `curl http://127.0.0.1:8420/metrics` contains `forge_phase_duration_seconds`, `forge_phase_output_rows_total`, `forge_table_rows`.
+  - `sqlite3 /tmp/forge-t1-dogfood/forge.db "SELECT COUNT(*) FROM kpi_events WHERE event_type='phase_completed'"` == 23 per pass.
+  - Every kpi_events row has `metadata_schema_version: 1` in metadata_json.
+  - Jaeger UI at `http://localhost:16686` shows a trace with 23 child spans under `consolidate_pass` root.
+- [ ] **11.7.** Kill daemon + cleanup tempdir + Jaeger container.
+- [ ] **11.8.** Write results doc at `docs/benchmarks/results/2026-04-XX-forge-identity-observability-T1.md` — screenshots, counts, migration note for operators who grep stderr.
+- [ ] **11.9.** Update `HANDOFF.md` §Lifted constraints with Tier 1 entry.
+- [ ] **11.10.** Commit results + HANDOFF.
+
+---
+
+## Acceptance (repeated from spec §8 for operator convenience)
+
+- [ ] `/metrics` ≥ 10 families.
+- [ ] `SELECT COUNT(*) FROM kpi_events WHERE event_type='phase_completed'` == 23 per pass.
+- [ ] `metadata_schema_version == 1` in every row.
+- [ ] Jaeger shows 23 child spans under `consolidate_pass`.
+- [ ] `grep -rn 'eprintln!\|println!' crates/daemon/src/workers/*.rs | grep -v '#\[cfg(test'` returns 0.
+- [ ] `PHASE_ORDER`, `Request::ProbePhase`, handler remain cfg-gated.
+- [ ] `cargo test --workspace` ≥ 1388 baseline + ≥ 23 new + auxiliary tests.
+- [ ] `cargo clippy --workspace -- -W clippy::all -D warnings` clean.
+- [ ] `scripts/check-harness-sync.sh` clean.
+- [ ] CI span-integrity + `tokio::spawn` guard installed.
+- [ ] Latency budget within limits.
+- [ ] Two adversarial reviews complete on the diff.
+- [ ] `docs/architecture/kpi_events-namespace.md` committed.
+
+---
+
+## Unblocks
+
+- Tier 2 (2A-4d.2) — `/inspect {layer, shape, window}` reads from `kpi_events` + per-table gauges.
+- Tier 3 (2A-4d.3) — bench scoring consumes Tier 2's queries.
+- Any future operator Grafana dashboard.
+- 2A-4c2 Codex-LOW "no structured tracing for `skills_inferred`" — closed here.

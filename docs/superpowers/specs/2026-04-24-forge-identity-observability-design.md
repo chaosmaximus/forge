@@ -1,6 +1,6 @@
 # Forge-Identity Observability — Design v4 (Phase 2A-4d.1, Instrumentation Tier)
 
-**Status:** DESIGN v4 — lock-ready. Three rounds of adversarial review (Claude + Codex) caught: v1 recon errors (OTLP wiring, events table), v2 design errors (retention in held lock, heterogeneous return types), v3 precision errors (wrong paths, wrong table name, decay double-count, unversioned JSON contract). v4 addresses all. Planner re-verifies recon at implementation time.
+**Status:** LOCKED 2026-04-24 at HEAD `b2dfa20` after a targeted convergence review confirmed every R3 finding was closed in v4 and no new BLOCKER was introduced. Three rounds of adversarial review (Claude + Codex) caught: v1 recon errors (OTLP wiring, events table), v2 design errors (retention in held lock, heterogeneous return types), v3 precision errors (wrong paths, wrong table name, decay double-count, unversioned JSON contract). v4 addresses all. Planner re-verifies recon at implementation time per Task 1.
 
 **Phase position:** First of three 2A-4d tiers.
 
