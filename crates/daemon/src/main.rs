@@ -380,6 +380,7 @@ async fn main() {
             let cs = forge_daemon::workers::consolidator::run_all_phases(
                 &locked.conn,
                 &startup_consol_config,
+                None,
             );
             eprintln!(
                 "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",

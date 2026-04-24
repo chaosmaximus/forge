@@ -2839,7 +2839,7 @@ pub fn run(config: ConsolidationBenchConfig) -> Result<ConsolidationScore, Strin
         reweave_limit: 100,
         ..Default::default()
     };
-    let stats = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
+    let stats = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config, None);
     let _ = stats;
 
     // 6. Post-consolidation recall snapshot
@@ -4152,7 +4152,7 @@ mod tests {
             reweave_limit: 100,
             ..Default::default()
         };
-        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
+        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config, None);
         let heal_count: i64 = state
             .conn
             .query_row(
@@ -4205,7 +4205,7 @@ mod tests {
             reweave_limit: 100,
             ..Default::default()
         };
-        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
+        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config, None);
         let score = audit_reweave(&state.conn, &dataset).unwrap();
         assert!(
             score.f1 > 0.9,
@@ -4253,7 +4253,7 @@ mod tests {
             reweave_limit: 100,
             ..Default::default()
         };
-        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config);
+        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config, None);
         let score = audit_lifecycle(&state.conn, &dataset).unwrap();
         // decay and quality should now pass
         let decay_detail = score

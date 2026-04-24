@@ -17,6 +17,9 @@ use crate::server::metrics::ForgeMetrics;
 /// `consolidator.rs::run_all_phases` 1:1. A unit test in this module scans
 /// the consolidator source and asserts the counts match — rename a phase
 /// without updating both sides and CI fails.
+// Execution order in `run_all_phases` as of 2026-04-24. Numeric suffix is the
+// phase's historical id (Phase 23 was inserted between 17 and 18 in 2A-4c2);
+// list order here matches run-time firing order, not numeric id.
 pub const PHASE_SPAN_NAMES: &[&str; 23] = &[
     "phase_1_dedup_memories",
     "phase_2_semantic_dedup",
@@ -26,21 +29,21 @@ pub const PHASE_SPAN_NAMES: &[&str; 23] = &[
     "phase_6_reconsolidate_contradicting",
     "phase_7_merge_embedding_duplicates",
     "phase_8_strengthen_by_access",
-    "phase_9_score_memory_quality",
-    "phase_10_entity_detection",
-    "phase_11_synthesize_contradictions",
-    "phase_12_detect_and_surface_gaps",
-    "phase_13_reweave_memories",
-    "phase_14_flip_stale_preferences",
-    "phase_15_apply_recency_decay",
-    "phase_16_compute_effectiveness",
+    "phase_9_detect_contradictions",
+    "phase_10_decay_activation",
+    "phase_11_entity_detection",
+    "phase_12_synthesize_contradictions",
+    "phase_13_detect_gaps",
+    "phase_14_reweave_memories",
+    "phase_15_quality_scoring",
+    "phase_16_portability_classification",
     "phase_17_extract_protocols",
+    "phase_23_infer_skills_from_behavior",
     "phase_18_tag_antipatterns",
     "phase_19_emit_notifications",
-    "phase_20_record_tool_use_kpis",
-    "phase_21_run_healing_checks",
+    "phase_20_auto_supersede",
+    "phase_21_session_staleness_fade",
     "phase_22_apply_quality_pressure",
-    "phase_23_infer_skills_from_behavior",
 ];
 
 /// Observation produced by each consolidator phase.
@@ -122,7 +125,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "T3 un-ignores this once phase call sites are wrapped in info_span!"]
     fn span_name_count_matches_phase_count_in_consolidator() {
         // Source-scan integrity check: each PHASE_SPAN_NAMES entry must appear
         // exactly once as `tracing::info_span!("phase_*")` in consolidator.rs.

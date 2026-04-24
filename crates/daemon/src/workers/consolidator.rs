@@ -82,243 +82,629 @@ pub struct HealingStats {
 pub fn run_all_phases(
     conn: &Connection,
     config: &crate::config::ConsolidationConfig,
+    metrics: Option<&crate::server::metrics::ForgeMetrics>,
 ) -> ConsolidationStats {
+    use crate::workers::instrumentation::{record, PhaseOutcome};
+
     let mut stats = ConsolidationStats::default();
+    let run_id = ulid::Ulid::new().to_string();
+    let _pass_span = tracing::info_span!("consolidate_pass", run_id = %run_id).entered();
 
     // Phase 1: Exact dedup (fast)
-    match ops::dedup_memories(conn) {
-        Ok(removed) => {
-            stats.exact_dedup = removed;
-            if removed > 0 {
-                eprintln!("[consolidator] dedup removed {removed} duplicate memories");
+    {
+        let _span = tracing::info_span!("phase_1_dedup_memories").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match ops::dedup_memories(conn) {
+            Ok(removed) => {
+                stats.exact_dedup = removed;
+                if removed > 0 {
+                    tracing::info!(removed, "phase_1: dedup removed duplicate memories");
+                }
+                (removed as u64, 0u64)
             }
-        }
-        Err(e) => eprintln!("[consolidator] dedup error: {e}"),
+            Err(e) => {
+                tracing::error!(error = %e, "phase_1: dedup error");
+                (0, 1)
+            }
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_1_dedup_memories",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 2: Semantic dedup (slow O(n^2), bounded by batch_limit)
-    match ops::semantic_dedup(conn, config.batch_limit) {
-        Ok(merged) => {
-            stats.semantic_dedup = merged;
-            if merged > 0 {
-                eprintln!("[consolidator] semantic dedup merged {merged} near-duplicates");
+    {
+        let _span = tracing::info_span!("phase_2_semantic_dedup").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match ops::semantic_dedup(conn, config.batch_limit) {
+            Ok(merged) => {
+                stats.semantic_dedup = merged;
+                if merged > 0 {
+                    tracing::info!(merged, "phase_2: semantic dedup merged near-duplicates");
+                }
+                (merged as u64, 0u64)
             }
-        }
-        Err(e) => eprintln!("[consolidator] semantic dedup error: {e}"),
+            Err(e) => {
+                tracing::error!(error = %e, "phase_2: semantic dedup error");
+                (0, 1)
+            }
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_2_semantic_dedup",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 3: Link related memories (bounded by batch_limit)
-    match ops::link_related_memories(conn, config.batch_limit) {
-        Ok(linked) => {
-            stats.linked = linked;
-            if linked > 0 {
-                eprintln!("[consolidator] linked {linked} related memory pairs");
+    {
+        let _span = tracing::info_span!("phase_3_link_memories").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match ops::link_related_memories(conn, config.batch_limit) {
+            Ok(linked) => {
+                stats.linked = linked;
+                if linked > 0 {
+                    tracing::info!(linked, "phase_3: linked related memory pairs");
+                }
+                (linked as u64, 0u64)
             }
-        }
-        Err(e) => eprintln!("[consolidator] link error: {e}"),
+            Err(e) => {
+                tracing::error!(error = %e, "phase_3: link error");
+                (0, 1)
+            }
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_3_link_memories",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
-    // Phase 4: Decay (bounded by batch_limit)
+    // Phase 4: Decay (bounded by batch_limit). output_count = faded (NOT
+    // checked + faded — per 2A-4d.1 spec §3.1a, faded ⊆ checked so summing
+    // would double-count). Checked count preserved in extra for operator
+    // drill-down.
     let preference_half_life_days = crate::config::load_config()
         .recall
         .validated()
         .preference_half_life_days;
-    match ops::decay_memories(conn, config.batch_limit, preference_half_life_days) {
-        Ok((_decayed, faded)) => {
-            stats.faded = faded;
-            if faded > 0 {
-                eprintln!("[consolidator] faded {faded}");
-            }
-        }
-        Err(e) => eprintln!("[consolidator] decay error: {e}"),
+    {
+        let _span = tracing::info_span!("phase_4_decay_memories").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err, checked_count) =
+            match ops::decay_memories(conn, config.batch_limit, preference_half_life_days) {
+                Ok((checked, faded)) => {
+                    stats.faded = faded;
+                    if faded > 0 {
+                        tracing::info!(faded, checked, "phase_4: decay faded memories");
+                    }
+                    (faded as u64, 0u64, checked as u64)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "phase_4: decay error");
+                    (0, 1, 0)
+                }
+            };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_4_decay_memories",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({ "checked_count": checked_count }),
+            },
+        );
     }
 
     // Phase 5: Episodic -> Semantic promotion (bounded by batch_limit)
-    match ops::promote_recurring_lessons(conn, config.batch_limit) {
-        Ok(promoted) => {
-            stats.promoted = promoted;
-            if promoted > 0 {
-                eprintln!("[consolidator] promoted {promoted} recurring lessons to patterns");
+    {
+        let _span = tracing::info_span!("phase_5_promote_patterns").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match ops::promote_recurring_lessons(conn, config.batch_limit) {
+            Ok(promoted) => {
+                stats.promoted = promoted;
+                if promoted > 0 {
+                    tracing::info!(promoted, "phase_5: promoted recurring lessons to patterns");
+                }
+                (promoted as u64, 0u64)
             }
-        }
-        Err(e) => eprintln!("[consolidator] promotion error: {e}"),
+            Err(e) => {
+                tracing::error!(error = %e, "phase_5: promotion error");
+                (0, 1)
+            }
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_5_promote_patterns",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
-    // Phase 6: Reconsolidation — boost confidence of heavily-accessed memories
-    match ops::find_reconsolidation_candidates(conn) {
-        Ok(candidates) => {
-            for mem in &candidates {
-                let new_confidence = (mem.confidence + 0.05).min(1.0);
-                if let Err(e) = conn.execute(
-                    "UPDATE memory SET confidence = ?1 WHERE id = ?2",
-                    rusqlite::params![new_confidence, mem.id],
-                ) {
-                    eprintln!(
-                        "[consolidator] failed to reconsolidate memory {}: {e}",
-                        mem.id
-                    );
+    // Phase 6: Reconsolidation — boost confidence of heavily-accessed memories.
+    // output_count = candidates.len() per spec §3.1a (inner UPDATE loop may
+    // swallow errors; those surface as tracing::warn!).
+    {
+        let _span = tracing::info_span!("phase_6_reconsolidate_contradicting").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match ops::find_reconsolidation_candidates(conn) {
+            Ok(candidates) => {
+                for mem in &candidates {
+                    let new_confidence = (mem.confidence + 0.05).min(1.0);
+                    if let Err(e) = conn.execute(
+                        "UPDATE memory SET confidence = ?1 WHERE id = ?2",
+                        rusqlite::params![new_confidence, mem.id],
+                    ) {
+                        tracing::warn!(error = %e, memory_id = %mem.id, "phase_6: reconsolidate update failed");
+                    }
                 }
+                stats.reconsolidated = candidates.len();
+                if !candidates.is_empty() {
+                    tracing::info!(count = candidates.len(), "phase_6: reconsolidated memories");
+                }
+                (candidates.len() as u64, 0u64)
             }
-            stats.reconsolidated = candidates.len();
-            if !candidates.is_empty() {
-                eprintln!(
-                    "[consolidator] reconsolidated {} memories",
-                    candidates.len()
-                );
+            Err(e) => {
+                tracing::error!(error = %e, "phase_6: reconsolidation error");
+                (0, 1)
             }
-        }
-        Err(e) => eprintln!("[consolidator] reconsolidation error: {e}"),
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_6_reconsolidate_contradicting",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 7: Embedding-based merge (sleep cycle — deep structural cleanup)
-    match ops::embedding_merge(conn) {
-        Ok(merged) => {
-            stats.embedding_merged = merged;
-            if merged > 0 {
-                eprintln!("[consolidator] embedding merge: {merged} similar memories merged");
+    {
+        let _span = tracing::info_span!("phase_7_merge_embedding_duplicates").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match ops::embedding_merge(conn) {
+            Ok(merged) => {
+                stats.embedding_merged = merged;
+                if merged > 0 {
+                    tracing::info!(merged, "phase_7: embedding merge merged similar memories");
+                }
+                (merged as u64, 0u64)
             }
-        }
-        Err(e) => eprintln!("[consolidator] embedding merge error: {e}"),
+            Err(e) => {
+                tracing::error!(error = %e, "phase_7: embedding merge error");
+                (0, 1)
+            }
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_7_merge_embedding_duplicates",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 8: Strengthen active edges
-    match ops::strengthen_active_edges(conn) {
-        Ok(strengthened) => {
-            stats.strengthened = strengthened;
-            if strengthened > 0 {
-                eprintln!("[consolidator] strengthened {strengthened} active edges");
+    {
+        let _span = tracing::info_span!("phase_8_strengthen_by_access").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match ops::strengthen_active_edges(conn) {
+            Ok(strengthened) => {
+                stats.strengthened = strengthened;
+                if strengthened > 0 {
+                    tracing::info!(strengthened, "phase_8: strengthened active edges");
+                }
+                (strengthened as u64, 0u64)
             }
-        }
-        Err(e) => eprintln!("[consolidator] edge strengthening error: {e}"),
+            Err(e) => {
+                tracing::error!(error = %e, "phase_8: edge strengthening error");
+                (0, 1)
+            }
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_8_strengthen_by_access",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
-    // Phase 9: Contradiction detection (two strategies)
-    // 9a: Valence-based (requires opposite valence + shared tags + intensity > 0.5)
-    match ops::detect_contradictions(conn) {
-        Ok(found) => {
-            stats.contradictions = found;
-            if found > 0 {
-                eprintln!("[consolidator] detected {found} valence-based contradictions");
-            } else {
-                // Log why valence-based detection found nothing — most memories are neutral
-                let valence_counts: Vec<(String, i64)> = conn
-                    .prepare(
-                        "SELECT valence, COUNT(*) FROM memory WHERE status = 'active' GROUP BY valence"
-                    )
-                    .and_then(|mut s| {
-                        s.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let summary: Vec<String> = valence_counts
-                    .iter()
-                    .map(|(v, c)| format!("{v}={c}"))
-                    .collect();
-                eprintln!(
-                    "[consolidator] valence-based contradiction: 0 found (valence distribution: {})",
-                    if summary.is_empty() { "none".to_string() } else { summary.join(", ") }
-                );
+    // Phase 9: Contradiction detection (two strategies — 9a valence, 9b content)
+    {
+        let _span = tracing::info_span!("phase_9_detect_contradictions").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err, valence_summary) = match ops::detect_contradictions(conn) {
+            Ok(found) => {
+                stats.contradictions = found;
+                let mut summary = String::new();
+                if found > 0 {
+                    tracing::info!(found, "phase_9a: valence-based contradictions detected");
+                } else {
+                    let valence_counts: Vec<(String, i64)> = conn
+                        .prepare("SELECT valence, COUNT(*) FROM memory WHERE status = 'active' GROUP BY valence")
+                        .and_then(|mut s| s.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+                        .unwrap_or_default();
+                    let joined: Vec<String> = valence_counts.iter().map(|(v, c)| format!("{v}={c}")).collect();
+                    summary = if joined.is_empty() { "none".to_string() } else { joined.join(", ") };
+                    tracing::info!(valence_distribution = %summary, "phase_9a: 0 valence-based contradictions");
+                }
+                (found as u64, 0u64, summary)
             }
+            Err(e) => {
+                tracing::error!(error = %e, "phase_9a: contradiction detection error");
+                (0, 1, String::new())
+            }
+        };
+        let content_contradictions = detect_content_contradictions(conn);
+        stats.contradictions += content_contradictions;
+        if content_contradictions > 0 {
+            tracing::info!(content_contradictions, "phase_9b: content-based contradictions detected");
         }
-        Err(e) => eprintln!("[consolidator] contradiction detection error: {e}"),
-    }
-
-    // 9b: Content-based (same type + high title overlap + low content overlap)
-    let content_contradictions = detect_content_contradictions(conn);
-    stats.contradictions += content_contradictions;
-    if content_contradictions > 0 {
-        eprintln!("[consolidator] detected {content_contradictions} content-based contradictions");
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_9_detect_contradictions",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output + content_contradictions as u64,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({ "valence_distribution": valence_summary, "content_contradictions": content_contradictions }),
+            },
+        );
     }
 
     // Phase 10: Decay activation levels (fast — single UPDATE)
-    match ops::decay_activation_levels(conn) {
-        Ok(n) => {
-            if n > 0 {
-                eprintln!("[consolidator] decayed {n} activation levels");
+    {
+        let _span = tracing::info_span!("phase_10_decay_activation").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match ops::decay_activation_levels(conn) {
+            Ok(n) => {
+                if n > 0 {
+                    tracing::info!(n, "phase_10: decayed activation levels");
+                }
+                (n as u64, 0u64)
             }
-        }
-        Err(e) => eprintln!("[consolidator] activation decay error: {e}"),
+            Err(e) => {
+                tracing::error!(error = %e, "phase_10: activation decay error");
+                (0, 1)
+            }
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_10_decay_activation",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 11: Entity detection (Knowledge Intelligence)
-    match crate::db::manas::detect_entities(conn) {
-        Ok(detected) => {
-            stats.entities_detected = detected;
-            if detected > 0 {
-                eprintln!("[consolidator] detected/updated {detected} entities from memory titles");
+    {
+        let _span = tracing::info_span!("phase_11_entity_detection").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match crate::db::manas::detect_entities(conn) {
+            Ok(detected) => {
+                stats.entities_detected = detected;
+                if detected > 0 {
+                    tracing::info!(detected, "phase_11: entity detection");
+                }
+                (detected as u64, 0u64)
             }
-        }
-        Err(e) => eprintln!("[consolidator] entity detection error: {e}"),
+            Err(e) => {
+                tracing::error!(error = %e, "phase_11: entity detection error");
+                (0, 1)
+            }
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_11_entity_detection",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 12: Contradiction synthesis — resolve detected contradictions
-    let synthesized = synthesize_contradictions(conn, config.batch_limit);
-    stats.synthesized = synthesized;
-    if synthesized > 0 {
-        eprintln!("[consolidator] synthesized {synthesized} contradiction resolutions");
+    {
+        let _span = tracing::info_span!("phase_12_synthesize_contradictions").entered();
+        let t0 = std::time::Instant::now();
+        let synthesized = synthesize_contradictions(conn, config.batch_limit);
+        stats.synthesized = synthesized;
+        if synthesized > 0 {
+            tracing::info!(synthesized, "phase_12: contradiction resolutions synthesized");
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_12_synthesize_contradictions",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: synthesized as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 13: Knowledge gap detection — surface concepts without entities
-    let gaps = detect_and_surface_gaps(conn);
-    stats.gaps_detected = gaps;
-    if gaps > 0 {
-        eprintln!("[consolidator] detected {gaps} knowledge gaps");
+    {
+        let _span = tracing::info_span!("phase_13_detect_gaps").entered();
+        let t0 = std::time::Instant::now();
+        let gaps = detect_and_surface_gaps(conn);
+        stats.gaps_detected = gaps;
+        if gaps > 0 {
+            tracing::info!(gaps, "phase_13: knowledge gaps detected");
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_13_detect_gaps",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: gaps as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 14: Memory reweave — enrich older memories with newer context sharing tags
-    let reweaved = reweave_memories(conn, config.batch_limit, config.reweave_limit);
-    stats.reweaved = reweaved;
-    if reweaved > 0 {
-        eprintln!("[consolidator] reweaved {reweaved} memory pairs");
+    {
+        let _span = tracing::info_span!("phase_14_reweave_memories").entered();
+        let t0 = std::time::Instant::now();
+        let reweaved = reweave_memories(conn, config.batch_limit, config.reweave_limit);
+        stats.reweaved = reweaved;
+        if reweaved > 0 {
+            tracing::info!(reweaved, "phase_14: memory pairs reweaved");
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_14_reweave_memories",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: reweaved as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 15: Quality scoring — compute quality scores for active memories
-    let scored = score_memory_quality(conn, config.batch_limit);
-    stats.scored = scored;
-    if scored > 0 {
-        eprintln!("[consolidator] scored {scored} memories");
+    {
+        let _span = tracing::info_span!("phase_15_quality_scoring").entered();
+        let t0 = std::time::Instant::now();
+        let scored = score_memory_quality(conn, config.batch_limit);
+        stats.scored = scored;
+        if scored > 0 {
+            tracing::info!(scored, "phase_15: memories scored");
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_15_quality_scoring",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: scored as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 16: Portability classification — classify unknown memories
-    match ops::classify_portability(conn, config.batch_limit) {
-        Ok(classified) => {
-            if classified > 0 {
-                eprintln!("[consolidator] classified portability for {classified} memories");
+    {
+        let _span = tracing::info_span!("phase_16_portability_classification").entered();
+        let t0 = std::time::Instant::now();
+        let (output, err) = match ops::classify_portability(conn, config.batch_limit) {
+            Ok(classified) => {
+                if classified > 0 {
+                    tracing::info!(classified, "phase_16: portability classified");
+                }
+                (classified as u64, 0u64)
             }
-        }
-        Err(e) => eprintln!("[consolidator] portability classification failed: {e}"),
+            Err(e) => {
+                tracing::error!(error = %e, "phase_16: portability classification failed");
+                (0, 1)
+            }
+        };
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_16_portability_classification",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: output,
+                error_count: err,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 17: Protocol extraction — promote recurring process patterns to protocols
-    let protocols = extract_protocols(conn, config.batch_limit);
-    stats.protocols_extracted = protocols;
-    if protocols > 0 {
-        eprintln!("[consolidator] extracted {protocols} protocols from behavior patterns");
+    let protocols;
+    {
+        let _span = tracing::info_span!("phase_17_extract_protocols").entered();
+        let t0 = std::time::Instant::now();
+        protocols = extract_protocols(conn, config.batch_limit);
+        stats.protocols_extracted = protocols;
+        if protocols > 0 {
+            tracing::info!(protocols, "phase_17: protocols extracted");
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_17_extract_protocols",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: protocols as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 23: Behavioral skill inference — elevate recurring clean tool-use
-    // patterns from session_tool_call to the skill table.
-    let skills_inferred = infer_skills_from_behavior(
-        conn,
-        config.skill_inference_min_sessions,
-        config.skill_inference_window_days,
-    );
-    stats.skills_inferred = skills_inferred;
-    if skills_inferred > 0 {
-        tracing::info!(
-            skills_inferred,
-            "phase_23: inferred skills from tool-use patterns"
+    // patterns from session_tool_call to the skill table. Physically runs
+    // between Phase 17 and Phase 18 per 2A-4c2 design.
+    {
+        let _span = tracing::info_span!("phase_23_infer_skills_from_behavior").entered();
+        let t0 = std::time::Instant::now();
+        let skills_inferred = infer_skills_from_behavior(
+            conn,
+            config.skill_inference_min_sessions,
+            config.skill_inference_window_days,
+        );
+        stats.skills_inferred = skills_inferred;
+        if skills_inferred > 0 {
+            tracing::info!(
+                skills_inferred,
+                "phase_23: inferred skills from tool-use patterns"
+            );
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_23_infer_skills_from_behavior",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: skills_inferred as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
         );
     }
 
     // Phase 18: Anti-pattern tagging — tag lessons with negative signals
-    let antipatterns = tag_antipatterns(conn, config.batch_limit);
-    stats.antipatterns_tagged = antipatterns;
-    if antipatterns > 0 {
-        eprintln!("[consolidator] tagged {antipatterns} anti-patterns from lessons");
+    {
+        let _span = tracing::info_span!("phase_18_tag_antipatterns").entered();
+        let t0 = std::time::Instant::now();
+        let antipatterns = tag_antipatterns(conn, config.batch_limit);
+        stats.antipatterns_tagged = antipatterns;
+        if antipatterns > 0 {
+            tracing::info!(antipatterns, "phase_18: anti-patterns tagged from lessons");
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_18_tag_antipatterns",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: antipatterns as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 19: Generate notifications from consolidation findings
+    let _span_19 = tracing::info_span!("phase_19_emit_notifications").entered();
+    let t0_19 = std::time::Instant::now();
     let mut notifs_generated = 0;
 
     // 19a: Protocol suggestion notifications
@@ -480,48 +866,129 @@ pub fn run_all_phases(
     }
 
     if notifs_generated > 0 {
-        eprintln!("[consolidator] generated {notifs_generated} notifications");
+        tracing::info!(notifs_generated, "phase_19: notifications generated");
     }
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_19_emit_notifications",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: notifs_generated as u64,
+            error_count: 0,
+            duration_ms: t0_19.elapsed().as_millis() as u64,
+            extra: serde_json::json!({}),
+        },
+    );
+    drop(_span_19);
 
     // ── Memory Self-Healing (Phases 20-22) ──
 
-    // Phase 20: Topic-aware auto-supersede
     let healing_config = crate::config::load_config().healing;
-    let healing_stats = heal_topic_supersedes(conn, &healing_config);
-    stats.healed_superseded = healing_stats.topic_superseded;
-    if healing_stats.topic_superseded > 0 {
-        eprintln!("[consolidator] healing: auto-superseded {} topic-evolved memories ({} candidates, {} skipped)",
-            healing_stats.topic_superseded, healing_stats.candidates_found, healing_stats.false_positives_skipped);
+
+    // Phase 20: Topic-aware auto-supersede
+    {
+        let _span = tracing::info_span!("phase_20_auto_supersede").entered();
+        let t0 = std::time::Instant::now();
+        let healing_stats = heal_topic_supersedes(conn, &healing_config);
+        stats.healed_superseded = healing_stats.topic_superseded;
+        if healing_stats.topic_superseded > 0 {
+            tracing::info!(
+                superseded = healing_stats.topic_superseded,
+                candidates = healing_stats.candidates_found,
+                skipped = healing_stats.false_positives_skipped,
+                "phase_20: topic-evolved memories auto-superseded"
+            );
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_20_auto_supersede",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: healing_stats.topic_superseded as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({
+                    "candidates_found": healing_stats.candidates_found,
+                    "false_positives_skipped": healing_stats.false_positives_skipped,
+                }),
+            },
+        );
     }
+    let healing_stats_topic_superseded = stats.healed_superseded;
 
     // Phase 21: Session staleness fade
-    let healed_faded = heal_session_staleness(conn, &healing_config);
-    stats.healed_faded = healed_faded;
-    if healed_faded > 0 {
-        eprintln!("[consolidator] healing: auto-faded {healed_faded} stale memories");
+    let healed_faded;
+    {
+        let _span = tracing::info_span!("phase_21_session_staleness_fade").entered();
+        let t0 = std::time::Instant::now();
+        healed_faded = heal_session_staleness(conn, &healing_config);
+        stats.healed_faded = healed_faded;
+        if healed_faded > 0 {
+            tracing::info!(healed_faded, "phase_21: stale memories auto-faded");
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_21_session_staleness_fade",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: healed_faded as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
     // Phase 22: Quality pressure (natural selection)
-    let quality_adjusted = apply_quality_pressure(conn, &healing_config);
-    stats.healed_quality_adjusted = quality_adjusted;
-    if quality_adjusted > 0 {
-        eprintln!("[consolidator] healing: adjusted quality for {quality_adjusted} memories");
+    {
+        let _span = tracing::info_span!("phase_22_apply_quality_pressure").entered();
+        let t0 = std::time::Instant::now();
+        let quality_adjusted = apply_quality_pressure(conn, &healing_config);
+        stats.healed_quality_adjusted = quality_adjusted;
+        if quality_adjusted > 0 {
+            tracing::info!(quality_adjusted, "phase_22: quality pressure applied");
+        }
+        record(
+            conn,
+            metrics,
+            &PhaseOutcome {
+                phase: "phase_22_apply_quality_pressure",
+                run_id: &run_id,
+                correlation_id: &run_id,
+                trace_id: None,
+                output_count: quality_adjusted as u64,
+                error_count: 0,
+                duration_ms: t0.elapsed().as_millis() as u64,
+                extra: serde_json::json!({}),
+            },
+        );
     }
 
-    // Healing notification (throttled: max once per hour)
-    if (healing_stats.topic_superseded > 0 || healed_faded > 0)
+    // Healing notification (throttled: max once per hour). Uses healing stats
+    // captured in Phase 20+21 scopes (healed_superseded via saved local,
+    // healed_faded via the surrounding `let`).
+    let healing_superseded = healing_stats_topic_superseded;
+    if (healing_superseded > 0 || healed_faded > 0)
         && !crate::notifications::check_throttle(conn, "healing", "local", 3600).unwrap_or(true)
     {
         if let Err(e) = crate::notifications::NotificationBuilder::new(
             "insight", "medium",
-            &format!("Memory healing: {} superseded, {} faded", healing_stats.topic_superseded, healed_faded),
-            &format!("Auto-superseded {} same-topic decisions, faded {} stale memories. Review: forge-next healing-log",
-                healing_stats.topic_superseded, healed_faded),
+            &format!("Memory healing: {healing_superseded} superseded, {healed_faded} faded"),
+            &format!("Auto-superseded {healing_superseded} same-topic decisions, faded {healed_faded} stale memories. Review: forge-next healing-log"),
             "consolidator",
         )
         .topic("healing")
         .build(conn) {
-            eprintln!("[consolidator] healing notification failed: {e}");
+            tracing::error!(error = %e, "healing notification failed");
         }
     }
 
@@ -1902,7 +2369,7 @@ pub async fn run_consolidator(
                 let stats = {
                     let consol_config = crate::config::load_config().consolidation.validated();
                     let locked = state.lock().await;
-                    run_all_phases(&locked.conn, &consol_config)
+                    run_all_phases(&locked.conn, &consol_config, None)
                 };
 
                 // Emit consolidation event with stats
@@ -1951,7 +2418,7 @@ mod tests {
 
         // On an empty DB, all stats should be 0
         let config = crate::config::ConsolidationConfig::default();
-        let stats = run_all_phases(&conn, &config);
+        let stats = run_all_phases(&conn, &config, None);
         assert_eq!(stats.exact_dedup, 0);
         assert_eq!(stats.semantic_dedup, 0);
         assert_eq!(stats.linked, 0);
@@ -2532,7 +2999,7 @@ mod tests {
         ).unwrap();
 
         let config = crate::config::ConsolidationConfig::default();
-        let stats = run_all_phases(&conn, &config);
+        let stats = run_all_phases(&conn, &config, None);
 
         // Healing phases should have run
         assert!(
@@ -2708,7 +3175,7 @@ mod tests {
 
         // Run full consolidation (which includes meeting timeout in phase 19d)
         let config = crate::config::ConsolidationConfig::default();
-        let _stats = run_all_phases(&conn, &config);
+        let _stats = run_all_phases(&conn, &config, None);
 
         // Verify meeting is timed_out
         let status: String = conn
@@ -2843,7 +3310,7 @@ mod tests {
 
         // Run all phases — should auto-dismiss the notification since quality is good
         let config = crate::config::ConsolidationConfig::default();
-        run_all_phases(&conn, &config);
+        run_all_phases(&conn, &config, None);
 
         // Verify the notification is dismissed
         let dismissed_count: i64 = conn.query_row(
@@ -3177,7 +3644,7 @@ mod tests {
 
         // Run full consolidation — Phase 9b should pick these up
         let config = crate::config::ConsolidationConfig::default();
-        let stats = run_all_phases(&conn, &config);
+        let stats = run_all_phases(&conn, &config, None);
 
         assert!(
             stats.contradictions >= 1,

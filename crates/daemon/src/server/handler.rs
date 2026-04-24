@@ -3537,7 +3537,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
         Request::ForceConsolidate => {
             let consol_config = crate::config::load_config().consolidation.validated();
-            let stats = crate::workers::consolidator::run_all_phases(&state.conn, &consol_config);
+            let stats =
+                crate::workers::consolidator::run_all_phases(&state.conn, &consol_config, None);
             tracing::info!(
                 exact_dedup = stats.exact_dedup,
                 semantic_dedup = stats.semantic_dedup,
