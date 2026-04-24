@@ -3,6 +3,7 @@ pub mod grpc;
 pub mod handler;
 pub mod health;
 pub mod http;
+pub mod inspect;
 pub mod metrics;
 pub mod pty;
 pub mod rate_limit;

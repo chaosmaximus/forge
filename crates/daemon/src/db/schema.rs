@@ -264,6 +264,11 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_kpi_events_timestamp ON kpi_events(timestamp);
         CREATE INDEX IF NOT EXISTS idx_kpi_events_type ON kpi_events(event_type);
+        -- Phase 2A-4d.2 T3: expression index on metadata_json.$.phase_name so
+        -- /inspect's GROUP BY phase queries don't require a full JSON scan.
+        -- SQLite >= 3.9.0 supports expression indexes; JSON1 is compiled in.
+        CREATE INDEX IF NOT EXISTS idx_kpi_events_phase
+            ON kpi_events(json_extract(metadata_json, '$.phase_name'));
 
         CREATE TABLE IF NOT EXISTS kpi_snapshots (
             id TEXT PRIMARY KEY,

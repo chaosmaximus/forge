@@ -18,6 +18,87 @@ use prometheus::{
 
 use super::http::AppState;
 
+/// Atomic snapshot of gauge values for `/inspect shape=row_count` consumers.
+///
+/// Distinct from the live Prometheus gauges (which `/metrics` scrapes and
+/// which are still written non-atomically). `refresh_gauges` builds a new
+/// `GaugeSnapshot` from the single 13-subquery SELECT and swaps it under a
+/// write lock so `/inspect` readers see a single point-in-time view.
+///
+/// T3 defines the types; T4 wires `Arc<RwLock<GaugeSnapshot>>` onto
+/// `ForgeMetrics` and populates the snapshot inside `refresh_gauges`. Until
+/// T4 lands, `/inspect row_count` returns empty rows + `stale: true` (the
+/// inspect handler accepts `Option<&GaugeSnapshot>` and handles `None`).
+#[derive(Clone, Debug, Default)]
+pub struct GaugeSnapshot {
+    /// Unix seconds when the snapshot was last built. `0` = never refreshed.
+    pub refreshed_at_secs: u64,
+    pub tables: TableGauges,
+    pub memories_total: i64,
+    pub edges_total: i64,
+    pub embeddings_total: i64,
+    pub active_sessions: i64,
+}
+
+/// Per-Manas-table gauges. Named struct (not a `BTreeMap<String, i64>`) because
+/// the 11 tables are compile-time-known; adding a table is a compile-time change.
+#[derive(Clone, Debug, Default)]
+pub struct TableGauges {
+    pub memory: RowAndFreshness,
+    pub skill: RowAndFreshness,
+    pub edge: RowAndFreshness,
+    pub identity: RowAndFreshness,
+    pub disposition: RowAndFreshness,
+    pub platform: RowAndFreshness,
+    pub tool: RowAndFreshness,
+    pub perception: RowAndFreshness,
+    pub declared: RowAndFreshness,
+    pub domain_dna: RowAndFreshness,
+    pub entity: RowAndFreshness,
+}
+
+impl TableGauges {
+    /// Flatten the named struct into the `LayerRow` wire format used by
+    /// `/inspect row_count`. `snapshot_age_secs` is passed in by the caller
+    /// (computed once from `GaugeSnapshot.refreshed_at_secs`).
+    pub fn to_layer_rows(
+        &self,
+        snapshot_age_secs: u64,
+    ) -> Vec<forge_core::protocol::LayerRow> {
+        use forge_core::protocol::LayerRow;
+        vec![
+            ("memory", &self.memory),
+            ("skill", &self.skill),
+            ("edge", &self.edge),
+            ("identity", &self.identity),
+            ("disposition", &self.disposition),
+            ("platform", &self.platform),
+            ("tool", &self.tool),
+            ("perception", &self.perception),
+            ("declared", &self.declared),
+            ("domain_dna", &self.domain_dna),
+            ("entity", &self.entity),
+        ]
+        .into_iter()
+        .map(|(name, rf)| LayerRow {
+            layer: name.to_string(),
+            count: rf.count,
+            snapshot_age_secs,
+            freshness_secs: rf.freshness_secs,
+        })
+        .collect()
+    }
+}
+
+/// One table's row count + time-since-last-write. `freshness_secs = None`
+/// when the table is empty (Prometheus uses `-1` sentinel at T4; internal
+/// types keep `Option<i64>` for honesty).
+#[derive(Clone, Debug, Default)]
+pub struct RowAndFreshness {
+    pub count: i64,
+    pub freshness_secs: Option<i64>,
+}
+
 /// Holds all Prometheus metric collectors and the registry that owns them.
 #[derive(Clone)]
 pub struct ForgeMetrics {

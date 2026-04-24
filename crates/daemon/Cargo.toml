@@ -57,6 +57,9 @@ tokio-stream = "0.1"
 # Prometheus metrics
 prometheus = "0.13"
 
+# Human-friendly duration parsing for /inspect window argument (Phase 2A-4d.2).
+humantime = "2"
+
 # PTY management
 portable-pty = "0.8"
 
