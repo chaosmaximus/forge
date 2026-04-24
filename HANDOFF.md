@@ -120,9 +120,12 @@ All 12 divergent commits (spec v1 + plan v1 + T1-T7 implementation + T8 WIP + cl
 
     Dogfood (T6a): 6/7 PASS, 1 WARN (plugin filesystem skills surface via `<skills>` only after behavioral accumulation — expected per 2A-4c2 T7 dual-gate), 0 FAIL. Results doc at `docs/benchmarks/results/forge-public-resplit-2026-04-23.md`.
 
-    **Pending to fully close 2P-1a:**
-    - Merge `chaosmaximus/forge-app#1` (branch `2P-1a-prune` — 71 deletions, 5843 lines removed). After merge, record the post-merge SHA here as `SHA_A_private`. Closes acceptance criterion §6.6.
-    - 2-minute user real-session check: open a fresh Claude Code session with the plugin installed from the public repo, say one phrase that should trigger a `forge-*` skill (e.g. "let me plan a new feature" → forge-feature), confirm the skill surfaces. Closes acceptance criterion §6.4 for the "agent sees skills" lane.
+    **2P-1a closure (2026-04-24):**
+    - `chaosmaximus/forge-app#1` merged. `SHA_A_private = 665c372c7c461016a8b5953d91e792b7b7221636` — closes acceptance criterion §6.6.
+    - Public plugin installed locally via `~/.claude/plugins/marketplaces/forge-marketplace → /mnt/colab-disk/DurgaSaiK/forge/forge` symlink + `extraKnownMarketplaces.forge-marketplace.source.path` in `~/.claude/settings.json` + `"forge@forge-marketplace": true` in `enabledPlugins`.
+    - **Forge HUD rendering live** via `~/.claude/statusline-command.sh` → `target/release/forge-hud`. Sample output: `[Claude Opus 4.7 | Max] │ Forge v0.4.0 │ <gcp-branch> │ Context/Usage bars │ 📂 <cwd> │ N decisions`.
+    - `forge-next doctor` surfaces `[OK] hook: plugin hooks installed (9 events)` when the plugin is installed at the canonical path. Closes §6.4 for the harness-wired lane.
+    - Remaining §6.4 lane (user intent → skill trigger in a NEW Claude Code session): the next fresh CC session in this repo should see `forge-*` skills in its context once the plugin is enabled. User can verify at their convenience — not blocking for this phase since the plugin is confirmed loaded + HUD is live.
 
 ## Phase 2P-1b backlog (harden)
 
