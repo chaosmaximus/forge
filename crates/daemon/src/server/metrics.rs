@@ -95,7 +95,12 @@ impl ForgeMetrics {
                 "forge_phase_duration_seconds",
                 "Consolidator phase duration in seconds, labelled by phase",
             )
-            .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0]),
+            // Buckets span sub-ms (phase 1 dedup, phase 10 decay) through
+            // multi-minute (phase 2 semantic_dedup, phase 7 embedding_merge,
+            // phase 14 reweave on warm DBs routinely exceed 30s).
+            .buckets(vec![
+                0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0, 60.0, 120.0, 300.0,
+            ]),
             &["phase"],
         )
         .expect("phase_duration metric");
@@ -164,7 +169,11 @@ impl ForgeMetrics {
 }
 
 /// Refresh gauge values from the database before a Prometheus scrape.
-/// Opens a read-only connection, queries current counts, and updates gauges.
+/// Opens a read-only connection, wraps all COUNT(*) queries in a single
+/// SQLite read transaction so every gauge in one scrape reflects the same
+/// DB snapshot — otherwise Phase 1 dedup or Phase 7 embedding_merge can
+/// commit between statements and produce torn snapshots (e.g. memory count
+/// updated, edge count still stale) that trip operator alerts.
 fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
     // Open a per-scrape read-only connection (same pattern as health probes)
     let reader = match crate::server::handler::DaemonState::new_reader(
@@ -181,37 +190,84 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         }
     };
 
-    // Memory count
-    if let Ok(count) = reader
+    // Single consistent snapshot — BEGIN DEFERRED acquires the read lock on
+    // first query and holds WAL snapshot visibility until COMMIT / ROLLBACK.
+    if let Err(e) = reader.conn.execute_batch("BEGIN DEFERRED;") {
+        tracing::warn!(error = %e, "metrics: failed to BEGIN read transaction; falling back to autocommit (torn snapshot possible)");
+        // Continue without the snapshot guarantee rather than refuse to scrape.
+    }
+
+    let count_memory = reader
         .conn
         .query_row("SELECT COUNT(*) FROM memory", [], |r| r.get::<_, i64>(0))
-    {
-        metrics.memories_total.set(count);
-    }
-    // Edge count
-    if let Ok(count) = reader
+        .ok();
+    let count_edge = reader
         .conn
         .query_row("SELECT COUNT(*) FROM edge", [], |r| r.get::<_, i64>(0))
-    {
-        metrics.edges_total.set(count);
-    }
-    // Embedding count
-    if let Ok(count) = reader
+        .ok();
+    let count_mem_vec = reader
         .conn
-        .query_row("SELECT COUNT(*) FROM memory_vec", [], |r| {
-            r.get::<_, i64>(0)
+        .query_row("SELECT COUNT(*) FROM memory_vec", [], |r| r.get::<_, i64>(0))
+        .ok();
+    let count_active_sessions = reader
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM session WHERE ended_at IS NULL",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .ok();
+
+    // Per-table row gauges. Labels match actual SQLite table names (verified
+    // 2026-04-24 in schema.rs); adding a label that doesn't correspond to a
+    // real table would produce a perpetually-zero series that misleads
+    // operators.
+    let tables = [
+        "memory",
+        "skill",
+        "edge",
+        "identity",
+        "disposition",
+        "platform",
+        "tool",
+        "perception",
+        "declared",
+        "domain_dna",
+        "entity",
+    ];
+    let table_counts: Vec<(&&str, Option<i64>)> = tables
+        .iter()
+        .map(|t| {
+            let sql = format!("SELECT COUNT(*) FROM {t}");
+            let c = reader
+                .conn
+                .query_row(&sql, [], |r| r.get::<_, i64>(0))
+                .ok();
+            (t, c)
         })
-    {
-        metrics.embeddings_total.set(count);
+        .collect();
+
+    // Close the snapshot before touching Prometheus (no point holding the
+    // lock while we format label strings).
+    if let Err(e) = reader.conn.execute_batch("COMMIT;") {
+        // BEGIN may have failed earlier; COMMIT without a txn is an error.
+        // Downgrade to debug — the reads themselves succeeded.
+        tracing::debug!(error = %e, "metrics: COMMIT after BEGIN DEFERRED failed (expected if BEGIN failed)");
     }
-    // Active sessions (non-ended)
-    if let Ok(count) = reader.conn.query_row(
-        "SELECT COUNT(*) FROM session WHERE ended_at IS NULL",
-        [],
-        |r| r.get::<_, i64>(0),
-    ) {
-        metrics.active_sessions.set(count);
+
+    if let Some(c) = count_memory {
+        metrics.memories_total.set(c);
     }
+    if let Some(c) = count_edge {
+        metrics.edges_total.set(c);
+    }
+    if let Some(c) = count_mem_vec {
+        metrics.embeddings_total.set(c);
+    }
+    if let Some(c) = count_active_sessions {
+        metrics.active_sessions.set(c);
+    }
+
     // Worker health — set all known workers to 1 (we're alive if we can query)
     for worker in &[
         "watcher",
@@ -226,26 +282,9 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         metrics.worker_healthy.with_label_values(&[worker]).set(1);
     }
 
-    // Phase 2A-4d.1 Instrumentation — per-table row gauges. Labels match
-    // actual SQLite table names (verified 2026-04-24 in schema.rs); adding
-    // a label that doesn't correspond to a real table would produce a
-    // perpetually-zero series that misleads operators.
-    for table in &[
-        "memory",
-        "skill",
-        "edge",
-        "identity",
-        "disposition",
-        "platform",
-        "tool",
-        "perception",
-        "declared",
-        "domain_dna",
-        "entity",
-    ] {
-        let sql = format!("SELECT COUNT(*) FROM {table}");
-        if let Ok(count) = reader.conn.query_row(&sql, [], |r| r.get::<_, i64>(0)) {
-            metrics.table_rows.with_label_values(&[table]).set(count);
+    for (table, count) in &table_counts {
+        if let Some(c) = *count {
+            metrics.table_rows.with_label_values(&[**table]).set(c);
         }
     }
 }

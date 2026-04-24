@@ -703,16 +703,18 @@ pub fn run_all_phases(
     }
 
     // Phase 19: Generate notifications from consolidation findings
-    let _span_19 = tracing::info_span!("phase_19_emit_notifications").entered();
-    let t0_19 = std::time::Instant::now();
-    let mut notifs_generated = 0;
+    let (notifs_generated, notifs_failed, phase_19_duration_ms) = {
+        let _span = tracing::info_span!("phase_19_emit_notifications").entered();
+        let t0_19 = std::time::Instant::now();
+        let mut notifs_generated = 0u64;
+        let mut notifs_failed = 0u64;
 
     // 19a: Protocol suggestion notifications
     if protocols > 0
         && !crate::notifications::check_throttle(conn, "protocol_suggestion", "local", 3600)
             .unwrap_or(true)
     {
-        if let Err(e) = crate::notifications::NotificationBuilder::new(
+        match crate::notifications::NotificationBuilder::new(
             "confirmation",
             "medium",
             &format!("Forge extracted {protocols} new protocol(s) from behavior patterns"),
@@ -723,9 +725,12 @@ pub fn run_all_phases(
         .action("review_protocols", "{}")
         .build(conn)
         {
-            tracing::warn!(target: "forge::consolidator", error = %e, topic = "protocol_suggestion", "notification build failed");
+            Ok(_) => notifs_generated += 1,
+            Err(e) => {
+                tracing::warn!(target: "forge::consolidator", error = %e, topic = "protocol_suggestion", "notification build failed");
+                notifs_failed += 1;
+            }
         }
-        notifs_generated += 1;
     }
 
     // 19b: Contradiction notifications
@@ -733,7 +738,7 @@ pub fn run_all_phases(
         && !crate::notifications::check_throttle(conn, "contradiction", "local", 1800)
             .unwrap_or(true)
     {
-        let _ = crate::notifications::NotificationBuilder::new(
+        match crate::notifications::NotificationBuilder::new(
             "insight",
             "high",
             &format!(
@@ -744,8 +749,14 @@ pub fn run_all_phases(
             "consolidator",
         )
         .topic("contradiction")
-        .build(conn);
-        notifs_generated += 1;
+        .build(conn)
+        {
+            Ok(_) => notifs_generated += 1,
+            Err(e) => {
+                tracing::warn!(target: "forge::consolidator", error = %e, topic = "contradiction", "notification build failed");
+                notifs_failed += 1;
+            }
+        }
     }
 
     // 19c: Quality decline check
@@ -763,15 +774,20 @@ pub fn run_all_phases(
             && !crate::notifications::check_throttle(conn, "quality_decline", "local", 86400)
                 .unwrap_or(true)
         {
-            if let Err(e) = crate::notifications::NotificationBuilder::new(
+            match crate::notifications::NotificationBuilder::new(
                 "insight", "medium",
                 "Memory quality declining",
                 &format!("Average quality score for recent memories is {avg_quality:.2}. Consider reviewing and cleaning up low-quality entries."),
                 "consolidator",
             )
             .topic("quality_decline")
-            .build(conn) { tracing::warn!(target: "forge::consolidator", error = %e, topic = "quality_decline", "notification build failed"); }
-            notifs_generated += 1;
+            .build(conn) {
+                Ok(_) => notifs_generated += 1,
+                Err(e) => {
+                    tracing::warn!(target: "forge::consolidator", error = %e, topic = "quality_decline", "notification build failed");
+                    notifs_failed += 1;
+                }
+            }
         } else if avg_quality >= 0.3 {
             // Auto-dismiss existing quality decline notifications — condition resolved
             let _ = conn.execute(
@@ -854,7 +870,7 @@ pub fn run_all_phases(
                 tracing::warn!(target: "forge::consolidator", error = %e, "meeting timeout update failed");
             }
 
-            if let Err(e) = crate::notifications::NotificationBuilder::new(
+            match crate::notifications::NotificationBuilder::new(
                 "alert", "high",
                 &format!("Meeting '{topic}' timed out — auto-synthesized"),
                 &format!("Meeting {} timed out with {} response(s). Auto-synthesis stored as decision. Review: forge-next meeting transcript {}",
@@ -863,14 +879,22 @@ pub fn run_all_phases(
             )
             .topic("meeting_timeout")
             .source_id(meeting_id)
-            .build(conn) { tracing::warn!(target: "forge::consolidator", error = %e, topic = "meeting_timeout", "notification build failed"); }
-            notifs_generated += 1;
+            .build(conn) {
+                Ok(_) => notifs_generated += 1,
+                Err(e) => {
+                    tracing::warn!(target: "forge::consolidator", error = %e, topic = "meeting_timeout", "notification build failed");
+                    notifs_failed += 1;
+                }
+            }
         }
     }
 
     if notifs_generated > 0 {
         tracing::info!(notifs_generated, "phase_19: notifications generated");
     }
+        (notifs_generated, notifs_failed, t0_19.elapsed().as_millis() as u64)
+    };
+
     record(
         conn,
         metrics,
@@ -879,13 +903,12 @@ pub fn run_all_phases(
             run_id: &run_id,
             correlation_id: &run_id,
             trace_id: None,
-            output_count: notifs_generated as u64,
-            error_count: 0,
-            duration_ms: t0_19.elapsed().as_millis() as u64,
+            output_count: notifs_generated,
+            error_count: notifs_failed,
+            duration_ms: phase_19_duration_ms,
             extra: serde_json::json!({}),
         },
     );
-    drop(_span_19);
 
     // ── Memory Self-Healing (Phases 20-22) ──
 

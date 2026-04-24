@@ -51,10 +51,11 @@ phase per consolidate_pass.
   "trace_id": "abc123..." | null,
 
   // Phase accounting
-  "input_count": 0,                                     // reserved; currently 0
   "output_count": 1,                                    // phase-specific, see PhaseOutputProjection §3.1a
-  "error_count": 0,                                     // 1 if phase returned Err; 0 otherwise
-                                                        // 11 phases that .unwrap_or(0) internally never flip this
+  "error_count": 0,                                     // sum of recoverable failures observed inside the phase
+                                                        // (e.g. per-row insert/rollback); 0 means success.
+                                                        // NOTE: 11 helpers currently `.unwrap_or(0)` on inner
+                                                        // errors — see 2A-4d.1.1 follow-up to make these honest.
 
   // Phase-specific payload
   "extra": { /* keys vary by phase; stable per phase */ }

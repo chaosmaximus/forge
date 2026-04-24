@@ -62,13 +62,38 @@ pub struct PhaseOutcome<'a> {
 }
 
 /// Record a phase outcome to Prometheus metrics (if available) and the
-/// `kpi_events` table. Non-fatal on kpi_events insert failure — logs a warning.
+/// `kpi_events` table. Non-fatal on kpi_events insert failure — logs a warning
+/// and increments the `errored` bucket of `forge_phase_output_rows_total` so
+/// Prometheus and kpi_events never diverge silently.
 pub fn record(conn: &Connection, metrics: Option<&ForgeMetrics>, outcome: &PhaseOutcome) {
     if let Some(m) = metrics {
         update_phase_metrics(m, outcome);
     }
-    if let Err(e) = insert_kpi_event_row(conn, outcome) {
-        tracing::warn!(error = %e, phase = outcome.phase, "kpi_events insert failed");
+    match insert_kpi_event_row(conn, outcome) {
+        Ok(rows_written) => {
+            if rows_written == 0 {
+                // ULID PK collision (2^-80 per monotonic-ms window). Record
+                // it as an errored bucket increment so operators see
+                // persistence drift rather than silent loss.
+                tracing::warn!(
+                    phase = outcome.phase,
+                    "kpi_events insert hit ULID PK collision — row dropped"
+                );
+                if let Some(m) = metrics {
+                    m.phase_output_rows
+                        .with_label_values(&[outcome.phase, "errored"])
+                        .inc();
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, phase = outcome.phase, "kpi_events insert failed");
+            if let Some(m) = metrics {
+                m.phase_output_rows
+                    .with_label_values(&[outcome.phase, "errored"])
+                    .inc();
+            }
+        }
     }
 }
 
@@ -88,21 +113,26 @@ fn update_phase_metrics(metrics: &ForgeMetrics, outcome: &PhaseOutcome) {
         .inc_by(outcome.output_count);
 }
 
-fn insert_kpi_event_row(conn: &Connection, outcome: &PhaseOutcome) -> rusqlite::Result<()> {
+fn insert_kpi_event_row(conn: &Connection, outcome: &PhaseOutcome) -> rusqlite::Result<usize> {
     let metadata = json!({
         "metadata_schema_version": 1,
         "phase_name": outcome.phase,
         "run_id": outcome.run_id,
         "correlation_id": outcome.correlation_id,
         "trace_id": outcome.trace_id,
-        "input_count": 0,
         "output_count": outcome.output_count,
         "error_count": outcome.error_count,
         "extra": outcome.extra,
     });
     let id = format!("phase-{}", ulid::Ulid::new());
+    // INSERT OR IGNORE: on the astronomically rare ULID PK collision we'd
+    // rather drop the row than error — collisions at the 80-bit random
+    // component per-ms are ~2^-80 per monotonic tick. Return rows_affected
+    // so `record()` can tell "inserted" apart from "ignored" and emit a
+    // metric for the latter. Avoids silent divergence between Prometheus
+    // and kpi_events.
     conn.execute(
-        "INSERT INTO kpi_events (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json)
+        "INSERT OR IGNORE INTO kpi_events (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json)
          VALUES (?1, strftime('%s','now'), 'phase_completed', NULL, ?2, ?3, ?4, ?5)",
         params![
             id,
@@ -111,8 +141,7 @@ fn insert_kpi_event_row(conn: &Connection, outcome: &PhaseOutcome) -> rusqlite::
             if outcome.error_count == 0 { 1_i64 } else { 0_i64 },
             metadata.to_string(),
         ],
-    )?;
-    Ok(())
+    )
 }
 
 #[cfg(test)]
@@ -129,15 +158,74 @@ mod tests {
         // Source-scan integrity check: each PHASE_SPAN_NAMES entry must appear
         // exactly once as `tracing::info_span!("phase_*")` in consolidator.rs.
         // Rename a phase + forget the literal and this test catches it before CI.
+        //
+        // Earlier version counted the total number of `info_span!("phase_`
+        // occurrences, which silently accepted duplicates. This per-name loop
+        // rejects both missing names *and* names with >1 literal occurrence.
         let src = include_str!("consolidator.rs");
-        let count = src.matches(r#"info_span!("phase_"#).count();
+        let total = src.matches(r#"info_span!("phase_"#).count();
         assert_eq!(
-            count,
+            total,
             PHASE_SPAN_NAMES.len(),
-            "expected {} info_span!(\"phase_ calls in consolidator.rs, saw {}",
+            "expected {} total info_span!(\"phase_ calls in consolidator.rs, saw {}",
             PHASE_SPAN_NAMES.len(),
-            count
+            total
         );
+        for name in PHASE_SPAN_NAMES {
+            let needle = format!(r#"info_span!("{name}""#);
+            let count = src.matches(needle.as_str()).count();
+            assert_eq!(
+                count, 1,
+                "phase span `{name}` should appear exactly once in consolidator.rs (found {count})"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_json_contains_all_v1_contract_fields() {
+        // Regression test for HIGH-3: if the metadata_json v1 contract ever
+        // drops or renames a field, the /inspect (Tier 2) API breaks. Lock
+        // in every documented key.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        let outcome = PhaseOutcome {
+            phase: "phase_1_dedup_memories",
+            run_id: "01HFIELD",
+            correlation_id: "01HFIELD",
+            trace_id: Some("abc123"),
+            output_count: 42,
+            error_count: 1,
+            duration_ms: 7,
+            extra: json!({"some_key": "some_value"}),
+        };
+        record(&conn, None, &outcome);
+        let json_text: String = conn
+            .query_row(
+                "SELECT metadata_json FROM kpi_events WHERE event_type = 'phase_completed' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        for key in [
+            "metadata_schema_version",
+            "phase_name",
+            "run_id",
+            "correlation_id",
+            "trace_id",
+            "output_count",
+            "error_count",
+            "extra",
+        ] {
+            let needle = format!("\"{key}\"");
+            assert!(
+                json_text.contains(&needle),
+                "v1 metadata_json must include field `{key}`; got {json_text}"
+            );
+        }
+        // Schema version pinned to 1 so downstream consumers can reject
+        // unknown versions deterministically.
+        assert!(json_text.contains("\"metadata_schema_version\":1"));
     }
 
     #[test]
