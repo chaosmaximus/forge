@@ -72,7 +72,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # OpenTelemetry (OTLP trace export — opt-in)
-opentelemetry = { version = "0.27", features = ["trace"] }
+opentelemetry = { version = "0.31", features = ["trace"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
 tracing-opentelemetry = "0.28"
