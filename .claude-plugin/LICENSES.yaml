@@ -1,0 +1,22 @@
+# SPDX sidecar for the .claude-plugin/ directory.
+#
+# JSON files in this directory (plugin.json, marketplace.json) can't carry
+# inline SPDX-License-Identifier comments without breaking schema-validated
+# parsers, so this YAML sidecar is the canonical license declaration for
+# those files. 2P-1b §3.
+#
+# License of record for the entire public Forge repo: Apache-2.0 (see
+# ../LICENSE, ../NOTICE). This sidecar just makes the declaration
+# machine-readable for tools that scrape marketplace metadata.
+
+package: forge
+license: Apache-2.0
+files:
+  - path: plugin.json
+    license: Apache-2.0
+  - path: marketplace.json
+    license: Apache-2.0
+
+references:
+  - ../LICENSE
+  - ../NOTICE
