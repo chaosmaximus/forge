@@ -536,3 +536,70 @@ One commit per finding, `fix(2A-4d.1 T9): address <severity>-<n>-<slug>`.
 - Tier 3 (2A-4d.3) — bench scoring consumes Tier 2's queries.
 - Any future operator Grafana dashboard.
 - 2A-4c2 Codex-LOW "no structured tracing for `skills_inferred`" — closed here.
+
+---
+
+## Deferred from T8 reviews → 2A-4d.1.1 follow-up
+
+These findings were raised by the Claude + Codex adversarial reviews on the T1–T7 diff and
+deliberately deferred rather than block T10/T11. They do not affect correctness of data
+stored in `kpi_events`; they affect observability fidelity at the operator-SLO level.
+
+### 1. Claude BLOCKER-1 / BLOCKER-4 — `error_count` honesty
+
+**Finding:** 11 helpers in `consolidator.rs` (`synthesize_contradictions`,
+`detect_and_surface_gaps`, `reweave_memories`, `score_memory_quality`, `extract_protocols`,
+`infer_skills_from_behavior`, `tag_antipatterns`, `heal_topic_supersedes` — already returns
+a struct; `heal_session_staleness`, `apply_quality_pressure`, `detect_content_contradictions`)
+`return 0;` on inner SQL errors after a `tracing::warn!`, so the caller can't tell
+"nothing to do" from "query failed." `PhaseOutcome::error_count` stays zero in exactly
+those cases, and SLO dashboards on `rate(forge_phase_output_rows_total{action="errored"}[5m])`
+undercount real failures. BLOCKER-4 is Phase 9's variant — 9a + 9b counts merge into a
+single opaque error flag.
+
+**Fix plan (2A-4d.1.1):** change each `-> usize` helper to `-> (usize, usize)`
+(output, errors). Increment at every `warn!` site that was followed by an early `return 0;`
+or `continue;` that hides a recoverable failure. Thread the error count into
+`PhaseOutcome::error_count` in `run_all_phases`. For Phase 9, record 9a + 9b errors
+separately in `extra` and sum into `error_count`.
+
+**Why deferred:** touches 11 helper signatures + 20+ test call sites, mechanical but
+sizeable; doesn't block latency baseline (T10) or Jaeger dogfood (T11) which measure span
+behavior, not error-count semantics.
+
+### 2. Claude HIGH-1 — `correlation_id` / `trace_id` wiring
+
+**Finding:** `correlation_id` equals `run_id` 100% of the time; `trace_id` is always `None`
+even when OTLP is enabled. The fields are shipped but never take distinct values.
+
+**Fix plan (2A-4d.1.1 or Tier 2):** pull the current span's OTLP trace id via
+`tracing_opentelemetry::OpenTelemetrySpanExt::context().span().span_context().trace_id()`
+inside `record()` and populate `PhaseOutcome::trace_id`.
+
+**Why deferred:** `OpenTelemetrySpanExt` needs to be in scope at every call site, and Tier 2
+is where consumers start reading these. `metadata_schema_version` is pinned at 1, so real
+values flowing later don't break compat.
+
+### 3. Codex MEDIUM — consolidator holds state `Mutex` across all 23 phases
+
+**Finding:** `run_all_phases` holds `Arc<Mutex<DaemonState>>` for its full duration
+(~2–30s on warm DBs). Any handler that also locks the state mutex waits.
+
+**Fix plan:** move the consolidator to its own SQLite connection (mirror `WriterActor`), or
+acquire-release the state lock per phase.
+
+**Why deferred:** structural refactor affecting many assumptions. `/metrics` already uses
+`new_reader`; HTTP handlers sharing `state.conn` still wait. Acceptable for Tier 1 dogfood
+on a local daemon.
+
+### 4. Claude HIGH-4 — `record()` inside span scope
+
+**Finding:** `record(...)` runs *inside* each phase's `info_span!(...)` scope, so its own
+tracing drops get nested under the phase span. Cosmetic — no correctness impact.
+
+**Fix plan:** capture the `PhaseOutcome` inside a block expression and call `record()`
+after the scope drops. Phase 19 already does this post-T9.2; apply to the remaining 22
+phases.
+
+**Why deferred:** 22 sites, zero user-visible benefit until Tier 2 surfaces phase spans in
+a UI.
