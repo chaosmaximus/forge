@@ -288,9 +288,13 @@ fn render_memory_fallback(m: &crate::state::MemoryStats) -> String {
 }
 
 /// Phase 2A-4d.2 T6: render the consolidation segment.
-///   `cons:23✓ 1.2s`     — latest pass succeeded (green)
-///   `cons:19/23 err 3.4s` — latest pass had errors (red)
-/// Returns `None` when the state carries no latest-run info.
+///   `cons:23✓ 1.2s`       — latest pass had zero errors (green)
+///   `cons:23 ⚠3e 3.4s`    — latest pass had N errors across its phases (red)
+///
+/// Note: `error_count` is total errors across the run, not failed-phase
+/// count. A previous draft rendered `ok/total err` math on these counts,
+/// which was nonsense (T9 Codex Q9). We now render the raw error count.
+/// Returns `None` when required fields are missing.
 fn render_consolidation(
     cons: &crate::state::ConsolidationStats,
 ) -> Option<String> {
@@ -304,10 +308,8 @@ fn render_consolidation(
             "{GREEN}cons:{phase_count}\u{2713} {dur_s:.1}s{RESET}"
         ))
     } else {
-        // Partial: (phase_count - errors of passes-with-errors) / total
-        let ok = phase_count.saturating_sub(errors);
         Some(format!(
-            "{RED}cons:{ok}/{phase_count} err {dur_s:.1}s{RESET}"
+            "{RED}cons:{phase_count} \u{26a0}{errors}e {dur_s:.1}s{RESET}"
         ))
     }
 }
@@ -345,7 +347,11 @@ mod tests {
     fn render_consolidation_red_when_errors_present() {
         let c = cons_with(Some(23), Some(3400), Some(2));
         let out = render_consolidation(&c).expect("segment");
-        assert!(out.contains("cons:21/23 err 3.4s"), "got: {out}");
+        // error_count is total errors (not failed-phase count), so render as
+        // "cons:23 ⚠2e 3.4s" — phase_count stays as-is, errors shown raw.
+        assert!(out.contains("cons:23"), "got: {out}");
+        assert!(out.contains("\u{26a0}2e"), "got: {out}");
+        assert!(out.contains("3.4s"), "got: {out}");
     }
 
     #[test]

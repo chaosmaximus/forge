@@ -1010,7 +1010,10 @@ mod tests {
             None,
             None,
         );
-        matches!(resp, Response::Error { .. });
+        assert!(
+            matches!(resp, Response::Error { .. }),
+            "expected Response::Error, got: {resp:?}"
+        );
     }
 
     #[test]
@@ -1024,7 +1027,10 @@ mod tests {
             Some(InspectGroupBy::Phase),
             None,
         );
-        matches!(resp, Response::Error { .. });
+        assert!(
+            matches!(resp, Response::Error { .. }),
+            "expected Response::Error, got: {resp:?}"
+        );
     }
 
     #[test]

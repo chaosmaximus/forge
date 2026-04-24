@@ -6561,12 +6561,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         // daemon was constructed without metrics (shouldn't happen in
         // production but does in tests) we pass None and row_count returns
         // stale+empty.
+        //
+        // T9/Q9 fix: if the snapshot is empty (refreshed_at_secs == 0, i.e.
+        // no one has scraped /metrics yet) and the caller is asking for
+        // row_count, lazy-refresh the snapshot right here. Otherwise
+        // `/inspect row_count` would return stale:true forever on daemons
+        // without a Prometheus scraper. Non-row_count shapes don't use the
+        // snapshot, so no refresh needed.
         Request::Inspect {
             shape,
             window,
             filter,
             group_by,
         } => {
+            if matches!(shape, forge_core::protocol::InspectShape::RowCount) {
+                if let Some(metrics_arc) = state.metrics.as_ref() {
+                    let needs_refresh = metrics_arc.snapshot.read().refreshed_at_secs == 0;
+                    if needs_refresh {
+                        crate::server::metrics::refresh_gauges_from_conn(
+                            metrics_arc,
+                            &state.conn,
+                        );
+                    }
+                }
+            }
             let snap_owned = state.metrics.as_ref().map(|m| m.snapshot.read().clone());
             let snap_ref = snap_owned.as_ref();
             crate::server::inspect::run_inspect(

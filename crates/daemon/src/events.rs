@@ -419,10 +419,14 @@ fn read_last_consolidation_from_hud_state_file() -> Option<serde_json::Value> {
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
     let cons = parsed.get("consolidation")?.clone();
 
-    // Staleness guard: if the cached latest_run_ts_secs is older than
-    // 2× the configured consolidation interval, don't serve it.
+    // Staleness guard: treat cache as stale if older than
+    // 2× consolidation_interval, capped at 1h. The cap matters for very
+    // long intervals (e.g. operators with 12-24h cadence) — without it a
+    // daemon restart could serve a day-old HUD segment as "current".
+    // 5 minutes minimum so a tight-interval dev loop doesn't flap.
     let cfg = crate::config::load_config();
-    let max_age_secs = (cfg.workers.consolidation_interval_secs * 2) as i64;
+    let interval = cfg.workers.consolidation_interval_secs;
+    let max_age_secs = ((interval.saturating_mul(2)).clamp(300, 3600)) as i64;
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

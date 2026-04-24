@@ -355,6 +355,19 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
             return;
         }
     };
+    refresh_gauges_from_conn(metrics, &reader.conn);
+}
+
+/// Phase 2A-4d.2 T9 fix: lazy-refresh entry point for `/inspect row_count`
+/// when no Prometheus scraper is configured. Given any read-capable
+/// connection (reader or writer — the SELECT is read-only), populate the
+/// Prometheus gauges + atomic GaugeSnapshot. Same query as `refresh_gauges`;
+/// shares all state-mutation logic with it via the split-off body.
+pub fn refresh_gauges_from_conn(metrics: &ForgeMetrics, conn: &rusqlite::Connection) {
+    refresh_gauges_impl(metrics, conn)
+}
+
+fn refresh_gauges_impl(metrics: &ForgeMetrics, conn: &rusqlite::Connection) {
 
     // Per-table row gauges. Labels match actual SQLite table names (verified
     // 2026-04-24 in schema.rs); adding a label that doesn't correspond to a
@@ -433,7 +446,7 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>,
         Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>,
     );
-    let row: rusqlite::Result<CountsRow> = reader.conn.query_row(COUNTS_SQL, [], |r| {
+    let row: rusqlite::Result<CountsRow> = conn.query_row(COUNTS_SQL, [], |r| {
         Ok((
             r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
             r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?,
