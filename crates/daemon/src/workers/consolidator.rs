@@ -73,6 +73,12 @@ pub struct HealingStats {
     pub quality_adjusted: usize,
     pub candidates_found: usize,
     pub false_positives_skipped: usize,
+    /// Count of recoverable errors encountered during the healing helper run
+    /// (e.g. candidate-query prepare failures, healing_log INSERT failures,
+    /// edge-insert failures). Previously swallowed; now threaded into
+    /// `PhaseOutcome::error_count` by the Phase 20 / 21 wrappers so SLO
+    /// dashboards reflect them.
+    pub errors: usize,
 }
 
 /// Run all consolidation phases synchronously. Used by:
@@ -406,7 +412,8 @@ pub fn run_all_phases(
                 (0, 1, String::new())
             }
         };
-        let content_contradictions = detect_content_contradictions(conn);
+        let (content_contradictions, content_errors) =
+            detect_content_contradictions_with_errors(conn);
         stats.contradictions += content_contradictions;
         if content_contradictions > 0 {
             tracing::info!(
@@ -423,9 +430,18 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: output + content_contradictions as u64,
-                error_count: err,
+                // BLOCKER-4 fix: 9a and 9b errors are tracked separately in
+                // `extra` so downstream can still attribute; the aggregate
+                // error_count is the sum so phase-level SLI reflects both
+                // strategies failing.
+                error_count: err + content_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({ "valence_distribution": valence_summary, "content_contradictions": content_contradictions }),
+                extra: serde_json::json!({
+                    "valence_distribution": valence_summary,
+                    "content_contradictions": content_contradictions,
+                    "valence_errors": err,
+                    "content_errors": content_errors,
+                }),
             },
         );
     }
@@ -499,7 +515,8 @@ pub fn run_all_phases(
     {
         let _span = tracing::info_span!("phase_12_synthesize_contradictions").entered();
         let t0 = std::time::Instant::now();
-        let synthesized = synthesize_contradictions(conn, config.batch_limit);
+        let (synthesized, synth_errors) =
+            synthesize_contradictions_with_errors(conn, config.batch_limit);
         stats.synthesized = synthesized;
         if synthesized > 0 {
             tracing::info!(
@@ -516,7 +533,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: synthesized as u64,
-                error_count: 0,
+                error_count: synth_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({}),
             },
@@ -527,7 +544,7 @@ pub fn run_all_phases(
     {
         let _span = tracing::info_span!("phase_13_detect_gaps").entered();
         let t0 = std::time::Instant::now();
-        let gaps = detect_and_surface_gaps(conn);
+        let (gaps, gap_errors) = detect_and_surface_gaps_with_errors(conn);
         stats.gaps_detected = gaps;
         if gaps > 0 {
             tracing::info!(gaps, "phase_13: knowledge gaps detected");
@@ -541,7 +558,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: gaps as u64,
-                error_count: 0,
+                error_count: gap_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({}),
             },
@@ -552,7 +569,8 @@ pub fn run_all_phases(
     {
         let _span = tracing::info_span!("phase_14_reweave_memories").entered();
         let t0 = std::time::Instant::now();
-        let reweaved = reweave_memories(conn, config.batch_limit, config.reweave_limit);
+        let (reweaved, reweave_errors) =
+            reweave_memories_with_errors(conn, config.batch_limit, config.reweave_limit);
         stats.reweaved = reweaved;
         if reweaved > 0 {
             tracing::info!(reweaved, "phase_14: memory pairs reweaved");
@@ -566,7 +584,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: reweaved as u64,
-                error_count: 0,
+                error_count: reweave_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({}),
             },
@@ -577,7 +595,7 @@ pub fn run_all_phases(
     {
         let _span = tracing::info_span!("phase_15_quality_scoring").entered();
         let t0 = std::time::Instant::now();
-        let scored = score_memory_quality(conn, config.batch_limit);
+        let (scored, score_errors) = score_memory_quality_with_errors(conn, config.batch_limit);
         stats.scored = scored;
         if scored > 0 {
             tracing::info!(scored, "phase_15: memories scored");
@@ -591,7 +609,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: scored as u64,
-                error_count: 0,
+                error_count: score_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({}),
             },
@@ -635,7 +653,8 @@ pub fn run_all_phases(
     {
         let _span = tracing::info_span!("phase_17_extract_protocols").entered();
         let t0 = std::time::Instant::now();
-        protocols = extract_protocols(conn, config.batch_limit);
+        let (p, protocol_errors) = extract_protocols_with_errors(conn, config.batch_limit);
+        protocols = p;
         stats.protocols_extracted = protocols;
         if protocols > 0 {
             tracing::info!(protocols, "phase_17: protocols extracted");
@@ -649,7 +668,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: protocols as u64,
-                error_count: 0,
+                error_count: protocol_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({}),
             },
@@ -662,7 +681,7 @@ pub fn run_all_phases(
     {
         let _span = tracing::info_span!("phase_23_infer_skills_from_behavior").entered();
         let t0 = std::time::Instant::now();
-        let skills_inferred = infer_skills_from_behavior(
+        let (skills_inferred, skill_errors) = infer_skills_from_behavior_with_errors(
             conn,
             config.skill_inference_min_sessions,
             config.skill_inference_window_days,
@@ -683,7 +702,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: skills_inferred as u64,
-                error_count: 0,
+                error_count: skill_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({}),
             },
@@ -694,7 +713,8 @@ pub fn run_all_phases(
     {
         let _span = tracing::info_span!("phase_18_tag_antipatterns").entered();
         let t0 = std::time::Instant::now();
-        let antipatterns = tag_antipatterns(conn, config.batch_limit);
+        let (antipatterns, antipattern_errors) =
+            tag_antipatterns_with_errors(conn, config.batch_limit);
         stats.antipatterns_tagged = antipatterns;
         if antipatterns > 0 {
             tracing::info!(antipatterns, "phase_18: anti-patterns tagged from lessons");
@@ -708,7 +728,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: antipatterns as u64,
-                error_count: 0,
+                error_count: antipattern_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({}),
             },
@@ -954,7 +974,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: healing_stats.topic_superseded as u64,
-                error_count: 0,
+                error_count: healing_stats.errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({
                     "candidates_found": healing_stats.candidates_found,
@@ -970,7 +990,8 @@ pub fn run_all_phases(
     {
         let _span = tracing::info_span!("phase_21_session_staleness_fade").entered();
         let t0 = std::time::Instant::now();
-        healed_faded = heal_session_staleness(conn, &healing_config);
+        let (faded, fade_errors) = heal_session_staleness_with_errors(conn, &healing_config);
+        healed_faded = faded;
         stats.healed_faded = healed_faded;
         if healed_faded > 0 {
             tracing::info!(healed_faded, "phase_21: stale memories auto-faded");
@@ -984,7 +1005,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: healed_faded as u64,
-                error_count: 0,
+                error_count: fade_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({}),
             },
@@ -995,7 +1016,8 @@ pub fn run_all_phases(
     {
         let _span = tracing::info_span!("phase_22_apply_quality_pressure").entered();
         let t0 = std::time::Instant::now();
-        let quality_adjusted = apply_quality_pressure(conn, &healing_config);
+        let (quality_adjusted, quality_errors) =
+            apply_quality_pressure_with_errors(conn, &healing_config);
         stats.healed_quality_adjusted = quality_adjusted;
         if quality_adjusted > 0 {
             tracing::info!(quality_adjusted, "phase_22: quality pressure applied");
@@ -1009,7 +1031,7 @@ pub fn run_all_phases(
                 correlation_id: &run_id,
                 trace_id: None,
                 output_count: quality_adjusted as u64,
-                error_count: 0,
+                error_count: quality_errors as u64,
                 duration_ms: t0.elapsed().as_millis() as u64,
                 extra: serde_json::json!({}),
             },
@@ -1046,8 +1068,17 @@ pub fn run_all_phases(
 /// detector produces zero results in practice.
 ///
 /// Returns number of contradiction pairs found.
+///
+/// Back-compat wrapper over [`detect_content_contradictions_with_errors`].
 pub fn detect_content_contradictions(conn: &Connection) -> usize {
+    detect_content_contradictions_with_errors(conn).0
+}
+
+/// As [`detect_content_contradictions`], but returns `(output, errors)`.
+pub fn detect_content_contradictions_with_errors(conn: &Connection) -> (usize, usize) {
     use crate::db::diagnostics::{store_diagnostic, Diagnostic};
+
+    let mut errors = 0usize;
 
     // Fetch active memories grouped by type — only types that can contradict
     let mut stmt = match conn.prepare(
@@ -1058,7 +1089,7 @@ pub fn detect_content_contradictions(conn: &Connection) -> usize {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "forge::consolidator", error = %e, "content contradiction query failed");
-            return 0;
+            return (0, 1);
         }
     };
 
@@ -1080,13 +1111,13 @@ pub fn detect_content_contradictions(conn: &Connection) -> usize {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
         Err(e) => {
             tracing::warn!(target: "forge::consolidator", error = %e, "content contradiction row iteration failed");
-            return 0;
+            return (0, 1);
         }
     };
 
     if rows.is_empty() {
         tracing::debug!(target: "forge::consolidator", "content contradiction: 0 candidate memories");
-        return 0;
+        return (0, 0);
     }
 
     /// Extract lowercase word set from text (alphanumeric words with 3+ chars).
@@ -1202,6 +1233,7 @@ pub fn detect_content_contradictions(conn: &Connection) -> usize {
             };
             if let Err(e) = store_diagnostic(conn, &diag) {
                 tracing::warn!(target: "forge::consolidator", error = %e, "content contradiction diagnostic store failed");
+                errors += 1;
                 continue;
             }
 
@@ -1222,13 +1254,29 @@ pub fn detect_content_contradictions(conn: &Connection) -> usize {
         }
     }
 
-    found
+    (found, errors)
 }
 
 /// Synthesize contradictions: find pairs of conflicting memories (same tags,
 /// opposite valence, both active), create a resolution memory, and mark
 /// originals as "superseded". Returns count of resolutions created.
+///
+/// Back-compat thin wrapper over [`synthesize_contradictions_with_errors`]. Use
+/// the `_with_errors` variant from `run_all_phases` so the caller can thread
+/// the swallowed-error count into `PhaseOutcome::error_count`.
 pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize {
+    synthesize_contradictions_with_errors(conn, batch_limit).0
+}
+
+/// As [`synthesize_contradictions`], but returns `(output, errors)`. `errors`
+/// counts every recoverable failure that was previously swallowed with
+/// `tracing::warn!` + early-return-0 or `continue`.
+pub fn synthesize_contradictions_with_errors(
+    conn: &Connection,
+    batch_limit: usize,
+) -> (usize, usize) {
+    let mut errors = 0usize;
+
     // Find pairs of active memories with opposite valence, shared tags, high intensity
     let mut stmt = match conn.prepare(&format!(
         "SELECT id, title, content, tags, valence, intensity, confidence, project, organization_id FROM memory
@@ -1238,7 +1286,7 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "forge::consolidator", error = %e, "synthesize query failed");
-            return 0;
+            return (0, 1);
         }
     };
 
@@ -1271,7 +1319,7 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
         Err(e) => {
             tracing::warn!(target: "forge::consolidator", error = %e, "synthesize row iteration failed");
-            return 0;
+            return (0, 1);
         }
     };
 
@@ -1349,11 +1397,13 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
             // Transaction: resolution insert + supersede originals (atomic)
             if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
                 tracing::warn!(target: "forge::consolidator", error = %e, "synthesize: failed to begin transaction");
+                errors += 1;
                 continue;
             }
             if let Err(e) = ops::remember(conn, &resolution) {
                 tracing::warn!(target: "forge::consolidator", error = %e, "synthesize: failed to store resolution");
                 let _ = conn.execute_batch("ROLLBACK");
+                errors += 1;
                 continue;
             }
             if conn
@@ -1371,6 +1421,7 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
             {
                 tracing::warn!(target: "forge::consolidator", "synthesize: failed to supersede originals — rolling back");
                 let _ = conn.execute_batch("ROLLBACK");
+                errors += 1;
                 continue;
             }
             let _ = conn.execute_batch("COMMIT");
@@ -1381,18 +1432,26 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
         }
     }
 
-    synthesized
+    (synthesized, errors)
 }
 
 /// Detect knowledge gaps and surface them as perceptions.
 /// A knowledge gap is a word appearing in 3+ memory titles but with no entity.
 /// Returns count of gap perceptions created.
+///
+/// Back-compat wrapper over [`detect_and_surface_gaps_with_errors`].
 pub fn detect_and_surface_gaps(conn: &Connection) -> usize {
+    detect_and_surface_gaps_with_errors(conn).0
+}
+
+/// As [`detect_and_surface_gaps`], but returns `(output, errors)`.
+pub fn detect_and_surface_gaps_with_errors(conn: &Connection) -> (usize, usize) {
+    let mut errors = 0usize;
     let gaps = match crate::db::manas::detect_knowledge_gaps(conn, None) {
         Ok(g) => g,
         Err(e) => {
             tracing::warn!(target: "forge::consolidator", error = %e, "knowledge gap detection failed");
-            return 0;
+            return (0, 1);
         }
     };
 
@@ -1434,19 +1493,33 @@ pub fn detect_and_surface_gaps(conn: &Connection) -> usize {
 
         if let Err(e) = crate::db::manas::store_perception(conn, &p) {
             tracing::warn!(target: "forge::consolidator", error = %e, "failed to store gap perception");
+            errors += 1;
             continue;
         }
         count += 1;
     }
 
-    count
+    (count, errors)
 }
 
 /// Reweave memories: when a newer memory shares 2+ tags with an older memory
 /// and both are active with the same project and memory_type, enrich the older
 /// memory by appending the newer content and mark the newer one as "merged".
 /// Returns count of reweaves performed.
+///
+/// Back-compat wrapper over [`reweave_memories_with_errors`].
 pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: usize) -> usize {
+    reweave_memories_with_errors(conn, batch_limit, reweave_limit).0
+}
+
+/// As [`reweave_memories`], but returns `(output, errors)`.
+pub fn reweave_memories_with_errors(
+    conn: &Connection,
+    batch_limit: usize,
+    reweave_limit: usize,
+) -> (usize, usize) {
+    let mut errors = 0usize;
+
     // Find candidate pairs: newer memory shares 2+ tags with older memory,
     // same project, same memory_type, both active
     let mut stmt = match conn.prepare(&format!(
@@ -1458,7 +1531,7 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "forge::consolidator", error = %e, "reweave query failed");
-            return 0;
+            return (0, 1);
         }
     };
 
@@ -1489,7 +1562,7 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
         Err(e) => {
             tracing::warn!(target: "forge::consolidator", error = %e, "reweave row iteration failed");
-            return 0;
+            return (0, 1);
         }
     };
 
@@ -1555,6 +1628,7 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
             // Transaction: read current content, enrich, mark newer as merged (atomic)
             if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
                 tracing::warn!(target: "forge::consolidator", error = %e, "reweave begin transaction failed");
+                errors += 1;
                 continue;
             }
             // Re-read content inside transaction to avoid TOCTOU race
@@ -1586,10 +1660,12 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
             {
                 tracing::warn!(target: "forge::consolidator", "reweave update error — rolling back");
                 let _ = conn.execute_batch("ROLLBACK");
+                errors += 1;
                 continue;
             }
             if let Err(e) = conn.execute_batch("COMMIT") {
                 tracing::warn!(target: "forge::consolidator", error = %e, "reweave commit failed");
+                errors += 1;
                 continue;
             }
 
@@ -1598,14 +1674,22 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
         }
     }
 
-    reweaved
+    (reweaved, errors)
 }
 
 /// Score memory quality for active memories. Computes a quality score (0.0 to 1.0)
 /// based on freshness, utility (access_count), completeness (content length),
 /// and activation_level. Stores the result in the quality_score column.
 /// Returns count of memories scored.
+///
+/// Back-compat wrapper over [`score_memory_quality_with_errors`].
 pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
+    score_memory_quality_with_errors(conn, batch_limit).0
+}
+
+/// As [`score_memory_quality`], but returns `(output, errors)`.
+pub fn score_memory_quality_with_errors(conn: &Connection, batch_limit: usize) -> (usize, usize) {
+    let mut errors = 0usize;
     let mut stmt = match conn.prepare(&format!(
         "SELECT id, content, access_count, activation_level,
                 julianday('now') - julianday(created_at) as age_days
@@ -1615,7 +1699,7 @@ pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "forge::consolidator", error = %e, "quality score query failed");
-            return 0;
+            return (0, 1);
         }
     };
 
@@ -1640,7 +1724,7 @@ pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
         Err(e) => {
             tracing::warn!(target: "forge::consolidator", error = %e, "quality score row iteration failed");
-            return 0;
+            return (0, 1);
         }
     };
 
@@ -1671,12 +1755,13 @@ pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
                 error = %e,
                 "quality score update failed"
             );
+            errors += 1;
             continue;
         }
         scored += 1;
     }
 
-    scored
+    (scored, errors)
 }
 
 /// Phase 17: Protocol Extraction — promote recurring process patterns to protocols.
@@ -1688,7 +1773,15 @@ pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
 ///
 /// Avoids promoting facts, decisions, or observations that happen to
 /// mention process-adjacent words.
+///
+/// Back-compat wrapper over [`extract_protocols_with_errors`].
 pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
+    extract_protocols_with_errors(conn, batch_limit).0
+}
+
+/// As [`extract_protocols`], but returns `(output, errors)`.
+pub fn extract_protocols_with_errors(conn: &Connection, batch_limit: usize) -> (usize, usize) {
+    let mut errors = 0usize;
     // Two-tier extraction:
     // Tier 1: ALL preferences → these are explicit user process preferences
     // Tier 2: Patterns with "Behavioral:" prefix or strong title signals
@@ -1710,21 +1803,26 @@ pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return 0,
+        Err(e) => {
+            tracing::warn!(target: "forge::consolidator", error = %e, "extract_protocols query prepare failed");
+            return (0, 1);
+        }
     };
 
-    let candidates: Vec<(String, String, String, String)> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?, // id
-                row.get::<_, String>(1)?, // title
-                row.get::<_, String>(2)?, // content
-                row.get::<_, String>(3)?, // memory_type
-            ))
-        })
-        .ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+    let candidates: Vec<(String, String, String, String)> = match stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?, // id
+            row.get::<_, String>(1)?, // title
+            row.get::<_, String>(2)?, // content
+            row.get::<_, String>(3)?, // memory_type
+        ))
+    }) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            tracing::warn!(target: "forge::consolidator", error = %e, "extract_protocols row iteration failed");
+            return (0, 1);
+        }
+    };
 
     let mut promoted = 0;
     for (source_id, title, content, _memory_type) in &candidates {
@@ -1774,17 +1872,24 @@ pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
         let protocol_id = ulid::Ulid::new().to_string();
         let now = forge_core::time::now_iso();
 
-        if conn.execute(
+        match conn.execute(
             "INSERT INTO memory (id, memory_type, title, content, confidence, status, created_at, accessed_at, quality_score)
              VALUES (?1, 'protocol', ?2, ?3, 0.8, 'active', ?4, ?5, 0.7)",
             rusqlite::params![protocol_id, protocol_title, content, now, now],
-        ).is_ok() {
-            let _ = crate::db::ops::store_edge(conn, source_id, &protocol_id, "promoted_to", "{}");
-            promoted += 1;
+        ) {
+            Ok(_) => {
+                let _ =
+                    crate::db::ops::store_edge(conn, source_id, &protocol_id, "promoted_to", "{}");
+                promoted += 1;
+            }
+            Err(e) => {
+                tracing::warn!(target: "forge::consolidator", error = %e, source = %source_id, "extract_protocols: insert failed");
+                errors += 1;
+            }
         }
     }
 
-    promoted
+    (promoted, errors)
 }
 
 /// Phase 23: Behavioral Skill Inference — elevate recurring clean tool-use
@@ -1800,15 +1905,28 @@ pub fn extract_protocols(conn: &Connection, batch_limit: usize) -> usize {
 /// creating duplicate rows (ON CONFLICT (agent, fingerprint) DO UPDATE).
 ///
 /// Returns the number of rows affected (INSERTs + upsert-UPDATEs).
+///
+/// Back-compat wrapper over [`infer_skills_from_behavior_with_errors`].
 pub fn infer_skills_from_behavior(
     conn: &Connection,
     min_sessions: usize,
     window_days: u32,
 ) -> usize {
+    infer_skills_from_behavior_with_errors(conn, min_sessions, window_days).0
+}
+
+/// As [`infer_skills_from_behavior`], but returns `(output, errors)`.
+pub fn infer_skills_from_behavior_with_errors(
+    conn: &Connection,
+    min_sessions: usize,
+    window_days: u32,
+) -> (usize, usize) {
     use crate::workers::skill_inference::{
         canonical_fingerprint, format_skill_name, infer_domain, ToolCall,
     };
     use std::collections::{BTreeMap, BTreeSet};
+
+    let mut errors = 0usize;
 
     // Step 1: SELECT clean rows within the window. Join the session table to
     // carry project through — otherwise inferred skills are project-NULL and
@@ -1826,7 +1944,7 @@ pub fn infer_skills_from_behavior(
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "Phase 23: prepare failed, skipping");
-            return 0;
+            return (0, 1);
         }
     };
     let rows: Vec<(String, String, String, String, String)> = match stmt.query_map([], |row| {
@@ -1841,7 +1959,7 @@ pub fn infer_skills_from_behavior(
         Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
         Err(e) => {
             tracing::warn!(error = %e, "Phase 23: query failed, skipping");
-            return 0;
+            return (0, 1);
         }
     };
 
@@ -1861,6 +1979,7 @@ pub fn infer_skills_from_behavior(
                     session_id = %session_id,
                     "Phase 23: tool_args not valid JSON, skipping row"
                 );
+                errors += 1;
                 continue;
             }
         };
@@ -1935,6 +2054,7 @@ pub fn infer_skills_from_behavior(
         match insert_res {
             Err(e) => {
                 tracing::error!(error = %e, "Phase 23: INSERT OR IGNORE failed, skipping fingerprint");
+                errors += 1;
                 continue;
             }
             Ok(inserted) if inserted > 0 => {
@@ -1963,13 +2083,14 @@ pub fn infer_skills_from_behavior(
                     Ok(n) => affected += n,
                     Err(e) => {
                         tracing::error!(error = %e, "Phase 23: UPDATE failed for fingerprint");
+                        errors += 1;
                     }
                 }
             }
         }
     }
 
-    affected
+    (affected, errors)
 }
 
 /// Phase 18: Anti-pattern tagging — identify lessons that describe what NOT to do.
@@ -1978,6 +2099,12 @@ pub fn infer_skills_from_behavior(
 /// "broke", "reverted", "never") and tags them with "anti-pattern" in the tags
 /// JSON array. These are then surfaced in context as guardrails.
 pub fn tag_antipatterns(conn: &Connection, batch_limit: usize) -> usize {
+    tag_antipatterns_with_errors(conn, batch_limit).0
+}
+
+/// As [`tag_antipatterns`], but returns `(output, errors)`.
+pub fn tag_antipatterns_with_errors(conn: &Connection, batch_limit: usize) -> (usize, usize) {
+    let mut errors = 0usize;
     let sql = format!(
         "SELECT id, tags FROM memory
          WHERE status = 'active'
@@ -2001,16 +2128,21 @@ pub fn tag_antipatterns(conn: &Connection, batch_limit: usize) -> usize {
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return 0,
+        Err(e) => {
+            tracing::warn!(target: "forge::consolidator", error = %e, "tag_antipatterns prepare failed");
+            return (0, 1);
+        }
     };
 
-    let candidates: Vec<(String, String)> = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+    let candidates: Vec<(String, String)> = match stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            tracing::warn!(target: "forge::consolidator", error = %e, "tag_antipatterns row iteration failed");
+            return (0, 1);
+        }
+    };
 
     let mut tagged = 0;
     for (id, tags_json) in &candidates {
@@ -2022,18 +2154,19 @@ pub fn tag_antipatterns(conn: &Connection, batch_limit: usize) -> usize {
         tags.push("anti-pattern".into());
         let new_tags = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
 
-        if conn
-            .execute(
-                "UPDATE memory SET tags = ?1 WHERE id = ?2",
-                rusqlite::params![new_tags, id],
-            )
-            .is_ok()
-        {
-            tagged += 1;
+        match conn.execute(
+            "UPDATE memory SET tags = ?1 WHERE id = ?2",
+            rusqlite::params![new_tags, id],
+        ) {
+            Ok(_) => tagged += 1,
+            Err(e) => {
+                tracing::warn!(target: "forge::consolidator", error = %e, id = %id, "tag_antipatterns UPDATE failed");
+                errors += 1;
+            }
         }
     }
 
-    tagged
+    (tagged, errors)
 }
 
 /// Phase 20: Topic supersede — detect memories on the same topic that have been
@@ -2073,6 +2206,7 @@ pub fn heal_topic_supersedes(
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "forge::consolidator::healing", error = %e, "failed to prepare candidate query");
+            stats.errors += 1;
             return stats;
         }
     };
@@ -2239,6 +2373,7 @@ pub fn heal_topic_supersedes(
             // Insert edge
             if let Err(e) = ops::store_edge(conn, new_id, old_id, "supersedes", "{}") {
                 tracing::warn!(target: "forge::consolidator::healing", new_id = %new_id, old_id = %old_id, error = %e, "edge insert failed");
+                stats.errors += 1;
             }
 
             // Insert healing_log
@@ -2256,6 +2391,7 @@ pub fn heal_topic_supersedes(
                 ],
             ) {
                 tracing::warn!(target: "forge::consolidator::healing", error = %e, action = "auto_superseded", "healing_log insert failed");
+                stats.errors += 1;
             }
 
             already_superseded.insert(old_id.clone());
@@ -2279,9 +2415,23 @@ pub fn heal_topic_supersedes(
 /// Phase 21: Fade old unaccessed low-quality memories.
 /// Memories with quality_score < threshold AND zero accesses AND older than N days -> faded.
 /// Two tiers: aggressive (quality < 0.1, 3 days) and normal (quality < threshold, N days).
+///
+/// Back-compat wrapper over [`heal_session_staleness_with_errors`].
 pub fn heal_session_staleness(conn: &Connection, config: &crate::config::HealingConfig) -> usize {
+    heal_session_staleness_with_errors(conn, config).0
+}
+
+/// As [`heal_session_staleness`], but returns `(output, errors)`. `errors`
+/// counts every recoverable failure (healing_log INSERT failures) that was
+/// previously swallowed with `tracing::warn!`.
+pub fn heal_session_staleness_with_errors(
+    conn: &Connection,
+    config: &crate::config::HealingConfig,
+) -> (usize, usize) {
+    let mut errors = 0usize;
+
     if !config.enabled {
-        return 0;
+        return (0, errors);
     }
 
     let days = config.staleness_days;
@@ -2344,18 +2494,33 @@ pub fn heal_session_staleness(conn: &Connection, config: &crate::config::Healing
                 ],
             ) {
                 tracing::warn!(target: "forge::consolidator::healing", error = %e, action = "auto_faded", "healing_log insert failed");
+                errors += 1;
             }
         }
     }
 
-    faded
+    (faded, errors)
 }
 
 /// Phase 22: Natural selection — decay unused memories' quality, boost accessed ones.
 /// Two-tier decay: accelerated decay (0.15) for quality < 0.3, normal decay for the rest.
+///
+/// Back-compat wrapper over [`apply_quality_pressure_with_errors`].
 pub fn apply_quality_pressure(conn: &Connection, config: &crate::config::HealingConfig) -> usize {
+    apply_quality_pressure_with_errors(conn, config).0
+}
+
+/// As [`apply_quality_pressure`], but returns `(output, errors)`. `errors`
+/// counts every UPDATE failure that was previously swallowed via
+/// `.unwrap_or(0)`.
+pub fn apply_quality_pressure_with_errors(
+    conn: &Connection,
+    config: &crate::config::HealingConfig,
+) -> (usize, usize) {
+    let mut errors = 0usize;
+
     if !config.enabled {
-        return 0;
+        return (0, errors);
     }
 
     let decay = config.quality_decay_per_cycle;
@@ -2363,37 +2528,52 @@ pub fn apply_quality_pressure(conn: &Connection, config: &crate::config::Healing
     let accelerated_decay = 0.15_f64.max(decay); // at least 0.15 for low-quality
 
     // Accelerated decay: faster decay for low-quality memories (quality < 0.3)
-    let accel_decayed: usize = conn
-        .execute(
-            "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
+    let accel_decayed: usize = match conn.execute(
+        "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
          WHERE status = 'active' AND access_count = 0
          AND COALESCE(quality_score, 0.5) > 0.0
          AND COALESCE(quality_score, 0.5) < 0.3",
-            rusqlite::params![accelerated_decay],
-        )
-        .unwrap_or(0);
+        rusqlite::params![accelerated_decay],
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(target: "forge::consolidator::healing", error = %e, "apply_quality_pressure accelerated decay UPDATE failed");
+            errors += 1;
+            0
+        }
+    };
 
     // Normal decay: reduce quality for unaccessed active memories with quality >= 0.3 (floor at 0.0)
-    let normal_decayed: usize = conn
-        .execute(
-            "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
+    let normal_decayed: usize = match conn.execute(
+        "UPDATE memory SET quality_score = MAX(0.0, COALESCE(quality_score, 0.5) - ?1)
          WHERE status = 'active' AND access_count = 0
          AND COALESCE(quality_score, 0.5) >= 0.3",
-            rusqlite::params![decay],
-        )
-        .unwrap_or(0);
+        rusqlite::params![decay],
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(target: "forge::consolidator::healing", error = %e, "apply_quality_pressure normal decay UPDATE failed");
+            errors += 1;
+            0
+        }
+    };
 
     // Boost: increase quality for recently accessed active memories (cap at 1.0)
-    let boosted: usize = conn
-        .execute(
-            "UPDATE memory SET quality_score = MIN(1.0, COALESCE(quality_score, 0.5) + ?1)
+    let boosted: usize = match conn.execute(
+        "UPDATE memory SET quality_score = MIN(1.0, COALESCE(quality_score, 0.5) + ?1)
          WHERE status = 'active' AND access_count > 0
          AND accessed_at > datetime('now', '-1 day')",
-            rusqlite::params![boost],
-        )
-        .unwrap_or(0);
+        rusqlite::params![boost],
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(target: "forge::consolidator::healing", error = %e, "apply_quality_pressure boost UPDATE failed");
+            errors += 1;
+            0
+        }
+    };
 
-    accel_decayed + normal_decayed + boosted
+    (accel_decayed + normal_decayed + boosted, errors)
 }
 
 pub async fn run_consolidator(
@@ -4363,5 +4543,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(skill_type, "behavioral");
+    }
+
+    #[test]
+    fn error_count_honesty_synthesize_query_failure() {
+        // Regression test for 2A-4d.1.1 T13.1 BLOCKER-1: helpers that previously
+        // swallowed errors and returned 0 now expose them via _with_errors.
+        // Drop the memory table to force the SELECT to fail; confirm errors=1.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute("DROP TABLE memory", []).unwrap();
+
+        let (output, errors) = synthesize_contradictions_with_errors(&conn, 100);
+        assert_eq!(output, 0);
+        assert_eq!(
+            errors, 1,
+            "dropped memory table must produce errors=1, got {errors}"
+        );
     }
 }
