@@ -30,7 +30,7 @@ pub async fn run_diagnostics_worker(
     debounce_secs: u64,
 ) {
     let mut pending_files: HashSet<String> = HashSet::new();
-    eprintln!("[diagnostics] ready, waiting for files ({debounce_secs}s debounce)...");
+    tracing::info!(target: "forge::diagnostics", debounce_secs, "ready, waiting for files");
 
     loop {
         // Wait for the first file event or shutdown
@@ -45,7 +45,7 @@ pub async fn run_diagnostics_worker(
                         let files: Vec<String> = pending_files.drain().collect();
                         run_batch_analysis(&state, &files, &db_path).await;
                     }
-                    eprintln!("[diagnostics] shutdown received");
+                    tracing::info!(target: "forge::diagnostics", "shutdown received");
                     return;
                 }
             }
@@ -68,7 +68,7 @@ pub async fn run_diagnostics_worker(
                 }
                 _ = max_timeout => {
                     // Max wait reached — process even if still receiving files
-                    eprintln!("[diagnostics] max wait reached, processing {} files", pending_files.len());
+                    tracing::debug!(target: "forge::diagnostics", count = pending_files.len(), "max wait reached, processing");
                     break;
                 }
                 _ = shutdown_rx.changed() => {
@@ -77,7 +77,7 @@ pub async fn run_diagnostics_worker(
                             let files: Vec<String> = pending_files.drain().collect();
                             run_batch_analysis(&state, &files, &db_path).await;
                         }
-                        eprintln!("[diagnostics] shutdown during debounce");
+                        tracing::info!(target: "forge::diagnostics", "shutdown during debounce");
                         return;
                     }
                 }
@@ -91,7 +91,7 @@ pub async fn run_diagnostics_worker(
 }
 
 async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String], db_path: &str) {
-    eprintln!("[diagnostics] batch analysis on {} files", files.len());
+    tracing::info!(target: "forge::diagnostics", count = files.len(), "batch analysis");
 
     // For :memory: databases (tests), fall back to state lock for all operations.
     // Read-only connections can't share data with in-memory databases.
@@ -103,7 +103,7 @@ async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String], d
             {
                 let locked = state.lock().await;
                 if let Err(e) = diagnostics::clear_diagnostics(&locked.conn, file) {
-                    eprintln!("[diagnostics] failed to clear diagnostics for {file}: {e}");
+                    tracing::error!(target: "forge::diagnostics", file = %file, error = %e, "failed to clear diagnostics");
                 }
             } // lock released
 
@@ -126,12 +126,12 @@ async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String], d
                     let locked = state.lock().await;
                     for d in &diags {
                         if let Err(e) = diagnostics::store_diagnostic(&locked.conn, d) {
-                            eprintln!("[diagnostics] failed to store consistency diagnostic: {e}");
+                            tracing::error!(target: "forge::diagnostics", error = %e, "failed to store consistency diagnostic");
                         }
                     }
                     for d in &bug_diags {
                         if let Err(e) = diagnostics::store_diagnostic(&locked.conn, d) {
-                            eprintln!("[diagnostics] failed to store repeat-bug diagnostic: {e}");
+                            tracing::error!(target: "forge::diagnostics", error = %e, "failed to store repeat-bug diagnostic");
                         }
                     }
                 }
@@ -140,18 +140,18 @@ async fn run_batch_analysis(state: &Arc<Mutex<DaemonState>>, files: &[String], d
             // Fallback: use state lock for everything (tests with :memory: databases)
             let locked = state.lock().await;
             if let Err(e) = diagnostics::clear_diagnostics(&locked.conn, file) {
-                eprintln!("[diagnostics] failed to clear diagnostics for {file}: {e}");
+                tracing::error!(target: "forge::diagnostics", file = %file, error = %e, "failed to clear diagnostics");
             }
             let diags = collect_consistency_diagnostics(&locked.conn, file);
             let bug_diags = collect_repeat_bug_diagnostics(&locked.conn, file);
             for d in &diags {
                 if let Err(e) = diagnostics::store_diagnostic(&locked.conn, d) {
-                    eprintln!("[diagnostics] failed to store consistency diagnostic: {e}");
+                    tracing::error!(target: "forge::diagnostics", error = %e, "failed to store consistency diagnostic");
                 }
             }
             for d in &bug_diags {
                 if let Err(e) = diagnostics::store_diagnostic(&locked.conn, d) {
-                    eprintln!("[diagnostics] failed to store repeat-bug diagnostic: {e}");
+                    tracing::error!(target: "forge::diagnostics", error = %e, "failed to store repeat-bug diagnostic");
                 }
             }
             drop(locked);
@@ -181,7 +181,7 @@ pub(crate) fn run_consistency_check(conn: &Connection, file: &str) {
     let diags = collect_consistency_diagnostics(conn, file);
     for d in &diags {
         if let Err(e) = diagnostics::store_diagnostic(conn, d) {
-            eprintln!("[diagnostics] failed to store consistency diagnostic: {e}");
+            tracing::error!(target: "forge::diagnostics", error = %e, "failed to store consistency diagnostic");
         }
     }
 }
@@ -240,7 +240,7 @@ pub(crate) fn run_repeat_bug_check(conn: &Connection, file: &str) {
     let diags = collect_repeat_bug_diagnostics(conn, file);
     for d in &diags {
         if let Err(e) = diagnostics::store_diagnostic(conn, d) {
-            eprintln!("[diagnostics] failed to store repeat-bug diagnostic: {e}");
+            tracing::error!(target: "forge::diagnostics", error = %e, "failed to store repeat-bug diagnostic");
         }
     }
 }

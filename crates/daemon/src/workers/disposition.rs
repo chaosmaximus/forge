@@ -36,7 +36,7 @@ pub async fn run_disposition(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    eprintln!("[disposition] started, interval = {interval:?}");
+    tracing::info!(target: "forge::disposition", ?interval, "disposition started");
 
     loop {
         tokio::select! {
@@ -44,7 +44,7 @@ pub async fn run_disposition(
                 tick(&state, &db_path).await;
             }
             _ = shutdown_rx.changed() => {
-                eprintln!("[disposition] shutting down");
+                tracing::info!(target: "forge::disposition", "shutting down");
                 return;
             }
         }
@@ -66,7 +66,7 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>, db_path: 
 
     // query_active_agents always returns at least DEFAULT_AGENT_NAME, so this is defensive
     if active_agents.is_empty() {
-        eprintln!("[disposition] WARN: no agents found at all — this should not happen");
+        tracing::warn!(target: "forge::disposition", "no agents found at all — this should not happen");
         return;
     }
 
@@ -83,14 +83,16 @@ fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
     let sessions = match query_recent_sessions_for_agent(conn, agent_name) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[disposition] session query error for {agent_name}: {e}");
+            tracing::error!(target: "forge::disposition", agent = %agent_name, error = %e, "session query error");
             return;
         }
     };
 
     if sessions.is_empty() {
-        eprintln!(
-            "[disposition] no sessions found for agent '{agent_name}' — cannot compute traits"
+        tracing::debug!(
+            target: "forge::disposition",
+            agent = %agent_name,
+            "no sessions found; cannot compute traits"
         );
         return;
     }
@@ -165,15 +167,20 @@ fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
     };
 
     if let Err(e) = manas::store_disposition(conn, &caution) {
-        eprintln!("[disposition] store caution error for {agent_name}: {e}");
+        tracing::error!(target: "forge::disposition", agent = %agent_name, error = %e, "store caution error");
     }
     if let Err(e) = manas::store_disposition(conn, &thoroughness) {
-        eprintln!("[disposition] store thoroughness error for {agent_name}: {e}");
+        tracing::error!(target: "forge::disposition", agent = %agent_name, error = %e, "store thoroughness error");
     }
 
-    eprintln!(
-        "[disposition] updated {}: caution={:.3} ({:?}), thoroughness={:.3} ({:?})",
-        agent_name, new_caution, caution.trend, new_thoroughness, thoroughness.trend
+    tracing::info!(
+        target: "forge::disposition",
+        agent = %agent_name,
+        caution = %format!("{new_caution:.3}"),
+        caution_trend = ?caution.trend,
+        thoroughness = %format!("{new_thoroughness:.3}"),
+        thoroughness_trend = ?thoroughness.trend,
+        "updated traits"
     );
 }
 
@@ -190,20 +197,24 @@ fn query_active_agents(conn: &rusqlite::Connection) -> Vec<String> {
     {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[disposition] WARN: failed to prepare agent query: {e}");
+            tracing::warn!(target: "forge::disposition", error = %e, "failed to prepare agent query");
             return vec![DEFAULT_AGENT_NAME.to_string()];
         }
     };
     let rows = match stmt.query_map(rusqlite::params![cutoff], |row| row.get(0)) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[disposition] WARN: failed to query agents: {e}");
+            tracing::warn!(target: "forge::disposition", error = %e, "failed to query agents");
             return vec![DEFAULT_AGENT_NAME.to_string()];
         }
     };
     let agents: Vec<String> = rows.filter_map(|r| r.ok()).collect();
     if agents.is_empty() {
-        eprintln!("[disposition] no active agents found, using default: {DEFAULT_AGENT_NAME}");
+        tracing::info!(
+            target: "forge::disposition",
+            default = %DEFAULT_AGENT_NAME,
+            "no active agents found, using default"
+        );
         vec![DEFAULT_AGENT_NAME.to_string()]
     } else {
         agents
@@ -331,7 +342,7 @@ fn get_current_value(
         Ok(v) => v,
         Err(rusqlite::Error::QueryReturnedNoRows) => DEFAULT_VALUE, // Expected: first-time trait
         Err(e) => {
-            eprintln!("[disposition] WARN: failed to read {trait_type:?} for {agent_name}: {e}");
+            tracing::warn!(target: "forge::disposition", ?trait_type, agent = %agent_name, error = %e, "failed to read trait");
             DEFAULT_VALUE
         }
     }
