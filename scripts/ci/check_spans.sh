@@ -3,12 +3,14 @@
 #
 # Two checks:
 #   (1) every name in PHASE_SPAN_NAMES (instrumentation.rs) appears exactly
-#       once as an `info_span!("<name>")` call site in consolidator.rs;
-#   (2) the only non-test tokio::spawn calls inside crates/daemon/src/workers/
-#       live in workers/mod.rs (the single allowed worker-spawn entry point).
+#       once as a `tracing::info_span!` / `tracing::span!` / `#[instrument]`
+#       reference to `"<name>"` in consolidator.rs;
+#   (2) the only non-test `tokio::spawn(` calls inside
+#       `crates/daemon/src/workers/*.rs` live in `mod.rs` (the allowed
+#       worker-spawn entry point) or inside a `#[cfg(test)]`-gated module.
 #
 # Exits 0 on success, 1 on any violation. Runs locally and in CI.
-# Requires: bash, grep, awk, sed, rg (ripgrep optional — falls back to grep).
+# Requires: bash, grep, awk, sed.
 
 set -euo pipefail
 
@@ -28,9 +30,67 @@ fi
 
 fail=0
 
+# Strip line/block comments and double-quoted string literals before regex
+# matching. Keeps line numbers by replacing comment/string bodies with spaces
+# of the same length so downstream greps still report the right `file:line`.
+# Not a full Rust lexer, but it is enough to neutralise the two documented
+# CI-guard false-positive classes: `// tokio::spawn(...)` and "mod tests" in
+# a string literal.
+strip_comments_and_strings() {
+  local file="$1"
+  # Remove block comments via awk state machine (/* … */ across lines).
+  awk '
+    BEGIN { in_block = 0 }
+    {
+      line = $0
+      out = ""
+      i = 1
+      while (i <= length(line)) {
+        ch = substr(line, i, 1)
+        nch = substr(line, i + 1, 1)
+        if (in_block) {
+          if (ch == "*" && nch == "/") {
+            out = out "  "; i += 2; in_block = 0
+          } else {
+            out = out " "; i++
+          }
+          continue
+        }
+        if (ch == "/" && nch == "*") {
+          out = out "  "; i += 2; in_block = 1
+          continue
+        }
+        if (ch == "/" && nch == "/") {
+          # Rest of line is a line comment.
+          rest_len = length(line) - i + 1
+          for (k = 0; k < rest_len; k++) out = out " "
+          i = length(line) + 1
+          continue
+        }
+        if (ch == "\"") {
+          # Consume string until unescaped closing quote. Blank out the body.
+          out = out " "; i++
+          while (i <= length(line)) {
+            c = substr(line, i, 1)
+            p = substr(line, i - 1, 1)
+            if (c == "\"" && p != "\\") {
+              out = out " "; i++; break
+            }
+            out = out " "; i++
+          }
+          continue
+        }
+        out = out ch
+        i++
+      }
+      print out
+    }
+  ' "$file"
+}
+
 # ---------- Check 1: phase-span integrity ----------
 # Extract every quoted string in the PHASE_SPAN_NAMES slice literal.
-# Accepts any formatting: one-per-line, multi-per-line, trailing commas.
+# (We read instrumentation.rs raw here — the slice *is* the contract.)
 names_block=$(awk '
   /pub const PHASE_SPAN_NAMES/ { in_block = 1; next }
   in_block && /^\];/ { exit }
@@ -42,7 +102,6 @@ if [[ -z "$names_block" ]]; then
   exit 1
 fi
 
-# Pull quoted identifiers; preserve execution order from the slice.
 mapfile -t phase_names < <(printf '%s\n' "$names_block" | grep -oE '"[a-z0-9_]+"' | tr -d '"')
 
 if [[ ${#phase_names[@]} -eq 0 ]]; then
@@ -55,9 +114,18 @@ echo "==> Checking ${#phase_names[@]} phase span names..."
 missing=()
 duplicated=()
 for name in "${phase_names[@]}"; do
-  # Count exact matches of info_span!("<name>") — anchor to the literal form
-  # the spec calls out. Accept both info_span! and info_span ! (formatter safety).
-  count=$(grep -cE "info_span!\(\s*\"${name}\"" "$CONSOLIDATOR" || true)
+  # Accept any of the canonical tracing invocation forms. We do NOT strip
+  # strings from consolidator.rs here — the phase-name string IS a string
+  # literal, so it has to survive.
+  #   - tracing::info_span!("<name>") / info_span!("<name>")
+  #   - tracing::info_span!(target: "...", "<name>")
+  #   - tracing::span!(tracing::Level::INFO, "<name>")
+  #   - #[tracing::instrument(name = "<name>")] / #[instrument(name = "<name>")]
+  count=$(grep -cE \
+    -e "(tracing::)?info_span[[:space:]]*!\([^)]*\"${name}\"" \
+    -e "(tracing::)?span[[:space:]]*!\([^)]*Level::INFO[^)]*\"${name}\"" \
+    -e "#\[(tracing::)?instrument[^]]*name[[:space:]]*=[[:space:]]*\"${name}\"" \
+    "$CONSOLIDATOR" || true)
   if [[ "$count" -eq 0 ]]; then
     missing+=("$name")
   elif [[ "$count" -gt 1 ]]; then
@@ -79,10 +147,6 @@ fi
 # ---------- Check 2: tokio::spawn whitelist ----------
 echo "==> Checking tokio::spawn usage in workers/..."
 
-# Find every tokio::spawn outside workers/mod.rs, then exclude lines whose
-# surrounding module is `#[cfg(test)] mod tests` by filtering on a trailing
-# test-only marker column. Simpler heuristic: if the file's block starting
-# with `mod tests` contains the line number, it's a test.
 violations=()
 while IFS= read -r -d '' file; do
   base="$(basename "$file")"
@@ -90,20 +154,76 @@ while IFS= read -r -d '' file; do
     continue
   fi
 
-  # Locate `mod tests {` and compute its start line; everything at or below is test-scope.
-  tests_start=$(grep -nE '^[[:space:]]*mod tests[[:space:]]*\{' "$file" | head -n1 | cut -d: -f1 || true)
+  # Neutralise comments + string literals so `// tokio::spawn(` and
+  # "mod tests" in a string can't trigger or exempt the guard.
+  scrubbed=$(strip_comments_and_strings "$file")
 
+  # Locate every `#[cfg(test)]` annotation on a test-scope module — the
+  # module itself is declared on the very next `mod X {` line (in
+  # practice, inner_attributes-in-test-modules convention).
+  # Parse all `#[cfg(test)]` line numbers and the adjacent `mod X {` line.
+  # A `tokio::spawn(` inside any such module (by line range to the matching
+  # closing brace of that mod) is exempt.
+  cfg_test_modules=$(printf '%s\n' "$scrubbed" | awk '
+    /^[[:space:]]*#\[cfg\(test\)\]/ {
+      cfg_line = NR
+      in_expect = 1
+      next
+    }
+    in_expect && /^[[:space:]]*mod[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\{/ {
+      mod_start = NR
+      depth = 1
+      for (n = NR + 1; n <= NR_limit && depth > 0; n++) { } # placeholder
+      print cfg_line " " mod_start
+      in_expect = 0
+      next
+    }
+    in_expect && !/^[[:space:]]*$/ { in_expect = 0 }
+  ')
+
+  # For each #[cfg(test)] mod X { … }, find the matching close brace line by
+  # counting { and } balance starting at mod_start. Build a list of exempt
+  # line-ranges.
+  declare -a ranges=()
+  while read -r _cfg_line mod_start; do
+    [[ -z "$mod_start" ]] && continue
+    # Walk from mod_start forward counting braces in the scrubbed source.
+    range_end=$(printf '%s\n' "$scrubbed" | awk -v start="$mod_start" '
+      NR < start { next }
+      {
+        n = gsub(/\{/, "{", $0)
+        m = gsub(/\}/, "}", $0)
+        depth += n - m
+        if (NR == start) depth = n - m
+        if (NR > start && depth <= 0) { print NR; exit }
+      }
+    ')
+    if [[ -n "$range_end" ]]; then
+      ranges+=("$mod_start:$range_end")
+    fi
+  done <<< "$cfg_test_modules"
+
+  # Now grep for tokio::spawn in the scrubbed source and filter by ranges.
   while IFS=: read -r lineno _rest; do
     [[ -z "$lineno" ]] && continue
-    if [[ -n "$tests_start" && "$lineno" -ge "$tests_start" ]]; then
-      continue
+    exempt=0
+    for r in "${ranges[@]}"; do
+      lo="${r%:*}"
+      hi="${r#*:}"
+      if [[ "$lineno" -ge "$lo" && "$lineno" -le "$hi" ]]; then
+        exempt=1
+        break
+      fi
+    done
+    if [[ "$exempt" -eq 0 ]]; then
+      violations+=("$file:$lineno")
     fi
-    violations+=("$file:$lineno")
-  done < <(grep -nE 'tokio::spawn\s*\(' "$file" || true)
+  done < <(printf '%s\n' "$scrubbed" | grep -nE 'tokio::spawn[[:space:]]*\(' || true)
+  unset ranges
 done < <(find "$WORKERS_DIR" -maxdepth 1 -name '*.rs' -print0)
 
 if [[ ${#violations[@]} -gt 0 ]]; then
-  echo "ERR: tokio::spawn found outside workers/mod.rs (and not inside tests):" >&2
+  echo "ERR: tokio::spawn found outside workers/mod.rs (and not inside #[cfg(test)] modules):" >&2
   printf '  - %s\n' "${violations[@]}" >&2
   echo "    Workers must be spawned from mod.rs::spawn_workers. Move the call or scope it under #[cfg(test)]." >&2
   fail=1
