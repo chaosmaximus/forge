@@ -66,6 +66,14 @@ pub fn render_line3(stdin: &StdinData, state: &HudState, _width: usize) -> Strin
         }
     }
 
+    // Phase 2A-4d.2 T6: consolidation summary of the latest pass. Lowest
+    // priority — omitted when no pass has fired yet (state.consolidation =
+    // None) OR when the cached value is stale (handled by the daemon
+    // staleness guard before the key is even written).
+    if let Some(cons_str) = state.consolidation.as_ref().and_then(render_consolidation) {
+        parts.push(cons_str);
+    }
+
     // Show active sessions count (other projects = interesting, same project = context)
     if !state.sessions.is_empty() {
         let current_project = stdin.project_name();
@@ -277,4 +285,74 @@ fn render_memory_fallback(m: &crate::state::MemoryStats) -> String {
         return String::new();
     }
     format!("{BLUE}{}{RESET}", parts.join(" \u{00b7} "))
+}
+
+/// Phase 2A-4d.2 T6: render the consolidation segment.
+///   `cons:23✓ 1.2s`     — latest pass succeeded (green)
+///   `cons:19/23 err 3.4s` — latest pass had errors (red)
+/// Returns `None` when the state carries no latest-run info.
+fn render_consolidation(
+    cons: &crate::state::ConsolidationStats,
+) -> Option<String> {
+    let phase_count = cons.latest_run_phase_count?;
+    let dur_ms = cons.latest_run_wall_duration_ms?;
+    let errors = cons.latest_run_error_count.unwrap_or(0);
+    let dur_s = dur_ms as f64 / 1000.0;
+
+    if errors == 0 {
+        Some(format!(
+            "{GREEN}cons:{phase_count}\u{2713} {dur_s:.1}s{RESET}"
+        ))
+    } else {
+        // Partial: (phase_count - errors of passes-with-errors) / total
+        let ok = phase_count.saturating_sub(errors);
+        Some(format!(
+            "{RED}cons:{ok}/{phase_count} err {dur_s:.1}s{RESET}"
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::ConsolidationStats;
+
+    fn cons_with(
+        phase_count: Option<u64>,
+        duration_ms: Option<u64>,
+        errors: Option<u64>,
+    ) -> ConsolidationStats {
+        ConsolidationStats {
+            latest_run_id: Some("01HX".into()),
+            latest_run_ts_secs: Some(1),
+            latest_run_wall_duration_ms: duration_ms,
+            latest_run_error_count: errors,
+            latest_run_phase_count: phase_count,
+            latest_run_trace_id: None,
+            rolling_24h_pass_count: Some(0),
+            rolling_24h_error_passes: Some(0),
+        }
+    }
+
+    #[test]
+    fn render_consolidation_green_when_no_errors() {
+        let c = cons_with(Some(23), Some(1234), Some(0));
+        let out = render_consolidation(&c).expect("segment");
+        assert!(out.contains("cons:23\u{2713} 1.2s"), "got: {out}");
+    }
+
+    #[test]
+    fn render_consolidation_red_when_errors_present() {
+        let c = cons_with(Some(23), Some(3400), Some(2));
+        let out = render_consolidation(&c).expect("segment");
+        assert!(out.contains("cons:21/23 err 3.4s"), "got: {out}");
+    }
+
+    #[test]
+    fn render_consolidation_absent_when_missing_fields() {
+        let c = cons_with(None, Some(1000), Some(0));
+        assert!(render_consolidation(&c).is_none());
+        let c = cons_with(Some(23), None, Some(0));
+        assert!(render_consolidation(&c).is_none());
+    }
 }

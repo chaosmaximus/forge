@@ -35,6 +35,26 @@ pub struct HudState {
     /// Active sessions across all projects
     #[serde(default)]
     pub sessions: Vec<SessionEntry>,
+    /// Phase 2A-4d.2 T6: latest consolidate_pass_completed summary. Absent
+    /// when no pass has fired in this daemon's lifetime or the cache is
+    /// stale (> 2× consolidation_interval_secs old at read time).
+    #[serde(default)]
+    pub consolidation: Option<ConsolidationStats>,
+}
+
+/// Summary of the most recent `consolidate_pass_completed` event, rendered
+/// in the HUD line3 as `cons:23✓ 1.2s` or `cons:19/23 err 3.4s`.
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct ConsolidationStats {
+    pub latest_run_id: Option<String>,
+    pub latest_run_ts_secs: Option<i64>,
+    pub latest_run_wall_duration_ms: Option<u64>,
+    pub latest_run_error_count: Option<u64>,
+    pub latest_run_phase_count: Option<u64>,
+    pub latest_run_trace_id: Option<String>,
+    pub rolling_24h_pass_count: Option<u64>,
+    pub rolling_24h_error_passes: Option<u64>,
 }
 
 #[derive(Deserialize, Default, Clone)]

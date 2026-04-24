@@ -307,7 +307,15 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
 
     // Sessions are tracked via events (not DB query — avoids WAL visibility issues)
 
-    serde_json::json!({
+    // Phase 2A-4d.2 T6: consolidation segment. Rebuilt from the event payload
+    // on `consolidate_pass_completed` (cheap — no SQL for run fields, one
+    // query for the 24h rollup). On every OTHER event, we carry over the
+    // previously-written value from hud-state.json if it's still fresh
+    // (<= 2× configured consolidation_interval_secs). This keeps the HUD
+    // segment cheap for high-frequency events like extraction progress.
+    let consolidation = build_consolidation_field(&conn, event);
+
+    let mut out = serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "memory": {
             "decisions": decisions,
@@ -325,7 +333,106 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
         "projects": projects,
         "sessions": [],
         "team": {},
-    })
+    });
+    if let Some(cons) = consolidation {
+        out["consolidation"] = cons;
+    }
+    out
+}
+
+/// Phase 2A-4d.2 T6 — populate `hud-state.json.consolidation` from the
+/// incoming event when it's a pass-completion; otherwise carry over the
+/// previously-written value if it's still fresh. Returns `None` when there
+/// is no known pass OR the cached value is older than 2×
+/// consolidation_interval_secs (first-boot and post-restart staleness guard).
+fn build_consolidation_field(
+    conn: &rusqlite::Connection,
+    event: &ForgeEvent,
+) -> Option<serde_json::Value> {
+    if event.event == "consolidate_pass_completed" {
+        build_consolidation_from_event(conn, event)
+    } else {
+        read_last_consolidation_from_hud_state_file()
+    }
+}
+
+fn build_consolidation_from_event(
+    conn: &rusqlite::Connection,
+    event: &ForgeEvent,
+) -> Option<serde_json::Value> {
+    let d = &event.data;
+    // All tolerant reads — missing / wrong-type fields yield None and the
+    // segment is omitted from the HUD (renderer treats absence as "no data").
+    let latest_run_id = d.get("run_id").and_then(|v| v.as_str()).map(String::from)?;
+    let latest_run_duration_ms = d.get("pass_wall_duration_ms").and_then(|v| v.as_u64())?;
+    let latest_run_phase_count = d.get("phase_count").and_then(|v| v.as_u64())?;
+    let latest_run_error_count = d.get("error_count").and_then(|v| v.as_u64()).unwrap_or(0);
+    let latest_run_trace_id = d.get("trace_id").and_then(|v| v.as_str()).map(String::from);
+
+    // 24h rollup — one query per pass (~1/30min at default cadence).
+    // Uses the timestamp index.
+    let cutoff_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64 - 86_400)
+        .unwrap_or(0);
+    let (pass_count, error_passes): (u64, u64) = conn
+        .query_row(
+            r#"SELECT
+                COUNT(DISTINCT json_extract(metadata_json, '$.run_id')) AS pass_count,
+                SUM(CASE WHEN COALESCE(json_extract(metadata_json, '$.error_count'), 0) > 0
+                         THEN 1 ELSE 0 END) AS err_passes
+               FROM kpi_events
+               WHERE timestamp >= ?1
+                 AND event_type = 'phase_completed'"#,
+            rusqlite::params![cutoff_secs],
+            |r| {
+                let pc: i64 = r.get(0)?;
+                let ep: i64 = r.get::<_, Option<i64>>(1)?.unwrap_or(0);
+                Ok((pc.max(0) as u64, ep.max(0) as u64))
+            },
+        )
+        .unwrap_or((0, 0));
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    Some(serde_json::json!({
+        "latest_run_id": latest_run_id,
+        "latest_run_ts_secs": now_secs,
+        "latest_run_wall_duration_ms": latest_run_duration_ms,
+        "latest_run_error_count": latest_run_error_count,
+        "latest_run_phase_count": latest_run_phase_count,
+        "latest_run_trace_id": latest_run_trace_id,
+        "rolling_24h_pass_count": pass_count,
+        "rolling_24h_error_passes": error_passes,
+    }))
+}
+
+/// Read the previously-written consolidation subtree from `hud-state.json`.
+/// Returns `None` if the file is missing, unparseable, or the cached
+/// timestamp is older than 2× consolidation_interval_secs.
+fn read_last_consolidation_from_hud_state_file() -> Option<serde_json::Value> {
+    let hud_path = resolve_hud_dir().join("hud-state.json");
+    let content = std::fs::read_to_string(&hud_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let cons = parsed.get("consolidation")?.clone();
+
+    // Staleness guard: if the cached latest_run_ts_secs is older than
+    // 2× the configured consolidation interval, don't serve it.
+    let cfg = crate::config::load_config();
+    let max_age_secs = (cfg.workers.consolidation_interval_secs * 2) as i64;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let ts = cons.get("latest_run_ts_secs")?.as_i64()?;
+    if now_secs.saturating_sub(ts) > max_age_secs {
+        None
+    } else {
+        Some(cons)
+    }
 }
 
 #[cfg(test)]
@@ -378,5 +485,75 @@ mod tests {
         let restored: ForgeEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.event, "extraction");
         assert_eq!(restored.data["memory_id"], "abc123");
+    }
+
+    // ── Phase 2A-4d.2 T6: HUD consolidation segment ──
+
+    fn seed_conn_for_events() -> rusqlite::Connection {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn build_consolidation_from_event_populates_all_fields() {
+        let conn = seed_conn_for_events();
+        let event = ForgeEvent {
+            event: "consolidate_pass_completed".to_string(),
+            data: serde_json::json!({
+                "event_schema_version": 1,
+                "run_id": "01HX_TEST_RUN",
+                "correlation_id": "01HX_TEST_RUN",
+                "trace_id": null,
+                "pass_wall_duration_ms": 1234u64,
+                "phase_count": 23u64,
+                "error_count": 0u64,
+                "stats": {}
+            }),
+            timestamp: "1712000000".to_string(),
+        };
+        let cons = build_consolidation_from_event(&conn, &event).expect("field");
+        assert_eq!(cons["latest_run_id"], "01HX_TEST_RUN");
+        assert_eq!(cons["latest_run_wall_duration_ms"], 1234);
+        assert_eq!(cons["latest_run_phase_count"], 23);
+        assert_eq!(cons["latest_run_error_count"], 0);
+        assert!(cons["latest_run_trace_id"].is_null());
+        // 24h rollup on empty DB should be zeros.
+        assert_eq!(cons["rolling_24h_pass_count"], 0);
+        assert_eq!(cons["rolling_24h_error_passes"], 0);
+    }
+
+    #[test]
+    fn build_consolidation_from_event_tolerates_missing_required_fields() {
+        let conn = seed_conn_for_events();
+        // Missing pass_wall_duration_ms → returns None (segment omitted).
+        let event = ForgeEvent {
+            event: "consolidate_pass_completed".to_string(),
+            data: serde_json::json!({
+                "run_id": "x",
+                "phase_count": 23u64,
+            }),
+            timestamp: "1712000000".to_string(),
+        };
+        assert!(build_consolidation_from_event(&conn, &event).is_none());
+    }
+
+    #[test]
+    fn build_consolidation_field_carries_over_on_non_pass_events() {
+        // On an extraction event, the function calls
+        // read_last_consolidation_from_hud_state_file which returns None when
+        // the file doesn't exist. Verify it gracefully returns None rather
+        // than panicking.
+        let conn = seed_conn_for_events();
+        let event = ForgeEvent {
+            event: "extraction".to_string(),
+            data: serde_json::json!({}),
+            timestamp: "1712000000".to_string(),
+        };
+        // Should not panic; may or may not return Some depending on
+        // ambient hud-state.json presence on the test host. Just assert
+        // no crash.
+        let _ = build_consolidation_field(&conn, &event);
     }
 }
