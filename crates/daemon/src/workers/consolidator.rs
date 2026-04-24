@@ -723,7 +723,7 @@ pub fn run_all_phases(
         .action("review_protocols", "{}")
         .build(conn)
         {
-            eprintln!("[consolidator] notification failed: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, topic = "protocol_suggestion", "notification build failed");
         }
         notifs_generated += 1;
     }
@@ -770,7 +770,7 @@ pub fn run_all_phases(
                 "consolidator",
             )
             .topic("quality_decline")
-            .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
+            .build(conn) { tracing::warn!(target: "forge::consolidator", error = %e, topic = "quality_decline", "notification build failed"); }
             notifs_generated += 1;
         } else if avg_quality >= 0.3 {
             // Auto-dismiss existing quality decline notifications — condition resolved
@@ -838,8 +838,11 @@ pub fn run_all_phases(
             )
             .with_confidence(0.6);
             if let Err(e) = ops::remember(conn, &decision_mem) {
-                eprintln!(
-                    "[consolidator] auto-synthesis store failed for meeting {meeting_id}: {e}"
+                tracing::warn!(
+                    target: "forge::consolidator",
+                    meeting_id = %meeting_id,
+                    error = %e,
+                    "auto-synthesis store failed"
                 );
             }
 
@@ -848,7 +851,7 @@ pub fn run_all_phases(
                 "UPDATE meeting SET status = 'timed_out', synthesis = ?2 WHERE id = ?1",
                 rusqlite::params![meeting_id, synthesis],
             ) {
-                eprintln!("[consolidator] meeting timeout update failed: {e}");
+                tracing::warn!(target: "forge::consolidator", error = %e, "meeting timeout update failed");
             }
 
             if let Err(e) = crate::notifications::NotificationBuilder::new(
@@ -860,7 +863,7 @@ pub fn run_all_phases(
             )
             .topic("meeting_timeout")
             .source_id(meeting_id)
-            .build(conn) { eprintln!("[consolidator] notification failed: {e}"); }
+            .build(conn) { tracing::warn!(target: "forge::consolidator", error = %e, topic = "meeting_timeout", "notification build failed"); }
             notifs_generated += 1;
         }
     }
@@ -1014,7 +1017,7 @@ pub fn detect_content_contradictions(conn: &Connection) -> usize {
     ) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[consolidator] content contradiction query error: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "content contradiction query failed");
             return 0;
         }
     };
@@ -1036,13 +1039,13 @@ pub fn detect_content_contradictions(conn: &Connection) -> usize {
     }) {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
         Err(e) => {
-            eprintln!("[consolidator] content contradiction row error: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "content contradiction row iteration failed");
             return 0;
         }
     };
 
     if rows.is_empty() {
-        eprintln!("[consolidator] content contradiction: 0 candidate memories");
+        tracing::debug!(target: "forge::consolidator", "content contradiction: 0 candidate memories");
         return 0;
     }
 
@@ -1158,7 +1161,7 @@ pub fn detect_content_contradictions(conn: &Connection) -> usize {
                 expires_at: forge_core::time::now_offset(86400),
             };
             if let Err(e) = store_diagnostic(conn, &diag) {
-                eprintln!("[consolidator] content contradiction diagnostic error: {e}");
+                tracing::warn!(target: "forge::consolidator", error = %e, "content contradiction diagnostic store failed");
                 continue;
             }
 
@@ -1194,7 +1197,7 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
     )) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[consolidator] synthesize query error: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "synthesize query failed");
             return 0;
         }
     };
@@ -1227,7 +1230,7 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
     }) {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
         Err(e) => {
-            eprintln!("[consolidator] synthesize row error: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "synthesize row iteration failed");
             return 0;
         }
     };
@@ -1305,11 +1308,11 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
 
             // Transaction: resolution insert + supersede originals (atomic)
             if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
-                eprintln!("[consolidator] failed to begin transaction: {e}");
+                tracing::warn!(target: "forge::consolidator", error = %e, "synthesize: failed to begin transaction");
                 continue;
             }
             if let Err(e) = ops::remember(conn, &resolution) {
-                eprintln!("[consolidator] failed to store resolution: {e}");
+                tracing::warn!(target: "forge::consolidator", error = %e, "synthesize: failed to store resolution");
                 let _ = conn.execute_batch("ROLLBACK");
                 continue;
             }
@@ -1326,7 +1329,7 @@ pub fn synthesize_contradictions(conn: &Connection, batch_limit: usize) -> usize
                     )
                     .is_err()
             {
-                eprintln!("[consolidator] failed to supersede originals — rolling back");
+                tracing::warn!(target: "forge::consolidator", "synthesize: failed to supersede originals — rolling back");
                 let _ = conn.execute_batch("ROLLBACK");
                 continue;
             }
@@ -1348,7 +1351,7 @@ pub fn detect_and_surface_gaps(conn: &Connection) -> usize {
     let gaps = match crate::db::manas::detect_knowledge_gaps(conn, None) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("[consolidator] knowledge gap detection error: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "knowledge gap detection failed");
             return 0;
         }
     };
@@ -1390,7 +1393,7 @@ pub fn detect_and_surface_gaps(conn: &Connection) -> usize {
         };
 
         if let Err(e) = crate::db::manas::store_perception(conn, &p) {
-            eprintln!("[consolidator] failed to store gap perception: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "failed to store gap perception");
             continue;
         }
         count += 1;
@@ -1414,7 +1417,7 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
     )) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[consolidator] reweave query error: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "reweave query failed");
             return 0;
         }
     };
@@ -1445,7 +1448,7 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
     }) {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
         Err(e) => {
-            eprintln!("[consolidator] reweave row error: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "reweave row iteration failed");
             return 0;
         }
     };
@@ -1511,7 +1514,7 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
 
             // Transaction: read current content, enrich, mark newer as merged (atomic)
             if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
-                eprintln!("[consolidator] reweave begin error: {e}");
+                tracing::warn!(target: "forge::consolidator", error = %e, "reweave begin transaction failed");
                 continue;
             }
             // Re-read content inside transaction to avoid TOCTOU race
@@ -1541,12 +1544,12 @@ pub fn reweave_memories(conn: &Connection, batch_limit: usize, reweave_limit: us
                 || update1.unwrap_or(0) != 1
                 || update2.unwrap_or(0) != 1
             {
-                eprintln!("[consolidator] reweave update error — rolling back");
+                tracing::warn!(target: "forge::consolidator", "reweave update error — rolling back");
                 let _ = conn.execute_batch("ROLLBACK");
                 continue;
             }
             if let Err(e) = conn.execute_batch("COMMIT") {
-                eprintln!("[consolidator] reweave commit error: {e}");
+                tracing::warn!(target: "forge::consolidator", error = %e, "reweave commit failed");
                 continue;
             }
 
@@ -1571,7 +1574,7 @@ pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
     )) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[consolidator] quality score query error: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "quality score query failed");
             return 0;
         }
     };
@@ -1596,7 +1599,7 @@ pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
     }) {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
         Err(e) => {
-            eprintln!("[consolidator] quality score row error: {e}");
+            tracing::warn!(target: "forge::consolidator", error = %e, "quality score row iteration failed");
             return 0;
         }
     };
@@ -1622,9 +1625,11 @@ pub fn score_memory_quality(conn: &Connection, batch_limit: usize) -> usize {
             "UPDATE memory SET quality_score = ?1 WHERE id = ?2",
             rusqlite::params![quality_score, row.id],
         ) {
-            eprintln!(
-                "[consolidator] quality score update error for {}: {e}",
-                row.id
+            tracing::warn!(
+                target: "forge::consolidator",
+                memory_id = %row.id,
+                error = %e,
+                "quality score update failed"
             );
             continue;
         }
@@ -2027,7 +2032,7 @@ pub fn heal_topic_supersedes(
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[healing] failed to prepare candidate query: {e}");
+            tracing::warn!(target: "forge::consolidator::healing", error = %e, "failed to prepare candidate query");
             return stats;
         }
     };
@@ -2193,7 +2198,7 @@ pub fn heal_topic_supersedes(
 
             // Insert edge
             if let Err(e) = ops::store_edge(conn, new_id, old_id, "supersedes", "{}") {
-                eprintln!("[healing] edge insert failed for {new_id} -> {old_id}: {e}");
+                tracing::warn!(target: "forge::consolidator::healing", new_id = %new_id, old_id = %old_id, error = %e, "edge insert failed");
             }
 
             // Insert healing_log
@@ -2210,7 +2215,7 @@ pub fn heal_topic_supersedes(
                     format!("Same topic (overlap={:.2}), newer memory supersedes older", overlap),
                 ],
             ) {
-                eprintln!("[healing] healing_log insert failed: {e}");
+                tracing::warn!(target: "forge::consolidator::healing", error = %e, action = "auto_superseded", "healing_log insert failed");
             }
 
             already_superseded.insert(old_id.clone());
@@ -2219,9 +2224,12 @@ pub fn heal_topic_supersedes(
     }
 
     if stats.topic_superseded > 0 {
-        eprintln!(
-            "[healing] topic supersede: {} superseded, {} candidates, {} false positives skipped",
-            stats.topic_superseded, stats.candidates_found, stats.false_positives_skipped
+        tracing::info!(
+            target: "forge::consolidator::healing",
+            superseded = stats.topic_superseded,
+            candidates = stats.candidates_found,
+            false_positives_skipped = stats.false_positives_skipped,
+            "topic supersede summary"
         );
     }
 
@@ -2295,7 +2303,7 @@ pub fn heal_session_staleness(conn: &Connection, config: &crate::config::Healing
                     now
                 ],
             ) {
-                eprintln!("[healing] healing_log insert failed: {e}");
+                tracing::warn!(target: "forge::consolidator::healing", error = %e, action = "auto_faded", "healing_log insert failed");
             }
         }
     }
@@ -2354,7 +2362,7 @@ pub async fn run_consolidator(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    eprintln!("[consolidator] started, interval = {interval:?}");
+    tracing::info!(target: "forge::consolidator", ?interval, "started");
 
     loop {
         tokio::select! {
@@ -2398,7 +2406,7 @@ pub async fn run_consolidator(
                 }
             }
             _ = shutdown_rx.changed() => {
-                eprintln!("[consolidator] shutting down");
+                tracing::info!(target: "forge::consolidator", "shutting down");
                 return;
             }
         }
