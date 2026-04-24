@@ -38,6 +38,32 @@ try:
 except: print('0')
 " 2>/dev/null)
 
+# Phase 23 data feed: record every bash invocation (success + failure) so
+# session_tool_call has real data for the consolidator. Silent failure if
+# the daemon is down — the hook stays fire-and-forget (2P-1b §10.5).
+if [ -n "$CMD" ]; then
+    SESSION_ID="${CLAUDE_SESSION_ID:-}"
+    if [ -z "$SESSION_ID" ]; then
+        FORGE_SESSION_DIR="${XDG_RUNTIME_DIR:-$HOME/.forge/sessions}"
+        CWD_HASH=$(echo "${CLAUDE_CWD:-$(pwd)}" | md5sum | cut -d' ' -f1)
+        SESSION_FILE="$FORGE_SESSION_DIR/forge-session-${CWD_HASH}"
+        if [ -f "$SESSION_FILE" ] && [ ! -L "$SESSION_FILE" ]; then
+            SESSION_ID=$(cat "$SESSION_FILE" 2>/dev/null || true)
+        fi
+    fi
+    if [ -n "$SESSION_ID" ]; then
+        TOOL_ARGS=$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1]}))' "$CMD" 2>/dev/null || echo '{}')
+        SUCCESS_FLAG=true
+        [ "$EXIT_CODE" = "0" ] || SUCCESS_FLAG=false
+        timeout 3 "$FORGE_NEXT" record-tool-use \
+            --session-id "$SESSION_ID" \
+            --agent claude-code \
+            --tool-name Bash \
+            --tool-args "$TOOL_ARGS" \
+            --success "$SUCCESS_FLAG" 2>/dev/null || true
+    fi
+fi
+
 [ -z "$CMD" ] && exit 0
 [ "$EXIT_CODE" = "0" ] && exit 0  # Silent on success
 

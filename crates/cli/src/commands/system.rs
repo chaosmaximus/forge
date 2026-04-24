@@ -731,6 +731,44 @@ pub async fn register_session(
     }
 }
 
+/// Record a tool-call observation for Phase 23 behavioral skill inference.
+///
+/// Hooks (post-bash.sh, post-edit.sh) shell out to this to populate
+/// `session_tool_call`. Silent on success — non-zero exit only on daemon
+/// errors, never on user input issues (hook path must stay fire-and-forget).
+pub async fn record_tool_use(
+    session_id: String,
+    agent: String,
+    tool_name: String,
+    tool_args_json: String,
+    tool_result_summary: String,
+    success: bool,
+    user_correction_flag: bool,
+) {
+    let tool_args: serde_json::Value = serde_json::from_str(&tool_args_json).unwrap_or_else(|_| {
+        // Preserve the raw string as a JSON string so Phase 23 can still
+        // infer arg-keys from well-formed callers; malformed JSON from the
+        // hook path is usually due to sed escaping, not data loss.
+        serde_json::Value::String(tool_args_json.clone())
+    });
+
+    match client::send(&Request::RecordToolUse {
+        session_id,
+        agent,
+        tool_name,
+        tool_args,
+        tool_result_summary,
+        success,
+        user_correction_flag,
+    })
+    .await
+    {
+        Ok(Response::Ok { .. }) => {}
+        Ok(Response::Error { message }) => eprintln!("record-tool-use: {message}"),
+        Err(e) => eprintln!("record-tool-use: {e}"),
+    }
+}
+
 /// End an active agent session.
 pub async fn end_session(id: String) {
     match client::send(&Request::EndSession { id: id.clone() }).await {

@@ -236,6 +236,32 @@ enum Commands {
         #[arg(long)]
         id: String,
     },
+    /// Record a tool-call observation into the session_tool_call table
+    /// (hook-facing — Phase 23 consumes this).
+    #[command(name = "record-tool-use")]
+    RecordToolUse {
+        /// Session ID the tool call belongs to
+        #[arg(long)]
+        session_id: String,
+        /// Agent name (claude-code, codex, cline, etc.)
+        #[arg(long)]
+        agent: String,
+        /// Tool name (Bash, Edit, Read, etc.)
+        #[arg(long)]
+        tool_name: String,
+        /// JSON object with the tool call arguments (default: {})
+        #[arg(long, default_value = "{}")]
+        tool_args: String,
+        /// Short summary of tool result (default: empty)
+        #[arg(long, default_value = "")]
+        tool_result_summary: String,
+        /// Whether the tool call succeeded (default: true)
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        success: bool,
+        /// Whether the user issued a correction afterward (default: false)
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        user_correction_flag: bool,
+    },
     /// Cleanup sessions: end sessions matching prefix/age filters
     #[command(name = "cleanup-sessions")]
     CleanupSessions {
@@ -1324,6 +1350,26 @@ async fn main() {
         }
         Commands::EndSession { id } => {
             commands::system::end_session(id).await;
+        }
+        Commands::RecordToolUse {
+            session_id,
+            agent,
+            tool_name,
+            tool_args,
+            tool_result_summary,
+            success,
+            user_correction_flag,
+        } => {
+            commands::system::record_tool_use(
+                session_id,
+                agent,
+                tool_name,
+                tool_args,
+                tool_result_summary,
+                success,
+                user_correction_flag,
+            )
+            .await;
         }
         Commands::CleanupSessions {
             prefix,

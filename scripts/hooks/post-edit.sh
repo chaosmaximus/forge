@@ -17,21 +17,44 @@ if ! command -v "$FORGE_NEXT" &>/dev/null; then
 fi
 command -v "$FORGE_NEXT" &>/dev/null || exit 0
 
-# Extract file path from tool result (multiple possible field names)
-FILE=$(echo "$INPUT" | python3 -c "
+# Extract tool name, file path, and raw tool_input (multiple field names).
+# Tab-separated so the tool_args JSON (which contains spaces) parses cleanly.
+IFS=$'\t' read -r TOOL_NAME FILE TOOL_ARGS < <(echo "$INPUT" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
+    tn = data.get('tool_name', data.get('toolName', 'Edit'))
     ti = data.get('tool_input', data.get('toolInput', {}))
-    print(ti.get('file_path', ti.get('filePath', ti.get('path', ''))))
+    fp = ti.get('file_path', ti.get('filePath', ti.get('path', '')))
+    print(f'{tn}\t{fp}\t{json.dumps(ti)}')
 except:
-    print('')
+    print('Edit\t\t{}')
 " 2>/dev/null)
 
 [ -z "$FILE" ] && exit 0
 
 # Security: reject paths with shell metacharacters
 [[ "$FILE" =~ [';|&$`\\'] ]] && exit 0
+
+# Phase 23 data feed: record every edit so session_tool_call has data
+# for the consolidator. Silent failure if the daemon is down (2P-1b §10.5).
+SESSION_ID="${CLAUDE_SESSION_ID:-}"
+if [ -z "$SESSION_ID" ]; then
+    FORGE_SESSION_DIR="${XDG_RUNTIME_DIR:-$HOME/.forge/sessions}"
+    CWD_HASH=$(echo "${CLAUDE_CWD:-$(pwd)}" | md5sum | cut -d' ' -f1)
+    SESSION_FILE="$FORGE_SESSION_DIR/forge-session-${CWD_HASH}"
+    if [ -f "$SESSION_FILE" ] && [ ! -L "$SESSION_FILE" ]; then
+        SESSION_ID=$(cat "$SESSION_FILE" 2>/dev/null || true)
+    fi
+fi
+if [ -n "$SESSION_ID" ]; then
+    timeout 3 "$FORGE_NEXT" record-tool-use \
+        --session-id "$SESSION_ID" \
+        --agent claude-code \
+        --tool-name "$TOOL_NAME" \
+        --tool-args "$TOOL_ARGS" \
+        --success true 2>/dev/null || true
+fi
 
 # Run post-edit check (non-blocking — 5s timeout in hooks.json)
 RESULT=$("$FORGE_NEXT" post-edit-check --file "$FILE" 2>/dev/null || echo "")
