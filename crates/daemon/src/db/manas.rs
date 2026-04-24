@@ -875,9 +875,16 @@ pub fn record_skill_result(
 /// Only removes skills with zero success_count to avoid deleting proven workflows.
 /// Behavioral skills are exempt from the "no steps" check since they don't have steps.
 pub fn prune_junk_skills(conn: &Connection) -> rusqlite::Result<usize> {
+    // Phase 23 inferred skills look like junk by every heuristic (steps='[]',
+    // empty description, success_count=0, skill_type='behavioral' *should*
+    // exempt them but we also hard-exempt inferred_at IS NOT NULL so a
+    // future write that forgets skill_type still can't wipe the row
+    // (T10 review Codex-H1, defense-in-depth).
     conn.execute(
         "DELETE FROM skill WHERE
          skill_type != 'behavioral'
+         AND inferred_at IS NULL
+         AND source != 'inferred'
          AND (steps = '[]' OR steps = '' OR LENGTH(description) < 50)
          AND success_count = 0",
         [],
@@ -2445,6 +2452,47 @@ mod tests {
         let remaining = list_skills(&conn, None).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].name, "Deploy Rust");
+    }
+
+    #[test]
+    fn test_prune_exempts_phase23_inferred_skills() {
+        // T10 review Codex-H1 regression guard: Phase 23 inferred rows look
+        // like junk by every heuristic (steps='[]', empty description,
+        // success_count=0). Without the inferred_at / source='inferred'
+        // exemption, prune_junk_skills would wipe every inferred skill at
+        // daemon startup.
+        let conn = open_db();
+
+        conn.execute(
+            "INSERT INTO skill
+             (id, name, domain, description, steps, source, skill_type,
+              agent, fingerprint, inferred_from, inferred_at, success_count)
+             VALUES ('inferred1', 'Inferred: Bash+Edit+Read [deadbeef]',
+                     'file-ops', '', '[]', 'inferred', 'behavioral',
+                     'claude-code', 'deadbeefcafe1234',
+                     '[\"SA\",\"SB\",\"SC\"]', '2026-04-24T00:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+
+        // Also a legacy junk row to prove prune still works.
+        conn.execute(
+            "INSERT INTO skill
+             (id, name, domain, description, steps, source, skill_type,
+              agent, fingerprint, inferred_from, success_count)
+             VALUES ('junk1', 'All Tasks Complete', 'tasks', 'Done', '[]',
+                     'extracted', 'procedural', 'claude-code', '',
+                     '[]', 0)",
+            [],
+        )
+        .unwrap();
+
+        let pruned = prune_junk_skills(&conn).unwrap();
+        assert_eq!(pruned, 1, "only the non-inferred junk row should be pruned");
+
+        let remaining = list_skills(&conn, None).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "inferred1");
     }
 
     #[test]

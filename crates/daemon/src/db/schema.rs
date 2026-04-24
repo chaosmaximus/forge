@@ -785,11 +785,17 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         [],
     );
     let _ = conn.execute("ALTER TABLE skill ADD COLUMN inferred_at TEXT", []);
-    // Partial unique index on (agent, fingerprint) — gated on non-empty fingerprint
-    // so existing rows with default '' do not collide. Safe to re-run (IF NOT EXISTS).
+    // Partial unique index on (agent, project, fingerprint) — gated on non-empty
+    // fingerprint so existing rows with default '' do not collide. Project is
+    // included so the same behavior pattern in different projects produces
+    // distinct rows (T10 review Codex-H2). Safe to re-run (IF NOT EXISTS).
+    //
+    // Drop the pre-Codex-H2 index name if present so re-running schema init
+    // against an older DB migrates cleanly.
     let _ = conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_agent_fingerprint
-            ON skill(agent, fingerprint)
+        "DROP INDEX IF EXISTS idx_skill_agent_fingerprint;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_agent_project_fingerprint
+            ON skill(agent, project, fingerprint)
             WHERE fingerprint != '';",
     );
 
@@ -2380,11 +2386,13 @@ mod tests {
             "inferred_at column must be TEXT NULL"
         );
 
-        // Partial unique index present, gated on fingerprint != ''.
+        // Partial unique index present, gated on fingerprint != '',
+        // and scoped per project so cross-project patterns don't collide
+        // (T10 review Codex-H2).
         let idx_sql: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master
-                 WHERE type='index' AND name='idx_skill_agent_fingerprint'",
+                 WHERE type='index' AND name='idx_skill_agent_project_fingerprint'",
                 [],
                 |row| row.get(0),
             )
@@ -2392,12 +2400,26 @@ mod tests {
         assert!(
             idx_sql.contains("UNIQUE")
                 && idx_sql.contains("agent")
+                && idx_sql.contains("project")
                 && idx_sql.contains("fingerprint"),
-            "expected partial unique index on (agent, fingerprint); got: {idx_sql}"
+            "expected partial unique index on (agent, project, fingerprint); got: {idx_sql}"
         );
         assert!(
             idx_sql.to_lowercase().contains("where") && idx_sql.contains("fingerprint"),
             "expected WHERE fingerprint != '' partial predicate; got: {idx_sql}"
+        );
+        // Pre-Codex-H2 index name must not coexist.
+        let legacy_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_skill_agent_fingerprint'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            legacy_count, 0,
+            "legacy idx_skill_agent_fingerprint must be dropped by the migration"
         );
     }
 
@@ -2428,7 +2450,7 @@ mod tests {
         let idx_count_before: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type='index' AND name='idx_skill_agent_fingerprint'",
+                 WHERE type='index' AND name='idx_skill_agent_project_fingerprint'",
                 [],
                 |row| row.get(0),
             )
@@ -2440,8 +2462,12 @@ mod tests {
 
         // Rollback recipe (documented in spec §6 / this test's commit message).
         // SQLite 3.35+ supports ALTER TABLE ... DROP COLUMN directly.
+        // Drop both the current and the pre-Codex-H2 index names so the
+        // recipe is correct regardless of which schema the DB was migrated
+        // from.
         conn.execute_batch(
             "
+            DROP INDEX IF EXISTS idx_skill_agent_project_fingerprint;
             DROP INDEX IF EXISTS idx_skill_agent_fingerprint;
             ALTER TABLE skill DROP COLUMN inferred_at;
             ALTER TABLE skill DROP COLUMN inferred_from;
@@ -2455,12 +2481,14 @@ mod tests {
         let idx_after: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type='index' AND name='idx_skill_agent_fingerprint'",
+                 WHERE type='index'
+                   AND name IN ('idx_skill_agent_project_fingerprint',
+                                'idx_skill_agent_fingerprint')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(idx_after, 0, "partial unique index should be dropped");
+        assert_eq!(idx_after, 0, "partial unique indexes should be dropped");
 
         // None of the 4 Phase 23 columns exist in PRAGMA table_info any more.
         let cols: Vec<String> = conn

@@ -1295,13 +1295,17 @@ pub fn infer_skills_from_behavior(
     };
     use std::collections::{BTreeMap, BTreeSet};
 
-    // Step 1: SELECT clean rows within the window.
+    // Step 1: SELECT clean rows within the window. Join the session table to
+    // carry project through — otherwise inferred skills are project-NULL and
+    // leak across every project on recall (T10 review Codex-H2).
     let sql = format!(
-        "SELECT agent, session_id, tool_name, tool_args
-         FROM session_tool_call
-         WHERE success = 1 AND user_correction_flag = 0
-           AND created_at > datetime('now', '-{window_days} days')
-         ORDER BY agent, session_id, created_at"
+        "SELECT stc.agent, stc.session_id, stc.tool_name, stc.tool_args,
+                COALESCE(s.project, '') AS project
+         FROM session_tool_call AS stc
+         LEFT JOIN session AS s ON s.id = stc.session_id
+         WHERE stc.success = 1 AND stc.user_correction_flag = 0
+           AND stc.created_at > datetime('now', '-{window_days} days')
+         ORDER BY stc.agent, COALESCE(s.project, ''), stc.session_id, stc.created_at"
     );
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -1310,12 +1314,13 @@ pub fn infer_skills_from_behavior(
             return 0;
         }
     };
-    let rows: Vec<(String, String, String, String)> = match stmt.query_map([], |row| {
+    let rows: Vec<(String, String, String, String, String)> = match stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
         ))
     }) {
         Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
@@ -1325,9 +1330,9 @@ pub fn infer_skills_from_behavior(
         }
     };
 
-    // Step 2: group by (agent, session_id), build per-session fingerprint.
-    let mut per_session: BTreeMap<(String, String), Vec<ToolCall>> = BTreeMap::new();
-    for (agent, session_id, tool_name, tool_args_json) in rows {
+    // Step 2: group by (agent, project, session_id), build per-session fingerprint.
+    let mut per_session: BTreeMap<(String, String, String), Vec<ToolCall>> = BTreeMap::new();
+    for (agent, session_id, tool_name, tool_args_json, project) in rows {
         let arg_keys: Vec<String> = match serde_json::from_str::<serde_json::Value>(&tool_args_json)
         {
             Ok(serde_json::Value::Object(map)) => {
@@ -1345,7 +1350,7 @@ pub fn infer_skills_from_behavior(
             }
         };
         per_session
-            .entry((agent, session_id))
+            .entry((agent, project, session_id))
             .or_default()
             .push(ToolCall {
                 tool_name,
@@ -1353,17 +1358,18 @@ pub fn infer_skills_from_behavior(
             });
     }
 
-    // Step 3: aggregate fingerprints across sessions.
-    //   (agent, fingerprint) -> (sessions, last-seen tool_names_sorted)
-    let mut fp_sessions: BTreeMap<(String, String), (BTreeSet<String>, Vec<String>)> =
-        BTreeMap::new();
-    for ((agent, session_id), calls) in per_session {
+    // Step 3: aggregate fingerprints across sessions, scoped per project.
+    //   (agent, project, fingerprint) -> (sessions, last-seen tool_names_sorted)
+    type FpKey = (String, String, String);
+    type FpBucket = (BTreeSet<String>, Vec<String>);
+    let mut fp_sessions: BTreeMap<FpKey, FpBucket> = BTreeMap::new();
+    for ((agent, project, session_id), calls) in per_session {
         let fp = canonical_fingerprint(&calls);
         let mut names: Vec<String> = calls.iter().map(|c| c.tool_name.clone()).collect();
         names.sort();
         names.dedup();
         let entry = fp_sessions
-            .entry((agent, fp))
+            .entry((agent, project, fp))
             .or_insert_with(|| (BTreeSet::new(), names.clone()));
         entry.0.insert(session_id);
         entry.1 = names;
@@ -1372,7 +1378,7 @@ pub fn infer_skills_from_behavior(
     // Step 4: filter ≥ min_sessions + elevate.
     let now_iso = forge_core::time::now_iso();
     let mut affected = 0_usize;
-    for ((agent, fingerprint), (sessions, tool_names_sorted)) in fp_sessions {
+    for ((agent, project, fingerprint), (sessions, tool_names_sorted)) in fp_sessions {
         if sessions.len() < min_sessions {
             continue;
         }
@@ -1381,16 +1387,35 @@ pub fn infer_skills_from_behavior(
         let inferred_from = serde_json::to_string(&sessions.into_iter().collect::<Vec<String>>())
             .unwrap_or_else(|_| "[]".to_string());
         let id = ulid::Ulid::new().to_string();
+        // Always write project as a TEXT value (possibly empty '') — never
+        // NULL. SQLite treats each NULL as distinct in unique indexes, so a
+        // NULL project would break idempotency on the partial unique index
+        // (agent, project, fingerprint). Recall.rs already maps Some("") to
+        // "global" semantics alongside None.
+        let project_value: &str = project.as_str();
 
-        // SQLite partial-index workaround: the unique index on (agent, fingerprint)
+        // SQLite partial-index workaround: the unique index on (agent, project, fingerprint)
         // is partial (WHERE fingerprint != ''), so ON CONFLICT(cols) DO UPDATE
         // is not usable. Use INSERT OR IGNORE + UPDATE instead.
+        //
+        // skill_type='behavioral' is explicit — without it the column default
+        // 'procedural' matches prune_junk_skills()'s delete predicate and every
+        // inferred row gets wiped at next daemon startup (T10 review Codex-H1).
         let insert_res = conn.execute(
             "INSERT OR IGNORE INTO skill
-             (id, name, domain, description, steps, source,
+             (id, name, domain, description, steps, source, skill_type, project,
               agent, fingerprint, inferred_from, inferred_at, success_count)
-             VALUES (?1, ?2, ?3, '', '[]', 'inferred', ?4, ?5, ?6, ?7, 0)",
-            rusqlite::params![id, name, domain, agent, fingerprint, inferred_from, now_iso,],
+             VALUES (?1, ?2, ?3, '', '[]', 'inferred', 'behavioral', ?4, ?5, ?6, ?7, ?8, 0)",
+            rusqlite::params![
+                id,
+                name,
+                domain,
+                project_value,
+                agent,
+                fingerprint,
+                inferred_from,
+                now_iso,
+            ],
         );
         match insert_res {
             Err(e) => {
@@ -1412,8 +1437,9 @@ pub fn infer_skills_from_behavior(
                             )
                         ),
                         inferred_at = ?2
-                     WHERE agent = ?3 AND fingerprint = ?4",
-                    rusqlite::params![inferred_from, now_iso, agent, fingerprint],
+                     WHERE agent = ?3 AND fingerprint = ?4
+                       AND COALESCE(project, '') = ?5",
+                    rusqlite::params![inferred_from, now_iso, agent, fingerprint, project_value],
                 );
                 match update_res {
                     Ok(n) => affected += n,
@@ -3602,5 +3628,104 @@ mod tests {
             rows,
             vec!["claude-code".to_string(), "codex-cli".to_string()]
         );
+    }
+
+    // ── Phase 2A-4c2 T10 Codex-H2 regression guard ───────────────────────────
+
+    fn seed_session_with_project(conn: &Connection, id: &str, agent: &str, project: &str) {
+        conn.execute(
+            "INSERT INTO session (id, agent, project, started_at, status, organization_id)
+             VALUES (?1, ?2, ?3, '2026-04-19 10:00:00', 'active', 'default')",
+            rusqlite::params![id, agent, project],
+        )
+        .unwrap();
+    }
+
+    fn seed_clean_tool_calls(conn: &Connection, sid: &str, agent: &str) {
+        seed_session_tool_call_row(
+            conn,
+            &format!("{sid}-01"),
+            sid,
+            agent,
+            "Read",
+            r#"{"file_path":"/tmp/a"}"#,
+            1,
+            0,
+            0,
+        );
+        seed_session_tool_call_row(
+            conn,
+            &format!("{sid}-02"),
+            sid,
+            agent,
+            "Edit",
+            r#"{"file_path":"/tmp/a","old_string":"x","new_string":"y"}"#,
+            1,
+            0,
+            0,
+        );
+        seed_session_tool_call_row(
+            conn,
+            &format!("{sid}-03"),
+            sid,
+            agent,
+            "Bash",
+            r#"{"cmd":"cargo test"}"#,
+            1,
+            0,
+            0,
+        );
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_scopes_per_project() {
+        // T10 Codex-H2: the same tool-call pattern used in three sessions of
+        // project "alpha" plus three sessions of project "beta" must elevate
+        // into two rows (one per project), not a single global row. Otherwise
+        // project alpha's pattern leaks into beta's compiled context.
+        let conn = fresh_schema_conn();
+        for sid in ["A1", "A2", "A3"] {
+            seed_session_with_project(&conn, sid, "claude-code", "alpha");
+            seed_clean_tool_calls(&conn, sid, "claude-code");
+        }
+        for sid in ["B1", "B2", "B3"] {
+            seed_session_with_project(&conn, sid, "claude-code", "beta");
+            seed_clean_tool_calls(&conn, sid, "claude-code");
+        }
+
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(elevated, 2, "same fingerprint in two projects → two rows");
+
+        let projects: Vec<String> = conn
+            .prepare("SELECT project FROM skill WHERE inferred_at IS NOT NULL ORDER BY project")
+            .unwrap()
+            .query_map([], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .map(|p| p.unwrap_or_default())
+            .collect();
+        assert_eq!(projects, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_inserts_behavioral_skill_type() {
+        // T10 Codex-H1: inferred skills must be stored with skill_type='behavioral'
+        // so prune_junk_skills does not wipe them on daemon restart.
+        let conn = fresh_schema_conn();
+        seed_clean_sess(&conn, "SA");
+        seed_clean_sess(&conn, "SB");
+        seed_clean_sess(&conn, "SC");
+
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(elevated, 1);
+
+        let skill_type: String = conn
+            .query_row(
+                "SELECT skill_type FROM skill WHERE inferred_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(skill_type, "behavioral");
     }
 }

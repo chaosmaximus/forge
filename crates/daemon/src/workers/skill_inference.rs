@@ -32,7 +32,17 @@ pub fn canonical_fingerprint(calls: &[ToolCall]) -> String {
     tool_names.sort();
     tool_names.dedup();
 
-    let mut arg_shapes: Vec<Vec<String>> = calls.iter().map(|c| c.arg_keys.clone()).collect();
+    // Per-call arg_keys are documented as pre-sorted, but re-sort defensively
+    // so a future direct caller can't silently produce a different hash for
+    // the same behavior (T10 review B1).
+    let mut arg_shapes: Vec<Vec<String>> = calls
+        .iter()
+        .map(|c| {
+            let mut ks = c.arg_keys.clone();
+            ks.sort();
+            ks
+        })
+        .collect();
     arg_shapes.sort();
 
     let canonical = serde_json::json!([tool_names, arg_shapes]);
@@ -136,6 +146,33 @@ mod tests {
         let a = [tc("Bash", &["cmd"])];
         let b = [tc("Bash", &["cmd", "run_id"])];
         assert_ne!(canonical_fingerprint(&a), canonical_fingerprint(&b));
+    }
+
+    #[test]
+    fn canonical_fingerprint_defensively_sorts_per_call_arg_keys() {
+        // T10 review B1 hardening — even if a future caller forgets to pre-sort
+        // arg_keys on a ToolCall, the helper must produce the same hash as the
+        // correctly sorted form.
+        let unsorted = [ToolCall {
+            tool_name: "Edit".to_string(),
+            arg_keys: vec![
+                "new_string".to_string(),
+                "file_path".to_string(),
+                "old_string".to_string(),
+            ],
+        }];
+        let sorted = [ToolCall {
+            tool_name: "Edit".to_string(),
+            arg_keys: vec![
+                "file_path".to_string(),
+                "new_string".to_string(),
+                "old_string".to_string(),
+            ],
+        }];
+        assert_eq!(
+            canonical_fingerprint(&unsorted),
+            canonical_fingerprint(&sorted)
+        );
     }
 
     #[test]
