@@ -41,7 +41,7 @@ pub async fn run_extractor(
     // Default 15s gap = extract roughly every 2-3 conversation turns.
     // At ~65 extractions/day with haiku: ~$1.50/month.
     // Configurable via config.workers.extraction_debounce_secs
-    eprintln!("[extractor] ready, waiting for files ({debounce_secs}s debounce)...");
+    tracing::info!(target: "forge::extractor", debounce_secs, "ready, waiting for files");
 
     loop {
         // Wait for a file event or shutdown
@@ -55,7 +55,7 @@ pub async fn run_extractor(
                     for path in pending.drain() {
                         let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters, &db_path, writer_tx.as_ref()).await;
                     }
-                    eprintln!("[extractor] shutdown received");
+                    tracing::info!(target: "forge::extractor", "shutdown received");
                     return;
                 }
             }
@@ -78,7 +78,7 @@ pub async fn run_extractor(
                         for path in pending.drain() {
                             let _ = process_file(&path, &mut offsets, &state, &config, &agent_adapters, &db_path, writer_tx.as_ref()).await;
                         }
-                        eprintln!("[extractor] shutdown received during debounce");
+                        tracing::info!(target: "forge::extractor", "shutdown received during debounce");
                         return;
                     }
                 }
@@ -88,9 +88,10 @@ pub async fn run_extractor(
         // Process all accumulated files
         let files_to_process: Vec<PathBuf> = pending.drain().collect();
         if !files_to_process.is_empty() {
-            eprintln!(
-                "[extractor] processing {} files after activity gap",
-                files_to_process.len()
+            tracing::info!(
+                target: "forge::extractor",
+                count = files_to_process.len(),
+                "processing files after activity gap"
             );
             for path in &files_to_process {
                 if let Err(e) = process_file(
@@ -104,7 +105,7 @@ pub async fn run_extractor(
                 )
                 .await
                 {
-                    eprintln!("[extractor] error processing {}: {e}", path.display());
+                    tracing::error!(target: "forge::extractor", path = %path.display(), error = %e, "error processing");
                 }
             }
         }
@@ -157,10 +158,11 @@ async fn process_file(
 
     if file_size > MAX_SKIP_SIZE {
         offsets.insert(path.clone(), file_size as usize);
-        eprintln!(
-            "[extractor] file too large ({} bytes > 200MB), skipping: {}",
+        tracing::warn!(
+            target: "forge::extractor",
             file_size,
-            canonical.display()
+            path = %canonical.display(),
+            "file too large (> 200MB), skipping"
         );
         return Ok(());
     }
@@ -207,11 +209,12 @@ async fn process_file(
         }
         let actual_start = tail_start + line_start;
         let tail_str = String::from_utf8_lossy(&buf[line_start..]).to_string();
-        eprintln!(
-            "[extractor] tail-reading last {:.1}MB of {:.1}MB file: {}",
-            tail_str.len() as f64 / 1_048_576.0,
-            file_size as f64 / 1_048_576.0,
-            canonical.display()
+        tracing::info!(
+            target: "forge::extractor",
+            tail_mb = %format!("{:.1}", tail_str.len() as f64 / 1_048_576.0),
+            file_mb = %format!("{:.1}", file_size as f64 / 1_048_576.0),
+            path = %canonical.display(),
+            "tail-reading oversized file"
         );
         (tail_str, actual_start)
     };
@@ -298,7 +301,7 @@ async fn process_file(
                     &session_id,
                     tool_use_count,
                 ) {
-                    eprintln!("[extractor] failed to increment tool_use_count: {e}");
+                    tracing::error!(target: "forge::extractor", error = %e, "failed to increment tool_use_count");
                 }
                 // #54 Layer 1: increment per-tool counters from structured
                 // `tool_names` populated by adapters at parse time. Adapters
@@ -410,7 +413,7 @@ async fn process_file(
             .await
         }
         BackendChoice::None(reason) => {
-            eprintln!("[extractor] no backend available: {reason}");
+            tracing::warn!(target: "forge::extractor", reason = %reason, "no backend available");
             return Ok(());
         }
     };
@@ -452,9 +455,12 @@ async fn process_file(
 
                         if !long_enough || !has_domain {
                             // Demote to pattern (behavioral skills too short = just a pattern)
-                            eprintln!(
-                                "[extractor] demoted weak behavioral skill '{}' to pattern (long_enough={}, has_domain={})",
-                                em.title, long_enough, has_domain
+                            tracing::info!(
+                                target: "forge::extractor",
+                                title = %em.title,
+                                long_enough,
+                                has_domain,
+                                "demoted weak behavioral skill to pattern"
                             );
                             // Don't continue — let it fall through to memory storage as a pattern/lesson
                         } else {
@@ -487,9 +493,11 @@ async fn process_file(
                             if let Err(e) =
                                 crate::db::manas::store_or_observe_skill(&locked.conn, &skill)
                             {
-                                eprintln!(
-                                    "[extractor] failed to store behavioral skill '{}': {e}",
-                                    em.title
+                                tracing::error!(
+                                    target: "forge::extractor",
+                                    title = %em.title,
+                                    error = %e,
+                                    "failed to store behavioral skill"
                                 );
                             } else {
                                 stored += 1;
@@ -537,9 +545,13 @@ async fn process_file(
 
                         if !has_steps || !long_enough || !not_status {
                             // Demote to lesson — fall through to normal memory storage below
-                            eprintln!(
-                                "[extractor] demoted junk skill '{}' to lesson (has_steps={}, long_enough={}, not_status={})",
-                                em.title, has_steps, long_enough, not_status
+                            tracing::info!(
+                                target: "forge::extractor",
+                                title = %em.title,
+                                has_steps,
+                                long_enough,
+                                not_status,
+                                "demoted junk skill to lesson"
                             );
                             // Don't continue — let it fall through to memory storage as a lesson
                         } else {
@@ -590,7 +602,7 @@ async fn process_file(
                             };
 
                             if let Err(e) = crate::db::manas::store_skill(&locked.conn, &skill) {
-                                eprintln!("[extractor] failed to store skill '{}': {e}", em.title);
+                                tracing::error!(target: "forge::extractor", title = %em.title, error = %e, "failed to store skill");
                             } else {
                                 stored += 1;
                                 events::emit(
@@ -633,9 +645,10 @@ async fn process_file(
                         .iter()
                         .any(|kw| title_lower.contains(kw))
                     {
-                        eprintln!(
-                            "[extractor] filtered AI agent identity '{}' — only human user identity accepted",
-                            em.title
+                        tracing::info!(
+                            target: "forge::extractor",
+                            title = %em.title,
+                            "filtered AI agent identity — only human user identity accepted"
                         );
                         continue;
                     }
@@ -656,7 +669,7 @@ async fn process_file(
                         user_id: None,
                     };
                     if let Err(e) = crate::db::manas::store_identity(&locked.conn, &facet) {
-                        eprintln!("[extractor] failed to store identity '{}': {e}", em.title);
+                        tracing::error!(target: "forge::extractor", title = %em.title, error = %e, "failed to store identity");
                     } else {
                         stored += 1;
                         events::emit(
@@ -730,7 +743,7 @@ async fn process_file(
                                     "motivated_by",
                                     "{}",
                                 ) {
-                                    eprintln!("[extractor] failed to store motivated_by edge: {e}");
+                                    tracing::error!(target: "forge::extractor", error = %e, "failed to store motivated_by edge");
                                 }
                             }
                         }
@@ -756,9 +769,12 @@ async fn process_file(
                                 let union = new_words.union(&existing_words).count();
                                 let overlap = intersection as f64 / union as f64;
                                 if overlap > 0.7 {
-                                    eprintln!(
-                                        "[extractor] skipped near-duplicate '{}' (overlap={:.2} with existing '{}')",
-                                        em.title, overlap, existing_title
+                                    tracing::info!(
+                                        target: "forge::extractor",
+                                        title = %em.title,
+                                        overlap = %format!("{overlap:.2}"),
+                                        existing = %existing_title,
+                                        "skipped near-duplicate"
                                     );
                                     skip = true;
                                     break;
@@ -772,7 +788,7 @@ async fn process_file(
                 }
 
                 if let Err(e) = ops::remember(&locked.conn, &memory) {
-                    eprintln!("[extractor] failed to store memory '{}': {e}", em.title);
+                    tracing::error!(target: "forge::extractor", title = %em.title, error = %e, "failed to store memory");
                 } else {
                     stored += 1;
 
@@ -798,7 +814,7 @@ async fn process_file(
                                 "affects",
                                 "{}",
                             ) {
-                                eprintln!("[extractor] failed to store affects edge: {e}");
+                                tracing::error!(target: "forge::extractor", error = %e, "failed to store affects edge");
                             }
                         }
                     }
@@ -807,9 +823,15 @@ async fn process_file(
 
             let extract_ms = extract_start.elapsed().as_millis();
             let total_ms = total_start.elapsed().as_millis();
-            eprintln!(
-                "[extractor] {} memories from {} | parse: {}ms, extract: {}ms, total: {}ms, chunks: {}",
-                stored, path.display(), parse_ms, extract_ms, total_ms, chunks.len()
+            tracing::info!(
+                target: "forge::extractor",
+                stored,
+                path = %path.display(),
+                parse_ms,
+                extract_ms,
+                total_ms,
+                chunks = chunks.len(),
+                "extracted memories"
             );
 
             // Tokens / cost are not yet returned by the extraction backend;
@@ -820,9 +842,11 @@ async fn process_file(
             Ok(())
         }
         ExtractionResult::Unavailable(reason) => {
-            eprintln!(
-                "[extractor] backend unavailable: {reason} ({}ms)",
-                total_start.elapsed().as_millis()
+            tracing::warn!(
+                target: "forge::extractor",
+                reason = %reason,
+                total_ms = total_start.elapsed().as_millis(),
+                "backend unavailable"
             );
             // Session ID isn't computed on this branch; query_stats only
             // reads the status flag to count errors.
@@ -832,9 +856,11 @@ async fn process_file(
             Ok(())
         }
         ExtractionResult::Error(err) => {
-            eprintln!(
-                "[extractor] extraction error: {err} ({}ms)",
-                total_start.elapsed().as_millis()
+            tracing::error!(
+                target: "forge::extractor",
+                error = %err,
+                total_ms = total_start.elapsed().as_millis(),
+                "extraction error"
             );
             if let Some(tx) = writer_tx {
                 emit_extraction_metric(tx, "", 0, 0, 0, 0, Some(&err));
