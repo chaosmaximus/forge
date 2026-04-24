@@ -1,25 +1,36 @@
 /// E2E tests for Forge hooks — validates the full pipeline:
 /// Claude Code hook → shell script → forge-next CLI → daemon socket → response
 ///
-/// These tests require the release binary to be built and the daemon to be available.
-/// Two tests that need the release forge-next + a running daemon are marked
-/// `#[ignore]` so `cargo test --workspace` stays green on a fresh clone; run
-/// them explicitly with `cargo test -- --ignored` after building release + starting
-/// the daemon.
-use std::process::Command;
+/// Two tests that reach the full hook → CLI → daemon path spin up an
+/// isolated daemon in a tempdir (via `env!("CARGO_BIN_EXE_forge-daemon")`)
+/// and point the `forge-next` subprocess at the same FORGE_DIR. Other
+/// tests exercise only the hook scripts + their CLI subcommands and do
+/// not need a daemon.
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 fn forge_next() -> String {
+    // forge-next is in a different crate (forge-cli) so CARGO_BIN_EXE_forge-next
+    // is NOT set in this test binary's env. Discover on disk instead — CI
+    // builds both binaries before running integration tests (2P-1b §11).
     let candidates = [
         "target/release/forge-next",
         "../target/release/forge-next",
         "../../target/release/forge-next",
+        "target/debug/forge-next",
+        "../target/debug/forge-next",
+        "../../target/debug/forge-next",
     ];
     for c in &candidates {
         if std::path::Path::new(c).exists() {
             return c.to_string();
         }
     }
-    "forge-next".to_string()
+    panic!(
+        "forge-next binary not found — run `cargo build --bin forge-next` \
+         before these hook e2e tests"
+    );
 }
 
 fn hooks_dir() -> String {
@@ -30,6 +41,65 @@ fn hooks_dir() -> String {
         }
     }
     "scripts/hooks".to_string()
+}
+
+/// Ephemeral daemon bound to a tempdir FORGE_DIR, killed on drop.
+struct TestDaemon {
+    process: Child,
+    forge_dir: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+impl TestDaemon {
+    fn start() -> Self {
+        let dir = tempfile::tempdir().expect("create tempdir for TestDaemon");
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).expect("create .forge subdir");
+
+        let daemon_bin = PathBuf::from(env!("CARGO_BIN_EXE_forge-daemon"));
+        assert!(
+            daemon_bin.exists(),
+            "CARGO_BIN_EXE_forge-daemon should point at a built binary: {daemon_bin:?}"
+        );
+
+        let mut process = Command::new(&daemon_bin)
+            .env("FORGE_DIR", &forge_dir)
+            .env("HOME", dir.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn daemon");
+
+        // Wait for the socket to appear (up to 30s). Debug daemon cold-boot
+        // is ~10-15s due to SQLite migrate + worker spawn + ORT link.
+        let socket = forge_dir.join("forge.sock");
+        for _ in 0..300 {
+            if socket.exists() {
+                std::thread::sleep(Duration::from_millis(200));
+                return TestDaemon {
+                    process,
+                    forge_dir,
+                    _dir: dir,
+                };
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let _ = process.kill();
+        let _ = process.wait();
+        panic!("daemon did not create socket within 30s — set up pre-test build");
+    }
+
+    fn forge_dir(&self) -> &Path {
+        &self.forge_dir
+    }
+}
+
+impl Drop for TestDaemon {
+    fn drop(&mut self) {
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
 }
 
 // ─── Session Start Hook ──────────────────────────────────────────
@@ -57,8 +127,8 @@ fn test_session_start_hook_outputs_valid_json() {
 }
 
 #[test]
-#[ignore = "requires release forge-next + running daemon; run with --ignored after T6a dogfood infra"]
 fn test_session_start_hook_registers_session() {
+    let daemon = TestDaemon::start();
     let session_id = format!(
         "hook-test-{}",
         std::time::SystemTime::now()
@@ -67,22 +137,20 @@ fn test_session_start_hook_registers_session() {
             .as_secs()
     );
 
-    // Run the session start hook. CLAUDE_CWD must be writable + deterministic
-    // across dev/CI — use a fresh tempdir rather than a host-specific absolute
-    // path (the hardcoded /mnt/colab-disk/... path used pre-split only worked
-    // on the author's box).
     let cwd = tempfile::tempdir().expect("tempdir");
     let _ = Command::new("bash")
         .arg(format!("{}/session-start.sh", hooks_dir()))
         .env("CLAUDE_CWD", cwd.path())
         .env("CLAUDE_SESSION_ID", &session_id)
+        .env("FORGE_DIR", daemon.forge_dir())
+        .env("FORGE_NEXT", forge_next())
         .stdin(std::process::Stdio::null())
         .output()
         .expect("run session-start hook");
 
-    // Verify session was registered
     let output = Command::new(forge_next())
         .args(["sessions", "--all"])
+        .env("FORGE_DIR", daemon.forge_dir())
         .output()
         .expect("list sessions");
 
@@ -232,8 +300,9 @@ fn test_session_end_hook_succeeds() {
 // ─── Full Pipeline: Hook → Daemon → Response ──────────────────
 
 #[test]
-#[ignore = "requires release forge-next + running daemon; run with --ignored after T6a dogfood infra"]
 fn test_full_pipeline_remember_check_via_cli() {
+    let daemon = TestDaemon::start();
+
     // 1. Store a decision that mentions a file path in content.
     //    Since Session 12, the remember handler auto-creates affects edges
     //    for file paths matching (crates|src|lib|app)/.../*.rs patterns.
@@ -249,6 +318,7 @@ fn test_full_pipeline_remember_check_via_cli() {
             "--project",
             "forge",
         ])
+        .env("FORGE_DIR", daemon.forge_dir())
         .output()
         .expect("remember");
     assert!(output.status.success());
@@ -260,6 +330,7 @@ fn test_full_pipeline_remember_check_via_cli() {
     //    (affects edge was auto-created by the remember handler)
     let output = Command::new(forge_next())
         .args(["check", "--file", "src/hook_test.rs", "--action", "edit"])
+        .env("FORGE_DIR", daemon.forge_dir())
         .output()
         .expect("check");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -277,6 +348,7 @@ fn test_full_pipeline_remember_check_via_cli() {
             "--action",
             "edit",
         ])
+        .env("FORGE_DIR", daemon.forge_dir())
         .output()
         .expect("check");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -287,6 +359,9 @@ fn test_full_pipeline_remember_check_via_cli() {
 
     // 4. Clean up
     if !id.is_empty() {
-        let _ = Command::new(forge_next()).args(["forget", id]).output();
+        let _ = Command::new(forge_next())
+            .args(["forget", id])
+            .env("FORGE_DIR", daemon.forge_dir())
+            .output();
     }
 }
