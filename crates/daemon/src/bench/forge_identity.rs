@@ -354,13 +354,193 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// Dim 4: valence flipping — polarity reversals are detected and applied.
-/// T4 implements this; stub returns score 0.0 / pass false.
-fn dim_4_valence_flipping(_state: &DaemonState, _rng: &mut ChaCha20Rng) -> DimensionScore {
-    DimensionScore {
-        name: "valence_flipping".to_string(),
-        score: 0.0,
+///
+/// Master v6 §4 Dim 4: `FlipPreference(id, new_valence)` marks the old preference
+/// as flipped (`status='superseded'` + `valence_flipped_at` metadata); the new
+/// preference is active; `ListFlipped` returns the old; default `Recall` filters
+/// flipped; explicit `include_flipped=true` surfaces both.
+///
+/// Master v6 §7: Dim 4 scores AFTER `Request::ForceConsolidate`.
+///
+/// Implementation:
+///   1. Seed 1 preference (positive valence, intensity 0.7, confidence 0.8) via
+///      direct SQL with a SHA-256 token in title/content/tags so BM25 + Recall
+///      can locate it deterministically.
+///   2. Call `Request::FlipPreference` to flip to negative; capture new memory_id.
+///   3. Run `Request::ForceConsolidate` per master v6 §7 consolidator-run policy.
+///   4. Five binary assertions, 0.20 each.
+///   5. Score = 0.20 × n_passed; pass at >= 0.85.
+///
+/// Assertions:
+///
+/// * A1 — response is `Response::Ok` and old.status = 'superseded'.
+/// * A2 — old.valence_flipped_at IS NOT NULL AND superseded_by = new_id
+///   (master v6 §5 2A-4a: `flipped_to_id` is mirrored from `superseded_by`).
+/// * A3 — ListFlipped returns the old memory.
+/// * A4 — default Recall (include_flipped=None ≡ false) returns new only,
+///   NOT the old.
+/// * A5 — Recall with include_flipped=Some(true) returns BOTH old and new.
+fn dim_4_valence_flipping(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> DimensionScore {
+    use forge_core::protocol::{Request, Response, ResponseData};
+
+    let dim_name = "valence_flipping".to_string();
+    let fail = |score: f64| DimensionScore {
+        name: dim_name.clone(),
+        score,
         min: DIM_MINIMUMS[3],
-        pass: false,
+        pass: score >= DIM_MINIMUMS[3],
+    };
+
+    // ── 1. Seed one preference with a SHA-256 token ──────────────
+    let token = super::common::sha256_hex("dim4-valence-flip");
+    let old_id = "bench-dim4-pref-old";
+    let title = format!("dim4 pref {token}");
+    let content = format!("dim4 pref {token} body");
+    let tags_json =
+        serde_json::to_string(&vec!["dim4", token.as_str()]).unwrap_or_else(|_| "[]".to_string());
+    let created_at = "2026-04-24T00:00:00Z";
+
+    if let Err(e) = state.conn.execute(
+        "INSERT INTO memory
+            (id, memory_type, title, content, confidence, status, project, tags,
+             created_at, accessed_at, valence, intensity, access_count,
+             activation_level, quality_score, organization_id)
+         VALUES (?1, 'preference', ?2, ?3, 0.8, 'active', NULL, ?4,
+                 ?5, ?5, 'positive', 0.7, 0, 0.5, 0.5, 'default')",
+        rusqlite::params![old_id, title, content, tags_json, created_at],
+    ) {
+        tracing::warn!("dim_4 seed insert failed: {e}");
+        return fail(0.0);
+    }
+
+    // ── 2. Flip preference ───────────────────────────────────────
+    let flip_req = Request::FlipPreference {
+        memory_id: old_id.to_string(),
+        new_valence: "negative".to_string(),
+        new_intensity: 0.7,
+        reason: Some("bench Dim 4".to_string()),
+    };
+    let flip_resp = crate::server::handler::handle_request(state, flip_req);
+
+    let (a1_ok_response, new_id_opt) = match flip_resp {
+        Response::Ok {
+            data:
+                ResponseData::PreferenceFlipped {
+                    old_id: resp_old,
+                    new_id,
+                    ..
+                },
+        } if resp_old == old_id => (true, Some(new_id)),
+        other => {
+            tracing::warn!("dim_4 FlipPreference unexpected response: {other:?}");
+            (false, None)
+        }
+    };
+    let new_id = match new_id_opt {
+        Some(id) => id,
+        None => return fail(0.0),
+    };
+
+    // ── 3. Force-consolidate per master v6 §7 ────────────────────
+    let _ = crate::server::handler::handle_request(state, Request::ForceConsolidate);
+
+    // ── 4. Assertions ────────────────────────────────────────────
+
+    // A1: Response::Ok + old.status = 'superseded'.
+    let old_status: Option<String> = state
+        .conn
+        .query_row(
+            "SELECT status FROM memory WHERE id = ?1",
+            rusqlite::params![old_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let a1 = a1_ok_response && old_status.as_deref() == Some("superseded");
+
+    // A2: old.valence_flipped_at IS NOT NULL AND superseded_by = new_id.
+    let a2_row: Option<(Option<String>, Option<String>)> = state
+        .conn
+        .query_row(
+            "SELECT valence_flipped_at, superseded_by FROM memory WHERE id = ?1",
+            rusqlite::params![old_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let a2 = matches!(
+        a2_row,
+        Some((Some(_), Some(ref sb))) if sb == &new_id
+    );
+
+    // A3: ListFlipped returns old memory.
+    let list_resp = crate::server::handler::handle_request(
+        state,
+        Request::ListFlipped {
+            agent: None,
+            limit: None,
+        },
+    );
+    let a3 = match list_resp {
+        Response::Ok {
+            data: ResponseData::FlippedList { items },
+        } => items.iter().any(|fm| fm.old.id == old_id),
+        _ => false,
+    };
+
+    // A4: default Recall (include_flipped=None) returns new only — not old.
+    let recall_default = crate::server::handler::handle_request(
+        state,
+        Request::Recall {
+            query: token.clone(),
+            memory_type: None,
+            project: None,
+            limit: Some(16),
+            layer: Some("experience".to_string()),
+            since: None,
+            include_flipped: None,
+            query_embedding: None,
+        },
+    );
+    let a4 = match recall_default {
+        Response::Ok {
+            data: ResponseData::Memories { results, .. },
+        } => {
+            let ids: Vec<&str> = results.iter().map(|m| m.memory.id.as_str()).collect();
+            !ids.contains(&old_id) && ids.contains(&new_id.as_str())
+        }
+        _ => false,
+    };
+
+    // A5: Recall with include_flipped=Some(true) returns BOTH old and new.
+    let recall_inclusive = crate::server::handler::handle_request(
+        state,
+        Request::Recall {
+            query: token.clone(),
+            memory_type: None,
+            project: None,
+            limit: Some(16),
+            layer: Some("experience".to_string()),
+            since: None,
+            include_flipped: Some(true),
+            query_embedding: None,
+        },
+    );
+    let a5 = match recall_inclusive {
+        Response::Ok {
+            data: ResponseData::Memories { results, .. },
+        } => {
+            let ids: Vec<&str> = results.iter().map(|m| m.memory.id.as_str()).collect();
+            ids.contains(&old_id) && ids.contains(&new_id.as_str())
+        }
+        _ => false,
+    };
+
+    let n_passed = [a1, a2, a3, a4, a5].iter().filter(|b| **b).count();
+    let score = n_passed as f64 * 0.20;
+    DimensionScore {
+        name: dim_name,
+        score,
+        min: DIM_MINIMUMS[3],
+        pass: score >= DIM_MINIMUMS[3],
     }
 }
 
@@ -1106,7 +1286,7 @@ pub async fn run_bench(config: BenchConfig) -> Result<IdentityScore, String> {
         mark_pass(dim_1_identity_facet_persistence(&state, &mut rng)),
         mark_pass(dim_2_disposition_drift(&state, &mut rng)),
         mark_pass(dim_3_preference_time_ordering(&mut state, &mut rng)),
-        mark_pass(dim_4_valence_flipping(&state, &mut rng)),
+        mark_pass(dim_4_valence_flipping(&mut state, &mut rng)),
         mark_pass(dim_5_behavioral_skill_inference(&state, &mut rng)),
         mark_pass(dim_6_preference_staleness(&mut state, &mut rng)),
     ];
@@ -1249,6 +1429,35 @@ mod tests {
         );
         let marked = mark_pass(dim);
         assert!(marked.pass, "dim_1 score 1.0 must mark pass");
+    }
+
+    // ── T4 — Dim 4 valence flipping ───────────────────────────────
+
+    #[test]
+    fn test_dim_4_valence_flipping_full_pass() {
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+        let mut rng = super::super::common::seeded_rng(42);
+        let dim = dim_4_valence_flipping(&mut state, &mut rng);
+        assert_eq!(dim.name, "valence_flipping");
+        assert!(
+            (dim.score - 1.0).abs() < 1e-12,
+            "dim_4 must pass all 5 assertions; got score={}",
+            dim.score
+        );
+        let marked = mark_pass(dim);
+        assert!(marked.pass, "dim_4 score 1.0 must mark pass");
+    }
+
+    #[test]
+    fn test_dim_4_valence_flipping_returns_score_struct() {
+        // Smoke test: regardless of calibration, dim_4 must never panic and
+        // must return a DimensionScore with the canonical name + min.
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+        let mut rng = super::super::common::seeded_rng(42);
+        let dim = dim_4_valence_flipping(&mut state, &mut rng);
+        assert_eq!(dim.name, "valence_flipping");
+        assert!((dim.min - DIM_MINIMUMS[3]).abs() < 1e-12);
+        assert!((0.0..=1.0).contains(&dim.score));
     }
 
     // ── T6 — 14 infrastructure checks ─────────────────────────────
