@@ -12,6 +12,7 @@
 pub mod common;
 pub mod forge_consolidation;
 pub mod forge_context;
+pub mod forge_identity;
 pub mod forge_persist;
 pub mod locomo;
 pub mod longmemeval;
