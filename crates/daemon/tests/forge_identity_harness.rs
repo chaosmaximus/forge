@@ -1,9 +1,14 @@
 //! Integration test: Forge-Identity skeleton compiles + runs (Phase 2A-4d.3 T2).
 //!
-//! This exercises the fail-fast path — the T2 stub returns 14 failing
-//! infrastructure checks, so `run_bench` short-circuits with `pass: false`
-//! and zeroed dimension scores. T6 flips the checks to real assertions
-//! and unblocks the happy path.
+//! The forge-identity bench module is gated behind `cfg(any(test, feature =
+//! "bench"))` because it references bench-only Request variants
+//! (`ComputeRecencyFactor`, `ProbePhase`, `PHASE_ORDER`). The library crate
+//! is compiled WITHOUT `cfg(test)` active when producing integration-test
+//! binaries, so this file is only compiled under `--features bench`.
+//!
+//! Run with: `cargo test -p forge-daemon --test forge_identity_harness --features bench`
+
+#![cfg(feature = "bench")]
 
 use forge_daemon::bench::forge_identity::{run_bench, BenchConfig};
 
@@ -17,7 +22,6 @@ async fn forge_identity_skeleton_runs_without_panic() {
     };
     let score = run_bench(cfg).await.expect("run_bench returns Ok");
 
-    assert!(!score.pass, "T2 stub cannot pass overall");
     assert_eq!(
         score.infrastructure_checks.len(),
         14,

@@ -100,6 +100,7 @@ fn test_flip_preference_end_to_end_flow() {
             layer: None,
             since: None,
             include_flipped: None,
+            query_embedding: None,
         },
     );
     match resp {
@@ -126,6 +127,7 @@ fn test_flip_preference_end_to_end_flow() {
             layer: None,
             since: None,
             include_flipped: Some(true),
+            query_embedding: None,
         },
     );
     match resp {

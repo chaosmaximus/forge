@@ -53,8 +53,8 @@ pub fn parse_window_secs(s: &str) -> Result<u64, String> {
     if trimmed.is_empty() {
         return Err("window is empty".to_string());
     }
-    let dur = humantime::parse_duration(trimmed)
-        .map_err(|e| format!("invalid window '{s}': {e}"))?;
+    let dur =
+        humantime::parse_duration(trimmed).map_err(|e| format!("invalid window '{s}': {e}"))?;
     let secs = dur.as_secs();
     if secs == 0 {
         return Err(format!("window '{s}' parses to zero duration"));
@@ -77,9 +77,7 @@ pub fn resolve_group_by(
     use InspectShape::*;
     match (shape, provided) {
         (RowCount, None) => Ok(None),
-        (RowCount, Some(g)) => Err(format!(
-            "group_by={g:?} not supported for shape=row_count"
-        )),
+        (RowCount, Some(g)) => Err(format!("group_by={g:?} not supported for shape=row_count")),
 
         (Latency, None) => Ok(Some(Phase)),
         (Latency, Some(Phase)) | (Latency, Some(RunId)) => Ok(provided),
@@ -90,9 +88,9 @@ pub fn resolve_group_by(
         (ErrorRate, Some(g)) => Err(format!("group_by={g:?} not valid for shape=error_rate")),
 
         (Throughput, None) => Ok(Some(EventType)),
-        (Throughput, Some(Phase))
-        | (Throughput, Some(EventType))
-        | (Throughput, Some(Project)) => Ok(provided),
+        (Throughput, Some(Phase)) | (Throughput, Some(EventType)) | (Throughput, Some(Project)) => {
+            Ok(provided)
+        }
         (Throughput, Some(g)) => Err(format!("group_by={g:?} not valid for shape=throughput")),
 
         (PhaseRunSummary, None) => Ok(None),
@@ -284,7 +282,10 @@ fn shape_latency(
             |row| {
                 let key: Option<String> = row.get(0)?;
                 let lat: i64 = row.get(1)?;
-                Ok((key.unwrap_or_else(|| "unknown".to_string()), lat.max(0) as u64))
+                Ok((
+                    key.unwrap_or_else(|| "unknown".to_string()),
+                    lat.max(0) as u64,
+                ))
             },
         )
         .map_err(|e| format!("query: {e}"))?;
@@ -636,7 +637,10 @@ mod tests {
 
     #[test]
     fn resolve_group_by_row_count_accepts_only_none() {
-        assert_eq!(resolve_group_by(InspectShape::RowCount, None).unwrap(), None);
+        assert_eq!(
+            resolve_group_by(InspectShape::RowCount, None).unwrap(),
+            None
+        );
         assert!(resolve_group_by(InspectShape::RowCount, Some(InspectGroupBy::Phase)).is_err());
     }
 
@@ -655,9 +659,7 @@ mod tests {
             resolve_group_by(InspectShape::Throughput, None).unwrap(),
             Some(InspectGroupBy::EventType)
         );
-        assert!(
-            resolve_group_by(InspectShape::Throughput, Some(InspectGroupBy::RunId)).is_err()
-        );
+        assert!(resolve_group_by(InspectShape::Throughput, Some(InspectGroupBy::RunId)).is_err());
     }
 
     #[test]
@@ -682,7 +684,14 @@ mod tests {
             InspectShape::Throughput,
             InspectShape::PhaseRunSummary,
         ] {
-            let resp = run_inspect(&conn, shape, "1h".into(), InspectFilter::default(), None, None);
+            let resp = run_inspect(
+                &conn,
+                shape,
+                "1h".into(),
+                InspectFilter::default(),
+                None,
+                None,
+            );
             match resp {
                 Response::Ok {
                     data: ResponseData::Inspect { data, .. },
@@ -846,7 +855,7 @@ mod tests {
     fn latency_shape_returns_percentiles_per_phase() {
         let conn = seed_conn();
         let ts = now_secs() as i64 - 10; // inside the 1h window
-        // phase_A: 100, 200, 300 ms → p50=200, p95≈300, mean=200
+                                         // phase_A: 100, 200, 300 ms → p50=200, p95≈300, mean=200
         insert_phase_event(&conn, "a1", ts, "phase_A", "run1", 100, 0, None);
         insert_phase_event(&conn, "a2", ts, "phase_A", "run1", 200, 0, None);
         insert_phase_event(&conn, "a3", ts, "phase_A", "run1", 300, 0, None);
@@ -928,8 +937,26 @@ mod tests {
         let conn = seed_conn();
         let ts = now_secs() as i64 - 10;
         // run_A: two phases, 100ms + 200ms, 1 error total
-        insert_phase_event(&conn, "ra1", ts, "phase_1", "runA", 100, 0, Some("trace_aaa"));
-        insert_phase_event(&conn, "ra2", ts + 1, "phase_2", "runA", 200, 1, Some("trace_aaa"));
+        insert_phase_event(
+            &conn,
+            "ra1",
+            ts,
+            "phase_1",
+            "runA",
+            100,
+            0,
+            Some("trace_aaa"),
+        );
+        insert_phase_event(
+            &conn,
+            "ra2",
+            ts + 1,
+            "phase_2",
+            "runA",
+            200,
+            1,
+            Some("trace_aaa"),
+        );
         // run_B: one phase, 50ms, 0 errors, no trace_id
         insert_phase_event(&conn, "rb1", ts, "phase_1", "runB", 50, 0, None);
 
@@ -993,9 +1020,15 @@ mod tests {
         else {
             panic!("expected Ok Throughput");
         };
-        let phase = rows.iter().find(|r| r.group_key == "phase_completed").unwrap();
+        let phase = rows
+            .iter()
+            .find(|r| r.group_key == "phase_completed")
+            .unwrap();
         assert_eq!(phase.count, 2);
-        let bench = rows.iter().find(|r| r.group_key == "bench_run_completed").unwrap();
+        let bench = rows
+            .iter()
+            .find(|r| r.group_key == "bench_run_completed")
+            .unwrap();
         assert_eq!(bench.count, 1);
     }
 

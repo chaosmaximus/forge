@@ -330,6 +330,7 @@ mod tests {
             layer: None,
             since: None,
             include_flipped: None,
+            query_embedding: None,
         }));
 
         assert!(is_read_only(&Request::CompileContext {

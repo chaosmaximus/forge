@@ -394,6 +394,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
             Request::Remember {
                 memory_type: forge_core::types::MemoryType::Decision,

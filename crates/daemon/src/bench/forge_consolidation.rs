@@ -2008,6 +2008,7 @@ pub fn snapshot_recall(
             layer: None,
             since: None,
             include_flipped: None,
+            query_embedding: None,
         };
         let resp = crate::server::handler::handle_request(state, req);
         let titles = match resp {

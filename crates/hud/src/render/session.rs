@@ -295,9 +295,7 @@ fn render_memory_fallback(m: &crate::state::MemoryStats) -> String {
 /// count. A previous draft rendered `ok/total err` math on these counts,
 /// which was nonsense (T9 Codex Q9). We now render the raw error count.
 /// Returns `None` when required fields are missing.
-fn render_consolidation(
-    cons: &crate::state::ConsolidationStats,
-) -> Option<String> {
+fn render_consolidation(cons: &crate::state::ConsolidationStats) -> Option<String> {
     let phase_count = cons.latest_run_phase_count?;
     let dur_ms = cons.latest_run_wall_duration_ms?;
     let errors = cons.latest_run_error_count.unwrap_or(0);

@@ -98,6 +98,7 @@ fn touch_exemption_recall_preference_unchanged() {
             layer: None,
             since: None,
             include_flipped: None,
+            query_embedding: None,
         },
     );
     assert!(

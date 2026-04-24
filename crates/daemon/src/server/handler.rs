@@ -539,8 +539,20 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             layer,
             since,
             include_flipped, // Phase 2A-4a: wired up in T10
+            query_embedding,
         } => {
             let lim = limit.unwrap_or(10);
+
+            // Phase 2A-4d.3 T3: under bench/test builds honor caller-supplied
+            // query_embedding; in production always ignore it (defense against
+            // sneaking embeddings through the wire).
+            #[cfg(any(test, feature = "bench"))]
+            let effective_query_embedding: Option<Vec<f32>> = query_embedding;
+            #[cfg(not(any(test, feature = "bench")))]
+            let effective_query_embedding: Option<Vec<f32>> = {
+                let _ = query_embedding;
+                None
+            };
 
             // Multi-tenant: extract org_id from the active session for this project
             let _org_id = {
@@ -567,7 +579,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 Some("experience") => hybrid_recall(
                     &state.conn,
                     &query,
-                    None,
+                    effective_query_embedding.as_deref(),
                     memory_type.as_ref(),
                     project.as_deref(),
                     lim,
@@ -722,7 +734,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     let mut results = hybrid_recall(
                         &state.conn,
                         &query,
-                        None,
+                        effective_query_embedding.as_deref(),
                         memory_type.as_ref(),
                         project.as_deref(),
                         lim,
@@ -6578,10 +6590,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 if let Some(metrics_arc) = state.metrics.as_ref() {
                     let needs_refresh = metrics_arc.snapshot.read().refreshed_at_secs == 0;
                     if needs_refresh {
-                        crate::server::metrics::refresh_gauges_from_conn(
-                            metrics_arc,
-                            &state.conn,
-                        );
+                        crate::server::metrics::refresh_gauges_from_conn(metrics_arc, &state.conn);
                     }
                 }
             }
@@ -6644,6 +6653,7 @@ mod tests {
             layer: None,
             since: None,
             include_flipped: None,
+            query_embedding: None,
         };
         let response = handle_request(&mut state, recall_req);
 
@@ -8329,6 +8339,7 @@ mod tests {
                 layer: Some("experience".into()),
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -8351,6 +8362,7 @@ mod tests {
                 layer: Some("declared".into()),
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -8391,6 +8403,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -8432,6 +8445,7 @@ mod tests {
                 layer: Some("identity".into()),
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -8455,6 +8469,7 @@ mod tests {
                 layer: Some("identity".into()),
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -8495,6 +8510,7 @@ mod tests {
                 layer: Some("perception".into()),
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -8544,6 +8560,7 @@ mod tests {
                 layer: Some("skill".into()),
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -8567,6 +8584,7 @@ mod tests {
                 layer: Some("skill".into()),
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -8919,6 +8937,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match recall_resp {
@@ -9152,6 +9171,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match recall_resp {
@@ -10825,6 +10845,7 @@ mod tests {
                 layer: None,
                 since: Some("2026-04-01 00:00:00".into()),
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -10860,6 +10881,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -10903,6 +10925,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
         match resp {
@@ -11221,6 +11244,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             },
         );
 

@@ -70,6 +70,7 @@ fn do_recall(
             layer: None,
             since: None,
             include_flipped: None,
+            query_embedding: None,
         },
     );
     match resp {
@@ -913,6 +914,7 @@ fn test_edge_cases() {
             layer: None,
             since: None,
             include_flipped: None,
+            query_embedding: None,
         },
     );
     match resp {

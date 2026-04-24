@@ -61,10 +61,7 @@ impl TableGauges {
     /// Flatten the named struct into the `LayerRow` wire format used by
     /// `/inspect row_count`. `snapshot_age_secs` is passed in by the caller
     /// (computed once from `GaugeSnapshot.refreshed_at_secs`).
-    pub fn to_layer_rows(
-        &self,
-        snapshot_age_secs: u64,
-    ) -> Vec<forge_core::protocol::LayerRow> {
+    pub fn to_layer_rows(&self, snapshot_age_secs: u64) -> Vec<forge_core::protocol::LayerRow> {
         use forge_core::protocol::LayerRow;
         vec![
             ("memory", &self.memory),
@@ -368,7 +365,6 @@ pub fn refresh_gauges_from_conn(metrics: &ForgeMetrics, conn: &rusqlite::Connect
 }
 
 fn refresh_gauges_impl(metrics: &ForgeMetrics, conn: &rusqlite::Connection) {
-
     // Per-table row gauges. Labels match actual SQLite table names (verified
     // 2026-04-24 in schema.rs); adding a label that doesn't correspond to a
     // real table would produce a perpetually-zero series that misleads
@@ -442,16 +438,57 @@ fn refresh_gauges_impl(metrics: &ForgeMetrics, conn: &rusqlite::Connection) {
            FROM entity)                                                                 AS ent_f";
 
     type CountsRow = (
-        i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64,
-        Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>,
-        Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
     );
     let row: rusqlite::Result<CountsRow> = conn.query_row(COUNTS_SQL, [], |r| {
         Ok((
-            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
-            r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?,
-            r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?, r.get(17)?, r.get(18)?,
-            r.get(19)?, r.get(20)?, r.get(21)?, r.get(22)?, r.get(23)?,
+            r.get(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get(4)?,
+            r.get(5)?,
+            r.get(6)?,
+            r.get(7)?,
+            r.get(8)?,
+            r.get(9)?,
+            r.get(10)?,
+            r.get(11)?,
+            r.get(12)?,
+            r.get(13)?,
+            r.get(14)?,
+            r.get(15)?,
+            r.get(16)?,
+            r.get(17)?,
+            r.get(18)?,
+            r.get(19)?,
+            r.get(20)?,
+            r.get(21)?,
+            r.get(22)?,
+            r.get(23)?,
         ))
     });
 
@@ -553,17 +590,50 @@ fn refresh_gauges_impl(metrics: &ForgeMetrics, conn: &rusqlite::Connection) {
             .map(|d| d.as_secs())
             .unwrap_or(0),
         tables: TableGauges {
-            memory: RowAndFreshness { count: count_memory, freshness_secs: fresh_memory },
-            skill: RowAndFreshness { count: count_skill, freshness_secs: fresh_skill },
-            edge: RowAndFreshness { count: count_edge, freshness_secs: fresh_edge },
-            identity: RowAndFreshness { count: count_identity, freshness_secs: fresh_identity },
-            disposition: RowAndFreshness { count: count_disposition, freshness_secs: fresh_disposition },
-            platform: RowAndFreshness { count: count_platform, freshness_secs: fresh_platform },
-            tool: RowAndFreshness { count: count_tool, freshness_secs: fresh_tool },
-            perception: RowAndFreshness { count: count_perception, freshness_secs: fresh_perception },
-            declared: RowAndFreshness { count: count_declared, freshness_secs: fresh_declared },
-            domain_dna: RowAndFreshness { count: count_domain_dna, freshness_secs: fresh_domain_dna },
-            entity: RowAndFreshness { count: count_entity, freshness_secs: fresh_entity },
+            memory: RowAndFreshness {
+                count: count_memory,
+                freshness_secs: fresh_memory,
+            },
+            skill: RowAndFreshness {
+                count: count_skill,
+                freshness_secs: fresh_skill,
+            },
+            edge: RowAndFreshness {
+                count: count_edge,
+                freshness_secs: fresh_edge,
+            },
+            identity: RowAndFreshness {
+                count: count_identity,
+                freshness_secs: fresh_identity,
+            },
+            disposition: RowAndFreshness {
+                count: count_disposition,
+                freshness_secs: fresh_disposition,
+            },
+            platform: RowAndFreshness {
+                count: count_platform,
+                freshness_secs: fresh_platform,
+            },
+            tool: RowAndFreshness {
+                count: count_tool,
+                freshness_secs: fresh_tool,
+            },
+            perception: RowAndFreshness {
+                count: count_perception,
+                freshness_secs: fresh_perception,
+            },
+            declared: RowAndFreshness {
+                count: count_declared,
+                freshness_secs: fresh_declared,
+            },
+            domain_dna: RowAndFreshness {
+                count: count_domain_dna,
+                freshness_secs: fresh_domain_dna,
+            },
+            entity: RowAndFreshness {
+                count: count_entity,
+                freshness_secs: fresh_entity,
+            },
         },
         memories_total: count_memory,
         edges_total: count_edge,

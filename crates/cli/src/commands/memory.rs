@@ -44,6 +44,7 @@ pub async fn recall(
         layer,
         since,
         include_flipped: None,
+        query_embedding: None,
     };
 
     match client::send(&request).await {

@@ -95,6 +95,7 @@ mod tests {
                     layer: Some("experience".into()),
                     since: None,
                     include_flipped: None,
+                    query_embedding: None,
                 },
             ),
             (
@@ -107,6 +108,7 @@ mod tests {
                     layer: None,
                     since: None,
                     include_flipped: Some(true),
+                    query_embedding: None,
                 },
             ),
             (
@@ -1341,6 +1343,7 @@ mod tests {
                     layer: None,
                     since: None,
                     include_flipped: None,
+                    query_embedding: None,
                 },
                 Request::Forget { id: "x".into() },
                 Request::Export {

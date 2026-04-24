@@ -12,6 +12,13 @@
 pub mod common;
 pub mod forge_consolidation;
 pub mod forge_context;
+// forge_identity requires `Request::ComputeRecencyFactor` + `ResponseData::RecencyFactor`
+// + `consolidator::PHASE_ORDER`, all of which live in forge-core / forge-daemon behind
+// `#[cfg(any(test, feature = "bench"))]`. Since `cfg(test)` does not propagate across
+// crate boundaries, the module must be feature-gated to match — `cargo test` on
+// forge-daemon sees forge-core as a non-test dependency, so only `feature = "bench"`
+// makes the bench-only enum variants visible here.
+#[cfg(feature = "bench")]
 pub mod forge_identity;
 pub mod forge_persist;
 pub mod locomo;

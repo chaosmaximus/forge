@@ -232,6 +232,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             }
         )
         .is_ok());
@@ -293,6 +294,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                query_embedding: None,
             }
         )
         .is_ok());

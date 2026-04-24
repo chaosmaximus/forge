@@ -49,12 +49,18 @@ async fn consolidate_pass_completed_emits_one_event_per_pass() {
                         d["trace_id"].is_null() || d["trace_id"].is_string(),
                         "trace_id should be null or string"
                     );
-                    assert_eq!(d["phase_count"], 23, "phase_count should match PHASE_SPAN_NAMES.len()");
+                    assert_eq!(
+                        d["phase_count"], 23,
+                        "phase_count should match PHASE_SPAN_NAMES.len()"
+                    );
                     assert!(
                         d["pass_wall_duration_ms"].is_u64(),
                         "pass_wall_duration_ms missing"
                     );
-                    assert!(d["stats"].is_object(), "stats should be serialized ConsolidationStats");
+                    assert!(
+                        d["stats"].is_object(),
+                        "stats should be serialized ConsolidationStats"
+                    );
 
                     // ConsolidationStats has 20 usize fields — spot-check one.
                     assert!(d["stats"]["exact_dedup"].is_u64());
@@ -62,13 +68,15 @@ async fn consolidate_pass_completed_emits_one_event_per_pass() {
                 }
                 // Other events (extraction, consolidation summary, etc.) are ignored.
             }
-            Ok(Err(_)) => break,      // channel closed
-            Err(_) => break,          // per-recv timeout; let the outer loop decide
+            Ok(Err(_)) => break, // channel closed
+            Err(_) => break,     // per-recv timeout; let the outer loop decide
         }
         if saw_consolidate_pass_completed > 0 {
             // Give the bus a brief settle window to catch any duplicates.
             tokio::time::sleep(Duration::from_millis(100)).await;
-            while let Ok(Ok(event)) = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+            while let Ok(Ok(event)) =
+                tokio::time::timeout(Duration::from_millis(50), rx.recv()).await
+            {
                 if event.event == "consolidate_pass_completed" {
                     saw_consolidate_pass_completed += 1;
                 }
@@ -95,9 +103,7 @@ async fn consolidate_pass_completed_not_emitted_when_events_is_none() {
     // Short probe: if we don't see the event in 300ms we call it good.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
     while tokio::time::Instant::now() < deadline {
-        if let Ok(Ok(event)) =
-            tokio::time::timeout(Duration::from_millis(50), rx.recv()).await
-        {
+        if let Ok(Ok(event)) = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
             assert_ne!(
                 event.event, "consolidate_pass_completed",
                 "should not receive event when events param is None"

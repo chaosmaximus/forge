@@ -72,6 +72,14 @@ pub enum Request {
         /// in the candidate set. Default (None or Some(false)) matches pre-2A-4a behavior.
         #[serde(default)]
         include_flipped: Option<bool>,
+        /// Phase 2A-4d.3 T3: bench/test-only caller-provided query embedding.
+        /// In production builds the handler ALWAYS ignores this field and
+        /// falls back to the embedder. Under `cfg(any(test, feature = "bench"))`
+        /// the handler honors `Some(v)` and passes it through to
+        /// `hybrid_recall` verbatim. The field is unconditional at the struct
+        /// level to avoid cfg-gated struct-literal pain across call sites.
+        #[serde(default)]
+        query_embedding: Option<Vec<f32>>,
     },
     Forget {
         id: String,

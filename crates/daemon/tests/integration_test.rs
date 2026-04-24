@@ -48,6 +48,7 @@ fn recall(state: &mut DaemonState, query: &str) -> Vec<MemoryResult> {
         layer: None,
         since: None,
         include_flipped: None,
+        query_embedding: None,
     };
     let resp = handle_request(state, req);
     match resp {
