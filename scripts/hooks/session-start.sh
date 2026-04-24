@@ -87,4 +87,4 @@ CONTEXT=$("$FORGE_NEXT" compile-context \
 CONTEXT_ESCAPED=$(echo "$CONTEXT" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
 
 # Output hook response
-echo "{\"hookSpecificOutput\":{\"additionalContext\":\"$CONTEXT_ESCAPED\"}}"
+echo "{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"$CONTEXT_ESCAPED\"}}"

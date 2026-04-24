@@ -122,4 +122,4 @@ done <<< "$(echo "$RESULT" | grep '^Decision to review:' 2>/dev/null || true)"
 FULL="<forge-post-edit><diagnostics>${XML}</diagnostics></forge-post-edit>"
 # Escape for JSON
 ESCAPED=$(echo "$FULL" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-echo "{\"hookSpecificOutput\":{\"additionalContext\":\"${ESCAPED}\"}}"
+echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"${ESCAPED}\"}}"

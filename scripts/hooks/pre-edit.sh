@@ -42,7 +42,7 @@ CHECK_OUTPUT=$("$FORGE_NEXT" check --file "$FILE_PATH" --action edit 2>/dev/null
 if echo "$CHECK_OUTPUT" | grep -q "decision(s) linked"; then
   CONTEXT=$(echo "$CHECK_OUTPUT" | head -3 | tr '\n' ' ' | cut -c1-200)
   ESCAPED=$(echo "$CONTEXT" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  echo "{\"hookSpecificOutput\":{\"additionalContext\":\"<forge-pre-edit>${ESCAPED}</forge-pre-edit>\"}}"
+  echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"<forge-pre-edit>${ESCAPED}</forge-pre-edit>\"}}"
 fi
 
 exit 0

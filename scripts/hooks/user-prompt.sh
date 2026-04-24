@@ -64,4 +64,4 @@ CONTEXT=$(echo "$RESULT" | head -5 | tr '\n' ' ' | cut -c1-300)
 # Escape XML entities first, then JSON
 XML_SAFE=$(echo "$CONTEXT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
 ESCAPED=$(echo "$XML_SAFE" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-echo "{\"hookSpecificOutput\":{\"additionalContext\":\"<forge-delta>${ESCAPED}</forge-delta>\"}}"
+echo "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"<forge-delta>${ESCAPED}</forge-delta>\"}}"

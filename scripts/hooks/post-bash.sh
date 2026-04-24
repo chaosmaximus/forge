@@ -48,5 +48,5 @@ RESULT=$("$FORGE_NEXT" post-bash-check --command "$CMD" --exit-code "$EXIT_CODE"
 if echo "$RESULT" | grep -q "Lesson\|Skill\|suggestion"; then
     CONTEXT=$(echo "$RESULT" | head -3 | tr '\n' ' ' | cut -c1-200)
     ESCAPED=$(echo "$CONTEXT" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    echo "{\"hookSpecificOutput\":{\"additionalContext\":\"<forge-bash-failure>${ESCAPED}</forge-bash-failure>\"}}"
+    echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"<forge-bash-failure>${ESCAPED}</forge-bash-failure>\"}}"
 fi

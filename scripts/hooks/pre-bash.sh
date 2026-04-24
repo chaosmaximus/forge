@@ -36,5 +36,5 @@ RESULT=$("$FORGE_NEXT" pre-bash-check --command "$CMD" 2>/dev/null) || true
 if echo "$RESULT" | grep -q "Destructive\|Lesson\|Skill"; then
     CONTEXT=$(echo "$RESULT" | head -3 | tr '\n' ' ' | cut -c1-200)
     ESCAPED=$(echo "$CONTEXT" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    echo "{\"hookSpecificOutput\":{\"additionalContext\":\"<forge-bash-check>${ESCAPED}</forge-bash-check>\"}}"
+    echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"<forge-bash-check>${ESCAPED}</forge-bash-check>\"}}"
 fi

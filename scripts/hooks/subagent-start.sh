@@ -74,4 +74,4 @@ fi
 XML_SAFE=$(echo "$XML" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
 FULL="<forge-subagent-context>${XML_SAFE}</forge-subagent-context>"
 ESCAPED=$(echo "$FULL" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-echo "{\"hookSpecificOutput\":{\"additionalContext\":\"${ESCAPED}\"}}"
+echo "{\"hookSpecificOutput\":{\"hookEventName\":\"SubagentStart\",\"additionalContext\":\"${ESCAPED}\"}}"
