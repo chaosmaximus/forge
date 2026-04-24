@@ -1,183 +1,130 @@
-# Handoff — Cloud Continuation from Local Session (2026-04-23)
+# Handoff — Post-Compact Continuation (2026-04-24)
 
-**Public HEAD:** `b48991e` (2P-1a T6a complete). Also shipped in this cloud session: `chore(dev-env)` (`729f2d4`), `fix(2A-4c2 T8): rustfmt + verified` (`7d1ef2c`), `docs: lift forge:* ban + harness philosophy + git-workflow rules` (`5d25256`), the full 2P-1 design iteration (v1→v3, `1f87606`/`65f5ea1`/`3863b24`), and 2P-1a T1a-T6a (`c44110d`/`090485f`/`79de480`/`f68317b`/`b48991e`).
-**Active phase status:** **2A-4c2 T8 verified + committed**; **2P-1a shipped** pending forge-app prune merge (PR #1) + user 2-min real-session check. Remaining 2A-4c2 work: T9 (schema rollback recipe test), T10 (adversarial review of T1-T9 pure-daemon diff), T11 (live-daemon dogfood + results doc).
-**Prior phase:** **Phase 2A-4c1 Forge-Tool-Use-Recording** — SHIPPED.
+**Public HEAD (chaosmaximus/forge):** see `git log -1` at session start.
+**forge-app master:** `665c372c7c461016a8b5953d91e792b7b7221636` (post-2P-1a prune).
+**Current version:** **v0.5.0** across all four crates + plugin manifest + marketplace + Homebrew formula (bumped from 0.4.0 at phase close).
 
-## Why the session ended
+## State in one paragraph
 
-Local Mac ran out of RAM (15 G used, 82 M free, 6 G compressor, sustained load-avg 23+). Rust compile jobs kept getting swapped out and stalled. Rather than push through, we killed all cargo/rustc, cleaned the worktree, wrote this handoff, and pushed. Continue in the cloud.
+Phase **2P-1a (plugin surface migration)** is SHIPPED. The public repo now carries the full agent-facing Forge SDK — plugin manifest, marketplace entry, 3 agent teams, 11 hook scripts, 15 skills + shared reference, Homebrew formula, install.sh, full test suite (BATS unit + bash integration + 9 static validators + Claude Code E2E), daemon-side Hook HealthCheck, CI gating. Public plugin is installed in the user's `~/.claude/plugins/marketplaces/forge-marketplace/` (symlink into the repo); `"forge@forge-marketplace": true` in `~/.claude/settings.json`. **Forge HUD renders live** through `~/.claude/statusline-command.sh` → `target/release/forge-hud`. forge-app has been pruned to its private allowlist (Tauri app, licensing, internal product docs).
 
-## First actions on the cloud box
+Phase **2A-4c2 (Behavioral Skill Inference)** is T1-T8 complete; T9-T11 remain.
 
-1. **Clone + pull:**
-   ```bash
-   git clone https://github.com/chaosmaximus/forge.git
-   cd forge
-   git pull origin master   # HEAD should be daf6f09
-   ```
+Phase **2P-1b (harden)** is a 13-item backlog tracked below in §Lifted constraints.
 
-2. **Verify T8 WIP** (the last local commit, tests unverified):
-   ```bash
-   cargo fmt --all
-   cargo clippy --workspace -- -W clippy::all -D warnings
-   cargo test -p forge-daemon --test skill_inference_flow
-   cargo test --workspace
-   ```
-   - If tests pass: amend the T8 WIP commit message to drop the `[unverified]` tag, or add a follow-up `fix(2A-4c2 T8):` commit if any adjustment is needed.
-   - If tests fail: the integration test in `crates/daemon/tests/skill_inference_flow.rs` is a complete scaffold per plan §Task 8; fix whatever the runner exposes (most likely: missing `Request::ForceConsolidate` unit-variant handling, or `ResponseData::CompiledContext` field name drift).
+## First actions after `/compact`
 
-3. **Continue with T9-T11** per `docs/superpowers/plans/2026-04-23-forge-behavioral-skill-inference.md`:
-   - T9: Schema rollback recipe test (follows 2A-4c1 T11 precedent)
-   - T10: Adversarial review pass on T1-T9 diff (dispatch Claude code-reviewer + Codex CLI in parallel)
-   - T11: Live-daemon dogfood + results doc at `docs/benchmarks/results/forge-behavioral-skill-inference-2026-04-XX.md`
+```bash
+# Sanity-check environment
+cd /mnt/colab-disk/DurgaSaiK/forge/forge
+cargo fmt --all --check                                 # should be clean
+cargo clippy --workspace -- -W clippy::all -D warnings  # 0 warnings
+cargo test --workspace                                  # 1710 passed, 0 failed, 3 ignored
 
-## Unpushed state at handoff
+# Verify plugin + HUD still wired
+ls -l ~/.claude/plugins/marketplaces/forge-marketplace  # symlink → public repo
+echo '{"session_id":"t","model":{"display_name":"Claude Opus 4.7"}}' | bash ~/.claude/statusline-command.sh
+```
 
-All 12 divergent commits (spec v1 + plan v1 + T1-T7 implementation + T8 WIP + cleanup chores) are being pushed to `origin/master`. After push, local and origin are synced.
+If all four pass, you're ready to work. If not: see §Environment prerequisites below.
 
-## Repo state — what's actually on disk
+## Next work (pick one)
 
-### `docs/superpowers/specs/`
-- `2026-04-17-forge-valence-flipping-design.md` (2A-4a, shipped)
-- `2026-04-18-forge-recency-decay-design.md` (2A-4b, shipped)
-- `2026-04-19-forge-tool-use-recording-design.md` (2A-4c1, shipped)
-- `2026-04-20-dark-loops-sp1-design.md` (sp1 — landed via its own PR/merge flow, already on master)
-- `2026-04-23-forge-behavioral-skill-inference-design.md` (2A-4c2, active)
+### Stream A — Finish 2A-4c2 (3 tasks)
 
-### `docs/superpowers/plans/`
-- `2026-04-16-forge-consolidation.md` (2A-3, shipped)
-- `2026-04-16-forge-context.md` (2A-2, shipped)
-- `2026-04-16-housekeeping-and-doctor-observability.md` — **UNEXECUTED orphan plan** (Version endpoint + HttpClient timeout + session pagination + Doctor-on-steroids). 4 deferred items from Forge-Persist reviews. Not in any active phase. Cloud session should **triage**: either schedule it between 2A-4c2 and 2A-4d, or explicitly defer past 2A-4d.
-- `2026-04-17-forge-valence-flipping.md` (2A-4a, executed)
-- `2026-04-19-forge-recency-decay.md` (2A-4b, executed)
-- `2026-04-19-forge-tool-use-recording.md` (2A-4c1, executed)
-- `2026-04-20-dark-loops-sp1.md` (sp1, executed)
-- `2026-04-23-forge-behavioral-skill-inference.md` (2A-4c2, **active** — T1-T7 done, T8 WIP, T9-T11 pending)
+Plan: `docs/superpowers/plans/2026-04-23-forge-behavioral-skill-inference.md`
+Spec: `docs/superpowers/specs/2026-04-23-forge-behavioral-skill-inference-design.md` (LOCKED; do not edit).
 
-### `docs/benchmarks/results/`
-- `forge-valence-flipping-2026-04-17.md` (2A-4a dogfood)
-- `forge-recency-weighted-decay-2026-04-19.md` (2A-4b dogfood)
-- `forge-tool-use-recording-2026-04-19.md` (2A-4c1 dogfood)
-- Plus historical floor-wave results (locomo / longmemeval).
-- **Missing (to be written at T11):** `forge-behavioral-skill-inference-2026-04-XX.md`.
+- **T9**: Schema rollback recipe test. Follows 2A-4c1 T11 precedent. Lands in `crates/daemon/src/db/schema.rs` or a sibling test file. The 2A-4c2 T1 ALTERs on `skill` table need a rollback recipe that's actually tested.
+- **T10**: Adversarial review of T1-T9 pure-daemon diff (Claude code-reviewer + Codex rescue, inverted prompts).
+- **T11**: Live-daemon dogfood + results doc at `docs/benchmarks/results/forge-behavioral-skill-inference-2026-04-XX.md`.
 
-### Known untracked (not pushed — not in worktree after cleanup)
-- `bench_results/`, `bench_results_*/` — now gitignored; local artifacts purged.
-- No other stray files.
+Once T11 lands, 2A-4c2 is done and **Phase 2A-4d Forge-Identity Bench** unblocks.
 
-## 2A-4c2 progress ledger (source: git log + plan §12)
+### Stream B — Start 2P-1b (harden, pick any item)
 
-| Task | Scope | Commit | Status |
-|------|-------|--------|--------|
-| T1 | `skill` table ALTER + partial unique index | `b0109b9` | ✅ shipped |
-| T2 | ConsolidationConfig skill inference fields + validators | `5d2fb07` | ✅ shipped |
-| T3 | Pure helpers (fingerprint, domain, name) + L0 tests | `92ee8ee` | ✅ shipped |
-| T4 | `infer_skills_from_behavior` orchestrator + 9 L1 tests | `5d29d3a` | ✅ shipped |
-| T5 | Register Phase 23 in consolidator orchestrator | `6a11952` | ✅ shipped |
-| T6 | `Request::ProbePhase` + `ResponseData::PhaseProbe` + PHASE_ORDER const + 4 L1 tests | `416b55c` | ✅ shipped |
-| T7 | `<skills>` renderer dual-gate + `inferred_sessions=` attr + 4 L1 tests | `b393d26` | ✅ shipped |
-| **T8** | **Integration test `tests/skill_inference_flow.rs`** | **`daf6f09`** | ⚠️ **WIP — unverified locally** |
-| T9 | Schema rollback recipe test | — | ⏳ pending |
-| T10 | Adversarial review on T1-T9 diff | — | ⏳ pending |
-| T11 | Live-daemon dogfood + results doc | — | ⏳ pending |
+Spec: `docs/superpowers/specs/2026-04-23-forge-public-resplit-design.md` §Phase 2P-1b.
 
-## Open items carried forward (not blocking 2A-4c2)
+Highest-leverage items:
+1. **Harness-sync CI check** (`scripts/check-harness-sync.sh`) — the invariant that turns the CLAUDE.md harness philosophy into a testable gate. Scans JSON method literals + Rust fixtures + CLI subcommand refs + rustdoc `Request::<Variant>` against the authoritative list in `crates/core/src/protocol/request.rs` + `forge-cli`'s clap derive. 2-week warn-only window, then fail-closed.
+2. **Cut v0.5.0 public release** — `git tag v0.5.0 && git push --tags` triggers `.github/workflows/release.yml` which ships `forge-v0.5.0-x86_64-unknown-linux-gnu.tar.gz` + macOS variants. Once live, `scripts/install.sh` resolves 200 OK and Formula/forge.rb's URL template resolves. Closes latent 2P-1a fragility.
+3. **Re-enable `#[ignore]` tests** in `crates/daemon/tests/test_hook_e2e.rs` (`test_session_start_hook_registers_session`, `test_full_pipeline_remember_check_via_cli`) once CI provisions release `forge-next` + running daemon.
+4. Full 2P-1b backlog (13 items) in §Lifted constraints below.
 
-1. **Authenticated caller-session API** — flagged since 2A-4a T9 / 2A-4b T9 cross-org BLOCKERs, still a known same-org ambiguity in Flip/Reaffirm/Record/List. Phase 2A-6 concern. Do not re-solve inside 2A-4c2.
-2. **`load_config()` hot-path I/O** in consolidator Phase 4 (Codex v7 LOW since 2A-4b). Still not addressed.
-3. **`expected_recall_delta = 0.20` CLI default** for Forge-Consolidation regression CI (noted since 2A-3 handoff). Still not locked.
-4. **Housekeeping + Doctor Observability plan** — now tracked at `docs/superpowers/plans/2026-04-16-housekeeping-and-doctor-observability.md`. 4 deferred items; never executed. Triage in the cloud.
+### Stream C — Triage orphan plan
 
-## Phase 2A-4 roadmap remaining after 2A-4c2
+`docs/superpowers/plans/2026-04-16-housekeeping-and-doctor-observability.md` — 4 deferred items from Forge-Persist reviews (Version endpoint, HttpClient timeout, session pagination, Doctor-on-steroids). Never executed. Decide: schedule or defer.
 
-- **Phase 2A-4d Forge-Identity Bench** (task #207) — 6 dimensions, per-dim minimums, composite ≥ 0.95 on 5 seeds, calibration loop. **Depends on:** 2A-4a + 2A-4b + 2A-4c1 + 2A-4c2 ALL shipped. After 2A-4c2 lands, this is the next phase.
+## Environment prerequisites
 
-## Process rules carried forward (from prior phase handoffs, unchanged)
+- Ubuntu 22.04 (glibc 2.35) or newer. On this cloud box `scripts/setup-dev-env.sh` downloads Microsoft's manylinux_2_17 ORT 1.23.0 into `.tools/` — needed because `fastembed 5` / `ort 2.0.0-rc.11` default to pyke.io's glibc ≥ 2.38 binary.
+- `sudo apt-get install -y pkg-config libssl-dev` (one-time).
+- `.cargo/config.toml` + `scripts/with-ort.sh` runner wire ORT env into every cargo invocation transparently — no manual `LD_LIBRARY_PATH` exports needed.
+- For running the daemon directly (outside cargo), export `LD_LIBRARY_PATH="$(pwd)/.tools/onnxruntime-linux-x64-1.23.0/lib"` before launch.
 
-- Work on `master` directly (2A-4a/4b/4c1 precedent — no feature branches, no worktrees).
-- Every sub-phase: 2 adversarial reviews (Claude code-reviewer + Codex CLI) on design before implementation AND on diff before merge.
-- `cargo clippy --workspace -- -W clippy::all -D warnings` must be 0 warnings at every commit boundary.
-- `cargo fmt --all` clean.
-- `cargo test --workspace` green after each GREEN phase of TDD.
-- Dogfood via live daemon rebuild+restart BEFORE moving to next sub-phase.
-- Do NOT use git worktrees unless the user explicitly grants permission for the specific task (see CLAUDE.md "Git workflow").
-- Commit message prefixes: `feat(2A-4cX TN):`, `test(2A-4cX TN):`, `fix(2A-4cX TN):`, `chore(2A-4cX):`, `docs(2A-4cX ...):`. Co-author trailer `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
-
-## Lifted constraints (changelog)
-
-- **2026-04-23 — `forge:*` plugin skills ban lifted.** Original rule (pre-2A-4c1): "DO NOT invoke any `forge:*` plugin skill or `superpowers:using-git-worktrees` — both corrupted git state via rogue branches / orphan commits." Root cause was almost certainly the `superpowers:using-git-worktrees` interaction, not the forge plugin itself. Going forward: worktrees are off by default (see CLAUDE.md), and the `forge:*` plugin surface is being thoroughly audited + rebuilt during Phase 2P-1.
-
-- **2026-04-23 — Phase 2P-1a (plugin surface migration) COMPLETE** at public `SHA_A = b48991e` (chaosmaximus/forge master). Six commits land the move from private `forge-app@480527b`:
-    - `3863b24 docs(2P-1): spec v3 — split into 2P-1a (move) + 2P-1b (harden)`
-    - `c44110d docs(2P-1a T1a): inventory + scope lock`
-    - `090485f chore(2P-1a T2a): migration tooling — scrub + copy + lexicon + fixture tests`
-    - `79de480 feat(2P-1a T3a): migrate plugin surface from forge-app@480527b`
-    - `f68317b chore(2P-1a T4a): CI gating — plugin + hooks + skills + agents + shellcheck`
-    - `b48991e fix(2P-1a T6a): add daemon-side Hook HealthCheck + prune CLI duplicate`
-
-    Public-facing surface added: `.claude-plugin/{plugin.json, marketplace.json}`, `agents/forge-{planner,generator,evaluator}.md`, `hooks/hooks.json`, 11 hook scripts under `scripts/hooks/`, 15 `skills/forge-*` + `forge-build-workflow.md`, `Formula/forge.rb`, `templates/`, `scripts/install.sh`, full test suite (BATS unit + bash integration + static validators + Claude Code E2E), `crates/daemon/tests/test_hook_e2e.rs`, `doctor` Hook HealthCheck.
-
-    Dogfood (T6a): 6/7 PASS, 1 WARN (plugin filesystem skills surface via `<skills>` only after behavioral accumulation — expected per 2A-4c2 T7 dual-gate), 0 FAIL. Results doc at `docs/benchmarks/results/forge-public-resplit-2026-04-23.md`.
-
-    **2P-1a closure (2026-04-24):**
-    - `chaosmaximus/forge-app#1` merged. `SHA_A_private = 665c372c7c461016a8b5953d91e792b7b7221636` — closes acceptance criterion §6.6.
-    - Public plugin installed locally via `~/.claude/plugins/marketplaces/forge-marketplace → /mnt/colab-disk/DurgaSaiK/forge/forge` symlink + `extraKnownMarketplaces.forge-marketplace.source.path` in `~/.claude/settings.json` + `"forge@forge-marketplace": true` in `enabledPlugins`.
-    - **Forge HUD rendering live** via `~/.claude/statusline-command.sh` → `target/release/forge-hud`. Sample output: `[Claude Opus 4.7 | Max] │ Forge v0.4.0 │ <gcp-branch> │ Context/Usage bars │ 📂 <cwd> │ N decisions`.
-    - `forge-next doctor` surfaces `[OK] hook: plugin hooks installed (9 events)` when the plugin is installed at the canonical path. Closes §6.4 for the harness-wired lane.
-    - Remaining §6.4 lane (user intent → skill trigger in a NEW Claude Code session): the next fresh CC session in this repo should see `forge-*` skills in its context once the plugin is enabled. User can verify at their convenience — not blocking for this phase since the plugin is confirmed loaded + HUD is live.
-
-## Phase 2P-1b backlog (harden)
-
-Follow-up phase, tracked separately. Each item surfaced during the 2P-1a adversarial review rounds or dogfood:
-
-1. **Harness-sync CI check** (`scripts/check-harness-sync.sh`) — JSON method literals + Rust test fixtures (incl. variable-name form) + CLI subcommand refs (incl. flags-before-command and nested forms like `forge-next identity list`) + rustdoc `Request::<Variant>` refs cross-checked against `crates/core/src/protocol/request.rs`. Warn-only 2 weeks then fail-closed. Rename vs delete via `#[deprecated]` grace window.
-2. **Evidence-gated audit contract** — `docs/superpowers/reviews/*.yaml` artifacts from `skill-creator` + inverted-prompt Claude/Codex adversarial passes; `scripts/check-review-artifacts.sh` enforces HIGH+CRITICAL == 0 in CI on every PR touching `skills/`, `agents/`, `hooks/`.
-3. **SPDX header backfill for JSON** via sidecar (`.claude-plugin/LICENSES.yaml`) since inline `// SPDX-...` breaks JSON parse.
-4. **Expanded dogfood matrix** — macOS (ARM + x86) × marketplace install + symlink install × session-start/session-end/post-edit × daemon-kill mid-session (graceful hook degradation) × parallel-session test.
-5. **Rollback playbook** (`docs/operations/2P-1-rollback.md`) — repo revert + GitHub release-asset revocation + Homebrew bottle revocation + sideloaded-user advisory; walked through in a tabletop exercise.
-6. **Marketplace publication** — resolve Q6 (new submission vs version bump); explicit task owns the Anthropic marketplace listing.
-7. **2A-4d interlock** — any 2A-4d PR touching `crates/core/src/protocol/request.rs` must bump a sync version in `.claude-plugin/plugin.json` and update referenced hooks/skills in the same PR, enforced by the harness-sync CI check once in `fail-closed` mode.
-8. **Sideload-user migration note** — short migration guide for anyone who sideloaded the private plugin pre-ban-lift (2026-04-23).
-9. **Repo governance** — public repo CODEOWNERS, dependabot config, branch protection rules, issue templates.
-10. **Hook-level bugs** surfaced by adversarial review but deferred as non-ship-blocking:
-    - `scripts/hooks/session-end.sh`: `rm -f SESSION_FILE` before confirming `end-session` succeeded.
-    - `scripts/hooks/user-prompt.sh`: advances `SINCE` watermark on empty first-call result.
-    - `scripts/hooks/subagent-start.sh`: nested XML-escape bug on recall args.
-    - `scripts/hooks/post-edit.sh` / `post-bash.sh`: currently don't call `record_tool_use`; hook layer doesn't persist tool-use rows on edits (direct `RecordToolUse` API works).
-    - `skills/forge/SKILL.md`: documents `cargo install ... forge-cli` but installed binary is `forge-next`.
-    - `Formula/forge.rb`: no `depends_on "rust"`, no `head` stanza for source fallback; `sha256 "PLACEHOLDER"` needs release-workflow-driven fill.
-    - `scripts/install.sh`: no SHA256 checksum verification (supply-chain surface for curl-pipe-bash).
-11. **Re-enable `#[ignore]` tests** in `crates/daemon/tests/test_hook_e2e.rs` (`test_session_start_hook_registers_session`, `test_full_pipeline_remember_check_via_cli`) once CI provisions release forge-next + running daemon.
-12. **Stale validators** not currently wired to CI (content gaps): `tests/static/validate-csv.sh` (references project-types.csv + domain-complexity.csv that aren't in forge-app v0.4.0), `validate-rubrics.sh` (evaluation-criteria/ only in forge-app archive), `validate-templates.sh` (expects PRD.md etc. not in templates/). Decide: migrate the missing content, or retire the validators.
-13. **Homebrew formula fix** — Formula installs `bin.install "forge-daemon"` + `"forge-next"` only (trimmed from 4 to 2 in T3a), but version 0.4.0 URL template still 404s until a v0.4.0 GitHub release exists. Either cut the release or put the formula behind a `head` stanza for now.
-
-## What NOT to redo
-
-- Don't re-brainstorm 2A-4c2 design — v1 at `docs/superpowers/specs/2026-04-23-forge-behavioral-skill-inference-design.md` is already committed at `4d1d9f9`.
-- Don't re-write the 2A-4c2 plan — v1 at `docs/superpowers/plans/2026-04-23-forge-behavioral-skill-inference.md` is at `6644283`.
-- Don't touch 2A-4c1 — shipped.
-- Don't create new branches.
-
-## Memory updates to apply when resuming
-
-Update `~/.claude/projects/-Users-dsskonuru-workspace-playground-forge/memory/MEMORY.md`:
-- Mark **2A-4c1 COMPLETE** (pointer file already exists in memory/).
-- Add or update **2A-4c2 IN PROGRESS** entry (T1-T7 shipped, T8 WIP) as the new "START HERE NEXT SESSION" entry.
-- Remove any leftover `project_phase_2a4b_complete_*` as "START HERE" (it's superseded).
-
-## Files of interest for the first 30 minutes of the cloud session
+## Files of interest
 
 | File | Why |
 |------|-----|
+| `CLAUDE.md` | Project identity, harness philosophy, git workflow rules. |
 | `HANDOFF.md` | This file. |
-| `docs/superpowers/plans/2026-04-23-forge-behavioral-skill-inference.md` | The active plan — §Task 8 matches `tests/skill_inference_flow.rs`; §Task 9-11 are next. |
-| `docs/superpowers/specs/2026-04-23-forge-behavioral-skill-inference-design.md` | Locked design; do not edit. |
-| `crates/daemon/tests/skill_inference_flow.rs` | WIP T8 — run the tests. |
-| `crates/daemon/src/workers/consolidator.rs` | Contains the T4 `infer_skills_from_behavior` call + T5 Phase 23 registration. |
-| `crates/daemon/src/recall.rs` | T7's `<skills>` renderer with `inferred_sessions="N"` attribute. |
-| `crates/daemon/src/db/schema.rs` | T1 schema ALTER + T9's rollback recipe should land here. |
+| `docs/superpowers/specs/2026-04-23-forge-behavioral-skill-inference-design.md` | 2A-4c2 locked design. |
+| `docs/superpowers/plans/2026-04-23-forge-behavioral-skill-inference.md` | 2A-4c2 task plan (T1-T8 done, T9-T11 pending). |
+| `docs/superpowers/specs/2026-04-23-forge-public-resplit-design.md` | 2P-1 design v3 (2P-1a shipped, 2P-1b pending). |
+| `docs/superpowers/plans/2P-1a-inventory.md` | Source of truth for what migrated. |
+| `docs/benchmarks/results/forge-public-resplit-2026-04-23.md` | 2P-1a dogfood results (6/7 PASS, 1 WARN, 0 FAIL). |
+| `crates/daemon/src/workers/consolidator.rs` | `infer_skills_from_behavior` (T4) + Phase 23 registration (T5). |
+| `crates/daemon/src/server/handler.rs` | Request dispatch; doctor Hook check (T6a). |
+| `crates/daemon/tests/skill_inference_flow.rs` | 2A-4c2 T8 integration test. |
+| `crates/daemon/tests/test_hook_e2e.rs` | Restored hook E2E (2 tests `#[ignore]`'d pending infra). |
+| `scripts/migrate-{copy,scrub,scrub-allowlist}.sh` + `migrate-{lexicon,exclude}.txt` | T2a migration tooling. |
+| `tests/static/*.sh` | Plugin/hook/skill/agent validators (wired to CI in T4a). |
+| `tests/fixtures/scrub/` + `tests/scripts/test-migrate-scrub.sh` | Scrub fixture tests. |
 
----
+## Lifted constraints (changelog)
 
-Safe to `/compact` after pushing. The next session's first action is `git pull origin master` and running the T8 verification commands above.
+- **2026-04-23 — `forge:*` plugin skills ban lifted.** Original rule: "DO NOT invoke any `forge:*` plugin skill or `superpowers:using-git-worktrees` — both corrupted git state via rogue branches / orphan commits." Root cause: the worktrees interaction, not forge plugin. Worktrees now off by default (CLAUDE.md §Git workflow). Plugin rebuilt in 2P-1a.
+
+- **2026-04-23 — Phase 2P-1a COMPLETE at public `b48991e`.** Six migration commits (`3863b24` → `b48991e`) landed the move from `forge-app@480527b`. Dogfood: 6/7 PASS, 1 WARN (by design, 2A-4c2 T7 dual-gate), 0 FAIL. See `docs/benchmarks/results/forge-public-resplit-2026-04-23.md`.
+
+- **2026-04-24 — Phase 2P-1a closed.** `chaosmaximus/forge-app#1` merged (`SHA_A_private = 665c372`). Plugin installed locally via `~/.claude/plugins/marketplaces/forge-marketplace` symlink + `"forge@forge-marketplace": true` in `~/.claude/settings.json` + `extraKnownMarketplaces.forge-marketplace.source.path`. Forge HUD rendering live. All four crates + plugin manifest + marketplace + Formula bumped to **v0.5.0**.
+
+## Phase 2P-1b backlog (harden — 13 items)
+
+1. **Harness-sync CI check** (`scripts/check-harness-sync.sh`). JSON + Rust fixtures + CLI subcommand refs (incl. flags-before-command and `forge-next identity list`-style nested) + rustdoc `Request::<Variant>` refs cross-checked against `crates/core/src/protocol/request.rs` + clap derive. Warn-only 2 weeks then fail-closed. Rename/delete via `#[deprecated]` grace window.
+2. **Evidence-gated audit contract** — `docs/superpowers/reviews/*.yaml` artifacts from `skill-creator` + inverted-prompt Claude/Codex passes; `scripts/check-review-artifacts.sh` enforces HIGH+CRITICAL == 0 on every PR touching `skills/`, `agents/`, `hooks/`.
+3. **SPDX JSON sidecar** (`.claude-plugin/LICENSES.yaml`) since inline `// SPDX` breaks JSON parse.
+4. **Expanded dogfood matrix** — macOS (ARM + x86) × marketplace install + symlink install × session-start / session-end / post-edit × daemon-kill mid-session × parallel-session test.
+5. **Rollback playbook** (`docs/operations/2P-1-rollback.md`) — repo revert + GitHub release-asset revocation + Homebrew bottle revocation + sideload-user advisory; tabletop exercise.
+6. **Marketplace publication** — resolve Q6 (new submission vs version bump); explicit task owns the Anthropic marketplace listing.
+7. **2A-4d interlock** — any PR touching `crates/core/src/protocol/request.rs` bumps a sync version in `.claude-plugin/plugin.json` + updates referenced hooks/skills in the same PR; enforced by harness-sync CI in fail-closed mode.
+8. **Sideload-user migration note** — short guide for anyone who sideloaded the private plugin pre-ban-lift.
+9. **Repo governance** — CODEOWNERS, dependabot, branch protection, issue templates.
+10. **Hook-level bugs** (latent, non-ship-blocking):
+    - `scripts/hooks/session-end.sh` — `rm -f SESSION_FILE` before confirming `end-session` succeeded.
+    - `scripts/hooks/user-prompt.sh` — advances `SINCE` watermark on empty first-call.
+    - `scripts/hooks/subagent-start.sh` — nested XML-escape bug on recall args.
+    - `scripts/hooks/post-edit.sh` / `post-bash.sh` — don't call `record_tool_use`; direct API works.
+    - `skills/forge/SKILL.md` — docs `cargo install ... forge-cli` but binary is `forge-next`.
+    - `Formula/forge.rb` — no `depends_on "rust"`, no `head` stanza; `sha256 "PLACEHOLDER"` needs release-workflow fill.
+    - `scripts/install.sh` — no SHA256 checksum verification.
+11. **Re-enable `#[ignore]` tests** in `test_hook_e2e.rs` once CI provisions release binary + daemon.
+12. **Stale validators** not wired to CI: `validate-csv.sh`, `validate-rubrics.sh`, `validate-templates.sh` (content gaps). Migrate the missing content or retire the validators.
+13. **Cut v0.5.0 release** — tag + push triggers `release.yml`; without it, `Formula/forge.rb` and `scripts/install.sh` URL templates 404.
+
+## Process rules
+
+- Work on `master` directly (no feature branches by default).
+- **Do not use git worktrees without explicit per-task permission** (CLAUDE.md §Git workflow).
+- `cargo fmt --all` clean + `cargo clippy --workspace -- -W clippy::all -D warnings` 0 warnings at every commit boundary.
+- `cargo test --workspace` green after each GREEN phase.
+- Two adversarial reviews (Claude code-reviewer + Codex rescue) on every design BEFORE implementation AND on every diff BEFORE merge.
+- Commit prefixes: `feat(<phase> <task>):`, `fix(...)`, `chore(...)`, `docs(...)`, `test(...)`. Co-author trailer `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`. New commits, never amend.
+
+## What NOT to redo
+
+- 2P-1a — SHIPPED. Don't re-migrate. Hardening is 2P-1b, separate scope.
+- 2A-4c2 spec + plan — LOCKED. Don't edit either.
+- 2A-4c1, 2A-4b, 2A-4a — SHIPPED. Don't touch.
+- Don't re-derive the scrub lexicon, migration tooling, or inventory from scratch — `scripts/migrate-*.sh`, `tests/fixtures/scrub/`, `docs/superpowers/plans/2P-1a-inventory.md` are authoritative.
+- Don't create new git branches (master-direct workflow).
