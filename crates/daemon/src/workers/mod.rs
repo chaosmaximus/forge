@@ -241,6 +241,7 @@ pub fn spawn_workers(
     let kpi_reaper_state = Arc::clone(&state);
     let kpi_reaper_interval = worker_intervals.kpi_reaper_interval_secs;
     let kpi_retention_days = worker_intervals.kpi_events_retention_days;
+    let kpi_retention_by_type = worker_intervals.kpi_events_retention_days_by_type.clone();
     let kpi_reaper_handle = tokio::spawn(async move {
         kpi_reaper::run_kpi_reaper(
             kpi_reaper_state,
@@ -248,6 +249,7 @@ pub fn spawn_workers(
             kpi_reaper_shutdown,
             kpi_reaper_interval,
             kpi_retention_days,
+            kpi_retention_by_type,
         )
         .await;
     });

@@ -417,6 +417,20 @@ pub struct WorkerConfig {
     /// batched and the cutoff only moves by one tick anyway.
     #[serde(default = "default_21600")]
     pub kpi_reaper_interval_secs: u64,
+    /// Per-event-type retention override map. When a kpi_events row's
+    /// event_type matches a key, that retention applies; otherwise the
+    /// global `kpi_events_retention_days` is used.
+    ///
+    /// Default seeds `bench_run_completed` = 180 days for the leaderboard
+    /// (Tier 3 D9). Operators can extend or override.
+    #[serde(default = "default_kpi_events_retention_days_by_type")]
+    pub kpi_events_retention_days_by_type: HashMap<String, u32>,
+}
+
+fn default_kpi_events_retention_days_by_type() -> HashMap<String, u32> {
+    let mut m = HashMap::new();
+    m.insert("bench_run_completed".to_string(), 180);
+    m
 }
 
 impl Default for WorkerConfig {
@@ -433,6 +447,7 @@ impl Default for WorkerConfig {
             heartbeat_timeout_secs: 60,
             kpi_events_retention_days: 30,
             kpi_reaper_interval_secs: 21_600,
+            kpi_events_retention_days_by_type: default_kpi_events_retention_days_by_type(),
         }
     }
 }
@@ -929,6 +944,13 @@ impl WorkerConfig {
             // Clamp retention to 1..=365 days, reaper interval to 60s..=24h.
             kpi_events_retention_days: self.kpi_events_retention_days.clamp(1, 365),
             kpi_reaper_interval_secs: self.kpi_reaper_interval_secs.clamp(60, 86400),
+            // Phase 2A-4d.3 T11 (D9): per-event-type retention overrides.
+            // Clamp each entry to the same 1..=365 bounds as the global value.
+            kpi_events_retention_days_by_type: self
+                .kpi_events_retention_days_by_type
+                .iter()
+                .map(|(k, v)| (k.clone(), (*v).clamp(1, 365)))
+                .collect(),
         }
     }
 }

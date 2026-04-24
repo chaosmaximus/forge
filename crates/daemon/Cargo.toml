@@ -14,6 +14,10 @@ path = "src/main.rs"
 [[bin]]
 name = "forge-bench"
 path = "src/bin/forge-bench.rs"
+# Imports `bench::forge_identity` + `bench::telemetry` (both gated on
+# feature = "bench"). Skip this binary on default builds so
+# `cargo check --workspace` stays clean without `--features bench`.
+required-features = ["bench"]
 
 [dependencies]
 forge-core = { path = "../core" }
