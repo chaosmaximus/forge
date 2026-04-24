@@ -37,6 +37,9 @@ jobs:
       - name: Clippy (0 warnings required)
         run: cargo clippy -p forge-daemon -p forge-core -p forge-cli -p forge-hud -- -W clippy::all -D warnings
 
+      - name: Span integrity + tokio::spawn whitelist (2A-4d.1 T7)
+        run: bash scripts/ci/check_spans.sh
+
   test:
     name: Test (${{ matrix.os }})
     strategy:
