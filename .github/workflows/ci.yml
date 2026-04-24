@@ -100,3 +100,6 @@ jobs:
 
       - name: Scrub fixture tests
         run: bash tests/scripts/test-migrate-scrub.sh
+
+      - name: Harness drift (WARN-only until 2026-05-08, then FORCE_FAIL=1)
+        run: bash scripts/check-harness-sync.sh
