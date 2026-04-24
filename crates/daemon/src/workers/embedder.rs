@@ -23,14 +23,14 @@ pub async fn run_embedder(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    eprintln!("[embedder] started, interval = {interval:?}");
+    tracing::info!(target: "forge::embedder", ?interval, "embedder started");
 
     loop {
         tokio::select! {
             _ = tokio::time::sleep(interval) => {}
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
-                    eprintln!("[embedder] shutdown received");
+                    tracing::info!(target: "forge::embedder", "shutdown received");
                     return;
                 }
             }
@@ -70,20 +70,22 @@ pub async fn run_embedder(
                             match vec::store_embedding(&locked.conn, id, emb) {
                                 Ok(()) => inserted += 1,
                                 Err(e) => {
-                                    eprintln!("[embedder] store error for {id}: {e}");
+                                    tracing::error!(target: "forge::embedder", memory_id = %id, error = %e, "store error");
                                 }
                             }
                         }
                     }
 
-                    eprintln!(
-                        "[embedder] embedded {inserted}/{} memories ({}ms)",
-                        batch.len(),
-                        batch_start.elapsed().as_millis()
+                    tracing::info!(
+                        target: "forge::embedder",
+                        inserted,
+                        batch_size = batch.len(),
+                        duration_ms = batch_start.elapsed().as_millis(),
+                        "embedded memories"
                     );
                 }
                 Err(e) => {
-                    eprintln!("[embedder] ollama embed failed: {e}, will retry next interval");
+                    tracing::warn!(target: "forge::embedder", error = %e, "ollama embed failed; retry next interval");
                     break; // skip remaining batches, retry next interval
                 }
             }
@@ -105,7 +107,7 @@ fn get_unembedded_memories(conn: &rusqlite::Connection) -> Vec<(String, String)>
     ) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[embedder] query error: {e}");
+            tracing::error!(target: "forge::embedder", error = %e, "query error");
             return Vec::new();
         }
     };
@@ -127,7 +129,7 @@ fn get_unembedded_memories(conn: &rusqlite::Connection) -> Vec<(String, String)>
     }) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[embedder] query_map error: {e}");
+            tracing::error!(target: "forge::embedder", error = %e, "query_map error");
             return Vec::new();
         }
     };

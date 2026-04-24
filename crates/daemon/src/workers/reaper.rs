@@ -20,17 +20,17 @@ pub async fn run_session_reaper(
     let interval = config.workers.session_reaper_interval_secs;
     let timeout = config.workers.heartbeat_timeout_secs;
 
-    eprintln!("[reaper] started — interval={interval}s, timeout={timeout}s");
+    tracing::info!(target: "forge::reaper", interval_s = interval, timeout_s = timeout, "reaper started");
 
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(interval)) => {
                 if let Err(e) = reap_stale_sessions(&db_path, timeout, &events) {
-                    eprintln!("[reaper] error: {e}");
+                    tracing::error!(target: "forge::reaper", error = %e, "reaper error");
                 }
             }
             _ = shutdown_rx.changed() => {
-                eprintln!("[reaper] shutdown received");
+                tracing::info!(target: "forge::reaper", "shutdown received");
                 return;
             }
         }
@@ -73,7 +73,7 @@ fn reap_stale_sessions(
                 "reason": "heartbeat_timeout"
             }),
         );
-        eprintln!("[reaper] reaped stale session: {session_id}");
+        tracing::info!(target: "forge::reaper", %session_id, reason = "heartbeat_timeout", "reaped stale session");
     }
 
     // Phase 2: Reap sessions that never heartbeated AND are older than 24 hours.
@@ -102,16 +102,17 @@ fn reap_stale_sessions(
                 "reason": "no_heartbeat_24h"
             }),
         );
-        eprintln!("[reaper] reaped orphan session (no heartbeat, >24h): {session_id}");
+        tracing::info!(target: "forge::reaper", %session_id, reason = "no_heartbeat_24h", "reaped orphan session");
     }
 
     let total = stale_ids.len() + orphan_ids.len();
     if total > 0 {
-        eprintln!(
-            "[reaper] reaped {} session(s) ({} stale heartbeat, {} orphan)",
+        tracing::info!(
+            target: "forge::reaper",
             total,
-            stale_ids.len(),
-            orphan_ids.len()
+            stale = stale_ids.len(),
+            orphan = orphan_ids.len(),
+            "reaped sessions"
         );
     }
 

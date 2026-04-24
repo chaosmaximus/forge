@@ -21,7 +21,7 @@ pub async fn run_perception(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    eprintln!("[perception] started, interval = {interval:?}");
+    tracing::info!(target: "forge::perception", ?interval, "perception started");
 
     loop {
         tokio::select! {
@@ -29,7 +29,7 @@ pub async fn run_perception(
                 tick(&state).await;
             }
             _ = shutdown_rx.changed() => {
-                eprintln!("[perception] shutting down");
+                tracing::info!(target: "forge::perception", "shutting down");
                 return;
             }
         }
@@ -43,10 +43,10 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
         match manas::expire_perceptions(&locked.conn) {
             Ok(expired) => {
                 if expired > 0 {
-                    eprintln!("[perception] expired {expired} old perceptions");
+                    tracing::info!(target: "forge::perception", expired, "expired old perceptions");
                 }
             }
-            Err(e) => eprintln!("[perception] expire error: {e}"),
+            Err(e) => tracing::error!(target: "forge::perception", error = %e, "expire error"),
         }
     } // lock released
 
@@ -58,10 +58,10 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
             let locked = state.lock().await;
             for p in &perceptions {
                 if let Err(e) = manas::store_perception(&locked.conn, p) {
-                    eprintln!("[perception] store error: {e}");
+                    tracing::error!(target: "forge::perception", error = %e, "store error");
                 }
             }
-            eprintln!("[perception] stored {} git perceptions", perceptions.len());
+            tracing::info!(target: "forge::perception", count = perceptions.len(), "stored git perceptions");
         }
     }
 
@@ -91,7 +91,7 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
                 consumed: false,
             };
             if let Err(e) = manas::store_perception(&locked.conn, &perception) {
-                eprintln!("[perception] anti-pattern store error: {e}");
+                tracing::error!(target: "forge::perception", error = %e, "anti-pattern store error");
             }
             // Emit event for real-time UI notification
             crate::events::emit(
@@ -103,8 +103,11 @@ async fn tick(state: &Arc<Mutex<crate::server::handler::DaemonState>>) {
                     "confidence": confidence,
                 }),
             );
-            eprintln!(
-                "[perception] anti-pattern detected: {ap_title} (confidence: {confidence:.2})"
+            tracing::warn!(
+                target: "forge::perception",
+                anti_pattern = %ap_title,
+                confidence = %format!("{confidence:.2}"),
+                "anti-pattern detected"
             );
         }
     } // lock released

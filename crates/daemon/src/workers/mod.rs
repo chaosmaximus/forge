@@ -45,7 +45,11 @@ pub fn open_read_conn(db_path: &str) -> Option<rusqlite::Connection> {
             Some(conn)
         }
         Err(e) => {
-            eprintln!("[worker] WARN: failed to open read-only connection: {e} — falling back to state lock");
+            tracing::warn!(
+                target: "forge::workers",
+                error = %e,
+                "failed to open read-only connection — falling back to state lock"
+            );
             None
         }
     }
@@ -66,7 +70,7 @@ pub fn spawn_workers(
     // Detect installed agent adapters
     let detected = adapters::detect_adapters();
     let adapter_names: Vec<&str> = detected.iter().map(|a| a.name()).collect();
-    eprintln!("[workers] detected adapters: {adapter_names:?}");
+    tracing::info!(target: "forge::workers", ?adapter_names, "detected adapters");
 
     // Build watch configs from adapters
     let watch_configs: Vec<watcher::WatchConfig> = detected
@@ -226,7 +230,10 @@ pub fn spawn_workers(
         reaper::run_session_reaper(reaper_db, reaper_config, reaper_events, reaper_shutdown).await;
     });
 
-    eprintln!("[workers] spawned: watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics, reaper");
+    tracing::info!(
+        target: "forge::workers",
+        "spawned workers: watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics, reaper"
+    );
 
     vec![
         watcher_handle,

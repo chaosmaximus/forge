@@ -22,12 +22,12 @@ pub async fn run_watcher(
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     if watch_configs.is_empty() {
-        eprintln!("[watcher] no watch directories configured");
+        tracing::warn!(target: "forge::watcher", "no watch directories configured");
         return;
     }
 
     for (dir, ext) in &watch_configs {
-        eprintln!("[watcher] configured: {} (*.{})", dir.display(), ext);
+        tracing::info!(target: "forge::watcher", dir = %dir.display(), ext = %ext, "configured");
     }
 
     // Build set of valid extensions for fast lookup
@@ -65,7 +65,7 @@ pub async fn run_watcher(
     let mut watcher = match watcher_result {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("[watcher] failed to create watcher: {e}");
+            tracing::error!(target: "forge::watcher", error = %e, "failed to create watcher");
             return;
         }
     };
@@ -77,9 +77,9 @@ pub async fn run_watcher(
     for (dir, _) in &watch_configs {
         if dir.exists() {
             if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
-                eprintln!("[watcher] failed to watch {}: {e}", dir.display());
+                tracing::error!(target: "forge::watcher", dir = %dir.display(), error = %e, "failed to watch");
             } else {
-                eprintln!("[watcher] watching {}", dir.display());
+                tracing::info!(target: "forge::watcher", dir = %dir.display(), "watching");
                 watched.insert(dir.clone());
             }
         }
@@ -102,9 +102,9 @@ pub async fn run_watcher(
                 for (dir, _) in &watch_configs {
                     if !watched.contains(dir) && dir.exists() {
                         if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
-                            eprintln!("[watcher] failed to watch new dir {}: {e}", dir.display());
+                            tracing::error!(target: "forge::watcher", dir = %dir.display(), error = %e, "failed to watch new dir");
                         } else {
-                            eprintln!("[watcher] now watching {}", dir.display());
+                            tracing::info!(target: "forge::watcher", dir = %dir.display(), "now watching");
                             watched.insert(dir.clone());
                         }
                     }
@@ -113,7 +113,7 @@ pub async fn run_watcher(
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
-                    eprintln!("[watcher] shutdown received");
+                    tracing::info!(target: "forge::watcher", "shutdown received");
                     return;
                 }
             }
@@ -131,7 +131,7 @@ pub async fn run_watcher(
                 }
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
-                        eprintln!("[watcher] shutdown received during debounce");
+                        tracing::info!(target: "forge::watcher", "shutdown received during debounce");
                         return;
                     }
                 }
@@ -139,9 +139,9 @@ pub async fn run_watcher(
         }
 
         for path in pending {
-            eprintln!("[watcher] detected: {}", path.display());
+            tracing::debug!(target: "forge::watcher", path = %path.display(), "detected");
             if tx.send(path).await.is_err() {
-                eprintln!("[watcher] extractor channel closed, stopping");
+                tracing::warn!(target: "forge::watcher", "extractor channel closed, stopping");
                 return;
             }
         }
