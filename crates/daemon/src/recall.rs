@@ -1775,10 +1775,20 @@ pub fn compile_dynamic_suffix(
     // Phase 2A-4b T13: <preferences> section — shows active (non-flipped) preferences
     // sorted by recency (COALESCE(reaffirmed_at, created_at) DESC), max 5, budget-accounted.
     // Adds pref IDs to touched_ids so the T6 touch() SQL predicate can filter them back out.
+    //
+    // Master v6 §6 D4: ALWAYS emit `<preferences>` (or self-closing `<preferences/>` when
+    // empty) — keeps the XML schema stable so consumers can rely on the element being
+    // present. 2A-4d.3.1 backlog #1 closed by this branch.
     if !excluded_layers.iter().any(|l| l == "preferences") {
         let org = organization_id.unwrap_or("default");
         let prefs = crate::db::ops::list_active_preferences(conn, org, 5).unwrap_or_default();
-        if !prefs.is_empty() {
+        if prefs.is_empty() {
+            let empty_tag = "<preferences/>\n";
+            if used + empty_tag.len() <= budget {
+                used += empty_tag.len();
+                xml.push_str(empty_tag);
+            }
+        } else {
             let mut prefs_block = String::from("<preferences>");
             let close_tag = "\n</preferences>\n";
             let now_secs = crate::db::ops::current_epoch_secs();

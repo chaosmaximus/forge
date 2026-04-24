@@ -1658,9 +1658,6 @@ mod tests {
     // ── T6 — 14 infrastructure checks ─────────────────────────────
 
     #[test]
-    #[ignore = "T12 calibration: master v6 §6 assertion #10 expects <preferences> in \
-                CompileContext XML on fresh state, but recall.rs currently omits the \
-                element when no preferences exist. Tracked in 2A-4d.3.1 backlog."]
     fn test_run_infrastructure_checks_all_pass_on_fresh_state() {
         let state = DaemonState::new(":memory:").expect("DaemonState::new");
         let checks = run_infrastructure_checks(&state);
@@ -1703,13 +1700,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "T12 calibration: see test_run_infrastructure_checks_all_pass_on_fresh_state \
-                for the same <preferences> element gap. Tracked in 2A-4d.3.1 backlog."]
     async fn test_run_bench_infra_passes_on_fresh_state() {
-        // T6 wires the 14 infra assertions; on a fresh :memory: daemon
-        // every check must pass, so run_bench proceeds to the dimensions.
-        // Overall pass remains false because Dim 2/3/4/5/6 are still
-        // stubs returning score 0.0.
+        // 14 infra assertions pass on a fresh :memory: daemon; run_bench
+        // proceeds to dimensions. Dim 2 is still a stub (StepDispositionOnce
+        // Request variant missing — tracked in 2A-4d.3.1 backlog #2), so
+        // the overall composite cannot reach the 0.95 pass threshold and
+        // `score.pass` must remain false.
         let tmp = tempfile::tempdir().unwrap();
         let cfg = BenchConfig {
             seed: 42,
@@ -1725,20 +1721,19 @@ mod tests {
         );
         assert!(
             score.infrastructure_checks.iter().all(|c| c.passed),
-            "T6: every infra check must pass on a fresh :memory: daemon"
+            "every infra check must pass on a fresh :memory: daemon"
         );
-        // Dim 1 scores 1.0 (implemented); the other dims are still 0.0.
-        assert!(
-            (score.dimensions[0].score - 1.0).abs() < 1e-12,
-            "Dim 1 must score 1.0"
+        // Dim 2 must still be a stub (BLOCKED on StepDispositionOnce).
+        assert_eq!(
+            score.dimensions[1].score, 0.0,
+            "Dim 2 must still be a stub until StepDispositionOnce ships"
         );
-        for d in score.dimensions.iter().skip(1) {
-            assert_eq!(d.score, 0.0, "{} must still be a stub", d.name);
-        }
-        // Composite below threshold → overall pass must remain false.
+        assert!(!score.dimensions[1].pass, "Dim 2 stub cannot pass");
+        // Composite stays below threshold while Dim 2 is missing → overall
+        // pass must remain false.
         assert!(
             !score.pass,
-            "T6 does not complete remaining dims; overall must not pass"
+            "Dim 2 stub keeps composite below 0.95 threshold"
         );
         assert!(tmp.path().join("summary.json").exists());
     }
