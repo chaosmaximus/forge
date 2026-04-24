@@ -16,6 +16,7 @@ pub mod embedder;
 pub mod extractor;
 pub mod indexer;
 pub mod instrumentation;
+pub mod kpi_reaper;
 pub mod perception;
 pub mod reaper;
 pub mod skill_inference;
@@ -223,16 +224,37 @@ pub fn spawn_workers(
 
     // Session heartbeat reaper
     let reaper_shutdown = shutdown_tx.subscribe();
-    let reaper_db = reaper_db_path;
+    let reaper_db = reaper_db_path.clone();
     let reaper_config = config.clone();
     let reaper_events = events;
     let reaper_handle = tokio::spawn(async move {
         reaper::run_session_reaper(reaper_db, reaper_config, reaper_events, reaper_shutdown).await;
     });
 
+    // Phase 2A-4d.2 T7: kpi_events retention reaper. Runs every
+    // `kpi_reaper_interval_secs` (default 6h) and deletes rows older
+    // than `kpi_events_retention_days` (default 30). Uses its own
+    // dedicated SQLite connection so it never contends with
+    // DaemonState's write lock for large catch-up passes.
+    let kpi_reaper_shutdown = shutdown_tx.subscribe();
+    let kpi_reaper_db = reaper_db_path;
+    let kpi_reaper_state = Arc::clone(&state);
+    let kpi_reaper_interval = worker_intervals.kpi_reaper_interval_secs;
+    let kpi_retention_days = worker_intervals.kpi_events_retention_days;
+    let kpi_reaper_handle = tokio::spawn(async move {
+        kpi_reaper::run_kpi_reaper(
+            kpi_reaper_state,
+            kpi_reaper_db,
+            kpi_reaper_shutdown,
+            kpi_reaper_interval,
+            kpi_retention_days,
+        )
+        .await;
+    });
+
     tracing::info!(
         target: "forge::workers",
-        "spawned workers: watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics, reaper"
+        "spawned workers: watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics, reaper, kpi_reaper"
     );
 
     vec![
@@ -245,5 +267,6 @@ pub fn spawn_workers(
         disposition_handle,
         diagnostics_handle,
         reaper_handle,
+        kpi_reaper_handle,
     ]
 }

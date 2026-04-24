@@ -43,6 +43,12 @@ fn default_900() -> u64 {
 fn default_1800() -> u64 {
     1800
 }
+fn default_21600() -> u64 {
+    21_600
+}
+fn default_kpi_retention_days() -> u32 {
+    30
+}
 fn default_3000_usize() -> usize {
     3000
 }
@@ -399,6 +405,18 @@ pub struct WorkerConfig {
     /// Sessions without a heartbeat for this many seconds are considered dead (seconds).
     #[serde(default = "default_60")]
     pub heartbeat_timeout_secs: u64,
+    /// Phase 2A-4d.2 T7: retention window for the `kpi_events` table (days).
+    /// Rows older than this are deleted on every `kpi_reaper_interval_secs`
+    /// tick. Default 30 days is sized so `/inspect` dashboards keep a month
+    /// of history while `phase_completed` volume (~1,100 rows/project/day)
+    /// stays bounded.
+    #[serde(default = "default_kpi_retention_days")]
+    pub kpi_events_retention_days: u32,
+    /// Phase 2A-4d.2 T7: how often the `kpi_events` retention reaper fires
+    /// (seconds). Default 6h = 21600s; slow cadence because deletions are
+    /// batched and the cutoff only moves by one tick anyway.
+    #[serde(default = "default_21600")]
+    pub kpi_reaper_interval_secs: u64,
 }
 
 impl Default for WorkerConfig {
@@ -413,6 +431,8 @@ impl Default for WorkerConfig {
             diagnostics_debounce_secs: 3,
             session_reaper_interval_secs: 60,
             heartbeat_timeout_secs: 60,
+            kpi_events_retention_days: 30,
+            kpi_reaper_interval_secs: 21_600,
         }
     }
 }
@@ -905,6 +925,10 @@ impl WorkerConfig {
             diagnostics_debounce_secs: self.diagnostics_debounce_secs.max(1),
             session_reaper_interval_secs: self.session_reaper_interval_secs.clamp(10, 86400),
             heartbeat_timeout_secs: self.heartbeat_timeout_secs.clamp(10, 86400),
+            // Phase 2A-4d.2 T7: kpi_events retention reaper.
+            // Clamp retention to 1..=365 days, reaper interval to 60s..=24h.
+            kpi_events_retention_days: self.kpi_events_retention_days.clamp(1, 365),
+            kpi_reaper_interval_secs: self.kpi_reaper_interval_secs.clamp(60, 86400),
         }
     }
 }
@@ -1246,6 +1270,14 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         }
         ["workers", "heartbeat_timeout_secs"] => {
             config.workers.heartbeat_timeout_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "kpi_events_retention_days"] => {
+            config.workers.kpi_events_retention_days =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "kpi_reaper_interval_secs"] => {
+            config.workers.kpi_reaper_interval_secs =
                 value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
         // Context assembly
