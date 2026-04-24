@@ -618,7 +618,14 @@ async fn run_forge_identity(
             ));
         }
     }
-    Ok(())
+    // Match forge-context / forge-consolidation: non-pass = process exit 1,
+    // so CI gates can rely on the binary's exit code without parsing
+    // summary.json. Exit code matches `score.pass`.
+    if score.pass {
+        Ok(())
+    } else {
+        Err("forge-identity FAIL: composite below threshold or per-dim minimum".to_string())
+    }
 }
 
 // Parameter list mirrors the clap `Commands::ForgePersist` variant
