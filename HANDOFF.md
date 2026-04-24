@@ -8,7 +8,7 @@
 
 Phase **2P-1a (plugin surface migration)** is SHIPPED. The public repo now carries the full agent-facing Forge SDK — plugin manifest, marketplace entry, 3 agent teams, 11 hook scripts, 15 skills + shared reference, Homebrew formula, install.sh, full test suite (BATS unit + bash integration + 9 static validators + Claude Code E2E), daemon-side Hook HealthCheck, CI gating. Public plugin is installed in the user's `~/.claude/plugins/marketplaces/forge-marketplace/` (symlink into the repo); `"forge@forge-marketplace": true` in `~/.claude/settings.json`. **Forge HUD renders live** through `~/.claude/statusline-command.sh` → `target/release/forge-hud`. forge-app has been pruned to its private allowlist (Tauri app, licensing, internal product docs).
 
-Phase **2A-4c2 (Behavioral Skill Inference)** is T1-T8 complete; T9-T11 remain.
+Phase **2A-4c2 (Behavioral Skill Inference)** is SHIPPED. T9 rollback test, T10 adversarial review + 3-finding hardening, T11 live-daemon dogfood all landed 2026-04-24. Results at `docs/benchmarks/results/2026-04-24-forge-behavioral-skill-inference.md`. Phase **2A-4d Forge-Identity Bench** is unblocked.
 
 Phase **2P-1b (harden)** is a 13-item backlog tracked below in §Lifted constraints.
 
@@ -30,16 +30,9 @@ If all four pass, you're ready to work. If not: see §Environment prerequisites 
 
 ## Next work (pick one)
 
-### Stream A — Finish 2A-4c2 (3 tasks)
+### Stream A — Start 2A-4d Forge-Identity Bench
 
-Plan: `docs/superpowers/plans/2026-04-23-forge-behavioral-skill-inference.md`
-Spec: `docs/superpowers/specs/2026-04-23-forge-behavioral-skill-inference-design.md` (LOCKED; do not edit).
-
-- **T9**: Schema rollback recipe test. Follows 2A-4c1 T11 precedent. Lands in `crates/daemon/src/db/schema.rs` or a sibling test file. The 2A-4c2 T1 ALTERs on `skill` table need a rollback recipe that's actually tested.
-- **T10**: Adversarial review of T1-T9 pure-daemon diff (Claude code-reviewer + Codex rescue, inverted prompts).
-- **T11**: Live-daemon dogfood + results doc at `docs/benchmarks/results/forge-behavioral-skill-inference-2026-04-XX.md`.
-
-Once T11 lands, 2A-4c2 is done and **Phase 2A-4d Forge-Identity Bench** unblocks.
+Now unblocked by 2A-4c2. No spec yet — design phase first.
 
 ### Stream B — Start 2P-1b (harden, pick any item)
 
@@ -69,7 +62,8 @@ Highest-leverage items:
 | `CLAUDE.md` | Project identity, harness philosophy, git workflow rules. |
 | `HANDOFF.md` | This file. |
 | `docs/superpowers/specs/2026-04-23-forge-behavioral-skill-inference-design.md` | 2A-4c2 locked design. |
-| `docs/superpowers/plans/2026-04-23-forge-behavioral-skill-inference.md` | 2A-4c2 task plan (T1-T8 done, T9-T11 pending). |
+| `docs/superpowers/plans/2026-04-23-forge-behavioral-skill-inference.md` | 2A-4c2 task plan (SHIPPED). |
+| `docs/benchmarks/results/2026-04-24-forge-behavioral-skill-inference.md` | 2A-4c2 dogfood results at HEAD `90d9b74`. |
 | `docs/superpowers/specs/2026-04-23-forge-public-resplit-design.md` | 2P-1 design v3 (2P-1a shipped, 2P-1b pending). |
 | `docs/superpowers/plans/2P-1a-inventory.md` | Source of truth for what migrated. |
 | `docs/benchmarks/results/forge-public-resplit-2026-04-23.md` | 2P-1a dogfood results (6/7 PASS, 1 WARN, 0 FAIL). |
@@ -89,7 +83,11 @@ Highest-leverage items:
 
 - **2026-04-24 — Phase 2P-1a closed.** `chaosmaximus/forge-app#1` merged (`SHA_A_private = 665c372`). Plugin installed locally via `~/.claude/plugins/marketplaces/forge-marketplace` symlink + `"forge@forge-marketplace": true` in `~/.claude/settings.json` + `extraKnownMarketplaces.forge-marketplace.source.path`. Forge HUD rendering live. All four crates + plugin manifest + marketplace + Formula bumped to **v0.5.0**.
 
-## Phase 2P-1b backlog (harden — 13 items)
+- **2026-04-24 — Phase 2A-4c2 SHIPPED.** T9 (`f85d15c` rollback recipe test), T10 (`90d9b74` Codex-H1 + H2 + Claude-B1 hardening + 4 regression tests), T11 live-daemon dogfood (results: `docs/benchmarks/results/2026-04-24-forge-behavioral-skill-inference.md`). Dogfood produced `<skill domain="file-ops" inferred_sessions="3">Inferred: Bash+Edit+Read [b9f98611]</skill>` at HEAD `90d9b74`. Partial unique index widened from `(agent, fingerprint)` → `(agent, project, fingerprint)` and renamed `idx_skill_agent_project_fingerprint`.
+
+- **2026-04-24 — Hook schema fix.** All 7 Forge hooks that emit `hookSpecificOutput` (pre-bash, pre-edit, post-bash, post-edit, session-start, user-prompt, subagent-start) were missing the required `hookEventName` field. Every invocation emitted a "Hook JSON output validation failed" non-blocking error and dropped `additionalContext` silently. Fixed in `d660562`. Live-verified — PreToolUse:Bash context now flows through as a valid hook event.
+
+## Phase 2P-1b backlog (harden — 18 items)
 
 1. **Harness-sync CI check** (`scripts/check-harness-sync.sh`). JSON + Rust fixtures + CLI subcommand refs (incl. flags-before-command and `forge-next identity list`-style nested) + rustdoc `Request::<Variant>` refs cross-checked against `crates/core/src/protocol/request.rs` + clap derive. Warn-only 2 weeks then fail-closed. Rename/delete via `#[deprecated]` grace window.
 2. **Evidence-gated audit contract** — `docs/superpowers/reviews/*.yaml` artifacts from `skill-creator` + inverted-prompt Claude/Codex passes; `scripts/check-review-artifacts.sh` enforces HIGH+CRITICAL == 0 on every PR touching `skills/`, `agents/`, `hooks/`.
@@ -111,6 +109,11 @@ Highest-leverage items:
 11. **Re-enable `#[ignore]` tests** in `test_hook_e2e.rs` once CI provisions release binary + daemon.
 12. **Stale validators** not wired to CI: `validate-csv.sh`, `validate-rubrics.sh`, `validate-templates.sh` (content gaps). Migrate the missing content or retire the validators.
 13. **Cut v0.5.0 release** — tag + push triggers `release.yml`; without it, `Formula/forge.rb` and `scripts/install.sh` URL templates 404.
+14. **Phase 23 `inferred_from` windowed pruning** (Codex-MED from T10) — currently monotonic across runs. Recompute `inferred_from` from the current window each run, or move observations into a separate table and derive count/windowed set at read time.
+15. **Expose `skills_inferred` in `ConsolidationComplete` response + structured tracing** (Codex-LOW from T10) — today only `eprintln!`, so Phase 23 is invisible to request-level telemetry and to the forthcoming 2A-4d bench.
+16. **Shape-vs-behavior fingerprint split** (Codex-H3 from T10) — current fingerprint hashes tool names + arg KEYS only, so `Read{"/tmp/a"}` and `Read{"/prod/secret"}` collide. Future: normalize value features (`file_path`, `cmd`, URL host) into the hash, or maintain shape vs behavior fingerprints.
+17. **Defensive `WHERE json_valid(skill.inferred_from)` on UPDATE merge** (Claude-H2 from T10) — malformed JSON in `inferred_from` would error the json_each subquery. Column DEFAULT is `'[]'` + all writers emit valid JSON, so edge case is manual corruption only.
+18. **Phase-number vs orchestrator-position alignment** (Claude-H3 from T10) — Phase 23 runs between Phase 17 and 18 in `run_consolidation`. Rename to Phase 17.5 / 17a OR extend `PHASE_ORDER` const to list every phase's fn_name in actual run order so the probe API is honest.
 
 ## Process rules
 
@@ -124,7 +127,7 @@ Highest-leverage items:
 ## What NOT to redo
 
 - 2P-1a — SHIPPED. Don't re-migrate. Hardening is 2P-1b, separate scope.
-- 2A-4c2 spec + plan — LOCKED. Don't edit either.
+- 2A-4c2 — SHIPPED. Spec + plan LOCKED. Carry-forward items live in 2P-1b §14-18.
 - 2A-4c1, 2A-4b, 2A-4a — SHIPPED. Don't touch.
 - Don't re-derive the scrub lexicon, migration tooling, or inventory from scratch — `scripts/migrate-*.sh`, `tests/fixtures/scrub/`, `docs/superpowers/plans/2P-1a-inventory.md` are authoritative.
 - Don't create new git branches (master-direct workflow).
