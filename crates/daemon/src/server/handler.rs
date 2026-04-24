@@ -6551,16 +6551,29 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 },
             }
         }
-        // Phase 2A-4d.2: Observability API. The real shape handlers live in
-        // server/inspect.rs. GaugeSnapshot is passed as None here until T4
-        // wires the atomic snapshot onto ForgeMetrics; `/inspect row_count`
-        // therefore returns empty rows + stale: true in the meantime.
+        // Phase 2A-4d.2: Observability API. Shape handlers live in
+        // server/inspect.rs. `/inspect row_count` reads the atomic
+        // GaugeSnapshot by cloning it once (tiny struct, cheap); if the
+        // daemon was constructed without metrics (shouldn't happen in
+        // production but does in tests) we pass None and row_count returns
+        // stale+empty.
         Request::Inspect {
             shape,
             window,
             filter,
             group_by,
-        } => crate::server::inspect::run_inspect(&state.conn, shape, window, filter, group_by, None),
+        } => {
+            let snap_owned = state.metrics.as_ref().map(|m| m.snapshot.read().clone());
+            let snap_ref = snap_owned.as_ref();
+            crate::server::inspect::run_inspect(
+                &state.conn,
+                shape,
+                window,
+                filter,
+                group_by,
+                snap_ref,
+            )
+        }
     }
 }
 

@@ -139,6 +139,22 @@ pub struct ForgeMetrics {
     /// indistinguishable from a stable database. Operators should alert
     /// on any non-zero rate.
     pub gauge_refresh_failures: IntCounterVec,
+
+    // ── Phase 2A-4d.2 Observability API (2 new families + 1 atomic snapshot) ──
+    /// Seconds since the most recent write to each Manas table, labelled
+    /// by table name. Prometheus cannot emit NULL, so empty tables report
+    /// `-1` as a sentinel; consumers should filter `> 0`. Internal Rust /
+    /// JSON consumers (via `/inspect row_count`) see `Option<i64>` with
+    /// `None` for empty tables — no sentinel ambiguity on that path.
+    pub layer_freshness: IntGaugeVec,
+
+    /// Atomic snapshot of the most recent gauge refresh. Read by
+    /// `/inspect row_count` to serve a point-in-time view without the torn
+    /// reads the serial `.set()` calls above would produce. Distinct from
+    /// the live Prometheus gauges (which `/metrics` scrapes and which are
+    /// still written non-atomically — acceptable because Prometheus
+    /// aggregation tolerates sub-scrape drift).
+    pub snapshot: std::sync::Arc<parking_lot::RwLock<GaugeSnapshot>>,
 }
 
 impl Default for ForgeMetrics {
@@ -239,6 +255,16 @@ impl ForgeMetrics {
         )
         .expect("gauge_refresh_failures metric");
 
+        // ── Phase 2A-4d.2 Observability API ──
+        let layer_freshness = IntGaugeVec::new(
+            Opts::new(
+                "forge_layer_freshness_seconds",
+                "Seconds since the most recent write to each Manas table (-1 when empty or time column is NULL)",
+            ),
+            &["table"],
+        )
+        .expect("layer_freshness metric");
+
         registry
             .register(Box::new(memories_total.clone()))
             .expect("register memories_total");
@@ -275,6 +301,9 @@ impl ForgeMetrics {
         registry
             .register(Box::new(gauge_refresh_failures.clone()))
             .expect("register gauge_refresh_failures");
+        registry
+            .register(Box::new(layer_freshness.clone()))
+            .expect("register layer_freshness");
 
         Self {
             registry,
@@ -290,6 +319,8 @@ impl ForgeMetrics {
             table_rows,
             phase_persistence_errors,
             gauge_refresh_failures,
+            layer_freshness,
+            snapshot: std::sync::Arc::new(parking_lot::RwLock::new(GaugeSnapshot::default())),
         }
     }
 }
@@ -331,52 +362,83 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
     // operators. `memory` and `edge` intentionally appear here *and* feed
     // the dedicated memories_total / edges_total gauges — the single SELECT
     // below returns each count exactly once and we reuse it for both sinks.
-    let tables = [
-        "memory",
-        "skill",
-        "edge",
-        "identity",
-        "disposition",
-        "platform",
-        "tool",
-        "perception",
-        "declared",
-        "domain_dna",
-        "entity",
-    ];
+    // The canonical (table, count, freshness) tuple list lives below in
+    // `per_table` so labels and SELECT column order can't drift apart.
 
-    // Single-row SELECT with scalar subqueries — all 15 counts come back in
-    // one round-trip, evaluated against one implicit read snapshot.
+    // Single-row SELECT with scalar subqueries — 13 counts + 11 freshness
+    // values all come back in one round-trip, evaluated against one implicit
+    // read snapshot. Freshness expressions use `strftime('%s', ...)` because
+    // the Manas tables store their timestamp columns as TEXT ISO strings;
+    // naive integer subtraction would produce garbage. Empty tables (or the
+    // all-NULL case for skill.last_used) evaluate to NULL, which rusqlite
+    // decodes as `Option::None`.
+    //
+    // Per-table timestamp column (verified 2026-04-24):
+    //   memory      → created_at        identity    → created_at
+    //   skill       → last_used (NULL)  perception  → created_at
+    //   edge        → created_at        declared    → ingested_at
+    //   disposition → updated_at        domain_dna  → detected_at
+    //   platform    → detected_at       entity      → last_seen
+    //   tool        → discovered_at
     const COUNTS_SQL: &str = "SELECT \
-        (SELECT COUNT(*) FROM memory)                          AS mem, \
-        (SELECT COUNT(*) FROM edge)                            AS edg, \
-        (SELECT COUNT(*) FROM memory_vec)                      AS vec, \
-        (SELECT COUNT(*) FROM session WHERE ended_at IS NULL)  AS active_sess, \
-        (SELECT COUNT(*) FROM skill)                           AS skl, \
-        (SELECT COUNT(*) FROM identity)                        AS idn, \
-        (SELECT COUNT(*) FROM disposition)                     AS dsp, \
-        (SELECT COUNT(*) FROM platform)                        AS plt, \
-        (SELECT COUNT(*) FROM tool)                            AS tol, \
-        (SELECT COUNT(*) FROM perception)                      AS prc, \
-        (SELECT COUNT(*) FROM declared)                        AS dcl, \
-        (SELECT COUNT(*) FROM domain_dna)                      AS dna, \
-        (SELECT COUNT(*) FROM entity)                          AS ent";
+        (SELECT COUNT(*) FROM memory)                                                   AS mem_c, \
+        (SELECT COUNT(*) FROM edge)                                                     AS edg_c, \
+        (SELECT COUNT(*) FROM memory_vec)                                               AS vec_c, \
+        (SELECT COUNT(*) FROM session WHERE ended_at IS NULL)                           AS active_sess, \
+        (SELECT COUNT(*) FROM skill)                                                    AS skl_c, \
+        (SELECT COUNT(*) FROM identity)                                                 AS idn_c, \
+        (SELECT COUNT(*) FROM disposition)                                              AS dsp_c, \
+        (SELECT COUNT(*) FROM platform)                                                 AS plt_c, \
+        (SELECT COUNT(*) FROM tool)                                                     AS tol_c, \
+        (SELECT COUNT(*) FROM perception)                                               AS prc_c, \
+        (SELECT COUNT(*) FROM declared)                                                 AS dcl_c, \
+        (SELECT COUNT(*) FROM domain_dna)                                               AS dna_c, \
+        (SELECT COUNT(*) FROM entity)                                                   AS ent_c, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(created_at)) AS INTEGER) END \
+           FROM memory)                                                                 AS mem_f, \
+        (SELECT CASE WHEN COUNT(last_used)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(last_used)) AS INTEGER) END \
+           FROM skill)                                                                  AS skl_f, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(created_at)) AS INTEGER) END \
+           FROM edge)                                                                   AS edg_f, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(created_at)) AS INTEGER) END \
+           FROM identity)                                                               AS idn_f, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(updated_at)) AS INTEGER) END \
+           FROM disposition)                                                            AS dsp_f, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(detected_at)) AS INTEGER) END \
+           FROM platform)                                                               AS plt_f, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(discovered_at)) AS INTEGER) END \
+           FROM tool)                                                                   AS tol_f, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(created_at)) AS INTEGER) END \
+           FROM perception)                                                             AS prc_f, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(ingested_at)) AS INTEGER) END \
+           FROM declared)                                                               AS dcl_f, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(detected_at)) AS INTEGER) END \
+           FROM domain_dna)                                                             AS dna_f, \
+        (SELECT CASE WHEN COUNT(*)=0 THEN NULL \
+                     ELSE CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MAX(last_seen)) AS INTEGER) END \
+           FROM entity)                                                                 AS ent_f";
 
-    let row = reader.conn.query_row(COUNTS_SQL, [], |r| {
+    type CountsRow = (
+        i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64,
+        Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>,
+        Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>,
+    );
+    let row: rusqlite::Result<CountsRow> = reader.conn.query_row(COUNTS_SQL, [], |r| {
         Ok((
-            r.get::<_, i64>(0)?,  // memory
-            r.get::<_, i64>(1)?,  // edge
-            r.get::<_, i64>(2)?,  // memory_vec
-            r.get::<_, i64>(3)?,  // active sessions
-            r.get::<_, i64>(4)?,  // skill
-            r.get::<_, i64>(5)?,  // identity
-            r.get::<_, i64>(6)?,  // disposition
-            r.get::<_, i64>(7)?,  // platform
-            r.get::<_, i64>(8)?,  // tool
-            r.get::<_, i64>(9)?,  // perception
-            r.get::<_, i64>(10)?, // declared
-            r.get::<_, i64>(11)?, // domain_dna
-            r.get::<_, i64>(12)?, // entity
+            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
+            r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?,
+            r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?, r.get(17)?, r.get(18)?,
+            r.get(19)?, r.get(20)?, r.get(21)?, r.get(22)?, r.get(23)?,
         ))
     });
 
@@ -394,6 +456,17 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         count_declared,
         count_domain_dna,
         count_entity,
+        fresh_memory,
+        fresh_skill,
+        fresh_edge,
+        fresh_identity,
+        fresh_disposition,
+        fresh_platform,
+        fresh_tool,
+        fresh_perception,
+        fresh_declared,
+        fresh_domain_dna,
+        fresh_entity,
     ) = match row {
         Ok(r) => r,
         Err(e) => {
@@ -432,22 +505,59 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
 
     // Iterate in the same order as `tables` so label → count pairing is
     // unambiguous and matches the SELECT's column order above.
-    let per_table_counts: [i64; 11] = [
-        count_memory,
-        count_skill,
-        count_edge,
-        count_identity,
-        count_disposition,
-        count_platform,
-        count_tool,
-        count_perception,
-        count_declared,
-        count_domain_dna,
-        count_entity,
+    let per_table: [(&str, i64, Option<i64>); 11] = [
+        ("memory", count_memory, fresh_memory),
+        ("skill", count_skill, fresh_skill),
+        ("edge", count_edge, fresh_edge),
+        ("identity", count_identity, fresh_identity),
+        ("disposition", count_disposition, fresh_disposition),
+        ("platform", count_platform, fresh_platform),
+        ("tool", count_tool, fresh_tool),
+        ("perception", count_perception, fresh_perception),
+        ("declared", count_declared, fresh_declared),
+        ("domain_dna", count_domain_dna, fresh_domain_dna),
+        ("entity", count_entity, fresh_entity),
     ];
-    for (table, count) in tables.iter().zip(per_table_counts.iter()) {
+    for (table, count, _fresh) in &per_table {
         metrics.table_rows.with_label_values(&[*table]).set(*count);
     }
+    // Freshness — Prometheus cannot emit NULL, so empty tables report -1.
+    // Consumers filter `> 0`; internal /inspect row_count sees Option<i64>.
+    for (table, _count, fresh) in &per_table {
+        metrics
+            .layer_freshness
+            .with_label_values(&[*table])
+            .set(fresh.unwrap_or(-1));
+    }
+
+    // Build GaugeSnapshot and atomic-swap at the END so readers never see a
+    // half-built snapshot. The 11 table_rows Prometheus gauges above are
+    // still written non-atomically (accepted: /metrics tolerates sub-scrape
+    // drift; /inspect row_count reads from this snapshot instead).
+    let new_snapshot = GaugeSnapshot {
+        refreshed_at_secs: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        tables: TableGauges {
+            memory: RowAndFreshness { count: count_memory, freshness_secs: fresh_memory },
+            skill: RowAndFreshness { count: count_skill, freshness_secs: fresh_skill },
+            edge: RowAndFreshness { count: count_edge, freshness_secs: fresh_edge },
+            identity: RowAndFreshness { count: count_identity, freshness_secs: fresh_identity },
+            disposition: RowAndFreshness { count: count_disposition, freshness_secs: fresh_disposition },
+            platform: RowAndFreshness { count: count_platform, freshness_secs: fresh_platform },
+            tool: RowAndFreshness { count: count_tool, freshness_secs: fresh_tool },
+            perception: RowAndFreshness { count: count_perception, freshness_secs: fresh_perception },
+            declared: RowAndFreshness { count: count_declared, freshness_secs: fresh_declared },
+            domain_dna: RowAndFreshness { count: count_domain_dna, freshness_secs: fresh_domain_dna },
+            entity: RowAndFreshness { count: count_entity, freshness_secs: fresh_entity },
+        },
+        memories_total: count_memory,
+        edges_total: count_edge,
+        embeddings_total: count_mem_vec,
+        active_sessions: count_active_sessions,
+    };
+    *metrics.snapshot.write() = new_snapshot;
 }
 
 /// GET /metrics — Prometheus scrape endpoint.
@@ -566,6 +676,8 @@ mod tests {
         m.gauge_refresh_failures
             .with_label_values(&["open_reader"])
             .inc_by(0);
+        // Phase 2A-4d.2 — 1 new family (layer_freshness).
+        m.layer_freshness.with_label_values(&["skill"]).set(-1);
         let families = m.registry.gather();
         let names: Vec<&str> = families.iter().map(|f| f.get_name()).collect();
         assert!(
@@ -588,7 +700,11 @@ mod tests {
             names.contains(&"forge_gauge_refresh_failures_total"),
             "missing forge_gauge_refresh_failures_total"
         );
-        assert_eq!(families.len(), 12, "expected exactly 12 metric families");
+        assert!(
+            names.contains(&"forge_layer_freshness_seconds"),
+            "missing forge_layer_freshness_seconds"
+        );
+        assert_eq!(families.len(), 13, "expected exactly 13 metric families");
     }
 
     #[test]
@@ -754,5 +870,91 @@ mod tests {
             .expect("recall family");
         let metric = &recall_family.get_metric()[0];
         assert_eq!(metric.get_histogram().get_sample_count(), 2);
+    }
+
+    // ── Phase 2A-4d.2 T4: GaugeSnapshot ──
+
+    #[test]
+    fn test_gauge_snapshot_initially_never_refreshed() {
+        let m = ForgeMetrics::new();
+        let snap = m.snapshot.read().clone();
+        assert_eq!(
+            snap.refreshed_at_secs, 0,
+            "fresh ForgeMetrics should have refreshed_at_secs = 0"
+        );
+        assert_eq!(snap.tables.memory.count, 0);
+        assert_eq!(snap.tables.memory.freshness_secs, None);
+        assert_eq!(snap.memories_total, 0);
+    }
+
+    #[test]
+    fn test_table_gauges_to_layer_rows_covers_all_eleven_tables() {
+        let tg = TableGauges::default();
+        let rows = tg.to_layer_rows(5);
+        assert_eq!(rows.len(), 11, "expected exactly 11 Manas tables");
+        let names: Vec<&str> = rows.iter().map(|r| r.layer.as_str()).collect();
+        for expected in [
+            "memory",
+            "skill",
+            "edge",
+            "identity",
+            "disposition",
+            "platform",
+            "tool",
+            "perception",
+            "declared",
+            "domain_dna",
+            "entity",
+        ] {
+            assert!(names.contains(&expected), "missing table: {expected}");
+        }
+        assert!(rows.iter().all(|r| r.snapshot_age_secs == 5));
+        assert!(rows.iter().all(|r| r.freshness_secs.is_none()));
+    }
+
+    #[test]
+    fn test_gauge_snapshot_torn_read_stress_sees_consistent_view() {
+        // Reader side: repeatedly clone the snapshot and check that
+        // (refreshed_at_secs, memories_total) come from the same generation
+        // — writer picks monotonically increasing pairs so a torn read would
+        // show (old_ts, new_count) or (new_ts, old_count).
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let m = ForgeMetrics::new();
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let writer_snap = Arc::clone(&m.snapshot);
+        let stop_w = Arc::clone(&stop);
+        let writer = std::thread::spawn(move || {
+            let mut gen: i64 = 1;
+            while !stop_w.load(Ordering::Relaxed) {
+                // Each generation has refreshed_at_secs == memories_total (a
+                // trivially-invariant pairing that a torn read would break).
+                let new_snap = GaugeSnapshot {
+                    refreshed_at_secs: gen as u64,
+                    memories_total: gen,
+                    edges_total: gen,
+                    embeddings_total: gen,
+                    active_sessions: gen,
+                    tables: TableGauges::default(),
+                };
+                *writer_snap.write() = new_snap;
+                gen += 1;
+            }
+            gen
+        });
+
+        // Do a substantial number of reads on this thread while the writer
+        // hammers the snapshot.
+        for _ in 0..10_000 {
+            let snap = m.snapshot.read().clone();
+            assert_eq!(
+                snap.refreshed_at_secs as i64, snap.memories_total,
+                "torn read detected: {snap:?}"
+            );
+        }
+        stop.store(true, Ordering::Relaxed);
+        let _ = writer.join();
     }
 }

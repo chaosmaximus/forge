@@ -726,6 +726,123 @@ mod tests {
     }
 
     #[test]
+    fn row_count_with_fresh_snapshot_returns_eleven_rows() {
+        use crate::server::metrics::{GaugeSnapshot, RowAndFreshness, TableGauges};
+        let conn = seed_conn();
+        let now = now_secs();
+        let snap = GaugeSnapshot {
+            refreshed_at_secs: now,
+            tables: TableGauges {
+                memory: RowAndFreshness {
+                    count: 42,
+                    freshness_secs: Some(10),
+                },
+                skill: RowAndFreshness::default(), // empty → freshness_secs = None
+                ..Default::default()
+            },
+            memories_total: 42,
+            edges_total: 0,
+            embeddings_total: 0,
+            active_sessions: 0,
+        };
+        let resp = run_inspect(
+            &conn,
+            InspectShape::RowCount,
+            "1h".into(),
+            InspectFilter::default(),
+            None,
+            Some(&snap),
+        );
+        let Response::Ok {
+            data:
+                ResponseData::Inspect {
+                    stale,
+                    data: InspectData::RowCount { rows },
+                    ..
+                },
+        } = resp
+        else {
+            panic!("expected Ok RowCount");
+        };
+        assert!(!stale, "fresh snapshot should not be stale");
+        assert_eq!(rows.len(), 11);
+        let memory = rows.iter().find(|r| r.layer == "memory").unwrap();
+        assert_eq!(memory.count, 42);
+        assert_eq!(memory.freshness_secs, Some(10));
+        let skill = rows.iter().find(|r| r.layer == "skill").unwrap();
+        assert_eq!(skill.count, 0);
+        assert!(skill.freshness_secs.is_none(), "empty table → None");
+    }
+
+    #[test]
+    fn row_count_with_layer_filter_narrows_to_one_row() {
+        use crate::server::metrics::{GaugeSnapshot, RowAndFreshness, TableGauges};
+        let conn = seed_conn();
+        let now = now_secs();
+        let snap = GaugeSnapshot {
+            refreshed_at_secs: now,
+            tables: TableGauges {
+                entity: RowAndFreshness {
+                    count: 7,
+                    freshness_secs: Some(3),
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let resp = run_inspect(
+            &conn,
+            InspectShape::RowCount,
+            "1h".into(),
+            InspectFilter {
+                layer: Some("entity".into()),
+                ..Default::default()
+            },
+            None,
+            Some(&snap),
+        );
+        let Response::Ok {
+            data:
+                ResponseData::Inspect {
+                    data: InspectData::RowCount { rows },
+                    ..
+                },
+        } = resp
+        else {
+            panic!("expected Ok RowCount");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].layer, "entity");
+        assert_eq!(rows[0].count, 7);
+    }
+
+    #[test]
+    fn row_count_with_stale_snapshot_flags_stale() {
+        use crate::server::metrics::{GaugeSnapshot, TableGauges};
+        let conn = seed_conn();
+        let snap = GaugeSnapshot {
+            refreshed_at_secs: now_secs().saturating_sub(120), // 2 minutes old
+            tables: TableGauges::default(),
+            ..Default::default()
+        };
+        let resp = run_inspect(
+            &conn,
+            InspectShape::RowCount,
+            "1h".into(),
+            InspectFilter::default(),
+            None,
+            Some(&snap),
+        );
+        let Response::Ok {
+            data: ResponseData::Inspect { stale, .. },
+        } = resp
+        else {
+            panic!("expected Ok");
+        };
+        assert!(stale, "120s-old snapshot should be flagged stale (>60s)");
+    }
+
+    #[test]
     fn latency_shape_returns_percentiles_per_phase() {
         let conn = seed_conn();
         let ts = now_secs() as i64 - 10; // inside the 1h window

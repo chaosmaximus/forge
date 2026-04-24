@@ -60,6 +60,10 @@ prometheus = "0.13"
 # Human-friendly duration parsing for /inspect window argument (Phase 2A-4d.2).
 humantime = "2"
 
+# parking_lot::RwLock for GaugeSnapshot atomic swap — never held across .await,
+# tighter than tokio::sync::RwLock, and already in the transitive dep graph.
+parking_lot = "0.12"
+
 # PTY management
 portable-pty = "0.8"
 
