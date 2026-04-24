@@ -158,53 +158,24 @@ pub struct PhaseOutcome<'a> {
     pub extra: serde_json::Value,
 }
 
-pub fn record(conn: &Connection, metrics: Option<&ForgeMetrics>, outcome: &PhaseOutcome) {
-    if let Some(m) = metrics {
-        update_phase_metrics(m, outcome);
-    }
-    if let Err(e) = insert_kpi_event_row(conn, outcome) {
-        tracing::warn!(error = %e, phase = outcome.phase, "kpi_events insert failed");
-    }
-}
-
-fn update_phase_metrics(metrics: &ForgeMetrics, outcome: &PhaseOutcome) {
-    metrics
-        .phase_duration
-        .with_label_values(&[outcome.phase])
-        .observe(outcome.duration_ms as f64 / 1000.0);
-    let action = if outcome.error_count == 0 { "succeeded" } else { "errored" };
-    metrics
-        .phase_output_rows
-        .with_label_values(&[outcome.phase, action])
-        .inc_by(outcome.output_count);
-}
-
-fn insert_kpi_event_row(conn: &Connection, outcome: &PhaseOutcome) -> rusqlite::Result<()> {
-    let metadata = json!({
-        "metadata_schema_version": 1,
-        "phase_name": outcome.phase,
-        "run_id": outcome.run_id,
-        "correlation_id": outcome.correlation_id,
-        "trace_id": outcome.trace_id,
-        "input_count": 0,                     // reserved; wrapper may set non-zero
-        "output_count": outcome.output_count,
-        "error_count": outcome.error_count,
-        "extra": outcome.extra,
-    });
-    let id = format!("phase-{}", ulid::Ulid::new());
-    conn.execute(
-        "INSERT INTO kpi_events (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json)
-         VALUES (?1, strftime('%s','now'), 'phase_completed', NULL, ?2, ?3, ?4, ?5)",
-        params![
-            id,
-            outcome.duration_ms as i64,
-            outcome.output_count as i64,
-            if outcome.error_count == 0 { 1_i64 } else { 0_i64 },
-            metadata.to_string(),
-        ],
-    )?;
-    Ok(())
-}
+// record(), update_phase_metrics(), and insert_kpi_event_row() are implemented
+// in crates/daemon/src/workers/instrumentation.rs — see that file for the
+// authoritative source. The shipped version differs from the original plan
+// pseudocode in these ways (applied during T9.2, T12, and T13.2):
+//
+//   * Metadata JSON no longer carries the reserved `input_count` field. Every
+//     caller was setting it to 0; the field was dropped rather than kept as
+//     dead scaffolding.
+//   * `insert_kpi_event_row` uses `INSERT OR IGNORE` and returns
+//     `rusqlite::Result<usize>` (rows written) so the caller can distinguish a
+//     successful insert from a ULID PK collision that OR-IGNORE absorbed.
+//   * `record()` auto-populates `trace_id` from the currently-active
+//     `tracing::Span`'s OpenTelemetry context when the caller passes `None`.
+//     All-zeros `TraceId::INVALID` collapses to JSON null so the "OTLP off →
+//     trace_id null" contract holds.
+//   * Persistence-layer failures (SQL insert error, ULID collision)
+//     increment a dedicated `forge_phase_persistence_errors_total{phase, kind}`
+//     counter instead of stomping `phase_output_rows{action="errored"}`.
 ```
 
 - [ ] **2.4. Wire module into `mod.rs`:** `pub mod instrumentation;`

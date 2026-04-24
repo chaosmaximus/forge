@@ -183,7 +183,6 @@ VALUES (?, strftime('%s','now'), 'phase_completed', NULL, ?, ?, ?, ?);
   "run_id": "01HXYZ...",
   "correlation_id": "01HXYZ...",
   "trace_id": "abc123..." | null,
-  "input_count": 0,
   "output_count": 1,
   "error_count": 0,
   "extra": {}

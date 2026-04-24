@@ -47,6 +47,17 @@ pub struct ForgeMetrics {
     /// `phase_output_rows{action="errored"}` prevents double-counting when a
     /// phase also had an internal error.
     pub phase_persistence_errors: IntCounterVec,
+    /// `/metrics` scrape refreshes that skipped whole-snapshot reads.
+    /// Label `reason` takes one of:
+    /// - `open_reader` — failed to open the read-only SQLite connection.
+    /// - `query_failed` — the single-SELECT gauge refresh returned an
+    ///   error (table missing, schema drift, corruption).
+    ///
+    /// Without this counter, a silent gauge freeze (refresh_gauges returns
+    /// early, Prometheus keeps serving the last-known values) would be
+    /// indistinguishable from a stable database. Operators should alert
+    /// on any non-zero rate.
+    pub gauge_refresh_failures: IntCounterVec,
 }
 
 impl Default for ForgeMetrics {
@@ -138,6 +149,14 @@ impl ForgeMetrics {
             &["phase", "kind"],
         )
         .expect("phase_persistence_errors metric");
+        let gauge_refresh_failures = IntCounterVec::new(
+            Opts::new(
+                "forge_gauge_refresh_failures_total",
+                "/metrics scrapes where the gauge refresh returned early (open_reader | query_failed)",
+            ),
+            &["reason"],
+        )
+        .expect("gauge_refresh_failures metric");
 
         registry
             .register(Box::new(memories_total.clone()))
@@ -172,6 +191,9 @@ impl ForgeMetrics {
         registry
             .register(Box::new(phase_persistence_errors.clone()))
             .expect("register phase_persistence_errors");
+        registry
+            .register(Box::new(gauge_refresh_failures.clone()))
+            .expect("register gauge_refresh_failures");
 
         Self {
             registry,
@@ -186,6 +208,7 @@ impl ForgeMetrics {
             phase_output_rows,
             table_rows,
             phase_persistence_errors,
+            gauge_refresh_failures,
         }
     }
 }
@@ -213,6 +236,10 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("metrics: failed to open reader for gauge refresh: {e}");
+            metrics
+                .gauge_refresh_failures
+                .with_label_values(&["open_reader"])
+                .inc();
             return;
         }
     };
@@ -291,8 +318,14 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         Err(e) => {
             // Any table missing / schema drift → skip this scrape entirely
             // rather than partially-update gauges (preserves all-or-nothing
-            // semantics from the prior BEGIN/COMMIT design).
+            // semantics from the prior BEGIN/COMMIT design). Counter allows
+            // operators to alert on the silent freeze that would otherwise
+            // look identical to a stable-but-idle database.
             tracing::warn!(error = %e, "metrics: failed to collect DB counts; skipping gauge refresh");
+            metrics
+                .gauge_refresh_failures
+                .with_label_values(&["query_failed"])
+                .inc();
             return;
         }
     };
@@ -449,6 +482,9 @@ mod tests {
         m.phase_persistence_errors
             .with_label_values(&["phase_23_infer_skills_from_behavior", "insert_error"])
             .inc_by(0);
+        m.gauge_refresh_failures
+            .with_label_values(&["open_reader"])
+            .inc_by(0);
         let families = m.registry.gather();
         let names: Vec<&str> = families.iter().map(|f| f.get_name()).collect();
         assert!(
@@ -467,7 +503,11 @@ mod tests {
             names.contains(&"forge_phase_persistence_errors_total"),
             "missing forge_phase_persistence_errors_total"
         );
-        assert_eq!(families.len(), 11, "expected exactly 11 metric families");
+        assert!(
+            names.contains(&"forge_gauge_refresh_failures_total"),
+            "missing forge_gauge_refresh_failures_total"
+        );
+        assert_eq!(families.len(), 12, "expected exactly 12 metric families");
     }
 
     #[test]
@@ -530,6 +570,60 @@ mod tests {
             text.contains("forge_recall_latency_seconds"),
             "body should contain recall_latency histogram"
         );
+    }
+
+    #[tokio::test]
+    async fn test_refresh_gauges_query_failure_bumps_counter() {
+        // Regression test for T14 LOW-1: a schema-drift / table-missing
+        // failure inside refresh_gauges must increment
+        // forge_gauge_refresh_failures_total{reason="query_failed"} so
+        // operators can alert on the otherwise-silent gauge freeze.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp.path().to_string_lossy().to_string();
+        {
+            let state = DaemonState::new(&db_path).unwrap();
+            // Drop `memory` to force the single-SELECT in refresh_gauges to fail.
+            state.conn.execute("DROP TABLE memory", []).unwrap();
+        }
+        // Keep the tempfile alive for the read-only reopen below.
+        std::mem::forget(tmp);
+
+        let metrics = Arc::new(ForgeMetrics::new());
+        let state = test_app_state_with_metrics_and_db(Some(metrics.clone()), db_path);
+
+        // Trigger a refresh; should warn + increment "query_failed" counter.
+        refresh_gauges(&metrics, &state);
+
+        let got = metrics
+            .gauge_refresh_failures
+            .with_label_values(&["query_failed"])
+            .get();
+        assert_eq!(
+            got, 1,
+            "expected gauge_refresh_failures{{query_failed}}=1 after a dropped-table refresh, got {got}"
+        );
+    }
+
+    fn test_app_state_with_metrics_and_db(
+        metrics: Option<Arc<ForgeMetrics>>,
+        db_path: String,
+    ) -> AppState {
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        let hlc = Arc::new(Hlc::new("test"));
+        let (write_tx, write_rx) = mpsc::channel(16);
+        std::mem::forget(write_rx);
+        AppState {
+            db_path,
+            events,
+            hlc,
+            started_at: Instant::now(),
+            write_tx,
+            admin_emails: vec![],
+            viewer_emails: vec![],
+            auth_enabled: false,
+            metrics,
+            rate_limiter: None,
+        }
     }
 
     #[tokio::test]
