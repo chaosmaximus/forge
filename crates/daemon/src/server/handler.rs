@@ -9380,7 +9380,10 @@ mod tests {
                 assert_eq!(embedding_merged, 0);
                 assert_eq!(strengthened, 0);
                 assert_eq!(contradictions, 0);
-                assert_eq!(skills_inferred, 0, "2P-1b §15: Phase 23 count exposed in response");
+                assert_eq!(
+                    skills_inferred, 0,
+                    "2P-1b §15: Phase 23 count exposed in response"
+                );
             }
             other => panic!("expected ConsolidationComplete, got {other:?}"),
         }

@@ -207,7 +207,9 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         .ok();
     let count_mem_vec = reader
         .conn
-        .query_row("SELECT COUNT(*) FROM memory_vec", [], |r| r.get::<_, i64>(0))
+        .query_row("SELECT COUNT(*) FROM memory_vec", [], |r| {
+            r.get::<_, i64>(0)
+        })
         .ok();
     let count_active_sessions = reader
         .conn
@@ -239,10 +241,7 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         .iter()
         .map(|t| {
             let sql = format!("SELECT COUNT(*) FROM {t}");
-            let c = reader
-                .conn
-                .query_row(&sql, [], |r| r.get::<_, i64>(0))
-                .ok();
+            let c = reader.conn.query_row(&sql, [], |r| r.get::<_, i64>(0)).ok();
             (t, c)
         })
         .collect();

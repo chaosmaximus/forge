@@ -648,7 +648,11 @@ pub async fn run_http_server_with_listener(
 ) -> std::io::Result<()> {
     // Honour config.metrics.enabled — even if main constructed a shared
     // ForgeMetrics, operators can still disable the /metrics endpoint here.
-    let metrics = if config.metrics.enabled { metrics } else { None };
+    let metrics = if config.metrics.enabled {
+        metrics
+    } else {
+        None
+    };
 
     let state = AppState {
         db_path,

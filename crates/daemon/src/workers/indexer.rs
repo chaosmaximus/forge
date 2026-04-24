@@ -496,9 +496,13 @@ async fn run_index(
                     all_symbols.extend(symbols);
                     all_call_edges.extend(edges);
                 }
-                Err(e) => tracing::warn!(target: "forge::indexer", language = %config.language, error = %e, "index_with_server failed"),
+                Err(e) => {
+                    tracing::warn!(target: "forge::indexer", language = %config.language, error = %e, "index_with_server failed")
+                }
             },
-            Err(e) => tracing::warn!(target: "forge::indexer", command = %config.command, error = %e, "lsp spawn failed"),
+            Err(e) => {
+                tracing::warn!(target: "forge::indexer", command = %config.command, error = %e, "lsp spawn failed")
+            }
         }
     }
 
@@ -862,7 +866,9 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
                     let to_id = format!("file:{resolved}");
                     match ops::store_edge(conn, &from_id, &to_id, "imports", "{}") {
                         Ok(_) => import_edges_stored += 1,
-                        Err(e) => tracing::warn!(target: "forge::indexer", error = %e, "store_edge (resolved) failed"),
+                        Err(e) => {
+                            tracing::warn!(target: "forge::indexer", error = %e, "store_edge (resolved) failed")
+                        }
                     }
                 }
             }
@@ -1333,7 +1339,9 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
         Ok(_) => {
             tracing::info!(target: "forge::indexer", project = %project_name, languages = %language_str, "auto-detected conventions");
         }
-        Err(e) => tracing::warn!(target: "forge::indexer", error = %e, "failed to store conventions"),
+        Err(e) => {
+            tracing::warn!(target: "forge::indexer", error = %e, "failed to store conventions")
+        }
     }
 }
 

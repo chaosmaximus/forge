@@ -388,8 +388,15 @@ pub fn run_all_phases(
                         .prepare("SELECT valence, COUNT(*) FROM memory WHERE status = 'active' GROUP BY valence")
                         .and_then(|mut s| s.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
                         .unwrap_or_default();
-                    let joined: Vec<String> = valence_counts.iter().map(|(v, c)| format!("{v}={c}")).collect();
-                    summary = if joined.is_empty() { "none".to_string() } else { joined.join(", ") };
+                    let joined: Vec<String> = valence_counts
+                        .iter()
+                        .map(|(v, c)| format!("{v}={c}"))
+                        .collect();
+                    summary = if joined.is_empty() {
+                        "none".to_string()
+                    } else {
+                        joined.join(", ")
+                    };
                     tracing::info!(valence_distribution = %summary, "phase_9a: 0 valence-based contradictions");
                 }
                 (found as u64, 0u64, summary)
@@ -402,7 +409,10 @@ pub fn run_all_phases(
         let content_contradictions = detect_content_contradictions(conn);
         stats.contradictions += content_contradictions;
         if content_contradictions > 0 {
-            tracing::info!(content_contradictions, "phase_9b: content-based contradictions detected");
+            tracing::info!(
+                content_contradictions,
+                "phase_9b: content-based contradictions detected"
+            );
         }
         record(
             conn,
@@ -492,7 +502,10 @@ pub fn run_all_phases(
         let synthesized = synthesize_contradictions(conn, config.batch_limit);
         stats.synthesized = synthesized;
         if synthesized > 0 {
-            tracing::info!(synthesized, "phase_12: contradiction resolutions synthesized");
+            tracing::info!(
+                synthesized,
+                "phase_12: contradiction resolutions synthesized"
+            );
         }
         record(
             conn,
@@ -709,12 +722,12 @@ pub fn run_all_phases(
         let mut notifs_generated = 0u64;
         let mut notifs_failed = 0u64;
 
-    // 19a: Protocol suggestion notifications
-    if protocols > 0
-        && !crate::notifications::check_throttle(conn, "protocol_suggestion", "local", 3600)
-            .unwrap_or(true)
-    {
-        match crate::notifications::NotificationBuilder::new(
+        // 19a: Protocol suggestion notifications
+        if protocols > 0
+            && !crate::notifications::check_throttle(conn, "protocol_suggestion", "local", 3600)
+                .unwrap_or(true)
+        {
+            match crate::notifications::NotificationBuilder::new(
             "confirmation",
             "medium",
             &format!("Forge extracted {protocols} new protocol(s) from behavior patterns"),
@@ -731,50 +744,50 @@ pub fn run_all_phases(
                 notifs_failed += 1;
             }
         }
-    }
-
-    // 19b: Contradiction notifications
-    if stats.contradictions > 0
-        && !crate::notifications::check_throttle(conn, "contradiction", "local", 1800)
-            .unwrap_or(true)
-    {
-        match crate::notifications::NotificationBuilder::new(
-            "insight",
-            "high",
-            &format!(
-                "{} contradiction(s) detected between active decisions",
-                stats.contradictions
-            ),
-            "Review with: forge-next recall --type decision. Resolve conflicting decisions.",
-            "consolidator",
-        )
-        .topic("contradiction")
-        .build(conn)
-        {
-            Ok(_) => notifs_generated += 1,
-            Err(e) => {
-                tracing::warn!(target: "forge::consolidator", error = %e, topic = "contradiction", "notification build failed");
-                notifs_failed += 1;
-            }
         }
-    }
 
-    // 19c: Quality decline check
-    {
-        let avg_quality: f64 = conn
-            .query_row(
-                "SELECT COALESCE(AVG(quality_score), 0.5) FROM memory
-                 WHERE status='active' AND created_at > datetime('now', '-7 days')",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0.5);
-
-        if avg_quality < 0.3
-            && !crate::notifications::check_throttle(conn, "quality_decline", "local", 86400)
+        // 19b: Contradiction notifications
+        if stats.contradictions > 0
+            && !crate::notifications::check_throttle(conn, "contradiction", "local", 1800)
                 .unwrap_or(true)
         {
             match crate::notifications::NotificationBuilder::new(
+                "insight",
+                "high",
+                &format!(
+                    "{} contradiction(s) detected between active decisions",
+                    stats.contradictions
+                ),
+                "Review with: forge-next recall --type decision. Resolve conflicting decisions.",
+                "consolidator",
+            )
+            .topic("contradiction")
+            .build(conn)
+            {
+                Ok(_) => notifs_generated += 1,
+                Err(e) => {
+                    tracing::warn!(target: "forge::consolidator", error = %e, topic = "contradiction", "notification build failed");
+                    notifs_failed += 1;
+                }
+            }
+        }
+
+        // 19c: Quality decline check
+        {
+            let avg_quality: f64 = conn
+                .query_row(
+                    "SELECT COALESCE(AVG(quality_score), 0.5) FROM memory
+                 WHERE status='active' AND created_at > datetime('now', '-7 days')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0.5);
+
+            if avg_quality < 0.3
+                && !crate::notifications::check_throttle(conn, "quality_decline", "local", 86400)
+                    .unwrap_or(true)
+            {
+                match crate::notifications::NotificationBuilder::new(
                 "insight", "medium",
                 "Memory quality declining",
                 &format!("Average quality score for recent memories is {avg_quality:.2}. Consider reviewing and cleaning up low-quality entries."),
@@ -788,39 +801,39 @@ pub fn run_all_phases(
                     notifs_failed += 1;
                 }
             }
-        } else if avg_quality >= 0.3 {
-            // Auto-dismiss existing quality decline notifications — condition resolved
-            let _ = conn.execute(
-                "UPDATE notification SET status = 'dismissed'
+            } else if avg_quality >= 0.3 {
+                // Auto-dismiss existing quality decline notifications — condition resolved
+                let _ = conn.execute(
+                    "UPDATE notification SET status = 'dismissed'
                  WHERE category = 'insight' AND title LIKE '%quality%' AND status = 'pending'",
-                [],
-            );
+                    [],
+                );
+            }
         }
-    }
 
-    // 19d: Meeting timeout detection
-    {
-        let timeout_secs = crate::config::load_config().meeting.timeout_secs;
-        let timeout_modifier = format!("-{timeout_secs} seconds");
-        let timed_out: Vec<(String, String)> = conn
-            .prepare(
-                "SELECT id, topic FROM meeting
+        // 19d: Meeting timeout detection
+        {
+            let timeout_secs = crate::config::load_config().meeting.timeout_secs;
+            let timeout_modifier = format!("-{timeout_secs} seconds");
+            let timed_out: Vec<(String, String)> = conn
+                .prepare(
+                    "SELECT id, topic FROM meeting
                  WHERE status IN ('open', 'collecting')
                  AND created_at < datetime('now', ?1)",
-            )
-            .ok()
-            .and_then(|mut stmt| {
-                stmt.query_map(rusqlite::params![timeout_modifier], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })
+                )
                 .ok()
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
-            })
-            .unwrap_or_default();
+                .and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![timeout_modifier], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                })
+                .unwrap_or_default();
 
-        for (meeting_id, topic) in &timed_out {
-            // Collect partial responses for auto-synthesis
-            let responses: Vec<(String, String)> = conn.prepare(
+            for (meeting_id, topic) in &timed_out {
+                // Collect partial responses for auto-synthesis
+                let responses: Vec<(String, String)> = conn.prepare(
                 "SELECT session_id, COALESCE(response, '') FROM meeting_participant WHERE meeting_id = ?1 AND response IS NOT NULL ORDER BY responded_at"
             ).and_then(|mut stmt| {
                 stmt.query_map(rusqlite::params![meeting_id], |row| {
@@ -828,49 +841,49 @@ pub fn run_all_phases(
                 })?.collect()
             }).unwrap_or_default();
 
-            // Auto-synthesize from partial responses
-            let synthesis = if responses.is_empty() {
-                format!("Meeting '{topic}' timed out with no responses.")
-            } else {
-                let parts: Vec<String> = responses
-                    .iter()
-                    .map(|(sid, resp)| {
-                        format!("- {}: {}", sid, resp.chars().take(200).collect::<String>())
-                    })
-                    .collect();
-                format!(
-                    "Meeting '{}' timed out with {} partial response(s):\n{}",
-                    topic,
-                    responses.len(),
-                    parts.join("\n")
+                // Auto-synthesize from partial responses
+                let synthesis = if responses.is_empty() {
+                    format!("Meeting '{topic}' timed out with no responses.")
+                } else {
+                    let parts: Vec<String> = responses
+                        .iter()
+                        .map(|(sid, resp)| {
+                            format!("- {}: {}", sid, resp.chars().take(200).collect::<String>())
+                        })
+                        .collect();
+                    format!(
+                        "Meeting '{}' timed out with {} partial response(s):\n{}",
+                        topic,
+                        responses.len(),
+                        parts.join("\n")
+                    )
+                };
+
+                // Store synthesis as a decision memory
+                let decision_mem = Memory::new(
+                    MemoryType::Decision,
+                    format!("Meeting timed out: {topic}"),
+                    synthesis.clone(),
                 )
-            };
+                .with_confidence(0.6);
+                if let Err(e) = ops::remember(conn, &decision_mem) {
+                    tracing::warn!(
+                        target: "forge::consolidator",
+                        meeting_id = %meeting_id,
+                        error = %e,
+                        "auto-synthesis store failed"
+                    );
+                }
 
-            // Store synthesis as a decision memory
-            let decision_mem = Memory::new(
-                MemoryType::Decision,
-                format!("Meeting timed out: {topic}"),
-                synthesis.clone(),
-            )
-            .with_confidence(0.6);
-            if let Err(e) = ops::remember(conn, &decision_mem) {
-                tracing::warn!(
-                    target: "forge::consolidator",
-                    meeting_id = %meeting_id,
-                    error = %e,
-                    "auto-synthesis store failed"
-                );
-            }
+                // Update meeting status + store synthesis
+                if let Err(e) = conn.execute(
+                    "UPDATE meeting SET status = 'timed_out', synthesis = ?2 WHERE id = ?1",
+                    rusqlite::params![meeting_id, synthesis],
+                ) {
+                    tracing::warn!(target: "forge::consolidator", error = %e, "meeting timeout update failed");
+                }
 
-            // Update meeting status + store synthesis
-            if let Err(e) = conn.execute(
-                "UPDATE meeting SET status = 'timed_out', synthesis = ?2 WHERE id = ?1",
-                rusqlite::params![meeting_id, synthesis],
-            ) {
-                tracing::warn!(target: "forge::consolidator", error = %e, "meeting timeout update failed");
-            }
-
-            match crate::notifications::NotificationBuilder::new(
+                match crate::notifications::NotificationBuilder::new(
                 "alert", "high",
                 &format!("Meeting '{topic}' timed out — auto-synthesized"),
                 &format!("Meeting {} timed out with {} response(s). Auto-synthesis stored as decision. Review: forge-next meeting transcript {}",
@@ -886,13 +899,17 @@ pub fn run_all_phases(
                     notifs_failed += 1;
                 }
             }
+            }
         }
-    }
 
-    if notifs_generated > 0 {
-        tracing::info!(notifs_generated, "phase_19: notifications generated");
-    }
-        (notifs_generated, notifs_failed, t0_19.elapsed().as_millis() as u64)
+        if notifs_generated > 0 {
+            tracing::info!(notifs_generated, "phase_19: notifications generated");
+        }
+        (
+            notifs_generated,
+            notifs_failed,
+            t0_19.elapsed().as_millis() as u64,
+        )
     };
 
     record(
@@ -4223,17 +4240,37 @@ mod tests {
         for sid in ["OLD1", "OLD2", "OLD3"] {
             seed_session(&conn, sid, "claude-code");
             seed_session_tool_call_row(
-                &conn, &format!("{sid}-01"), sid, "claude-code",
-                "Read", r#"{"file_path":"/tmp/a"}"#, 1, 0, 60,
+                &conn,
+                &format!("{sid}-01"),
+                sid,
+                "claude-code",
+                "Read",
+                r#"{"file_path":"/tmp/a"}"#,
+                1,
+                0,
+                60,
             );
             seed_session_tool_call_row(
-                &conn, &format!("{sid}-02"), sid, "claude-code",
-                "Edit", r#"{"file_path":"/tmp/a","old_string":"x","new_string":"y"}"#,
-                1, 0, 60,
+                &conn,
+                &format!("{sid}-02"),
+                sid,
+                "claude-code",
+                "Edit",
+                r#"{"file_path":"/tmp/a","old_string":"x","new_string":"y"}"#,
+                1,
+                0,
+                60,
             );
             seed_session_tool_call_row(
-                &conn, &format!("{sid}-03"), sid, "claude-code",
-                "Bash", r#"{"cmd":"cargo test"}"#, 1, 0, 60,
+                &conn,
+                &format!("{sid}-03"),
+                sid,
+                "claude-code",
+                "Bash",
+                r#"{"cmd":"cargo test"}"#,
+                1,
+                0,
+                60,
             );
         }
         // Run with a 90-day window — all 3 old sessions qualify.
