@@ -597,3 +597,109 @@ no-op span sink; measure the tracing_opentelemetry layer overhead.
 
 **Why deferred:** separate latency story with its own numbers and reproduction steps.
 T13.4 set up the harness to accept this extension without test-infra churn.
+
+---
+
+## 2A-4d.2.1 Follow-Up Backlog
+
+Tier 2 landed at HEAD `c04b6ce` via T1-T9. Adversarial review pair (Claude + Codex)
+returned `lockable-with-fixes`; four real correctness issues (BLOCKER-1 vacuous
+test, HUD red-path math, snapshot lazy-refresh, staleness guard clamp) closed in
+T9 fixes. Seven items deferred here — none block 2A-4d.3.
+
+### Closed in T9
+
+| # | Finding | Closed by |
+|---|---------|-----------|
+| 1 | `matches!` not wrapped in `assert!` → vacuous error tests | T9 `c04b6ce` |
+| 2 | Codex Q9: HUD rendered `ok/total err Ns` from total-error-count → nonsensical | T9 `c04b6ce` (now `cons:23 ⚠Ne Ns`) |
+| 3 | `/inspect row_count` permanently stale without `/metrics` scraper | T9 `c04b6ce` — lazy refresh at dispatch (partial; see open #1 below) |
+| 4 | HUD cache staleness = 2× interval → 48h max at long intervals | T9 `c04b6ce` — clamped to `[300, 3600]` secs |
+
+### Open — non-blocking for 2A-4d.3
+
+#### 1. `/inspect row_count` lazy-refresh needs Arc wired through DaemonState
+
+**Finding:** T9 wired a branch that calls `refresh_gauges_from_conn` when
+`snapshot.refreshed_at_secs == 0 && DaemonState.metrics.is_some()`. But
+`DaemonState::new_reader` sets `metrics: None` at every per-request reader,
+so the branch never fires in the HTTP path. Dogfood confirmed: `row_count`
+returns `stale: true, rows: []` on a running daemon.
+
+**Fix plan:** either (a) thread `Arc<ForgeMetrics>` from `AppState` into the
+per-request `DaemonState` at request construction time, or (b) move the
+lazy-refresh branch up into the HTTP handler where `AppState` is in scope.
+(b) is cleaner.
+
+**Why deferred:** non-destructive — `stale: true` is honest behavior.
+Plumb requires its own commit + test.
+
+#### 2. SSE filter `?events=consolidate_pass_completed` returned 0 events in one test
+
+**Finding:** Unfiltered `/api/subscribe` received the event; with a filter one
+test capture was silent. The filter code does `types.contains(&event.event)`
+on a comma-split query — straightforward on paper.
+
+**Fix plan:** reproduce in a unit test on `subscribe_handler`'s filter logic.
+
+**Why deferred:** emit works; client-side filtering is an escape hatch.
+
+#### 3. HUD I/O on tokio runtime — refactor to spawn_blocking + atomic write
+
+**Finding:** (Codex Q2 + Claude HIGH-5/6) `build_hud_state` runs synchronous
+`std::fs::read_to_string` (cache read) + `rusqlite::Connection::open`
+(per-event reader) + `std::fs::write` (non-atomic) on the tokio runtime
+thread. On bursty extraction events the thread is blocked for I/O and
+hud-state.json can be observed mid-write.
+
+**Fix plan:** (a) cache a long-lived read-only `Connection` in the HUD writer
+task; (b) wrap cache read/write in `tokio::task::spawn_blocking`; (c) use
+tmpfile + atomic rename for the write.
+
+**Why deferred:** not user-visible in low-event-rate workloads. Batch as one
+"HUD I/O refactor" issue.
+
+#### 4. HUD 24h rollup not index-backed
+
+**Finding:** (Claude HIGH-2) `COUNT(DISTINCT json_extract(metadata_json,
+'$.run_id'))` can't use `idx_kpi_events_phase` (indexes `phase_name`, not
+`run_id`). On month-old DBs the query scans all 24h rows per HUD update.
+
+**Fix plan:** either add a `run_id TEXT` column to `kpi_events` with its own
+index, or maintain the rollup in-memory (daemon-resident counter).
+
+**Why deferred:** <100ms until `kpi_events` accumulates months of rows.
+
+#### 5. Percentile convention surfaced in API docs
+
+**Finding:** (Claude MEDIUM-1) `shape_latency` uses ceiling-rank percentiles
+(`sorted[ceil(p*n)-1]`). For `n=2, p=0.5` this returns the minimum — tests
+lock the behavior but Inspect API docs don't tell consumers.
+
+**Fix plan:** one paragraph in `docs/api-reference.md` §Inspect.
+
+**Why deferred:** doc polish; not a correctness bug.
+
+#### 6. `shape_latency` truncation counter off-by-one
+
+**Finding:** (Claude MEDIUM-2) When the global `MAX_TOTAL_ROWS` cap fires,
+the row that triggered the break increments `total_seen` but is never added
+to any bucket, so `truncated_samples` per group undercounts by 1 for the
+affected group. `truncated: true` on the response is correct.
+
+**Fix plan:** move the `total_seen` increment below the bucket insert, OR
+credit the skipped row to the offending group.
+
+**Why deferred:** cosmetic; the boolean flag is the signal callers act on.
+
+#### 7. CLI `ObserveShape` mirror vs `forge-core` `ValueEnum` feature flag
+
+**Finding:** (Claude MEDIUM-5) Forge-cli re-declares `InspectShape` as
+`ObserveShape` with a `From` impl because forge-core has no clap dep. Any
+Tier 3 shape requires a two-file update.
+
+**Fix plan:** Option A — `[features] cli = ["clap"]` in forge-core, derive
+`ValueEnum` conditionally. Option B — replace mirrors with `FromStr` table.
+
+**Why deferred:** current shim works. Reopen when Tier 3 adds a new shape.
+
