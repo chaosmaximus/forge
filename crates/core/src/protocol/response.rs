@@ -1004,6 +1004,29 @@ pub enum ResponseData {
         uptime_secs: u64,
     },
 
+    /// Phase 2A-4d.2: Observability API response. `data` is tagged by `kind`
+    /// matching the requested `shape`.
+    Inspect {
+        shape: crate::protocol::InspectShape,
+        /// Echoed back from the request.
+        window: String,
+        /// Parsed window in seconds.
+        window_secs: u64,
+        /// Unix seconds when the handler built the response.
+        generated_at_secs: u64,
+        /// Which filter fields were actually applied (others nulled).
+        effective_filter: crate::protocol::InspectFilter,
+        /// Which group_by the handler actually used (None = no grouping).
+        effective_group_by: Option<crate::protocol::InspectGroupBy>,
+        /// True when `shape=row_count` served from a stale or empty snapshot.
+        #[serde(default)]
+        stale: bool,
+        /// True when at least one group hit the per-group sample cap.
+        #[serde(default)]
+        truncated: bool,
+        data: crate::protocol::InspectData,
+    },
+
     Shutdown,
 }
 

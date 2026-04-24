@@ -713,6 +713,19 @@ mod tests {
                     approved: true,
                 },
             ),
+            // ── Phase 2A-4d.2: Observability API ──
+            (
+                "inspect",
+                Request::Inspect {
+                    shape: crate::protocol::InspectShape::Latency,
+                    window: "1h".into(),
+                    filter: crate::protocol::InspectFilter {
+                        phase: Some("phase_1_exact_dedup".into()),
+                        ..Default::default()
+                    },
+                    group_by: Some(crate::protocol::InspectGroupBy::Phase),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -1124,6 +1137,27 @@ mod tests {
             (
                 "session_send with to_session alias",
                 r#"{"method":"session_send","params":{"to_session":"s2","kind":"notification","topic":"test","parts":[]}}"#,
+            ),
+            // ── Phase 2A-4d.2: Observability API ──
+            (
+                "inspect row_count minimal",
+                r#"{"method":"inspect","params":{"shape":"row_count"}}"#,
+            ),
+            (
+                "inspect latency with filter + group_by",
+                r#"{"method":"inspect","params":{"shape":"latency","window":"24h","filter":{"phase":"phase_23_infer_skills_from_behavior"},"group_by":"phase"}}"#,
+            ),
+            (
+                "inspect error_rate default window",
+                r#"{"method":"inspect","params":{"shape":"error_rate"}}"#,
+            ),
+            (
+                "inspect phase_run_summary",
+                r#"{"method":"inspect","params":{"shape":"phase_run_summary","window":"7d"}}"#,
+            ),
+            (
+                "inspect throughput group_by=event_type",
+                r#"{"method":"inspect","params":{"shape":"throughput","window":"1h","group_by":"event_type"}}"#,
             ),
         ];
 

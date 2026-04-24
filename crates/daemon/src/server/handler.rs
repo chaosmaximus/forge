@@ -6551,6 +6551,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 },
             }
         }
+        // Phase 2A-4d.2 T3 wires the real handler in server/inspect.rs.
+        Request::Inspect { .. } => Response::Error {
+            message: "inspect: handler not yet implemented (Phase 2A-4d.2 T3)".into(),
+        },
     }
 }
 

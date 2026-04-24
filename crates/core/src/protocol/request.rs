@@ -989,5 +989,17 @@ pub enum Request {
     /// Runtime version and build metadata. Lightweight (no DB queries).
     Version,
 
+    /// Phase 2A-4d.2: Observability API. Queries `kpi_events` or the per-layer
+    /// gauge snapshot through one shape-parameterized RPC.
+    Inspect {
+        shape: crate::protocol::InspectShape,
+        #[serde(default = "crate::protocol::default_inspect_window")]
+        window: String,
+        #[serde(default)]
+        filter: crate::protocol::InspectFilter,
+        #[serde(default)]
+        group_by: Option<crate::protocol::InspectGroupBy>,
+    },
+
     Shutdown,
 }
