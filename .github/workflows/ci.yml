@@ -106,3 +106,69 @@ jobs:
 
       - name: Harness drift (WARN-only until 2026-05-08, then FORCE_FAIL=1)
         run: bash scripts/check-harness-sync.sh
+
+  bench-fast:
+    # Phase 2A-4d.3 T13: per-commit fast benches (forge-consolidation,
+    # forge-identity). In-process harnesses run in <1s on ubuntu-latest
+    # (T1 measured 0.416s for forge-consolidation seed=42), so the job
+    # fits comfortably in CI budget. ORT download is the dominant cost
+    # (~30s cold, ~1s warm via actions/cache).
+    #
+    # Rollout policy (D4): continue-on-error: true for the first 14 days
+    # post-merge while telemetry calibrates; T17 promotes to required
+    # after 14 consecutive green master runs.
+    name: Bench-fast (${{ matrix.bench }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        bench: [forge-consolidation, forge-identity]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: .tools
+          key: ${{ runner.os }}-ort-${{ hashFiles('scripts/setup-dev-env.sh') }}
+
+      - name: Setup dev env (downloads ORT to .tools/ on cold cache)
+        run: bash scripts/setup-dev-env.sh
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build forge-bench (release, bench feature)
+        run: cargo build --release --bin forge-bench --features bench
+
+      - name: Run ${{ matrix.bench }}
+        env:
+          FORGE_DIR: ${{ runner.temp }}/forge-ci
+          FORGE_HARDWARE_PROFILE: ubuntu-latest-ci
+        run: |
+          mkdir -p "$RUNNER_TEMP/bench-results/${{ matrix.bench }}"
+          ./target/release/forge-bench ${{ matrix.bench }} \
+            --seed 42 \
+            --output "$RUNNER_TEMP/bench-results/${{ matrix.bench }}"
+
+      - name: Upload bench results (summary.json only — no forge.db)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.bench }}-${{ github.sha }}
+          path: ${{ runner.temp }}/bench-results/${{ matrix.bench }}/
+          retention-days: 14
+          compression-level: 9
