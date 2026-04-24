@@ -2,8 +2,9 @@
 //!
 //! Measures the overhead of the phase-span + kpi_events + Prometheus
 //! instrumentation by timing `run_all_phases` on a seeded SQLite DB with
-//! and without a `ForgeMetrics` handle, across N=5 iterations, comparing
-//! medians.
+//! and without a `ForgeMetrics` handle, across N=20 iterations with a
+//! fresh `ForgeMetrics` per iteration, comparing medians under a relative
+//! 1.15× ceiling.
 //!
 //! We cannot easily compare pre-T1 commit vs. HEAD without a worktree (which
 //! the project's CLAUDE.md gates behind explicit permission). Instead we
@@ -23,7 +24,7 @@
 //! observability layer of Tier 1 (see spec §3.2 non-goals).
 //!
 //! The test is ignored by default because it needs a non-trivial seeded
-//! DB and takes ~5-20s depending on host. Run with:
+//! DB and takes ~20-60s depending on host. Run with:
 //!
 //!     cargo test -p forge-daemon --test t10_instrumentation_latency -- --ignored --nocapture
 //!
@@ -38,14 +39,14 @@ use forge_daemon::server::metrics::ForgeMetrics;
 use forge_daemon::workers::consolidator;
 use rusqlite::Connection;
 
-const N_ITERATIONS: usize = 5;
+const N_ITERATIONS: usize = 20;
 const SEEDED_MEMORY_COUNT: usize = 400;
-/// Budget: the whole Prometheus path is a few microseconds per phase × 23
-/// phases × per-iteration overhead. 50 ms is a very generous ceiling chosen
-/// to catch runaway regressions (e.g. an accidental O(n) scan per update)
-/// rather than noise-level jitter on CI hosts. Tune down in a follow-up
-/// once stable.
-const OVERHEAD_CEILING: Duration = Duration::from_millis(50);
+/// Relative ceiling: Variant B's median must be ≤ 1.15× Variant A's median.
+/// Replaces the previous 50 ms absolute ceiling which was ~50× typical
+/// overhead and caught only runaway regressions. A ratio tolerates
+/// single-digit-ms jitter while catching proportional regressions at any
+/// absolute workload size.
+const OVERHEAD_RATIO_CEILING: f64 = 1.15;
 
 fn median(mut xs: Vec<Duration>) -> Duration {
     xs.sort_unstable();
@@ -109,17 +110,26 @@ fn t10_consolidation_latency_baseline() {
         a_durs.push(t0.elapsed());
     }
 
-    // Variant B: full instrumentation. Shares the one shared ForgeMetrics
-    // registry across iterations — mirrors production (one Arc per daemon).
+    // Variant B: full instrumentation. A *fresh* `ForgeMetrics::new()` is
+    // constructed per iteration rather than shared across all N.
+    //
+    // Why fresh-per-iteration: Prometheus counters are monotonic and
+    // accumulate across iterations. If one iteration silently stopped
+    // updating a counter mid-run, a shared registry would hide it in the
+    // aggregate (the final total would still look "about right" because
+    // other iterations made up the slack). A fresh registry means every
+    // iteration's counter state is checked in isolation against the 23-row
+    // `kpi_events` assertion — a per-iteration regression surfaces as a
+    // per-iteration failure, not an aggregate drift.
     //
     // Per-iteration assertion on kpi_events row count closes the coverage
     // gap noted in the T12 Codex review: without it, a regression that
     // silently drops kpi_events inserts on iterations 1..N_ITERATIONS
     // would go unnoticed (the standalone sanity check below only exercises
     // one fresh DB).
-    let metrics = ForgeMetrics::new();
     let mut b_durs: Vec<Duration> = Vec::with_capacity(N_ITERATIONS);
     for i in 0..N_ITERATIONS {
+        let metrics = ForgeMetrics::new();
         let conn = make_conn();
         let t0 = Instant::now();
         let _stats = consolidator::run_all_phases(&conn, &cfg, Some(&metrics));
@@ -139,7 +149,7 @@ fn t10_consolidation_latency_baseline() {
 
     let a_med = median(a_durs.clone());
     let b_med = median(b_durs.clone());
-    let overhead = b_med.saturating_sub(a_med);
+    let ratio = b_med.as_secs_f64() / a_med.as_secs_f64();
 
     println!("\n=== T10 instrumentation latency baseline (N={N_ITERATIONS}) ===");
     println!("seeded memories: {SEEDED_MEMORY_COUNT}");
@@ -152,22 +162,24 @@ fn t10_consolidation_latency_baseline() {
         b_med, b_durs
     );
     println!(
-        "Overhead (B − A): {:?}  budget ≤ {:?}",
-        overhead, OVERHEAD_CEILING
+        "Ratio (B / A) = {:.4}  ceiling ≤ {:.2}",
+        ratio, OVERHEAD_RATIO_CEILING
     );
     println!("=== end T10 baseline ===\n");
 
-    // `overhead` can theoretically be slightly negative on noisy hosts;
-    // saturating_sub guards that. The assertion catches orders-of-magnitude
-    // regressions, not single-digit-ms jitter.
+    // Relative ratio check: B's median must be within 1.15× A's median.
+    // If B is faster than A (e.g. cache warming, jitter), ratio < 1.0 and
+    // this assertion passes trivially — that's fine.
     assert!(
-        overhead < OVERHEAD_CEILING,
-        "instrumentation overhead {overhead:?} exceeds ceiling {OVERHEAD_CEILING:?}"
+        ratio <= OVERHEAD_RATIO_CEILING,
+        "instrumentation overhead ratio {ratio:.4} exceeds ceiling {OVERHEAD_RATIO_CEILING:.2} \
+         (a_med={a_med:?}, b_med={b_med:?})"
     );
 
     // Sanity: the kpi_events rows should have been written in both variants.
     // Re-run a fresh iteration and assert the row count lands at 23 for
     // variant B (one per phase per run).
+    let metrics = ForgeMetrics::new();
     let conn = make_conn();
     let _stats = consolidator::run_all_phases(&conn, &cfg, Some(&metrics));
     let kpi_count: i64 = conn

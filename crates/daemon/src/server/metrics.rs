@@ -191,11 +191,16 @@ impl ForgeMetrics {
 }
 
 /// Refresh gauge values from the database before a Prometheus scrape.
-/// Opens a read-only connection, wraps all COUNT(*) queries in a single
-/// SQLite read transaction so every gauge in one scrape reflects the same
-/// DB snapshot — otherwise Phase 1 dedup or Phase 7 embedding_merge can
-/// commit between statements and produce torn snapshots (e.g. memory count
-/// updated, edge count still stale) that trip operator alerts.
+/// Opens a read-only connection and collects all 15 COUNT(*) values in a
+/// single SELECT with scalar subqueries. SQLite evaluates every subquery
+/// within one implicit read transaction on an auto-commit SELECT, so the
+/// whole row reflects one DB snapshot — no explicit BEGIN/COMMIT is needed
+/// and the WAL snapshot window is ~1 round-trip instead of 15, which
+/// avoids blocking WAL checkpoint on busy DBs (HIGH-2 adversarial review).
+/// Without the single-snapshot property, Phase 1 dedup or Phase 7
+/// embedding_merge could commit between statements and produce torn
+/// snapshots (e.g. memory count updated, edge count still stale) that
+/// trip operator alerts.
 fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
     // Open a per-scrape read-only connection (same pattern as health probes)
     let reader = match crate::server::handler::DaemonState::new_reader(
@@ -212,40 +217,12 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         }
     };
 
-    // Single consistent snapshot — BEGIN DEFERRED acquires the read lock on
-    // first query and holds WAL snapshot visibility until COMMIT / ROLLBACK.
-    if let Err(e) = reader.conn.execute_batch("BEGIN DEFERRED;") {
-        tracing::warn!(error = %e, "metrics: failed to BEGIN read transaction; falling back to autocommit (torn snapshot possible)");
-        // Continue without the snapshot guarantee rather than refuse to scrape.
-    }
-
-    let count_memory = reader
-        .conn
-        .query_row("SELECT COUNT(*) FROM memory", [], |r| r.get::<_, i64>(0))
-        .ok();
-    let count_edge = reader
-        .conn
-        .query_row("SELECT COUNT(*) FROM edge", [], |r| r.get::<_, i64>(0))
-        .ok();
-    let count_mem_vec = reader
-        .conn
-        .query_row("SELECT COUNT(*) FROM memory_vec", [], |r| {
-            r.get::<_, i64>(0)
-        })
-        .ok();
-    let count_active_sessions = reader
-        .conn
-        .query_row(
-            "SELECT COUNT(*) FROM session WHERE ended_at IS NULL",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .ok();
-
     // Per-table row gauges. Labels match actual SQLite table names (verified
     // 2026-04-24 in schema.rs); adding a label that doesn't correspond to a
     // real table would produce a perpetually-zero series that misleads
-    // operators.
+    // operators. `memory` and `edge` intentionally appear here *and* feed
+    // the dedicated memories_total / edges_total gauges — the single SELECT
+    // below returns each count exactly once and we reuse it for both sinks.
     let tables = [
         "memory",
         "skill",
@@ -259,35 +236,71 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         "domain_dna",
         "entity",
     ];
-    let table_counts: Vec<(&&str, Option<i64>)> = tables
-        .iter()
-        .map(|t| {
-            let sql = format!("SELECT COUNT(*) FROM {t}");
-            let c = reader.conn.query_row(&sql, [], |r| r.get::<_, i64>(0)).ok();
-            (t, c)
-        })
-        .collect();
 
-    // Close the snapshot before touching Prometheus (no point holding the
-    // lock while we format label strings).
-    if let Err(e) = reader.conn.execute_batch("COMMIT;") {
-        // BEGIN may have failed earlier; COMMIT without a txn is an error.
-        // Downgrade to debug — the reads themselves succeeded.
-        tracing::debug!(error = %e, "metrics: COMMIT after BEGIN DEFERRED failed (expected if BEGIN failed)");
-    }
+    // Single-row SELECT with scalar subqueries — all 15 counts come back in
+    // one round-trip, evaluated against one implicit read snapshot.
+    const COUNTS_SQL: &str = "SELECT \
+        (SELECT COUNT(*) FROM memory)                          AS mem, \
+        (SELECT COUNT(*) FROM edge)                            AS edg, \
+        (SELECT COUNT(*) FROM memory_vec)                      AS vec, \
+        (SELECT COUNT(*) FROM session WHERE ended_at IS NULL)  AS active_sess, \
+        (SELECT COUNT(*) FROM skill)                           AS skl, \
+        (SELECT COUNT(*) FROM identity)                        AS idn, \
+        (SELECT COUNT(*) FROM disposition)                     AS dsp, \
+        (SELECT COUNT(*) FROM platform)                        AS plt, \
+        (SELECT COUNT(*) FROM tool)                            AS tol, \
+        (SELECT COUNT(*) FROM perception)                      AS prc, \
+        (SELECT COUNT(*) FROM declared)                        AS dcl, \
+        (SELECT COUNT(*) FROM domain_dna)                      AS dna, \
+        (SELECT COUNT(*) FROM entity)                          AS ent";
 
-    if let Some(c) = count_memory {
-        metrics.memories_total.set(c);
-    }
-    if let Some(c) = count_edge {
-        metrics.edges_total.set(c);
-    }
-    if let Some(c) = count_mem_vec {
-        metrics.embeddings_total.set(c);
-    }
-    if let Some(c) = count_active_sessions {
-        metrics.active_sessions.set(c);
-    }
+    let row = reader.conn.query_row(COUNTS_SQL, [], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,  // memory
+            r.get::<_, i64>(1)?,  // edge
+            r.get::<_, i64>(2)?,  // memory_vec
+            r.get::<_, i64>(3)?,  // active sessions
+            r.get::<_, i64>(4)?,  // skill
+            r.get::<_, i64>(5)?,  // identity
+            r.get::<_, i64>(6)?,  // disposition
+            r.get::<_, i64>(7)?,  // platform
+            r.get::<_, i64>(8)?,  // tool
+            r.get::<_, i64>(9)?,  // perception
+            r.get::<_, i64>(10)?, // declared
+            r.get::<_, i64>(11)?, // domain_dna
+            r.get::<_, i64>(12)?, // entity
+        ))
+    });
+
+    let (
+        count_memory,
+        count_edge,
+        count_mem_vec,
+        count_active_sessions,
+        count_skill,
+        count_identity,
+        count_disposition,
+        count_platform,
+        count_tool,
+        count_perception,
+        count_declared,
+        count_domain_dna,
+        count_entity,
+    ) = match row {
+        Ok(r) => r,
+        Err(e) => {
+            // Any table missing / schema drift → skip this scrape entirely
+            // rather than partially-update gauges (preserves all-or-nothing
+            // semantics from the prior BEGIN/COMMIT design).
+            tracing::warn!(error = %e, "metrics: failed to collect DB counts; skipping gauge refresh");
+            return;
+        }
+    };
+
+    metrics.memories_total.set(count_memory);
+    metrics.edges_total.set(count_edge);
+    metrics.embeddings_total.set(count_mem_vec);
+    metrics.active_sessions.set(count_active_sessions);
 
     // Worker health — set all known workers to 1 (we're alive if we can query)
     for worker in &[
@@ -303,10 +316,23 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         metrics.worker_healthy.with_label_values(&[worker]).set(1);
     }
 
-    for (table, count) in &table_counts {
-        if let Some(c) = *count {
-            metrics.table_rows.with_label_values(&[**table]).set(c);
-        }
+    // Iterate in the same order as `tables` so label → count pairing is
+    // unambiguous and matches the SELECT's column order above.
+    let per_table_counts: [i64; 11] = [
+        count_memory,
+        count_skill,
+        count_edge,
+        count_identity,
+        count_disposition,
+        count_platform,
+        count_tool,
+        count_perception,
+        count_declared,
+        count_domain_dna,
+        count_entity,
+    ];
+    for (table, count) in tables.iter().zip(per_table_counts.iter()) {
+        metrics.table_rows.with_label_values(&[*table]).set(*count);
     }
 }
 

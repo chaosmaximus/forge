@@ -6,10 +6,31 @@
 //!
 //! Spec: `docs/superpowers/specs/2026-04-24-forge-identity-observability-design.md`.
 
+use opentelemetry::trace::{TraceContextExt, TraceId};
 use rusqlite::{params, Connection};
 use serde_json::json;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::server::metrics::ForgeMetrics;
+
+/// Extract the 32-char hex trace id from the currently-active `tracing::Span`
+/// via its attached OpenTelemetry context.
+///
+/// Returns `None` when no OTLP provider is wired up (tracing-opentelemetry
+/// then yields an all-zeros `TraceId`). This preserves the documented
+/// contract that `trace_id` is `null` in `kpi_events.metadata_json` whenever
+/// OTLP is disabled.
+fn current_otlp_trace_id() -> Option<String> {
+    let span = tracing::Span::current();
+    let otel_context = span.context();
+    let span_ref = otel_context.span();
+    let trace_id = span_ref.span_context().trace_id();
+    if trace_id == TraceId::INVALID {
+        None
+    } else {
+        Some(trace_id.to_string())
+    }
+}
 
 /// Canonical, ordered phase identifiers.
 ///
@@ -74,7 +95,17 @@ pub fn record(conn: &Connection, metrics: Option<&ForgeMetrics>, outcome: &Phase
     if let Some(m) = metrics {
         update_phase_metrics(m, outcome);
     }
-    match insert_kpi_event_row(conn, outcome) {
+    // Honor an explicit override from the caller (tests, replayers), but
+    // when `outcome.trace_id` is None auto-populate from the currently-
+    // active tracing span's attached OTLP context. All-zeros trace ids
+    // (no provider installed) collapse to None so the stored JSON stays
+    // `"trace_id":null`.
+    let computed_trace_id = if outcome.trace_id.is_some() {
+        None
+    } else {
+        current_otlp_trace_id()
+    };
+    match insert_kpi_event_row(conn, outcome, computed_trace_id.as_deref()) {
         Ok(rows_written) => {
             if rows_written == 0 {
                 // ULID PK collision (2^-80 per monotonic-ms window).
@@ -116,13 +147,22 @@ fn update_phase_metrics(metrics: &ForgeMetrics, outcome: &PhaseOutcome) {
         .inc_by(outcome.output_count);
 }
 
-fn insert_kpi_event_row(conn: &Connection, outcome: &PhaseOutcome) -> rusqlite::Result<usize> {
+fn insert_kpi_event_row(
+    conn: &Connection,
+    outcome: &PhaseOutcome,
+    computed_trace_id: Option<&str>,
+) -> rusqlite::Result<usize> {
+    // Caller-supplied `outcome.trace_id` wins; otherwise fall back to the
+    // trace id we pulled off the active OTLP-backed span. Either way, an
+    // absent value stays as JSON null rather than the all-zeros sentinel
+    // so dashboards / schema consumers see a clean null when OTLP is off.
+    let trace_id_for_json = outcome.trace_id.or(computed_trace_id);
     let metadata = json!({
         "metadata_schema_version": 1,
         "phase_name": outcome.phase,
         "run_id": outcome.run_id,
         "correlation_id": outcome.correlation_id,
-        "trace_id": outcome.trace_id,
+        "trace_id": trace_id_for_json,
         "output_count": outcome.output_count,
         "error_count": outcome.error_count,
         "extra": outcome.extra,
@@ -337,6 +377,150 @@ mod tests {
         assert_eq!(
             persistence_err, 1,
             "phase_persistence_errors{{insert_error}} must be bumped by the failed kpi insert"
+        );
+    }
+
+    #[test]
+    fn record_trace_id_is_null_without_otlp_provider() {
+        // Negative regression for the all-zeros → null collapse. When no
+        // OpenTelemetry provider is active the default tracer returns the
+        // INVALID `TraceId` (32 zeros). We must store `"trace_id":null`
+        // in metadata_json rather than leaking the zeros sentinel.
+        //
+        // Paired with `record_populates_trace_id_from_active_otlp_span`
+        // below which exercises the positive path with a real tracer.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        let _enter = tracing::info_span!("unit_test_no_otlp").entered();
+        let outcome = PhaseOutcome {
+            phase: "phase_1_dedup_memories",
+            run_id: "01HNOP",
+            correlation_id: "01HNOP",
+            trace_id: None,
+            output_count: 0,
+            error_count: 0,
+            duration_ms: 1,
+            extra: json!({}),
+        };
+        record(&conn, None, &outcome);
+        let json_text: String = conn
+            .query_row(
+                "SELECT metadata_json FROM kpi_events WHERE event_type = 'phase_completed' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            json_text.contains("\"trace_id\":null"),
+            "without an OTLP provider, trace_id must serialize to null; got {json_text}"
+        );
+        assert!(
+            !json_text.contains("00000000000000000000000000000000"),
+            "all-zeros TraceId sentinel must never leak into metadata_json; got {json_text}"
+        );
+    }
+
+    #[test]
+    fn record_populates_trace_id_from_active_otlp_span() {
+        // Positive regression: wire a real in-process OpenTelemetry tracer
+        // provider (no exporter — default builder keeps spans in memory
+        // and discards on drop), open a `tracing::info_span!` whose OTLP
+        // parent context points at a real span on that tracer, and
+        // confirm that `record()` picks up the 32-char hex trace id.
+        //
+        // `OpenTelemetrySpanExt::set_parent` only survives `span.context()`
+        // lookups when a subscriber with the `tracing_opentelemetry::layer`
+        // is active. We install one *locally* via
+        // `tracing_subscriber::with_default` so no global state leaks into
+        // other tests in the same process.
+        use opentelemetry::trace::{TraceContextExt, Tracer, TracerProvider as _};
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let provider = opentelemetry_sdk::trace::TracerProvider::builder().build();
+        let tracer = provider.tracer("forge-test");
+        let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer.clone());
+        let subscriber = tracing_subscriber::registry().with(otlp_layer);
+
+        let otel_span = tracer.start("parent-trace");
+        let cx = opentelemetry::Context::current_with_span(otel_span);
+        let expected_trace_id = cx.span().span_context().trace_id().to_string();
+        assert_eq!(
+            expected_trace_id.len(),
+            32,
+            "OTLP TraceId must render as 32 hex chars"
+        );
+        assert_ne!(
+            expected_trace_id, "00000000000000000000000000000000",
+            "real provider must mint a non-zero trace id"
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("phase_under_test");
+            span.set_parent(cx);
+            let _enter = span.enter();
+
+            let outcome = PhaseOutcome {
+                phase: "phase_1_dedup_memories",
+                run_id: "01HOTL",
+                correlation_id: "01HOTL",
+                trace_id: None,
+                output_count: 0,
+                error_count: 0,
+                duration_ms: 1,
+                extra: json!({}),
+            };
+            record(&conn, None, &outcome);
+        });
+
+        let json_text: String = conn
+            .query_row(
+                "SELECT metadata_json FROM kpi_events WHERE event_type = 'phase_completed' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let needle = format!("\"trace_id\":\"{expected_trace_id}\"");
+        assert!(
+            json_text.contains(&needle),
+            "metadata_json should carry the active OTLP span's trace id ({expected_trace_id}); got {json_text}"
+        );
+    }
+
+    #[test]
+    fn record_caller_override_beats_span_trace_id() {
+        // Contract: explicit `outcome.trace_id = Some(...)` must win over
+        // any span-derived value. Replayers and backfill jobs rely on
+        // this to stamp historical trace ids onto newly written rows.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        let outcome = PhaseOutcome {
+            phase: "phase_1_dedup_memories",
+            run_id: "01HOVR",
+            correlation_id: "01HOVR",
+            trace_id: Some("deadbeefdeadbeefdeadbeefdeadbeef"),
+            output_count: 0,
+            error_count: 0,
+            duration_ms: 1,
+            extra: json!({}),
+        };
+        record(&conn, None, &outcome);
+        let json_text: String = conn
+            .query_row(
+                "SELECT metadata_json FROM kpi_events WHERE event_type = 'phase_completed' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            json_text.contains("\"trace_id\":\"deadbeefdeadbeefdeadbeefdeadbeef\""),
+            "caller-supplied trace_id must be preserved verbatim; got {json_text}"
         );
     }
 }

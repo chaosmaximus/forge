@@ -44,6 +44,33 @@ Overhead (B − A): **~5.67 ms**.
 **Budget ceiling:** 50 ms — passed with roughly an order of magnitude of headroom even on
 the slower-of-two runs.
 
+### Run 3 (N=20, relative ratio)
+
+Methodology upgrade: N bumped from 5 to 20, a fresh `ForgeMetrics::new()` is constructed per
+Variant B iteration (so Prometheus counter accumulation cannot mask a per-iteration regression
+— the 23-row `kpi_events` assertion is evaluated against isolated state each iteration), and
+the absolute 50 ms ceiling is replaced with a relative ratio assertion `b_med ≤ 1.15 × a_med`.
+A relative check scales with workload and catches proportional regressions that an absolute
+ceiling 50× larger than the signal would miss.
+
+| Variant | Median | Samples (ms) |
+| ------- | -----: | ------------ |
+| A (no metrics)   | **110.27 ms** | 114.81, 114.02, 107.04, 110.27, 128.12, 116.12, 114.49, 97.32, 107.87, 117.03, 111.97, 112.03, 107.27, 108.21, 103.91, 98.11, 98.11, 119.00, 102.86, 108.83 |
+| B (full metrics) | **107.02 ms** | 104.11, 117.13, 104.11, 111.57, 97.59, 99.18, 101.39, 103.79, 114.38, 108.41, 105.95, 100.67, 98.43, 117.01, 97.43, 126.30, 110.70, 123.56, 111.75, 107.02 |
+
+Ratio (B / A): **0.9705** — Variant B median is ~3% *faster* than Variant A median.
+
+**Ceiling:** 1.15× — passed. The assertion held trivially because B came in under A.
+
+**Signal vs. noise:** This ratio is pure noise, not signal. With N=20 the per-variant samples
+span ~97–128 ms (a ~30 ms spread within each variant) while the median delta between variants
+is ~3 ms. The Prometheus-path cost (~70 µs across 23 phases) lives three orders of magnitude
+below host-level scheduling jitter at this workload size, so whether B nominally beats A or
+trails it by a few ms on any given run is determined by CPU frequency scaling and page-cache
+state, not by the instrumentation. The 1.15× ceiling therefore guards against *orders-of-
+magnitude* regressions (an accidental O(n²) update or a sync flush on the hot path) without
+producing false positives from ±5% jitter.
+
 ## Interpretation
 
 - The Prometheus-update path (`update_phase_metrics` + `table_rows.set`) adds zero measurable
@@ -78,12 +105,12 @@ behind explicit user permission. Instead:
 cargo test -p forge-daemon --release --test t10_instrumentation_latency -- --ignored --nocapture
 ```
 
-Edit `N_ITERATIONS`, `SEEDED_MEMORY_COUNT`, or `OVERHEAD_CEILING` in the test file to
+Edit `N_ITERATIONS`, `SEEDED_MEMORY_COUNT`, or `OVERHEAD_RATIO_CEILING` in the test file to
 change the sample size / workload / tolerance.
 
 ## Acceptance
 
-- [x] Median Variant B within 50 ms of Variant A.
-- [x] Exactly 23 kpi_events rows per `run_all_phases` invocation (assertion in test body).
+- [x] Median Variant B ≤ 1.15× Variant A (Run 3 methodology).
+- [x] Exactly 23 kpi_events rows per `run_all_phases` invocation (per-iteration assertion in test body, fresh `ForgeMetrics` per iteration).
 - [x] `cargo clippy --workspace -- -W clippy::all -D warnings` clean.
 - [x] `cargo test --lib` unaffected (1,390 passing).
