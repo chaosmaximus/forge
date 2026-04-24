@@ -1,14 +1,14 @@
-# Forge-Identity Observability — Design v2 (Phase 2A-4d.1, Instrumentation Tier)
+# Forge-Identity Observability — Design v3 (Phase 2A-4d.1, Instrumentation Tier)
 
-**Status:** DESIGN v2 — revised after v1 adversarial review found 2 BLOCKERs (false reconnaissance about OTLP wiring and events-table existence) + 3 HIGHs (cfg asymmetry, phase count, refactor scope). Spec is LOCKED once this version passes two adversarial reviews.
+**Status:** DESIGN v3 — revised after v2 adversarial review (Claude + Codex, 2026-04-24) found 2 BLOCKERs + 3 HIGHs + 3 MEDIUMs. v1 v2 histories preserved in git; this is the proposed LOCK-ready version.
 
-**Phase position:** First of three 2A-4d tiers. Sequence:
+**Phase position:** First of three 2A-4d tiers.
 
-| Tier | Phase | Description | Unblocks |
-|------|-------|-------------|----------|
-| **2A-4d.1 (this spec)** | Instrumentation | `info_span!` around every consolidator phase + 4 new Prometheus metric families + write to existing `kpi_events` table + replace worker `eprintln!`/`println!` with `tracing` events | Every later observability consumer. |
-| 2A-4d.2 | Observability API | Generic `/inspect {layer, shape, window}` + SSE stream + `forge-next observe` CLI + HUD drift display | Live user-facing observability. |
-| 2A-4d.3 | Bench Harness | `forge-bench identity` + fixtures + `bench_runs` table + ablation flags + CI-per-commit + leaderboard | Quality as a time series. |
+| Tier | Description | Unblocks |
+|------|-------------|----------|
+| **2A-4d.1 (this spec)** | Per-phase `tracing::info_span!` + 3 new Prometheus metric families + write phase observations to `kpi_events` + convert worker `eprintln!`/`println!` to `tracing` | Everything downstream. |
+| 2A-4d.2 | Observability API (`/inspect`, SSE, `forge-next observe`, HUD drift) | Live user-facing observability. |
+| 2A-4d.3 | Bench harness + fixtures + `bench_runs` table + CI per-commit + leaderboard | Quality as time series. |
 
 Each tier ships independently (two reviews + merge + dogfood) before the next starts.
 
@@ -16,87 +16,119 @@ Each tier ships independently (two reviews + merge + dogfood) before the next st
 
 ## 1. Goal
 
-Turn every consolidator phase and every Manas layer write into a first-class observable event.
+Turn every consolidator phase into a first-class observable event.
 
 **Before this work:**
-- Workers emit ~184 `eprintln!("[consolidator] …")` calls to stderr (counted 2026-04-24 across 11 files). Not structured. Not queryable. Not exported.
-- `forge_*` Prometheus metrics exist for 7 top-level gauges but have no per-phase or per-layer granularity. You can't answer "how long did Phase 23 take last pass?" or "which phase errors most?".
-- `tracing-opentelemetry` + `opentelemetry-otlp` 0.27 are **already wired** (`init_otlp_layer` at `crates/daemon/src/main.rs:91-130`) and active when `FORGE_OTLP_ENABLED=true` + `FORGE_OTLP_ENDPOINT` is set — but nothing in the consolidator emits phase-level spans, so the collector receives only top-level subscriber spans (limited value).
-- `kpi_events` table exists (`schema.rs:255-266`) with columns `(id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json)` + two indexes. Currently used by perception/recall telemetry; no consolidator writes.
+- Workers emit ~184 `eprintln!`/`println!` calls across 11 files; not structured, not queryable, not exported.
+- `forge_*` Prometheus metrics cover 7 top-level gauges; no per-phase or per-table granularity.
+- `tracing-opentelemetry` + `opentelemetry-otlp 0.27` are already wired (`init_otlp_layer` at `main.rs:91-130`); spans land in Jaeger/Grafana when `FORGE_OTLP_ENABLED=true` — but nothing in the consolidator emits phase-level spans, so the collector sees only top-level subscriber spans.
+- `kpi_events` table (`schema.rs:255-266`) is SCHEMA-ONLY — no writers in the codebase today. It's a documented-but-unbuilt shared logging surface. v2 wrongly called it "currently used". v3 treats it as green-field and carves `event_type='phase_completed'` explicitly.
 
 **After this work:**
-- Every consolidator phase is wrapped in `tracing::info_span!` rooted at a `consolidate_pass` span; spans carry `phase_name`, `input_count`, `output_count`, `duration_ms`, `error_count`. When OTLP is enabled, these land in Jaeger/Grafana as-is.
-- `ForgeMetrics` gains 4 new families: per-phase duration histogram, per-phase output counter, per-layer rows gauge, per-layer freshness gauge.
-- Each phase writes one row to `kpi_events` with `event_type="phase_completed"` and phase-specific fields in `metadata_json`. Tier 2's `/inspect` will read this.
-- Worker code contains zero `eprintln!`/`println!` outside `#[cfg(test)]`. Every event is a structured `tracing::info!`/`warn!`/`error!`.
+- Every consolidator phase emits a `tracing::info_span!` rooted at `consolidate_pass`; spans carry `phase_name`, `output_count`, `duration_ms`, `error_count`. OTLP picks them up where enabled — zero new init code.
+- `ForgeMetrics` gains 3 new families: per-phase duration histogram, per-phase output counter, per-table rows gauge.
+- Each consolidator phase writes one row to `kpi_events` with `event_type='phase_completed'` and phase-specific fields in `metadata_json`. This is the FIRST writer of `kpi_events`; Tier 1 claims the `phase_completed` namespace explicitly.
+- Worker code has zero `eprintln!`/`println!` outside `#[cfg(test)]`. Every event is a structured `tracing::info!`/`warn!`/`error!`.
 
-**Success metric:** A Grafana dashboard (or equivalent) can, without custom SQL, answer:
-1. "Duration of each consolidation phase over the last hour."
-2. "Rate of skills inferred per hour."
-3. "Which worker is slowest on average."
-4. "Trace view of a single consolidation pass (span per phase)."
+**Success metric:** a Grafana dashboard can, without custom SQL, answer: duration per phase over time; skills inferred per hour; slowest phase on average; trace of one consolidation pass (span per phase).
 
 ---
 
-## 2. Verified reconnaissance (2026-04-24 at HEAD `d30eaab`)
+## 2. Verified reconnaissance (2026-04-24, HEAD `65ebdf3`)
 
-Each fact below was independently confirmed against current code; planner must re-check at implementation time in case anything drifts.
+Each fact below confirmed independently against current code. Planner re-verifies at implementation time in case anything drifts.
 
 | # | Fact | Evidence |
 |---|------|----------|
-| 1 | **23 consolidator phases** run in `consolidator.rs::run_all_phases` (not 22). Phase 23 was inserted between phases 17 and 18 per 2A-4c2 T5. | `grep -cE "^\s*// Phase [0-9]+:" crates/daemon/src/workers/consolidator.rs` → 23 |
-| 2 | **OTLP exporter is fully wired** — `init_otlp_layer` at `main.rs:91-130` builds a `TracerProvider` via `opentelemetry_otlp 0.27` (tonic/gRPC), sets it as the global provider, and composes a `tracing-opentelemetry::OpenTelemetryLayer` into the subscriber when `FORGE_OTLP_ENABLED=true` + `FORGE_OTLP_ENDPOINT` is set. | `main.rs:91-178`; `Cargo.toml:opentelemetry` block |
-| 3 | **OTLP config dual-path.** `OtlpConfig` struct (`config.rs:356-365`) is NEVER read — wiring uses `FORGE_OTLP_*` env vars directly. Resolve this in Tier 1: either read the config struct or delete it. | `rg OtlpConfig --type rust` shows references only in `config.rs` + tests. |
-| 4 | **`kpi_events` table exists** with columns `(id TEXT PK, timestamp INTEGER, event_type TEXT, project TEXT, latency_ms INTEGER, result_count INTEGER, success INTEGER, metadata_json TEXT)`. Indexed on `timestamp` and `event_type`. Currently written by perception + recall telemetry. No consolidator writes. | `schema.rs:255-266`; `rg "INSERT INTO kpi_events"` → 0 consolidator hits. |
-| 5 | **`eprintln!`/`println!` site count in `crates/daemon/src/workers/`: 184 across 11 files**. Largest: `consolidator.rs` (69), `indexer.rs` (33), `extractor.rs` (22). | `grep -c 'eprintln!\|println!' crates/daemon/src/workers/*.rs \| sort -n` |
-| 6 | **`PHASE_ORDER` const + `Request::ProbePhase` + handler are ALL `#[cfg(any(test, feature = "bench"))]`.** Symmetric today. | `consolidator.rs:37`, `request.rs:142`, `handler.rs:1391`. |
-| 7 | **`prometheus 0.13` + `ForgeMetrics` Registry already exist** (`server/metrics.rs:20`) with 7 metric families, `refresh_gauges` per scrape, and a `/metrics` endpoint that returns 404 when disabled. 6 unit tests cover it. | `server/metrics.rs`; `Cargo.toml:58` |
-| 8 | **`reaper` worker is session-specific** (`reaper.rs` — heartbeat timeouts). Not a generic time-based sweeper. Any new retention policy needs either an expansion of `reaper.rs` or a new worker, not "drop into reaper". | `crates/daemon/src/workers/reaper.rs` |
-| 9 | **Daemon test baseline at HEAD `d30eaab`: 1386 daemon lib tests (+ ~35 integration), `cargo test --workspace` returns 1388+ pass**. Instrumentation must not regress this. | Output of last `cargo test --workspace` (pre-spec). |
-| 10 | **`consolidator.rs` phase fns have non-uniform return types** (`Ok(usize)`, `Ok((usize, usize))` for recency decay, `Ok(Vec<Memory>)`, etc.). A `PhaseResult` refactor that unifies them would touch 23 call sites + ~20 `ops::*` functions across `workers/ops/` + tests. | `grep "match ops::" consolidator.rs`; multiple return shapes visible in existing code. |
+| 1 | 23 consolidator phases in `run_all_phases`. | `grep -cE "^\s*// Phase [0-9]+:" consolidator.rs` → 23 |
+| 2 | OTLP exporter fully wired at `main.rs:91-130`; uses `opentelemetry-otlp 0.27` tonic/gRPC via `FORGE_OTLP_*` env vars. | `main.rs:91-178`; `Cargo.toml` |
+| 3 | `OtlpConfig` struct at `config.rs:356-365` is UNUSED by code — only referenced in tests. `main.rs:140-141` comment: *"We read env vars directly (not ForgeConfig) to avoid a chicken-and-egg problem — config loading logs, but the logger isn't initialized yet."* | `rg OtlpConfig --type rust` returns only `config.rs` + tests. |
+| 4 | `kpi_events` table exists (schema.rs:255-266). **Zero writers in codebase today.** | `grep -rn "INSERT INTO kpi_events" crates/` returns nothing. |
+| 5 | 184 `eprintln!`/`println!` sites across 11 worker files. Largest: `consolidator.rs` (69), `indexer.rs` (33), `extractor.rs` (22). | `grep -c 'eprintln!\|println!' crates/daemon/src/workers/*.rs` |
+| 6 | `PHASE_ORDER`, `Request::ProbePhase`, and its handler are all `#[cfg(any(test, feature = "bench"))]` — symmetric today. | `consolidator.rs:37`, `request.rs:142`, `handler.rs:1391` |
+| 7 | `prometheus 0.13` + `ForgeMetrics` Registry already exist with 7 families. | `server/metrics.rs` |
+| 8 | `reaper.rs` is session-specific (heartbeat timeouts). No generic time-based sweeper exists. | `workers/reaper.rs` |
+| 9 | `cargo test --workspace` baseline at HEAD: 1388+ pass, 0 failed, 1 ignored. | Last full run pre-spec. |
+| 10 | Phase fn return types are heterogeneous: `Ok(usize)`, `Ok((usize, usize))`, `Ok(Vec<Memory>)`, `Result<()>`, bare `usize`. Unifying them via a `PhaseResult` refactor would touch ~20 files including benches + tests. | See `match ops::` blocks in consolidator.rs. |
+| 11 | `run_consolidator` holds `state.lock().await` across the entire `run_all_phases` call (`consolidator.rs:1897-1905`). Lock hold spans the full 23-phase pass. | Direct inspection of `run_consolidator`. |
+| 12 | `identity` table (`schema.rs:479`) has no `updated_at` column (only `created_at`). `kpi_snapshots` + `kpi_benchmarks` tables exist alongside `kpi_events` but also have zero writers. | Schema + grep. |
+| 13 | Memory subtypes (decision, lesson, pattern) share the `memory` table — not distinct tables. | `schema.rs:388`+ uses a `memory_type` column. |
 
 ---
 
 ## 3. Architecture
 
-### 3.1 Span hierarchy (no phase-fn signature change)
+### 3.1 Span wrapping — preserve heterogeneous return types
 
-v1 proposed refactoring all 23 phase fns to return a `PhaseResult` struct — recon fact #10 shows this is a ~20-file cross-cutting refactor that would balloon Tier 1 scope. **v2 keeps all phase fn signatures unchanged.** Timing + counter capture happens at the *call site* in `run_all_phases`.
+Phase fn signatures are NOT refactored. Timing + counter capture happens at the call site with a small helper that handles each return shape. Three concrete templates:
 
-Each call site is wrapped in a local pattern:
-
+**Template A — plain `usize` return (most common, e.g. Phase 23):**
 ```rust
-// Example for Phase 23.
 let _span = tracing::info_span!(
     "phase_23_infer_skills_from_behavior",
     run_id = %run_id,
-    min_sessions = config.skill_inference_min_sessions,
-    window_days = config.skill_inference_window_days,
 );
 let t0 = std::time::Instant::now();
-let output = infer_skills_from_behavior(
-    conn,
-    config.skill_inference_min_sessions,
-    config.skill_inference_window_days,
-);
+let output = infer_skills_from_behavior(conn, config.min_sessions, config.window_days);
 let duration_ms = t0.elapsed().as_millis() as u64;
-stats.skills_inferred = output;
-tracing::info!(
-    output_count = output,
+let outcome = PhaseOutcome {
+    phase: "phase_23_infer_skills_from_behavior",
+    output_count: output as u64,
+    error_count: 0,
     duration_ms,
-    "phase_23 complete"
-);
-kpi_events::record_phase(conn, "phase_23_infer_skills_from_behavior", duration_ms, output, &run_id);
+};
+record_phase_outcome(conn, &run_id, &outcome);
+update_phase_metrics(&metrics, &outcome);
+stats.skills_inferred = output;
 ```
 
-Input counts that aren't returned by the existing phase fn are read from a pre-phase `COUNT(*)` where meaningful; otherwise left as `0` with a doc comment. This avoids the PhaseResult refactor cost.
+**Template B — `Result<T>` return with error arm (e.g. Phase 1 dedup):**
+```rust
+let _span = tracing::info_span!("phase_1_dedup_memories", run_id = %run_id);
+let t0 = std::time::Instant::now();
+let (output_count, error_count) = match ops::dedup_memories(conn) {
+    Ok(n) => (n as u64, 0),
+    Err(e) => {
+        tracing::error!(error = %e, "phase_1 failed");
+        (0, 1)
+    }
+};
+let outcome = PhaseOutcome {
+    phase: "phase_1_dedup_memories",
+    output_count, error_count,
+    duration_ms: t0.elapsed().as_millis() as u64,
+};
+record_phase_outcome(conn, &run_id, &outcome);
+update_phase_metrics(&metrics, &outcome);
+stats.exact_dedup = output_count as usize;
+```
 
-Spans:
-- Root: `consolidate_pass { run_id, triggered_by: "scheduled"|"force_consolidate"|"startup_task", start_iso }`. Run ID is a ULID generated at pass start.
-- Children: one `phase_N_<name>` span per phase. 23 children per pass.
-- Grandchildren: not committed in Tier 1 (e.g., per-INSERT spans are too fine-grained; defer to Tier 2 if needed).
+**Template C — tuple `(u, v)` return (e.g. Phase 4 decay):**
+Define which component is "output" at the spec level — pick the most operator-meaningful. For recency decay: `(normal_decayed, accel_decayed)`; output_count = `normal_decayed + accel_decayed`. Spec carries a `PhaseOutputProjection` table mapping every phase to its output-count function:
 
-### 3.2 Prometheus surface — 4 new families
+| Phase | Fn return | output_count formula |
+|-------|-----------|----------------------|
+| 1 | `Result<usize>` | `Ok(n)` → `n`; `Err` → `0` + error_count++ |
+| 2 | `Result<usize>` | same |
+| 3 | `usize` | raw |
+| 4 | `(usize, usize)` | sum |
+| 5 | `Result<usize>` | same as #1 |
+| 6 | `Vec<Memory>` + inner UPDATE | `updated_count` from inner loop |
+| 7 | `Result<usize>` | same |
+| 8 | `Result<(usize, usize)>` | sum-of-tuple; errors bump error_count |
+| 9 | `Result<usize>` | same |
+| 10 | `usize` | raw |
+| 11 | `Result<usize>` | entity detection count |
+| 12-22 | `Result<usize>` or `usize` | raw (see plan) |
+| 23 | `usize` | raw |
+
+The plan file enumerates each phase with its signature + chosen projection. No signature changes.
+
+**`PhaseOutcome` struct** lives in `workers/mod.rs` (or a new `workers/instrumentation.rs`). Read-only data — no public API surface exposed beyond Tier 1 internal use.
+
+### 3.2 Prometheus surface — 3 new families (not 4)
+
+v2 proposed 4 families; v3 drops `forge_layer_freshness_seconds` (Claude H2: no uniform source column across "layers" which aren't even distinct tables for memory subtypes). Freshness becomes Tier 2 scope where layer semantics get defined properly.
 
 ```
 # Phase duration histogram, per phase.
@@ -104,40 +136,41 @@ forge_phase_duration_seconds{phase="phase_23_infer_skills_from_behavior"}
   buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0]
 
 # Phase output counter, per phase × action.
-forge_phase_output_rows_total{phase="...", action="inserted|updated|skipped|errored"}
+forge_phase_output_rows_total{phase=..., action="succeeded|errored"}
 
-# Per-layer row gauge (supplements the 7 existing top-level gauges).
-forge_layer_rows_total{layer="skill|decision|lesson|pattern|platform|tool|identity|disposition|perception|declared|entity"}
-
-# Per-layer freshness — seconds since last write in that layer.
-forge_layer_freshness_seconds{layer=...}
+# Per-table rows gauge (named by SQL TABLE, not conceptual "layer").
+forge_table_rows{table="skill|memory|identity_trait|disposition|platform|tool|
+                         perception|declared|domain_dna|entity|edge"}
 ```
 
-**Cardinality math:** 23 phases × 1 histogram = 23 series; 23 phases × 4 actions = 92 series; 11 layers × 1 gauge + 11 × 1 freshness = 22 series. **Total new series: ≤ 137.** Prometheus budgets are typically 100k+ per instance — this is well under noise. In-memory registry impact on the daemon: negligible.
+Note: `forge_table_rows` (gauge) has no `_total` suffix per Claude M2 (Prometheus naming convention reserves `_total` for counters).
 
-Gauges are refreshed in `refresh_gauges()` on each `/metrics` scrape. Counters are `.inc()`ed at span close in the call-site wrapper. Histograms `.observe(duration)` at span close.
+**Cardinality:** 23 phases × 1 histogram = 23 series; 23 phases × 2 actions = 46 series; 11 tables × 1 gauge = 11 series. **Total new series: 80.** Well under Prometheus budget.
 
-### 3.3 OTLP integration — no new wiring, just span emission
+Gauges refresh on each `/metrics` scrape via extended `refresh_gauges()`. Counters `.inc_by(n)` + histograms `.observe(d)` in the call-site wrapper.
 
-Recon fact #2 confirms OTLP is already wired end-to-end. The sole Tier 1 OTLP task is: **when phases emit spans via `info_span!`, `tracing-opentelemetry` picks them up automatically and exports to the configured OTLP endpoint**. Zero new init code.
+### 3.3 OTLP integration — zero new wiring
 
-**Tier 1 resolves the config dual-path** (recon fact #3): `init_otlp_layer` today reads `FORGE_OTLP_ENABLED` + `FORGE_OTLP_ENDPOINT` + `FORGE_OTLP_SERVICE_NAME` env vars. We change it to read `OtlpConfig` from `ForgeConfig`, with env var overrides (same precedence pattern as `HttpConfig`). Any existing operator relying on env vars continues to work.
+OTLP is fully wired (recon #2). Tier 1's sole OTLP delivery: phase spans are picked up by the existing `tracing-opentelemetry` layer and exported through the existing gRPC batch exporter when `FORGE_OTLP_ENABLED=true`.
 
-Fails-loud policy: if `otlp.enabled = true` but the collector is unreachable at daemon startup, the daemon **logs a warning + starts without OTLP export** (does NOT exit). OTLP is an observability concern; unavailable collector must never take the daemon down. This is the industry-standard "fire-and-forget observability" pattern.
+**The `OtlpConfig` vs env-var dual-path is EXPLICITLY DEFERRED.** Claude H3 correctly identified main.rs's own comment about the chicken-and-egg issue (logger not yet initialized when config is parsed). Resolving this in Tier 1 would either (a) reintroduce that bug, or (b) require a subscriber-reinstall dance that's a known OTLP footgun. v3 leaves env vars as the sole entry point. The unused `OtlpConfig` struct stays in `config.rs` as reserved scaffolding; a follow-up task (Tier 3 candidate) will either wire it via two-phase init or delete it.
 
-### 3.4 `kpi_events` — reuse, don't reinvent
+**Fails-loud policy:** if `FORGE_OTLP_ENABLED=true` but the collector is unreachable, daemon logs a warning + starts without OTLP export. The daemon never exits on collector problems. (`opentelemetry-otlp` with `tonic` uses `with_batch_exporter` which does not validate connectivity at init; "fail loud" means log at init, retry on export, drop on repeated failure — standard batch-exporter behavior. Spec does not ask the daemon to verify the collector at init time.)
 
-v1 proposed a new `phase_event` table. Recon fact #4 shows `kpi_events` already exists with a suitable shape. **v2 reuses it.**
+### 3.4 `kpi_events` — FIRST writer, namespace carved explicitly
 
-Schema stays identical — no migration needed. Consolidator writes:
+v2 claimed `kpi_events` was already used. Recon fact #4 proved otherwise: green-field. v3 treats Tier 1 as the table's first writer and reserves `event_type='phase_completed'` for consolidator observations.
+
+No schema change. Writes:
 
 ```sql
 INSERT INTO kpi_events (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json)
 VALUES (?, strftime('%s','now'), 'phase_completed', NULL, ?, ?, ?, ?);
 ```
 
-with `metadata_json` carrying the phase-specific structured fields:
+`id` is a ULID (reuses daemon's existing ULID generator). `latency_ms` = `duration_ms`. `result_count` = `output_count`. `success` = `1` if `error_count == 0`.
 
+`metadata_json` contract (STABLE surface Tier 2 will consume):
 ```json
 {
   "phase_name": "phase_23_infer_skills_from_behavior",
@@ -145,138 +178,149 @@ with `metadata_json` carrying the phase-specific structured fields:
   "input_count": 0,
   "output_count": 1,
   "error_count": 0,
-  "trace_id": "abc123..." | null,
-  "details": { "min_sessions": 3, "window_days": 30, "patterns_seen": 5 }
+  "trace_id": "abc123..." | null
 }
 ```
 
-`result_count` column stores `output_count` (for fast roll-up queries without JSON parsing). `latency_ms` stores `duration_ms`. `success` is `1` if `error_count == 0`.
+No `details` object inside metadata_json in Tier 1 — keep the contract small. Phase-specific fields can be added later as explicit extensions (versioned `metadata_schema_version` if we ever need it).
 
-**Retention:** `kpi_events` has no existing reaper. Tier 1 adds a minimal retention task that runs inside the existing consolidator worker (same thread, same interval) — `DELETE FROM kpi_events WHERE timestamp < strftime('%s','now') - (86400 * retention_days)`. Default 30 days; override via new `metrics.kpi_events_retention_days` config field. Runs once per consolidator pass.
+**`event_type` namespace table (claims register):** Tier 1 claims `phase_completed`. Future additions go in a namespace table inside `HANDOFF.md` or a dedicated `docs/architecture/kpi_events-namespace.md` so Tier 2, Tier 3, and any other writer coordinate upfront.
 
-### 3.5 `eprintln!` / `println!` convergence
+**Retention — EXPLICITLY DEFERRED to Tier 2.** v2 tried to inline retention in the held consolidator lock (Claude B2 concurrency issue). v3 drops retention from Tier 1 entirely. At 23 inserts × 48 passes/day × 30 days = 33k rows, table stays under 1MB for a month. For the Tier-1 ship window this is a non-concern. Tier 2 (`/inspect` needs fast reads) owns retention: either a dedicated reaper worker (new file) or an extension of the existing reaper with a second timer. Documented in §4 Task 10.
 
-Recon fact #5: 184 sites across 11 files. v1's "one commit per worker directory" was unreviewable. **v2 ships one commit per worker file**, rolled up roughly as:
+### 3.5 `eprintln!`/`println!` convergence
 
-| Group | Files | Sites | Commit estimate |
-|-------|-------|-------|-----------------|
-| Consolidator | `consolidator.rs` | 69 | 1 commit, small diff per grep cluster |
-| Indexer | `indexer.rs` | 33 | 1 commit |
-| Extractor | `extractor.rs` | 22 | 1 commit |
-| Diagnostics + Disposition | `diagnostics.rs`, `disposition.rs` | 13+12 | 1 commit each |
-| Watcher / Embedder / Reaper / Perception / mod.rs | small files | 5-11 each | 1 bundled commit (≤ 40 lines) |
+184 sites × 11 files. Commits per file, size-capped at ~70 lines per commit; larger files split by concern (init/error/progress).
 
-Conversion pattern:
-- `eprintln!("[consolidator] inferred {n} skills")` → `tracing::info!(skills_inferred = n, phase = "phase_23", "phase complete")`.
-- `eprintln!("error X: {e}")` → `tracing::error!(error = %e, "error X")`.
-- `println!(...)` remains ONLY in `forge-cli` (user-facing output, explicit intent).
+| File | Sites | Commits |
+|------|-------|---------|
+| `consolidator.rs` | 69 | 2 commits (eprintln: ≤35 lines each) |
+| `indexer.rs` | 33 | 1 commit |
+| `extractor.rs` | 22 | 1 commit |
+| `diagnostics.rs` | 13 | 1 commit |
+| `disposition.rs` | 12 | 1 commit |
+| `watcher.rs` + `perception.rs` + `embedder.rs` | 11 + 8 + 7 | 1 bundled commit |
+| `reaper.rs` + `mod.rs` | 6 + 3 | 1 bundled commit |
+| `skill_inference.rs` | 0 | n/a |
 
-### 3.6 `PHASE_ORDER` cfg symmetry — explicitly kept test/bench-only
+**7 commits total.** Each has a consistent conversion map:
+- `eprintln!("[W] X")` → `tracing::info!(target: "forge::W", "X")`.
+- `eprintln!("[W] error: {e}")` → `tracing::error!(target: "forge::W", error = %e, "...")`.
+- `println!(...)` stays ONLY in `forge-cli` (user-facing output).
 
-v1 Task 2 proposed promoting `PHASE_ORDER` to prod. Recon fact #6 shows the const + `Request::ProbePhase` + handler are all cfg-symmetric today — the review flagged that breaking that symmetry silently (promoting only the const) introduces latent drift.
+### 3.6 `PHASE_ORDER` cfg symmetry — no change
 
-**v2 resolves by NOT promoting any of them.** Instrumentation does not need `PHASE_ORDER` — span names are string literals at call sites (`"phase_23_infer_skills_from_behavior"`), and those literals are maintained alongside the phase call, not in a cross-file const. If a future phase reorders or renames, the span literal stays next to the call.
-
-`Request::ProbePhase` stays a test-assertion escape hatch for master-design §9 verification, as 2A-4c2 T6 intended.
-
-If a later tier needs a prod-visible list of phase names (e.g., Tier 2's `/inspect shape=audit`), it can be added as a separate `pub const PHASE_NAMES: &[&str]` next to `PHASE_ORDER`, decoupled from the probe API.
+Keep all three cfg-gated. Instrumentation uses literal span names at call sites. Recon fact #6 and v2 design apply.
 
 ### 3.7 Span overhead & latency budget
 
-Explicit Tier 1 budget:
-- **Cold startup latency** with OTLP enabled + collector available: must regress ≤ 50 ms vs. OTLP-disabled baseline on the same machine.
-- **Steady-state CPU** for a daemon with OTLP enabled and consolidator idle: must regress ≤ 2% over a 5-minute window.
-- **Consolidator pass duration** for a seeded 100-memory DB: must regress ≤ 5 ms total (across 23 phases) vs. pre-Tier-1 baseline.
+**Baseline-and-compare:** measure cold-start time + steady-state CPU + consolidator-pass duration PRE-Tier-1 (baseline snapshot stored in `docs/benchmarks/results/2026-04-XX-forge-identity-observability-T1-baseline.md`) vs POST-Tier-1. Use existing `forge_consolidation_harness.rs` as the harness.
 
-Measured in the Tier 1 dogfood results doc with a cold-start timer + `pidstat` sampling. Regression > budget = deferral, not ship.
+Budget:
+- Cold start with OTLP disabled: regression ≤ 20 ms.
+- Cold start with OTLP enabled + local collector: regression ≤ 100 ms (includes collector handshake).
+- Steady-state CPU over 5 min (idle consolidator): regression ≤ 2%.
+- `force_consolidate` on seeded 100-memory DB: regression ≤ 10 ms total.
 
----
+Regression > budget = deferral. Measured at Task 11 (see §4).
 
-## 4. Task list (for the plan file, not implemented here)
+### 3.8 Future-proofing for spawn context loss
 
-1. **Re-verify recon.** Re-run the commands in §2 at implementation time; update any drift.
-2. **Wrap phase call sites in `info_span!` + timers** inside `run_all_phases`. 23 call sites. No signature change to phase fns.
-3. **Expand Prometheus surface** — 4 new families per §3.2, wired into `refresh_gauges()` where gauges; `.observe()`/`.inc()` at call-site wrappers where histograms/counters.
-4. **Write to `kpi_events` from each phase** via a `kpi_events::record_phase(conn, name, latency_ms, output, run_id)` helper.
-5. **Resolve OTLP config dual-path** — read `OtlpConfig` struct; keep env var overrides.
-6. **`eprintln!`/`println!` convergence** — one commit per worker file per §3.5 table.
-7. **Retention task for `kpi_events`** — inline DELETE in consolidator's per-pass loop; add `metrics.kpi_events_retention_days` config (default 30).
-8. **Adversarial reviews** (Claude + Codex) on T1-T7 diff.
-9. **Address BLOCKER/HIGH findings.**
-10. **Live-daemon dogfood + results doc.** Rebuild release daemon; seed 100 memories; run `force_consolidate`; verify: `/metrics` has ≥ 11 families with live values; `kpi_events` has 23 rows `event_type='phase_completed'` after one pass; OTLP spans land in a local Jaeger-all-in-one container.
-11. **Latency budget measurement** per §3.7.
+Tier 1 adds a CI grep check:
+```bash
+! grep -n "tokio::spawn" crates/daemon/src/workers/consolidator.rs
+```
+Fails CI if any `tokio::spawn` is introduced without explicit `.instrument(span)` — documented as a convention in CONTRIBUTING.md.
 
 ---
 
-## 5. Non-goals (explicit, won't slip in)
+## 4. Task list
 
-- **No Observability API** (`/inspect`). Tier 2.
-- **No bench scoring / `bench_runs` table.** Tier 3.
+1. **Re-verify recon.** Re-run §2 commands.
+2. **Introduce `PhaseOutcome` struct + helpers.** `record_phase_outcome(conn, run_id, outcome)` inserts to `kpi_events`; `update_phase_metrics(metrics, outcome)` bumps histogram + counter. Lands in `workers/instrumentation.rs` (new file, ≤ 80 lines).
+3. **Wrap each of 23 phase call sites in `run_all_phases`** per §3.1 templates. Write unit tests at phase-by-phase granularity: "after Phase N, kpi_events has one new row with phase_name = …".
+4. **Extend `ForgeMetrics`** with the 3 new families per §3.2. Wire `refresh_gauges` for the new gauge; `.observe` / `.inc_by` in the helper.
+5. **Convert `eprintln!`/`println!` → `tracing`** per §3.5. 7 commits.
+6. **Acceptance check + docs update.** `scripts/check-harness-sync.sh` stays green; update HANDOFF §Lifted constraints with Tier 1 entry.
+7. **Adversarial reviews on T1-T6 diff.** Claude + Codex, inverted prompts.
+8. **Address BLOCKER + HIGH findings.**
+9. **Live-daemon dogfood** + results doc at `docs/benchmarks/results/2026-04-XX-forge-identity-observability-T1.md`. Steps: seeded DB, `force_consolidate`, prove `/metrics` has 3 new families with non-zero values + `kpi_events` has 23 `phase_completed` rows per pass + OTLP spans visible in a local Jaeger container.
+10. **Carry-forwards recorded in HANDOFF 2P-1b backlog** (tentatively 2A-4d.2 scope): retention reaper for `kpi_events`; `forge_layer_freshness_seconds`; `OtlpConfig` wiring via two-phase init.
+11. **Latency-budget measurement** per §3.7 — baseline snapshot + post-Tier-1 snapshot, both committed.
+
+---
+
+## 5. Non-goals (explicit)
+
+- **No `/inspect` endpoint.** Tier 2.
+- **No `bench_runs` table, no scoring.** Tier 3.
 - **No HUD UI changes.** Tier 2.
-- **No Grafana dashboard files** committed. Users build their own against the metric names; we don't pin a dashboard JSON.
-- **No SSE / streaming endpoint.** Tier 2.
-- **No ground-truth fixture curation.** Tier 3.
-- **No promotion of `PHASE_ORDER` / `Request::ProbePhase` to prod** (see §3.6).
-- **No `PhaseResult` refactor of `ops::*` fns** (see §3.1).
+- **No Grafana dashboard JSON committed.**
+- **No SSE / streaming.** Tier 2.
+- **No `OtlpConfig` wiring** (§3.3 defers).
+- **No `PhaseResult` refactor of `ops::*`** (§3.1 keeps signatures).
+- **No `kpi_events` retention worker** (§3.4 defers to Tier 2).
+- **No `forge_layer_freshness_seconds`** (§3.2 defers to Tier 2).
+- **No promotion of `PHASE_ORDER` / `Request::ProbePhase`** (§3.6).
+- **No freshness/drift queries** — Tier 2 owns those.
 
 ---
 
 ## 6. Backward compatibility
 
-- `/metrics` exposes all 7 existing families unchanged + 4 additive families. Operators with pinned scrapers see additive data only.
+- `/metrics` exposes 7 existing families unchanged + 3 additive. Scrapers pinned to the old surface see additive data only.
 - `ResponseData::Doctor` unchanged.
-- `ConsolidationComplete` unchanged (2P-1b §15 already exposed `skills_inferred`).
-- `kpi_events` schema unchanged (reused, not altered). No migration required.
-- OTLP env vars `FORGE_OTLP_*` continue to work as override; existing operators see no change.
+- `ConsolidationComplete` unchanged (2P-1b §15 already added `skills_inferred`).
+- `kpi_events` schema unchanged; Tier 1 is the first writer.
+- OTLP env vars continue to work as-is.
 
-**Breaking behavior:** worker stderr stops carrying `[consolidator] …` style lines. Operators grepping daemon logs update their filters: JSON tracing events carry stable `phase`, `worker` fields that are more expressive. Migration note in the results doc covers this.
+**Breaking:** worker stderr stops carrying `[consolidator] …` unstructured lines. Operators update log filters to JSON event queries (`jq 'select(.phase == "phase_23")'`). Migration note in results doc.
 
 ---
 
 ## 7. Open questions
 
-- **Q1.** Should `trace_id` in `kpi_events.metadata_json` be always-populated (ULID fallback when OTLP disabled) or NULL when OTLP disabled? (Recommendation: always-populated — tier 2 can correlate even without a collector. Use the consolidate_pass ULID when no OTLP.)
-- **Q2.** Retention default — 30 days feel right, or 7? (Recommendation: 30 days. 23 phases × 48 passes/day × 30 = ~33k rows. Negligible.)
-- **Q3.** `OtlpConfig.enabled` default — stays `false`? (Recommendation: yes. Observability is opt-in.)
+- **Q1.** Retention for `kpi_events` — does Tier 2 inherit a pre-defined policy or design its own? (v3 recommendation: Tier 2 defines; Tier 1 emits freely.)
+- **Q2.** Does `trace_id` fall back to the consolidate_pass ULID when OTLP is off? (v3 recommendation: yes — Tier 2's correlation query treats trace_id as "correlation id" whether or not OTLP is running.)
+- **Q3.** Span naming — `phase_23_infer_skills_from_behavior` vs `phase_23.infer_skills_from_behavior` vs `forge.consolidator.phase_23.infer_skills_from_behavior`? (v3 recommendation: underscore-only, tier is implicit via the `consolidate_pass` parent span.)
 
 ---
 
 ## 8. Acceptance criteria
 
-- [ ] `/metrics` returns ≥ 11 metric families (7 existing + 4 new) with non-zero values after a seeded consolidation pass.
-- [ ] After one `force_consolidate`, `SELECT COUNT(*) FROM kpi_events WHERE event_type='phase_completed'` == 23.
-- [ ] With `FORGE_OTLP_ENABLED=true` + a local Jaeger-all-in-one container, a consolidation pass produces one trace with 23 child spans visible in Jaeger UI.
-- [ ] `grep -rn 'eprintln!\|println!' crates/daemon/src/workers/*.rs` (excluding `#[cfg(test)]` blocks) returns 0 matches.
-- [ ] `PHASE_ORDER`, `Request::ProbePhase`, and its handler remain `#[cfg(any(test, feature = "bench"))]` (§3.6 intentional).
-- [ ] `cargo test --workspace` passes ≥ baseline (1388) + 23 new instrumentation tests.
+- [ ] `/metrics` returns ≥ 10 metric families (7 existing + 3 new) with non-zero values after a seeded consolidation pass.
+- [ ] After one `force_consolidate` on a seeded DB, `SELECT COUNT(*) FROM kpi_events WHERE event_type='phase_completed'` == 23. Every phase emits a row including zero-work passes (no-op phases write `output_count=0, success=1`).
+- [ ] With `FORGE_OTLP_ENABLED=true` + `FORGE_OTLP_ENDPOINT=http://localhost:4317` + a local Jaeger-all-in-one container, one pass produces one trace with 23 child spans in Jaeger.
+- [ ] `grep -rn 'eprintln!\|println!' crates/daemon/src/workers/*.rs` (excluding `#[cfg(test)]` blocks) returns 0.
+- [ ] `PHASE_ORDER`, `Request::ProbePhase`, and its handler remain `#[cfg(any(test, feature = "bench"))]`.
+- [ ] `cargo test --workspace` passes ≥ baseline (1388) + ≥ 23 new per-phase instrumentation tests.
 - [ ] `cargo clippy --workspace -- -W clippy::all -D warnings` clean.
 - [ ] `scripts/check-harness-sync.sh` clean.
-- [ ] Two adversarial reviews complete; BLOCKERs + HIGHs fixed or explicitly deferred with rationale.
-- [ ] Latency budget (§3.7) measured + within limits.
-- [ ] Results doc at `docs/benchmarks/results/2026-04-XX-forge-identity-observability-T1.md` — OTLP trace screenshot link, `/metrics` sample output, `eprintln!` count before/after, commit SHAs per task.
+- [ ] CI grep guard (§3.8) installed in `plugin-surface` job.
+- [ ] Latency budget (§3.7) measured in baseline-and-compare doc, within budget.
+- [ ] Two adversarial reviews complete; BLOCKERs + HIGHs addressed or explicitly deferred with rationale.
+- [ ] `kpi_events` namespace register committed to docs/architecture/.
 
 ---
 
-## 9. Risks
+## 9. Risks (residual)
 
-- **R1 — OTLP dep churn.** `opentelemetry-*` had breaking changes pre-0.24. Locked to 0.27 per recon fact #2; monitor upstream before touching exporter init.
-- **R2 — Prometheus cardinality.** Bounded at 137 new series (§3.2); safe.
-- **R3 — `kpi_events` table write amplification.** 23 inserts/pass × 48 passes/day = ~1.1k inserts/day. WAL + single-writer ensures this is trivial. Indexes on `(timestamp)` + `(event_type)` are well-behaved.
-- **R4 — `tracing-opentelemetry` span context propagation through `tokio::spawn`.** Consolidator runs on a single worker task (not spawned per phase), so span context is preserved via thread-local `Current`. Verified: no `tokio::spawn` inside `run_all_phases`. If future phases spawn, use `.instrument(span)`.
-- **R5 — `eprintln!` convergence fatigue.** 184 sites × 11 commits. Reviewers may rubber-stamp mid-series. Mitigation: each commit self-contained, ≤ 70 lines, ≤ 1 file touched.
-- **R6 — OTLP collector unreachable at startup.** Fails-loud policy (§3.3) is to warn + continue; does NOT crash. Verified in dogfood.
-- **R7 — Worker-level span explosion.** 184 `eprintln!` sites become `tracing::info!` calls — some are hot-loop. When OTLP is enabled, every call becomes an exported event. Mitigation: reserve `info!` for state-change events; use `debug!` for fine-grained. Task 6 (convergence) reviews each site and picks the right level.
+- **R1** — `opentelemetry` dep API churn. Locked to 0.27; monitor upstream.
+- **R2** — `eprintln!` convergence fatigue across 7 commits. Mitigation: each commit ≤ 70 lines, one-file-one-concern.
+- **R3** — `kpi_events` write amplification. 23 × 48 = ~1.1k inserts/day; negligible.
+- **R4** — Span context through `tokio::spawn`. Tier 1 CI grep guard (§3.8) prevents regression. Existing code has zero spawns inside `run_all_phases` (recon #11 implicit).
+- **R5** — OTLP collector unreachable at startup. Log + continue; never exits. Covered in §3.3.
+- **R6** — No retention in Tier 1 → unbounded growth. Bounded in practice by deferral to Tier 2; at worst 23 × 48 × 365 = ~400k rows/year (~40 MB). SQLite handles this fine.
+- **R7** — `kpi_snapshots` and `kpi_benchmarks` tables exist alongside `kpi_events` (also zero writers). Don't confuse namespaces: Tier 1 only writes to `kpi_events`. Namespace register makes this explicit.
 
 ---
 
 ## 10. References
 
-- `crates/daemon/src/main.rs:91-178` — existing OTLP wiring.
-- `crates/daemon/src/server/metrics.rs` — existing Prometheus surface.
-- `crates/daemon/src/db/schema.rs:255-266` — `kpi_events` table.
-- `crates/daemon/src/workers/consolidator.rs:37-41` — `PHASE_ORDER` + cfg gate.
-- `crates/core/src/protocol/request.rs:142-145` — `Request::ProbePhase` + cfg gate.
-- `crates/daemon/src/config.rs:340-375` — `MetricsConfig` / `OtlpConfig`.
-- `docs/benchmarks/results/2026-04-24-forge-behavioral-skill-inference.md` — 2A-4c2 dogfood; Codex-LOW carry-forward (no structured tracing) addressed here.
-- `docs/superpowers/specs/2026-04-23-forge-behavioral-skill-inference-design.md` — Phase 23 (2A-4c2).
-- `HANDOFF.md` §Lifted constraints — history of phase shipping cadence.
+- `crates/daemon/src/main.rs:91-178` — OTLP wiring.
+- `crates/daemon/src/server/metrics.rs` — Prometheus surface.
+- `crates/daemon/src/db/schema.rs:255-266` — `kpi_events`.
+- `crates/daemon/src/workers/consolidator.rs:82-…` — `run_all_phases`.
+- `docs/benchmarks/results/2026-04-24-forge-behavioral-skill-inference.md` — Codex-LOW carry-forward "no structured tracing" that this tier addresses.
+- `docs/superpowers/specs/2026-04-23-forge-behavioral-skill-inference-design.md` — 2A-4c2 precedent.
+- v1 and v2 of this spec preserved in git history (commits `d30eaab`, `65ebdf3`).
