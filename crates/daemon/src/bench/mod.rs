@@ -24,6 +24,8 @@ pub mod forge_persist;
 pub mod locomo;
 pub mod longmemeval;
 pub mod scoring;
+#[cfg(feature = "bench")]
+pub mod telemetry;
 
 #[cfg(test)]
 mod tests {

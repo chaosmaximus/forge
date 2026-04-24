@@ -8,6 +8,7 @@
 // Designed for benchmark parity with MemPalace's reference scripts — see
 // docs/benchmarks/plan.md §5 for the harness contract.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,6 +23,7 @@ use forge_daemon::bench::longmemeval::{
     load_entries, run_consolidate, run_extract, run_hybrid, run_raw, summarize, BenchMode,
     QuestionResult, RawStrategy,
 };
+use forge_daemon::bench::telemetry::{emit_bench_run_completed, BenchRunPayload, DimensionEntry};
 use forge_daemon::embed::{minilm::MiniLMEmbedder, Embedder, FakeEmbedder};
 
 #[derive(Parser, Debug)]
@@ -475,7 +477,32 @@ async fn run_longmemeval(
     println!("  summary.json    {}", summary_path.display());
     println!("  repro.sh        {}", repro_path.display());
 
+    let bench_specific = serde_json::to_value(&summary).unwrap_or(serde_json::Value::Null);
+    emit_bench_telemetry(
+        "longmemeval",
+        BenchRunPayload {
+            bench_name: format!("longmemeval-{}", mode.as_str()),
+            seed: 0,
+            composite: summary.mean_recall_at_5,
+            pass: true,
+            dimensions: Vec::new(),
+            dimension_scores: HashMap::new(),
+            bench_specific_stats: bench_specific,
+            wall_duration_ms: elapsed.as_millis() as u64,
+            result_count: 0,
+        },
+    );
+
     Ok(())
+}
+
+/// Emit one `bench_run_completed` row into `${FORGE_DIR}/forge.db`.
+/// Telemetry failure is logged but never fails the bench — the bench
+/// result on disk is still authoritative.
+fn emit_bench_telemetry(name: &str, payload: BenchRunPayload) {
+    if let Err(e) = emit_bench_run_completed(&payload) {
+        tracing::warn!(bench = name, error = %e, "bench telemetry emit failed");
+    }
 }
 
 fn unix_secs_string() -> String {
@@ -498,6 +525,7 @@ fn run_forge_context(seed: u64, output: PathBuf) -> Result<(), String> {
         output_dir: Some(output),
     };
 
+    let started = Instant::now();
     match run(config) {
         Ok(score) => {
             eprintln!("[forge-context] === results ===");
@@ -516,11 +544,55 @@ fn run_forge_context(seed: u64, output: PathBuf) -> Result<(), String> {
                 score.tool_filter_accuracy
             );
             eprintln!("[forge-context] composite={:.4}", score.composite);
-            if score.pass {
+            let pass = score.pass;
+            if pass {
                 eprintln!("[forge-context] PASS");
-                Ok(())
             } else {
                 eprintln!("[forge-context] FAIL");
+            }
+
+            // Telemetry: 4 dimensions match compute_composite weights.
+            let dim_specs: [(&str, f64, f64); 4] = [
+                ("context_assembly", score.context_assembly_f1, 0.0),
+                ("guardrails", score.guardrails_f1, 0.0),
+                ("completion", score.completion_f1, 0.0),
+                ("layer_recall", score.layer_recall_f1, 0.0),
+            ];
+            let dimensions: Vec<DimensionEntry> = dim_specs
+                .iter()
+                .map(|(name, s, m)| DimensionEntry {
+                    name: (*name).to_string(),
+                    score: *s,
+                    min: *m,
+                    pass: *s >= *m,
+                })
+                .collect();
+            let mut dimension_scores = HashMap::new();
+            for d in &dimensions {
+                dimension_scores.insert(d.name.clone(), d.score);
+            }
+            let bench_specific = serde_json::json!({
+                "tool_filter_accuracy": score.tool_filter_accuracy,
+                "total_queries": score.total_queries,
+            });
+            emit_bench_telemetry(
+                "forge-context",
+                BenchRunPayload {
+                    bench_name: "forge-context".to_string(),
+                    seed,
+                    composite: score.composite,
+                    pass,
+                    dimensions: dimensions.clone(),
+                    dimension_scores,
+                    bench_specific_stats: bench_specific,
+                    wall_duration_ms: started.elapsed().as_millis() as u64,
+                    result_count: dimensions.len() as u64,
+                },
+            );
+
+            if pass {
+                Ok(())
+            } else {
                 Err("forge-context FAIL: composite below threshold".to_string())
             }
         }
@@ -551,6 +623,7 @@ fn run_forge_consolidation(
         expected_recall_delta,
     };
 
+    let started = Instant::now();
     match run(config) {
         Ok(score) => {
             eprintln!("[forge-consolidation] === results ===");
@@ -565,11 +638,58 @@ fn run_forge_consolidation(
             for failure in &score.infrastructure_failures {
                 eprintln!("[forge-consolidation] INFRA_FAIL: {failure}");
             }
-            if score.pass {
+            let pass = score.pass;
+            if pass {
                 eprintln!("[forge-consolidation] PASS");
-                Ok(())
             } else {
                 eprintln!("[forge-consolidation] FAIL");
+            }
+
+            // Telemetry: 5 dimensions covering dedup / contradictions /
+            // reweave / lifecycle / recall_improvement, each as the
+            // dimension-keyed F1 from the score's HashMap.
+            let dim_names = [
+                "dedup",
+                "contradictions",
+                "reweave",
+                "lifecycle",
+                "recall_improvement",
+            ];
+            let dimensions: Vec<DimensionEntry> = dim_names
+                .iter()
+                .map(|name| {
+                    let f1 = score.dimensions.get(*name).map(|d| d.f1).unwrap_or(0.0);
+                    DimensionEntry {
+                        name: (*name).to_string(),
+                        score: f1,
+                        min: 0.0,
+                        pass: f1 >= 0.0,
+                    }
+                })
+                .collect();
+            let mut dimension_scores = HashMap::new();
+            for d in &dimensions {
+                dimension_scores.insert(d.name.clone(), d.score);
+            }
+            let bench_specific = serde_json::to_value(&score).unwrap_or(serde_json::Value::Null);
+            emit_bench_telemetry(
+                "forge-consolidation",
+                BenchRunPayload {
+                    bench_name: "forge-consolidation".to_string(),
+                    seed,
+                    composite: score.composite,
+                    pass,
+                    dimensions: dimensions.clone(),
+                    dimension_scores,
+                    bench_specific_stats: bench_specific,
+                    wall_duration_ms: started.elapsed().as_millis() as u64,
+                    result_count: dimensions.len() as u64,
+                },
+            );
+
+            if pass {
+                Ok(())
+            } else {
                 Err("forge-consolidation FAIL: composite below threshold or infrastructure failures".to_string())
             }
         }
@@ -610,6 +730,47 @@ async fn run_forge_identity(
         "[forge-identity] {}",
         if score.pass { "PASS" } else { "FAIL" }
     );
+
+    // Telemetry: 6 dimensions match the master v6 fixed shape.
+    let dimensions: Vec<DimensionEntry> = score
+        .dimensions
+        .iter()
+        .map(|d| DimensionEntry {
+            name: d.name.clone(),
+            score: d.score,
+            min: d.min,
+            pass: d.pass,
+        })
+        .collect();
+    let mut dimension_scores = HashMap::new();
+    for d in &dimensions {
+        dimension_scores.insert(d.name.clone(), d.score);
+    }
+    let infra_passed = score
+        .infrastructure_checks
+        .iter()
+        .filter(|c| c.passed)
+        .count();
+    let bench_specific = serde_json::json!({
+        "infrastructure_checks_passed": infra_passed,
+        "infrastructure_checks_total": score.infrastructure_checks.len(),
+        "wall_duration_ms": score.wall_duration_ms,
+    });
+    emit_bench_telemetry(
+        "forge-identity",
+        BenchRunPayload {
+            bench_name: "forge-identity".to_string(),
+            seed,
+            composite: score.composite,
+            pass: score.pass,
+            dimensions: dimensions.clone(),
+            dimension_scores,
+            bench_specific_stats: bench_specific,
+            wall_duration_ms: score.wall_duration_ms,
+            result_count: dimensions.len() as u64,
+        },
+    );
+
     if let Some(expected) = expected_composite {
         if (score.composite - expected).abs() > 0.05 {
             return Err(format!(
@@ -700,6 +861,7 @@ fn run_forge_persist(
         request_timeout: Duration::from_millis(request_timeout_ms),
     };
 
+    let started = Instant::now();
     let summary = run(config).map_err(|e| format!("forge-persist run failed: {e:?}"))?;
 
     eprintln!("[forge-persist] === verdict ===");
@@ -714,6 +876,22 @@ fn run_forge_persist(
     eprintln!(
         "[forge-persist] wall_time_ms={} daemon_version={}",
         summary.wall_time_ms, summary.daemon_version
+    );
+
+    let bench_specific = serde_json::to_value(&summary).unwrap_or(serde_json::Value::Null);
+    emit_bench_telemetry(
+        "forge-persist",
+        BenchRunPayload {
+            bench_name: "forge-persist".to_string(),
+            seed,
+            composite: summary.recovery_rate,
+            pass: summary.passed,
+            dimensions: Vec::new(),
+            dimension_scores: HashMap::new(),
+            bench_specific_stats: bench_specific,
+            wall_duration_ms: started.elapsed().as_millis() as u64,
+            result_count: 0,
+        },
     );
 
     if summary.passed {
@@ -913,6 +1091,22 @@ async fn run_locomo(
     println!("  results.jsonl   {}", jsonl_path.display());
     println!("  summary.json    {}", summary_path.display());
     println!("  repro.sh        {}", repro_path.display());
+
+    let bench_specific = serde_json::to_value(&summary).unwrap_or(serde_json::Value::Null);
+    emit_bench_telemetry(
+        "locomo",
+        BenchRunPayload {
+            bench_name: format!("locomo-{mode}"),
+            seed: 0,
+            composite: summary.mean_recall_at_10,
+            pass: true,
+            dimensions: Vec::new(),
+            dimension_scores: HashMap::new(),
+            bench_specific_stats: bench_specific,
+            wall_duration_ms: elapsed.as_millis() as u64,
+            result_count: 0,
+        },
+    );
 
     Ok(())
 }
