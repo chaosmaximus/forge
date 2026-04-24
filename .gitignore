@@ -37,3 +37,4 @@ __pycache__/
 bench_results/
 bench_results_*/
 .fastembed_cache/
+release-local/
