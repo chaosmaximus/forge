@@ -62,9 +62,14 @@ pub struct PhaseOutcome<'a> {
 }
 
 /// Record a phase outcome to Prometheus metrics (if available) and the
-/// `kpi_events` table. Non-fatal on kpi_events insert failure — logs a warning
-/// and increments the `errored` bucket of `forge_phase_output_rows_total` so
-/// Prometheus and kpi_events never diverge silently.
+/// `kpi_events` table. `kpi_events` persistence failures are NOT counted
+/// against the phase's own error budget — they go to a dedicated
+/// `forge_phase_persistence_errors_total` counter so operators can tell a
+/// phase-level failure (Phase 9 query blew up) apart from an
+/// instrumentation-layer failure (SQLite INSERT OR IGNORE absorbed the row,
+/// or the statement returned an error). Prior to this split, a phase that
+/// hit BOTH kinds of error in one call was double-counted under
+/// `phase_output_rows{action="errored"}`.
 pub fn record(conn: &Connection, metrics: Option<&ForgeMetrics>, outcome: &PhaseOutcome) {
     if let Some(m) = metrics {
         update_phase_metrics(m, outcome);
@@ -72,16 +77,14 @@ pub fn record(conn: &Connection, metrics: Option<&ForgeMetrics>, outcome: &Phase
     match insert_kpi_event_row(conn, outcome) {
         Ok(rows_written) => {
             if rows_written == 0 {
-                // ULID PK collision (2^-80 per monotonic-ms window). Record
-                // it as an errored bucket increment so operators see
-                // persistence drift rather than silent loss.
+                // ULID PK collision (2^-80 per monotonic-ms window).
                 tracing::warn!(
                     phase = outcome.phase,
                     "kpi_events insert hit ULID PK collision — row dropped"
                 );
                 if let Some(m) = metrics {
-                    m.phase_output_rows
-                        .with_label_values(&[outcome.phase, "errored"])
+                    m.phase_persistence_errors
+                        .with_label_values(&[outcome.phase, "ulid_collision"])
                         .inc();
                 }
             }
@@ -89,8 +92,8 @@ pub fn record(conn: &Connection, metrics: Option<&ForgeMetrics>, outcome: &Phase
         Err(e) => {
             tracing::warn!(error = %e, phase = outcome.phase, "kpi_events insert failed");
             if let Some(m) = metrics {
-                m.phase_output_rows
-                    .with_label_values(&[outcome.phase, "errored"])
+                m.phase_persistence_errors
+                    .with_label_values(&[outcome.phase, "insert_error"])
                     .inc();
             }
         }
@@ -282,5 +285,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(success, 0, "success should be 0 when error_count > 0");
+    }
+
+    #[test]
+    fn kpi_insert_error_routes_to_persistence_counter_not_phase_output() {
+        // Regression test for T12 review finding HIGH-1: when kpi_events
+        // INSERT fails, the persistence error must not be double-counted
+        // as a phase-level error. Drop the kpi_events table to force the
+        // INSERT to fail, then confirm:
+        //   - phase_output_rows{errored} is NOT bumped by record()'s
+        //     failure path (it only reflects outcome.error_count),
+        //   - phase_persistence_errors{kind="insert_error"} IS bumped.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn.execute("DROP TABLE kpi_events", []).unwrap();
+
+        let metrics = crate::server::metrics::ForgeMetrics::new();
+        let outcome = PhaseOutcome {
+            phase: "phase_1_dedup_memories",
+            run_id: "01HINS",
+            correlation_id: "01HINS",
+            trace_id: None,
+            output_count: 5,
+            error_count: 0,
+            duration_ms: 1,
+            extra: json!({}),
+        };
+        record(&conn, Some(&metrics), &outcome);
+
+        let errored = metrics
+            .phase_output_rows
+            .with_label_values(&[outcome.phase, "errored"])
+            .get();
+        assert_eq!(
+            errored, 0,
+            "phase_output_rows{{errored}} must not be bumped by an insert_error"
+        );
+        let succeeded = metrics
+            .phase_output_rows
+            .with_label_values(&[outcome.phase, "succeeded"])
+            .get();
+        assert_eq!(
+            succeeded, 5,
+            "phase_output_rows{{succeeded}} should reflect output_count since the phase itself succeeded"
+        );
+        let persistence_err = metrics
+            .phase_persistence_errors
+            .with_label_values(&[outcome.phase, "insert_error"])
+            .get();
+        assert_eq!(
+            persistence_err, 1,
+            "phase_persistence_errors{{insert_error}} must be bumped by the failed kpi insert"
+        );
     }
 }

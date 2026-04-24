@@ -603,3 +603,78 @@ phases.
 
 **Why deferred:** 22 sites, zero user-visible benefit until Tier 2 surfaces phase spans in
 a UI.
+
+---
+
+## Deferred from T12 review → 2A-4d.1.1 follow-up
+
+A second adversarial pass on the T9–T11 diff (`d8403d2..` T12 HEAD) surfaced 15 additional
+findings from Claude + Codex. The immediately-actionable ones landed in T12 (HIGH-1
+persistence counter split, MEDIUM-8 run_id verification). The rest were deferred:
+
+### 5. Claude HIGH-2 — `refresh_gauges` holds WAL read lock across 15 SELECTs
+
+**Finding:** the `BEGIN DEFERRED; … COMMIT;` window spans all 11 table-row COUNT(*) queries
+plus 4 fixed counts. On a high-churn DB with a Prometheus scrape cadence of 15 s, this
+blocks WAL checkpoint every scrape because checkpoint can't reclaim frames an open snapshot
+still references.
+
+**Fix plan:** consolidate the 15 counts into a single SQL statement using
+`SELECT (SELECT COUNT(*) FROM memory), (SELECT COUNT(*) FROM edge), … ` or a `UNION ALL`
+aggregate — cuts the snapshot hold time from ~30 ms to ~5 ms on the same workload.
+
+**Why deferred:** the current 30 ms lock hold at 15 s scrape interval is 0.2 % duty
+cycle — not operationally critical until production DBs exceed 10 MB of WAL and
+checkpoint pressure becomes visible.
+
+### 6. Claude HIGH-3 + HIGH-4 — T10 harness `N=5` and shared-state accumulation
+
+**Finding:** five samples against ~100 ms medians with a 50 ms ceiling catches only
+~50 % regressions. `ForgeMetrics` is shared across 5 iterations so counter accumulation is
+invisible to the test. A 6th iteration on a fresh DB asserts `kpi_count == 23`, which is
+consistent but does not exercise the accumulated-Prometheus-state code path.
+
+**Fix plan:** bump `N_ITERATIONS >= 20`, switch to a relative-ratio assertion
+(`b_med < a_med * 1.15`), construct a fresh `ForgeMetrics` for the sanity iteration, and
+assert explicit counter values on the shared registry after the loops.
+
+**Why deferred:** the existing harness works as an "order-of-magnitude regression" canary.
+Tightening it is worth a dedicated commit with before/after numbers so statistical rigor
+is reviewable on its own.
+
+### 7. Claude HIGH-5 + HIGH-6 — CI guard scrubber ignores raw strings + `cfg(all(test, …))`
+
+**Finding:** the awk scrubber in `scripts/ci/check_spans.sh` doesn't recognise
+`r#"…"#` raw string literals — a production string containing `{` / `}` would corrupt
+`#[cfg(test)] mod X { … }` brace-balance scope detection. Similarly,
+`#[cfg(all(test, feature = "foo"))]` doesn't match the `cfg\(test\)` anchor, so a
+feature-gated test module would have its `tokio::spawn` falsely flagged.
+
+**Fix plan:** extend the awk to recognise raw strings (count `#` on entry/exit), broaden
+the `#[cfg(...)]` regex to match any form containing `test`. Or — the proper long-term
+fix — rewrite the guard in Rust using `syn` for actual AST parsing.
+
+**Why deferred:** neither form is used in the current codebase, so the failure modes are
+latent. Lands cleanly alongside a `syn`-based rewrite in 2A-4d.1.1.
+
+### 8. Claude MEDIUM-9 — T10 doesn't exercise OTLP path
+
+**Finding:** Variant B in the T10 harness exercises only the Prometheus and kpi_events
+write paths. It never constructs an OTLP tonic exporter, so the real production hot path
+latency (spans serialised + shipped over gRPC) is unmeasured.
+
+**Fix plan:** add a Variant C that constructs a real `BatchSpanProcessor` backed by a
+`NoOp` span sink, measure through it.
+
+**Why deferred:** separate latency story with its own numbers and reproduction steps.
+
+### 9. Claude MEDIUM-10 — integrity test uses substring match on `include_str!`
+
+**Finding:** a rustdoc comment or test string containing `info_span!("phase_1_…")` would
+make the per-name count hit 2 and fail the guard for a non-bug reason.
+
+**Fix plan:** parse consolidator.rs via `syn` in the test; count AST-level macro
+invocations, not text substrings.
+
+**Why deferred:** no such duplicate exists today. `syn` dependency pull would bloat the
+compile graph for a single test.

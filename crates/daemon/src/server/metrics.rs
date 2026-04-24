@@ -30,13 +30,23 @@ pub struct ForgeMetrics {
     pub edges_total: IntGauge,
     pub embeddings_total: IntGauge,
 
-    // ── Phase 2A-4d.1 Instrumentation tier (3 new families) ──
+    // ── Phase 2A-4d.1 Instrumentation tier (4 new families) ──
     /// Consolidator phase duration, labelled by phase.
     pub phase_duration: HistogramVec,
-    /// Output-row count per phase × action (succeeded|errored).
+    /// Output-row count per phase × action (succeeded|errored). `action` is
+    /// driven by `PhaseOutcome::error_count`, which reflects errors INSIDE
+    /// the phase body. `kpi_events` persistence failures are tracked
+    /// separately in `phase_persistence_errors_total` to avoid polluting
+    /// the phase-level SLI.
     pub phase_output_rows: IntCounterVec,
     /// Row count per Manas-layer SQL table (memory, skill, edge, identity, …).
     pub table_rows: IntGaugeVec,
+    /// `kpi_events` row write failures, labelled by phase and kind.
+    /// `kind` is one of `insert_error` (SQL failed) or `ulid_collision`
+    /// (INSERT OR IGNORE absorbed the row). Separating this from
+    /// `phase_output_rows{action="errored"}` prevents double-counting when a
+    /// phase also had an internal error.
+    pub phase_persistence_errors: IntCounterVec,
 }
 
 impl Default for ForgeMetrics {
@@ -120,6 +130,14 @@ impl ForgeMetrics {
             &["table"],
         )
         .expect("table_rows metric");
+        let phase_persistence_errors = IntCounterVec::new(
+            Opts::new(
+                "forge_phase_persistence_errors_total",
+                "kpi_events row write failures per phase × kind (insert_error | ulid_collision)",
+            ),
+            &["phase", "kind"],
+        )
+        .expect("phase_persistence_errors metric");
 
         registry
             .register(Box::new(memories_total.clone()))
@@ -151,6 +169,9 @@ impl ForgeMetrics {
         registry
             .register(Box::new(table_rows.clone()))
             .expect("register table_rows");
+        registry
+            .register(Box::new(phase_persistence_errors.clone()))
+            .expect("register phase_persistence_errors");
 
         Self {
             registry,
@@ -164,6 +185,7 @@ impl ForgeMetrics {
             phase_duration,
             phase_output_rows,
             table_rows,
+            phase_persistence_errors,
         }
     }
 }
@@ -398,6 +420,9 @@ mod tests {
             .with_label_values(&["phase_23_infer_skills_from_behavior", "succeeded"])
             .inc_by(0);
         m.table_rows.with_label_values(&["skill"]).set(0);
+        m.phase_persistence_errors
+            .with_label_values(&["phase_23_infer_skills_from_behavior", "insert_error"])
+            .inc_by(0);
         let families = m.registry.gather();
         let names: Vec<&str> = families.iter().map(|f| f.get_name()).collect();
         assert!(
@@ -412,7 +437,11 @@ mod tests {
             names.contains(&"forge_table_rows"),
             "missing forge_table_rows"
         );
-        assert_eq!(families.len(), 10, "expected exactly 10 metric families");
+        assert!(
+            names.contains(&"forge_phase_persistence_errors_total"),
+            "missing forge_phase_persistence_errors_total"
+        );
+        assert_eq!(families.len(), 11, "expected exactly 11 metric families");
     }
 
     #[test]

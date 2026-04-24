@@ -56,6 +56,12 @@ phase per consolidate_pass.
                                                         // (e.g. per-row insert/rollback); 0 means success.
                                                         // NOTE: 11 helpers currently `.unwrap_or(0)` on inner
                                                         // errors — see 2A-4d.1.1 follow-up to make these honest.
+                                                        // **Instrumentation-layer failures** (kpi_events insert
+                                                        // blew up, ULID collision absorbed) do NOT contribute
+                                                        // here — they land in
+                                                        // `forge_phase_persistence_errors_total{kind}` only,
+                                                        // so phase-level SLOs stay untainted by persistence
+                                                        // hiccups.
 
   // Phase-specific payload
   "extra": { /* keys vary by phase; stable per phase */ }

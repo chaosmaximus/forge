@@ -94,6 +94,29 @@ ORDER BY phase;
 -- phase_10_decay_activation … phase_9_detect_contradictions (23 names)
 ```
 
+### run_id × row-count invariant (T12 review MEDIUM-8)
+
+Row count alone does not prove the 46 rows came from exactly 2 full passes —
+it could also come from 3 partial passes or from state carried over across
+daemon restarts. The invariant we care about is *"each run_id produces
+exactly 23 rows (one per phase)"*. Verified on a second dogfood pass
+(service `forge-daemon-t12`) after the T12 persistence-counter split landed:
+
+```sql
+SELECT json_extract(metadata_json, '$.run_id') AS rid, COUNT(*)
+FROM kpi_events WHERE event_type = 'phase_completed'
+GROUP BY rid ORDER BY rid;
+-- 01KPZWFRZ8BGH3J98QNSFP6TP4|23   (startup pass)
+-- 01KPZWFY5NEWQ3MCRSQGKXJVC5|23   (ForceConsolidate pass)
+
+SELECT COUNT(DISTINCT json_extract(metadata_json, '$.run_id'))
+FROM kpi_events WHERE event_type = 'phase_completed';
+-- 2
+```
+
+Two distinct ULIDs, each emitted 23 kpi_events rows, total = 46. The
+invariant holds end-to-end.
+
 Sample row:
 
 ```json
