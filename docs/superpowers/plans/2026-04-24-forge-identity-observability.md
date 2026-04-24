@@ -539,136 +539,72 @@ One commit per finding, `fix(2A-4d.1 T9): address <severity>-<n>-<slug>`.
 
 ---
 
-## Deferred from T8 reviews → 2A-4d.1.1 follow-up
+## 2A-4d.1.1 Follow-Up Backlog
 
-These findings were raised by the Claude + Codex adversarial reviews on the T1–T7 diff and
-deliberately deferred rather than block T10/T11. They do not affect correctness of data
-stored in `kpi_events`; they affect observability fidelity at the operator-SLO level.
+Single source of truth for every finding surfaced by adversarial reviews on the T1–T12 diffs.
+The T13 wave (commits `a0429ea` + `e8c9116`) closed four of these. The remaining four are
+documented below with their fix plan and why-deferred rationale — none block Tier 2
+design work.
 
-### 1. Claude BLOCKER-1 / BLOCKER-4 — `error_count` honesty
+### Closed in T13
 
-**Finding:** 11 helpers in `consolidator.rs` (`synthesize_contradictions`,
-`detect_and_surface_gaps`, `reweave_memories`, `score_memory_quality`, `extract_protocols`,
-`infer_skills_from_behavior`, `tag_antipatterns`, `heal_topic_supersedes` — already returns
-a struct; `heal_session_staleness`, `apply_quality_pressure`, `detect_content_contradictions`)
-`return 0;` on inner SQL errors after a `tracing::warn!`, so the caller can't tell
-"nothing to do" from "query failed." `PhaseOutcome::error_count` stays zero in exactly
-those cases, and SLO dashboards on `rate(forge_phase_output_rows_total{action="errored"}[5m])`
-undercount real failures. BLOCKER-4 is Phase 9's variant — 9a + 9b counts merge into a
-single opaque error flag.
+| # | Finding | Closed by |
+| --- | ------- | --------- |
+| 1 | Claude BLOCKER-1 / BLOCKER-4 — `error_count` honesty (11 swallowing helpers, Phase 9 9a/9b split) | T13.1 `a0429ea` |
+| 2 | Claude HIGH-1 — `correlation_id` / `trace_id` wiring (pull OTLP trace id from current span inside `record()`) | T13.2 `e8c9116` |
+| 3 | Claude HIGH-2 — `refresh_gauges` holds WAL read lock across 15 SELECTs (collapsed to single scalar-subquery SELECT) | T13.3 `e8c9116` |
+| 4 | Claude HIGH-3 + HIGH-4 — T10 harness `N=5` and shared-state accumulation (N=20, fresh `ForgeMetrics` per iter, 1.15× relative ratio) | T13.4 `e8c9116` |
 
-**Fix plan (2A-4d.1.1):** change each `-> usize` helper to `-> (usize, usize)`
-(output, errors). Increment at every `warn!` site that was followed by an early `return 0;`
-or `continue;` that hides a recoverable failure. Thread the error count into
-`PhaseOutcome::error_count` in `run_all_phases`. For Phase 9, record 9a + 9b errors
-separately in `extra` and sum into `error_count`.
+### Still open — 2A-4d.1.1 follow-up
 
-**Why deferred:** touches 11 helper signatures + 20+ test call sites, mechanical but
-sizeable; doesn't block latency baseline (T10) or Jaeger dogfood (T11) which measure span
-behavior, not error-count semantics.
+These stay deferred because each is either structural (warrants its own design review) or
+cosmetic (zero user-visible impact at Tier 1). Reopen when Tier 2 design surfaces a
+concrete consumer that depends on them.
 
-### 2. Claude HIGH-1 — `correlation_id` / `trace_id` wiring
-
-**Finding:** `correlation_id` equals `run_id` 100% of the time; `trace_id` is always `None`
-even when OTLP is enabled. The fields are shipped but never take distinct values.
-
-**Fix plan (2A-4d.1.1 or Tier 2):** pull the current span's OTLP trace id via
-`tracing_opentelemetry::OpenTelemetrySpanExt::context().span().span_context().trace_id()`
-inside `record()` and populate `PhaseOutcome::trace_id`.
-
-**Why deferred:** `OpenTelemetrySpanExt` needs to be in scope at every call site, and Tier 2
-is where consumers start reading these. `metadata_schema_version` is pinned at 1, so real
-values flowing later don't break compat.
-
-### 3. Codex MEDIUM — consolidator holds state `Mutex` across all 23 phases
+#### 1. Codex MEDIUM — consolidator holds state `Mutex` across all 23 phases
 
 **Finding:** `run_all_phases` holds `Arc<Mutex<DaemonState>>` for its full duration
-(~2–30s on warm DBs). Any handler that also locks the state mutex waits.
+(~2–30 s on warm DBs). Any handler that also locks the state mutex waits on the full
+pass. `/metrics` already avoids the problem via `new_reader`; HTTP handlers sharing
+`state.conn` still wait.
 
-**Fix plan:** move the consolidator to its own SQLite connection (mirror `WriterActor`), or
-acquire-release the state lock per phase.
+**Fix plan:** move the consolidator to its own SQLite connection (mirror `WriterActor`),
+or acquire-release the state lock per phase.
 
-**Why deferred:** structural refactor affecting many assumptions. `/metrics` already uses
-`new_reader`; HTTP handlers sharing `state.conn` still wait. Acceptable for Tier 1 dogfood
-on a local daemon.
+**Why deferred:** structural refactor affecting many assumptions. Acceptable for Tier 1
+dogfood on a local daemon. Reopen when Tier 2 introduces concurrent readers that can't
+tolerate multi-second blocking.
 
-### 4. Claude HIGH-4 — `record()` inside span scope
+#### 2. Claude HIGH-4 from T8 — `record()` inside span scope
 
 **Finding:** `record(...)` runs *inside* each phase's `info_span!(...)` scope, so its own
-tracing drops get nested under the phase span. Cosmetic — no correctness impact.
+`tracing::warn!` drops get nested under the phase span in log aggregators.
+Instrumentation-layer errors misattribute to the phase being instrumented. Cosmetic —
+no correctness impact.
 
-**Fix plan:** capture the `PhaseOutcome` inside a block expression and call `record()`
-after the scope drops. Phase 19 already does this post-T9.2; apply to the remaining 22
-phases.
+**Fix plan:** capture `PhaseOutcome` from a block expression and call `record()` after
+the scope drops. Phase 19 already does this (shipped in T9.2). Apply to the remaining
+22 phases.
 
-**Why deferred:** 22 sites, zero user-visible benefit until Tier 2 surfaces phase spans in
-a UI.
+**Why deferred:** 22 sites, zero user-visible benefit until Tier 2 surfaces phase spans
+in a UI. Log-aggregator nesting noise is invisible at operator-SLO level.
 
----
+#### 3. Claude HIGH-5 + HIGH-6 from T12 — CI guard scrubber brittleness
 
-## Deferred from T12 review → 2A-4d.1.1 follow-up
-
-A second adversarial pass on the T9–T11 diff (`d8403d2..` T12 HEAD) surfaced 15 additional
-findings from Claude + Codex. The immediately-actionable ones landed in T12 (HIGH-1
-persistence counter split, MEDIUM-8 run_id verification). The rest were deferred:
-
-### 5. Claude HIGH-2 — `refresh_gauges` holds WAL read lock across 15 SELECTs
-
-**Finding:** the `BEGIN DEFERRED; … COMMIT;` window spans all 11 table-row COUNT(*) queries
-plus 4 fixed counts. On a high-churn DB with a Prometheus scrape cadence of 15 s, this
-blocks WAL checkpoint every scrape because checkpoint can't reclaim frames an open snapshot
-still references.
-
-**Fix plan:** consolidate the 15 counts into a single SQL statement using
-`SELECT (SELECT COUNT(*) FROM memory), (SELECT COUNT(*) FROM edge), … ` or a `UNION ALL`
-aggregate — cuts the snapshot hold time from ~30 ms to ~5 ms on the same workload.
-
-**Why deferred:** the current 30 ms lock hold at 15 s scrape interval is 0.2 % duty
-cycle — not operationally critical until production DBs exceed 10 MB of WAL and
-checkpoint pressure becomes visible.
-
-### 6. Claude HIGH-3 + HIGH-4 — T10 harness `N=5` and shared-state accumulation
-
-**Finding:** five samples against ~100 ms medians with a 50 ms ceiling catches only
-~50 % regressions. `ForgeMetrics` is shared across 5 iterations so counter accumulation is
-invisible to the test. A 6th iteration on a fresh DB asserts `kpi_count == 23`, which is
-consistent but does not exercise the accumulated-Prometheus-state code path.
-
-**Fix plan:** bump `N_ITERATIONS >= 20`, switch to a relative-ratio assertion
-(`b_med < a_med * 1.15`), construct a fresh `ForgeMetrics` for the sanity iteration, and
-assert explicit counter values on the shared registry after the loops.
-
-**Why deferred:** the existing harness works as an "order-of-magnitude regression" canary.
-Tightening it is worth a dedicated commit with before/after numbers so statistical rigor
-is reviewable on its own.
-
-### 7. Claude HIGH-5 + HIGH-6 — CI guard scrubber ignores raw strings + `cfg(all(test, …))`
-
-**Finding:** the awk scrubber in `scripts/ci/check_spans.sh` doesn't recognise
-`r#"…"#` raw string literals — a production string containing `{` / `}` would corrupt
-`#[cfg(test)] mod X { … }` brace-balance scope detection. Similarly,
+**Finding:** the awk scrubber in `scripts/ci/check_spans.sh` doesn't recognise `r#"…"#`
+raw string literals (production string containing `{` / `}` would corrupt
+`#[cfg(test)] mod X { … }` brace-balance scope detection). Similarly,
 `#[cfg(all(test, feature = "foo"))]` doesn't match the `cfg\(test\)` anchor, so a
 feature-gated test module would have its `tokio::spawn` falsely flagged.
 
 **Fix plan:** extend the awk to recognise raw strings (count `#` on entry/exit), broaden
-the `#[cfg(...)]` regex to match any form containing `test`. Or — the proper long-term
-fix — rewrite the guard in Rust using `syn` for actual AST parsing.
+the `#[cfg(...)]` regex to match any form containing `test`. Proper long-term fix:
+rewrite as `scripts/ci/check_spans.rs` using `syn` for actual AST parsing.
 
-**Why deferred:** neither form is used in the current codebase, so the failure modes are
-latent. Lands cleanly alongside a `syn`-based rewrite in 2A-4d.1.1.
+**Why deferred:** neither form is used in the current codebase. `syn`-based rewrite pairs
+naturally with §4 below (integrity test AST-ification).
 
-### 8. Claude MEDIUM-9 — T10 doesn't exercise OTLP path
-
-**Finding:** Variant B in the T10 harness exercises only the Prometheus and kpi_events
-write paths. It never constructs an OTLP tonic exporter, so the real production hot path
-latency (spans serialised + shipped over gRPC) is unmeasured.
-
-**Fix plan:** add a Variant C that constructs a real `BatchSpanProcessor` backed by a
-`NoOp` span sink, measure through it.
-
-**Why deferred:** separate latency story with its own numbers and reproduction steps.
-
-### 9. Claude MEDIUM-10 — integrity test uses substring match on `include_str!`
+#### 4. Claude MEDIUM-10 from T12 — integrity test uses substring match on `include_str!`
 
 **Finding:** a rustdoc comment or test string containing `info_span!("phase_1_…")` would
 make the per-name count hit 2 and fail the guard for a non-bug reason.
@@ -677,4 +613,16 @@ make the per-name count hit 2 and fail the guard for a non-bug reason.
 invocations, not text substrings.
 
 **Why deferred:** no such duplicate exists today. `syn` dependency pull would bloat the
-compile graph for a single test.
+compile graph for a single test; batch with §3 above.
+
+#### 5. Claude MEDIUM-9 from T12 — T10 doesn't exercise OTLP path
+
+**Finding:** Variant B in the T10 harness exercises only the Prometheus and kpi_events
+write paths. It never constructs an OTLP tonic exporter, so the real production hot-path
+latency (spans serialised + shipped over gRPC) is unmeasured.
+
+**Fix plan:** add a Variant C that constructs a real `BatchSpanProcessor` backed by a
+no-op span sink; measure the tracing_opentelemetry layer overhead.
+
+**Why deferred:** separate latency story with its own numbers and reproduction steps.
+T13.4 set up the harness to accept this extension without test-infra churn.

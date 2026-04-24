@@ -43,13 +43,17 @@ elif [ -n "${PWD:-}" ]; then
   PROJECT=$(basename "$PWD")
 fi
 
-# Register this session
+# Register this session.
+# Silence BOTH stdout and stderr: `register-session` prints
+# "Session registered: <id>" to stdout, which otherwise leaks into the
+# hook's JSON response channel and renders as non-JSON noise in the
+# Claude Code hook dialog every SessionStart.
 SESSION_ID="${CLAUDE_SESSION_ID:-session-$(date +%s)}"
 "$FORGE_NEXT" register-session \
   --id "$SESSION_ID" \
   --agent claude-code \
   ${PROJECT:+--project "$PROJECT"} \
-  ${CLAUDE_CWD:+--cwd "$CLAUDE_CWD"} 2>/dev/null || true
+  ${CLAUDE_CWD:+--cwd "$CLAUDE_CWD"} >/dev/null 2>&1 || true
 
 # Save session ID to a secure state directory (not world-writable /tmp)
 # Uses $XDG_RUNTIME_DIR if available, otherwise ~/.forge/sessions/
