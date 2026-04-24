@@ -31,6 +31,8 @@ pub enum ObserveShape {
     ErrorRate,
     Throughput,
     PhaseRunSummary,
+    /// Tier 3 §3.3 leaderboard — aggregates `bench_run_completed` events.
+    BenchRunSummary,
 }
 
 impl From<ObserveShape> for InspectShape {
@@ -41,6 +43,7 @@ impl From<ObserveShape> for InspectShape {
             ObserveShape::ErrorRate => InspectShape::ErrorRate,
             ObserveShape::Throughput => InspectShape::Throughput,
             ObserveShape::PhaseRunSummary => InspectShape::PhaseRunSummary,
+            ObserveShape::BenchRunSummary => InspectShape::BenchRunSummary,
         }
     }
 }
@@ -52,6 +55,9 @@ pub enum ObserveGroupBy {
     EventType,
     Project,
     RunId,
+    BenchName,
+    CommitSha,
+    Seed,
 }
 
 impl From<ObserveGroupBy> for InspectGroupBy {
@@ -61,6 +67,9 @@ impl From<ObserveGroupBy> for InspectGroupBy {
             ObserveGroupBy::EventType => InspectGroupBy::EventType,
             ObserveGroupBy::Project => InspectGroupBy::Project,
             ObserveGroupBy::RunId => InspectGroupBy::RunId,
+            ObserveGroupBy::BenchName => InspectGroupBy::BenchName,
+            ObserveGroupBy::CommitSha => InspectGroupBy::CommitSha,
+            ObserveGroupBy::Seed => InspectGroupBy::Seed,
         }
     }
 }
@@ -78,9 +87,19 @@ pub enum OutputFormat {
 /// Mirrors `crates/daemon/src/server/inspect.rs::parse_window_secs` to catch
 /// bad input before a round-trip. The daemon re-validates.
 const MAX_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
+const BENCH_RUN_SUMMARY_MAX_WINDOW_SECS: u64 = 180 * 24 * 60 * 60;
 
-/// Returns Ok(()) iff the window string parses to a duration in `(0, 7 days]`.
-fn validate_window(window: &str) -> Result<(), String> {
+/// D8: the per-shape window ceiling. Mirror of the daemon helper.
+fn window_cap_secs_for_shape(shape: &InspectShape) -> u64 {
+    match shape {
+        InspectShape::BenchRunSummary => BENCH_RUN_SUMMARY_MAX_WINDOW_SECS,
+        _ => MAX_WINDOW_SECS,
+    }
+}
+
+/// Returns Ok(()) iff the window string parses to a duration within the
+/// per-shape ceiling (7d default; 180d for `BenchRunSummary`).
+fn validate_window(window: &str, shape: &InspectShape) -> Result<(), String> {
     let trimmed = window.trim();
     if trimmed.is_empty() {
         return Err("window is empty".to_string());
@@ -91,9 +110,11 @@ fn validate_window(window: &str) -> Result<(), String> {
     if secs == 0 {
         return Err(format!("window '{window}' parses to zero duration"));
     }
-    if secs > MAX_WINDOW_SECS {
+    let cap_secs = window_cap_secs_for_shape(shape);
+    if secs > cap_secs {
+        let cap_days = cap_secs / 86_400;
         return Err(format!(
-            "window '{window}' exceeds 7-day ceiling ({secs}s > {MAX_WINDOW_SECS}s)"
+            "window '{window}' exceeds {cap_days}-day ceiling ({secs}s > {cap_secs}s)"
         ));
     }
     Ok(())
@@ -113,19 +134,22 @@ pub async fn observe(
     group_by: Option<ObserveGroupBy>,
     format: Option<OutputFormat>,
 ) {
-    if let Err(e) = validate_window(&window) {
+    let core_shape: InspectShape = shape.into();
+    if let Err(e) = validate_window(&window, &core_shape) {
         eprintln!("error: {e}");
         std::process::exit(2);
     }
 
     let request = Request::Inspect {
-        shape: shape.into(),
+        shape: core_shape,
         window,
         filter: InspectFilter {
             layer,
             phase,
             event_type,
             project,
+            bench_name: None,
+            commit_sha: None,
         },
         group_by: group_by.map(Into::into),
     };
@@ -194,6 +218,7 @@ fn print_table(response: &Response) {
         InspectShape::ErrorRate => "error_rate",
         InspectShape::Throughput => "throughput",
         InspectShape::PhaseRunSummary => "phase_run_summary",
+        InspectShape::BenchRunSummary => "bench_run_summary",
     };
     println!("shape={shape_name}  window={window} ({window_secs}s)");
 
@@ -211,12 +236,21 @@ fn print_table(response: &Response) {
     if let Some(v) = &effective_filter.project {
         meta.push(format!("project={v}"));
     }
+    if let Some(v) = &effective_filter.bench_name {
+        meta.push(format!("bench_name={v}"));
+    }
+    if let Some(v) = &effective_filter.commit_sha {
+        meta.push(format!("commit_sha={v}"));
+    }
     if let Some(g) = effective_group_by {
         let g = match g {
             InspectGroupBy::Phase => "phase",
             InspectGroupBy::EventType => "event_type",
             InspectGroupBy::Project => "project",
             InspectGroupBy::RunId => "run_id",
+            InspectGroupBy::BenchName => "bench_name",
+            InspectGroupBy::CommitSha => "commit_sha",
+            InspectGroupBy::Seed => "seed",
         };
         meta.push(format!("group_by={g}"));
     }
@@ -323,6 +357,36 @@ fn print_table(response: &Response) {
                 .collect();
             write_table(&header, &body);
         }
+        InspectData::BenchRunSummary { rows } => {
+            let header = [
+                "bench_name",
+                "group_key",
+                "runs",
+                "pass_rate",
+                "comp_mean",
+                "comp_p50",
+                "comp_p95",
+                "first_ts",
+                "last_ts",
+            ];
+            let body: Vec<[String; 9]> = rows
+                .iter()
+                .map(|r| {
+                    [
+                        r.bench_name.clone(),
+                        r.group_key.clone(),
+                        r.runs.to_string(),
+                        format!("{:.3}", r.pass_rate),
+                        format!("{:.4}", r.composite_mean),
+                        format!("{:.4}", r.composite_p50),
+                        format!("{:.4}", r.composite_p95),
+                        r.first_ts_secs.to_string(),
+                        r.last_ts_secs.to_string(),
+                    ]
+                })
+                .collect();
+            write_table(&header, &body);
+        }
     }
 }
 
@@ -376,6 +440,7 @@ mod tests {
             (ObserveShape::ErrorRate, InspectShape::ErrorRate),
             (ObserveShape::Throughput, InspectShape::Throughput),
             (ObserveShape::PhaseRunSummary, InspectShape::PhaseRunSummary),
+            (ObserveShape::BenchRunSummary, InspectShape::BenchRunSummary),
         ];
         for (observe, core) in pairs {
             let converted: InspectShape = observe.into();
@@ -390,6 +455,9 @@ mod tests {
             (ObserveGroupBy::EventType, InspectGroupBy::EventType),
             (ObserveGroupBy::Project, InspectGroupBy::Project),
             (ObserveGroupBy::RunId, InspectGroupBy::RunId),
+            (ObserveGroupBy::BenchName, InspectGroupBy::BenchName),
+            (ObserveGroupBy::CommitSha, InspectGroupBy::CommitSha),
+            (ObserveGroupBy::Seed, InspectGroupBy::Seed),
         ];
         for (observe, core) in pairs {
             let converted: InspectGroupBy = observe.into();
@@ -399,23 +467,36 @@ mod tests {
 
     #[test]
     fn client_side_window_validation_rejects_bad_input() {
-        assert!(validate_window("").is_err());
-        assert!(validate_window("   ").is_err());
-        assert!(validate_window("0s").is_err());
-        assert!(validate_window("0m").is_err());
-        assert!(validate_window("8d").is_err());
-        assert!(validate_window("999d").is_err());
-        assert!(validate_window("notatime").is_err());
+        let s = InspectShape::Latency;
+        assert!(validate_window("", &s).is_err());
+        assert!(validate_window("   ", &s).is_err());
+        assert!(validate_window("0s", &s).is_err());
+        assert!(validate_window("0m", &s).is_err());
+        assert!(validate_window("8d", &s).is_err());
+        assert!(validate_window("999d", &s).is_err());
+        assert!(validate_window("notatime", &s).is_err());
     }
 
     #[test]
     fn client_side_window_validation_accepts_good_input() {
-        assert!(validate_window("1h").is_ok());
-        assert!(validate_window("30m").is_ok());
-        assert!(validate_window("7d").is_ok());
-        assert!(validate_window("1h30m").is_ok());
-        assert!(validate_window("5m").is_ok());
-        assert!(validate_window("24h").is_ok());
+        let s = InspectShape::Latency;
+        assert!(validate_window("1h", &s).is_ok());
+        assert!(validate_window("30m", &s).is_ok());
+        assert!(validate_window("7d", &s).is_ok());
+        assert!(validate_window("1h30m", &s).is_ok());
+        assert!(validate_window("5m", &s).is_ok());
+        assert!(validate_window("24h", &s).is_ok());
+    }
+
+    #[test]
+    fn bench_run_summary_accepts_180d_rejects_200d() {
+        let s = InspectShape::BenchRunSummary;
+        assert!(validate_window("90d", &s).is_ok());
+        assert!(validate_window("180d", &s).is_ok());
+        assert!(validate_window("200d", &s).is_err());
+        // Other shapes still capped at 7d.
+        let other = InspectShape::Latency;
+        assert!(validate_window("90d", &other).is_err());
     }
 
     #[test]

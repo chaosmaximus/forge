@@ -7,8 +7,8 @@ pub mod response;
 
 pub use codec::{decode_request, encode_response, read_request, write_response};
 pub use inspect::{
-    default_inspect_window, ErrorRateRow, InspectData, InspectFilter, InspectGroupBy, InspectShape,
-    LatencyRow, LayerRow, PhaseRunRow, ThroughputRow,
+    default_inspect_window, BenchRunRow, ErrorRateRow, InspectData, InspectFilter, InspectGroupBy,
+    InspectShape, LatencyRow, LayerRow, PhaseRunRow, ThroughputRow,
 };
 pub use request::{EvaluationFinding, MessagePart, RecallQuery, Request};
 pub use response::{

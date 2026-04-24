@@ -17,13 +17,27 @@
 //! summary aggregates that the cap doesn't affect in the current design).
 
 use forge_core::protocol::{
-    ErrorRateRow, InspectData, InspectFilter, InspectGroupBy, InspectShape, LatencyRow,
-    PhaseRunRow, Response, ResponseData, ThroughputRow,
+    BenchRunRow, ErrorRateRow, InspectData, InspectFilter, InspectGroupBy, InspectShape,
+    LatencyRow, PhaseRunRow, Response, ResponseData, ThroughputRow,
 };
 use rusqlite::{named_params, Connection};
 
-/// Hard ceiling for window duration. Anything longer is rejected.
+/// Default hard ceiling for window duration (Tier 2 shapes). Overridden per
+/// shape via `window_cap_secs_for_shape`.
 const MAX_WINDOW_SECS: u64 = 7 * 86_400;
+
+/// Tier 3 §3.3 (D8): `bench_run_summary` permits a 180d window to surface
+/// seasonal regression trends without hitting per-event-type retention early.
+const BENCH_RUN_SUMMARY_MAX_WINDOW_SECS: u64 = 180 * 86_400;
+
+/// D8: return the per-shape window ceiling in seconds. All Tier 2 shapes keep
+/// the 7-day cap; `BenchRunSummary` is the only Tier 3 exception.
+pub fn window_cap_secs_for_shape(shape: &InspectShape) -> u64 {
+    match shape {
+        InspectShape::BenchRunSummary => BENCH_RUN_SUMMARY_MAX_WINDOW_SECS,
+        _ => MAX_WINDOW_SECS,
+    }
+}
 
 /// Soft cap for per-group latency sample counts. Latency queries pull at
 /// most this many rows per group_key before computing percentiles.
@@ -47,8 +61,10 @@ pub fn now_secs() -> u64 {
 
 /// Parse the `window` string into a count of seconds. Accepts any
 /// `humantime::parse_duration`-valid form (`5m`, `1h30m`, `2h`, `7d`, etc.)
-/// as long as the total is >0 and ≤ 7 days.
-pub fn parse_window_secs(s: &str) -> Result<u64, String> {
+/// as long as the total is >0 and ≤ the per-shape ceiling (D8):
+/// * `BenchRunSummary` → 180 days
+/// * all other shapes  → 7 days
+pub fn parse_window_secs(s: &str, shape: &InspectShape) -> Result<u64, String> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
         return Err("window is empty".to_string());
@@ -59,9 +75,11 @@ pub fn parse_window_secs(s: &str) -> Result<u64, String> {
     if secs == 0 {
         return Err(format!("window '{s}' parses to zero duration"));
     }
-    if secs > MAX_WINDOW_SECS {
+    let cap_secs = window_cap_secs_for_shape(shape);
+    if secs > cap_secs {
+        let cap_days = cap_secs / 86_400;
         return Err(format!(
-            "window '{s}' exceeds 7-day ceiling ({secs}s > {MAX_WINDOW_SECS}s)"
+            "window '{s}' exceeds {cap_days}-day ceiling ({secs}s > {cap_secs}s)"
         ));
     }
     Ok(secs)
@@ -97,6 +115,19 @@ pub fn resolve_group_by(
         (PhaseRunSummary, Some(g)) => Err(format!(
             "group_by={g:?} not supported for shape=phase_run_summary (run_id is implicit)"
         )),
+
+        // Tier 3 §3.3: BenchRunSummary defaults to grouping by bench_name; also
+        // accepts commit_sha and seed. All Tier 2 dimensions (phase/event_type/
+        // project/run_id) are rejected.
+        (BenchRunSummary, None) => Ok(Some(BenchName)),
+        (BenchRunSummary, Some(BenchName))
+        | (BenchRunSummary, Some(CommitSha))
+        | (BenchRunSummary, Some(Seed)) => Ok(provided),
+        (BenchRunSummary, Some(g)) => Err(format!(
+            "group_by={g:?} not valid for shape=bench_run_summary"
+        )),
+        // The Tier 2 arms above already reject BenchName/CommitSha/Seed via
+        // their catch-all `Some(g)` clauses with shape-specific error text.
     }
 }
 
@@ -126,6 +157,12 @@ fn effective_filter(shape: InspectShape, filter: &InspectFilter) -> InspectFilte
             out.event_type = filter.event_type.clone();
             out.project = filter.project.clone();
         }
+        InspectShape::BenchRunSummary => {
+            // Tier 3 §3.3: only bench_name + commit_sha are honored; event_type
+            // is implicit (`bench_run_completed`), other fields are dropped.
+            out.bench_name = filter.bench_name.clone();
+            out.commit_sha = filter.commit_sha.clone();
+        }
     }
     out
 }
@@ -143,7 +180,7 @@ pub fn run_inspect(
     // returns empty rows + stale: true.
     snapshot: Option<&crate::server::metrics::GaugeSnapshot>,
 ) -> Response {
-    let window_secs = match parse_window_secs(&window) {
+    let window_secs = match parse_window_secs(&window, &shape) {
         Ok(n) => n,
         Err(e) => return Response::Error { message: e },
     };
@@ -192,6 +229,13 @@ pub fn run_inspect(
         InspectShape::PhaseRunSummary => {
             match shape_phase_run_summary(conn, window_start_secs, &eff_filter) {
                 Ok(d) => (d, false, false),
+                Err(e) => return Response::Error { message: e },
+            }
+        }
+        InspectShape::BenchRunSummary => {
+            match shape_bench_run_summary(conn, window_start_secs, &eff_filter, effective_group_by)
+            {
+                Ok(rows) => (InspectData::BenchRunSummary { rows }, false, false),
                 Err(e) => return Response::Error { message: e },
             }
         }
@@ -537,6 +581,199 @@ fn shape_phase_run_summary(
     Ok(InspectData::PhaseRunSummary { rows })
 }
 
+// ─────────────────────────────────────────────────────────────
+// Shape: bench_run_summary (Tier 3 §3.3 / D8)
+// ─────────────────────────────────────────────────────────────
+
+/// Build the per-group aggregate rollup for `bench_run_completed` events.
+///
+/// Strategy: two passes over `kpi_events`. Pass 1 uses SQL to aggregate
+/// `runs`, `pass_rate`, `composite_mean`, and `first_ts`/`last_ts` per group.
+/// Pass 2 pulls raw `composite` values (with the same filter) so we can run
+/// the ceiling-rank percentile helper from Rust (matches `LatencyRow` semantics).
+/// The per-group + absolute row caps from `MAX_ROWS_PER_GROUP` / `MAX_TOTAL_ROWS`
+/// are honored; excess percentile samples are dropped silently but the mean +
+/// pass_rate stay accurate (they come from the SQL aggregate).
+pub fn shape_bench_run_summary(
+    conn: &Connection,
+    window_start_secs: u64,
+    filter: &InspectFilter,
+    group_by: Option<InspectGroupBy>,
+) -> Result<Vec<BenchRunRow>, String> {
+    // Default group_by for BenchRunSummary is BenchName; resolve_group_by
+    // already normalizes None → Some(BenchName) before we get here, but be
+    // defensive for callers that bypass it.
+    let group_expr = match group_by.unwrap_or(InspectGroupBy::BenchName) {
+        InspectGroupBy::BenchName => "CAST(json_extract(metadata_json, '$.bench_name') AS TEXT)",
+        InspectGroupBy::CommitSha => "CAST(json_extract(metadata_json, '$.commit_sha') AS TEXT)",
+        InspectGroupBy::Seed => "CAST(json_extract(metadata_json, '$.seed') AS TEXT)",
+        other => {
+            return Err(format!(
+                "group_by={other:?} not valid for bench_run_summary"
+            ))
+        }
+    };
+
+    // Pass 1: SQL aggregate rollup.
+    let sql = format!(
+        r#"SELECT
+              CAST(json_extract(metadata_json, '$.bench_name') AS TEXT) AS bench_name,
+              {group_expr} AS group_key,
+              COUNT(*) AS runs,
+              AVG(success) AS pass_rate,
+              AVG(CAST(json_extract(metadata_json, '$.composite') AS REAL)) AS composite_mean,
+              MIN(timestamp) AS first_ts,
+              MAX(timestamp) AS last_ts
+           FROM kpi_events
+           WHERE event_type = 'bench_run_completed'
+             AND timestamp >= :window_start_secs
+             AND (:bench_name IS NULL OR json_extract(metadata_json, '$.bench_name') = :bench_name)
+             AND (:commit_sha IS NULL OR json_extract(metadata_json, '$.commit_sha') = :commit_sha)
+           GROUP BY bench_name, group_key
+           HAVING runs > 0
+           ORDER BY bench_name, group_key
+           LIMIT :absolute_cap"#
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {e}"))?;
+    #[derive(Debug)]
+    struct Aggregate {
+        bench_name: String,
+        group_key: String,
+        runs: u64,
+        pass_rate: f64,
+        composite_mean: f64,
+        first_ts: i64,
+        last_ts: i64,
+    }
+    let aggregates: Vec<Aggregate> = stmt
+        .query_map(
+            named_params! {
+                ":window_start_secs": window_start_secs as i64,
+                ":bench_name": filter.bench_name.as_deref(),
+                ":commit_sha": filter.commit_sha.as_deref(),
+                // Enforce the absolute ceiling (MAX_TOTAL_ROWS) on rollup rows —
+                // 200 000 distinct (bench_name, group_key) pairs is already pathological.
+                ":absolute_cap": MAX_TOTAL_ROWS as i64,
+            },
+            |row| {
+                let bench_name: Option<String> = row.get(0)?;
+                let group_key: Option<String> = row.get(1)?;
+                let runs: i64 = row.get(2)?;
+                let pass_rate: Option<f64> = row.get(3)?;
+                let composite_mean: Option<f64> = row.get(4)?;
+                let first_ts: i64 = row.get(5)?;
+                let last_ts: i64 = row.get(6)?;
+                Ok(Aggregate {
+                    bench_name: bench_name.unwrap_or_else(|| "unknown".to_string()),
+                    group_key: group_key.unwrap_or_else(|| "unknown".to_string()),
+                    runs: runs.max(0) as u64,
+                    pass_rate: pass_rate.unwrap_or(0.0),
+                    composite_mean: composite_mean.unwrap_or(0.0),
+                    first_ts,
+                    last_ts,
+                })
+            },
+        )
+        .map_err(|e| format!("query: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row: {e}"))?;
+
+    if aggregates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Pass 2: per-group composite percentiles. Pull raw samples with a
+    // per-group cap and compute p50/p95 in Rust via the ceiling-rank helper.
+    let percentile_sql = format!(
+        r#"SELECT {group_expr} AS group_key,
+                  CAST(json_extract(metadata_json, '$.composite') AS REAL) AS composite
+           FROM kpi_events
+           WHERE event_type = 'bench_run_completed'
+             AND timestamp >= :window_start_secs
+             AND (:bench_name IS NULL OR json_extract(metadata_json, '$.bench_name') = :bench_name)
+             AND (:commit_sha IS NULL OR json_extract(metadata_json, '$.commit_sha') = :commit_sha)
+             AND json_extract(metadata_json, '$.composite') IS NOT NULL
+           ORDER BY group_key
+           LIMIT :total_cap"#
+    );
+    let mut p_stmt = conn
+        .prepare(&percentile_sql)
+        .map_err(|e| format!("prepare: {e}"))?;
+    let raw_iter = p_stmt
+        .query_map(
+            named_params! {
+                ":window_start_secs": window_start_secs as i64,
+                ":bench_name": filter.bench_name.as_deref(),
+                ":commit_sha": filter.commit_sha.as_deref(),
+                ":total_cap": (MAX_TOTAL_ROWS + 1) as i64,
+            },
+            |row| {
+                let key: Option<String> = row.get(0)?;
+                let v: Option<f64> = row.get(1)?;
+                Ok((
+                    key.unwrap_or_else(|| "unknown".to_string()),
+                    v.unwrap_or(0.0),
+                ))
+            },
+        )
+        .map_err(|e| format!("query: {e}"))?;
+
+    let mut buckets: std::collections::BTreeMap<String, Vec<f64>> =
+        std::collections::BTreeMap::new();
+    let mut total_seen: u64 = 0;
+    for r in raw_iter {
+        let (k, v) = r.map_err(|e| format!("row: {e}"))?;
+        total_seen += 1;
+        if total_seen > MAX_TOTAL_ROWS {
+            break;
+        }
+        let bucket = buckets.entry(k).or_default();
+        if (bucket.len() as u64) < MAX_ROWS_PER_GROUP {
+            bucket.push(v);
+        }
+    }
+
+    // Sort each bucket once so percentile() is correct.
+    for samples in buckets.values_mut() {
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    let rows: Vec<BenchRunRow> = aggregates
+        .into_iter()
+        .map(|agg| {
+            let samples = buckets.get(&agg.group_key);
+            let (p50, p95) = match samples {
+                Some(s) if !s.is_empty() => (percentile_f64(s, 0.50), percentile_f64(s, 0.95)),
+                _ => (0.0, 0.0),
+            };
+            BenchRunRow {
+                bench_name: agg.bench_name,
+                group_key: agg.group_key,
+                runs: agg.runs,
+                pass_rate: agg.pass_rate,
+                composite_mean: agg.composite_mean,
+                composite_p50: p50,
+                composite_p95: p95,
+                first_ts_secs: agg.first_ts,
+                last_ts_secs: agg.last_ts,
+            }
+        })
+        .collect();
+
+    Ok(rows)
+}
+
+/// Ceiling-rank percentile on an already-sorted slice of f64, mirroring
+/// `percentile` for u64 samples. `p` ∈ [0.0, 1.0].
+fn percentile_f64(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = (p * sorted.len() as f64).ceil() as usize;
+    let idx = rank.clamp(1, sorted.len()) - 1;
+    sorted[idx]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,50 +824,93 @@ mod tests {
     }
 
     // ── parse_window_secs ──
+    //
+    // Helpers: pick any non-bench shape to get the 7d cap. All Tier 2 shapes
+    // share the same ceiling so `Latency` works as a proxy.
+    const T2: InspectShape = InspectShape::Latency;
+    const BENCH: InspectShape = InspectShape::BenchRunSummary;
 
     #[test]
     fn parse_window_accepts_simple_forms() {
-        assert_eq!(parse_window_secs("5m").unwrap(), 300);
-        assert_eq!(parse_window_secs("1h").unwrap(), 3600);
-        assert_eq!(parse_window_secs("24h").unwrap(), 86_400);
-        assert_eq!(parse_window_secs("7d").unwrap(), 7 * 86_400);
+        assert_eq!(parse_window_secs("5m", &T2).unwrap(), 300);
+        assert_eq!(parse_window_secs("1h", &T2).unwrap(), 3600);
+        assert_eq!(parse_window_secs("24h", &T2).unwrap(), 86_400);
+        assert_eq!(parse_window_secs("7d", &T2).unwrap(), 7 * 86_400);
     }
 
     #[test]
     fn parse_window_accepts_compound_forms() {
-        assert_eq!(parse_window_secs("1h30m").unwrap(), 5400);
-        assert_eq!(parse_window_secs("2h 15m").unwrap(), 8100);
+        assert_eq!(parse_window_secs("1h30m", &T2).unwrap(), 5400);
+        assert_eq!(parse_window_secs("2h 15m", &T2).unwrap(), 8100);
     }
 
     #[test]
     fn parse_window_rejects_zero() {
-        assert!(parse_window_secs("0s").is_err());
-        assert!(parse_window_secs("0m").is_err());
+        assert!(parse_window_secs("0s", &T2).is_err());
+        assert!(parse_window_secs("0m", &T2).is_err());
     }
 
     #[test]
     fn parse_window_rejects_over_ceiling() {
-        assert!(parse_window_secs("8d").is_err());
-        assert!(parse_window_secs("2w").is_err());
-        assert!(parse_window_secs("365d").is_err());
+        // Tier 2 shapes reject anything beyond 7 days.
+        assert!(parse_window_secs("8d", &T2).is_err());
+        assert!(parse_window_secs("2w", &T2).is_err());
+        assert!(parse_window_secs("365d", &T2).is_err());
+    }
+
+    #[test]
+    fn non_bench_shapes_still_reject_8d() {
+        // T10 invariant: only BenchRunSummary unlocks >7d windows.
+        for shape in [
+            InspectShape::RowCount,
+            InspectShape::Latency,
+            InspectShape::ErrorRate,
+            InspectShape::Throughput,
+            InspectShape::PhaseRunSummary,
+        ] {
+            assert!(
+                parse_window_secs("8d", &shape).is_err(),
+                "{shape:?} should still cap at 7d"
+            );
+        }
     }
 
     #[test]
     fn parse_window_one_week_equals_seven_days_and_is_accepted() {
         // humantime parses "1w" as exactly 7 days; our ceiling is `<= 7d`, so accepted.
-        assert_eq!(parse_window_secs("1w").unwrap(), 7 * 86_400);
+        assert_eq!(parse_window_secs("1w", &T2).unwrap(), 7 * 86_400);
     }
 
     #[test]
     fn parse_window_rejects_empty_and_whitespace() {
-        assert!(parse_window_secs("").is_err());
-        assert!(parse_window_secs("   ").is_err());
+        assert!(parse_window_secs("", &T2).is_err());
+        assert!(parse_window_secs("   ", &T2).is_err());
     }
 
     #[test]
     fn parse_window_rejects_bare_integer() {
-        assert!(parse_window_secs("5").is_err());
-        assert!(parse_window_secs("3600").is_err());
+        assert!(parse_window_secs("5", &T2).is_err());
+        assert!(parse_window_secs("3600", &T2).is_err());
+    }
+
+    #[test]
+    fn bench_run_summary_with_180d_window_works() {
+        // D8: BenchRunSummary accepts windows up to 180 days.
+        assert_eq!(parse_window_secs("180d", &BENCH).unwrap(), 180 * 86_400);
+        assert_eq!(parse_window_secs("90d", &BENCH).unwrap(), 90 * 86_400);
+        assert_eq!(parse_window_secs("30d", &BENCH).unwrap(), 30 * 86_400);
+    }
+
+    #[test]
+    fn bench_run_summary_rejects_200d() {
+        // D8: 200 days exceeds the BenchRunSummary ceiling of 180 days.
+        assert!(parse_window_secs("200d", &BENCH).is_err());
+        assert!(parse_window_secs("365d", &BENCH).is_err());
+        let err = parse_window_secs("200d", &BENCH).unwrap_err();
+        assert!(
+            err.contains("180-day ceiling"),
+            "error message should cite 180-day ceiling, got: {err}"
+        );
     }
 
     // ── resolve_group_by validity matrix ──
@@ -673,6 +953,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bench_run_summary_resolve_group_by_defaults_to_bench_name() {
+        assert_eq!(
+            resolve_group_by(InspectShape::BenchRunSummary, None).unwrap(),
+            Some(InspectGroupBy::BenchName)
+        );
+        assert_eq!(
+            resolve_group_by(
+                InspectShape::BenchRunSummary,
+                Some(InspectGroupBy::CommitSha)
+            )
+            .unwrap(),
+            Some(InspectGroupBy::CommitSha)
+        );
+        assert_eq!(
+            resolve_group_by(InspectShape::BenchRunSummary, Some(InspectGroupBy::Seed)).unwrap(),
+            Some(InspectGroupBy::Seed)
+        );
+    }
+
+    #[test]
+    fn bench_run_summary_resolve_group_by_rejects_phase() {
+        // Tier 2 dimensions are not valid for BenchRunSummary.
+        assert!(
+            resolve_group_by(InspectShape::BenchRunSummary, Some(InspectGroupBy::Phase)).is_err()
+        );
+        assert!(resolve_group_by(
+            InspectShape::BenchRunSummary,
+            Some(InspectGroupBy::EventType)
+        )
+        .is_err());
+        assert!(
+            resolve_group_by(InspectShape::BenchRunSummary, Some(InspectGroupBy::Project)).is_err()
+        );
+        assert!(
+            resolve_group_by(InspectShape::BenchRunSummary, Some(InspectGroupBy::RunId)).is_err()
+        );
+    }
+
     // ── shape behavior on seeded DB ──
 
     #[test]
@@ -683,6 +1002,7 @@ mod tests {
             InspectShape::ErrorRate,
             InspectShape::Throughput,
             InspectShape::PhaseRunSummary,
+            InspectShape::BenchRunSummary,
         ] {
             let resp = run_inspect(
                 &conn,
@@ -700,11 +1020,222 @@ mod tests {
                     InspectData::ErrorRate { rows } => assert!(rows.is_empty(), "{shape:?}"),
                     InspectData::Throughput { rows } => assert!(rows.is_empty(), "{shape:?}"),
                     InspectData::PhaseRunSummary { rows } => assert!(rows.is_empty(), "{shape:?}"),
+                    InspectData::BenchRunSummary { rows } => assert!(rows.is_empty(), "{shape:?}"),
                     _ => panic!("unexpected data variant for {shape:?}"),
                 },
                 other => panic!("expected Ok, got {other:?}"),
             }
         }
+    }
+
+    /// Seed a `bench_run_completed` kpi_event with the fields T10 aggregates.
+    /// T8 will wire daemon-side emission; these rows are synthesized directly
+    /// so the leaderboard shape can be unit-tested in isolation.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_bench_event(
+        conn: &Connection,
+        id: &str,
+        ts: i64,
+        bench_name: &str,
+        commit_sha: Option<&str>,
+        seed: Option<&str>,
+        composite: f64,
+        success: bool,
+    ) {
+        let metadata = serde_json::json!({
+            "bench_name": bench_name,
+            "commit_sha": commit_sha,
+            "seed": seed,
+            "composite": composite,
+        });
+        conn.execute(
+            "INSERT INTO kpi_events (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json)
+             VALUES (?1, ?2, 'bench_run_completed', NULL, NULL, 1, ?3, ?4)",
+            rusqlite::params![
+                id,
+                ts,
+                i64::from(success),
+                metadata.to_string()
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn bench_run_summary_empty_db_returns_empty_rows() {
+        let conn = seed_conn();
+        let rows = shape_bench_run_summary(
+            &conn,
+            0,
+            &InspectFilter::default(),
+            Some(InspectGroupBy::BenchName),
+        )
+        .expect("query should succeed");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn bench_run_summary_aggregates_seeded_runs() {
+        let conn = seed_conn();
+        let ts = now_secs() as i64 - 10; // inside 1h window
+        insert_bench_event(
+            &conn,
+            "br1",
+            ts,
+            "forge-identity",
+            Some("abc"),
+            Some("1"),
+            0.97,
+            true,
+        );
+        insert_bench_event(
+            &conn,
+            "br2",
+            ts + 1,
+            "forge-identity",
+            Some("abc"),
+            Some("2"),
+            0.95,
+            true,
+        );
+        insert_bench_event(
+            &conn,
+            "br3",
+            ts + 2,
+            "forge-identity",
+            Some("abc"),
+            Some("3"),
+            0.93,
+            false,
+        );
+
+        let resp = run_inspect(
+            &conn,
+            InspectShape::BenchRunSummary,
+            "1h".into(),
+            InspectFilter::default(),
+            None,
+            None,
+        );
+        let Response::Ok {
+            data:
+                ResponseData::Inspect {
+                    data: InspectData::BenchRunSummary { rows },
+                    effective_group_by,
+                    ..
+                },
+        } = resp
+        else {
+            panic!("expected Ok BenchRunSummary, got {resp:?}");
+        };
+        assert_eq!(effective_group_by, Some(InspectGroupBy::BenchName));
+        assert_eq!(rows.len(), 1, "one bench_name → one rollup row");
+        let r = &rows[0];
+        assert_eq!(r.bench_name, "forge-identity");
+        assert_eq!(r.group_key, "forge-identity");
+        assert_eq!(r.runs, 3);
+        // 2/3 successes → ≈0.6667
+        assert!(
+            (r.pass_rate - 2.0 / 3.0).abs() < 1e-6,
+            "pass_rate: got {}",
+            r.pass_rate
+        );
+        // composite mean ≈ (0.97+0.95+0.93)/3 = 0.95
+        assert!(
+            (r.composite_mean - 0.95).abs() < 1e-6,
+            "composite_mean: got {}",
+            r.composite_mean
+        );
+        // sorted composites [0.93, 0.95, 0.97]: p50 = sorted[ceil(1.5)-1] = sorted[1] = 0.95
+        assert!(
+            (r.composite_p50 - 0.95).abs() < 1e-6,
+            "composite_p50: got {}",
+            r.composite_p50
+        );
+        // p95: ceil(0.95*3)-1 = ceil(2.85)-1 = 3-1 = 2 → 0.97
+        assert!(
+            (r.composite_p95 - 0.97).abs() < 1e-6,
+            "composite_p95: got {}",
+            r.composite_p95
+        );
+    }
+
+    #[test]
+    fn bench_run_summary_filters_by_bench_name() {
+        let conn = seed_conn();
+        let ts = now_secs() as i64 - 10;
+        insert_bench_event(&conn, "a", ts, "forge-identity", None, None, 0.9, true);
+        insert_bench_event(&conn, "b", ts, "forge-retrieval", None, None, 0.5, false);
+        let resp = run_inspect(
+            &conn,
+            InspectShape::BenchRunSummary,
+            "1h".into(),
+            InspectFilter {
+                bench_name: Some("forge-identity".into()),
+                ..Default::default()
+            },
+            None,
+            None,
+        );
+        let Response::Ok {
+            data:
+                ResponseData::Inspect {
+                    data: InspectData::BenchRunSummary { rows },
+                    ..
+                },
+        } = resp
+        else {
+            panic!("expected Ok BenchRunSummary");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].bench_name, "forge-identity");
+    }
+
+    #[test]
+    fn bench_run_summary_groups_by_commit_sha() {
+        let conn = seed_conn();
+        let ts = now_secs() as i64 - 10;
+        insert_bench_event(
+            &conn,
+            "a",
+            ts,
+            "forge-identity",
+            Some("sha1"),
+            None,
+            0.9,
+            true,
+        );
+        insert_bench_event(
+            &conn,
+            "b",
+            ts,
+            "forge-identity",
+            Some("sha2"),
+            None,
+            0.8,
+            true,
+        );
+        let resp = run_inspect(
+            &conn,
+            InspectShape::BenchRunSummary,
+            "1h".into(),
+            InspectFilter::default(),
+            Some(InspectGroupBy::CommitSha),
+            None,
+        );
+        let Response::Ok {
+            data:
+                ResponseData::Inspect {
+                    data: InspectData::BenchRunSummary { rows },
+                    effective_group_by,
+                    ..
+                },
+        } = resp
+        else {
+            panic!("expected Ok BenchRunSummary");
+        };
+        assert_eq!(effective_group_by, Some(InspectGroupBy::CommitSha));
+        assert_eq!(rows.len(), 2, "one row per commit_sha");
     }
 
     #[test]
@@ -1112,6 +1643,8 @@ mod tests {
             phase: Some("p".into()),
             event_type: Some("phase_completed".into()),
             project: Some("proj".into()),
+            bench_name: None,
+            commit_sha: None,
         };
         let eff = effective_filter(InspectShape::Latency, &filter);
         assert!(eff.layer.is_none());

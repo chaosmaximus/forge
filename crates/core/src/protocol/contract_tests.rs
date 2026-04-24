@@ -728,6 +728,19 @@ mod tests {
                     group_by: Some(crate::protocol::InspectGroupBy::Phase),
                 },
             ),
+            // ── Phase 2A-4d.3 T10: BenchRunSummary leaderboard shape ──
+            (
+                "inspect",
+                Request::Inspect {
+                    shape: crate::protocol::InspectShape::BenchRunSummary,
+                    window: "30d".into(),
+                    filter: crate::protocol::InspectFilter {
+                        bench_name: Some("forge-identity".into()),
+                        ..Default::default()
+                    },
+                    group_by: Some(crate::protocol::InspectGroupBy::BenchName),
+                },
+            ),
         ];
 
         for (expected_method, request) in &cases {
@@ -1160,6 +1173,23 @@ mod tests {
             (
                 "inspect throughput group_by=event_type",
                 r#"{"method":"inspect","params":{"shape":"throughput","window":"1h","group_by":"event_type"}}"#,
+            ),
+            // ── Phase 2A-4d.3 T10: BenchRunSummary ──
+            (
+                "inspect bench_run_summary defaults",
+                r#"{"method":"inspect","params":{"shape":"bench_run_summary"}}"#,
+            ),
+            (
+                "inspect bench_run_summary 180d window + bench_name + commit_sha filter",
+                r#"{"method":"inspect","params":{"shape":"bench_run_summary","window":"180d","filter":{"bench_name":"forge-identity","commit_sha":"abc123"},"group_by":"bench_name"}}"#,
+            ),
+            (
+                "inspect bench_run_summary group_by=commit_sha",
+                r#"{"method":"inspect","params":{"shape":"bench_run_summary","window":"30d","group_by":"commit_sha"}}"#,
+            ),
+            (
+                "inspect bench_run_summary group_by=seed",
+                r#"{"method":"inspect","params":{"shape":"bench_run_summary","window":"7d","group_by":"seed"}}"#,
             ),
         ];
 
@@ -2299,6 +2329,66 @@ mod tests {
             } => assert_eq!(skills_inferred, 0),
             other => panic!("expected ConsolidationComplete, got {other:?}"),
         }
+    }
+
+    /// Phase 2A-4d.3 T10 — round-trip a `ResponseData::Inspect` carrying a
+    /// `BenchRunSummary` payload; then re-decode from the produced JSON to
+    /// pin the wire format.
+    #[test]
+    fn response_inspect_bench_run_summary_decodes_from_raw_json() {
+        use crate::protocol::response::{Response, ResponseData};
+        use crate::protocol::{
+            BenchRunRow, InspectData, InspectFilter, InspectGroupBy, InspectShape,
+        };
+        let original = Response::Ok {
+            data: ResponseData::Inspect {
+                shape: InspectShape::BenchRunSummary,
+                window: "30d".into(),
+                window_secs: 30 * 86_400,
+                generated_at_secs: 1_745_500_000,
+                effective_filter: InspectFilter {
+                    bench_name: Some("forge-identity".into()),
+                    ..Default::default()
+                },
+                effective_group_by: Some(InspectGroupBy::BenchName),
+                stale: false,
+                truncated: false,
+                data: InspectData::BenchRunSummary {
+                    rows: vec![BenchRunRow {
+                        bench_name: "forge-identity".into(),
+                        group_key: "forge-identity".into(),
+                        runs: 3,
+                        pass_rate: 0.666,
+                        composite_mean: 0.95,
+                        composite_p50: 0.95,
+                        composite_p95: 0.97,
+                        first_ts_secs: 1_745_000_000,
+                        last_ts_secs: 1_745_500_000,
+                    }],
+                },
+            },
+        };
+        let s = serde_json::to_string(&original).expect("encode");
+        assert!(
+            s.contains(r#""kind":"bench_run_summary""#),
+            "expected inner InspectData tag; got {s}"
+        );
+        let back: Response = serde_json::from_str(&s).expect("decode");
+        let Response::Ok {
+            data:
+                ResponseData::Inspect {
+                    shape,
+                    data: InspectData::BenchRunSummary { rows },
+                    ..
+                },
+        } = back
+        else {
+            panic!("expected Ok + Inspect + BenchRunSummary");
+        };
+        assert_eq!(shape, InspectShape::BenchRunSummary);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].bench_name, "forge-identity");
+        assert_eq!(rows[0].runs, 3);
     }
 
     #[test]

@@ -6,8 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One of five shapes a caller can request. Each shape has its own validity
-/// matrix for `group_by` (documented in the Tier 2 spec §2.1).
+/// One of six shapes a caller can request. Each shape has its own validity
+/// matrix for `group_by` (documented in the Tier 2 spec §2.1 and Tier 3 §3.3).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InspectShape {
@@ -21,6 +21,10 @@ pub enum InspectShape {
     Throughput,
     /// Per-run_id summary: duration, phase count, error count, trace id.
     PhaseRunSummary,
+    /// Tier 3 §3.3 leaderboard: per-bench aggregated pass-rate + composite
+    /// percentiles derived from `bench_run_completed` events. Supports a
+    /// longer window (180d) per D8.
+    BenchRunSummary,
 }
 
 /// Grouping dimension for shapes that support it. "No grouping" is modeled
@@ -32,6 +36,12 @@ pub enum InspectGroupBy {
     EventType,
     Project,
     RunId,
+    /// Tier 3 §3.3: group `bench_run_summary` rows by bench name (default).
+    BenchName,
+    /// Tier 3 §3.3: group `bench_run_summary` rows by `metadata.commit_sha`.
+    CommitSha,
+    /// Tier 3 §3.3: group `bench_run_summary` rows by `metadata.seed`.
+    Seed,
 }
 
 /// Filters applied to the underlying query. `layer` gates `shape=row_count`;
@@ -44,6 +54,14 @@ pub struct InspectFilter {
     pub phase: Option<String>,
     pub event_type: Option<String>,
     pub project: Option<String>,
+    /// Tier 3 §3.3: scope `bench_run_summary` to a single bench. Ignored by
+    /// all other shapes.
+    #[serde(default)]
+    pub bench_name: Option<String>,
+    /// Tier 3 §3.3: scope `bench_run_summary` to a single commit SHA. Ignored
+    /// by all other shapes.
+    #[serde(default)]
+    pub commit_sha: Option<String>,
 }
 
 /// Response payload, tagged by shape.
@@ -58,6 +76,7 @@ pub enum InspectData {
     ErrorRate { rows: Vec<ErrorRateRow> },
     Throughput { rows: Vec<ThroughputRow> },
     PhaseRunSummary { rows: Vec<PhaseRunRow> },
+    BenchRunSummary { rows: Vec<BenchRunRow> },
 }
 
 /// One Manas table's row count + staleness, sampled from the gauge snapshot.
@@ -117,6 +136,26 @@ pub struct PhaseRunRow {
     pub correlation_id: Option<String>,
 }
 
+/// One leaderboard row for `shape=bench_run_summary` (Tier 3 §3.3).
+///
+/// Aggregates all `bench_run_completed` kpi_events within the requested window
+/// into per-group rollups. `pass_rate` is `AVG(success)` (0.0 when no runs
+/// succeeded, 1.0 when all passed). `composite_*` are computed from the
+/// `metadata.composite` score (float in `[0, 1]`). Percentiles use the same
+/// ceiling-rank algorithm as `LatencyRow`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BenchRunRow {
+    pub bench_name: String,
+    pub group_key: String,
+    pub runs: u64,
+    pub pass_rate: f64,
+    pub composite_mean: f64,
+    pub composite_p50: f64,
+    pub composite_p95: f64,
+    pub first_ts_secs: i64,
+    pub last_ts_secs: i64,
+}
+
 /// Default window when a caller omits `window`.
 pub fn default_inspect_window() -> String {
     "1h".to_string()
@@ -135,6 +174,7 @@ mod tests {
             (InspectShape::ErrorRate, "error_rate"),
             (InspectShape::Throughput, "throughput"),
             (InspectShape::PhaseRunSummary, "phase_run_summary"),
+            (InspectShape::BenchRunSummary, "bench_run_summary"),
         ] {
             let json = serde_json::to_value(shape).unwrap();
             assert_eq!(json, json!(expected));
@@ -150,6 +190,9 @@ mod tests {
             (InspectGroupBy::EventType, "event_type"),
             (InspectGroupBy::Project, "project"),
             (InspectGroupBy::RunId, "run_id"),
+            (InspectGroupBy::BenchName, "bench_name"),
+            (InspectGroupBy::CommitSha, "commit_sha"),
+            (InspectGroupBy::Seed, "seed"),
         ] {
             let json = serde_json::to_value(group).unwrap();
             assert_eq!(json, json!(expected));
@@ -165,6 +208,8 @@ mod tests {
         assert!(filter.phase.is_none());
         assert!(filter.event_type.is_none());
         assert!(filter.project.is_none());
+        assert!(filter.bench_name.is_none());
+        assert!(filter.commit_sha.is_none());
     }
 
     #[test]
@@ -174,10 +219,63 @@ mod tests {
             phase: Some("phase_1_exact_dedup".into()),
             event_type: Some("phase_completed".into()),
             project: None,
+            bench_name: Some("forge-identity".into()),
+            commit_sha: None,
         };
         let json = serde_json::to_value(&original).unwrap();
         let back: InspectFilter = serde_json::from_value(json).unwrap();
         assert_eq!(back, original);
+    }
+
+    #[test]
+    fn inspect_filter_omits_bench_fields_for_backcompat() {
+        // Old clients omit bench_name / commit_sha; the server must still decode.
+        let v = json!({"phase": "phase_A"});
+        let filter: InspectFilter = serde_json::from_value(v).unwrap();
+        assert_eq!(filter.phase.as_deref(), Some("phase_A"));
+        assert!(filter.bench_name.is_none());
+        assert!(filter.commit_sha.is_none());
+    }
+
+    #[test]
+    fn bench_run_row_round_trips_as_json() {
+        let row = BenchRunRow {
+            bench_name: "forge-identity".into(),
+            group_key: "forge-identity".into(),
+            runs: 17,
+            pass_rate: 0.87,
+            composite_mean: 0.91,
+            composite_p50: 0.92,
+            composite_p95: 0.98,
+            first_ts_secs: 1_745_500_000,
+            last_ts_secs: 1_745_600_000,
+        };
+        let j = serde_json::to_value(&row).unwrap();
+        assert_eq!(j["bench_name"], "forge-identity");
+        assert_eq!(j["runs"], 17);
+        let back: BenchRunRow = serde_json::from_value(j).unwrap();
+        assert_eq!(back, row);
+    }
+
+    #[test]
+    fn inspect_data_bench_run_summary_serializes_with_kind_tag() {
+        let data = InspectData::BenchRunSummary {
+            rows: vec![BenchRunRow {
+                bench_name: "forge-identity".into(),
+                group_key: "forge-identity".into(),
+                runs: 1,
+                pass_rate: 1.0,
+                composite_mean: 0.95,
+                composite_p50: 0.95,
+                composite_p95: 0.95,
+                first_ts_secs: 1,
+                last_ts_secs: 1,
+            }],
+        };
+        let j = serde_json::to_value(&data).unwrap();
+        assert_eq!(j["kind"], "bench_run_summary");
+        let back: InspectData = serde_json::from_value(j).unwrap();
+        assert_eq!(back, data);
     }
 
     #[test]
