@@ -38,15 +38,15 @@ Now unblocked by 2A-4c2. No spec yet — design phase first.
 
 Spec: `docs/superpowers/specs/2026-04-23-forge-public-resplit-design.md` §Phase 2P-1b.
 
-Highest-leverage items:
-1. **Harness-sync CI check** (`scripts/check-harness-sync.sh`) — the invariant that turns the CLAUDE.md harness philosophy into a testable gate. Scans JSON method literals + Rust fixtures + CLI subcommand refs + rustdoc `Request::<Variant>` against the authoritative list in `crates/core/src/protocol/request.rs` + `forge-cli`'s clap derive. 2-week warn-only window, then fail-closed.
-2. **Cut v0.5.0 public release** — `git tag v0.5.0 && git push --tags` triggers `.github/workflows/release.yml` which ships `forge-v0.5.0-x86_64-unknown-linux-gnu.tar.gz` + macOS variants. Once live, `scripts/install.sh` resolves 200 OK and Formula/forge.rb's URL template resolves. Closes latent 2P-1a fragility.
-3. **Re-enable `#[ignore]` tests** in `crates/daemon/tests/test_hook_e2e.rs` (`test_session_start_hook_registers_session`, `test_full_pipeline_remember_check_via_cli`) once CI provisions release `forge-next` + running daemon.
-4. Full 2P-1b backlog (13 items) in §Lifted constraints below.
+Highest-leverage remaining items (others shipped 2026-04-24):
+1. **Cut v0.5.0 public release** — `git tag v0.5.0 && git push --tags` triggers `.github/workflows/release.yml`. Currently blocked on GHA billing. Once that clears: re-tag and push. Closes latent 2P-1a fragility where `Formula/forge.rb` and `scripts/install.sh` URL templates 404.
+2. **2P-1b §2 evidence-gated audit contract** — YAML review artifacts + CI enforcement. Bigger design, pick up cold.
+3. **2P-1b §16 shape-vs-behavior fingerprint split** — Codex-H3 carry-forward from 2A-4c2 T10. Non-trivial design.
+4. **Full 2P-1b backlog** in §Lifted constraints below (current status: 11 of 18 shipped this session).
 
-### Stream C — Triage orphan plan
+### Stream C — Triage orphan plan — DONE 2026-04-24
 
-`docs/superpowers/plans/2026-04-16-housekeeping-and-doctor-observability.md` — 4 deferred items from Forge-Persist reviews (Version endpoint, HttpClient timeout, session pagination, Doctor-on-steroids). Never executed. Decide: schedule or defer.
+`docs/superpowers/plans/2026-04-16-housekeeping-and-doctor-observability.md` — SHIPPED in the interim. All 4 tasks (Version endpoint, HttpClient timeout, session pagination, Doctor-on-steroids) are live; plan marked SHIPPED with per-task evidence pointers at its top.
 
 ## Environment prerequisites
 
@@ -86,6 +86,10 @@ Highest-leverage items:
 - **2026-04-24 — Phase 2A-4c2 SHIPPED.** T9 (`f85d15c` rollback recipe test), T10 (`90d9b74` Codex-H1 + H2 + Claude-B1 hardening + 4 regression tests), T11 live-daemon dogfood (results: `docs/benchmarks/results/2026-04-24-forge-behavioral-skill-inference.md`). Dogfood produced `<skill domain="file-ops" inferred_sessions="3">Inferred: Bash+Edit+Read [b9f98611]</skill>` at HEAD `90d9b74`. Partial unique index widened from `(agent, fingerprint)` → `(agent, project, fingerprint)` and renamed `idx_skill_agent_project_fingerprint`.
 
 - **2026-04-24 — Hook schema fix.** All 7 Forge hooks that emit `hookSpecificOutput` (pre-bash, pre-edit, post-bash, post-edit, session-start, user-prompt, subagent-start) were missing the required `hookEventName` field. Every invocation emitted a "Hook JSON output validation failed" non-blocking error and dropped `additionalContext` silently. Fixed in `d660562`. Live-verified — PreToolUse:Bash context now flows through as a valid hook event.
+
+- **2026-04-24 — Phase 2P-1b partial: 11 of 18 items shipped.** §1 harness-sync CI (`ab88450`), §3 SPDX sidecar + §8 sideload migration (`0563873`), §5 rollback playbook (`a26ac7a`), §9 CODEOWNERS + dependabot (`d9fda72`), §10 all 5 hook-level bugs (`c61d926` + `030711b` — last also ships `forge-next record-tool-use` + post-bash/post-edit wiring so Phase 23 gets live data), §11 TestDaemon helper un-ignores hook e2e tests (`baea19b`), §12 retired 3 stale validators (`d9fda72`), §14 inferred_from windowed pruning (`f0fccf3`), §15 skills_inferred in ConsolidationComplete + tracing (`6ee6e9f`), §17 json_valid guard (obsoleted by §14). Remaining: §2 audit contract, §4 dogfood matrix (macOS), §6 marketplace, §7 2A-4d interlock (time-gated), §13 v0.5.0 release (billing-blocked), §16 fingerprint split, §18 Phase 23 numbering.
+
+- **2026-04-24 — Stream C closed.** Orphan `housekeeping-and-doctor-observability` plan triaged: all 4 tasks were shipped in the interim. Plan marked SHIPPED with per-task evidence pointers.
 
 ## Phase 2P-1b backlog (harden — 18 items)
 

@@ -1,5 +1,18 @@
 # Housekeeping + Doctor Observability Implementation Plan
 
+> **STATUS:** SHIPPED in the interim — retained only for historical context. Triaged 2026-04-24 as part of Stream C (2P-1b cleanup).
+>
+> All 4 tasks are live:
+>
+> | Task | Evidence |
+> |------|----------|
+> | 1. `Request::Version` endpoint + `build.rs` | `crates/core/src/protocol/request.rs:990` + `crates/daemon/build.rs` + live `{"method":"version"}` responds with `git_sha`, `rustc_version`, `target_triple` (T11 dogfood `/tmp/dogfood_version.json`) |
+> | 2. HttpClient configurable timeout | `crates/daemon/src/bin/forge-bench.rs:119-244` uses `request_timeout_ms` flag → `Duration::from_millis` into `HttpClient::with_timeout` at `forge_persist.rs:498` |
+> | 3. Session message pagination + offset | `crates/daemon/src/sessions.rs:1323` test + `offset` field on `Request::SessionMessages` |
+> | 4. Doctor "on steroids" | `ResponseData::Doctor` (response.rs:153-) carries `version`, `git_sha`, `raw_documents_count`, `raw_chunks_count`, per-layer counts; `structured checks: Vec<HealthCheck>` |
+>
+> No further action; this file is kept so future readers understand the original design intent. For live doctor fields and related observability work, see the current response.rs.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land 4 deferred housekeeping items from Forge-Persist reviews (Version endpoint, HttpClient timeout, session pagination, push to origin), then enhance Doctor into a "Doctor on steroids" observability surface for the dogfood gate.
