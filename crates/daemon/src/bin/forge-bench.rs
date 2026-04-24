@@ -142,6 +142,20 @@ enum Commands {
         #[arg(long)]
         expected_recall_delta: Option<f64>,
     },
+    /// Run the Forge-Identity benchmark (memory + identity + skill inference).
+    /// See docs/benchmarks/forge-identity-master-design.md.
+    ForgeIdentity {
+        /// ChaCha20 seed for deterministic dataset generation.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Output directory for summary.json.
+        #[arg(long, default_value = "bench_results_forge_identity")]
+        output: PathBuf,
+        /// Expected composite score for pass/fail gate.
+        /// Omit for first calibration run; observed composite will be printed.
+        #[arg(long)]
+        expected_composite: Option<f64>,
+    },
     /// Run the LoCoMo benchmark.
     Locomo {
         /// Path to locomo10.json (from snap-research/locomo).
@@ -226,6 +240,11 @@ async fn main() {
             .await
         }
         Commands::ForgeContext { seed, output } => run_forge_context(seed, output),
+        Commands::ForgeIdentity {
+            seed,
+            output,
+            expected_composite,
+        } => run_forge_identity(seed, output, expected_composite).await,
         Commands::ForgeConsolidation {
             seed,
             output,
@@ -559,6 +578,47 @@ fn run_forge_consolidation(
             Err(format!("forge-consolidation error: {e}"))
         }
     }
+}
+
+async fn run_forge_identity(
+    seed: u64,
+    output: PathBuf,
+    expected_composite: Option<f64>,
+) -> Result<(), String> {
+    use forge_daemon::bench::forge_identity::{run_bench, BenchConfig};
+    eprintln!("[forge-identity] starting seed={seed}");
+    let cfg = BenchConfig {
+        seed,
+        output_dir: output,
+        expected_composite,
+    };
+    let score = run_bench(cfg).await?;
+    eprintln!("[forge-identity] === results ===");
+    eprintln!("[forge-identity] composite={:.4}", score.composite);
+    eprintln!("[forge-identity] pass={}", score.pass);
+    for d in &score.dimensions {
+        eprintln!(
+            "[forge-identity] {} = {:.4} (min {:.2}, pass={})",
+            d.name, d.score, d.min, d.pass
+        );
+    }
+    eprintln!(
+        "[forge-identity] wall_duration_ms={}",
+        score.wall_duration_ms
+    );
+    eprintln!(
+        "[forge-identity] {}",
+        if score.pass { "PASS" } else { "FAIL" }
+    );
+    if let Some(expected) = expected_composite {
+        if (score.composite - expected).abs() > 0.05 {
+            return Err(format!(
+                "composite {:.4} drifted from expected {:.4} by > 0.05",
+                score.composite, expected
+            ));
+        }
+    }
+    Ok(())
 }
 
 // Parameter list mirrors the clap `Commands::ForgePersist` variant
