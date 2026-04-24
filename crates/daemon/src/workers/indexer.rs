@@ -76,7 +76,7 @@ pub async fn run_indexer(
     interval_secs: u64,
 ) {
     let index_interval = Duration::from_secs(interval_secs);
-    eprintln!("[indexer] started, interval = {index_interval:?}");
+    tracing::info!(target: "forge::indexer", ?index_interval, "started");
     let mut manager: Option<LspManager> = None;
     let mut first_run = true;
 
@@ -102,7 +102,7 @@ pub async fn run_indexer(
                 let project_dir = match project_dir {
                     Some(dir) => dir,
                     None => {
-                        eprintln!("[indexer] no project directory found (no active sessions, FORGE_PROJECT not set)");
+                        tracing::warn!(target: "forge::indexer", "no project directory found (no active sessions, FORGE_PROJECT not set)");
                         continue;
                     }
                 };
@@ -124,14 +124,14 @@ pub async fn run_indexer(
                 };
 
                 if let Err(e) = run_index(&project_dir, &state, mgr).await {
-                    eprintln!("[indexer] error: {e}");
+                    tracing::error!(target: "forge::indexer", error = %e, "index run failed");
                 }
             }
             _ = shutdown_rx.changed() => {
                 if let Some(mgr) = manager.take() {
                     mgr.shutdown_all().await;
                 }
-                eprintln!("[indexer] shutting down");
+                tracing::info!(target: "forge::indexer", "shutting down");
                 return;
             }
         }
@@ -231,11 +231,12 @@ fn collect_source_files(project_dir: &str, extensions: &[&str]) -> Vec<String> {
         0,
     );
     if files.len() > MAX_FILES_PER_PROJECT {
-        eprintln!(
-            "[indexer] capping file collection: {} files found, limiting to {} for {}",
-            files.len(),
-            MAX_FILES_PER_PROJECT,
-            project_dir
+        tracing::warn!(
+            target: "forge::indexer",
+            found = files.len(),
+            cap = MAX_FILES_PER_PROJECT,
+            project = %project_dir,
+            "capping file collection"
         );
         // L3: sort by path for deterministic truncation across runs
         files.sort();
@@ -316,17 +317,19 @@ async fn index_with_server(
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
 
-    eprintln!(
-        "[indexer] {} — found {} files, using persistent LSP server",
-        config.language,
-        source_files.len()
+    tracing::info!(
+        target: "forge::indexer",
+        language = %config.language,
+        files = source_files.len(),
+        "found files, using persistent LSP server"
     );
 
     // Check server capabilities before requesting symbols (Serena pattern)
     if !client.supports_document_symbols() {
-        eprintln!(
-            "[indexer] {} does not support documentSymbol, skipping",
-            config.command
+        tracing::warn!(
+            target: "forge::indexer",
+            command = %config.command,
+            "server does not support documentSymbol, skipping"
         );
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
@@ -359,7 +362,7 @@ async fn index_with_server(
         // Send didOpen before requesting symbols (required by LSP protocol)
         let content = std::fs::read_to_string(file_path).unwrap_or_default();
         if let Err(e) = client.did_open(&uri, &config.language, &content).await {
-            eprintln!("[indexer] didOpen failed for {file_path}: {e}");
+            tracing::warn!(target: "forge::indexer", file = %file_path, error = %e, "didOpen failed");
             continue;
         }
 
@@ -375,22 +378,27 @@ async fn index_with_server(
                     .insert(file_path.to_string(), hash);
             }
             Ok(Err(e)) => {
-                eprintln!(
-                    "[indexer] {} symbols failed for {}: {}",
-                    config.language, file_path, e
+                tracing::warn!(
+                    target: "forge::indexer",
+                    language = %config.language,
+                    file = %file_path,
+                    error = %e,
+                    "symbols request failed"
                 );
             }
             Err(_) => {
-                eprintln!(
-                    "[indexer] {} symbols timed out for {}",
-                    config.language, file_path
+                tracing::warn!(
+                    target: "forge::indexer",
+                    language = %config.language,
+                    file = %file_path,
+                    "symbols request timed out"
                 );
             }
         }
 
         // Close the document after processing (Serena pattern: didOpen/didClose lifecycle)
         if let Err(e) = client.did_close(&uri).await {
-            eprintln!("[indexer] failed to close document {file_path}: {e}");
+            tracing::warn!(target: "forge::indexer", file = %file_path, error = %e, "failed to close document");
         }
     }
 
@@ -407,7 +415,7 @@ async fn index_with_server(
             let sym_uri = file_uri(&sym.file_path);
             let content = std::fs::read_to_string(&sym.file_path).unwrap_or_default();
             if let Err(e) = client.did_open(&sym_uri, &config.language, &content).await {
-                eprintln!("[indexer] failed to open document for references: {e}");
+                tracing::warn!(target: "forge::indexer", error = %e, "failed to open document for references");
             }
 
             // Find the actual character position of the symbol name on its line.
@@ -440,7 +448,7 @@ async fn index_with_server(
             }
 
             if let Err(e) = client.did_close(&sym_uri).await {
-                eprintln!("[indexer] failed to close document after references: {e}");
+                tracing::warn!(target: "forge::indexer", error = %e, "failed to close document after references");
             }
         }
     }
@@ -488,9 +496,9 @@ async fn run_index(
                     all_symbols.extend(symbols);
                     all_call_edges.extend(edges);
                 }
-                Err(e) => eprintln!("[indexer] {} failed: {}", config.language, e),
+                Err(e) => tracing::warn!(target: "forge::indexer", language = %config.language, error = %e, "index_with_server failed"),
             },
-            Err(e) => eprintln!("[indexer] {} spawn failed: {}", config.command, e),
+            Err(e) => tracing::warn!(target: "forge::indexer", command = %config.command, error = %e, "lsp spawn failed"),
         }
     }
 
@@ -505,15 +513,16 @@ async fn run_index(
             .map(|s| s.as_str())
             .collect();
         if !unindexed.is_empty() {
-            eprintln!(
-                "[indexer] regex fallback: {} TS/JS files not covered by LSP",
-                unindexed.len()
+            tracing::info!(
+                target: "forge::indexer",
+                files = unindexed.len(),
+                "regex fallback: TS/JS files not covered by LSP"
             );
             for path in &unindexed {
                 let content = match std::fs::read_to_string(path) {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("[indexer] cannot read {path}: {e}");
+                        tracing::warn!(target: "forge::indexer", path = %path, error = %e, "cannot read source file");
                         continue;
                     }
                 };
@@ -656,7 +665,7 @@ async fn run_index(
         .conn
         .execute("DELETE FROM edge WHERE edge_type = 'calls'", [])
     {
-        eprintln!("[indexer] failed to clear old calls edges: {e}");
+        tracing::warn!(target: "forge::indexer", error = %e, "failed to clear old calls edges");
     }
 
     // Store "calls" edges
@@ -678,11 +687,12 @@ async fn run_index(
         all_symbols.clone()
     };
     let regex_call_edges = extract_call_edges_regex(&locked.conn, &all_files, &symbols_for_calls);
-    eprintln!(
-        "[indexer] call edges: {} from LSP, {} from regex (symbols: {})",
-        edges_stored,
-        regex_call_edges,
-        symbols_for_calls.len()
+    tracing::info!(
+        target: "forge::indexer",
+        lsp_edges = edges_stored,
+        regex_edges = regex_call_edges,
+        symbols = symbols_for_calls.len(),
+        "call edges"
     );
 
     // Run community detection on the updated graph
@@ -692,20 +702,20 @@ async fn run_index(
     let current_paths: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
     if let Ok(cleaned) = ops::cleanup_stale_files(&locked.conn, &current_paths) {
         if cleaned > 0 {
-            eprintln!("[indexer] cleaned {cleaned} stale entries");
+            tracing::info!(target: "forge::indexer", cleaned, "cleaned stale entries");
         }
     }
 
     drop(locked); // release lock immediately
 
     if symbols_stored > 0 {
-        eprintln!("[indexer] indexed {symbols_stored} symbols across {files_stored} file entries");
+        tracing::info!(target: "forge::indexer", symbols_stored, files_stored, "indexed symbols");
     }
     if edges_stored > 0 {
-        eprintln!("[indexer] stored {edges_stored} call edges");
+        tracing::info!(target: "forge::indexer", edges_stored, "stored call edges");
     }
     if import_edges_stored > 0 {
-        eprintln!("[indexer] stored {import_edges_stored} import edges");
+        tracing::info!(target: "forge::indexer", import_edges_stored, "stored import edges");
     }
     Ok(())
 }
@@ -769,7 +779,7 @@ pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usi
     }
 
     if all_files.is_empty() {
-        eprintln!("[force-index] no source files found in {project_dir}");
+        tracing::warn!(target: "forge::indexer", project = %project_dir, "force-index: no source files found");
         return (0, 0);
     }
 
@@ -796,8 +806,13 @@ pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usi
     // Auto-detect project conventions
     auto_detect_conventions(conn, project_dir);
 
-    eprintln!(
-        "[force-index] {files_stored} files, {symbols_stored} symbols, {import_edges} import edges for {project_dir}"
+    tracing::info!(
+        target: "forge::indexer",
+        files_stored,
+        symbols_stored,
+        import_edges,
+        project = %project_dir,
+        "force-index complete"
     );
 
     (files_stored, symbols_stored)
@@ -810,7 +825,7 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
 
     // Clear old import edges before re-indexing
     if let Err(e) = conn.execute("DELETE FROM edge WHERE edge_type = 'imports'", []) {
-        eprintln!("[indexer] failed to clear old import edges: {e}");
+        tracing::warn!(target: "forge::indexer", error = %e, "failed to clear old import edges");
         return 0;
     }
 
@@ -825,7 +840,7 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
         let content = match std::fs::read_to_string(&file.path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[indexer] cannot read {}: {e}", file.path);
+                tracing::warn!(target: "forge::indexer", path = %file.path, error = %e, "cannot read file for imports");
                 continue;
             }
         };
@@ -837,7 +852,7 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
             // Store the raw module-path edge (for find_callers LIKE matching)
             match ops::store_edge(conn, &from_id, imported_module, "imports", "{}") {
                 Ok(_) => import_edges_stored += 1,
-                Err(e) => eprintln!("[indexer] store_edge failed: {e}"),
+                Err(e) => tracing::warn!(target: "forge::indexer", error = %e, "store_edge failed"),
             }
             // For Rust imports, also store a file:-prefixed edge so find_importers can match
             if file.language == "rust" {
@@ -847,13 +862,19 @@ pub fn extract_and_store_imports(conn: &Connection, files: &[CodeFile]) -> usize
                     let to_id = format!("file:{resolved}");
                     match ops::store_edge(conn, &from_id, &to_id, "imports", "{}") {
                         Ok(_) => import_edges_stored += 1,
-                        Err(e) => eprintln!("[indexer] store_edge (resolved) failed: {e}"),
+                        Err(e) => tracing::warn!(target: "forge::indexer", error = %e, "store_edge (resolved) failed"),
                     }
                 }
             }
         }
     }
-    eprintln!("[indexer] import extraction: {files_read} files read, {total_imports_found} imports found, {import_edges_stored} edges stored");
+    tracing::info!(
+        target: "forge::indexer",
+        files_read,
+        total_imports_found,
+        import_edges_stored,
+        "import extraction complete"
+    );
     import_edges_stored
 }
 
@@ -1310,9 +1331,9 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
 
     match result {
         Ok(_) => {
-            eprintln!("[indexer] auto-detected conventions for {project_name}: {language_str}")
+            tracing::info!(target: "forge::indexer", project = %project_name, languages = %language_str, "auto-detected conventions");
         }
-        Err(e) => eprintln!("[indexer] failed to store conventions: {e}"),
+        Err(e) => tracing::warn!(target: "forge::indexer", error = %e, "failed to store conventions"),
     }
 }
 
@@ -1320,7 +1341,7 @@ pub fn run_clustering(conn: &Connection, project_dir: &str) {
     match ops::get_reality_by_path(conn, project_dir, "default") {
         Ok(Some(reality)) => {
             if let Err(e) = run_label_propagation(conn, &reality.id, 20) {
-                eprintln!("[indexer] clustering failed: {e}");
+                tracing::warn!(target: "forge::indexer", error = %e, "clustering failed");
             }
         }
         _ => {
