@@ -866,6 +866,35 @@ enum Commands {
     /// Re-index skills directory
     #[command(name = "skills-refresh")]
     SkillsRefresh,
+
+    /// Phase 2A-4d.2: Observability API — query kpi_events / gauges via /inspect.
+    #[command(name = "observe")]
+    Observe {
+        /// Which shape to fetch (row_count, latency, error_rate, throughput, phase_run_summary).
+        #[arg(long, value_enum)]
+        shape: commands::observe::ObserveShape,
+        /// Window over which to aggregate (humantime grammar, ≤ 7 days).
+        #[arg(long, default_value = "1h")]
+        window: String,
+        /// Filter: Manas layer (gates shape=row_count).
+        #[arg(long)]
+        layer: Option<String>,
+        /// Filter: phase name.
+        #[arg(long)]
+        phase: Option<String>,
+        /// Filter: kpi_event type (e.g., phase_completed).
+        #[arg(long, name = "event-type")]
+        event_type: Option<String>,
+        /// Filter: project.
+        #[arg(long)]
+        project: Option<String>,
+        /// Grouping dimension (phase, event_type, project, run_id).
+        #[arg(long, name = "group-by", value_enum)]
+        group_by: Option<commands::observe::ObserveGroupBy>,
+        /// Output format. If omitted, uses Table when stdout is a TTY, else Json.
+        #[arg(long, value_enum)]
+        format: Option<commands::observe::OutputFormat>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2117,6 +2146,21 @@ async fn main() {
                 }
                 Err(e) => eprintln!("Connection error: {e}"),
             }
+        }
+        Commands::Observe {
+            shape,
+            window,
+            layer,
+            phase,
+            event_type,
+            project,
+            group_by,
+            format,
+        } => {
+            commands::observe::observe(
+                shape, window, layer, phase, event_type, project, group_by, format,
+            )
+            .await;
         }
     }
 }

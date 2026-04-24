@@ -2586,6 +2586,81 @@ Query which language servers are available.
 }
 ```
 
+### inspect
+
+Phase 2A-4d.2 observability API. Queries `kpi_events` or the per-layer `GaugeSnapshot` through one shape-parameterized RPC. `shape=row_count` is served from the atomic gauge snapshot; all other shapes aggregate `kpi_events` rows over the `window`.
+
+**Role:** Viewer
+
+**Request:**
+
+```json
+{
+  "method": "inspect",
+  "params": {
+    "shape": "latency",
+    "window": "1h",
+    "filter": {
+      "layer": null,
+      "phase": null,
+      "event_type": "phase_completed",
+      "project": null
+    },
+    "group_by": "phase"
+  }
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `shape` | string | yes | One of `row_count`, `latency`, `error_rate`, `throughput`, `phase_run_summary` |
+| `window` | string | no | humantime grammar (`15m`, `1h30m`, `7d`…). Default `1h`. Ceiling 7 days. |
+| `filter.layer` | string | no | Manas layer filter (applies to `shape=row_count`) |
+| `filter.phase` | string | no | Phase name filter |
+| `filter.event_type` | string | no | kpi_event type filter |
+| `filter.project` | string | no | Project scope filter |
+| `group_by` | string | no | One of `phase`, `event_type`, `project`, `run_id` (validity per shape; see spec) |
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "kind": "inspect",
+    "shape": "latency",
+    "window": "1h",
+    "window_secs": 3600,
+    "generated_at_secs": 1745500000,
+    "effective_filter": {
+      "layer": null,
+      "phase": null,
+      "event_type": "phase_completed",
+      "project": null
+    },
+    "effective_group_by": "phase",
+    "stale": false,
+    "truncated": false,
+    "data": {
+      "kind": "latency",
+      "rows": [
+        {
+          "group_key": "phase_3_semantic_dedup",
+          "count": 420,
+          "p50_ms": 12.5,
+          "p95_ms": 48.0,
+          "p99_ms": 102.3,
+          "mean_ms": 17.9,
+          "truncated_samples": 0
+        }
+      ]
+    }
+  }
+}
+```
+
+`stale=true` indicates `shape=row_count` was served from a stale or empty snapshot. `truncated=true` indicates at least one group hit the per-group sample cap during percentile calculation. See `docs/superpowers/specs/2026-04-24-forge-identity-observability-tier2-design.md` §2 for the full validity matrix.
+
 ### get_stats
 
 Get aggregated metrics for a time period.

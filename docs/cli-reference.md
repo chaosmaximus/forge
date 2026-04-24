@@ -764,6 +764,39 @@ forge-next context-trace [--agent AGENT] [--project PROJECT]
 forge-next context-trace --agent claude-code --project forge
 ```
 
+### observe
+
+Phase 2A-4d.2 observability API. Queries `kpi_events` or the per-layer gauge snapshot through one shape-parameterized subcommand. Use for debugging slow phases, drift detection, and dashboard-free live checks.
+
+```
+forge-next observe --shape SHAPE [--window WINDOW] [--layer LAYER] [--phase PHASE] [--event-type TYPE] [--project PROJECT] [--group-by GROUP] [--format FORMAT]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--shape SHAPE` | *(required)* | One of `row-count`, `latency`, `error-rate`, `throughput`, `phase-run-summary` |
+| `--window WINDOW` | `1h` | Aggregation window (humantime grammar, e.g. `15m`, `4h`, `1h30m`, `7d`). 7-day ceiling. |
+| `--layer LAYER` | *(all)* | Filter: Manas layer. Applies to `shape=row-count`. |
+| `--phase PHASE` | *(all)* | Filter: phase name (e.g., `phase_3_semantic_dedup`) |
+| `--event-type TYPE` | *(all)* | Filter: kpi_event type (e.g., `phase_completed`, `consolidate_pass_completed`) |
+| `--project PROJECT` | *(all)* | Filter: project scope |
+| `--group-by GROUP` | *(shape default)* | One of `phase`, `event-type`, `project`, `run-id` |
+| `--format FORMAT` | *(auto)* | `table` or `json`. Auto-picks table for TTY, json for pipes. |
+
+```bash
+# Per-layer row counts + freshness
+forge-next observe --shape row-count
+
+# p50/p95/p99 per phase over the last 4 hours
+forge-next observe --shape latency --window 4h --group-by phase
+
+# Error rate for a specific event type across one day
+forge-next observe --shape error-rate --window 1d --event-type phase_completed --group-by phase
+
+# Consolidation pass rollups in the last hour (JSON for agents)
+forge-next observe --shape phase-run-summary --window 1h --format json
+```
+
 ### lsp-status
 
 Show available language servers for the current project.
