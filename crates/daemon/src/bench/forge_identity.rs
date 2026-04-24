@@ -545,16 +545,177 @@ fn dim_4_valence_flipping(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> Di
 }
 
 /// Dim 5: behavioral skill inference from tool-use patterns.
-/// T5 implements this; stub returns score 0.0 / pass false.
+///
+/// Master v6 §4 Dim 5: a tool-use sequence repeating in N ≥ 3 distinct
+/// sessions with identical canonical fingerprint must materialize as one
+/// `skill` row with `inferred_from = {session_ids}` and a non-empty
+/// `fingerprint`. No duplicate (agent, fingerprint) pair may exist.
+///
+/// Master v6 §7: Dim 5 scores AFTER `Request::ForceConsolidate` so that
+/// Phase 23 (`infer_skills_from_behavior`) has fired.
+///
+/// Implementation:
+///   1. Seed 3 distinct sessions, each carrying the same 3-tool sequence
+///      (`Read` → `Edit` → `Bash`) via `Request::RecordToolUse`.
+///   2. Probe Phase 23 metadata via `Request::ProbePhase` — assert it sits
+///      at index 23 AND runs after `extract_protocols`.
+///   3. Run `Request::ForceConsolidate` to fire Phase 23.
+///   4. Inspect the `skill` table: at least one row with `inferred_at`
+///      non-null and `fingerprint` non-empty.
+///   5. Dedup check: no duplicate (agent, fingerprint) rows.
+///   6. The row's `inferred_from` JSON contains all 3 seeded session_ids.
+///
+/// Score = 0.25 × n_passed (out of 4 assertions); pass at >= 0.80.
 fn dim_5_behavioral_skill_inference(
-    _state: &DaemonState,
+    state: &mut DaemonState,
     _rng: &mut ChaCha20Rng,
 ) -> DimensionScore {
-    DimensionScore {
-        name: "behavioral_skill_inference".to_string(),
-        score: 0.0,
+    use forge_core::protocol::{Request, Response, ResponseData};
+
+    let dim_name = "behavioral_skill_inference".to_string();
+    let fail = |score: f64| DimensionScore {
+        name: dim_name.clone(),
+        score,
         min: DIM_MINIMUMS[4],
-        pass: false,
+        pass: score >= DIM_MINIMUMS[4],
+    };
+
+    // ── 1. Seed 3 sessions × 3 tool calls each ───────────────────
+    let agent = "claude-code";
+    let session_ids: [String; 3] = [
+        "dim5_session_0".to_string(),
+        "dim5_session_1".to_string(),
+        "dim5_session_2".to_string(),
+    ];
+    let tool_specs: [(&str, serde_json::Value); 3] = [
+        ("Read", serde_json::json!({"path": "/tmp/foo"})),
+        ("Edit", serde_json::json!({"path": "/tmp/foo"})),
+        ("Bash", serde_json::json!({"path": "/tmp/foo"})),
+    ];
+
+    for sid in &session_ids {
+        // RecordToolUse requires a pre-existing `session` row (the handler
+        // INSERT…SELECT joins on session.id). Seed it directly.
+        if let Err(e) = state.conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, organization_id)
+             VALUES (?1, ?2, '2026-04-19 10:00:00', 'active', 'default')",
+            rusqlite::params![sid, agent],
+        ) {
+            tracing::warn!("dim_5 session seed failed for {sid}: {e}");
+            return fail(0.0);
+        }
+        for (tool_name, tool_args) in &tool_specs {
+            let req = Request::RecordToolUse {
+                session_id: sid.clone(),
+                agent: agent.to_string(),
+                tool_name: (*tool_name).to_string(),
+                tool_args: tool_args.clone(),
+                tool_result_summary: String::new(),
+                success: true,
+                user_correction_flag: false,
+            };
+            let resp = crate::server::handler::handle_request(state, req);
+            if !matches!(resp, Response::Ok { .. }) {
+                tracing::warn!("dim_5 RecordToolUse failed for {sid}/{tool_name}: {resp:?}");
+                return fail(0.0);
+            }
+        }
+    }
+
+    // ── 2. Assertion 1: Phase 23 metadata via ProbePhase ─────────
+    let probe_resp = crate::server::handler::handle_request(
+        state,
+        Request::ProbePhase {
+            phase_name: "infer_skills_from_behavior".to_string(),
+        },
+    );
+    let a1_phase = match probe_resp {
+        Response::Ok {
+            data:
+                ResponseData::PhaseProbe {
+                    executed_at_phase_index,
+                    executed_after,
+                },
+        } => {
+            executed_at_phase_index == 23 && executed_after.iter().any(|n| n == "extract_protocols")
+        }
+        other => {
+            tracing::warn!("dim_5 ProbePhase unexpected response: {other:?}");
+            false
+        }
+    };
+
+    // ── 3. Fire Phase 23 via ForceConsolidate ────────────────────
+    let _ = crate::server::handler::handle_request(state, Request::ForceConsolidate);
+
+    // ── 4. Assertion 2: skill row materialized w/ fingerprint ────
+    type SkillRow = (String, Option<String>, Option<String>);
+    let row: Option<SkillRow> = state
+        .conn
+        .query_row(
+            "SELECT inferred_from, fingerprint, inferred_at
+             FROM skill
+             WHERE agent = ?1 AND inferred_at IS NOT NULL
+             ORDER BY inferred_at DESC
+             LIMIT 1",
+            rusqlite::params![agent],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .ok();
+    let (inferred_from_json, fingerprint_opt) = match &row {
+        Some((ifj, fp, _ia)) => (Some(ifj.clone()), fp.clone()),
+        None => (None, None),
+    };
+    let a2_skill_row = match &fingerprint_opt {
+        Some(fp) => !fp.is_empty(),
+        None => false,
+    };
+
+    // ── 5. Assertion 3: no duplicate (agent, fingerprint) ────────
+    let dup_count: i64 = state
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM (
+                SELECT agent, fingerprint, COUNT(*) AS c
+                FROM skill
+                WHERE agent = ?1 AND fingerprint IS NOT NULL AND fingerprint != ''
+                GROUP BY agent, fingerprint
+                HAVING c > 1
+             )",
+            rusqlite::params![agent],
+            |r| r.get(0),
+        )
+        .unwrap_or(-1);
+    let a3_no_dup = dup_count == 0;
+
+    // ── 6. Assertion 4: inferred_from contains all 3 session_ids ─
+    let a4_inferred_from = match inferred_from_json.as_deref() {
+        Some(json_str) => match serde_json::from_str::<Vec<String>>(json_str) {
+            Ok(ids) => session_ids.iter().all(|sid| ids.iter().any(|i| i == sid)),
+            Err(e) => {
+                tracing::warn!("dim_5 inferred_from JSON parse failed: {e}");
+                false
+            }
+        },
+        None => false,
+    };
+
+    let n_passed = [a1_phase, a2_skill_row, a3_no_dup, a4_inferred_from]
+        .iter()
+        .filter(|b| **b)
+        .count();
+    let score = n_passed as f64 * 0.25;
+    DimensionScore {
+        name: dim_name,
+        score,
+        min: DIM_MINIMUMS[4],
+        pass: score >= DIM_MINIMUMS[4],
     }
 }
 
@@ -1287,7 +1448,7 @@ pub async fn run_bench(config: BenchConfig) -> Result<IdentityScore, String> {
         mark_pass(dim_2_disposition_drift(&state, &mut rng)),
         mark_pass(dim_3_preference_time_ordering(&mut state, &mut rng)),
         mark_pass(dim_4_valence_flipping(&mut state, &mut rng)),
-        mark_pass(dim_5_behavioral_skill_inference(&state, &mut rng)),
+        mark_pass(dim_5_behavioral_skill_inference(&mut state, &mut rng)),
         mark_pass(dim_6_preference_staleness(&mut state, &mut rng)),
     ];
 
@@ -1458,6 +1619,40 @@ mod tests {
         assert_eq!(dim.name, "valence_flipping");
         assert!((dim.min - DIM_MINIMUMS[3]).abs() < 1e-12);
         assert!((0.0..=1.0).contains(&dim.score));
+    }
+
+    // ── T5 — Dim 5 behavioral skill inference ─────────────────────
+
+    #[test]
+    fn test_dim_5_behavioral_skill_inference_returns_score_struct() {
+        // Shape-lock: regardless of calibration outcome, dim_5 must never
+        // panic and must return a DimensionScore with the canonical name +
+        // floor.
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+        let mut rng = super::super::common::seeded_rng(42);
+        let dim = dim_5_behavioral_skill_inference(&mut state, &mut rng);
+        assert_eq!(dim.name, "behavioral_skill_inference");
+        assert!((dim.min - DIM_MINIMUMS[4]).abs() < 1e-12);
+        assert!((0.0..=1.0).contains(&dim.score));
+    }
+
+    #[test]
+    fn test_dim_5_behavioral_skill_inference_full_pass() {
+        // Master v6 §4 Dim 5: all 4 assertions must fire on a fresh
+        // in-memory daemon — RecordToolUse seeds 3 sessions, ProbePhase
+        // confirms Phase 23 ordering, ForceConsolidate fires it, and the
+        // resulting skill row carries fingerprint + inferred_from.
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+        let mut rng = super::super::common::seeded_rng(42);
+        let dim = dim_5_behavioral_skill_inference(&mut state, &mut rng);
+        assert_eq!(dim.name, "behavioral_skill_inference");
+        assert!(
+            (dim.score - 1.0).abs() < 1e-12,
+            "dim_5 must pass all 4 assertions; got score={}",
+            dim.score
+        );
+        let marked = mark_pass(dim);
+        assert!(marked.pass, "dim_5 score 1.0 must mark pass");
     }
 
     // ── T6 — 14 infrastructure checks ─────────────────────────────
