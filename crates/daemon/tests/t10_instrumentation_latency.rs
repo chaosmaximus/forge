@@ -106,7 +106,7 @@ fn t10_consolidation_latency_baseline() {
     for _ in 0..N_ITERATIONS {
         let conn = make_conn();
         let t0 = Instant::now();
-        let _stats = consolidator::run_all_phases(&conn, &cfg, None);
+        let _stats = consolidator::run_all_phases(&conn, &cfg, None, None);
         a_durs.push(t0.elapsed());
     }
 
@@ -132,7 +132,7 @@ fn t10_consolidation_latency_baseline() {
         let metrics = ForgeMetrics::new();
         let conn = make_conn();
         let t0 = Instant::now();
-        let _stats = consolidator::run_all_phases(&conn, &cfg, Some(&metrics));
+        let _stats = consolidator::run_all_phases(&conn, &cfg, Some(&metrics), None);
         b_durs.push(t0.elapsed());
         let per_iter_count: i64 = conn
             .query_row(
@@ -181,7 +181,7 @@ fn t10_consolidation_latency_baseline() {
     // variant B (one per phase per run).
     let metrics = ForgeMetrics::new();
     let conn = make_conn();
-    let _stats = consolidator::run_all_phases(&conn, &cfg, Some(&metrics));
+    let _stats = consolidator::run_all_phases(&conn, &cfg, Some(&metrics), None);
     let kpi_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM kpi_events WHERE event_type = 'phase_completed'",

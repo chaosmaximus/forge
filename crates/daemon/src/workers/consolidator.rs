@@ -42,7 +42,7 @@ pub const PHASE_ORDER: &[(&str, usize)] = &[
 ];
 
 /// Stats returned by a consolidation run.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConsolidationStats {
     pub exact_dedup: usize,
     pub semantic_dedup: usize,
@@ -90,9 +90,16 @@ pub fn run_all_phases(
     conn: &Connection,
     config: &crate::config::ConsolidationConfig,
     metrics: Option<&crate::server::metrics::ForgeMetrics>,
+    // Phase 2A-4d.2 T5: optional event bus. When `Some`, `run_all_phases`
+    // emits a `consolidate_pass_completed` ForgeEvent just before returning
+    // (inside the `consolidate_pass` span so `trace_id` captures the pass,
+    // not a phase child). Non-blocking; safe to call with the daemon state
+    // lock held because `broadcast::Sender::send` never awaits.
+    events: Option<&crate::events::EventSender>,
 ) -> ConsolidationStats {
     use crate::workers::instrumentation::{record, PhaseOutcome};
 
+    let pass_start = std::time::Instant::now();
     let mut stats = ConsolidationStats::default();
     let run_id = ulid::Ulid::new().to_string();
     let _pass_span = tracing::info_span!("consolidate_pass", run_id = %run_id).entered();
@@ -1056,6 +1063,46 @@ pub fn run_all_phases(
         .build(conn) {
             tracing::error!(error = %e, "healing notification failed");
         }
+    }
+
+    // Phase 2A-4d.2 T5: emit consolidate_pass_completed event. Runs inside
+    // `_pass_span` scope (span lives until the closing brace below), so
+    // current_otlp_trace_id() captures the pass-level trace id, not a
+    // phase child's.
+    if let Some(tx) = events {
+        let trace_id = crate::workers::instrumentation::current_otlp_trace_id();
+        // Pass-level error total: sum the error_count written to
+        // kpi_events across this run's phases. Filtered by timestamp to
+        // stay on the timestamp index (phase/run_id aren't indexed).
+        let pass_start_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64 - pass_start.elapsed().as_secs() as i64 - 1)
+            .unwrap_or(0);
+        let total_errors: i64 = conn
+            .query_row(
+                r#"SELECT COALESCE(SUM(COALESCE(json_extract(metadata_json, '$.error_count'), 0)), 0)
+                   FROM kpi_events
+                   WHERE timestamp >= ?1
+                     AND event_type = 'phase_completed'
+                     AND json_extract(metadata_json, '$.run_id') = ?2"#,
+                rusqlite::params![pass_start_secs, &run_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        crate::events::emit(
+            tx,
+            "consolidate_pass_completed",
+            serde_json::json!({
+                "event_schema_version": 1,
+                "run_id": run_id,
+                "correlation_id": run_id,
+                "trace_id": trace_id,
+                "pass_wall_duration_ms": pass_start.elapsed().as_millis() as u64,
+                "phase_count": crate::workers::instrumentation::PHASE_SPAN_NAMES.len() as u64,
+                "error_count": total_errors,
+                "stats": stats,
+            }),
+        );
     }
 
     stats
@@ -2594,12 +2641,14 @@ pub async fn run_consolidator(
                     locked.events.clone()
                 };
 
-                // Run all 15 phases (acquires conn from state)
+                // Run all 23 phases (acquires conn from state). event_tx was
+                // cloned above BEFORE the lock was taken, so passing `&event_tx`
+                // here is deadlock-safe (broadcast::Sender::send never awaits).
                 let stats = {
                     let consol_config = crate::config::load_config().consolidation.validated();
                     let locked = state.lock().await;
                     let metrics = locked.metrics.as_deref();
-                    run_all_phases(&locked.conn, &consol_config, metrics)
+                    run_all_phases(&locked.conn, &consol_config, metrics, Some(&event_tx))
                 };
 
                 // Emit consolidation event with stats
@@ -2648,7 +2697,7 @@ mod tests {
 
         // On an empty DB, all stats should be 0
         let config = crate::config::ConsolidationConfig::default();
-        let stats = run_all_phases(&conn, &config, None);
+        let stats = run_all_phases(&conn, &config, None, None);
         assert_eq!(stats.exact_dedup, 0);
         assert_eq!(stats.semantic_dedup, 0);
         assert_eq!(stats.linked, 0);
@@ -3229,7 +3278,7 @@ mod tests {
         ).unwrap();
 
         let config = crate::config::ConsolidationConfig::default();
-        let stats = run_all_phases(&conn, &config, None);
+        let stats = run_all_phases(&conn, &config, None, None);
 
         // Healing phases should have run
         assert!(
@@ -3405,7 +3454,7 @@ mod tests {
 
         // Run full consolidation (which includes meeting timeout in phase 19d)
         let config = crate::config::ConsolidationConfig::default();
-        let _stats = run_all_phases(&conn, &config, None);
+        let _stats = run_all_phases(&conn, &config, None, None);
 
         // Verify meeting is timed_out
         let status: String = conn
@@ -3540,7 +3589,7 @@ mod tests {
 
         // Run all phases — should auto-dismiss the notification since quality is good
         let config = crate::config::ConsolidationConfig::default();
-        run_all_phases(&conn, &config, None);
+        run_all_phases(&conn, &config, None, None);
 
         // Verify the notification is dismissed
         let dismissed_count: i64 = conn.query_row(
@@ -3874,7 +3923,7 @@ mod tests {
 
         // Run full consolidation — Phase 9b should pick these up
         let config = crate::config::ConsolidationConfig::default();
-        let stats = run_all_phases(&conn, &config, None);
+        let stats = run_all_phases(&conn, &config, None, None);
 
         assert!(
             stats.contradictions >= 1,

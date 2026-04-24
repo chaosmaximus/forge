@@ -20,7 +20,7 @@ use crate::server::metrics::ForgeMetrics;
 /// then yields an all-zeros `TraceId`). This preserves the documented
 /// contract that `trace_id` is `null` in `kpi_events.metadata_json` whenever
 /// OTLP is disabled.
-fn current_otlp_trace_id() -> Option<String> {
+pub(crate) fn current_otlp_trace_id() -> Option<String> {
     let span = tracing::Span::current();
     let otel_context = span.context();
     let span_ref = otel_context.span();

@@ -3546,10 +3546,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
         Request::ForceConsolidate => {
             let consol_config = crate::config::load_config().consolidation.validated();
+            // `state.events` is a broadcast::Sender (Arc under the hood);
+            // ForceConsolidate is synchronous and doesn't hold a Mutex, so
+            // passing a ref to it is straightforward.
             let stats = crate::workers::consolidator::run_all_phases(
                 &state.conn,
                 &consol_config,
                 state.metrics.as_deref(),
+                Some(&state.events),
             );
             tracing::info!(
                 exact_dedup = stats.exact_dedup,

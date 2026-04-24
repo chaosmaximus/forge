@@ -392,6 +392,7 @@ async fn main() {
                 &locked.conn,
                 &startup_consol_config,
                 metrics,
+                Some(&locked.events),
             );
             eprintln!(
                 "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",

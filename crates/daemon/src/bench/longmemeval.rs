@@ -400,7 +400,7 @@ pub async fn run_consolidate(
     let started = Instant::now();
     let conn = open_bench_conn()?;
     build_extract_corpus(&conn, entry, api_key, model, concurrency).await?;
-    consolidator::run_all_phases(&conn, &ConsolidationConfig::default(), None);
+    consolidator::run_all_phases(&conn, &ConsolidationConfig::default(), None, None);
     let retrieved_session_ids = bm25_query_session_ids(&conn, &entry.question)?;
     Ok(score_question(
         entry,
