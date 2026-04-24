@@ -509,6 +509,10 @@ pub enum ResponseData {
         reweaved: usize,
         #[serde(default)]
         scored: usize,
+        /// Count of Phase 23 skill rows inserted/updated this run (2A-4c2).
+        /// Default keeps pre-2A-4c2 serialisations deserializable.
+        #[serde(default)]
+        skills_inferred: usize,
     },
     ExtractionTriggered {
         files_queued: usize,

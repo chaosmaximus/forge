@@ -305,7 +305,10 @@ pub fn run_all_phases(
     );
     stats.skills_inferred = skills_inferred;
     if skills_inferred > 0 {
-        eprintln!("[consolidator] inferred {skills_inferred} skills from tool-use patterns");
+        tracing::info!(
+            skills_inferred,
+            "phase_23: inferred skills from tool-use patterns"
+        );
     }
 
     // Phase 18: Anti-pattern tagging — tag lessons with negative signals

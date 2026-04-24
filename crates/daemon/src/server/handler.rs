@@ -3538,6 +3538,24 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         Request::ForceConsolidate => {
             let consol_config = crate::config::load_config().consolidation.validated();
             let stats = crate::workers::consolidator::run_all_phases(&state.conn, &consol_config);
+            tracing::info!(
+                exact_dedup = stats.exact_dedup,
+                semantic_dedup = stats.semantic_dedup,
+                linked = stats.linked,
+                faded = stats.faded,
+                promoted = stats.promoted,
+                reconsolidated = stats.reconsolidated,
+                embedding_merged = stats.embedding_merged,
+                strengthened = stats.strengthened,
+                contradictions = stats.contradictions,
+                entities_detected = stats.entities_detected,
+                synthesized = stats.synthesized,
+                gaps_detected = stats.gaps_detected,
+                reweaved = stats.reweaved,
+                scored = stats.scored,
+                skills_inferred = stats.skills_inferred,
+                "force_consolidate complete"
+            );
             Response::Ok {
                 data: ResponseData::ConsolidationComplete {
                     exact_dedup: stats.exact_dedup,
@@ -3554,6 +3572,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     gaps_detected: stats.gaps_detected,
                     reweaved: stats.reweaved,
                     scored: stats.scored,
+                    skills_inferred: stats.skills_inferred,
                 },
             }
         }
@@ -9335,6 +9354,7 @@ mod tests {
                         embedding_merged,
                         strengthened,
                         contradictions,
+                        skills_inferred,
                         ..
                     },
             } => {
@@ -9347,6 +9367,7 @@ mod tests {
                 assert_eq!(embedding_merged, 0);
                 assert_eq!(strengthened, 0);
                 assert_eq!(contradictions, 0);
+                assert_eq!(skills_inferred, 0, "2P-1b §15: Phase 23 count exposed in response");
             }
             other => panic!("expected ConsolidationComplete, got {other:?}"),
         }

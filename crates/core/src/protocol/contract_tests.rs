@@ -2215,6 +2215,56 @@ mod tests {
     }
 
     #[test]
+    fn consolidation_complete_response_roundtrip_with_skills_inferred() {
+        // 2P-1b §15: ConsolidationComplete now carries skills_inferred so
+        // the Phase 23 count is visible to bench harnesses + ops telemetry.
+        use crate::protocol::response::{Response, ResponseData};
+        let resp = Response::Ok {
+            data: ResponseData::ConsolidationComplete {
+                exact_dedup: 1,
+                semantic_dedup: 2,
+                linked: 3,
+                faded: 4,
+                promoted: 5,
+                reconsolidated: 6,
+                embedding_merged: 7,
+                strengthened: 8,
+                contradictions: 9,
+                entities_detected: 10,
+                synthesized: 11,
+                gaps_detected: 12,
+                reweaved: 13,
+                scored: 14,
+                skills_inferred: 15,
+            },
+        };
+        let s = serde_json::to_string(&resp).unwrap();
+        assert!(
+            s.contains("\"skills_inferred\":15"),
+            "serialised JSON must contain skills_inferred field: {s}"
+        );
+        let back: Response = serde_json::from_str(&s).unwrap();
+        assert_eq!(resp, back);
+
+        // Backward-compat: pre-2P-1b JSON without skills_inferred deserialises
+        // via #[serde(default)] — no deserialisation error and the field is 0.
+        let legacy = r#"{"status":"ok","data":{"kind":"consolidation_complete",
+            "exact_dedup":0,"semantic_dedup":0,"linked":0,"faded":0,"promoted":0,
+            "reconsolidated":0,"embedding_merged":0,"strengthened":0,
+            "contradictions":0,"entities_detected":0}}"#;
+        let parsed: Response = serde_json::from_str(legacy).unwrap();
+        match parsed {
+            Response::Ok {
+                data:
+                    ResponseData::ConsolidationComplete {
+                        skills_inferred, ..
+                    },
+            } => assert_eq!(skills_inferred, 0),
+            other => panic!("expected ConsolidationComplete, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn response_error_roundtrips_with_all_six_prefixes() {
         use crate::protocol::response::Response;
         let prefixes = [
