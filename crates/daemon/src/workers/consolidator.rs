@@ -1429,26 +1429,19 @@ pub fn infer_skills_from_behavior(
                 affected += 1;
             }
             Ok(_) => {
-                // Row already exists — merge inferred_from and update inferred_at.
-                // The json_valid(...) guard defends against a pre-existing row
-                // whose inferred_from is somehow non-JSON (manual DB edit, a
-                // pre-Phase-23 upsert path that wrote something else). Without
-                // it, json_each() would error and the UPDATE would silently
-                // skip the whole merge. On non-valid rows we leave them alone
-                // and fall back to a plain inferred_at bump so the row still
-                // gets refreshed. (T10 review Claude-H2, 2P-1b §17)
+                // Row already exists — REPLACE inferred_from with the current
+                // window's session set (not UNION). The pre-2P-1b merge path
+                // accumulated session IDs forever, so long-lived patterns grew
+                // inferred_sessions="N" unbounded even after most contributing
+                // sessions aged out of the window (Codex-MED / 2P-1b §14). The
+                // window filter at the SELECT already restricts `sessions` to
+                // the live set, so binding it directly is the correct value.
+                //
+                // json_valid is no longer needed on the right side — we rewrite
+                // with known-good JSON — so the CASE guard is gone.
                 let update_res = conn.execute(
                     "UPDATE skill SET
-                        inferred_from = CASE
-                            WHEN json_valid(skill.inferred_from) THEN (
-                                SELECT json_group_array(DISTINCT value) FROM (
-                                    SELECT value FROM json_each(skill.inferred_from)
-                                    UNION
-                                    SELECT value FROM json_each(?1)
-                                )
-                            )
-                            ELSE ?1
-                        END,
+                        inferred_from = ?1,
                         inferred_at = ?2
                      WHERE agent = ?3 AND fingerprint = ?4
                        AND COALESCE(project, '') = ?5",
@@ -3718,6 +3711,61 @@ mod tests {
             .map(|p| p.unwrap_or_default())
             .collect();
         assert_eq!(projects, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_prunes_aged_out_session_ids() {
+        // 2P-1b §14 (Codex-MED): on re-run, inferred_from must reflect only
+        // sessions in the current window — old IDs that aged out of the
+        // window should NOT accumulate forever.
+        let conn = fresh_schema_conn();
+
+        // Seed 3 sessions 60 days ago.
+        for sid in ["OLD1", "OLD2", "OLD3"] {
+            seed_session(&conn, sid, "claude-code");
+            seed_session_tool_call_row(
+                &conn, &format!("{sid}-01"), sid, "claude-code",
+                "Read", r#"{"file_path":"/tmp/a"}"#, 1, 0, 60,
+            );
+            seed_session_tool_call_row(
+                &conn, &format!("{sid}-02"), sid, "claude-code",
+                "Edit", r#"{"file_path":"/tmp/a","old_string":"x","new_string":"y"}"#,
+                1, 0, 60,
+            );
+            seed_session_tool_call_row(
+                &conn, &format!("{sid}-03"), sid, "claude-code",
+                "Bash", r#"{"cmd":"cargo test"}"#, 1, 0, 60,
+            );
+        }
+        // Run with a 90-day window — all 3 old sessions qualify.
+        assert_eq!(infer_skills_from_behavior(&conn, 3, 90), 1);
+
+        // Now add 3 fresh sessions (today) and re-run with 30-day window.
+        // OLD* should NOT appear in inferred_from anymore.
+        seed_clean_sess(&conn, "NEW1");
+        seed_clean_sess(&conn, "NEW2");
+        seed_clean_sess(&conn, "NEW3");
+        let _ = infer_skills_from_behavior(&conn, 3, 30);
+
+        let inferred_from: String = conn
+            .query_row(
+                "SELECT inferred_from FROM skill WHERE inferred_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for sid in ["NEW1", "NEW2", "NEW3"] {
+            assert!(
+                inferred_from.contains(&format!("\"{sid}\"")),
+                "inferred_from missing current-window session {sid}: {inferred_from}"
+            );
+        }
+        for sid in ["OLD1", "OLD2", "OLD3"] {
+            assert!(
+                !inferred_from.contains(&format!("\"{sid}\"")),
+                "inferred_from leaked aged-out session {sid}: {inferred_from}"
+            );
+        }
     }
 
     #[test]
