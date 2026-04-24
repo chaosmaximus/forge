@@ -1,6 +1,6 @@
-// workers/consolidator.rs — Memory consolidator (22 phases)
+// workers/consolidator.rs — Memory consolidator (23 phases)
 //
-// Runs every 30 minutes (configurable). 22 phases in 5 groups:
+// Runs every 30 minutes (configurable). 23 phases in 5 groups:
 //
 // Core (1-10): exact dedup, semantic dedup, link related, confidence decay,
 //   episodic→semantic promotion, reconsolidation, embedding merge,
@@ -8,7 +8,8 @@
 //   activation decay.
 // Knowledge Intelligence (11-15): entity detection, contradiction synthesis,
 //   knowledge gap detection, memory reweave, quality scoring.
-// Additional (16-18): portability classification, protocol extraction, anti-pattern tagging.
+// Additional (16-18, 23): portability classification, protocol extraction,
+//   behavioral skill inference (23, inserted between 17 and 18), anti-pattern tagging.
 // Notifications (19a-d): protocol suggestions, contradiction alerts, quality decline, meeting timeout.
 // Healing (20-22): topic supersede, session staleness fade, quality pressure.
 //

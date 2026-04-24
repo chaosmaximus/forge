@@ -389,3 +389,24 @@ All open questions from v3 closed:
 - `crates/daemon/src/workers/consolidator.rs:82-…` — `run_all_phases`.
 - `crates/daemon/tests/forge_consolidation_harness.rs` — deterministic baseline harness.
 - v1, v2, v3 preserved in git history (`d30eaab`, `65ebdf3`, `7ed071e`).
+
+---
+
+## Addendum — 2A-4d.2 T1 (2026-04-24, HEAD `dd4d9cb`): `/inspect audit` superseded
+
+The Tier 1 locked spec references a Tier 2 `/inspect audit` shape in four places (this doc lines 10, 107, 137, 324, 375) as the vehicle to surface the 11 phases that internally `.unwrap_or(0)` their SQL errors.
+
+**This shape has been dropped from Tier 2.** The rationale: **Tier 1 T13.1 already fixed the swallowing.** Across 11 helpers (`detect_content_contradictions`, `synthesize_contradictions`, `detect_and_surface_gaps`, `reweave_memories`, `score_memory_quality`, `extract_protocols`, `infer_skills_from_behavior`, `tag_antipatterns`, `heal_session_staleness`, `apply_quality_pressure`, plus `HealingStats.errors` for the 11th), T13.1 introduced `_with_errors` variants that return `(count, errors): (usize, usize)` and thread the error total into `PhaseOutcome.error_count` at the phase call site. Verified at HEAD `dd4d9cb`: the residual count of `.unwrap_or(0)` inside `run_all_phases` body is **zero**.
+
+As a consequence:
+- `kpi_events.error_count` is already honest for all 23 phases.
+- The `error_rate` shape in Tier 2 v4 (reading `WHERE json_extract(metadata_json, '$.error_count') > 0`) covers everything the `audit` shape was promised to surface.
+- Tier 2's spec includes `Latency`, `ErrorRate`, `Throughput`, `RowCount`, `PhaseRunSummary` — five shapes total; no `Audit` variant.
+
+Readers arriving here from §R8, §3.1a, or the phase projection table should treat "see Tier 2 `/inspect audit`" as redirecting to "see Tier 2's `error_rate` shape filtered by the phase in question."
+
+Related cleanup landed in the same T1 commit:
+- `crates/daemon/src/workers/consolidator.rs:1` header comment updated from "22 phases" to "23 phases" and Phase 23 added to the group list.
+- `docs/architecture/kpi_events-namespace.md` `error_count` NOTE rewritten to reflect T13.1 — no remaining `.unwrap_or(0)` swallowing inside `run_all_phases` body.
+
+Tier 2 v4 design spec: `docs/superpowers/specs/2026-04-24-forge-identity-observability-tier2-design.md`.

@@ -54,8 +54,10 @@ phase per consolidate_pass.
   "output_count": 1,                                    // phase-specific, see PhaseOutputProjection §3.1a
   "error_count": 0,                                     // sum of recoverable failures observed inside the phase
                                                         // (e.g. per-row insert/rollback); 0 means success.
-                                                        // NOTE: 11 helpers currently `.unwrap_or(0)` on inner
-                                                        // errors — see 2A-4d.1.1 follow-up to make these honest.
+                                                        // Tier 1 T13.1 landed `_with_errors` variants for 11
+                                                        // helpers so swallowed inner errors surface here
+                                                        // honestly; there are no remaining `.unwrap_or(0)`
+                                                        // sites inside `run_all_phases` body today.
                                                         // **Instrumentation-layer failures** (kpi_events insert
                                                         // blew up, ULID collision absorbed) do NOT contribute
                                                         // here — they land in
