@@ -111,13 +111,30 @@ fn t10_consolidation_latency_baseline() {
 
     // Variant B: full instrumentation. Shares the one shared ForgeMetrics
     // registry across iterations — mirrors production (one Arc per daemon).
+    //
+    // Per-iteration assertion on kpi_events row count closes the coverage
+    // gap noted in the T12 Codex review: without it, a regression that
+    // silently drops kpi_events inserts on iterations 1..N_ITERATIONS
+    // would go unnoticed (the standalone sanity check below only exercises
+    // one fresh DB).
     let metrics = ForgeMetrics::new();
     let mut b_durs: Vec<Duration> = Vec::with_capacity(N_ITERATIONS);
-    for _ in 0..N_ITERATIONS {
+    for i in 0..N_ITERATIONS {
         let conn = make_conn();
         let t0 = Instant::now();
         let _stats = consolidator::run_all_phases(&conn, &cfg, Some(&metrics));
         b_durs.push(t0.elapsed());
+        let per_iter_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM kpi_events WHERE event_type = 'phase_completed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(
+            per_iter_count, 23,
+            "iteration {i}: expected 23 kpi_events rows, got {per_iter_count}"
+        );
     }
 
     let a_med = median(a_durs.clone());
