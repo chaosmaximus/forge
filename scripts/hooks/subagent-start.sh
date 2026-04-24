@@ -54,16 +54,26 @@ append_if_budget() {
   return 1
 }
 
+# Escape user-controlled line content BEFORE wrapping in structural tags.
+# The old flow wrapped in <lesson>/<decision> first and then escape-passed
+# the whole XML, which turned the structural tags into &lt;lesson&gt; and
+# corrupted the subagent-context payload (2P-1b §10).
+xml_escape_content() {
+  echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+}
+
 # Add lessons first (higher priority for subagents)
 while IFS= read -r line; do
   [ -z "$line" ] && continue
-  append_if_budget "<lesson>${line}</lesson>" || break
+  safe=$(xml_escape_content "$line")
+  append_if_budget "<lesson>${safe}</lesson>" || break
 done <<< "$LESSONS"
 
 # Add decisions
 while IFS= read -r line; do
   [ -z "$line" ] && continue
-  append_if_budget "<decision>${line}</decision>" || break
+  safe=$(xml_escape_content "$line")
+  append_if_budget "<decision>${safe}</decision>" || break
 done <<< "$DECISIONS"
 
 # Always output something — fallback if daemon returned nothing
@@ -71,7 +81,6 @@ if [ -z "$XML" ]; then
   XML="<note>No lessons or decisions found. Follow project conventions.</note>"
 fi
 
-XML_SAFE=$(echo "$XML" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
-FULL="<forge-subagent-context>${XML_SAFE}</forge-subagent-context>"
+FULL="<forge-subagent-context>${XML}</forge-subagent-context>"
 ESCAPED=$(echo "$FULL" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 echo "{\"hookSpecificOutput\":{\"hookEventName\":\"SubagentStart\",\"additionalContext\":\"${ESCAPED}\"}}"

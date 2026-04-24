@@ -40,13 +40,22 @@ if [ -f "$TS_FILE" ] && [ ! -L "$TS_FILE" ]; then
   SINCE=$(cat "$TS_FILE" 2>/dev/null || true)
 fi
 
-# Call context-refresh BEFORE advancing watermark (Finding 4: avoid losing deltas on failure)
-RESULT=$(timeout 3 "$FORGE_NEXT" context-refresh \
+# Call context-refresh; capture exit status so the watermark only advances
+# on confirmed success, including empty-but-successful responses. The old
+# "[ -n $RESULT ] || [ -z $SINCE ]" gate advanced the watermark on the
+# very first call even when context-refresh errored (timeout, binary
+# absent, daemon down) — the next prompt would inherit a false SINCE and
+# miss real deltas (2P-1b §10).
+REFRESH_OK=0
+RESULT=""
+if output=$(timeout 3 "$FORGE_NEXT" context-refresh \
   --session-id "$SESSION_ID" \
-  ${SINCE:+--since "$SINCE"} 2>/dev/null || echo "")
+  ${SINCE:+--since "$SINCE"} 2>/dev/null); then
+  RESULT="$output"
+  REFRESH_OK=1
+fi
 
-# Only advance watermark AFTER successful fetch
-if [ -n "$RESULT" ] || [ -z "$SINCE" ]; then
+if [ "$REFRESH_OK" -eq 1 ]; then
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   TS_TMP=$(mktemp "$FORGE_REFRESH_DIR/forge-refresh-XXXXXX")
   echo "$NOW" > "$TS_TMP"

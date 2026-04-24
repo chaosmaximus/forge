@@ -18,6 +18,8 @@ forge-next manas-health
 
 If health fails, the daemon isn't running. Install from the public repo and start it:
 ```bash
+# Installs two packages: forge-daemon (binary: forge-daemon) and
+# forge-cli (binary: forge-next). Commands below reference `forge-next`.
 cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
 forge-daemon &
 ```

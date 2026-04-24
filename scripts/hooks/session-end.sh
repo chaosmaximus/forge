@@ -12,6 +12,7 @@ command -v "$FORGE_NEXT" &>/dev/null || FORGE_NEXT="$HOME/.local/bin/forge-next"
 
 # End the session
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
+SESSION_FILE=""
 if [ -z "$SESSION_ID" ]; then
   # Try to read saved session ID from session-start hook (secure state dir)
   FORGE_SESSION_DIR="${XDG_RUNTIME_DIR:-$HOME/.forge/sessions}"
@@ -19,11 +20,19 @@ if [ -z "$SESSION_ID" ]; then
   SESSION_FILE="$FORGE_SESSION_DIR/forge-session-${CWD_HASH}"
   if [ -f "$SESSION_FILE" ] && [ ! -L "$SESSION_FILE" ]; then
     SESSION_ID=$(cat "$SESSION_FILE" 2>/dev/null || true)
-    rm -f "$SESSION_FILE" 2>/dev/null || true
+  else
+    SESSION_FILE=""
   fi
 fi
+# Call end-session BEFORE removing the session file so a transient
+# failure (daemon down, binary absent) doesn't lose the ID — we can
+# retry on the next SessionEnd (2P-1b §10).
 if [ -n "$SESSION_ID" ]; then
-  "$FORGE_NEXT" end-session --id "$SESSION_ID" 2>/dev/null || true
+  if "$FORGE_NEXT" end-session --id "$SESSION_ID" 2>/dev/null; then
+    if [ -n "$SESSION_FILE" ]; then
+      rm -f "$SESSION_FILE" 2>/dev/null || true
+    fi
+  fi
 fi
 
 # Ingest any new Claude memory files
