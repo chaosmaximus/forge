@@ -49,7 +49,14 @@ pub struct AppState {
     /// Whether auth (and thus RBAC) is enabled.
     pub auth_enabled: bool,
     /// Prometheus metrics collectors (None when metrics.enabled = false).
-    pub metrics: Option<ForgeMetrics>,
+    ///
+    /// Shared with `DaemonState::metrics` via the same `Arc` constructed in
+    /// `main`. Sharing a single instance means the `/metrics` scrape endpoint,
+    /// the periodic consolidator loop, startup consolidation, and
+    /// `ForceConsolidate` all update/read one Prometheus registry rather than
+    /// each owning a fresh one (prior bug: the phase histograms were
+    /// unreachable because production callers passed `None`).
+    pub metrics: Option<Arc<ForgeMetrics>>,
     /// Rate limiter for API endpoints (None = disabled).
     pub rate_limiter: Option<super::rate_limit::RateLimiter>,
 }
@@ -637,12 +644,11 @@ pub async fn run_http_server_with_listener(
     write_tx: mpsc::Sender<WriteCommand>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     listener: tokio::net::TcpListener,
+    metrics: Option<Arc<ForgeMetrics>>,
 ) -> std::io::Result<()> {
-    let metrics = if config.metrics.enabled {
-        Some(ForgeMetrics::new())
-    } else {
-        None
-    };
+    // Honour config.metrics.enabled — even if main constructed a shared
+    // ForgeMetrics, operators can still disable the /metrics endpoint here.
+    let metrics = if config.metrics.enabled { metrics } else { None };
 
     let state = AppState {
         db_path,

@@ -2377,7 +2377,8 @@ pub async fn run_consolidator(
                 let stats = {
                     let consol_config = crate::config::load_config().consolidation.validated();
                     let locked = state.lock().await;
-                    run_all_phases(&locked.conn, &consol_config, None)
+                    let metrics = locked.metrics.as_deref();
+                    run_all_phases(&locked.conn, &consol_config, metrics)
                 };
 
                 // Emit consolidation event with stats

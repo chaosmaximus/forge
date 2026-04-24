@@ -25,6 +25,12 @@ pub struct DaemonState {
     /// ~90 MB download in tests that don't exercise the raw path). `RawIngest`
     /// and `RawSearch` handler arms return a clear error when this is None.
     pub raw_embedder: Option<Arc<dyn Embedder>>,
+    /// Shared Prometheus metrics. `Some` on the primary Arc<Mutex<DaemonState>>
+    /// created in `main` (so startup consolidation, the periodic consolidator
+    /// loop, and the `ForceConsolidate` handler all update the same registry);
+    /// `None` on reader/writer states and tests. The same `Arc` is passed to
+    /// `AppState` so `/metrics` serves whatever this Arc points at.
+    pub metrics: Option<Arc<crate::server::metrics::ForgeMetrics>>,
 }
 
 impl DaemonState {
@@ -121,6 +127,7 @@ impl DaemonState {
             diagnostics_tx: None,
             writer_tx: None,
             raw_embedder: None,
+            metrics: None,
         })
     }
 
@@ -158,6 +165,7 @@ impl DaemonState {
             diagnostics_tx: None,
             writer_tx: None,
             raw_embedder: None,
+            metrics: None,
         })
     }
 
@@ -193,6 +201,7 @@ impl DaemonState {
             diagnostics_tx: None,
             writer_tx,
             raw_embedder: None,
+            metrics: None,
         })
     }
 }
@@ -3537,8 +3546,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
         Request::ForceConsolidate => {
             let consol_config = crate::config::load_config().consolidation.validated();
-            let stats =
-                crate::workers::consolidator::run_all_phases(&state.conn, &consol_config, None);
+            let stats = crate::workers::consolidator::run_all_phases(
+                &state.conn,
+                &consol_config,
+                state.metrics.as_deref(),
+            );
             tracing::info!(
                 exact_dedup = stats.exact_dedup,
                 semantic_dedup = stats.semantic_dedup,

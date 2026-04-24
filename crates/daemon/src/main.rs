@@ -255,6 +255,16 @@ async fn main() {
     // so forge-hud can render current activity in the status line.
     forge_daemon::events::spawn_hud_writer(&events);
 
+    // Shared Prometheus metrics. Constructed unconditionally so the
+    // consolidator's phase histograms + counters (introduced in 2A-4d.1) are
+    // always populated; whether they are scraped depends on `http.metrics.enabled`.
+    // The same `Arc` is installed on `DaemonState` (for workers + handler) and
+    // on `AppState` (for the `/metrics` endpoint), so one registry serves every
+    // scraper.
+    let shared_metrics = Arc::new(ForgeMetrics::new());
+
+    let mut worker_state = worker_state;
+    worker_state.metrics = Some(Arc::clone(&shared_metrics));
     let state = Arc::new(Mutex::new(worker_state));
 
     // Raw layer embedder: load MiniLM in the background so daemon startup is
@@ -377,10 +387,11 @@ async fn main() {
                 .consolidation
                 .validated();
             let locked = startup_state.lock().await;
+            let metrics = locked.metrics.as_deref();
             let cs = forge_daemon::workers::consolidator::run_all_phases(
                 &locked.conn,
                 &startup_consol_config,
-                None,
+                metrics,
             );
             eprintln!(
                 "[daemon] startup consolidation: dedup={}, semantic={}, linked={}, faded={}, promoted={}, reconsolidated={}",
@@ -444,6 +455,7 @@ async fn main() {
         let http_hlc = Arc::clone(&hlc);
         let http_write_tx = write_tx.clone();
         let http_shutdown_rx = shutdown_tx.subscribe();
+        let http_metrics = Arc::clone(&shared_metrics);
         // Pre-bind the listener synchronously so bind failures are caught before we proceed
         let http_addr = format!("{}:{}", http_config.http.bind, http_config.http.port);
         let http_listener = match tokio::net::TcpListener::bind(&http_addr).await {
@@ -476,9 +488,12 @@ async fn main() {
                     }
                 };
 
-                // Build the same router but via a fresh state (can't move listener across TLS boundary)
+                // Build the same router but via a fresh state (can't move listener across TLS boundary).
+                // Share the Prometheus registry with the consolidator + handler by cloning the
+                // Arc constructed in main, rather than a disjoint ForgeMetrics::new() that would
+                // collect zero data.
                 let metrics = if tls_config_clone.metrics.enabled {
-                    Some(ForgeMetrics::new())
+                    Some(Arc::clone(&http_metrics))
                 } else {
                     None
                 };
@@ -509,6 +524,7 @@ async fn main() {
                 }
             });
         } else {
+            let http_metrics_opt = Some(http_metrics);
             tokio::spawn(async move {
                 if let Err(e) = run_http_server_with_listener(
                     &http_config,
@@ -519,6 +535,7 @@ async fn main() {
                     http_write_tx,
                     http_shutdown_rx,
                     http_listener,
+                    http_metrics_opt,
                 )
                 .await
                 {

@@ -293,7 +293,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tower::ServiceExt;
 
-    fn test_app_state_with_metrics(metrics: Option<ForgeMetrics>) -> AppState {
+    fn test_app_state_with_metrics(metrics: Option<Arc<ForgeMetrics>>) -> AppState {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_path = tmp.path().to_string_lossy().to_string();
         let _state = DaemonState::new(&db_path).unwrap();
@@ -392,7 +392,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metrics_endpoint_returns_prometheus_format() {
-        let metrics = ForgeMetrics::new();
+        let metrics = Arc::new(ForgeMetrics::new());
         let state = test_app_state_with_metrics(Some(metrics));
 
         let mut config = ForgeConfig::default();
