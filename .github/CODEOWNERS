@@ -1,0 +1,22 @@
+# Forge public repo owners.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Default owner for everything
+*                                   @chaosmaximus
+
+# Protocol surface — any change here reshapes every harness consumer.
+/crates/core/src/protocol/          @chaosmaximus
+/.claude-plugin/                    @chaosmaximus
+/hooks/                             @chaosmaximus
+/scripts/hooks/                     @chaosmaximus
+
+# Release automation — tags publish binaries + Homebrew formula.
+/.github/workflows/release.yml      @chaosmaximus
+/Formula/                           @chaosmaximus
+/scripts/install.sh                 @chaosmaximus
+
+# Docs governing contribution + licensing.
+/CLAUDE.md                          @chaosmaximus
+/CONTRIBUTING.md                    @chaosmaximus
+/LICENSE                            @chaosmaximus
+/NOTICE                             @chaosmaximus

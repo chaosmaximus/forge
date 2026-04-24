@@ -1430,15 +1430,25 @@ pub fn infer_skills_from_behavior(
             }
             Ok(_) => {
                 // Row already exists — merge inferred_from and update inferred_at.
+                // The json_valid(...) guard defends against a pre-existing row
+                // whose inferred_from is somehow non-JSON (manual DB edit, a
+                // pre-Phase-23 upsert path that wrote something else). Without
+                // it, json_each() would error and the UPDATE would silently
+                // skip the whole merge. On non-valid rows we leave them alone
+                // and fall back to a plain inferred_at bump so the row still
+                // gets refreshed. (T10 review Claude-H2, 2P-1b §17)
                 let update_res = conn.execute(
                     "UPDATE skill SET
-                        inferred_from = (
-                            SELECT json_group_array(DISTINCT value) FROM (
-                                SELECT value FROM json_each(skill.inferred_from)
-                                UNION
-                                SELECT value FROM json_each(?1)
+                        inferred_from = CASE
+                            WHEN json_valid(skill.inferred_from) THEN (
+                                SELECT json_group_array(DISTINCT value) FROM (
+                                    SELECT value FROM json_each(skill.inferred_from)
+                                    UNION
+                                    SELECT value FROM json_each(?1)
+                                )
                             )
-                        ),
+                            ELSE ?1
+                        END,
                         inferred_at = ?2
                      WHERE agent = ?3 AND fingerprint = ?4
                        AND COALESCE(project, '') = ?5",
@@ -3708,6 +3718,45 @@ mod tests {
             .map(|p| p.unwrap_or_default())
             .collect();
         assert_eq!(projects, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn infer_skills_from_behavior_survives_malformed_inferred_from_on_merge() {
+        // T10 Claude-H2 regression guard (2P-1b §17): if a pre-existing skill
+        // row has a non-JSON inferred_from (manual DB edit, pre-Phase-23
+        // writer), the UPDATE merge must not explode. Fall back to the new
+        // value rather than crashing json_each().
+        let conn = fresh_schema_conn();
+        seed_clean_sess(&conn, "SA");
+        seed_clean_sess(&conn, "SB");
+        seed_clean_sess(&conn, "SC");
+        let elevated = infer_skills_from_behavior(&conn, 3, 30);
+        assert_eq!(elevated, 1);
+
+        // Corrupt inferred_from out-of-band.
+        conn.execute(
+            "UPDATE skill SET inferred_from = 'not-json-at-all' \
+             WHERE inferred_at IS NOT NULL",
+            [],
+        )
+        .unwrap();
+
+        // Add a fourth matching session + re-run. Should not panic/error;
+        // row gets refreshed with the new JSON value.
+        seed_clean_sess(&conn, "SD");
+        let _ = infer_skills_from_behavior(&conn, 3, 30);
+
+        let inferred_from: String = conn
+            .query_row(
+                "SELECT inferred_from FROM skill WHERE inferred_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&inferred_from).is_ok(),
+            "inferred_from should be valid JSON after recovery; got {inferred_from}"
+        );
     }
 
     #[test]

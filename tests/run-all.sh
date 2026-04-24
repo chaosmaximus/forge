@@ -28,9 +28,7 @@ run_test "Plugin.json validation" "$TESTS_DIR/static/validate-plugin.sh"
 run_test "Hooks.json validation" "$TESTS_DIR/static/validate-hooks.sh"
 run_test "Skills validation" "$TESTS_DIR/static/validate-skills.sh"
 run_test "Agents validation" "$TESTS_DIR/static/validate-agents.sh"
-run_test "CSV data validation" "$TESTS_DIR/static/validate-csv.sh"
-run_test "Rubrics validation" "$TESTS_DIR/static/validate-rubrics.sh"
-run_test "Templates validation" "$TESTS_DIR/static/validate-templates.sh"
+run_test "Agent-tools validation" "$TESTS_DIR/static/validate-agent-tools.sh"
 run_test "ShellCheck analysis" "$TESTS_DIR/static/run-shellcheck.sh"
 
 # Layer 2: Unit tests (BATS)
