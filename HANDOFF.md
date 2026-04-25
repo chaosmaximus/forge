@@ -1,224 +1,215 @@
-# Handoff — master v6 1.0 composite gate CLOSED (2026-04-25)
+# Handoff — Phase A + B closed (2026-04-25, pre-compact)
 
-**Public HEAD (chaosmaximus/forge):** `9da7e83`.
+**Public HEAD:** `7a25da4`.
 **forge-app master:** `665c372c7c461016a8b5953d91e792b7b7221636` (unchanged).
-**Current version:** **v0.5.0** — not tagged on GitHub (parked until product complete).
+**Current version:** **v0.5.0**.
 
 ## State in one paragraph
 
-Phase **2A-4d (Forge-Identity Observability)** is **COMPLETE end-to-end across all three tiers**.
-The master v6 1.0 composite gate is closed: 5/5 calibration seeds (1, 2, 3, 7, 42) produce
-**composite=0.999, score.pass=true** with every dimension at its per-dim minimum or
-above (Dim 1+2+3+4+5 = 1.0, Dim 6 = 0.996). Wall 937-952ms per seed. The 0.001 below
-1.0 comes from Dim 6b's full-recall ranking and is tracked as 2A-4d.3.1 backlog #5
-(non-blocking; Dim 6 still passes its 0.80 floor by a wide margin). Phase A this
-session shipped the StepDispositionOnce blocker via two commits totalling 7 files /
-~600 LoC: `f07219f` (StepDispositionOnce variant + handler arm + Dim 2 body) and
-`9da7e83` (Claude review BLOCKERs B1+B2 + HIGHs H1-H4). Live dogfood confirms
-`forge-bench forge-identity --seed 42` writes a `bench_run_completed` v1 row to
-`kpi_events` with success=1, composite=0.999. **1474 daemon-lib tests pass, 0
-clippy warnings on both profiles, fmt clean**, with 8 new tests covering parity,
-negative-duration rejection, stable-trend coverage, max-delta boundary, and trait
-observation invariants. Adversarial review pair (Claude `general-purpose` +
-Codex `codex-rescue`) on the diff returned `lockable-with-fixes`; all BLOCKERs +
-HIGHs addressed in `9da7e83`; MEDIUMs/LOWs deferred to 2A-4d.3.1 #6 cosmetic batch.
+This session shipped **Phase A** (master v6 1.0 composite gate) and
+**Phase B** (3 backlog items + their adversarial review fixes) — 8 commits
+total (`4b6dc15..7a25da4`). Phase A: `Request::StepDispositionOnce` +
+Dim 2 disposition_drift body, T12 calibration on 5 seeds → composite=0.999
+on every seed (master v6 §10 success criteria met). Phase B: 2A-4d.3.1
+items #2 (StepDispositionOnce, closed in Phase A), #3 (context-injection
+6-feature toggles), #4 (sub-agent commit-discipline harness), #7 (session
+lifecycle `active → idle → ended`). Both #3 and #7 went through full
+adversarial review pairs and BLOCKERs+HIGHs were addressed in follow-up
+fix waves. **1485 daemon-lib tests pass; 0 clippy warnings on both
+profiles; fmt clean.** End-to-end dogfood verified: forge-bench
+forge-identity composite=0.999, kpi_events row v1 written, all dims pass.
+
+The biggest live behavior changes:
+1. **Default `heartbeat_timeout_secs`** bumped 60s → 14400s (4h) — was
+   too aggressive, ended healthy sessions during 5-min user breaks. The
+   new `idle` intermediate state at 600s (10 min) gives operators
+   visibility on dormant sessions without ending them.
+2. **`update_heartbeat`** now revives idle sessions atomically (was
+   silently dropping heartbeats from idle clients — zombification).
+3. **18 `WHERE status = 'active'` query sites** updated to
+   `IN ('active', 'idle')` for "live session" intent.
 
 ## First actions after `/compact`
 
 ```bash
 cd /mnt/colab-disk/DurgaSaiK/forge/forge
-git log --oneline -3                                                # expect 9da7e83 + 2 above
-git status --short                                                  # expect clean
+git log --oneline -10                                                     # expect 7a25da4 at top
+git status --short                                                        # expect clean
 export LD_LIBRARY_PATH="$(pwd)/.tools/onnxruntime-linux-x64-1.23.0/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-cargo clippy --workspace --features bench -- -W clippy::all -D warnings    # 0 warnings
-cargo test -p forge-daemon --lib --features bench bench::forge_identity   # 11 pass
-cargo test -p forge-daemon --lib --features bench workers::disposition    # 18 pass
+cargo clippy --workspace --features bench -- -W clippy::all -D warnings   # 0 warnings
+cargo test -p forge-daemon --lib --features bench                         # 1485 pass, 1 known flake
 ```
 
-Live dogfood (optional; ~3min release rebuild):
+Live dogfood (~3min release rebuild):
 ```bash
 cargo build --release --features bench --bin forge-bench
 mkdir -p /tmp/fi-resume && rm -rf /tmp/fi-resume/* && \
   FORGE_DIR=/tmp/fi-resume FORGE_HARDWARE_PROFILE=local \
   ./target/release/forge-bench forge-identity --seed 42 --output /tmp/fi-resume/out
-# expect: composite=0.999, exit 0, score.pass=true,
-#         kpi_events has 1 bench_run_completed row.
+# expect: composite=0.999, exit 0, score.pass=true.
 ```
 
-If green, resume with **2A-4d.3.1 backlog item #4** (sub-agent commit-discipline
-investigation — improves autonomous reliability for everything else) or any other
-backlog item per recommendation below.
+## Session commits (most recent first)
 
-## Phase A commits this session (most recent first)
+| #   | SHA       | Title |
+|-----|-----------|-------|
+|  8  | `7a25da4` | fix(2A-4d.3.1 #7): heartbeat zombification + status='active'-only sweep |
+|  7  | `307581f` | fix(2A-4d.3.1 #3): address Claude review BLOCKERs + selected HIGHs/MEDIUMs |
+|  6  | `72a2b07` | feat(2A-4d.3.1 #7): session state idle/active/ended lifecycle |
+|  5  | `a406dfb` | feat(2A-4d.3.1 #3): context-injection feature toggles |
+|  4  | `fe0bff9` | fix(2A-4d.3.1 #4): sub-agent commit-discipline harness |
+|  3  | `dbae34b` | docs(2A-4d.3.1 #2): close phase — master v6 1.0 composite gate |
+|  2  | `9da7e83` | fix(2A-4d.3.1 #2): address Claude review BLOCKERs + HIGHs |
+|  1  | `f07219f` | feat(2A-4d.3.1 #2): StepDispositionOnce + Dim 2 disposition_drift body |
+| (carryover) | `4b6dc15` | chore: bump to v0.5.0 + fresh post-compact handoff |
 
-| #  | SHA       | Title |
-|----|-----------|-------|
-|  3 | `9da7e83` | fix(2A-4d.3.1 #2): address Claude review BLOCKERs + HIGHs |
-|  2 | `f07219f` | feat(2A-4d.3.1 #2): StepDispositionOnce + Dim 2 disposition_drift body |
-|  1 | (carryover) `40b932b` docs(2A-4d.3 T16+T18): close phase — dogfood + HANDOFF + backlog |
+## What shipped
 
-Two code commits closing Phase A. Plan + dogfood doc updates in a third commit
-(this commit) — see HEAD.
+### Phase A — master v6 1.0 composite gate
 
-## What shipped in Phase A
+`Request::StepDispositionOnce { agent, synthetic_sessions: Vec<SessionFixture> }`
++ Dim 2 body in `forge_identity.rs` + per-cycle/final-value continuous
+scoring (22-event scheme) + parity test against `tick_for_agent` (master
+v6 §13 line 216 mandate). 5/5 seeds {1, 2, 3, 7, 42} produce
+composite=0.999, every dim ≥ minimum. Compile-time `const _: () =
+assert!(MAX_DELTA == 0.05)` per master v6 §6 #2. Master v6 §10 success
+criteria met. Live dogfood doc:
+`docs/benchmarks/results/2026-04-25-forge-identity-master-v6-close.md`.
 
-### `crates/core/src/protocol/request.rs`
-- `SessionFixture { duration_secs: i64 }` struct, `cfg(any(test, feature = "bench"))`-gated.
-- `Request::StepDispositionOnce { agent: String, synthetic_sessions: Vec<SessionFixture> }`
-  variant, same gate.
+### Phase B — 4 backlog items closed
 
-### `crates/core/src/protocol/response.rs`
-- `DispositionTraitState { trait_name, value_before, value_after, delta, trend }` struct.
-- `DispositionStepSummary { agent, traits, max_delta }` struct.
-- `ResponseData::DispositionStep { summary }` variant.
-- All gated `cfg(any(test, feature = "bench"))`.
+* **2A-4d.3.1 #4** — sub-agent commit-discipline harness. forge-generator
+  agent prompt now requires `git log -1 --format='%H %s'` evidence in
+  DONE summary (Mandatory Commit Verification Gate). `CLAUDE.md` codifies
+  the orchestrator-side verify pattern.
 
-### `crates/core/src/protocol/mod.rs`
-- Re-exports the three new types under the same gate.
+* **2A-4d.3.1 #3** — context-injection 6-feature toggles
+  (`session_context`, `active_state`, `skills`, `anti_patterns`,
+  `blast_radius`, `preferences`). Live-reload (daemon re-reads config
+  per request); env override `FORGE_CONTEXT_INJECTION_*`;
+  `forge-next config set context_injection.<key> <bool>`. 5 ungated
+  sections gated post-review (active-protocols, project-conventions,
+  guardrails, deferred-items, notifications). Self-closing tags
+  preserve XML schema stability for KV-cache.
 
-### `crates/daemon/src/workers/disposition.rs`
-- `MAX_DELTA` promoted from `const` (private) to `pub(crate) const` per master v6 §13 D7.
-- `step_for_bench(conn, agent, fixtures) -> Result<DispositionStepSummary, String>` —
-  bench-only fn (gated `cfg(feature = "bench")`) that mirrors `tick_for_agent` math
-  but reads its session set from caller-provided `Vec<SessionFixture>` instead of
-  the `session` table. Validates `duration_secs >= 0`, errors on empty fixtures.
-- 9 new tests (5 in `f07219f`, 4 in `9da7e83`): empty rejection, negative-duration
-  rejection, short→caution rises, long→thoroughness rises, compounding 10-cycle
-  trajectory, max-delta boundary, **parity with `tick_for_agent`** (master v6 §13
-  line 216 mandate), **medium fixtures keep thoroughness stable** (Stable trend
-  coverage), short-sessions raise caution.
+* **2A-4d.3.1 #7** — session state lifecycle. New
+  `WorkerConfig.heartbeat_idle_secs` (default 600s); bumped
+  `heartbeat_timeout_secs` 60 → 14400s. Reaper Phase 0 transitions
+  `active → idle`; Phase 1 expanded to `IN ('active', 'idle') → ended`.
+  `register_session` seeds `last_heartbeat_at = now`. `update_heartbeat`
+  atomically revives idle sessions. 18 `WHERE status = 'active'` query
+  sites updated to `IN ('active', 'idle')`. New `session_idled` event.
 
-### `crates/daemon/src/server/handler.rs`
-- `Request::StepDispositionOnce` arm dispatches to `step_for_bench`,
-  returns `Response::Ok { data: ResponseData::DispositionStep { summary } }` or
-  `Response::Error` with the worker's error message. Gated `cfg(feature = "bench")`.
-
-### `crates/daemon/src/server/tier.rs`
-- `request_to_feature` covers the new variant (no tier gate; bench/test only).
-
-### `crates/daemon/src/bench/forge_identity.rs`
-- Crate-scope `const _: () = assert!(crate::workers::disposition::MAX_DELTA == 0.05);`
-  enforces master v6 §6 #2 at compile time.
-- Dim 2 body: 10 cycles × 5 short fixtures via `Request::StepDispositionOnce`;
-  `Request::ForceConsolidate` invocation per master v6 §7 line 200; continuous
-  scoring `passed/22.0` (20 delta-bound + 2 final-value events); trait observation
-  invariant collapses score to 0.0 if either trait is missing on any cycle.
-- Updated `test_run_bench_infra_passes_on_fresh_state` to assert all dims pass
-  + composite ≥ COMPOSITE_THRESHOLD + score.pass.
-- `check_disposition_max_delta_const` now does a real runtime echo (was a
-  tautology-pretender).
+* **2A-4d.3.1 #2** — Phase A header (already counted above).
 
 ## Tests + verification (final state)
 
-- `cargo fmt --all --check` — clean
-- `cargo check --workspace` — clean (forge-bench skipped via required-features)
-- `cargo check --workspace --features bench` — clean
-- `cargo clippy --workspace -- -W clippy::all -D warnings` — 0 warnings
-- `cargo clippy --workspace --features bench -- -W clippy::all -D warnings` — 0 warnings
-- `cargo test -p forge-daemon --lib --features bench` — **1474 pass, 1 fail, 0 ignored**
-  (1 fail = `test_daemon_state_new_is_fast` — pre-existing timing flake, unchanged
-  since 2P-1a, unrelated to Phase A)
-- `cargo test -p forge-daemon --test forge_identity_harness --features bench` — 1 pass
-- Live dogfood — composite=0.999 across 5 seeds, exit=0 on PASS, kpi_events row v1 written.
-- Adversarial review pair on `f07219f` — Claude returned lockable-with-fixes
-  (2 BLOCKERs + 4 HIGHs); all addressed in `9da7e83`. Codex `codex-rescue` agent
-  terminated mid-investigation (same pattern as T3 / T14 — known quirk).
+* `cargo fmt --all --check` — clean
+* `cargo check --workspace` — clean (forge-bench skipped via required-features)
+* `cargo check --workspace --features bench` — clean
+* `cargo clippy --workspace -- -W clippy::all -D warnings` — 0 warnings
+* `cargo clippy --workspace --features bench -- -W clippy::all -D warnings` — 0 warnings
+* `cargo test -p forge-daemon --lib --features bench` — **1485 pass, 1 fail, 0 ignored**
+  (the 1 fail = `test_daemon_state_new_is_fast` — pre-existing flake on
+  heavy workspaces, documented since 2P-1a, unchanged this session)
+* Adversarial reviews on Phase A (BLOCKERs+HIGHs all addressed in `9da7e83`),
+  on #3 (closed in `307581f` + B2 in this commit), on #7 (closed in `7a25da4`).
+* Live dogfood — composite=0.999, exit=0 on PASS, kpi_events row v1 written.
 
 ## Deferred backlog (tracked)
 
-Single source of truth: **`docs/superpowers/plans/2026-04-24-forge-identity-observability.md`**
-— three backlog sections.
+Single source of truth:
+**`docs/superpowers/plans/2026-04-24-forge-identity-observability.md`**.
 
-### 2A-4d.1.1 — 5 items from Tier 1 (untouched this session)
-1. Codex MEDIUM — consolidator state Mutex across 23 phases.
-2. Claude HIGH-4 T8 — `record()` inside span scope.
-3. Claude HIGH-5/6 T12 — CI guard raw strings + cfg(all(test, …)).
-4. Claude MEDIUM-10 T12 — integrity test substring match.
-5. Claude MEDIUM-9 T12 — T10 OTLP exporter exercise.
+### From #3 review (lockable-with-fixes; HIGHs/MEDIUMs deferred)
 
-### 2A-4d.2.1 — 7 items from Tier 2 (untouched this session)
-1. `/inspect row_count` lazy-refresh Arc plumb.
-2. SSE filter `?events=consolidate_pass_completed` returned 0 events bug.
-3. HUD I/O refactor (spawn_blocking + atomic write).
-4. HUD 24h rollup not index-backed.
-5. Percentile convention surfaced in API docs.
-6. `shape_latency` truncation off-by-one.
-7. CLI ObserveShape mirror vs forge-core ValueEnum feature flag.
+Tracked under "Deferred from #3 adversarial review" section in the plan.
+Non-blocking — feature works; these are polish.
 
-### 2A-4d.3.1 — 6 items from Tier 3 (this session)
-1. ✅ **CLOSED** in `d6399ab` — recall.rs always-emit `<preferences>`.
-2. ✅ **CLOSED** in `f07219f` + `9da7e83` (this Phase A) — StepDispositionOnce + Dim 2.
-3. **forge-next config knob to suppress context-injection per-session/project.**
-   Operator-ergonomics raised by user.
-4. **Sub-agent commit-discipline failures.** Investigate forge-generator harness;
-   require explicit `git log -1 --format=%H` verification turn.
-5. **`shape_bench_run_summary` percentile cap pulls all rows into Rust** (T14 H2).
-   Reopen at >10k rows per window.
-6. **Cosmetic batch** — Phase A this-session-review MEDIUMs M1, M2, M4, M5 +
-   LOWs L1-L5 + T14 review backlog. Single cleanup PR when convenient. Specifically:
-   - `compute_trend` 0.001 vs MAX_DELTA threshold note (Phase A LOW)
-   - `format!("{trend:?}")` brittleness if Trend variants are renamed (Phase A LOW)
-   - master v6 §13 design doc note: `agent` field in `StepDispositionOnce` (M4)
-   - `(bench)` evidence-string suffix doc (M2)
-   - `payload_serializes_with_v1_schema` `#[serial]` mark (T14 M1)
-   - `detect_commit_metadata` 3× shell-out clustering (T14 M2)
-   - `forge_identity.rs::epoch_to_iso` chrono/time dep swap (T14 M3)
-   - 4 of 14 infra checks compile-time-tautology marker (T14 M4)
-   - `i64::from(payload.pass)` style (T14 L1)
-   - `civil_from_days` cast soup (T14 L2)
-   - `kpi_reaper` per-type pass log level (T14 L3)
+* H1 — Scoped-config wiring (per-project / per-org overrides via
+  `resolve_scoped_config`). Global toggle works today.
+* H2 — `compile_context_trace` not honoring flags (debug-only path).
+* H3 — `layers_used: 4`/`9` hard-coded constants.
+* H4 — Compose-direction doc note (operator-disable wins via OR).
+* H5 — BlastRadius CLI suppress-message clarity.
+* H6 — Thread `&ContextInjectionConfig` through 4 call sites instead
+  of `load_config()` per request (3-4× disk reads on hot hook path).
+  Reviewer estimated ~4 production + ~4 test sites; doable.
+* M1 — Tests exercising the actual gating (currently only config parse
+  tests).
+* M3-M5 — Cosmetic (KT_BLAST_RADIUS doc, bench harness override, TOCTOU).
+* M6 — ✅ Closed in `7a25da4` (default.toml sample).
 
-## Known quirks / state
+### From #7 review (lockable-with-fixes; B1 + H1 + M6 fixed; H2/H3/M1/LOWs deferred)
 
-- `test_daemon_state_new_is_fast` remains a pre-existing timing flake on heavy
-  workspaces (~3s threshold vs ~200ms isolated). Not related to any session change;
-  documented since 2P-1a.
-- Rust-analyzer frequently emits stale `cfg(feature = "bench")` diagnostics —
-  `cargo check --workspace --features bench` is the ground truth.
-- `forge-bench` binary requires `--features bench` to build; default
-  `cargo build --workspace` skips it via `required-features = ["bench"]`.
-- Codex `codex-rescue` agent terminated mid-investigation on the f07219f review
-  pass — same pattern as T3 / T14. Claude `general-purpose` returned full verdict;
-  folded into `9da7e83`.
-- Sub-agent commit-discipline still untreated. Phase A this session avoided the
-  problem by writing the implementation directly (no forge-generator dispatch);
-  recommend item #4 for the next big push to make autonomous orchestration safer
-  before tackling Tier 1/2 backlogs.
-- Phase A's `Request::ForceConsolidate` call before Dim 2 scoring satisfies master
-  v6 §7 line 200 for Dim 2 only. Dim 1 still has the same gap (pre-existing); no
-  functional impact since Phase 4 decay etc. don't touch the `identity` table,
-  but a strict reading of the policy would close that gap too. Tracked separately
-  if anyone reopens.
+* H2 — 60s → 14400s default change docs (operations.md, release notes).
+* H3 — `session_idled` event payload schema not in events-namespace.md.
+* M1 — `agent_status` column (`'idle'`/`'thinking'`/`'working'`/`'retired'`)
+  collides on the word "idle" with the new `session.status='idle'`.
+  Rename or doc-disambiguate.
+* LOWs — log-string change "reaped sessions" → "session lifecycle pass"
+  notice in release notes; per-org tenancy TODO comment in reaper;
+  validated() boundary-doc; orphan-path doc note about register_session
+  now seeding heartbeat.
 
-## Parked (won't touch until product-complete)
+### From earlier phases (untouched this session)
 
-- v0.5.0 GitHub release + tag push.
-- Marketplace publication.
-- macOS dogfood.
-- T17 — bench-fast CI gate promotion to required (after 14 consecutive green
-  master runs).
+* 2A-4d.1.1 (5 items): consolidator Mutex (structural), record() span
+  scope (cosmetic, 22 sites), CI guard scrubber, integrity test substring
+  match, OTLP exporter test variant.
+* 2A-4d.2.1 (7 items): row_count Arc plumb, SSE filter bug, HUD I/O
+  refactor, HUD 24h rollup, percentile docs, shape_latency off-by-one,
+  CLI ObserveShape mirror.
+* 2A-4d.3.1 (other): #5 (percentile cap CTE — defer until >10k rows),
+  #6 (cosmetic batch).
+
+## Known quirks
+
+* `test_daemon_state_new_is_fast` remains a pre-existing timing flake
+  (~3s threshold vs ~200ms isolated on heavy workspaces). Documented since
+  2P-1a; unchanged this session.
+* Rust-analyzer often shows stale `cfg(feature = "bench")` diagnostics
+  during incremental edits — `cargo check --workspace --features bench`
+  is the ground truth.
+* Codex-rescue agent terminated mid-investigation on #3 review (same
+  pattern as Tier 2 / Tier 3 / Phase A). Claude `general-purpose`
+  returned full verdicts on all reviews this session.
 
 ## Next — recommended path
 
-Phase A is the headline. With master v6 closed, the most leveraged remaining work
-is:
+Most leveraged remaining items in priority order:
 
-1. **2A-4d.3.1 #4 — sub-agent commit-discipline investigation.** Smaller than #3.
-   Improves autonomous orchestration reliability for every backlog item below.
-   Suggested first.
-2. **2A-4d.3.1 #3 — context-injection toggle** (forge-next config knob). User
-   raised this 2026-04-24; operator ergonomics. Independent of #4.
-3. **2A-4d.2.1 cleanup** — 7 items, mostly small. The `/inspect row_count` Arc
-   plumb (#1) is the most concrete bug.
-4. **2A-4d.1.1 cleanup** — 5 items, mostly structural / cosmetic. Consolidator
-   Mutex (#1) is structural; rest are paired with `syn` dep.
-5. **2A-4d.3.1 #6** — single cosmetic-batch cleanup PR.
+1. **#3 review H6** — thread `&ContextInjectionConfig` through 4 call
+   sites. Saves 3-4 disk reads per hook call on the hot path. Reviewer
+   gave concrete file:line list; ~1 commit.
+2. **#7 review H3 + H2** — register `session_idled` in
+   events-namespace.md + document the 60s → 14400s default change in
+   ops/release notes. Quick wins, reduces consumer surprise.
+3. **#3 review M1** — gating tests in recall.rs + proactive.rs (the
+   commit's "structurally identical" claim is unsound per the reviewer;
+   add 3 minimum tests).
+4. **#7 review M1** — rename `session.status='idle'` to something
+   non-colliding with `agent_status='idle'` (e.g., 'dormant'),
+   OR add a comment-block disambiguating in schema.rs.
+5. **Tier 2 cleanup (2A-4d.2.1)** — 7 items; first concrete bug is the
+   row_count Arc plumb (#1).
+6. **Tier 1 cleanup (2A-4d.1.1)** — 5 items; first structural is the
+   consolidator Mutex (#1).
+7. **Cosmetic batch** — single PR sweeping all the LOWs from #2/#3/#7
+   reviews + 2A-4d.3.1 #6.
 
-Or pick a different feature direction entirely — Phase 2A-4d is sealed.
+## Parked (won't touch until product-complete)
+
+* v0.5.0 GitHub release + tag push.
+* Marketplace publication.
+* macOS dogfood.
+* T17 — bench-fast CI gate promotion to required (after 14 consecutive
+  green master runs).
 
 ## One-line summary
 
-HEAD `9da7e83`; 2A-4d (Forge-Identity Observability) **complete across all 3 tiers**;
-composite=0.999 on 5/5 seeds, all dims pass, master v6 1.0 gate closed; 1474 tests
-green; 17 deferred items tracked across 2A-4d.{1.1, 2.1, 3.1}; recommended next:
-2A-4d.3.1 #4 (sub-agent commit-discipline) for orchestration reliability.
+HEAD `7a25da4`; Phase A (master v6 1.0 composite gate) + Phase B
+(2A-4d.3.1 #2/#3/#4/#7) all closed; 1485 tests green, 0 clippy warnings;
+deferred-from-review items tracked in plan; recommended next: #3 H6
+(thread `&ContextInjectionConfig` for the hot path) + #7 H3 (register
+`session_idled` event).
