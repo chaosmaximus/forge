@@ -437,13 +437,137 @@ fn dim_4_unscoped_query_breadth(state: &mut DaemonState, _corpus: &Corpus) -> Di
     }
 }
 
-/// SKELETON — T6 implementation per spec §3.1a (7 sub-probes).
-fn dim_5_edge_case_resilience(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D5 — edge_case_resilience** (T6, weight 0.15, min 0.85).
+///
+/// Per spec §3.1a — 7 sub-probes; score = pass_count / 7.
+///
+/// 1. `empty_string_targets_global` — `Some("")` recall returns ONLY globals
+/// 2. `special_chars_no_panic` — `Some("p@#$%")` does not panic
+/// 3. `overlong_project_no_panic` — 256-char project does not panic
+/// 4. `sql_injection_inert` — `Some("alpha'; DROP TABLE memory;--")` does
+///    not drop OR mutate; sentinel-row hash check (N4 fix)
+/// 5. `prefix_collision_isolated` — `Some("alpha")` excludes `alphabet`
+/// 6. `case_sensitivity_strict` — `Some("ALPHA")` excludes `alpha` corpus
+/// 7. `trailing_whitespace_strict` — `Some(" alpha")` excludes `alpha`
+fn dim_5_edge_case_resilience(state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+    let mut passes = 0u32;
+
+    // Probe 1: empty-string targets global pool only.
+    if let Ok(results) = crate::db::ops::recall_bm25_project(&state.conn, SHARED_TAG, Some(""), 200)
+    {
+        // No project-scoped (`{P}_secret_*`) memories should appear.
+        let foreign = results.iter().any(|r| {
+            MAIN_PROJECTS
+                .iter()
+                .any(|p| r.title.starts_with(&format!("{p}_secret_")))
+                || r.title
+                    .starts_with(&format!("{PREFIX_COLLISION_PROJECT}_secret_"))
+        });
+        if !foreign {
+            passes += 1;
+        }
+    }
+
+    // Probe 2: special chars don't panic; result is Ok.
+    if crate::db::ops::recall_bm25_project(&state.conn, SHARED_TAG, Some("p@#$%"), 50).is_ok() {
+        passes += 1;
+    }
+
+    // Probe 3: 256-char project doesn't panic.
+    let long_proj: String = "x".repeat(256);
+    if crate::db::ops::recall_bm25_project(&state.conn, SHARED_TAG, Some(&long_proj), 50).is_ok() {
+        passes += 1;
+    }
+
+    // Probe 4: SQL injection inert. N4 fix — sentinel-row hash check.
+    let pre_hash = sentinel_row_hash(state);
+    let pre_count: i64 = state
+        .conn
+        .query_row("SELECT COUNT(*) FROM memory", [], |r| r.get(0))
+        .unwrap_or(-1);
+
+    let _ = crate::db::ops::recall_bm25_project(
+        &state.conn,
+        SHARED_TAG,
+        Some("alpha'; DROP TABLE memory;--"),
+        50,
+    );
+
+    let post_hash = sentinel_row_hash(state);
+    let post_count: i64 = state
+        .conn
+        .query_row("SELECT COUNT(*) FROM memory", [], |r| r.get(0))
+        .unwrap_or(-2);
+    if pre_count == post_count && pre_hash == post_hash && pre_hash.is_some() {
+        passes += 1;
+    }
+
+    // Probe 5: prefix-collision — query=alpha excludes alphabet.
+    if let Ok(results) =
+        crate::db::ops::recall_bm25_project(&state.conn, SHARED_TAG, Some("alpha"), 50)
+    {
+        let saw_alphabet = results.iter().any(|r| {
+            r.title
+                .starts_with(&format!("{PREFIX_COLLISION_PROJECT}_secret_"))
+        });
+        if !saw_alphabet {
+            passes += 1;
+        }
+    }
+
+    // Probe 6: case sensitivity — query="ALPHA" excludes "alpha" corpus.
+    if let Ok(results) =
+        crate::db::ops::recall_bm25_project(&state.conn, SHARED_TAG, Some("ALPHA"), 50)
+    {
+        let saw_alpha = results.iter().any(|r| r.title.starts_with("alpha_secret_"));
+        if !saw_alpha {
+            passes += 1;
+        }
+    }
+
+    // Probe 7: trailing whitespace strict.
+    if let Ok(results) =
+        crate::db::ops::recall_bm25_project(&state.conn, SHARED_TAG, Some(" alpha"), 50)
+    {
+        let saw_alpha = results.iter().any(|r| r.title.starts_with("alpha_secret_"));
+        if !saw_alpha {
+            passes += 1;
+        }
+    }
+
+    let score = f64::from(passes) / 7.0;
     DimensionScore {
         name: "edge_case_resilience",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[4],
         pass: false,
+    }
+}
+
+/// Compute SHA-256 hash of a canary memory's `(title, content, project, tags)`
+/// to detect mutation-class SQL-injection regressions (per spec §3.1a probe 4
+/// + N4 fix). Returns `None` if the canary row is missing (which itself is
+/// a regression — table was deleted).
+fn sentinel_row_hash(state: &DaemonState) -> Option<String> {
+    let canary_id = "isolation_alpha_0";
+    let row: rusqlite::Result<(String, String, Option<String>, String)> = state.conn.query_row(
+        "SELECT title, content, project, tags FROM memory WHERE id = ?1",
+        [canary_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    );
+    match row {
+        Ok((title, content, project, tags)) => {
+            let mut payload = String::new();
+            payload.push_str(&title);
+            payload.push('\0');
+            payload.push_str(&content);
+            payload.push('\0');
+            payload.push_str(project.as_deref().unwrap_or(""));
+            payload.push('\0');
+            payload.push_str(&tags);
+            Some(crate::bench::common::sha256_hex(&payload))
+        }
+        Err(_) => None,
     }
 }
 
@@ -529,54 +653,167 @@ fn mark_pass(d: DimensionScore) -> DimensionScore {
 // ── Infrastructure assertions (T6 will fill in) ─────────────────────────
 
 /// Spec §3.4 — 8 fail-fast checks before dimensions run.
-fn run_infrastructure_checks(
-    _state: &mut DaemonState,
-    _corpus: &Corpus,
-) -> Vec<InfrastructureCheck> {
-    // T6 will populate these. Skeleton stubs all 8 as passed=false so the
-    // run aborts loudly until T6 lands real implementations.
-    vec![
-        InfrastructureCheck {
-            name: "memory_project_index_exists",
-            passed: false,
-            detail: "stub — T6 to implement".into(),
+fn run_infrastructure_checks(state: &mut DaemonState, corpus: &Corpus) -> Vec<InfrastructureCheck> {
+    let mut out = Vec::with_capacity(8);
+
+    // 1. memory_project_index_exists
+    let idx_exists: bool = state
+        .conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_memory_project'",
+            [],
+            |_r| Ok(true),
+        )
+        .unwrap_or(false);
+    out.push(InfrastructureCheck {
+        name: "memory_project_index_exists",
+        passed: idx_exists,
+        detail: if idx_exists {
+            "idx_memory_project present in sqlite_master".into()
+        } else {
+            "idx_memory_project MISSING".into()
         },
-        InfrastructureCheck {
-            name: "memory_project_column_exists",
-            passed: false,
-            detail: "stub — T6 to implement".into(),
+    });
+
+    // 2. memory_project_column_exists
+    let col_exists: bool = state
+        .conn
+        .prepare("SELECT project FROM memory LIMIT 0")
+        .is_ok();
+    out.push(InfrastructureCheck {
+        name: "memory_project_column_exists",
+        passed: col_exists,
+        detail: if col_exists {
+            "memory.project column accessible".into()
+        } else {
+            "memory.project column MISSING".into()
         },
-        InfrastructureCheck {
-            name: "recall_accepts_project_filter",
-            passed: false,
-            detail: "stub — T6 to implement".into(),
+    });
+
+    // 3. recall_accepts_project_filter — sanity call returns Ok.
+    let probe =
+        crate::db::ops::recall_bm25_project(&state.conn, "ping", Some("test_alpha"), 1).is_ok();
+    out.push(InfrastructureCheck {
+        name: "recall_accepts_project_filter",
+        passed: probe,
+        detail: if probe {
+            "recall_bm25_project returned Ok with Some(project)".into()
+        } else {
+            "recall_bm25_project errored on project filter".into()
         },
-        InfrastructureCheck {
-            name: "seeded_rng_deterministic",
-            passed: false,
-            detail: "stub — T6 to implement".into(),
+    });
+
+    // 4. seeded_rng_deterministic — same seed -> same first u64.
+    use rand::RngExt;
+    let mut a = seeded_rng(42);
+    let mut b = seeded_rng(42);
+    let v_a: u64 = a.random();
+    let v_b: u64 = b.random();
+    let det = v_a == v_b;
+    out.push(InfrastructureCheck {
+        name: "seeded_rng_deterministic",
+        passed: det,
+        detail: if det {
+            "seeded_rng(42) produces same u64 twice".into()
+        } else {
+            format!("seeded_rng diverged: {v_a} != {v_b}")
         },
-        InfrastructureCheck {
-            name: "corpus_size_matches_spec",
-            passed: false,
-            detail: "stub — T6 to implement".into(),
+    });
+
+    // 5. corpus_size_matches_spec
+    let size_match = corpus.memories.len() == TOTAL_CORPUS_SIZE;
+    out.push(InfrastructureCheck {
+        name: "corpus_size_matches_spec",
+        passed: size_match,
+        detail: format!(
+            "corpus has {} rows (expected {})",
+            corpus.memories.len(),
+            TOTAL_CORPUS_SIZE
+        ),
+    });
+
+    // 6. project_distribution_correct
+    let mut dist_ok = true;
+    let mut dist_detail = String::new();
+    for project in MAIN_PROJECTS {
+        let n = corpus.count_by_project(Some(project));
+        if n != MEMORIES_PER_MAIN_PROJECT {
+            dist_ok = false;
+            dist_detail.push_str(&format!("{project}={n}; "));
+        }
+    }
+    if corpus.count_by_project(Some(PREFIX_COLLISION_PROJECT)) != PREFIX_COLLISION_MEMORIES {
+        dist_ok = false;
+        dist_detail.push_str(&format!(
+            "{PREFIX_COLLISION_PROJECT}={}; ",
+            corpus.count_by_project(Some(PREFIX_COLLISION_PROJECT))
+        ));
+    }
+    if corpus.count_by_project(None) != GLOBAL_MEMORIES {
+        dist_ok = false;
+        dist_detail.push_str(&format!("globals={}", corpus.count_by_project(None)));
+    }
+    out.push(InfrastructureCheck {
+        name: "project_distribution_correct",
+        passed: dist_ok,
+        detail: if dist_ok {
+            "5×30 + 5 + 10 = 165 confirmed".into()
+        } else {
+            format!("distribution drift: {dist_detail}")
         },
-        InfrastructureCheck {
-            name: "project_distribution_correct",
-            passed: false,
-            detail: "stub — T6 to implement".into(),
+    });
+
+    // 7. embedding_dim_matches_consolidation
+    let dim_ok = corpus
+        .memories
+        .first()
+        .is_some_and(|m| m.embedding.len() == crate::bench::common::DETERMINISTIC_EMBEDDING_DIM);
+    out.push(InfrastructureCheck {
+        name: "embedding_dim_matches_consolidation",
+        passed: dim_ok,
+        detail: format!(
+            "first memory embedding.len() = {}, expected {}",
+            corpus
+                .memories
+                .first()
+                .map(|m| m.embedding.len())
+                .unwrap_or(0),
+            crate::bench::common::DETERMINISTIC_EMBEDDING_DIM,
+        ),
+    });
+
+    // 8. compile_context_returns_xml — non-empty result.
+    let ctx_config = crate::config::ContextConfig::default();
+    let pinned_inj = crate::config::ContextInjectionConfig {
+        session_context: true,
+        ..Default::default()
+    };
+    let (xml, _excluded) = crate::recall::compile_dynamic_suffix_with_inj(
+        &state.conn,
+        "isolation_bench_agent",
+        Some("alpha"),
+        &ctx_config,
+        &[],
+        None,
+        None,
+        None,
+        &pinned_inj,
+    );
+    let xml_ok = !xml.is_empty();
+    out.push(InfrastructureCheck {
+        name: "compile_context_returns_xml",
+        passed: xml_ok,
+        detail: if xml_ok {
+            format!(
+                "compile_dynamic_suffix_with_inj returned {} chars",
+                xml.len()
+            )
+        } else {
+            "compile_dynamic_suffix_with_inj returned empty string".into()
         },
-        InfrastructureCheck {
-            name: "embedding_dim_matches_consolidation",
-            passed: false,
-            detail: "stub — T6 to implement".into(),
-        },
-        InfrastructureCheck {
-            name: "compile_context_returns_xml",
-            passed: false,
-            detail: "stub — T6 to implement".into(),
-        },
-    ]
+    });
+
+    out
 }
 
 // ── Orchestrator (single shared DaemonState per spec §3.7) ──────────────
@@ -672,15 +909,36 @@ mod tests {
     }
 
     #[test]
-    fn skeleton_run_returns_zeroed_failing_score() {
+    fn end_to_end_run_passes_on_seed_42() {
+        // Post-T6: real impl. Composite should hit ≥ 0.95 with all dims passing.
         let score = run_bench(&BenchConfig { seed: 42 });
         assert_eq!(score.seed, 42);
-        // Skeleton dims all return 0.0; infra checks all return passed=false.
-        // Composite gets short-circuited to 0.0 via the infra-fail branch.
-        assert_eq!(score.composite, 0.0);
-        assert!(!score.pass);
         assert_eq!(score.dimensions.len(), 6);
         assert_eq!(score.infrastructure_checks.len(), 8);
+        assert!(
+            score.infrastructure_checks.iter().all(|c| c.passed),
+            "all 8 infra checks must pass; failing: {:?}",
+            score
+                .infrastructure_checks
+                .iter()
+                .filter(|c| !c.passed)
+                .map(|c| (c.name, &c.detail))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            score.composite >= 0.95,
+            "composite must be >= 0.95 on seed=42 clean corpus, got {}",
+            score.composite
+        );
+        assert!(
+            score.pass,
+            "score.pass must be true; per-dim scores: {:?}",
+            score
+                .dimensions
+                .iter()
+                .map(|d| (d.name, d.score, d.pass))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
