@@ -137,7 +137,10 @@ pub struct IdentityScore {
 ///      master v6 spec explicitly allows direct table query as the
 ///      simplest form of "full recovery".
 ///   3. Score = n_recovered / 5; pass at score >= 0.85.
-fn dim_1_identity_facet_persistence(state: &DaemonState, rng: &mut ChaCha20Rng) -> DimensionScore {
+fn dim_1_identity_facet_persistence(
+    state: &mut DaemonState,
+    rng: &mut ChaCha20Rng,
+) -> DimensionScore {
     use rand::Rng;
 
     const N: usize = 5;
@@ -210,7 +213,7 @@ fn dim_1_identity_facet_persistence(state: &DaemonState, rng: &mut ChaCha20Rng) 
 ///
 /// Until then this dimension returns score 0.0 / pass false; the composite
 /// degrades by 0.15 and T12 calibration will treat Dim 2 as a known gap.
-fn dim_2_disposition_drift(_state: &DaemonState, _rng: &mut ChaCha20Rng) -> DimensionScore {
+fn dim_2_disposition_drift(_state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> DimensionScore {
     // BLOCKER: StepDispositionOnce Request variant missing (see fn doc).
     DimensionScore {
         name: "disposition_drift".to_string(),
@@ -1467,11 +1470,14 @@ fn mark_pass(d: DimensionScore) -> DimensionScore {
 pub async fn run_bench(config: BenchConfig) -> Result<IdentityScore, String> {
     let start = std::time::Instant::now();
 
-    // 1. Fresh in-memory daemon.
-    let mut state = DaemonState::new(":memory:").map_err(|e| format!("state init: {e}"))?;
-
-    // 2. Infrastructure checks — fail fast.
-    let infrastructure_checks = run_infrastructure_checks(&state);
+    // 1. Master state for infrastructure checks ONLY. Dropped before
+    //    dimensions run so each dim gets a fresh `:memory:` instance —
+    //    master v6 §13 D7 isolation invariant. T14 BLOCKER B1+B2 fix.
+    let infrastructure_checks = {
+        let master_state =
+            DaemonState::new(":memory:").map_err(|e| format!("master state init: {e}"))?;
+        run_infrastructure_checks(&master_state)
+    };
     let infra_all_pass = infrastructure_checks.iter().all(|c| c.passed);
 
     if !infra_all_pass {
@@ -1488,17 +1494,40 @@ pub async fn run_bench(config: BenchConfig) -> Result<IdentityScore, String> {
         return Ok(score);
     }
 
-    // 3. Seeded PRNG.
+    // 2. Seeded PRNG — single deterministic stream across all dims.
+    //    Each dim consumes its own slice; per-dim DB isolation prevents
+    //    fixture cross-contamination, but the rng is sequential to
+    //    keep run-to-run determinism stable for a given seed.
     let mut rng = super::common::seeded_rng(config.seed);
 
-    // 4. Dimensions (T3/T4/T5/T6 own the bodies).
+    // 3. Dimensions — each gets a fresh DaemonState (master v6 §13 D7).
+    //    `run_dim_isolated` owns the state for one dim and drops it
+    //    immediately after, so Phase 4 decay / Phase 23 / etc. inside
+    //    Dim 4 + Dim 5 cannot leak into Dim 6's pre-consolidator
+    //    fixture (master v6 §7 line 200 invariant).
+    fn run_dim_isolated<F>(rng: &mut ChaCha20Rng, dim_fn: F) -> Result<DimensionScore, String>
+    where
+        F: FnOnce(&mut DaemonState, &mut ChaCha20Rng) -> DimensionScore,
+    {
+        let mut state = DaemonState::new(":memory:").map_err(|e| format!("dim state init: {e}"))?;
+        let score = dim_fn(&mut state, rng);
+        drop(state);
+        Ok(score)
+    }
+
     let dimensions: [DimensionScore; 6] = [
-        mark_pass(dim_1_identity_facet_persistence(&state, &mut rng)),
-        mark_pass(dim_2_disposition_drift(&state, &mut rng)),
-        mark_pass(dim_3_preference_time_ordering(&mut state, &mut rng)),
-        mark_pass(dim_4_valence_flipping(&mut state, &mut rng)),
-        mark_pass(dim_5_behavioral_skill_inference(&mut state, &mut rng)),
-        mark_pass(dim_6_preference_staleness(&mut state, &mut rng)),
+        mark_pass(run_dim_isolated(
+            &mut rng,
+            dim_1_identity_facet_persistence,
+        )?),
+        mark_pass(run_dim_isolated(&mut rng, dim_2_disposition_drift)?),
+        mark_pass(run_dim_isolated(&mut rng, dim_3_preference_time_ordering)?),
+        mark_pass(run_dim_isolated(&mut rng, dim_4_valence_flipping)?),
+        mark_pass(run_dim_isolated(
+            &mut rng,
+            dim_5_behavioral_skill_inference,
+        )?),
+        mark_pass(run_dim_isolated(&mut rng, dim_6_preference_staleness)?),
     ];
 
     // 5. Composite.
@@ -1628,9 +1657,9 @@ mod tests {
 
     #[test]
     fn test_dim_1_identity_facet_persistence_recovers_all_5() {
-        let state = DaemonState::new(":memory:").expect("DaemonState::new");
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
         let mut rng = super::super::common::seeded_rng(42);
-        let dim = dim_1_identity_facet_persistence(&state, &mut rng);
+        let dim = dim_1_identity_facet_persistence(&mut state, &mut rng);
         assert_eq!(dim.name, "identity_facet_persistence");
         assert!(
             (dim.score - 1.0).abs() < 1e-12,
