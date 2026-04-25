@@ -2364,6 +2364,7 @@ mod tests {
                         composite_mean: 0.95,
                         composite_p50: 0.95,
                         composite_p95: 0.97,
+                        composite_sample_size: 3,
                         first_ts_secs: 1_745_000_000,
                         last_ts_secs: 1_745_500_000,
                     }],

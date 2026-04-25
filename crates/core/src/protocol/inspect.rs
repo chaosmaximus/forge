@@ -145,6 +145,18 @@ pub struct PhaseRunRow {
 /// succeeded, 1.0 when all passed). `composite_*` are computed from the
 /// `metadata.composite` score (float in `[0, 1]`). Percentiles use the same
 /// ceiling-rank algorithm as `LatencyRow`.
+///
+/// **Pass-1 / Pass-2 sample-set divergence (P3-2 W5 review HIGH-1):**
+/// `runs` is computed from ALL runs in the window. `composite_p50`/`p95` are
+/// computed from at most `MAX_ROWS_PER_GROUP` (= 20_000) most-recent samples
+/// per group. At very high cardinality the divergence becomes observable —
+/// e.g. a group with `runs=50_000` has its percentiles derived from the
+/// most-recent 20k. `composite_sample_size` reports the actual number of
+/// samples used so operators can detect this.
+///
+/// Pre-W5 this field did not exist; old clients deserializing W5 responses
+/// will see it as a numeric field they can ignore. New clients should display
+/// it next to the percentiles when it diverges from `runs`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BenchRunRow {
     pub bench_name: String,
@@ -154,6 +166,13 @@ pub struct BenchRunRow {
     pub composite_mean: f64,
     pub composite_p50: f64,
     pub composite_p95: f64,
+    /// Actual sample count used for `composite_p50` / `composite_p95`.
+    /// Equals `runs` for groups under the per-group cap (20_000); below
+    /// `runs` for groups above the cap (most-recent-N sampling).
+    /// P3-2 W5 review HIGH-1: required so operators can detect when
+    /// percentiles describe only a subset of `runs`.
+    #[serde(default)]
+    pub composite_sample_size: u64,
     pub first_ts_secs: i64,
     pub last_ts_secs: i64,
 }
@@ -249,6 +268,7 @@ mod tests {
             composite_mean: 0.91,
             composite_p50: 0.92,
             composite_p95: 0.98,
+            composite_sample_size: 17,
             first_ts_secs: 1_745_500_000,
             last_ts_secs: 1_745_600_000,
         };
@@ -270,6 +290,7 @@ mod tests {
                 composite_mean: 0.95,
                 composite_p50: 0.95,
                 composite_p95: 0.95,
+                composite_sample_size: 1,
                 first_ts_secs: 1,
                 last_ts_secs: 1,
             }],

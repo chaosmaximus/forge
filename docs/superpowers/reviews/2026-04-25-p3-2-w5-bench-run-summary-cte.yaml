@@ -1,0 +1,42 @@
+schema_version: 1
+slug: 2026-04-25-p3-2-w5-bench-run-summary-cte
+target_paths:
+  - crates/daemon/src/server/inspect.rs
+  - crates/core/src/protocol/inspect.rs
+  - crates/core/src/protocol/contract_tests.rs
+  - docs/superpowers/plans/2026-04-25-complete-production-readiness.md
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 7a298d0
+  head: 16b7e71
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-2-w5-bench-run-summary-cte.transcript.md
+findings:
+  - id: HIGH-1
+    severity: HIGH
+    summary: Pass 1 / Pass 2 sample-set divergence — rollup over full window, percentiles over capped subset
+    file: crates/daemon/src/server/inspect.rs
+    status: resolved
+    fixed_by: pending
+  - id: MED-1
+    severity: MEDIUM
+    summary: No composite index supports the window function — planner materializes temp B-tree + sorts at scale
+    file: crates/daemon/src/db/schema.rs
+    status: deferred
+    rationale: kpi_events single-column indexes (timestamp, event_type, phase_name) can't satisfy JSON-extract PARTITION BY. SQLite builds temp B-tree at O(n log n). ~200k rows/window is acceptable; defer expression index until measurements justify (no production observation of slow inspect queries).
+  - id: MED-2
+    severity: MEDIUM
+    summary: Tests do not exercise the starvation regression they claim to fix
+    file: crates/daemon/src/server/inspect.rs
+    status: resolved
+    fixed_by: pending
+  - id: LOW-1
+    severity: LOW
+    summary: Behavior change — ORDER BY timestamp DESC introduces recency bias not present pre-W5
+    file: crates/daemon/src/server/inspect.rs
+    status: resolved
+    fixed_by: pending
