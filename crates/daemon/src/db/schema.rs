@@ -386,6 +386,22 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_code_symbol_name ON code_symbol(name);
         CREATE INDEX IF NOT EXISTS idx_code_symbol_file ON code_symbol(file_path);
 
+        -- session.status (lifecycle of the connection itself):
+        --   active  — recently active (heartbeat within heartbeat_idle_secs)
+        --   idle    — quiet (heartbeat older than heartbeat_idle_secs but within
+        --             heartbeat_timeout_secs); the next heartbeat atomically
+        --             revives to active. See workers/reaper.rs Phase 0.
+        --   ended   — reaped after no heartbeat for heartbeat_timeout_secs
+        --
+        -- A separate column agent_status (added by the agent-template migration
+        -- below) tracks the agent current WORK state:
+        --   idle / thinking / working / retired
+        -- The shared word idle across the two columns is intentional but
+        -- distinct: session.status=idle means no-heartbeat-lately; while
+        -- agent_status=idle means agent-is-between-turns. A session can be
+        -- session.status=active AND agent_status=idle (alive, awaiting work)
+        -- or session.status=idle AND agent_status=working (heartbeat lapsed
+        -- mid-task — operator should investigate).
         CREATE TABLE IF NOT EXISTS session (
             id TEXT PRIMARY KEY,
             agent TEXT NOT NULL,
@@ -1044,7 +1060,14 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     ",
     )?;
 
-    // Agent lifecycle: session gains template tracking, agent status, last activity
+    // Agent lifecycle: session gains template tracking, agent status, last activity.
+    //
+    // NOTE on the column naming: `session.agent_status` is the agent's WORK
+    // state ('idle' | 'thinking' | 'working' | 'retired') — distinct from
+    // `session.status` (lifecycle: 'active' | 'idle' | 'ended', see CREATE
+    // TABLE above for full disambiguation). Both columns can hold the value
+    // 'idle' for the same row, with different meanings: session.status='idle'
+    // means heartbeat-lapsed; agent_status='idle' means awaiting work.
     let _ = conn.execute("ALTER TABLE session ADD COLUMN template_id TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE session ADD COLUMN agent_status TEXT DEFAULT 'idle'",
