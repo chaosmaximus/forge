@@ -1,0 +1,56 @@
+schema_version: 1
+slug: 2026-04-25-p3-2-w3-otlp-path-latency
+target_paths:
+  - crates/daemon/tests/t10_instrumentation_latency.rs
+  - crates/daemon/src/config.rs
+  - crates/daemon/src/bench/forge_consolidation.rs
+  - crates/daemon/src/teams.rs
+  - crates/daemon/src/server/inspect.rs
+  - crates/daemon/src/workers/consolidator.rs
+  - docs/benchmarks/baselines/2026-04-24-consolidation-latency.md
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 97eb5cd
+  head: 2bdb687
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-2-w3-otlp-path-latency.transcript.md
+findings:
+  - id: HIGH-1
+    severity: HIGH
+    summary: Provider built before Tokio runtime ownership transferred — BatchSpanProcessor worker may race shutdown
+    file: crates/daemon/tests/t10_instrumentation_latency.rs
+    status: resolved
+    fixed_by: pending
+  - id: HIGH-2
+    severity: HIGH
+    summary: Ceiling 1.50× too generous — would mask a 45% regression
+    file: crates/daemon/tests/t10_instrumentation_latency.rs
+    status: resolved
+    fixed_by: pending
+  - id: MED-1
+    severity: MEDIUM
+    summary: similarity_threshold test still uses post-construction reassignment after struct-update conversion
+    file: crates/daemon/src/config.rs
+    status: resolved
+    fixed_by: pending
+  - id: LOW-1
+    severity: LOW
+    summary: worker_threads=2 is the bare minimum — no margin for future harness-path tokio spawns
+    file: crates/daemon/tests/t10_instrumentation_latency.rs
+    status: resolved
+    fixed_by: pending
+  - id: LOW-2
+    severity: LOW
+    summary: Variant A re-measured in-test rationale could be more explicit
+    file: crates/daemon/tests/t10_instrumentation_latency.rs
+    status: resolved
+    fixed_by: pending
+  - id: LOW-3
+    severity: LOW
+    summary: Commit bundles unrelated clippy cleanup with W3 feature
+    status: deferred
+    rationale: cosmetic; commit history immutable. Future commit-message hygiene captured. Splitting now would require revert+resubmit which is more churn than the bisect benefit warrants.

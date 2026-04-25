@@ -3207,7 +3207,9 @@ heartbeat_timeout_secs = 45
 
     #[test]
     fn consolidation_config_validated_clamps_similarity_threshold() {
-        let mut cfg = ConsolidationConfig {
+        // W3 review MED-1: symmetric struct-update form, matching the other
+        // four clamp tests; eliminates the lone `mut cfg` in this module.
+        let cfg = ConsolidationConfig {
             skill_inference_tool_name_similarity_threshold: -1.0,
             ..ConsolidationConfig::default()
         };
@@ -3216,7 +3218,10 @@ heartbeat_timeout_secs = 45
                 .skill_inference_tool_name_similarity_threshold,
             0.0
         );
-        cfg.skill_inference_tool_name_similarity_threshold = 2.5;
+        let cfg = ConsolidationConfig {
+            skill_inference_tool_name_similarity_threshold: 2.5,
+            ..ConsolidationConfig::default()
+        };
         assert_eq!(
             cfg.validated()
                 .skill_inference_tool_name_similarity_threshold,

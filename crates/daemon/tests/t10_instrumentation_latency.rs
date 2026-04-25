@@ -219,11 +219,17 @@ fn t10_consolidation_latency_baseline() {
 // overhead. A future extension could swap in a localhost grpc collector to
 // add network bytes/latency cost on top.
 
-/// Relative ceiling: Variant C's median must be ≤ 1.50× Variant A's median.
-/// More generous than the A↔B 1.15× ratio because the OTLP layer adds real
-/// (but small) per-span overhead — we want to catch a 2× regression but
-/// tolerate the 30-40% steady-state OTel layer cost.
-const OTLP_OVERHEAD_RATIO_CEILING: f64 = 1.50;
+/// Relative ceiling: Variant C's median must be ≤ 1.20× Variant A's median.
+///
+/// **W3 review HIGH-2 fix** — was 1.50× originally, which would have masked
+/// a 45% regression. Observed steady-state ratio is ~1.03 (i.e. ~3%
+/// overhead from the full OTLP-layer + BatchSpanProcessor SDK chain at
+/// 23 spans × 20 iterations × in-memory SQLite seed). 1.20× gives ~6×
+/// headroom over the observed value while catching any regression that
+/// pushes the SDK cost past 20% — the scale where production budgets
+/// start to bite. If host jitter ever flaps this, raise N_ITERATIONS
+/// (more samples) before relaxing the ceiling.
+const OTLP_OVERHEAD_RATIO_CEILING: f64 = 1.20;
 
 #[derive(Debug, Default)]
 struct NoopSpanExporter;
@@ -240,7 +246,12 @@ impl opentelemetry_sdk::export::trace::SpanExporter for NoopSpanExporter {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// W3 review LOW-1: 4 worker threads (test main + BatchSpanProcessor worker
+// + 2 spare) avoids contention with any background tokio task the harness
+// path may grow into the future without silently inflating measurements.
+// 2 was the bare minimum (test + processor); 4 keeps margin without
+// overspending.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "T10 OTLP-path latency variant — opt-in, see module comment"]
 async fn t10_consolidation_latency_otlp_variant_c() {
     use opentelemetry::trace::TracerProvider as _;
@@ -249,8 +260,11 @@ async fn t10_consolidation_latency_otlp_variant_c() {
 
     let cfg = forge_daemon::config::ConsolidationConfig::default();
 
-    // Variant A baseline first — re-measured in the same process so the
-    // ratio is robust to host-level jitter (CPU thermals, runner load).
+    // Variant A baseline first — re-measured in the same process (rather
+    // than reading from the existing baseline test) so the C/A ratio is
+    // robust to host-level jitter that affects both variants equally.
+    // Cost: ~6s of duplication out of ~12s total wall-clock, which is
+    // cheap insurance against a flapping ratio under noisy CI runners.
     let mut a_durs: Vec<Duration> = Vec::with_capacity(N_ITERATIONS);
     for _ in 0..N_ITERATIONS {
         let conn = make_conn();
@@ -297,11 +311,14 @@ async fn t10_consolidation_latency_otlp_variant_c() {
     // tracing layer isn't trying to write to a half-shut-down OTel pipeline.
     drop(_guard);
 
-    // Force-flush any queued spans, then drop the provider. Both calls are
-    // best-effort — a flush failure here would only mean the no-op exporter
-    // got fewer spans than expected, which doesn't affect correctness.
-    let _ = provider.force_flush();
-    drop(provider);
+    // W3 review HIGH-1 fix: previously did `force_flush()` + `drop(provider)`
+    // which is best-effort — the BatchSpanProcessor worker task could still
+    // be mid-batch at drop time, leaking the worker. `shutdown()` is the
+    // canonical OpenTelemetry shutdown sequence: blocking flush + worker
+    // termination. We accept any errors here (a no-op exporter cannot
+    // meaningfully fail; a real exporter could but that's not the test's
+    // concern). The provider goes out of scope at the end of fn either way.
+    let _shutdown_errs = provider.shutdown();
 
     let a_med = median(a_durs.clone());
     let c_med = median(c_durs.clone());

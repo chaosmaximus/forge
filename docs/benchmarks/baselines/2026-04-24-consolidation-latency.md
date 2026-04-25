@@ -136,19 +136,19 @@ N = 20 iterations, fresh seeded DB per iteration, fresh `ForgeMetrics` per Varia
 
 | Variant | Median | Samples (ms) |
 | ------- | -----: | ------------ |
-| A (no metrics, no OTLP layer) | **287.08 ms** | 297.49, 288.07, 288.30, 286.61, 281.58, 287.95, 286.68, 281.51, 289.80, 294.14, 280.76, 283.30, 283.50, 287.08, 280.87, 288.41, 287.28, 278.59, 283.26, 290.62 |
-| C (full + OTLP layer)         | **295.32 ms** | 298.45, 312.47, 287.68, 295.15, 295.90, 294.95, 298.67, 312.68, 295.41, 293.51, 290.72, 295.96, 290.50, 295.82, 288.75, 295.52, 291.70, 295.32, 286.28, 293.34 |
+| A (no metrics, no OTLP layer) | **292.16 ms** | 291.33, 292.21, 290.39, 299.19, 287.97, 293.67, 295.49, 287.59, 294.80, 291.97, 288.33, 293.15, 292.16, 288.42, 293.91, 298.28, 290.57, 294.36, 286.90, 288.06 |
+| C (full + OTLP layer)         | **296.47 ms** | 295.95, 292.92, 290.01, 294.63, 298.76, 293.25, 296.47, 301.85, 299.01, 305.23, 312.45, 310.81, 302.40, 294.67, 286.44, 302.89, 296.06, 295.66, 294.10, 302.11 |
 
-Ratio (C / A): **1.0287** — Variant C median is ~2.9% slower than Variant A median.
+Ratio (C / A): **1.0148** — Variant C median is ~1.5% slower than Variant A median (re-measured after W3-fix tightened the ceiling and switched to `provider.shutdown()`).
 
-**Ceiling:** 1.50× — passed with substantial headroom. The ceiling is more generous than Run 3's 1.15× because the OTLP layer + BatchSpanProcessor adds real (small) per-span overhead from queueing every `info_span!` enter/exit.
+**Ceiling:** 1.20× — passed. The ceiling was 1.50× originally; W3 adversarial review HIGH-2 flagged this as too generous (would have masked a 45% regression). Tightened to 1.20× — 6× headroom over the observed 1.0148 value, while still catching any regression that pushes SDK cost past 20%.
 
 ### Interpretation
 
 - Total Tier 1 hot-path overhead INCLUDING OTLP layer is ≈3% at this workload size — well within any reasonable production budget.
 - The OTLP-path delta (C − B in nominal terms) is on the order of single-digit ms per `run_all_phases` invocation. Most of that is the cost of converting tracing's structured fields into OTel `KeyValue` pairs and pushing them onto the BatchSpanProcessor's MPSC channel — neither of which is on the critical path of any consolidator phase, both being effectively "background work" handed off to the processor's worker task.
-- Variant A's absolute median (~287 ms) on this run is ~2.6× higher than Run 3's ~107 ms because the test runner host load was different (Run 4 ran inside a session with a live daemon, several active backgrounded `cargo` commands, and the development workflow's normal load). The ratio metric is robust against this — both A and C ran under the same load.
-- The N=20 ceiling check (`ratio ≤ 1.50`) provides ~50% headroom to absorb future steady-state OTel SDK upgrades (e.g., a major-version bump that adds extra encoding cost) without flapping. If ratio ever exceeds 1.30 in a steady-state run, that's a signal to investigate before it crosses 1.50.
+- Variant A's absolute median (~292 ms) on this run is ~2.7× higher than Run 3's ~107 ms because the test runner host load was different (Run 4 ran inside a session with a live daemon, several active backgrounded `cargo` commands, and the development workflow's normal load). The ratio metric is robust against this — both A and C ran under the same load.
+- The N=20 ceiling check (`ratio ≤ 1.20`) provides 6× headroom over the observed 1.0148 value while catching any regression that pushes SDK cost past 20% — the scale where production budgets bite. If ratio ever exceeds 1.10 in a steady-state run, that's a signal to investigate before it crosses 1.20.
 
 ### Reproducing
 
@@ -166,11 +166,14 @@ cargo test -p forge-daemon --release --test t10_instrumentation_latency \
 
 ### Acceptance
 
-- [x] Variant C median ≤ 1.50× Variant A median (passed at ratio 1.0287).
+- [x] Variant C median ≤ 1.20× Variant A median (passed at ratio 1.0148 after W3-fix; was 1.50× pre-fix per HIGH-2).
 - [x] Per-iteration kpi_events row count = 23 (asserted in-test; closes the spec §3.5 invariant).
 - [x] No-op exporter implements `opentelemetry_sdk::export::trace::SpanExporter` correctly (fn export returns `BoxFuture<'static, ExportResult>` as required by the trait).
 - [x] BatchSpanProcessor uses `opentelemetry_sdk::runtime::Tokio` (matches production `init_otlp_layer` in `crates/daemon/src/main.rs`).
 - [x] Subscriber installed via `set_default()` (per-thread, not global) so other tests are unaffected.
+- [x] Provider shutdown via `provider.shutdown()` (W3-fix HIGH-1: was best-effort `force_flush()` + drop, which could leak the BatchSpanProcessor worker task).
+- [x] Tokio runtime uses `worker_threads = 4` (W3-fix LOW-1: was 2 — bare minimum; 4 leaves margin against future harness-path tokio tasks).
 - [x] `cargo clippy --workspace -- -W clippy::all -D warnings` clean.
+- [x] `cargo clippy --workspace --tests -- -W clippy::all -D warnings` clean (W3 also closes 11 pre-existing test-only lints).
 
 **T12 Codex M9 status:** closed. The OTLP-path cost is now both measured and gated by an automated ratio assertion.
