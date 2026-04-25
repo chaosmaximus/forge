@@ -13,7 +13,7 @@ method, mark macOS / Homebrew / marketplace cells as user-reproducible
 
 | Cell                          | OS    | Install method     | Cycle    | Status      | Evidence |
 |-------------------------------|-------|--------------------|----------|-------------|----------|
-| 1.A.1 source build — health   | Linux | `cargo build --release` | health   | **PASS** | live daemon at PID 3697418 returned counts (171 decisions / 58 lessons / 33 patterns / 6 preferences / 50784 edges) |
+| 1.A.1 source build — health   | Linux | `cargo build --release` | health   | **PASS** | live daemon at PID 3697418 returned counts (174 decisions / 58 lessons / 33 patterns / 6 preferences / 50784 edges; total 271) |
 | 1.A.2 source build — doctor   | Linux | source                 | doctor   | **PASS** | UP 109913s, version 0.5.0 (d9fda72), 8 workers running, hook WARN expected (plugin not symlinked here) |
 | 1.A.3 source build — recall   | Linux | source                 | recall   | **PASS** | 2-result query returned scored memories with content + ranking |
 | 1.A.4 source build — stats    | Linux | source                 | stats    | **PASS** | 24h aggregator returned all-zero (no extractions in window — expected) |
@@ -64,9 +64,15 @@ Health Checks:
          marketplace or symlink hooks/hooks.json into ~/.claude/plugins/forge/
 ```
 
-The hook WARN is the expected state for a contributor who hasn't symlinked
-the plugin into `~/.claude/plugins/`; for end-users the WARN clears once
-the marketplace install lands the hooks.json.
+Two distinct cases produce the hook WARN:
+
+1. **Contributor without symlink** — expected; clears once the developer
+   symlinks the public repo into `~/.claude/plugins/forge/` (W7 doc).
+2. **Marketplace-installed user with broken plugin shipment** — *not*
+   expected; the marketplace plugin should ship `hooks/hooks.json` and
+   `/doctor` should clear the WARN. If the WARN fires after a successful
+   marketplace install, file an issue — the marketplace-supplied plugin
+   is missing hooks.json (or the install path is misconfigured).
 
 ## User reproduction — macOS
 
@@ -80,7 +86,13 @@ available). Operator path on macOS:
 cd ~/src                                             # or your usual src dir
 git clone https://github.com/chaosmaximus/forge
 cd forge
-bash scripts/setup-dev-env.sh                        # downloads ONNX runtime
+
+# scripts/setup-dev-env.sh is Linux-only (downloads manylinux ORT via
+# apt-get). On macOS, skip it — `pyke/ort` resolves the system ORT
+# automatically when cargo builds. If a build error names ORT, install
+# `brew install onnxruntime` first.
+# bash scripts/setup-dev-env.sh                       # Linux only
+
 cargo build --release -p forge-daemon -p forge-cli   # ~5-15 min cold
 
 # Run the daemon.
@@ -132,7 +144,7 @@ export FORGE_DIR=$(mktemp -d)
 sleep 2
 
 # Mid-session kill (graceful via SIGINT — see W5 §G3 + W5 review HIGH-1).
-kill -INT "$(cat $FORGE_DIR/forge.pid)"
+kill -INT "$(cat "$FORGE_DIR/forge.pid")"
 
 # Verify daemon shut down + DB is consistent (no stale lock).
 sleep 6
@@ -144,7 +156,7 @@ sleep 2
 ./target/release/forge-next health   # should still report counts
 
 # Cleanup.
-kill -INT "$(cat $FORGE_DIR/forge.pid)"
+kill -INT "$(cat "$FORGE_DIR/forge.pid")"
 rm -rf "$FORGE_DIR"
 ```
 
@@ -160,7 +172,7 @@ sleep 2
 # Expected: exit 1 with "another forge-daemon is running" (acquire_pid_lock).
 
 # Cleanup.
-kill -INT "$(cat $FORGE_DIR/forge.pid)"
+kill -INT "$(cat "$FORGE_DIR/forge.pid")"
 rm -rf "$FORGE_DIR"
 ```
 
@@ -185,9 +197,11 @@ rm -rf "$FORGE_DIR"
 ## Acceptance
 
 * Linux source-build cycle verified end-to-end against a live daemon.
-* All cells the autonomous run could exercise are PASS.
-* All cells requiring macOS hardware, network releases, or daemon-
-  killing have reproduction steps in this doc.
+* All 6 autonomous-runnable cells (1.A.1-5, 1.B) PASS.
+* 8 cells handed off — 3 release-blocked (1.C, 1.D, 1.E), 2 by-design
+  negative (1.F, 1.G — risky against the live user daemon), 3 macOS
+  (2.A, 2.B, 2.C — no Mac hardware in autonomous run).
+* All 8 handoff cells have full reproduction steps in this doc.
 * Per locked decision #2 (Linux primary, macOS best-effort), W8 is
-  complete on the autonomous side. macOS handoff cells convert to PASS
-  upon user execution; track in HANDOFF when run.
+  complete on the autonomous side. Handoff cells convert to PASS upon
+  user execution; track in HANDOFF when each runs.
