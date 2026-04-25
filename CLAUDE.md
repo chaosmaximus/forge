@@ -28,6 +28,10 @@ Daemon changes without matching harness updates are incomplete changes. If you'r
 - New commits, never `--amend`, `--force`, or `--no-verify`.
 - Commit prefixes: `feat(<phase> <task>):`, `test(...)`, `fix(...)`, `chore(...)`, `docs(...)`. Co-author trailer: `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
 
+## Agent dispatch — verify commits
+
+When dispatching `forge-generator` (or any sub-agent expected to commit), the orchestrator MUST verify the commit landed by running `git log -1 --format='%H %s'` after the agent reports DONE. The agent's own DONE contract requires it to paste the same line into its summary, but the orchestrator is responsible for the second-source check — agents have been observed narrating "Committing now" then exiting before the actual `git commit` runs (budget exhaustion, hook rejection, missing `git add`). Treat a DONE report without a git-log SHA matching the new work as evidence of a falsified completion claim, and complete the commit yourself before continuing the workflow.
+
 ## Architecture
 
 ```

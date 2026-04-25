@@ -764,21 +764,32 @@ agent reliability though — orchestration failures during 2A-4d.3 T3-T6
 parallel dispatch may have been amplified by hook noise diluting agent
 focus.
 
-#### 4. Sub-agent commit-discipline failures
+#### 4. Sub-agent commit-discipline failures — **CLOSED 2026-04-25**
 
-**Finding:** during 2A-4d.3 implementation, multiple forge-generator
-agents claimed "Committing" or "all tests green, committing" then exited
-without running `git commit`. Recovery cost was non-trivial (manual
-verification + commit). Suspect: agent narrates intent then runs out of
-budget / exits before final tool call.
+**Closed by:** `dbae34b`+1 — three-pronged fix:
 
-**Fix plan:** investigate forge-generator subagent harness — maybe the
-prompt template should explicitly require a final `git log -1 --format=%H`
-verification turn before returning. Alternatively, parent agent should
-always verify by checking git log before declaring task done (already
-how I'm working post-T3, but worth codifying).
+1. **Agent prompt — `agents/forge-generator.md`:** added a "Mandatory:
+   Commit Verification Gate" section requiring the agent to run
+   `git log -1 --format='%H %s'` immediately after committing and paste
+   the output verbatim into its DONE summary. The DONE definition is
+   tightened to require commit verification — reporting DONE without a
+   `git log -1` SHA matching the new work is now an explicit
+   "falsified completion claim".
+2. **Coding constraint:** added "Commit early, not late" rule. The
+   safe order is `implement → tests → git add → git commit → git log -1
+   → write report`, so an agent that runs out of turn budget mid-
+   narration still has the commit landed.
+3. **Orchestrator convention — `CLAUDE.md` §Agent dispatch — verify
+   commits:** parent agent must run `git log -1` after every dispatch
+   that's expected to commit, and complete the commit itself if the
+   sub-agent's DONE report lacks proof. Codifies the post-T3 informal
+   habit so future Claude orchestrators inherit it.
 
-**Why deferred:** harness-layer fix; orthogonal to Tier 3 deliverables.
+Original failure mode (multiple forge-generator agents this session
+narrated "Committing now" then exited before the actual `git commit`
+ran) is now caught by both layers — agent's own contract refuses to
+return DONE without verification, and orchestrator distrusts a DONE
+that lacks a SHA.
 
 #### 5. shape_bench_run_summary percentile cap pulls all rows into Rust
 

@@ -79,13 +79,40 @@ Before using any external crate (e.g., uuid, serde_json), verify it exists in th
 
 ## Completion Status — Report ONE of:
 
-- **DONE:** Task complete, tests passing. Include: files changed, tests added, summary of what was built.
-- **DONE_WITH_CONCERNS:** Task complete but with noted concerns. Include: concern list with specific file:line references.
+- **DONE:** Task complete, tests passing, **commit landed and verified** (see Commit Verification Gate below). Include: files changed, tests added, summary of what was built, **and the verbatim output of `git log -1 --format='%H %s'`** as evidence the commit is on the branch tip.
+- **DONE_WITH_CONCERNS:** Same DONE bar (commit verified) **plus** noted concerns with specific file:line references.
 - **NEEDS_CONTEXT:** Cannot proceed without information. Include: exactly what you need to know.
 - **BLOCKED:** Cannot proceed due to architectural/external constraint. Include: what would need to change and why.
 
+## Mandatory: Commit Verification Gate
+
+Reporting DONE without a landed commit is a **falsified completion claim**.
+Operators of forge-generator have observed agents narrate "Committing now"
+and then exit before the `git commit` actually ran (budget exhaustion,
+hook rejection, missing `git add`, etc.). Avoid this:
+
+1. **Commit early, not late.** As soon as your implementation compiles
+   and tests pass, run `git add` + `git commit`. Do NOT save committing
+   for the end of your turn budget.
+2. **Verify after committing.** Immediately after `git commit`, run:
+   ```bash
+   git log -1 --format='%H %s'
+   ```
+   The output must show YOUR new SHA and YOUR commit subject — not a
+   previous commit. If the SHA pre-dates your changes, the commit did
+   NOT land; investigate (likely causes: pre-commit hook failure left
+   files unstaged, or the commit message was rejected). Re-stage and
+   re-commit until `git log -1` shows your work.
+3. **Paste the verification output verbatim** into your completion
+   summary, exactly as it appeared on stdout.
+
+If you cannot produce a `git log -1` line that proves your commit
+landed, you must NOT report DONE — pick NEEDS_CONTEXT or BLOCKED
+with the failure mode noted instead.
+
 ## Coding Constraints
 
+- **Commit early.** As soon as the code compiles and the test command passes, commit. Do NOT batch the commit to "after I write the report" — at high turn counts you may run out of budget mid-narration and the commit never lands. The safe order is: implement → tests → `git add` → `git commit` → `git log -1` (verify) → write report.
 - Commit atomically with semantic prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`
 - Prefer the simplest solution. Do NOT add features not in the task.
 - Run the project's test suite after implementation. Check injected context for the test command. If none provided, auto-detect from project markers (Cargo.toml, package.json, pyproject.toml, go.mod).
