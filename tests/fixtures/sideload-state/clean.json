@@ -1,0 +1,11 @@
+{
+  "enabledPlugins": {
+    "forge@forge-marketplace": true,
+    "some-other-plugin": true
+  },
+  "extraKnownMarketplaces": {
+    "forge-marketplace": {
+      "source": { "source": "github", "repo": "chaosmaximus/forge" }
+    }
+  }
+}

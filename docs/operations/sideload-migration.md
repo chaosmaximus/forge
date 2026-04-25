@@ -21,6 +21,40 @@ the plugin-surface wiring moves.
 If none of those match, you either never sideloaded or you are already on
 the public plugin — no action needed.
 
+### Auto-detection
+
+A diagnostic script under `scripts/check-sideload-state.sh` answers this
+mechanically:
+
+```bash
+bash scripts/check-sideload-state.sh
+# Custom Claude Code settings location:
+CLAUDE_SETTINGS=/path/to/settings.json bash scripts/check-sideload-state.sh
+# Or:
+bash scripts/check-sideload-state.sh --settings /path/to/settings.json
+```
+
+Exit codes:
+
+- `0` — no sideload references (or settings file absent — Claude Code
+  is not installed, nothing to migrate).
+- `1` — pre-2026-04-23 sideload detected. Stderr lists the offending
+  entries + a link back to this doc.
+- `2` — usage / parse error.
+
+The script reads only — it never edits `settings.json`.
+
+## Platform notes
+
+`~/.claude/settings.json` is the same path on Linux and macOS. The
+migration steps below apply identically; the only OS-specific moment is
+"Step 4 — restart Claude Code", which you do via:
+
+- **Linux:** quit + relaunch Claude Code (X11 / Wayland).
+- **macOS:** ⌘Q to quit, then re-open from Applications. `pkill -f
+  "Claude"` is technically faster but kill-by-name is unsafe — see the
+  W5 rollback drill (§G3) for why pidfile-based shutdowns are preferred.
+
 ## Step 1 — snapshot current state
 
 ```bash

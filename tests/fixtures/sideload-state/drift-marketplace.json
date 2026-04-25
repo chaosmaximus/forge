@@ -1,0 +1,7 @@
+{
+  "extraKnownMarketplaces": {
+    "forge-app-marketplace": {
+      "source": { "source": "directory", "path": "/home/user/forge-app" }
+    }
+  }
+}

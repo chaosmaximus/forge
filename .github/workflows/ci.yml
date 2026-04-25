@@ -159,6 +159,14 @@ jobs:
       - name: Protocol-hash interlock validation
         run: bash scripts/check-protocol-hash.sh
 
+      # Phase 2P-1b §8: scripts/check-sideload-state.sh detects pre-
+      # 2026-04-23 sideload setups in a user's ~/.claude/settings.json.
+      # The script is user-side (not a CI gate against the repo), but
+      # we run its fixture tests in CI so regressions in the detection
+      # logic don't ship.
+      - name: Sideload-state detector fixture tests
+        run: bash tests/scripts/test-sideload-state.sh
+
   bench-fast:
     # Phase 2A-4d.3 T13: per-commit fast benches (forge-consolidation,
     # forge-identity). In-process harnesses run in <1s on ubuntu-latest
