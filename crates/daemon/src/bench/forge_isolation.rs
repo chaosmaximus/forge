@@ -29,10 +29,10 @@
 //! Composite = weighted mean. Pass = composite ≥ 0.95 AND every dim ≥ min.
 
 use rand_chacha::ChaCha20Rng;
-use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::bench::common::{deterministic_embedding, seeded_rng};
+use crate::server::handler::DaemonState;
 
 // ── Per-bench weights (§3.1, §3.3) ──────────────────────────────────────
 
@@ -76,6 +76,7 @@ pub const SHARED_TAG: &str = "isolation_bench";
 #[derive(Debug, Clone)]
 pub struct BenchMemory {
     pub id: String,
+    pub memory_type: String,
     /// `Some("alpha")` for project-scoped; `None` for global.
     pub project: Option<String>,
     pub title: String,
@@ -140,25 +141,139 @@ impl Default for BenchConfig {
     }
 }
 
-// ── Corpus generator (T3 will fill in) ──────────────────────────────────
+// ── Corpus generator (T3, spec §3.2) ────────────────────────────────────
 
-/// SKELETON — T3 implementation per spec §3.2.
+/// Deterministic per-index confidence formula per spec §3.2 M4 fix:
+/// `0.7 + (idx * 0.01).clamp(0.0, 0.29)` — produces values in [0.70, 0.99]
+/// for `idx ∈ 0..30`; clamps for idx ≥ 30 (only relevant if a future
+/// extension grows MEMORIES_PER_MAIN_PROJECT past 30).
+fn deterministic_confidence(idx: usize) -> f32 {
+    0.7 + (idx as f32 * 0.01).clamp(0.0, 0.29)
+}
+
+/// Generate the 165-memory corpus per spec §3.2.
 ///
-/// Generates 165-memory corpus with deterministic confidence
-/// (`0.7 + (idx as f32 * 0.01).clamp(0.0, 0.29)` per M4 fix), shared tag
-/// `"isolation_bench"`, project-specific tokens (e.g., `"alpha_secret_5"`),
-/// and `bench/common::deterministic_embedding`-derived 768-dim vectors.
+/// The function takes a `ChaCha20Rng` for signature-consistency with other
+/// bench harnesses but does not consume randomness from it — corpus content
+/// is fully derived by formula from project name + index, and embeddings
+/// come from [`deterministic_embedding`] which seeds its own internal RNG
+/// from the seed_key string. This is intentional: removing the
+/// `random_range` sampling edge eliminates one degree of cross-rustc-version
+/// drift risk (per v1 review M4 fix).
+///
+/// Layout:
+/// - 5 main projects × 30 each (20 lessons + 10 decisions) = 150
+/// - 1 prefix-collision sentinel ("alphabet") × 5 lessons = 5
+/// - 10 globals (project=None; 6 patterns + 4 decisions)
+/// - Total: 165
 pub fn generate_corpus(_rng: &mut ChaCha20Rng) -> Corpus {
-    // T3 will populate this. Skeleton returns empty corpus.
-    Corpus {
-        memories: Vec::new(),
+    let mut memories = Vec::with_capacity(TOTAL_CORPUS_SIZE);
+
+    // Main projects (5 × 30).
+    for project in MAIN_PROJECTS {
+        for idx in 0..MEMORIES_PER_MAIN_PROJECT {
+            let memory_type = if idx < 20 { "lesson" } else { "decision" };
+            let title = format!("{project}_secret_{idx}");
+            memories.push(BenchMemory {
+                id: format!("isolation_{project}_{idx}"),
+                memory_type: memory_type.to_string(),
+                project: Some(project.to_string()),
+                content: format!(
+                    "In project {project}, the topic_{idx} pattern uses \
+                     {project}_secret_{idx} as the canonical detail."
+                ),
+                tags: vec![project.to_string(), SHARED_TAG.to_string()],
+                confidence: deterministic_confidence(idx),
+                embedding: deterministic_embedding(&title),
+                title,
+            });
+        }
     }
+
+    // Prefix-collision sentinel (alphabet × 5). Exists only to drive
+    // D5 probe 5: a query for "alpha" must NOT return alphabet's memories.
+    for idx in 0..PREFIX_COLLISION_MEMORIES {
+        let title = format!("{PREFIX_COLLISION_PROJECT}_secret_{idx}");
+        memories.push(BenchMemory {
+            id: format!("isolation_{PREFIX_COLLISION_PROJECT}_{idx}"),
+            memory_type: "lesson".to_string(),
+            project: Some(PREFIX_COLLISION_PROJECT.to_string()),
+            content: format!(
+                "In project {PREFIX_COLLISION_PROJECT}, sentinel_{idx} \
+                 pattern uses {PREFIX_COLLISION_PROJECT}_secret_{idx} \
+                 as the canonical detail."
+            ),
+            tags: vec![PREFIX_COLLISION_PROJECT.to_string(), SHARED_TAG.to_string()],
+            confidence: deterministic_confidence(idx),
+            embedding: deterministic_embedding(&title),
+            title,
+        });
+    }
+
+    // Globals (project=None × 10).
+    for idx in 0..GLOBAL_MEMORIES {
+        let memory_type = if idx < 6 { "pattern" } else { "decision" };
+        let title = format!("global_pattern_{idx}");
+        memories.push(BenchMemory {
+            id: format!("isolation_global_{idx}"),
+            memory_type: memory_type.to_string(),
+            project: None,
+            content: format!(
+                "Global pattern_{idx}: this knowledge applies across all \
+                 projects regardless of scope."
+            ),
+            tags: vec!["global".to_string(), SHARED_TAG.to_string()],
+            confidence: deterministic_confidence(idx),
+            embedding: deterministic_embedding(&title),
+            title,
+        });
+    }
+
+    Corpus { memories }
+}
+
+/// Seed all 165 corpus memories into the bench DaemonState.
+///
+/// Each memory is INSERT'd directly via SQL (matches forge_identity's
+/// pattern at `forge_identity.rs:168`) — bypassing the dedup +
+/// source-priority branching in higher-level helpers so the corpus is
+/// persisted byte-identical. After each row inserts, the embedding is
+/// stored via [`crate::db::vec::store_embedding`] which the
+/// `memory_vec` virtual table needs for KNN queries.
+///
+/// Returns the number of memories successfully seeded; abort the bench if
+/// this is anything other than `TOTAL_CORPUS_SIZE` (infrastructure check
+/// `corpus_size_matches_spec` catches it).
+pub fn seed_corpus(state: &mut DaemonState, corpus: &Corpus) -> rusqlite::Result<usize> {
+    const NOW_ISO: &str = "2026-04-25T00:00:00Z";
+
+    for m in &corpus.memories {
+        let tags_json = serde_json::to_string(&m.tags).unwrap_or_else(|_| "[]".to_string());
+        state.conn.execute(
+            "INSERT INTO memory
+                (id, memory_type, title, content, confidence, status,
+                 project, tags, created_at, accessed_at, organization_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, ?8, 'default')",
+            rusqlite::params![
+                m.id,
+                m.memory_type,
+                m.title,
+                m.content,
+                f64::from(m.confidence),
+                m.project,
+                tags_json,
+                NOW_ISO,
+            ],
+        )?;
+        crate::db::vec::store_embedding(&state.conn, &m.id, &m.embedding)?;
+    }
+    Ok(corpus.memories.len())
 }
 
 // ── Dimension stubs (T4-T6 will fill in) ────────────────────────────────
 
 /// SKELETON — T4 implementation per spec §3.1 / §3.3.
-fn dim_1_cross_project_precision(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+fn dim_1_cross_project_precision(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
     DimensionScore {
         name: "cross_project_precision",
         score: 0.0,
@@ -168,7 +283,7 @@ fn dim_1_cross_project_precision(_conn: &Connection, _corpus: &Corpus) -> Dimens
 }
 
 /// SKELETON — T4 implementation per spec §3.1 / §3.3.
-fn dim_2_self_recall_completeness(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+fn dim_2_self_recall_completeness(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
     DimensionScore {
         name: "self_recall_completeness",
         score: 0.0,
@@ -178,7 +293,7 @@ fn dim_2_self_recall_completeness(_conn: &Connection, _corpus: &Corpus) -> Dimen
 }
 
 /// SKELETON — T5 implementation per spec §3.1 / §3.3.
-fn dim_3_global_memory_visibility(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+fn dim_3_global_memory_visibility(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
     DimensionScore {
         name: "global_memory_visibility",
         score: 0.0,
@@ -188,7 +303,7 @@ fn dim_3_global_memory_visibility(_conn: &Connection, _corpus: &Corpus) -> Dimen
 }
 
 /// SKELETON — T5 implementation per spec §3.1 / §3.3.
-fn dim_4_unscoped_query_breadth(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+fn dim_4_unscoped_query_breadth(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
     DimensionScore {
         name: "unscoped_query_breadth",
         score: 0.0,
@@ -198,7 +313,7 @@ fn dim_4_unscoped_query_breadth(_conn: &Connection, _corpus: &Corpus) -> Dimensi
 }
 
 /// SKELETON — T6 implementation per spec §3.1a (7 sub-probes).
-fn dim_5_edge_case_resilience(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+fn dim_5_edge_case_resilience(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
     DimensionScore {
         name: "edge_case_resilience",
         score: 0.0,
@@ -211,7 +326,7 @@ fn dim_5_edge_case_resilience(_conn: &Connection, _corpus: &Corpus) -> Dimension
 /// (max_possible = decisions_limit + lessons_limit = 15) + N3 fix (pinned
 /// `ContextInjectionConfig { session_context: true, .. }` via
 /// `compile_dynamic_suffix_with_inj`).
-fn dim_6_compile_context_isolation(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+fn dim_6_compile_context_isolation(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
     DimensionScore {
         name: "compile_context_isolation",
         score: 0.0,
@@ -235,7 +350,10 @@ fn mark_pass(d: DimensionScore) -> DimensionScore {
 // ── Infrastructure assertions (T6 will fill in) ─────────────────────────
 
 /// Spec §3.4 — 8 fail-fast checks before dimensions run.
-fn run_infrastructure_checks(_conn: &Connection, _corpus: &Corpus) -> Vec<InfrastructureCheck> {
+fn run_infrastructure_checks(
+    _state: &mut DaemonState,
+    _corpus: &Corpus,
+) -> Vec<InfrastructureCheck> {
     // T6 will populate these. Skeleton stubs all 8 as passed=false so the
     // run aborts loudly until T6 lands real implementations.
     vec![
@@ -290,19 +408,19 @@ fn run_infrastructure_checks(_conn: &Connection, _corpus: &Corpus) -> Vec<Infras
 /// Per §3.7, all dims share the SAME connection — per-dim isolation is
 /// the wrong primitive for an isolation bench because it would HIDE
 /// cross-dim leakage.
-pub fn run_bench_in_state(conn: &Connection, corpus: &Corpus, seed: u64) -> IsolationScore {
+pub fn run_bench_in_state(state: &mut DaemonState, corpus: &Corpus, seed: u64) -> IsolationScore {
     let start = std::time::Instant::now();
 
-    let infra = run_infrastructure_checks(conn, corpus);
+    let infra = run_infrastructure_checks(state, corpus);
     let infra_pass = infra.iter().all(|c| c.passed);
 
     let dims_raw = [
-        dim_1_cross_project_precision(conn, corpus),
-        dim_2_self_recall_completeness(conn, corpus),
-        dim_3_global_memory_visibility(conn, corpus),
-        dim_4_unscoped_query_breadth(conn, corpus),
-        dim_5_edge_case_resilience(conn, corpus),
-        dim_6_compile_context_isolation(conn, corpus),
+        dim_1_cross_project_precision(state, corpus),
+        dim_2_self_recall_completeness(state, corpus),
+        dim_3_global_memory_visibility(state, corpus),
+        dim_4_unscoped_query_breadth(state, corpus),
+        dim_5_edge_case_resilience(state, corpus),
+        dim_6_compile_context_isolation(state, corpus),
     ];
     let dimensions: [DimensionScore; 6] = std::array::from_fn(|i| mark_pass(dims_raw[i].clone()));
     let composite = if infra_pass {
@@ -325,19 +443,28 @@ pub fn run_bench_in_state(conn: &Connection, corpus: &Corpus, seed: u64) -> Isol
 }
 
 /// Top-level entry point used by the `forge-bench forge-isolation` CLI
-/// (T7) and integration tests. Builds a fresh `:memory:` connection, seeds
-/// the corpus, and runs the bench.
+/// (T7) and integration tests.
 ///
-/// Returns the score; caller is responsible for serializing summary.json.
+/// Builds a fresh `DaemonState::new(":memory:")` (which sets up the full
+/// schema + FTS triggers + memory_vec virtual table), seeds the corpus via
+/// [`seed_corpus`], then dispatches to [`run_bench_in_state`] for the 6
+/// dimension probes + 8 infrastructure checks.
+///
+/// Returns the [`IsolationScore`]; caller is responsible for serializing
+/// summary.json.
 pub fn run_bench(config: &BenchConfig) -> IsolationScore {
-    // T3 will replace this stub: open :memory: connection, run schema
-    // migrations, seed corpus rows + their embeddings via the daemon's
-    // memory-store path, then dispatch to run_bench_in_state.
     let mut rng = seeded_rng(config.seed);
     let corpus = generate_corpus(&mut rng);
-    let conn = Connection::open_in_memory().expect("open in-memory db");
-    // Schema migrations + corpus seeding pending T3.
-    run_bench_in_state(&conn, &corpus, config.seed)
+
+    let mut state =
+        DaemonState::new(":memory:").expect("DaemonState::new(:memory:) for forge-isolation");
+    let seeded = seed_corpus(&mut state, &corpus).expect("seed_corpus for forge-isolation");
+    debug_assert_eq!(
+        seeded, TOTAL_CORPUS_SIZE,
+        "seed_corpus should insert exactly TOTAL_CORPUS_SIZE rows"
+    );
+
+    run_bench_in_state(&mut state, &corpus, config.seed)
 }
 
 #[cfg(test)]
@@ -382,5 +509,126 @@ mod tests {
         // Sanity: lifted helper is callable from this module.
         let v = deterministic_embedding("forge-isolation-skeleton-test");
         assert_eq!(v.len(), 768);
+    }
+
+    #[test]
+    fn corpus_generator_produces_165_memories() {
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        assert_eq!(corpus.memories.len(), TOTAL_CORPUS_SIZE);
+        assert_eq!(corpus.memories.len(), 165);
+    }
+
+    #[test]
+    fn corpus_distribution_matches_spec_3_2() {
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        // 5 main projects × 30 each.
+        for project in MAIN_PROJECTS {
+            assert_eq!(
+                corpus.count_by_project(Some(project)),
+                MEMORIES_PER_MAIN_PROJECT,
+                "main project {project} should have 30 memories"
+            );
+        }
+        // alphabet sentinel × 5.
+        assert_eq!(
+            corpus.count_by_project(Some(PREFIX_COLLISION_PROJECT)),
+            PREFIX_COLLISION_MEMORIES
+        );
+        // Globals (project=None) × 10.
+        assert_eq!(corpus.count_by_project(None), GLOBAL_MEMORIES);
+    }
+
+    #[test]
+    fn corpus_titles_carry_project_token() {
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        // Every alpha-scoped memory's title contains "alpha_secret_".
+        for m in corpus
+            .memories
+            .iter()
+            .filter(|m| m.project.as_deref() == Some("alpha"))
+        {
+            assert!(
+                m.title.starts_with("alpha_secret_"),
+                "alpha memory title should start with `alpha_secret_`, got {}",
+                m.title
+            );
+        }
+        // alphabet-scoped memories' titles do NOT start with "alpha_secret_"
+        // (they start with "alphabet_secret_") — critical for D5 prefix-collision probe.
+        for m in corpus
+            .memories
+            .iter()
+            .filter(|m| m.project.as_deref() == Some(PREFIX_COLLISION_PROJECT))
+        {
+            assert!(m.title.starts_with("alphabet_secret_"));
+            assert!(!m.title.starts_with("alpha_secret_"));
+        }
+    }
+
+    #[test]
+    fn corpus_confidence_is_deterministic_and_in_range() {
+        let mut rng_a = seeded_rng(42);
+        let mut rng_b = seeded_rng(42);
+        let corpus_a = generate_corpus(&mut rng_a);
+        let corpus_b = generate_corpus(&mut rng_b);
+        // Same seed → same corpus (byte-identical confidences).
+        assert_eq!(corpus_a.memories.len(), corpus_b.memories.len());
+        for (a, b) in corpus_a.memories.iter().zip(corpus_b.memories.iter()) {
+            assert_eq!(a.confidence, b.confidence);
+            // All confidences in [0.70, 0.99].
+            assert!((0.70..=0.99).contains(&a.confidence));
+        }
+    }
+
+    #[test]
+    fn corpus_embedding_dim_is_768() {
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        for m in &corpus.memories {
+            assert_eq!(m.embedding.len(), 768);
+        }
+    }
+
+    #[test]
+    fn seed_corpus_inserts_all_165_rows() {
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        let mut state = DaemonState::new(":memory:").expect("daemonstate :memory:");
+        let seeded = seed_corpus(&mut state, &corpus).expect("seed");
+        assert_eq!(seeded, TOTAL_CORPUS_SIZE);
+
+        // Verify rows landed in the memory table.
+        let row_count: i64 = state
+            .conn
+            .query_row("SELECT COUNT(*) FROM memory", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(row_count as usize, TOTAL_CORPUS_SIZE);
+
+        // Verify per-project distribution survived the INSERT.
+        for project in MAIN_PROJECTS {
+            let n: i64 = state
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memory WHERE project = ?1",
+                    [project],
+                    |r| r.get(0),
+                )
+                .expect("count by project");
+            assert_eq!(n as usize, MEMORIES_PER_MAIN_PROJECT);
+        }
+
+        // Globals (project IS NULL) — 10.
+        let globals: i64 = state
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE project IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count globals");
+        assert_eq!(globals as usize, GLOBAL_MEMORIES);
     }
 }
