@@ -270,43 +270,168 @@ pub fn seed_corpus(state: &mut DaemonState, corpus: &Corpus) -> rusqlite::Result
     Ok(corpus.memories.len())
 }
 
-// ── Dimension stubs (T4-T6 will fill in) ────────────────────────────────
+// ── Dimension implementations (T4-T6) ───────────────────────────────────
 
-/// SKELETON — T4 implementation per spec §3.1 / §3.3.
-fn dim_1_cross_project_precision(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// Returns true if `title` starts with any foreign-project's `_secret_`
+/// token relative to the probing project. Globals (titles starting with
+/// `global_pattern_`) and the probing project's own titles are NOT
+/// foreign (per spec §3.3 — foreign-token denominator excludes globals).
+fn is_foreign_token(title: &str, probing_project: &str) -> bool {
+    for other in MAIN_PROJECTS
+        .iter()
+        .copied()
+        .chain(std::iter::once(PREFIX_COLLISION_PROJECT))
+    {
+        if other == probing_project {
+            continue;
+        }
+        let prefix = format!("{other}_secret_");
+        if title.starts_with(&prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+/// **D1 — cross_project_precision** (T4, weight 0.25, min 0.95).
+///
+/// Per spec §3.1 + §3.3. For each main project P: recall the shared-tag
+/// query `"isolation_bench"` scoped to P; assert no foreign-project
+/// memories appear in the result. Foreign-token denominator excludes
+/// globals (recallable from every project) and includes the alphabet
+/// sentinel (prefix-collision audit).
+///
+/// Per project: `max_possible = (N-1) × 30 + 5 = 125` (4 other main projects'
+/// memories + 5 alphabet-sentinel memories).
+fn dim_1_cross_project_precision(state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+    let mut sum_score = 0.0;
+
+    for project in MAIN_PROJECTS {
+        let results =
+            crate::db::ops::recall_bm25_project(&state.conn, SHARED_TAG, Some(project), 200)
+                .unwrap_or_default();
+
+        let foreign_count = results
+            .iter()
+            .filter(|r| is_foreign_token(&r.title, project))
+            .count();
+
+        let max_possible =
+            (MAIN_PROJECTS.len() - 1) * MEMORIES_PER_MAIN_PROJECT + PREFIX_COLLISION_MEMORIES;
+        let score_p = 1.0 - (foreign_count as f64 / max_possible as f64);
+        sum_score += score_p;
+    }
+
+    let score = sum_score / MAIN_PROJECTS.len() as f64;
     DimensionScore {
         name: "cross_project_precision",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[0],
         pass: false,
     }
 }
 
-/// SKELETON — T4 implementation per spec §3.1 / §3.3.
-fn dim_2_self_recall_completeness(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D2 — self_recall_completeness** (T4, weight 0.15, min 0.85).
+///
+/// Per spec §3.1 + §3.3. For each main project P: recall the project's
+/// secret prefix `"{P}_secret"` scoped to P; assert recall@10 covers the
+/// project's 10 most relevant memories.
+///
+/// Note: BM25 ranks rows containing the term; with 30 candidates per project
+/// each containing the prefix in title + content, recall@10 ≥ 10/10 = 1.0
+/// is achievable when no leakage occurs. Cross-project leakage would push
+/// some of the project's own memories OUT of the top 10.
+fn dim_2_self_recall_completeness(state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+    let mut sum_recall = 0.0;
+    const TOP_K: usize = 10;
+
+    for project in MAIN_PROJECTS {
+        let query = format!("{project}_secret");
+        let results = crate::db::ops::recall_bm25_project(&state.conn, &query, Some(project), 50)
+            .unwrap_or_default();
+
+        let project_id_prefix = format!("isolation_{project}_");
+        let own_hits_in_top_k = results
+            .iter()
+            .take(TOP_K)
+            .filter(|r| r.id.starts_with(&project_id_prefix))
+            .count();
+
+        let expected = TOP_K.min(MEMORIES_PER_MAIN_PROJECT);
+        let recall_at_k = own_hits_in_top_k as f64 / expected as f64;
+        sum_recall += recall_at_k;
+    }
+
+    let score = sum_recall / MAIN_PROJECTS.len() as f64;
     DimensionScore {
         name: "self_recall_completeness",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[1],
         pass: false,
     }
 }
 
-/// SKELETON — T5 implementation per spec §3.1 / §3.3.
-fn dim_3_global_memory_visibility(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D3 — global_memory_visibility** (T5, weight 0.10, min 0.90).
+///
+/// Per spec §3.1 + §3.3. Globals (project=None) must appear in every main
+/// project's recall — they're meant to be visible cross-project. For each
+/// project P: `Recall { query: "global_pattern", project: Some(P), limit: 50 }`;
+/// score = (globals seen / total globals) averaged across projects.
+fn dim_3_global_memory_visibility(state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+    let mut sum_rate = 0.0;
+
+    for project in MAIN_PROJECTS {
+        let results =
+            crate::db::ops::recall_bm25_project(&state.conn, "global_pattern", Some(project), 50)
+                .unwrap_or_default();
+
+        let globals_seen = results
+            .iter()
+            .filter(|r| r.id.starts_with("isolation_global_"))
+            .count();
+
+        let rate = globals_seen as f64 / GLOBAL_MEMORIES as f64;
+        sum_rate += rate;
+    }
+
+    let score = sum_rate / MAIN_PROJECTS.len() as f64;
     DimensionScore {
         name: "global_memory_visibility",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[2],
         pass: false,
     }
 }
 
-/// SKELETON — T5 implementation per spec §3.1 / §3.3.
-fn dim_4_unscoped_query_breadth(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D4 — unscoped_query_breadth** (T5, weight 0.10, min 0.85).
+///
+/// Per spec §3.1 + §3.3. With `project=None`, the recall must span all 6
+/// buckets (5 main projects + global pool — alphabet sentinel intentionally
+/// excluded since it's a D5-only construct). Score = bucket_coverage / 6.
+fn dim_4_unscoped_query_breadth(state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+    let results =
+        crate::db::ops::recall_bm25_project(&state.conn, SHARED_TAG, None, 200).unwrap_or_default();
+
+    let mut buckets: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+    for r in &results {
+        for project in MAIN_PROJECTS {
+            let prefix = format!("isolation_{project}_");
+            if r.id.starts_with(&prefix) {
+                buckets.insert(project);
+            }
+        }
+        if r.id.starts_with("isolation_global_") {
+            buckets.insert("__global__");
+        }
+    }
+
+    // Expected buckets: 5 main projects + global pool = 6.
+    let expected = MAIN_PROJECTS.len() + 1; // global pool counts once
+    let score = buckets.len() as f64 / expected as f64;
+
     DimensionScore {
         name: "unscoped_query_breadth",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[3],
         pass: false,
     }
@@ -322,14 +447,68 @@ fn dim_5_edge_case_resilience(_state: &mut DaemonState, _corpus: &Corpus) -> Dim
     }
 }
 
-/// SKELETON — T5 implementation per spec §3.1 / §3.3 + N1 fix
-/// (max_possible = decisions_limit + lessons_limit = 15) + N3 fix (pinned
-/// `ContextInjectionConfig { session_context: true, .. }` via
-/// `compile_dynamic_suffix_with_inj`).
-fn dim_6_compile_context_isolation(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D6 — compile_context_isolation** (T5, weight 0.25, min 0.95).
+///
+/// Per spec §3.1 + §3.3 + N1 fix (max_possible = 15 not 120) + N3 fix
+/// (pinned ContextInjectionConfig avoids brittleness against future
+/// Default::default() flips).
+///
+/// For each main project P: call `compile_dynamic_suffix_with_inj` with
+/// `project=Some(P)` and a pinned `ContextInjectionConfig { session_context:
+/// true, .. Default::default() }`. Scan the resulting XML for foreign-project
+/// secret tokens. Score per project = `1 - (foreign_tokens_found / 15)`;
+/// dimension score = mean across projects.
+///
+/// max_possible = 15 because compile_dynamic_suffix renders at most
+/// `decisions_limit (10) + lessons_limit (5)` rows per project per config
+/// defaults. Tight denominator means a 1-row regression scores 0.933 < 0.95
+/// min and is CAUGHT.
+fn dim_6_compile_context_isolation(state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+    let ctx_config = crate::config::ContextConfig::default();
+    let pinned_inj = crate::config::ContextInjectionConfig {
+        session_context: true,
+        ..Default::default()
+    };
+    let max_possible = (ctx_config.decisions_limit + ctx_config.lessons_limit) as f64;
+
+    let mut sum_score = 0.0;
+
+    for project in MAIN_PROJECTS {
+        let (xml, _excluded) = crate::recall::compile_dynamic_suffix_with_inj(
+            &state.conn,
+            "isolation_bench_agent",
+            Some(project),
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+            &pinned_inj,
+        );
+
+        // Count foreign-project secret-token occurrences in the XML.
+        let mut foreign_tokens = 0usize;
+        for other in MAIN_PROJECTS {
+            if other == project {
+                continue;
+            }
+            let needle = format!("{other}_secret_");
+            foreign_tokens += xml.matches(&needle).count();
+        }
+        // alphabet sentinel: from any non-alpha project, "alphabet_secret_"
+        // is foreign too. From "alpha", it's still foreign because the
+        // alphabet project ≠ alpha project.
+        let alphabet_needle = format!("{PREFIX_COLLISION_PROJECT}_secret_");
+        foreign_tokens += xml.matches(&alphabet_needle).count();
+
+        let score_p = (1.0 - foreign_tokens as f64 / max_possible).max(0.0);
+        sum_score += score_p;
+    }
+
+    let score = sum_score / MAIN_PROJECTS.len() as f64;
     DimensionScore {
         name: "compile_context_isolation",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[5],
         pass: false,
     }
@@ -590,6 +769,86 @@ mod tests {
         for m in &corpus.memories {
             assert_eq!(m.embedding.len(), 768);
         }
+    }
+
+    #[test]
+    fn d1_perfect_isolation_on_seeded_corpus() {
+        // With the corpus correctly seeded and project scoping working,
+        // D1 score should be 1.0 (no foreign tokens in any project's recall).
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        let mut state = DaemonState::new(":memory:").expect("daemonstate");
+        seed_corpus(&mut state, &corpus).expect("seed");
+        let dim = dim_1_cross_project_precision(&mut state, &corpus);
+        assert_eq!(dim.name, "cross_project_precision");
+        assert!(
+            dim.score >= 0.95,
+            "D1 should be at least min 0.95 on a clean corpus, got {}",
+            dim.score
+        );
+    }
+
+    #[test]
+    fn d3_global_visibility_on_seeded_corpus() {
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        let mut state = DaemonState::new(":memory:").expect("daemonstate");
+        seed_corpus(&mut state, &corpus).expect("seed");
+        let dim = dim_3_global_memory_visibility(&mut state, &corpus);
+        assert_eq!(dim.name, "global_memory_visibility");
+        assert!(
+            dim.score >= 0.90,
+            "D3 should be at least min 0.90 on a clean corpus, got {}",
+            dim.score
+        );
+    }
+
+    #[test]
+    fn d4_unscoped_breadth_on_seeded_corpus() {
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        let mut state = DaemonState::new(":memory:").expect("daemonstate");
+        seed_corpus(&mut state, &corpus).expect("seed");
+        let dim = dim_4_unscoped_query_breadth(&mut state, &corpus);
+        assert_eq!(dim.name, "unscoped_query_breadth");
+        assert!(
+            dim.score >= 0.85,
+            "D4 should be at least min 0.85 on a clean corpus, got {}",
+            dim.score
+        );
+    }
+
+    #[test]
+    fn d6_compile_context_isolation_on_seeded_corpus() {
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        let mut state = DaemonState::new(":memory:").expect("daemonstate");
+        seed_corpus(&mut state, &corpus).expect("seed");
+        let dim = dim_6_compile_context_isolation(&mut state, &corpus);
+        assert_eq!(dim.name, "compile_context_isolation");
+        assert!(
+            dim.score >= 0.95,
+            "D6 should be at least min 0.95 on a clean corpus, got {}",
+            dim.score
+        );
+    }
+
+    #[test]
+    fn d2_self_recall_completeness_on_seeded_corpus() {
+        // With each project's 30 memories carrying the `_secret` prefix in
+        // title + content, recall@10 with the per-project prefix query and
+        // project=Some(P) should saturate at 1.0 (top 10 are all own memories).
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        let mut state = DaemonState::new(":memory:").expect("daemonstate");
+        seed_corpus(&mut state, &corpus).expect("seed");
+        let dim = dim_2_self_recall_completeness(&mut state, &corpus);
+        assert_eq!(dim.name, "self_recall_completeness");
+        assert!(
+            dim.score >= 0.85,
+            "D2 should be at least min 0.85 on a clean corpus, got {}",
+            dim.score
+        );
     }
 
     #[test]
