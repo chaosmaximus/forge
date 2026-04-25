@@ -123,6 +123,10 @@ Each new bench follows the master v6 / Forge-Identity precedent: design spec →
 
 **Phase P3-3 close:** version bump to `0.6.0-rc.3`. HANDOFF rewrite. Halt.
 
+### P3-3 Stage 0 deferred backlog (dependabot residue)
+
+* **opentelemetry 0.27 → 0.31 cluster bump (PR #2 deferred 2026-04-25).** Cannot bump `opentelemetry` in isolation; the daemon Cargo.toml has 4 interlocked OTel deps (`opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`, `tracing-opentelemetry`) all pinned at the 0.27/0.28 line. Holistic bump requires migrating across 4 minor versions (0.28 stabilization, 0.29 Prometheus deprecation, 0.30 Metrics SDK stable, 0.31 SpanExporter unification) plus rewriting the T10 OTLP-path latency test's custom `NoopSpanExporter` impl (`opentelemetry_sdk::export::trace::SpanExporter` moved/unified in 0.31). Estimated 4–6 commits with calibration check that T10 ratio still ≤ 1.20×. Track for P3-3 dedicated wave or P3-4 pre-release task. Memory: `feedback_dependabot_ecosystem_cluster.md`.
+
 ---
 
 ## Phase P3-4 — Release & distribution (~10 commits + manual)
