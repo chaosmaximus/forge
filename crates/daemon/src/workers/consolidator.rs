@@ -105,7 +105,11 @@ pub fn run_all_phases(
     let _pass_span = tracing::info_span!("consolidate_pass", run_id = %run_id).entered();
 
     // Phase 1: Exact dedup (fast)
-    {
+    // P3-2 W4: phase work inside span scope; record() called AFTER span
+    // drops so kpi_events INSERTs and Prometheus metric updates are not
+    // attributed to the phase span itself (matches the Phase 19 reference
+    // pattern; closes 2A-4d.1.1 #2 — last open Tier 1 cleanup).
+    let (output, err, phase_1_duration_ms) = {
         let _span = tracing::info_span!("phase_1_dedup_memories").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match ops::dedup_memories(conn) {
@@ -121,24 +125,25 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_1_dedup_memories",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_1_dedup_memories",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_1_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 2: Semantic dedup (slow O(n^2), bounded by batch_limit)
-    {
+    let (output, err, phase_2_duration_ms) = {
         let _span = tracing::info_span!("phase_2_semantic_dedup").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match ops::semantic_dedup(conn, config.batch_limit) {
@@ -154,24 +159,25 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_2_semantic_dedup",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_2_semantic_dedup",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_2_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 3: Link related memories (bounded by batch_limit)
-    {
+    let (output, err, phase_3_duration_ms) = {
         let _span = tracing::info_span!("phase_3_link_memories").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match ops::link_related_memories(conn, config.batch_limit) {
@@ -187,21 +193,22 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_3_link_memories",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_3_link_memories",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_3_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 4: Decay (bounded by batch_limit). output_count = faded (NOT
     // checked + faded — per 2A-4d.1 spec §3.1a, faded ⊆ checked so summing
@@ -211,7 +218,7 @@ pub fn run_all_phases(
         .recall
         .validated()
         .preference_half_life_days;
-    {
+    let (output, err, checked_count, phase_4_duration_ms) = {
         let _span = tracing::info_span!("phase_4_decay_memories").entered();
         let t0 = std::time::Instant::now();
         let (output, err, checked_count) =
@@ -228,24 +235,25 @@ pub fn run_all_phases(
                     (0, 1, 0)
                 }
             };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_4_decay_memories",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({ "checked_count": checked_count }),
-            },
-        );
-    }
+        (output, err, checked_count, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_4_decay_memories",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_4_duration_ms,
+            extra: serde_json::json!({ "checked_count": checked_count }),
+        },
+    );
 
     // Phase 5: Episodic -> Semantic promotion (bounded by batch_limit)
-    {
+    let (output, err, phase_5_duration_ms) = {
         let _span = tracing::info_span!("phase_5_promote_patterns").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match ops::promote_recurring_lessons(conn, config.batch_limit) {
@@ -261,26 +269,27 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_5_promote_patterns",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_5_promote_patterns",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_5_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 6: Reconsolidation — boost confidence of heavily-accessed memories.
     // output_count = candidates.len() per spec §3.1a (inner UPDATE loop may
     // swallow errors; those surface as tracing::warn!).
-    {
+    let (output, err, phase_6_duration_ms) = {
         let _span = tracing::info_span!("phase_6_reconsolidate_contradicting").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match ops::find_reconsolidation_candidates(conn) {
@@ -305,24 +314,25 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_6_reconsolidate_contradicting",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_6_reconsolidate_contradicting",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_6_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 7: Embedding-based merge (sleep cycle — deep structural cleanup)
-    {
+    let (output, err, phase_7_duration_ms) = {
         let _span = tracing::info_span!("phase_7_merge_embedding_duplicates").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match ops::embedding_merge(conn) {
@@ -338,24 +348,25 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_7_merge_embedding_duplicates",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_7_merge_embedding_duplicates",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_7_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 8: Strengthen active edges
-    {
+    let (output, err, phase_8_duration_ms) = {
         let _span = tracing::info_span!("phase_8_strengthen_by_access").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match ops::strengthen_active_edges(conn) {
@@ -371,24 +382,25 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_8_strengthen_by_access",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_8_strengthen_by_access",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_8_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 9: Contradiction detection (two strategies — 9a valence, 9b content)
-    {
+    let (output, err, valence_summary, content_contradictions, content_errors, phase_9_duration_ms) = {
         let _span = tracing::info_span!("phase_9_detect_contradictions").entered();
         let t0 = std::time::Instant::now();
         let (output, err, valence_summary) = match ops::detect_contradictions(conn) {
@@ -429,33 +441,41 @@ pub fn run_all_phases(
                 "phase_9b: content-based contradictions detected"
             );
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_9_detect_contradictions",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output + content_contradictions as u64,
-                // BLOCKER-4 fix: 9a and 9b errors are tracked separately in
-                // `extra` so downstream can still attribute; the aggregate
-                // error_count is the sum so phase-level SLI reflects both
-                // strategies failing.
-                error_count: err + content_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({
-                    "valence_distribution": valence_summary,
-                    "content_contradictions": content_contradictions,
-                    "valence_errors": err,
-                    "content_errors": content_errors,
-                }),
-            },
-        );
-    }
+        (
+            output,
+            err,
+            valence_summary,
+            content_contradictions,
+            content_errors,
+            t0.elapsed().as_millis() as u64,
+        )
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_9_detect_contradictions",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output + content_contradictions as u64,
+            // BLOCKER-4 fix: 9a and 9b errors are tracked separately in
+            // `extra` so downstream can still attribute; the aggregate
+            // error_count is the sum so phase-level SLI reflects both
+            // strategies failing.
+            error_count: err + content_errors as u64,
+            duration_ms: phase_9_duration_ms,
+            extra: serde_json::json!({
+                "valence_distribution": valence_summary,
+                "content_contradictions": content_contradictions,
+                "valence_errors": err,
+                "content_errors": content_errors,
+            }),
+        },
+    );
 
     // Phase 10: Decay activation levels (fast — single UPDATE)
-    {
+    let (output, err, phase_10_duration_ms) = {
         let _span = tracing::info_span!("phase_10_decay_activation").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match ops::decay_activation_levels(conn) {
@@ -470,24 +490,25 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_10_decay_activation",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_10_decay_activation",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_10_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 11: Entity detection (Knowledge Intelligence)
-    {
+    let (output, err, phase_11_duration_ms) = {
         let _span = tracing::info_span!("phase_11_entity_detection").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match crate::db::manas::detect_entities(conn) {
@@ -503,24 +524,25 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_11_entity_detection",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_11_entity_detection",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_11_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 12: Contradiction synthesis — resolve detected contradictions
-    {
+    let (synthesized, synth_errors, phase_12_duration_ms) = {
         let _span = tracing::info_span!("phase_12_synthesize_contradictions").entered();
         let t0 = std::time::Instant::now();
         let (synthesized, synth_errors) =
@@ -532,24 +554,25 @@ pub fn run_all_phases(
                 "phase_12: contradiction resolutions synthesized"
             );
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_12_synthesize_contradictions",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: synthesized as u64,
-                error_count: synth_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (synthesized, synth_errors, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_12_synthesize_contradictions",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: synthesized as u64,
+            error_count: synth_errors as u64,
+            duration_ms: phase_12_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 13: Knowledge gap detection — surface concepts without entities
-    {
+    let (gaps, gap_errors, phase_13_duration_ms) = {
         let _span = tracing::info_span!("phase_13_detect_gaps").entered();
         let t0 = std::time::Instant::now();
         let (gaps, gap_errors) = detect_and_surface_gaps_with_errors(conn);
@@ -557,24 +580,25 @@ pub fn run_all_phases(
         if gaps > 0 {
             tracing::info!(gaps, "phase_13: knowledge gaps detected");
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_13_detect_gaps",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: gaps as u64,
-                error_count: gap_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (gaps, gap_errors, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_13_detect_gaps",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: gaps as u64,
+            error_count: gap_errors as u64,
+            duration_ms: phase_13_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 14: Memory reweave — enrich older memories with newer context sharing tags
-    {
+    let (reweaved, reweave_errors, phase_14_duration_ms) = {
         let _span = tracing::info_span!("phase_14_reweave_memories").entered();
         let t0 = std::time::Instant::now();
         let (reweaved, reweave_errors) =
@@ -583,24 +607,25 @@ pub fn run_all_phases(
         if reweaved > 0 {
             tracing::info!(reweaved, "phase_14: memory pairs reweaved");
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_14_reweave_memories",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: reweaved as u64,
-                error_count: reweave_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (reweaved, reweave_errors, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_14_reweave_memories",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: reweaved as u64,
+            error_count: reweave_errors as u64,
+            duration_ms: phase_14_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 15: Quality scoring — compute quality scores for active memories
-    {
+    let (scored, score_errors, phase_15_duration_ms) = {
         let _span = tracing::info_span!("phase_15_quality_scoring").entered();
         let t0 = std::time::Instant::now();
         let (scored, score_errors) = score_memory_quality_with_errors(conn, config.batch_limit);
@@ -608,24 +633,25 @@ pub fn run_all_phases(
         if scored > 0 {
             tracing::info!(scored, "phase_15: memories scored");
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_15_quality_scoring",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: scored as u64,
-                error_count: score_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (scored, score_errors, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_15_quality_scoring",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: scored as u64,
+            error_count: score_errors as u64,
+            duration_ms: phase_15_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 16: Portability classification — classify unknown memories
-    {
+    let (output, err, phase_16_duration_ms) = {
         let _span = tracing::info_span!("phase_16_portability_classification").entered();
         let t0 = std::time::Instant::now();
         let (output, err) = match ops::classify_portability(conn, config.batch_limit) {
@@ -640,53 +666,53 @@ pub fn run_all_phases(
                 (0, 1)
             }
         };
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_16_portability_classification",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: output,
-                error_count: err,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (output, err, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_16_portability_classification",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: output,
+            error_count: err,
+            duration_ms: phase_16_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 17: Protocol extraction — promote recurring process patterns to protocols
-    let protocols;
-    {
+    let (protocols, protocol_errors, phase_17_duration_ms) = {
         let _span = tracing::info_span!("phase_17_extract_protocols").entered();
         let t0 = std::time::Instant::now();
         let (p, protocol_errors) = extract_protocols_with_errors(conn, config.batch_limit);
-        protocols = p;
-        stats.protocols_extracted = protocols;
-        if protocols > 0 {
-            tracing::info!(protocols, "phase_17: protocols extracted");
+        stats.protocols_extracted = p;
+        if p > 0 {
+            tracing::info!(protocols = p, "phase_17: protocols extracted");
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_17_extract_protocols",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: protocols as u64,
-                error_count: protocol_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (p, protocol_errors, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_17_extract_protocols",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: protocols as u64,
+            error_count: protocol_errors as u64,
+            duration_ms: phase_17_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 23: Behavioral skill inference — elevate recurring clean tool-use
     // patterns from session_tool_call to the skill table. Physically runs
     // between Phase 17 and Phase 18 per 2A-4c2 design.
-    {
+    let (skills_inferred, skill_errors, phase_23_duration_ms) = {
         let _span = tracing::info_span!("phase_23_infer_skills_from_behavior").entered();
         let t0 = std::time::Instant::now();
         let (skills_inferred, skill_errors) = infer_skills_from_behavior_with_errors(
@@ -701,24 +727,29 @@ pub fn run_all_phases(
                 "phase_23: inferred skills from tool-use patterns"
             );
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_23_infer_skills_from_behavior",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: skills_inferred as u64,
-                error_count: skill_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (
+            skills_inferred,
+            skill_errors,
+            t0.elapsed().as_millis() as u64,
+        )
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_23_infer_skills_from_behavior",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: skills_inferred as u64,
+            error_count: skill_errors as u64,
+            duration_ms: phase_23_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 18: Anti-pattern tagging — tag lessons with negative signals
-    {
+    let (antipatterns, antipattern_errors, phase_18_duration_ms) = {
         let _span = tracing::info_span!("phase_18_tag_antipatterns").entered();
         let t0 = std::time::Instant::now();
         let (antipatterns, antipattern_errors) =
@@ -727,21 +758,26 @@ pub fn run_all_phases(
         if antipatterns > 0 {
             tracing::info!(antipatterns, "phase_18: anti-patterns tagged from lessons");
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_18_tag_antipatterns",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: antipatterns as u64,
-                error_count: antipattern_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (
+            antipatterns,
+            antipattern_errors,
+            t0.elapsed().as_millis() as u64,
+        )
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_18_tag_antipatterns",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: antipatterns as u64,
+            error_count: antipattern_errors as u64,
+            duration_ms: phase_18_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 19: Generate notifications from consolidation findings
     let (notifs_generated, notifs_failed, phase_19_duration_ms) = {
@@ -960,7 +996,7 @@ pub fn run_all_phases(
     let healing_config = crate::config::load_config().healing;
 
     // Phase 20: Topic-aware auto-supersede
-    {
+    let (healing_stats, phase_20_duration_ms) = {
         let _span = tracing::info_span!("phase_20_auto_supersede").entered();
         let t0 = std::time::Instant::now();
         let healing_stats = heal_topic_supersedes(conn, &healing_config);
@@ -973,55 +1009,55 @@ pub fn run_all_phases(
                 "phase_20: topic-evolved memories auto-superseded"
             );
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_20_auto_supersede",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: healing_stats.topic_superseded as u64,
-                error_count: healing_stats.errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({
-                    "candidates_found": healing_stats.candidates_found,
-                    "false_positives_skipped": healing_stats.false_positives_skipped,
-                }),
-            },
-        );
-    }
+        (healing_stats, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_20_auto_supersede",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: healing_stats.topic_superseded as u64,
+            error_count: healing_stats.errors as u64,
+            duration_ms: phase_20_duration_ms,
+            extra: serde_json::json!({
+                "candidates_found": healing_stats.candidates_found,
+                "false_positives_skipped": healing_stats.false_positives_skipped,
+            }),
+        },
+    );
     let healing_stats_topic_superseded = stats.healed_superseded;
 
     // Phase 21: Session staleness fade
-    let healed_faded;
-    {
+    let (healed_faded, fade_errors, phase_21_duration_ms) = {
         let _span = tracing::info_span!("phase_21_session_staleness_fade").entered();
         let t0 = std::time::Instant::now();
         let (faded, fade_errors) = heal_session_staleness_with_errors(conn, &healing_config);
-        healed_faded = faded;
-        stats.healed_faded = healed_faded;
-        if healed_faded > 0 {
-            tracing::info!(healed_faded, "phase_21: stale memories auto-faded");
+        stats.healed_faded = faded;
+        if faded > 0 {
+            tracing::info!(healed_faded = faded, "phase_21: stale memories auto-faded");
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_21_session_staleness_fade",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: healed_faded as u64,
-                error_count: fade_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (faded, fade_errors, t0.elapsed().as_millis() as u64)
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_21_session_staleness_fade",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: healed_faded as u64,
+            error_count: fade_errors as u64,
+            duration_ms: phase_21_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Phase 22: Quality pressure (natural selection)
-    {
+    let (quality_adjusted, quality_errors, phase_22_duration_ms) = {
         let _span = tracing::info_span!("phase_22_apply_quality_pressure").entered();
         let t0 = std::time::Instant::now();
         let (quality_adjusted, quality_errors) =
@@ -1030,21 +1066,26 @@ pub fn run_all_phases(
         if quality_adjusted > 0 {
             tracing::info!(quality_adjusted, "phase_22: quality pressure applied");
         }
-        record(
-            conn,
-            metrics,
-            &PhaseOutcome {
-                phase: "phase_22_apply_quality_pressure",
-                run_id: &run_id,
-                correlation_id: &run_id,
-                trace_id: None,
-                output_count: quality_adjusted as u64,
-                error_count: quality_errors as u64,
-                duration_ms: t0.elapsed().as_millis() as u64,
-                extra: serde_json::json!({}),
-            },
-        );
-    }
+        (
+            quality_adjusted,
+            quality_errors,
+            t0.elapsed().as_millis() as u64,
+        )
+    };
+    record(
+        conn,
+        metrics,
+        &PhaseOutcome {
+            phase: "phase_22_apply_quality_pressure",
+            run_id: &run_id,
+            correlation_id: &run_id,
+            trace_id: None,
+            output_count: quality_adjusted as u64,
+            error_count: quality_errors as u64,
+            duration_ms: phase_22_duration_ms,
+            extra: serde_json::json!({}),
+        },
+    );
 
     // Healing notification (throttled: max once per hour). Uses healing stats
     // captured in Phase 20+21 scopes (healed_superseded via saved local,
