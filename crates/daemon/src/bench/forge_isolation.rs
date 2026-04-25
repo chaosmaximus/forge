@@ -486,25 +486,32 @@ fn dim_5_edge_case_resilience(state: &mut DaemonState, _corpus: &Corpus) -> Dime
     }
 
     // Probe 4: SQL injection inert. N4 fix — sentinel-row hash check.
+    // Per MED-3 fix: assert the call returns Ok (not just any result) AND
+    // sentinel-row state unchanged. Catches DROP/DELETE (count delta) +
+    // UPDATE-class corruption (hash delta) + upstream short-circuit (Ok
+    // requirement: if a sanitizer ever rejects the dangerous string before
+    // it reaches the bind layer, this probe still validates that the call
+    // path returned a normal Ok rather than crashing or hanging).
     let pre_hash = sentinel_row_hash(state);
     let pre_count: i64 = state
         .conn
         .query_row("SELECT COUNT(*) FROM memory", [], |r| r.get(0))
         .unwrap_or(-1);
 
-    let _ = crate::db::ops::recall_bm25_project(
+    let inj_call_ok = crate::db::ops::recall_bm25_project(
         &state.conn,
         SHARED_TAG,
         Some("alpha'; DROP TABLE memory;--"),
         50,
-    );
+    )
+    .is_ok();
 
     let post_hash = sentinel_row_hash(state);
     let post_count: i64 = state
         .conn
         .query_row("SELECT COUNT(*) FROM memory", [], |r| r.get(0))
         .unwrap_or(-2);
-    if pre_count == post_count && pre_hash == post_hash && pre_hash.is_some() {
+    if inj_call_ok && pre_count == post_count && pre_hash == post_hash && pre_hash.is_some() {
         passes += 1;
     }
 
@@ -599,7 +606,20 @@ fn dim_6_compile_context_isolation(state: &mut DaemonState, _corpus: &Corpus) ->
         session_context: true,
         ..Default::default()
     };
-    let max_possible = (ctx_config.decisions_limit + ctx_config.lessons_limit) as f64;
+    // Per HIGH-1 fix: hardcode max_possible to spec §3.3 invariant value.
+    // Don't read from runtime config — if a developer overrides
+    // decisions_limit/lessons_limit, the spec invariant must hold regardless
+    // (it's a property of the bench, not the live config). debug_assert
+    // catches drift in tests but never relaxes the bench in release.
+    const SPEC_MAX_POSSIBLE: f64 = 15.0;
+    debug_assert!(
+        (ctx_config.decisions_limit + ctx_config.lessons_limit) as f64 == SPEC_MAX_POSSIBLE,
+        "spec §3.3 N1 fix invariant: decisions_limit + lessons_limit must equal 15 \
+         (actual {}+{}={}); bench scoring would drift if config defaults change",
+        ctx_config.decisions_limit,
+        ctx_config.lessons_limit,
+        ctx_config.decisions_limit + ctx_config.lessons_limit,
+    );
 
     let mut sum_score = 0.0;
 
@@ -616,7 +636,13 @@ fn dim_6_compile_context_isolation(state: &mut DaemonState, _corpus: &Corpus) ->
             &pinned_inj,
         );
 
-        // Count foreign-project secret-token occurrences in the XML.
+        // Per spec §3.3 D6 formula: foreign-token enumeration is over
+        // `Q in projects if Q != P` — i.e. the 5 main projects.
+        // The alphabet sentinel is a D5-only construct (prefix-collision
+        // probe); spec §3.2 documents it does not participate in D6.
+        // Per HIGH-1 fix: previous impl unconditionally added alphabet
+        // foreign-tokens on top of the main-projects loop, which is a
+        // spec deviation (would over-count if the SQL filter regressed).
         let mut foreign_tokens = 0usize;
         for other in MAIN_PROJECTS {
             if other == project {
@@ -625,13 +651,8 @@ fn dim_6_compile_context_isolation(state: &mut DaemonState, _corpus: &Corpus) ->
             let needle = format!("{other}_secret_");
             foreign_tokens += xml.matches(&needle).count();
         }
-        // alphabet sentinel: from any non-alpha project, "alphabet_secret_"
-        // is foreign too. From "alpha", it's still foreign because the
-        // alphabet project ≠ alpha project.
-        let alphabet_needle = format!("{PREFIX_COLLISION_PROJECT}_secret_");
-        foreign_tokens += xml.matches(&alphabet_needle).count();
 
-        let score_p = (1.0 - foreign_tokens as f64 / max_possible).max(0.0);
+        let score_p = (1.0 - foreign_tokens as f64 / SPEC_MAX_POSSIBLE).max(0.0);
         sum_score += score_p;
     }
 
@@ -788,7 +809,12 @@ fn run_infrastructure_checks(state: &mut DaemonState, corpus: &Corpus) -> Vec<In
         ),
     });
 
-    // 8. compile_context_returns_xml — non-empty result.
+    // 8. compile_context_returns_xml — non-empty result + contains the
+    // expected `<forge-dynamic>` root tag. Per HIGH-2 fix: spec §3.4
+    // originally said "containing `<context>`" but the actual tag emitted
+    // by `compile_dynamic_suffix_with_inj` is `<forge-dynamic>`. The
+    // assertion now matches reality (catches both empty-string regressions
+    // AND a future helper rename that would change the root tag).
     let ctx_config = crate::config::ContextConfig::default();
     let pinned_inj = crate::config::ContextInjectionConfig {
         session_context: true,
@@ -805,17 +831,24 @@ fn run_infrastructure_checks(state: &mut DaemonState, corpus: &Corpus) -> Vec<In
         None,
         &pinned_inj,
     );
-    let xml_ok = !xml.is_empty();
+    let xml_non_empty = !xml.is_empty();
+    let xml_has_root = xml.contains("<forge-dynamic>");
+    let xml_ok = xml_non_empty && xml_has_root;
     out.push(InfrastructureCheck {
         name: "compile_context_returns_xml",
         passed: xml_ok,
         detail: if xml_ok {
             format!(
-                "compile_dynamic_suffix_with_inj returned {} chars",
+                "compile_dynamic_suffix_with_inj returned {} chars containing <forge-dynamic>",
                 xml.len()
             )
-        } else {
+        } else if !xml_non_empty {
             "compile_dynamic_suffix_with_inj returned empty string".into()
+        } else {
+            format!(
+                "compile_dynamic_suffix_with_inj returned {} chars but no <forge-dynamic> root tag",
+                xml.len()
+            )
         },
     });
 
@@ -836,15 +869,37 @@ pub fn run_bench_in_state(state: &mut DaemonState, corpus: &Corpus, seed: u64) -
     let infra = run_infrastructure_checks(state, corpus);
     let infra_pass = infra.iter().all(|c| c.passed);
 
-    let dims_raw = [
-        dim_1_cross_project_precision(state, corpus),
-        dim_2_self_recall_completeness(state, corpus),
-        dim_3_global_memory_visibility(state, corpus),
-        dim_4_unscoped_query_breadth(state, corpus),
-        dim_5_edge_case_resilience(state, corpus),
-        dim_6_compile_context_isolation(state, corpus),
-    ];
-    let dimensions: [DimensionScore; 6] = std::array::from_fn(|i| mark_pass(dims_raw[i].clone()));
+    // Per MED-4 fix: when infra checks fail, ALL dimensions are zeroed
+    // (not just the composite). Avoids inconsistent summary.json where
+    // composite=0.0 but per-dim scores are populated — confusing for
+    // downstream readers. Mirrors forge_identity::run_bench precedent.
+    let dimensions: [DimensionScore; 6] = if infra_pass {
+        let dims_raw = [
+            dim_1_cross_project_precision(state, corpus),
+            dim_2_self_recall_completeness(state, corpus),
+            dim_3_global_memory_visibility(state, corpus),
+            dim_4_unscoped_query_breadth(state, corpus),
+            dim_5_edge_case_resilience(state, corpus),
+            dim_6_compile_context_isolation(state, corpus),
+        ];
+        std::array::from_fn(|i| mark_pass(dims_raw[i].clone()))
+    } else {
+        // Match the exact dim names + min thresholds the live path uses.
+        const ZEROED_DIM_NAMES: [&str; 6] = [
+            "cross_project_precision",
+            "self_recall_completeness",
+            "global_memory_visibility",
+            "unscoped_query_breadth",
+            "edge_case_resilience",
+            "compile_context_isolation",
+        ];
+        std::array::from_fn(|i| DimensionScore {
+            name: ZEROED_DIM_NAMES[i],
+            score: 0.0,
+            min: DIM_MINIMUMS[i],
+            pass: false,
+        })
+    };
     let composite = if infra_pass {
         composite_score(&dimensions)
     } else {
