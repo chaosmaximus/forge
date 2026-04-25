@@ -150,11 +150,14 @@ Sideload users: pull + rebuild after the revert lands:
     # false-matches any process whose cmdline mentions forge-daemon,
     # including shells whose cwd is a forge repo.
     #
-    # NOTE: send SIGINT (`kill -INT`), not the default SIGTERM. The
-    # daemon registers `tokio::signal::ctrl_c()` (= SIGINT) but does
-    # NOT handle SIGTERM; default `kill` would terminate abruptly,
-    # bypassing the 5s drain in socket.rs. Tracked: §G6 SIGTERM
-    # handler is a daemon-side follow-up (P3-1 W5 review HIGH-1).
+    # NOTE: as of P3-2 W7 (v0.6.0-rc.2), the daemon also handles SIGTERM
+    # via `tokio::signal::unix::signal(SignalKind::terminate())`, so
+    # `kill PID` (default SIGTERM) and `kill -INT PID` (SIGINT) both
+    # produce identical graceful socket-drain. We keep `kill -INT` here
+    # for compatibility with v0.5.x and v0.6.0-rc.1 daemons that pre-date
+    # the SIGTERM handler — it works on every released daemon. The
+    # original §G6 SIGTERM-gap finding (P3-1 W5 review HIGH-1) is now
+    # closed strategically.
     DAEMON_PID=$(cat "${FORGE_DIR:-$HOME/.forge}/forge.pid" 2>/dev/null || true)
     if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
         kill -INT "$DAEMON_PID"

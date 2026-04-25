@@ -368,12 +368,59 @@ async fn main() {
         Some(Arc::clone(&shared_metrics)),
     );
 
-    // I3: Spawn signal handler that sends on shutdown channel instead of process::exit
+    // I3: Spawn signal handler that sends on shutdown channel instead of process::exit.
+    //
+    // **Phase P3-2 W7 (closes 2P-1 W5 review HIGH-1 strategically):**
+    // previously this handler only listened on SIGINT (Ctrl+C); SIGTERM
+    // (sent by `systemctl stop`, the default `kill <pid>`, container
+    // orchestrators, and the `kill PID` step the rollback playbook used
+    // to recommend) bypassed graceful shutdown and the daemon was killed
+    // abruptly. The W5 playbook fix changed `kill PID` → `kill -INT
+    // PID` as a tactical workaround; this is the strategic fix.
+    //
+    // Now BOTH signals route through the same shutdown channel so the
+    // socket-drain + writer-channel teardown + healing-checkpoint paths
+    // run on either trigger. `tokio::select!` returns on the first
+    // signal received; the other branch is dropped when this task
+    // completes.
+    //
+    // SIGTERM is Unix-only — Windows builds keep SIGINT-only via the
+    // `#[cfg(not(unix))]` arm. (The daemon doesn't ship Windows binaries
+    // today; this guard is defensive against a future cross-compile.)
     let shutdown_for_signal = shutdown_tx.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("shutting down (signal)");
-        let _ = shutdown_for_signal.send(true);
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            // SignalKind::terminate registration can fail on a
+            // misconfigured runtime; treat as best-effort (we still get
+            // SIGINT). The success path is the production path.
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to register SIGTERM handler — falling back to SIGINT-only");
+                    tokio::signal::ctrl_c().await.ok();
+                    tracing::info!("shutting down (signal=SIGINT)");
+                    let _ = shutdown_for_signal.send(true);
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("shutting down (signal=SIGINT)");
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!("shutting down (signal=SIGTERM)");
+                }
+            }
+            let _ = shutdown_for_signal.send(true);
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("shutting down (signal=SIGINT)");
+            let _ = shutdown_for_signal.send(true);
+        }
     });
 
     // Spawn startup tasks in background (consolidation, ingestion).
