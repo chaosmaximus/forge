@@ -1,0 +1,52 @@
+schema_version: 1
+slug: 2026-04-25-p3-2-w6-cosmetic-batch
+target_paths:
+  - crates/daemon/src/bench/forge_identity.rs
+  - crates/daemon/src/bench/telemetry.rs
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 2783861
+  head: d226ba3
+verdict: lockable-as-is
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-2-w6-cosmetic-batch.transcript.md
+findings:
+  - id: LOW-1
+    severity: LOW
+    summary: M2 lines() is correct on Windows (%n produces \n, not \r\n) — no fix needed
+    file: crates/daemon/src/bench/telemetry.rs
+    status: deferred
+    rationale: prompt concern does not materialize; git's %n is a literal LF and str::lines() handles both \n and \r\n. Robust.
+  - id: LOW-2
+    severity: LOW
+    summary: M2 net fork count unchanged on CI when GITHUB_SHA set (still 2 forks); local-dev case saves 1 fork
+    file: crates/daemon/src/bench/telemetry.rs
+    status: deferred
+    rationale: commit-body claim "saves one fork on every bench run" is technically "saves up to one fork", accurate for local-dev path (the dominant case). No code change.
+  - id: LOW-3
+    severity: LOW
+    summary: M3 max(0) saturates negative epochs to UNIX origin silently; no error path
+    file: crates/daemon/src/bench/forge_identity.rs
+    status: deferred
+    rationale: matches the doc "clamps to epoch itself"; bench-harness "never panic" lane. Negative-1970 timestamp is visually obvious in dashboards.
+  - id: LOW-4
+    severity: LOW
+    summary: L2 unwrap_or(1) branch is genuinely unreachable for non-negative z (algorithm bounds verified)
+    file: crates/daemon/src/bench/forge_identity.rs
+    status: deferred
+    rationale: walked the math — doy ≤ 365, mp ≤ 11, both u64 values bounded ≤ 31, fit u32 trivially.
+  - id: LOW-5
+    severity: LOW
+    summary: M1 #[serial] adds one more node to the existing 5-test serial chain in this module — sub-millisecond marginal cost
+    file: crates/daemon/src/bench/telemetry.rs
+    status: deferred
+    rationale: telemetry.rs already has 5 #[serial] tests; adding a 6th is sub-ms contention. Defensive rationale (preventing future maintainer set_var without realizing) is sound.
+  - id: LOW-6
+    severity: LOW
+    summary: No new tests for M3 negative-epoch clamp
+    file: crates/daemon/src/bench/forge_identity.rs
+    status: resolved
+    fixed_by: pending

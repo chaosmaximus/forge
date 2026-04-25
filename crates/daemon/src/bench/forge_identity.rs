@@ -1801,6 +1801,22 @@ fn write_summary(output_dir: &std::path::Path, score: &IdentityScore) -> Result<
 mod tests {
     use super::*;
 
+    // P3-2 W6 review LOW-6: lock the M3 negative-epoch clamp semantic.
+    // The fn is unreachable from the bench harness today (only caller is
+    // current_epoch_secs() which is monotonic), but the clamp guard is a
+    // load-bearing piece of the W6 cosmetic story so a one-liner test
+    // pins the behavior cheaply.
+    #[test]
+    fn test_epoch_to_iso_clamps_negative_epoch_to_unix_origin() {
+        // Pre-1970 epoch maps to the UNIX origin string after the W6 clamp.
+        assert_eq!(epoch_to_iso(-1.0), "1970-01-01T00:00:00Z");
+        assert_eq!(epoch_to_iso(-1e9), "1970-01-01T00:00:00Z");
+        // Sanity: zero epoch is the boundary case.
+        assert_eq!(epoch_to_iso(0.0), "1970-01-01T00:00:00Z");
+        // Sanity: a known positive epoch (2024-01-01T00:00:00Z = 1704067200).
+        assert_eq!(epoch_to_iso(1_704_067_200.0), "2024-01-01T00:00:00Z");
+    }
+
     #[test]
     fn test_bench_config_defaults() {
         let cfg = BenchConfig {
