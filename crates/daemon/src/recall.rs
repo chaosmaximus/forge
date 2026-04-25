@@ -1441,8 +1441,12 @@ pub fn compile_dynamic_suffix(
     }
 
     // ── Active Protocols ──
-    // Inject process-level meta-knowledge (HOW work should be done)
-    {
+    // Inject process-level meta-knowledge (HOW work should be done).
+    // Phase 2A-4d.3.1 #3: gated on `inj.session_context`; emits
+    // self-closing tag when disabled to keep XML schema stable.
+    if section_disabled("active_protocols", inj.session_context) {
+        xml.push_str("<active-protocols/>\n");
+    } else {
         let protocol_sql = "SELECT title, content FROM memory
             WHERE memory_type = 'protocol' AND status = 'active'
             ORDER BY confidence DESC, accessed_at DESC LIMIT 5";
@@ -1455,7 +1459,9 @@ pub fn compile_dynamic_suffix(
                 .map(|rows| rows.filter_map(|r| r.ok()).collect())
                 .unwrap_or_default();
 
-            if !protocols.is_empty() {
+            if protocols.is_empty() {
+                xml.push_str("<active-protocols/>\n");
+            } else {
                 // Protocols are exempt from budget — they're process-critical
                 xml.push_str(
                     "<active-protocols hint=\"process rules for this project — follow these\">\n",
@@ -1469,6 +1475,8 @@ pub fn compile_dynamic_suffix(
                 }
                 xml.push_str("</active-protocols>\n");
             }
+        } else {
+            xml.push_str("<active-protocols/>\n");
         }
     }
 
@@ -1476,7 +1484,10 @@ pub fn compile_dynamic_suffix(
     // Inject project-specific conventions (test commands, lint commands, patterns, etc.)
     // Stored as decisions with metadata containing "project_conventions" + memory_type = decision.
     // Budget-capped at 2000 chars to prevent DoS via large content.
-    {
+    // Phase 2A-4d.3.1 #3: gated on `inj.session_context`.
+    if section_disabled("project_conventions", inj.session_context) {
+        xml.push_str("<project-conventions/>\n");
+    } else {
         let conv_result: rusqlite::Result<String> = if let Some(proj) = project {
             conn.query_row(
                 "SELECT content FROM memory
@@ -1497,36 +1508,42 @@ pub fn compile_dynamic_suffix(
                 |row| row.get(0),
             )
         };
-        if let Ok(content) = conv_result {
-            // Budget cap: truncate to prevent unbounded context injection
-            let capped = if content.len() > 2000 {
-                // ISSUE-25: ensure we don't slice inside a multi-byte UTF-8 character
-                let mut end = 2000;
-                while !content.is_char_boundary(end) && end > 0 {
-                    end -= 1;
+        match conv_result {
+            Ok(content) => {
+                // Budget cap: truncate to prevent unbounded context injection
+                let capped = if content.len() > 2000 {
+                    // ISSUE-25: ensure we don't slice inside a multi-byte UTF-8 character
+                    let mut end = 2000;
+                    while !content.is_char_boundary(end) && end > 0 {
+                        end -= 1;
+                    }
+                    &content[..end]
+                } else {
+                    &content
+                };
+                xml.push_str("<project-conventions hint=\"project-specific knowledge — use these for test/lint/build commands\">\n");
+                for entry in capped.split('|') {
+                    let entry = entry.trim();
+                    if let Some((key, val)) = entry.split_once(':') {
+                        xml.push_str(&format!(
+                            "  <convention key=\"{}\">{}</convention>\n",
+                            xml_escape(key.trim()),
+                            xml_escape(val.trim()),
+                        ));
+                    }
                 }
-                &content[..end]
-            } else {
-                &content
-            };
-            xml.push_str("<project-conventions hint=\"project-specific knowledge — use these for test/lint/build commands\">\n");
-            for entry in capped.split('|') {
-                let entry = entry.trim();
-                if let Some((key, val)) = entry.split_once(':') {
-                    xml.push_str(&format!(
-                        "  <convention key=\"{}\">{}</convention>\n",
-                        xml_escape(key.trim()),
-                        xml_escape(val.trim()),
-                    ));
-                }
+                xml.push_str("</project-conventions>\n");
             }
-            xml.push_str("</project-conventions>\n");
+            Err(_) => xml.push_str("<project-conventions/>\n"),
         }
     }
 
     // ── Guardrails (Anti-patterns) ──
-    // Inject lessons tagged as anti-patterns — WHAT NOT TO DO
-    {
+    // Inject lessons tagged as anti-patterns — WHAT NOT TO DO.
+    // Phase 2A-4d.3.1 #3: gated on `inj.session_context`.
+    if section_disabled("guardrails", inj.session_context) {
+        xml.push_str("<guardrails/>\n");
+    } else {
         let guard_sql = "SELECT title, content FROM memory
             WHERE memory_type = 'lesson' AND status = 'active'
             AND tags LIKE '%anti-pattern%'
@@ -1540,7 +1557,9 @@ pub fn compile_dynamic_suffix(
                 .map(|rows| rows.filter_map(|r| r.ok()).collect())
                 .unwrap_or_default();
 
-            if !guards.is_empty() {
+            if guards.is_empty() {
+                xml.push_str("<guardrails/>\n");
+            } else {
                 xml.push_str("<guardrails hint=\"known pitfalls — avoid these\">\n");
                 for (title, content) in &guards {
                     // Truncate content to ~150 chars for brevity (UTF-8 safe)
@@ -1556,12 +1575,17 @@ pub fn compile_dynamic_suffix(
                 }
                 xml.push_str("</guardrails>\n");
             }
+        } else {
+            xml.push_str("<guardrails/>\n");
         }
     }
 
     // ── Deferred Items ──
-    // Decisions that were explicitly postponed — don't re-solve them
-    {
+    // Decisions that were explicitly postponed — don't re-solve them.
+    // Phase 2A-4d.3.1 #3: gated on `inj.session_context`.
+    if section_disabled("deferred_items", inj.session_context) {
+        xml.push_str("<deferred-items/>\n");
+    } else {
         let defer_sql = "SELECT title FROM memory
             WHERE memory_type = 'decision' AND status = 'active'
             AND (LOWER(title) LIKE '%defer%' OR LOWER(content) LIKE '%defer%'
@@ -1575,7 +1599,9 @@ pub fn compile_dynamic_suffix(
                 .map(|rows| rows.filter_map(|r| r.ok()).collect())
                 .unwrap_or_default();
 
-            if !deferred.is_empty() {
+            if deferred.is_empty() {
+                xml.push_str("<deferred-items/>\n");
+            } else {
                 xml.push_str(
                     "<deferred-items hint=\"intentionally postponed — don't re-solve\">\n",
                 );
@@ -1584,6 +1610,8 @@ pub fn compile_dynamic_suffix(
                 }
                 xml.push_str("</deferred-items>\n");
             }
+        } else {
+            xml.push_str("<deferred-items/>\n");
         }
     }
 
@@ -1616,8 +1644,12 @@ pub fn compile_dynamic_suffix(
     }
 
     // ── Pending Notifications ──
-    // Surface notifications that need user attention (budget-exempt like protocols)
-    {
+    // Surface notifications that need user attention (budget-exempt like protocols).
+    // Phase 2A-4d.3.1 #3: gated on `inj.active_state` (notifications are
+    // transient state, like perceptions and pending-messages).
+    if section_disabled("notifications", inj.active_state) {
+        xml.push_str("<notifications count=\"0\" />\n");
+    } else {
         // Adaptive learning: exclude topics where user has set priority_override='low'
         // and we're filtering for medium+. Also apply the override to effective priority.
         let notif_sql = "SELECT n.id, n.category,
@@ -1799,7 +1831,18 @@ pub fn compile_dynamic_suffix(
     // Master v6 §6 D4: ALWAYS emit `<preferences>` (or self-closing `<preferences/>` when
     // empty) — keeps the XML schema stable so consumers can rely on the element being
     // present. 2A-4d.3.1 backlog #1 closed by this branch.
-    if !section_disabled("preferences", inj.preferences) {
+    //
+    // Phase 2A-4d.3.1 #3 review B3: when the operator disables `preferences`
+    // injection, we still emit the self-closing tag — the master v6 mandate
+    // is "always present", and toggling visibility doesn't change the schema
+    // contract. Only the contents are suppressed.
+    if section_disabled("preferences", inj.preferences) {
+        let empty_tag = "<preferences/>\n";
+        if used + empty_tag.len() <= budget {
+            used += empty_tag.len();
+            xml.push_str(empty_tag);
+        }
+    } else {
         let org = organization_id.unwrap_or("default");
         let prefs = crate::db::ops::list_active_preferences(conn, org, 5).unwrap_or_default();
         if prefs.is_empty() {
@@ -4114,11 +4157,21 @@ mod tests {
 
     #[test]
     fn test_no_conventions_when_none_stored() {
+        // Phase 2A-4d.3.1 #3 review B2: section now emits self-closing
+        // `<project-conventions/>` when no conventions are stored, matching
+        // how `<identity/>`, `<disposition/>`, `<perceptions/>` etc. behave.
+        // Schema stability for KV-cache consumers — `<project-conventions>`
+        // is always present, contents conditionally populated.
         let conn = setup();
         let ctx = compile_context(&conn, "claude-code", None);
         assert!(
-            !ctx.contains("project-conventions"),
-            "context should not include conventions when none stored"
+            ctx.contains("<project-conventions/>"),
+            "context should include self-closing `<project-conventions/>` when none stored"
+        );
+        // The populated form (with `hint=`) must NOT appear.
+        assert!(
+            !ctx.contains("<project-conventions hint="),
+            "should not emit populated form when no conventions exist"
         );
     }
 

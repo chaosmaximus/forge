@@ -1191,6 +1191,42 @@ impl ForgeConfig {
                 self.workers.heartbeat_timeout_secs = n;
             }
         }
+        if let Ok(v) = std::env::var("FORGE_HEARTBEAT_IDLE_SECS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.workers.heartbeat_idle_secs = n;
+            }
+        }
+        // Phase 2A-4d.3.1 #3 — context-injection feature toggles via env.
+        if let Ok(v) = std::env::var("FORGE_CONTEXT_INJECTION_SESSION_CONTEXT") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.context_injection.session_context = b;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_CONTEXT_INJECTION_ACTIVE_STATE") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.context_injection.active_state = b;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_CONTEXT_INJECTION_SKILLS") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.context_injection.skills = b;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_CONTEXT_INJECTION_ANTI_PATTERNS") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.context_injection.anti_patterns = b;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_CONTEXT_INJECTION_BLAST_RADIUS") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.context_injection.blast_radius = b;
+            }
+        }
+        if let Ok(v) = std::env::var("FORGE_CONTEXT_INJECTION_PREFERENCES") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.context_injection.preferences = b;
+            }
+        }
     }
 
     /// Validate that config fields are sensible.
@@ -1409,6 +1445,35 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
         ["workers", "kpi_reaper_interval_secs"] => {
             config.workers.kpi_reaper_interval_secs =
                 value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        ["workers", "heartbeat_idle_secs"] => {
+            config.workers.heartbeat_idle_secs =
+                value.parse().map_err(|e| format!("invalid value: {e}"))?;
+        }
+        // Phase 2A-4d.3.1 #3 — context-injection feature toggles
+        ["context_injection", "session_context"] => {
+            config.context_injection.session_context =
+                value.parse().map_err(|e| format!("invalid bool: {e}"))?;
+        }
+        ["context_injection", "active_state"] => {
+            config.context_injection.active_state =
+                value.parse().map_err(|e| format!("invalid bool: {e}"))?;
+        }
+        ["context_injection", "skills"] => {
+            config.context_injection.skills =
+                value.parse().map_err(|e| format!("invalid bool: {e}"))?;
+        }
+        ["context_injection", "anti_patterns"] => {
+            config.context_injection.anti_patterns =
+                value.parse().map_err(|e| format!("invalid bool: {e}"))?;
+        }
+        ["context_injection", "blast_radius"] => {
+            config.context_injection.blast_radius =
+                value.parse().map_err(|e| format!("invalid bool: {e}"))?;
+        }
+        ["context_injection", "preferences"] => {
+            config.context_injection.preferences =
+                value.parse().map_err(|e| format!("invalid bool: {e}"))?;
         }
         // Context assembly
         ["context", "budget_chars"] => {
