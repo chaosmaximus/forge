@@ -492,8 +492,16 @@ fn dim_3_preference_time_ordering(
 
 /// Convert epoch seconds (f64) to ISO-8601 UTC string (`YYYY-MM-DDTHH:MM:SSZ`).
 /// `parse_timestamp_to_epoch` in db/ops.rs accepts this subset.
+///
+/// **P3-2 W6 cosmetic M3:** clamps negative epochs (pre-1970) to the
+/// epoch itself rather than passing them through `civil_from_days`. The
+/// bench harness only ever feeds `current_epoch_secs()` here; pre-1970
+/// timestamps would indicate a clock wedge or test misconfiguration.
+/// Defensive guard rather than a pulled-in `chrono` dep — the project
+/// has no other consumer of `chrono`, so a single fn doesn't justify
+/// the dep-graph bloat.
 fn epoch_to_iso(epoch_secs: f64) -> String {
-    let secs = epoch_secs as i64;
+    let secs = (epoch_secs as i64).max(0);
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let hour = rem / 3600;
@@ -505,6 +513,13 @@ fn epoch_to_iso(epoch_secs: f64) -> String {
 
 /// Howard Hinnant's civil_from_days: epoch-day → (year, month, day) in the
 /// proleptic Gregorian calendar.
+///
+/// **P3-2 W6 cosmetic L2:** the final two casts now use `u32::try_from`
+/// rather than `as u32` for explicit overflow handling. `mp + 3 ≤ 12`
+/// and `(doy - ...)` are both bounded ≤ 31 by the algorithm, so the
+/// `unwrap_or(1)` branch is unreachable for any non-negative `z` —
+/// kept as a defensive default rather than a `.expect()` because a panic
+/// here on a calendar misuse would cascade through every bench run.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -513,8 +528,8 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let y_val = yoe as i64 + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let d = u32::try_from(doy - (153 * mp + 2) / 5 + 1).unwrap_or(1);
+    let m = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).unwrap_or(1);
     let y = y_val + if m <= 2 { 1 } else { 0 };
     (y, m, d)
 }

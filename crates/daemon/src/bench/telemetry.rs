@@ -75,30 +75,45 @@ pub fn detect_hardware_profile() -> String {
 ///
 /// Order for SHA:
 ///   1. `GITHUB_SHA` if set
-///   2. `git rev-parse HEAD` (no-fail; returns `None` if not a git repo)
+///   2. `git log -1 --format=%H%n%ct HEAD` first line (no-fail; returns
+///      `None` if not a git repo)
 ///
 /// Dirty flag: `git status --porcelain` non-empty (best-effort; `false` if git fails).
-/// Commit timestamp: `git show -s --format=%ct HEAD` (best-effort).
+/// Commit timestamp: `git log -1 --format=%H%n%ct HEAD` second line.
+///
+/// **P3-2 W6 cosmetic M2:** previously this fn issued 3 git fork+exec
+/// calls (`rev-parse HEAD`, `status --porcelain`, `show -s --format=%ct
+/// HEAD`). The SHA + commit-ts are now harvested from a single
+/// `git log -1 --format=%H%n%ct` invocation (saves one fork on every
+/// bench run). The dirty flag still requires its own `status --porcelain`
+/// call because the output is structurally different from log.
 pub fn detect_commit_metadata() -> (Option<String>, bool, Option<i64>) {
+    // Cluster SHA + commit_ts into one git invocation. %H = full SHA,
+    // %n = newline, %ct = committer timestamp (epoch seconds). We split
+    // on the literal newline + parse from there.
+    let log_combined: Option<(String, Option<i64>)> = Command::new("git")
+        .args(["log", "-1", "--format=%H%n%ct", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if !o.status.success() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&o.stdout);
+            let mut lines = text.lines();
+            let sha_line = lines.next()?.trim().to_string();
+            if sha_line.is_empty() {
+                return None;
+            }
+            let ts = lines.next().and_then(|l| l.trim().parse::<i64>().ok());
+            Some((sha_line, ts))
+        });
+
     let sha = match std::env::var("GITHUB_SHA") {
         Ok(s) if !s.is_empty() => Some(s),
-        _ => Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                } else {
-                    None
-                }
-            }),
+        _ => log_combined.as_ref().map(|(s, _)| s.clone()),
     };
+    let commit_ts = log_combined.and_then(|(_, ts)| ts);
 
     let dirty = Command::new("git")
         .args(["status", "--porcelain"])
@@ -106,21 +121,6 @@ pub fn detect_commit_metadata() -> (Option<String>, bool, Option<i64>) {
         .ok()
         .map(|o| o.status.success() && !o.stdout.is_empty())
         .unwrap_or(false);
-
-    let commit_ts = Command::new("git")
-        .args(["show", "-s", "--format=%ct", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8_lossy(&o.stdout)
-                    .trim()
-                    .parse::<i64>()
-                    .ok()
-            } else {
-                None
-            }
-        });
 
     (sha, dirty, commit_ts)
 }
@@ -201,7 +201,10 @@ pub fn emit_bench_run_completed(payload: &BenchRunPayload) -> Result<(), String>
     let timestamp = crate::db::ops::current_epoch_secs() as i64;
     let latency_ms = payload.wall_duration_ms as i64;
     let result_count = payload.result_count as i64;
-    let success = i64::from(payload.pass);
+    // P3-2 W6 cosmetic L1: `as i64` reads consistently with the f64 →
+    // i64 / u64 → i64 casts on the surrounding lines. `i64::from(bool)`
+    // is more pedantic but visually splits the cast cluster.
+    let success = payload.pass as i64;
 
     // Phase 2A-4d.2.1 #4 (W7): write run_id to its own indexed column
     // so cross-event-type queries that group by run_id don't have to
@@ -327,6 +330,12 @@ mod tests {
         }
     }
 
+    // P3-2 W6 cosmetic M1: convention parity with the other tests in this
+    // module that touch FORGE_DIR. Today this test does not, but
+    // #[serial] is cheap insurance against a future maintainer adding a
+    // `set_var` here without realizing the rest of the file relies on
+    // serial execution to avoid env-var races.
+    #[serial]
     #[test]
     fn payload_serializes_with_v1_schema() {
         let payload = sample_payload();
