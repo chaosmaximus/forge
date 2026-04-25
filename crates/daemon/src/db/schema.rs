@@ -1524,6 +1524,39 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     ",
     )?;
 
+    // ── Phase 2A-4d.2.1 #4 (W7): kpi_events.run_id for the HUD 24h rollup ──
+    //
+    // The HUD's 24h rollup (`events.rs::build_hud_state`) does
+    // `COUNT(DISTINCT json_extract(metadata_json, '$.run_id'))` against
+    // 24 hours of `phase_completed` rows. With only the existing
+    // `idx_kpi_events_timestamp`, the planner can range-scan
+    // timestamp-matching rows but must still parse JSON for every row
+    // to compute the DISTINCT — bounded today by the kpi_events
+    // retention reaper (so the table never grows unbounded), but slow
+    // enough to matter once `kpi_events_retention_days` is set high
+    // (>14d) on a high-throughput daemon.
+    //
+    // Fix: promote `run_id` to a real TEXT column with its own index,
+    // backfill from existing rows once, populate via writers going
+    // forward. The HUD query then becomes
+    // `COUNT(DISTINCT run_id)` against the indexed column.
+    let _ = conn.execute("ALTER TABLE kpi_events ADD COLUMN run_id TEXT", []);
+    // Backfill: once-per-DB UPDATE that pulls run_id from metadata_json
+    // for any row with a NULL column. Idempotent (a second run sees no
+    // NULL rows). Bounded by retention; on a fresh DB this is a no-op.
+    let _ = conn.execute(
+        "UPDATE kpi_events
+         SET run_id = json_extract(metadata_json, '$.run_id')
+         WHERE run_id IS NULL
+           AND json_extract(metadata_json, '$.run_id') IS NOT NULL",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kpi_events_run_id_timestamp \
+         ON kpi_events(run_id, timestamp)",
+        [],
+    );
+
     Ok(())
 }
 

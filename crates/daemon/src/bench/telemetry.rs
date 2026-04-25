@@ -203,10 +203,14 @@ pub fn emit_bench_run_completed(payload: &BenchRunPayload) -> Result<(), String>
     let result_count = payload.result_count as i64;
     let success = i64::from(payload.pass);
 
+    // Phase 2A-4d.2.1 #4 (W7): write run_id to its own indexed column
+    // so cross-event-type queries that group by run_id don't have to
+    // parse JSON. For bench_run_completed the kpi_events PK id IS the
+    // run_id (they're populated from the same `Ulid::new()` above).
     conn.execute(
         "INSERT INTO kpi_events
-           (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json)
-         VALUES (?1, ?2, 'bench_run_completed', NULL, ?3, ?4, ?5, ?6)",
+           (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json, run_id)
+         VALUES (?1, ?2, 'bench_run_completed', NULL, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             run_id,
             timestamp,
@@ -214,6 +218,7 @@ pub fn emit_bench_run_completed(payload: &BenchRunPayload) -> Result<(), String>
             result_count,
             success,
             metadata_json,
+            run_id,
         ],
     )
     .map_err(|e| format!("INSERT kpi_events: {e}"))?;

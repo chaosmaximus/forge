@@ -174,15 +174,20 @@ fn insert_kpi_event_row(
     // so `record()` can tell "inserted" apart from "ignored" and emit a
     // metric for the latter. Avoids silent divergence between Prometheus
     // and kpi_events.
+    // Phase 2A-4d.2.1 #4 (W7): write run_id to its own indexed column
+    // so the HUD 24h rollup can dedupe via index walk rather than
+    // full-table JSON scan. Same value also stays in metadata_json
+    // for v1-schema compatibility.
     conn.execute(
-        "INSERT OR IGNORE INTO kpi_events (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json)
-         VALUES (?1, strftime('%s','now'), 'phase_completed', NULL, ?2, ?3, ?4, ?5)",
+        "INSERT OR IGNORE INTO kpi_events (id, timestamp, event_type, project, latency_ms, result_count, success, metadata_json, run_id)
+         VALUES (?1, strftime('%s','now'), 'phase_completed', NULL, ?2, ?3, ?4, ?5, ?6)",
         params![
             id,
             outcome.duration_ms as i64,
             outcome.output_count as i64,
             if outcome.error_count == 0 { 1_i64 } else { 0_i64 },
             metadata.to_string(),
+            outcome.run_id,
         ],
     )
 }
