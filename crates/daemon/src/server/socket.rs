@@ -92,6 +92,7 @@ pub fn is_daemon_alive() -> bool {
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_server(
     socket_path: &str,
     db_path: String,
@@ -100,6 +101,11 @@ pub async fn run_server(
     started_at: Instant,
     write_tx: mpsc::Sender<WriteCommand>,
     shutdown_tx: watch::Sender<bool>,
+    // Phase 2A-4d.2.1 #1: thread the daemon-wide ForgeMetrics Arc so the
+    // per-connection reader can lazy-refresh `/inspect row_count` for
+    // forge-next CLI clients (the dominant transport — without this the
+    // CLI sees `stale: true` forever on a fresh daemon).
+    metrics: Option<Arc<crate::server::metrics::ForgeMetrics>>,
 ) -> std::io::Result<()> {
     // M1: Before removing the socket, check if another daemon is
     // actually alive. By the time we reach here, `acquire_pidlock`
@@ -173,6 +179,7 @@ pub async fn run_server(
                 let db_path = db_path.clone();
                 let events = events.clone();
                 let hlc = Arc::clone(&hlc);
+                let metrics = metrics.clone();
 
                 tokio::spawn(async move {
                     let _permit = permit; // hold semaphore permit until task completes
@@ -181,7 +188,7 @@ pub async fn run_server(
                     let mut reader_state = match DaemonState::new_reader(
                         &db_path, events.clone(), hlc, started_at,
                         Some(write_tx.clone()),
-                        None,
+                        metrics,
                     ) {
                         Ok(s) => s,
                         Err(e) => {

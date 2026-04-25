@@ -141,6 +141,15 @@ pub fn spawn_hud_writer(tx: &EventSender) {
                     // `tokio::task::spawn_blocking` (so DB + I/O happen on
                     // the blocking pool) and write via tmpfile + atomic
                     // rename so readers always see a complete file.
+                    //
+                    // The `.await` is intentional: writes are dispatched
+                    // serially per event so HUD readers see the events in
+                    // bus order. Concurrent writes would race on the same
+                    // target file (last rename wins), and skipping the
+                    // wait would also let `team_state` / `session_state`
+                    // mutate underneath an in-flight write. Callers
+                    // optimizing for throughput at the cost of order
+                    // would have to maintain a write-coalescing buffer.
                     let db_path_for_blocking = db_path.clone();
                     let hud_path_for_blocking = hud_path.clone();
                     let team_state_clone = team_state.clone();

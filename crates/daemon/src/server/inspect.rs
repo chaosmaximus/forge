@@ -384,6 +384,26 @@ fn shape_latency(
             }
         })
         .collect();
+    // Phase 2A-4d.2.1 #6 (W2 review H1): emit synthetic rows for any
+    // groups that only ever appeared in `truncated_by_group` (e.g. a
+    // brand-new group whose first sighting was the cap-triggering row,
+    // or a group that hit MAX_ROWS_PER_GROUP without ever inserting a
+    // sample because the bucket was already full from another path).
+    // Without this, the per-group truncated counter is silently
+    // dropped — the counter's whole purpose is to surface "we saw N
+    // events for this group that didn't make the response". `count: 0`
+    // signals "no observed samples" so percentiles render as 0.0.
+    for (group_key, truncated_samples) in std::mem::take(&mut truncated_by_group) {
+        rows.push(LatencyRow {
+            group_key,
+            count: 0,
+            p50_ms: 0.0,
+            p95_ms: 0.0,
+            p99_ms: 0.0,
+            mean_ms: 0.0,
+            truncated_samples,
+        });
+    }
     // Stable output ordering by group_key.
     rows.sort_by(|a, b| a.group_key.cmp(&b.group_key));
 

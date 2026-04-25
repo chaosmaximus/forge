@@ -594,6 +594,10 @@ async fn main() {
         started_at,
         write_tx,
         shutdown_tx,
+        // Phase 2A-4d.2.1 #1 (W2 review B1): forward the daemon-wide
+        // metrics Arc so per-connection readers handle `/inspect
+        // row_count` lazy-refresh on the unix socket transport too.
+        Some(Arc::clone(&shared_metrics)),
     )
     .await
     {
