@@ -72,6 +72,7 @@
 * **W5 §G5** — quarterly drill cadence is documented in the playbook's tabletop checklist but no calendar/cron reminder mechanism exists. Defer; consider a recurring HANDOFF entry or GitHub Actions cron workflow.
 * **W5 §G2** — `gh release delete --cleanup-tag=false` is non-idiomatic but functionally correct; the playbook now omits the flag in the default form (keep-tag) and shows bare `--cleanup-tag` in the optional opt-in branch. Closed by W5.
 * **W5 review HIGH-1 (daemon SIGTERM handler)** — the daemon currently registers only `tokio::signal::ctrl_c()` (= SIGINT). `systemctl stop` and any default `kill PID` send SIGTERM, which kills the daemon abruptly without running the socket-drain path. The W5 playbook fix uses `kill -INT` as a tactical workaround; the strategic fix is a `tokio::signal::unix::signal(SignalKind::terminate())` handler in `crates/daemon/src/main.rs` so SIGTERM also triggers graceful shutdown. Track for next P3-1 wave or P3-2.
+* **W7 L4** — `${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}` with unset `$HOME` falls back to `/.claude/settings.json` and exits 0 with "nothing to check". Benign in practice (every CI runner has `$HOME` set); not worth a fix.
 
 ---
 

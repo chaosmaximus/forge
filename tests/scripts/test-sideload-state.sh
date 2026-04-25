@@ -80,7 +80,7 @@ status=$?
 set -e
 assert_exit 1 "$status" "$output"
 assert_contains "forge@forge-app-marketplace" "$output"
-assert_contains "Migration steps" "$output"
+assert_contains "Migration: https://" "$output"
 
 # ============================================================================
 # Test 4: drift via extraKnownMarketplaces source.path
@@ -105,9 +105,20 @@ assert_exit 1 "$status" "$output"
 assert_contains "forge-private" "$output"
 
 # ============================================================================
-# Test 6: malformed JSON → exit 2
+# Test 6: drift via extraKnownMarketplaces source.repo (W7 review M1)
 # ============================================================================
-echo "Test 6: malformed JSON"
+echo "Test 6: drift-marketplace-repo (source.repo)"
+set +e
+output=$(run drift-marketplace-repo.json)
+status=$?
+set -e
+assert_exit 1 "$status" "$output"
+assert_contains "chaosmaximus/forge-app" "$output"
+
+# ============================================================================
+# Test 7: malformed JSON → exit 2
+# ============================================================================
+echo "Test 7: malformed JSON"
 set +e
 output=$(run malformed.json)
 status=$?

@@ -1,0 +1,7 @@
+{
+  "extraKnownMarketplaces": {
+    "external-forge": {
+      "source": { "source": "github", "repo": "chaosmaximus/forge-app" }
+    }
+  }
+}

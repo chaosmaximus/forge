@@ -26,6 +26,12 @@ while [ $# -gt 0 ]; do
                 echo "ERROR: --settings requires a path" >&2
                 exit 2
             fi
+            case "$2" in
+                -*)
+                    echo "ERROR: --settings path must not start with '-' (got: $2)" >&2
+                    exit 2
+                    ;;
+            esac
             CLAUDE_SETTINGS_OVERRIDE="$2"
             shift 2
             ;;
@@ -58,7 +64,6 @@ fi
 
 python3 - "$SETTINGS" <<'PYTHON'
 import json
-import os
 import sys
 
 settings_path = sys.argv[1]
@@ -73,17 +78,37 @@ if not isinstance(settings, dict):
     sys.stderr.write(f"sideload-state: top-level of {settings_path} is not an object\n")
     sys.exit(2)
 
+# Canonical pre-2026-04-23 private-plugin name fragments. Verified
+# against docs/superpowers/plans/2P-1a-inventory.md — no other names
+# (e.g. forge-internal, bhairavi-forge) shipped pre-ban-lift. Future
+# private forks with novel names will need a script update.
+PRIVATE_FRAGMENTS = ("forge-app", "forge-private")
+
+
+def _has_private_fragment(s) -> bool:
+    if not isinstance(s, str):
+        return False
+    lower = s.lower()
+    return any(f in lower for f in PRIVATE_FRAGMENTS)
+
+
 issues = []
 
 plugins = settings.get("enabledPlugins") or {}
 if isinstance(plugins, dict):
-    for name in plugins:
-        # Match the canonical private sideload names + any forge-app reference.
-        lower = name.lower()
-        if "forge-app" in lower or "forge-private" in lower:
-            issues.append(
-                f"enabledPlugins[{name!r}]: private sideload plugin"
-            )
+    for name, enabled in plugins.items():
+        if not _has_private_fragment(name):
+            continue
+        # Distinguish "active sideload" from "stale entry" — both should
+        # be removed but the latter is informational, not blocking the
+        # daemon from running.
+        active_note = (
+            "" if enabled
+            else " (entry present, value=false — remove the entry)"
+        )
+        issues.append(
+            f"enabledPlugins[{name!r}]: private sideload plugin{active_note}"
+        )
 
 markets = settings.get("extraKnownMarketplaces") or {}
 if isinstance(markets, dict):
@@ -96,9 +121,9 @@ if isinstance(markets, dict):
         path = src.get("path") or ""
         repo = src.get("repo") or ""
         if (
-            "forge-app" in mname.lower()
-            or (isinstance(path, str) and "forge-app" in path.lower())
-            or (isinstance(repo, str) and "forge-app" in repo.lower())
+            _has_private_fragment(mname)
+            or _has_private_fragment(path)
+            or _has_private_fragment(repo)
         ):
             target = path or repo or "(no path or repo)"
             issues.append(
@@ -115,8 +140,10 @@ sys.stderr.write(
 for line in issues:
     sys.stderr.write(f"  - {line}\n")
 sys.stderr.write(
-    "\nMigration steps: docs/operations/sideload-migration.md "
-    "(https://github.com/chaosmaximus/forge/blob/master/docs/operations/sideload-migration.md)\n"
+    "\nMigration: https://github.com/chaosmaximus/forge/blob/master/"
+    "docs/operations/sideload-migration.md\n"
+    "(in-tree path if you cloned the repo: docs/operations/"
+    "sideload-migration.md)\n"
 )
 sys.exit(1)
 PYTHON

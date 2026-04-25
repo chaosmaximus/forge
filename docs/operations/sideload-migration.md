@@ -52,8 +52,10 @@ migration steps below apply identically; the only OS-specific moment is
 
 - **Linux:** quit + relaunch Claude Code (X11 / Wayland).
 - **macOS:** ⌘Q to quit, then re-open from Applications. `pkill -f
-  "Claude"` is technically faster but kill-by-name is unsafe — see the
-  W5 rollback drill (§G3) for why pidfile-based shutdowns are preferred.
+  "Claude"` is technically faster but exhibits the same
+  substring-collision unsafety pattern flagged in the W5 rollback
+  drill §G3 (where `pkill -f 'forge-daemon'` matched unrelated
+  shells); prefer the GUI quit or use the app's PID directly.
 
 ## Step 1 — snapshot current state
 
