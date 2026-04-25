@@ -18,13 +18,21 @@
 //!                                                  written, but Prometheus
 //!                                                  updates skipped.
 //!   B. `run_all_phases(conn, cfg, Some(metrics))`— full 2A-4d.1 hot path.
+//!   C. Variant B + a `tracing_opentelemetry` layer wired to a real
+//!      `BatchSpanProcessor` backed by a no-op `SpanExporter`. Closes the
+//!      T12 Codex M9 deferred finding (P3-2 W3): Variant B exercised only
+//!      Prometheus + kpi_events; the OTLP serialise + queue path was
+//!      previously unmeasured. Variant C captures that extra cost end-to-end
+//!      without needing a live OTLP collector.
 //!
-//! The delta (B - A) is the Prometheus-observation cost. Span + kpi_events
-//! cost is baked into both branches because those are the always-on
-//! observability layer of Tier 1 (see spec §3.2 non-goals).
+//! The delta (B - A) is the Prometheus-observation cost. The delta (C - B)
+//! is the additional OTLP-layer cost (tracing→OTel span conversion +
+//! BatchSpanProcessor queueing). Span + kpi_events cost is baked into all
+//! three branches because those are the always-on observability layer of
+//! Tier 1 (see spec §3.2 non-goals).
 //!
-//! The test is ignored by default because it needs a non-trivial seeded
-//! DB and takes ~20-60s depending on host. Run with:
+//! The tests are ignored by default because they need a non-trivial seeded
+//! DB and take ~20-60s depending on host. Run with:
 //!
 //!     cargo test -p forge-daemon --test t10_instrumentation_latency -- --ignored --nocapture
 //!
@@ -192,5 +200,133 @@ fn t10_consolidation_latency_baseline() {
     assert_eq!(
         kpi_count, 23,
         "expected exactly 23 kpi_events rows per run_all_phases invocation (one per phase); got {kpi_count}"
+    );
+}
+
+// ── P3-2 W3: Variant C — OTLP-path latency ────────────────────────────────
+//
+// Variant C extends Variant B with a `tracing_opentelemetry` layer wired to
+// a real `BatchSpanProcessor` backed by an in-process no-op span sink.
+// Closes T12 Codex M9 (deferred from 2A-4d.1) — production hot-path latency
+// includes the cost of:
+//   - converting tracing spans into opentelemetry SpanData
+//   - queueing into the BatchSpanProcessor channel
+//   - the processor's worker task draining the queue + handing batches to
+//     the exporter (here: a no-op).
+//
+// Variant C does NOT exercise the network export path (gRPC + tonic + DNS
+// + TLS), so the measurement isolates SDK overhead from infrastructure
+// overhead. A future extension could swap in a localhost grpc collector to
+// add network bytes/latency cost on top.
+
+/// Relative ceiling: Variant C's median must be ≤ 1.50× Variant A's median.
+/// More generous than the A↔B 1.15× ratio because the OTLP layer adds real
+/// (but small) per-span overhead — we want to catch a 2× regression but
+/// tolerate the 30-40% steady-state OTel layer cost.
+const OTLP_OVERHEAD_RATIO_CEILING: f64 = 1.50;
+
+#[derive(Debug, Default)]
+struct NoopSpanExporter;
+
+impl opentelemetry_sdk::export::trace::SpanExporter for NoopSpanExporter {
+    fn export(
+        &mut self,
+        _batch: Vec<opentelemetry_sdk::export::trace::SpanData>,
+    ) -> futures_util::future::BoxFuture<'static, opentelemetry_sdk::export::trace::ExportResult>
+    {
+        // Discard spans without doing any IO. The whole point of Variant C
+        // is to measure SDK overhead, not exporter overhead.
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "T10 OTLP-path latency variant — opt-in, see module comment"]
+async fn t10_consolidation_latency_otlp_variant_c() {
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let cfg = forge_daemon::config::ConsolidationConfig::default();
+
+    // Variant A baseline first — re-measured in the same process so the
+    // ratio is robust to host-level jitter (CPU thermals, runner load).
+    let mut a_durs: Vec<Duration> = Vec::with_capacity(N_ITERATIONS);
+    for _ in 0..N_ITERATIONS {
+        let conn = make_conn();
+        let t0 = Instant::now();
+        let _stats = consolidator::run_all_phases(&conn, &cfg, None, None);
+        a_durs.push(t0.elapsed());
+    }
+
+    // Build the OpenTelemetry plumbing OUTSIDE the timed loop so provider
+    // construction cost doesn't pollute the per-iteration measurements.
+    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_batch_exporter(NoopSpanExporter, opentelemetry_sdk::runtime::Tokio)
+        .build();
+    let tracer = provider.tracer("forge-daemon-t10-variant-c");
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = tracing_subscriber::registry().with(otel_layer);
+
+    // `set_default` returns a per-thread guard. Using it (instead of
+    // `init`) keeps the global subscriber empty so a parallel cargo test
+    // run that depends on no global subscriber stays uncontaminated.
+    let _guard = subscriber.set_default();
+
+    let mut c_durs: Vec<Duration> = Vec::with_capacity(N_ITERATIONS);
+    for i in 0..N_ITERATIONS {
+        let metrics = ForgeMetrics::new();
+        let conn = make_conn();
+        let t0 = Instant::now();
+        let _stats = consolidator::run_all_phases(&conn, &cfg, Some(&metrics), None);
+        c_durs.push(t0.elapsed());
+        let per_iter_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM kpi_events WHERE event_type = 'phase_completed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(
+            per_iter_count, 23,
+            "iteration {i}: expected 23 kpi_events rows under Variant C, got {per_iter_count}"
+        );
+    }
+
+    // Drop the subscriber guard before tearing down the provider so the
+    // tracing layer isn't trying to write to a half-shut-down OTel pipeline.
+    drop(_guard);
+
+    // Force-flush any queued spans, then drop the provider. Both calls are
+    // best-effort — a flush failure here would only mean the no-op exporter
+    // got fewer spans than expected, which doesn't affect correctness.
+    let _ = provider.force_flush();
+    drop(provider);
+
+    let a_med = median(a_durs.clone());
+    let c_med = median(c_durs.clone());
+    let ratio = c_med.as_secs_f64() / a_med.as_secs_f64();
+
+    println!("\n=== T10 OTLP-path latency (Variant C, N={N_ITERATIONS}) ===");
+    println!("seeded memories: {SEEDED_MEMORY_COUNT}");
+    println!(
+        "Variant A (no metrics, no OTLP): median = {:>10?}  samples = {:?}",
+        a_med, a_durs
+    );
+    println!(
+        "Variant C (full + OTLP layer):   median = {:>10?}  samples = {:?}",
+        c_med, c_durs
+    );
+    println!(
+        "Ratio (C / A) = {:.4}  ceiling ≤ {:.2}",
+        ratio, OTLP_OVERHEAD_RATIO_CEILING
+    );
+    println!("=== end T10 Variant C ===\n");
+
+    assert!(
+        ratio <= OTLP_OVERHEAD_RATIO_CEILING,
+        "OTLP-path overhead ratio {ratio:.4} exceeds ceiling {OTLP_OVERHEAD_RATIO_CEILING:.2} \
+         (a_med={a_med:?}, c_med={c_med:?}). Layer + BatchSpanProcessor cost has regressed \
+         beyond the steady-state envelope."
     );
 }

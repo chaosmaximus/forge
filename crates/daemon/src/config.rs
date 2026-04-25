@@ -3026,9 +3026,11 @@ service_name = "my-forge"
     fn test_validated_idle_clamps_below_timeout() {
         // Phase 2A-4d.3.1 #7: idle must be < timeout to be reachable.
         // If misconfigured to be greater, validated() collapses it.
-        let mut cfg = WorkerConfig::default();
-        cfg.heartbeat_timeout_secs = 100;
-        cfg.heartbeat_idle_secs = 999;
+        let cfg = WorkerConfig {
+            heartbeat_timeout_secs: 100,
+            heartbeat_idle_secs: 999,
+            ..WorkerConfig::default()
+        };
         let v = cfg.validated();
         assert_eq!(v.heartbeat_timeout_secs, 100);
         assert!(v.heartbeat_idle_secs < v.heartbeat_timeout_secs);
@@ -3037,8 +3039,10 @@ service_name = "my-forge"
 
     #[test]
     fn test_validated_idle_zero_disables_phase() {
-        let mut cfg = WorkerConfig::default();
-        cfg.heartbeat_idle_secs = 0;
+        let cfg = WorkerConfig {
+            heartbeat_idle_secs: 0,
+            ..WorkerConfig::default()
+        };
         let v = cfg.validated();
         assert_eq!(v.heartbeat_idle_secs, 0, "0 must stay 0 (disabled)");
     }
@@ -3156,22 +3160,30 @@ heartbeat_timeout_secs = 45
 
     #[test]
     fn consolidation_config_validated_clamps_min_sessions_in_range() {
-        let mut cfg = ConsolidationConfig::default();
-        cfg.skill_inference_min_sessions = 0;
+        let cfg = ConsolidationConfig {
+            skill_inference_min_sessions: 0,
+            ..ConsolidationConfig::default()
+        };
         assert_eq!(
             cfg.validated().skill_inference_min_sessions,
             1,
             "0 clamps to range min 1"
         );
 
-        cfg.skill_inference_min_sessions = 50;
+        let cfg = ConsolidationConfig {
+            skill_inference_min_sessions: 50,
+            ..ConsolidationConfig::default()
+        };
         assert_eq!(
             cfg.validated().skill_inference_min_sessions,
             20,
             "50 clamps to range max 20"
         );
 
-        cfg.skill_inference_min_sessions = 5;
+        let cfg = ConsolidationConfig {
+            skill_inference_min_sessions: 5,
+            ..ConsolidationConfig::default()
+        };
         assert_eq!(
             cfg.validated().skill_inference_min_sessions,
             5,
@@ -3181,17 +3193,24 @@ heartbeat_timeout_secs = 45
 
     #[test]
     fn consolidation_config_validated_clamps_window_days_in_range() {
-        let mut cfg = ConsolidationConfig::default();
-        cfg.skill_inference_window_days = 0;
+        let cfg = ConsolidationConfig {
+            skill_inference_window_days: 0,
+            ..ConsolidationConfig::default()
+        };
         assert_eq!(cfg.validated().skill_inference_window_days, 1);
-        cfg.skill_inference_window_days = 400;
+        let cfg = ConsolidationConfig {
+            skill_inference_window_days: 400,
+            ..ConsolidationConfig::default()
+        };
         assert_eq!(cfg.validated().skill_inference_window_days, 365);
     }
 
     #[test]
     fn consolidation_config_validated_clamps_similarity_threshold() {
-        let mut cfg = ConsolidationConfig::default();
-        cfg.skill_inference_tool_name_similarity_threshold = -1.0;
+        let mut cfg = ConsolidationConfig {
+            skill_inference_tool_name_similarity_threshold: -1.0,
+            ..ConsolidationConfig::default()
+        };
         assert_eq!(
             cfg.validated()
                 .skill_inference_tool_name_similarity_threshold,

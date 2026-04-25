@@ -4109,7 +4109,7 @@ mod tests {
                 0.0
             };
             assert!(
-                overlap >= 0.3 && overlap < 0.7,
+                (0.3..0.7).contains(&overlap),
                 "pair {pair_idx}: overlap={overlap:.4} not in [0.3, 0.7)"
             );
         }

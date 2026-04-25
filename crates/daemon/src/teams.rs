@@ -2035,7 +2035,7 @@ mod tests {
             "Response test",
             None,
             &orch,
-            &[cto.clone()],
+            std::slice::from_ref(&cto),
             None,
         )
         .unwrap();
@@ -2229,7 +2229,7 @@ mod tests {
             "Meeting 1",
             None,
             &orch,
-            &[cto.clone()],
+            std::slice::from_ref(&cto),
             None,
         )
         .unwrap();
@@ -2239,7 +2239,7 @@ mod tests {
             "Meeting 2",
             None,
             &orch,
-            &[cmo.clone()],
+            std::slice::from_ref(&cmo),
             None,
         )
         .unwrap();

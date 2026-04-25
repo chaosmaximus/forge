@@ -823,6 +823,7 @@ mod tests {
         conn
     }
 
+    #[allow(clippy::too_many_arguments)] // test helper; column-per-arg matches the schema 1:1
     fn insert_phase_event(
         conn: &Connection,
         id: &str,

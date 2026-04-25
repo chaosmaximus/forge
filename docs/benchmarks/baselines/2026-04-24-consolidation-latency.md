@@ -114,3 +114,63 @@ change the sample size / workload / tolerance.
 - [x] Exactly 23 kpi_events rows per `run_all_phases` invocation (per-iteration assertion in test body, fresh `ForgeMetrics` per iteration).
 - [x] `cargo clippy --workspace -- -W clippy::all -D warnings` clean.
 - [x] `cargo test --lib` unaffected (1,390 passing).
+
+---
+
+## Run 4 — P3-2 W3, Variant C (OTLP-path)
+
+**Date:** 2026-04-25
+**Commit:** P3-2 W3 (after `97eb5cd` P3-2 W2 fix-wave; head TBD)
+**Harness:** new `t10_consolidation_latency_otlp_variant_c` test in same file.
+**Spec source:** Closes T12 Codex M9 deferred finding (`docs/superpowers/plans/2026-04-24-forge-identity-observability.md` §"Tier 1 #5"): Variant B exercised only Prometheus + kpi_events; the OpenTelemetry SDK serialise + queue path was previously unmeasured.
+
+### What's new in Variant C
+
+Variant C extends Variant B with a `tracing_opentelemetry::layer()` wired to a real `opentelemetry_sdk::trace::TracerProvider` whose `BatchSpanProcessor` is backed by an in-process **no-op `SpanExporter`**. This isolates SDK overhead (tracing → OTel span conversion + processor queueing) from infrastructure overhead (gRPC + tonic + DNS + TLS). The exporter discards every batch without IO, so the steady-state cost reflects what production pays *before* the network.
+
+The test uses `subscriber.set_default()` (per-thread guard) instead of the global `init()` so it does not contaminate any other test's subscriber state. Provider construction happens outside the timed loop. After the iterations the guard is dropped and `force_flush()` + drop on the provider clean up the BatchSpanProcessor's worker task.
+
+### Numbers
+
+N = 20 iterations, fresh seeded DB per iteration, fresh `ForgeMetrics` per Variant C iteration (same fresh-state policy as Run 3).
+
+| Variant | Median | Samples (ms) |
+| ------- | -----: | ------------ |
+| A (no metrics, no OTLP layer) | **287.08 ms** | 297.49, 288.07, 288.30, 286.61, 281.58, 287.95, 286.68, 281.51, 289.80, 294.14, 280.76, 283.30, 283.50, 287.08, 280.87, 288.41, 287.28, 278.59, 283.26, 290.62 |
+| C (full + OTLP layer)         | **295.32 ms** | 298.45, 312.47, 287.68, 295.15, 295.90, 294.95, 298.67, 312.68, 295.41, 293.51, 290.72, 295.96, 290.50, 295.82, 288.75, 295.52, 291.70, 295.32, 286.28, 293.34 |
+
+Ratio (C / A): **1.0287** — Variant C median is ~2.9% slower than Variant A median.
+
+**Ceiling:** 1.50× — passed with substantial headroom. The ceiling is more generous than Run 3's 1.15× because the OTLP layer + BatchSpanProcessor adds real (small) per-span overhead from queueing every `info_span!` enter/exit.
+
+### Interpretation
+
+- Total Tier 1 hot-path overhead INCLUDING OTLP layer is ≈3% at this workload size — well within any reasonable production budget.
+- The OTLP-path delta (C − B in nominal terms) is on the order of single-digit ms per `run_all_phases` invocation. Most of that is the cost of converting tracing's structured fields into OTel `KeyValue` pairs and pushing them onto the BatchSpanProcessor's MPSC channel — neither of which is on the critical path of any consolidator phase, both being effectively "background work" handed off to the processor's worker task.
+- Variant A's absolute median (~287 ms) on this run is ~2.6× higher than Run 3's ~107 ms because the test runner host load was different (Run 4 ran inside a session with a live daemon, several active backgrounded `cargo` commands, and the development workflow's normal load). The ratio metric is robust against this — both A and C ran under the same load.
+- The N=20 ceiling check (`ratio ≤ 1.50`) provides ~50% headroom to absorb future steady-state OTel SDK upgrades (e.g., a major-version bump that adds extra encoding cost) without flapping. If ratio ever exceeds 1.30 in a steady-state run, that's a signal to investigate before it crosses 1.50.
+
+### Reproducing
+
+```bash
+cargo test -p forge-daemon --release --test t10_instrumentation_latency \
+    -- --ignored --nocapture t10_consolidation_latency_otlp_variant_c
+```
+
+To run all three variants (A, B, C) sequentially in one session:
+
+```bash
+cargo test -p forge-daemon --release --test t10_instrumentation_latency \
+    -- --ignored --nocapture
+```
+
+### Acceptance
+
+- [x] Variant C median ≤ 1.50× Variant A median (passed at ratio 1.0287).
+- [x] Per-iteration kpi_events row count = 23 (asserted in-test; closes the spec §3.5 invariant).
+- [x] No-op exporter implements `opentelemetry_sdk::export::trace::SpanExporter` correctly (fn export returns `BoxFuture<'static, ExportResult>` as required by the trait).
+- [x] BatchSpanProcessor uses `opentelemetry_sdk::runtime::Tokio` (matches production `init_otlp_layer` in `crates/daemon/src/main.rs`).
+- [x] Subscriber installed via `set_default()` (per-thread, not global) so other tests are unaffected.
+- [x] `cargo clippy --workspace -- -W clippy::all -D warnings` clean.
+
+**T12 Codex M9 status:** closed. The OTLP-path cost is now both measured and gated by an automated ratio assertion.

@@ -3976,6 +3976,7 @@ mod tests {
 
     // ── Phase 2A-4c2 T4: infer_skills_from_behavior tests ────────────────────
 
+    #[allow(clippy::too_many_arguments)] // test seeder; column-per-arg matches the schema 1:1
     fn seed_session_tool_call_row(
         conn: &Connection,
         id: &str,
