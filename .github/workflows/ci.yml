@@ -134,6 +134,18 @@ jobs:
       - name: License manifest validation
         run: bash scripts/check-license-manifest.sh
 
+      # Phase 2P-1b §7 — 2A-4d interlock. Any PR that touches
+      # crates/core/src/protocol/request.rs MUST also bump plugin.json's
+      # protocol_hash via `bash scripts/sync-protocol-hash.sh`. Catches
+      # the dropped-bump scenario where harness-sync drift accumulates
+      # silently because nobody propagated a Request enum change to the
+      # plugin manifest.
+      - name: Protocol-hash interlock fixture tests
+        run: bash tests/scripts/test-protocol-hash.sh
+
+      - name: Protocol-hash interlock validation
+        run: bash scripts/check-protocol-hash.sh
+
   bench-fast:
     # Phase 2A-4d.3 T13: per-commit fast benches (forge-consolidation,
     # forge-identity). In-process harnesses run in <1s on ubuntu-latest

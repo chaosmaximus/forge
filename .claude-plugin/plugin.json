@@ -13,5 +13,6 @@
   ],
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
-  "mcpServers": {}
+  "mcpServers": {},
+  "protocol_hash": "9a38d781f45d44ea41ff6c83051ce85ea1d9752acc3d138db11c74b1207f758f"
 }
