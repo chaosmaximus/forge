@@ -913,6 +913,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bench_run_summary_181d_boundary() {
+        // T14 H1: pin the off-by-one boundary. 180d × 86_400 = 15_552_000;
+        // 181d = 15_638_400; both must be deterministic across humantime
+        // releases.
+        assert!(parse_window_secs("181d", &BENCH).is_err());
+        assert_eq!(parse_window_secs("180d", &BENCH).unwrap(), 180 * 86_400);
+    }
+
+    #[test]
+    fn non_bench_shapes_error_messages_cite_7d_ceiling() {
+        // T14 H1: confirm the parameterized error message is correct for
+        // non-BenchRunSummary shapes. T10's window_cap_secs_for_shape
+        // refactor previously passed a uniform 7-day cap into the error
+        // string regardless of shape — now each shape's error message
+        // must cite its own cap.
+        for shape in [
+            InspectShape::RowCount,
+            InspectShape::Latency,
+            InspectShape::ErrorRate,
+            InspectShape::Throughput,
+            InspectShape::PhaseRunSummary,
+        ] {
+            let err = parse_window_secs("30d", &shape).unwrap_err();
+            assert!(
+                err.contains("7-day ceiling"),
+                "{shape:?} error should cite 7-day ceiling, got: {err}"
+            );
+        }
+    }
+
     // ── resolve_group_by validity matrix ──
 
     #[test]

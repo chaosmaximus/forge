@@ -945,11 +945,28 @@ impl WorkerConfig {
             kpi_events_retention_days: self.kpi_events_retention_days.clamp(1, 365),
             kpi_reaper_interval_secs: self.kpi_reaper_interval_secs.clamp(60, 86400),
             // Phase 2A-4d.3 T11 (D9): per-event-type retention overrides.
-            // Clamp each entry to the same 1..=365 bounds as the global value.
+            // Clamp each non-zero entry to the same 1..=365 bounds as the
+            // global value. T14 H5: drop entries with value `0` so they
+            // fall through to the global default — operators were getting
+            // 1-day retention from a silent clamp when they intended
+            // "no per-type override / use the global". Dropping is the
+            // least-surprising honest behavior.
             kpi_events_retention_days_by_type: self
                 .kpi_events_retention_days_by_type
                 .iter()
-                .map(|(k, v)| (k.clone(), (*v).clamp(1, 365)))
+                .filter_map(|(k, v)| {
+                    if *v == 0 {
+                        tracing::warn!(
+                            target: "forge::config",
+                            event_type = %k,
+                            "kpi_events_retention_days_by_type[{k}] = 0 dropped; \
+                             global retention applies. Set ≥ 1 to override."
+                        );
+                        None
+                    } else {
+                        Some((k.clone(), (*v).clamp(1, 365)))
+                    }
+                })
                 .collect(),
         }
     }

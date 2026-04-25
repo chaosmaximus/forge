@@ -1270,21 +1270,70 @@ fn check_synthetic_embedding_determinism(state: &DaemonState) -> InfrastructureC
     }
 }
 
-/// #12 — `<skills>` element present in CompileContext output. Master v6
-/// §6 specifies a stronger variant that also seeds a Phase 23 skill and
-/// looks for its token inside the element; we take the lighter structural
-/// check here (the element's *presence* is what KV-cache stability
-/// depends on, which is what §6 is ultimately guarding).
+/// #12 — Phase 23 skill seeded via direct INSERT surfaces in `<skills>`
+/// CompileContext output. Master v6 §6 + T14 H3 require this tightened
+/// form: the renderer's `success_count > 0` filter must NOT drop
+/// Phase 23 rows (which insert with `success_count = 0` + non-null
+/// `inferred_at`). If a refactor reverts the renderer to the legacy
+/// filter, this check fires.
+///
+/// Implementation: seed one synthetic skill row with a deterministic
+/// SHA-256-derived name token, call CompileContext, assert the token
+/// appears verbatim inside the `<skills>` element. Idempotent — the
+/// row uses a stable id so re-runs UPSERT cleanly.
 fn check_sha256_token_uniqueness(state: &DaemonState) -> InfrastructureCheck {
+    let token = super::common::sha256_hex("bench-infra-12-skill-token");
+    let skill_id = "bench-infra-12-skill";
+    let skill_name = format!("infra12_{}", &token[..16]);
+
+    // Seed the row directly. Phase 23 inserts with success_count=0 +
+    // inferred_at=now; we mirror that shape so the check fails iff the
+    // renderer drops Phase-23 rows from the `<skills>` section.
+    // Required NOT-NULL columns on `skill`: id, name, domain, description,
+    // source. Phase-23 rows additionally set agent + fingerprint +
+    // inferred_from + inferred_at.
+    //
+    // project = NULL so the row passes the recall.rs:1058 filter under
+    // any current-project context (the renderer accepts skills with
+    // project IS NULL as global). Mirrors how a multi-project skill
+    // would be cataloged.
+    let seed_sql = "INSERT OR REPLACE INTO skill \
+        (id, name, domain, description, source, agent, project, \
+         fingerprint, inferred_from, success_count, inferred_at) \
+        VALUES (?1, ?2, 'mixed', 'bench infra check 12 seeded skill', \
+                'bench', 'claude-code', NULL, ?3, '[]', 0, ?4)";
+    let now_iso = epoch_to_iso(crate::db::ops::current_epoch_secs());
+    if let Err(e) = state.conn.execute(
+        seed_sql,
+        rusqlite::params![skill_id, skill_name, token, now_iso],
+    ) {
+        return InfrastructureCheck {
+            name: "sha256_token_uniqueness".to_string(),
+            passed: false,
+            detail: format!("seed skill row failed: {e}"),
+        };
+    }
+
     let xml = compile_context_xml_for_infra(state);
-    let passed = xml.contains("<skills>") || xml.contains("<skills/>");
+    // Renderer emits `<skills hint="..">` when content is non-empty, plain
+    // `<skills>` only in tests, and `<skills/>` self-closing on empty.
+    // Accept any of the three opening forms.
+    let element_present =
+        xml.contains("<skills>") || xml.contains("<skills/>") || xml.contains("<skills ");
+    let token_present = xml.contains(&skill_name);
+    let passed = element_present && token_present;
     InfrastructureCheck {
         name: "sha256_token_uniqueness".to_string(),
         passed,
         detail: if passed {
-            "CompileContext XML contains <skills>".to_string()
+            format!("seeded skill `{skill_name}` surfaces in <skills>")
+        } else if !element_present {
+            "CompileContext XML missing <skills> element".to_string()
         } else {
-            "CompileContext XML missing <skills>".to_string()
+            format!(
+                "<skills> element present but seeded token `{skill_name}` not found — \
+                 renderer may be dropping Phase-23 rows (success_count > 0 filter regression?)"
+            )
         },
     }
 }
