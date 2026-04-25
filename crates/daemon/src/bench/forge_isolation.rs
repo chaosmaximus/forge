@@ -547,7 +547,7 @@ fn dim_5_edge_case_resilience(state: &mut DaemonState, _corpus: &Corpus) -> Dime
 /// Compute SHA-256 hash of a canary memory's `(title, content, project, tags)`
 /// to detect mutation-class SQL-injection regressions (per spec §3.1a probe 4
 /// + N4 fix). Returns `None` if the canary row is missing (which itself is
-/// a regression — table was deleted).
+///   a regression — table was deleted).
 fn sentinel_row_hash(state: &DaemonState) -> Option<String> {
     let canary_id = "isolation_alpha_0";
     let row: rusqlite::Result<(String, String, Option<String>, String)> = state.conn.query_row(
