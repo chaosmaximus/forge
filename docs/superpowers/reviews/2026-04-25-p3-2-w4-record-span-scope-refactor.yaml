@@ -1,0 +1,27 @@
+schema_version: 1
+slug: 2026-04-25-p3-2-w4-record-span-scope-refactor
+target_paths:
+  - crates/daemon/src/workers/consolidator.rs
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: c37f59d
+  head: 50e64d3
+verdict: lockable-as-is
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-2-w4-record-span-scope-refactor.transcript.md
+findings:
+  - id: LOW-1
+    severity: LOW
+    summary: stats.healed_faded / stats.healed_superseded writes moved inside Phase 21/20 spans (cosmetic, pre-existing semantics)
+    file: crates/daemon/src/workers/consolidator.rs
+    status: deferred
+    rationale: writes happen inside the span scope post-W4 vs. outside pre-W4; observability identical because the read happens at function scope after the let-binding drops the span. No behavior change. Flagged "for the record" only.
+  - id: LOW-2
+    severity: LOW
+    summary: Phase 17 / 21 tracing!() field syntax shifted from shorthand to explicit alias due to local rename
+    file: crates/daemon/src/workers/consolidator.rs
+    status: deferred
+    rationale: tracing::info!(protocols, ...) → tracing::info!(protocols = p, ...) and similarly for healed_faded → faded. Required because the `let protocols;` / `let healed_faded;` outer declarations were folded into tuple destructure (renamed locals). Emitted span-field name preserved. Semantically equivalent. No event-name or schema change.
