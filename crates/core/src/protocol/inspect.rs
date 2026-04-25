@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// One of six shapes a caller can request. Each shape has its own validity
 /// matrix for `group_by` (documented in the Tier 2 spec §2.1 and Tier 3 §3.3).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "snake_case")]
 pub enum InspectShape {
     /// Per-layer row counts + freshness. Reads the gauge snapshot.
@@ -30,6 +31,7 @@ pub enum InspectShape {
 /// Grouping dimension for shapes that support it. "No grouping" is modeled
 /// as `Option::None` in the Request — no variant here represents it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "snake_case")]
 pub enum InspectGroupBy {
     Phase,

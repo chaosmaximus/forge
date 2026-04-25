@@ -872,7 +872,7 @@ enum Commands {
     Observe {
         /// Which shape to fetch (row_count, latency, error_rate, throughput, phase_run_summary).
         #[arg(long, value_enum)]
-        shape: commands::observe::ObserveShape,
+        shape: forge_core::protocol::InspectShape,
         /// Window over which to aggregate (humantime grammar, ≤ 7 days).
         #[arg(long, default_value = "1h")]
         window: String,
@@ -890,7 +890,7 @@ enum Commands {
         project: Option<String>,
         /// Grouping dimension (phase, event_type, project, run_id).
         #[arg(long, name = "group-by", value_enum)]
-        group_by: Option<commands::observe::ObserveGroupBy>,
+        group_by: Option<forge_core::protocol::InspectGroupBy>,
         /// Output format. If omitted, uses Table when stdout is a TTY, else Json.
         #[arg(long, value_enum)]
         format: Option<commands::observe::OutputFormat>,

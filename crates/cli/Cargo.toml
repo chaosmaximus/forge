@@ -8,7 +8,11 @@ name = "forge-next"
 path = "src/main.rs"
 
 [dependencies]
-forge-core = { path = "../core" }
+# Phase 2A-4d.2.1 #7: enable the optional `clap` feature so InspectShape
+# and InspectGroupBy carry their own clap::ValueEnum impls — forge-cli
+# can use them directly rather than maintaining ObserveShape /
+# ObserveGroupBy mirror enums + From<...> bridges.
+forge-core = { path = "../core", features = ["clap"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "process", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
