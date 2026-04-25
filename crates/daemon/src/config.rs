@@ -37,11 +37,17 @@ fn default_200_usize() -> usize {
 fn default_300() -> u64 {
     300
 }
+fn default_600() -> u64 {
+    600
+}
 fn default_900() -> u64 {
     900
 }
 fn default_1800() -> u64 {
     1800
+}
+fn default_14400() -> u64 {
+    14_400
 }
 fn default_21600() -> u64 {
     21_600
@@ -404,9 +410,25 @@ pub struct WorkerConfig {
     /// How often the session reaper runs to clean up dead sessions (seconds).
     #[serde(default = "default_60")]
     pub session_reaper_interval_secs: u64,
-    /// Sessions without a heartbeat for this many seconds are considered dead (seconds).
-    #[serde(default = "default_60")]
+    /// Sessions whose last heartbeat is older than this transition `active`
+    /// → `ended` (seconds). Default 14400 (4h) — the previous default of 60s
+    /// was too aggressive for real-world operator workflows where users
+    /// step away mid-task. Set lower if you want strict reaping.
+    ///
+    /// Phase 2A-4d.3.1 #7 — paired with `heartbeat_idle_secs` for the
+    /// `active → idle → ended` lifecycle.
+    #[serde(default = "default_14400")]
     pub heartbeat_timeout_secs: u64,
+    /// Sessions whose last heartbeat is older than this (but newer than
+    /// `heartbeat_timeout_secs`) transition `active` → `idle` (seconds).
+    /// Default 600 (10 min). Set to 0 to disable the idle phase
+    /// (sessions go straight from active to ended).
+    ///
+    /// Phase 2A-4d.3.1 #7 — operators saw "many active sessions" because
+    /// a session is `active` for the entire heartbeat window. The idle
+    /// phase makes the dormant subset visible without ending them yet.
+    #[serde(default = "default_600")]
+    pub heartbeat_idle_secs: u64,
     /// Phase 2A-4d.2 T7: retention window for the `kpi_events` table (days).
     /// Rows older than this are deleted on every `kpi_reaper_interval_secs`
     /// tick. Default 30 days is sized so `/inspect` dashboards keep a month
@@ -446,7 +468,8 @@ impl Default for WorkerConfig {
             indexer_interval_secs: 300,
             diagnostics_debounce_secs: 3,
             session_reaper_interval_secs: 60,
-            heartbeat_timeout_secs: 60,
+            heartbeat_timeout_secs: 14_400, // 4h — see field doc
+            heartbeat_idle_secs: 600,       // 10 min
             kpi_events_retention_days: 30,
             kpi_reaper_interval_secs: 21_600,
             kpi_events_retention_days_by_type: default_kpi_events_retention_days_by_type(),
@@ -998,6 +1021,16 @@ impl WorkerConfig {
             diagnostics_debounce_secs: self.diagnostics_debounce_secs.max(1),
             session_reaper_interval_secs: self.session_reaper_interval_secs.clamp(10, 86400),
             heartbeat_timeout_secs: self.heartbeat_timeout_secs.clamp(10, 86400),
+            // Phase 2A-4d.3.1 #7: idle threshold must be SHORTER than the
+            // ended threshold to be reachable. 0 disables the idle phase
+            // entirely. We clamp to (0, timeout) — values >= timeout
+            // collapse to timeout-1, which still leaves a 1s idle window.
+            heartbeat_idle_secs: if self.heartbeat_idle_secs == 0 {
+                0
+            } else {
+                self.heartbeat_idle_secs
+                    .clamp(1, self.heartbeat_timeout_secs.saturating_sub(1).max(1))
+            },
             // Phase 2A-4d.2 T7: kpi_events retention reaper.
             // Clamp retention to 1..=365 days, reaper interval to 60s..=24h.
             kpi_events_retention_days: self.kpi_events_retention_days.clamp(1, 365),
@@ -2475,11 +2508,40 @@ service_name = "my-forge"
 
     #[test]
     fn test_default_heartbeat_timeout() {
+        // Phase 2A-4d.3.1 #7: bumped from 60s (too aggressive — operators
+        // report many "active" sessions because the previous binary
+        // active→ended transition fired every 5 min) to 14400s (4h).
+        // Idle phase at 600s gives intermediate visibility.
         let config = ForgeConfig::default();
         assert_eq!(
-            config.workers.heartbeat_timeout_secs, 60,
-            "heartbeat_timeout_secs default should be 60"
+            config.workers.heartbeat_timeout_secs, 14_400,
+            "heartbeat_timeout_secs default should be 14400 (4h)"
         );
+        assert_eq!(
+            config.workers.heartbeat_idle_secs, 600,
+            "heartbeat_idle_secs default should be 600 (10 min)"
+        );
+    }
+
+    #[test]
+    fn test_validated_idle_clamps_below_timeout() {
+        // Phase 2A-4d.3.1 #7: idle must be < timeout to be reachable.
+        // If misconfigured to be greater, validated() collapses it.
+        let mut cfg = WorkerConfig::default();
+        cfg.heartbeat_timeout_secs = 100;
+        cfg.heartbeat_idle_secs = 999;
+        let v = cfg.validated();
+        assert_eq!(v.heartbeat_timeout_secs, 100);
+        assert!(v.heartbeat_idle_secs < v.heartbeat_timeout_secs);
+        assert_eq!(v.heartbeat_idle_secs, 99);
+    }
+
+    #[test]
+    fn test_validated_idle_zero_disables_phase() {
+        let mut cfg = WorkerConfig::default();
+        cfg.heartbeat_idle_secs = 0;
+        let v = cfg.validated();
+        assert_eq!(v.heartbeat_idle_secs, 0, "0 must stay 0 (disabled)");
     }
 
     #[test]

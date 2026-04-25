@@ -53,9 +53,16 @@ pub fn register_session(
         Some(p) if !p.is_empty() => Some(p.to_string()),
         _ => cwd.map(detect_project_name),
     };
+    // Phase 2A-4d.3.1 #7: also set last_heartbeat_at = now so the reaper's
+    // active → idle → ended lifecycle can track this session immediately.
+    // Previously, sessions registered without a heartbeat sat in the
+    // 24-hour orphan window — operators saw "many active sessions" because
+    // these never transitioned through idle. Now: registration is itself a
+    // heartbeat, and the next idle/ended transitions follow the configured
+    // thresholds.
     conn.execute(
-        "INSERT OR REPLACE INTO session (id, agent, project, cwd, started_at, status, capabilities, current_task)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'), 'active', ?5, ?6)",
+        "INSERT OR REPLACE INTO session (id, agent, project, cwd, started_at, status, capabilities, current_task, last_heartbeat_at)
+         VALUES (?1, ?2, ?3, ?4, datetime('now'), 'active', ?5, ?6, datetime('now'))",
         params![id, agent, derived_project, cwd, caps, task],
     )?;
     Ok(())
