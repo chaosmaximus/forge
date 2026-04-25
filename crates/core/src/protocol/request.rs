@@ -404,6 +404,17 @@ pub enum Request {
     CompileContextTrace {
         agent: Option<String>,
         project: Option<String>,
+        /// Optional session id. When provided, per-scope `context_injection`
+        /// overrides (org / team / user / reality / agent / session) are
+        /// resolved against the session and applied to the trace surface,
+        /// matching the behavior of `Request::CompileContext`. Required to
+        /// reflect session-scoped overrides set via
+        /// `forge-next config set ... --scope session=<id>`.
+        ///
+        /// P3-2 W1 (was Tier 3 review M3): closes the trace/compile parity
+        /// gap noted in `recall::compile_context_trace`.
+        #[serde(default)]
+        session_id: Option<String>,
     },
 
     // ── Sync Operations ──

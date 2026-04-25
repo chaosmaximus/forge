@@ -413,6 +413,7 @@ mod tests {
         assert!(is_read_only(&Request::CompileContextTrace {
             agent: None,
             project: None,
+            session_id: None,
         }));
 
         assert!(is_read_only(&Request::ListPermissions));

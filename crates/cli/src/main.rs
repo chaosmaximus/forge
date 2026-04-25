@@ -368,6 +368,13 @@ enum Commands {
         agent: String,
         #[arg(long)]
         project: Option<String>,
+        /// Optional session id; when set, per-scope `context_injection`
+        /// overrides (org/team/user/reality/agent/session) resolved
+        /// against this session are applied to the trace surface.
+        /// Required to surface session-scoped overrides set via
+        /// `forge-next config set ... --scope session=<id>` (P3-2 W1).
+        #[arg(long)]
+        session_id: Option<String>,
     },
 
     /// Detect the reality (project type) for a path
@@ -1461,8 +1468,12 @@ async fn main() {
         Commands::Entities { project, limit } => {
             commands::system::list_entities(project, limit).await;
         }
-        Commands::ContextTrace { agent, project } => {
-            commands::system::context_trace(agent, project).await;
+        Commands::ContextTrace {
+            agent,
+            project,
+            session_id,
+        } => {
+            commands::system::context_trace(agent, project, session_id).await;
         }
         Commands::CompileContext {
             agent,

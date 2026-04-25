@@ -1154,10 +1154,11 @@ pub async fn list_entities(project: Option<String>, limit: usize) {
     }
 }
 
-pub async fn context_trace(agent: String, project: Option<String>) {
+pub async fn context_trace(agent: String, project: Option<String>, session_id: Option<String>) {
     let req = Request::CompileContextTrace {
         agent: Some(agent),
         project,
+        session_id,
     };
     match client::send(&req).await {
         Ok(Response::Ok {

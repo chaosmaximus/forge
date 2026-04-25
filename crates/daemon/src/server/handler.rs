@@ -3287,15 +3287,47 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::CompileContextTrace { agent, project } => {
+        Request::CompileContextTrace {
+            agent,
+            project,
+            session_id,
+        } => {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
+            // P3-2 W1 (was W5 review M3): mirror `Request::CompileContext`
+            // session-ownership check + scoped `context_injection`
+            // resolution. With this in place the trace surface honors
+            // per-scope overrides exactly like the live compile path.
+            let sid = if let Some(ref sid_str) = session_id {
+                let session_ok: bool = state
+                    .conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM session WHERE id = ?1 AND status IN ('active', 'idle'))",
+                        rusqlite::params![sid_str],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+                if session_ok {
+                    Some(sid_str.as_str())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let trace_config = crate::config::load_config();
             let trace_ctx_config = trace_config.context.validated();
+            let inj = crate::config::resolve_context_injection_for_session(
+                &state.conn,
+                sid,
+                Some(agent_name),
+                &trace_config.context_injection,
+            );
             let trace = crate::recall::compile_context_trace(
                 &state.conn,
                 agent_name,
                 project.as_deref(),
                 &trace_ctx_config,
+                &inj,
             );
             Response::Ok {
                 data: ResponseData::ContextTrace {

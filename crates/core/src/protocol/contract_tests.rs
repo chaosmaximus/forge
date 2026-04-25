@@ -358,6 +358,7 @@ mod tests {
                 Request::CompileContextTrace {
                     agent: Some("claude-code".into()),
                     project: Some("forge".into()),
+                    session_id: None,
                 },
             ),
             (
@@ -1560,6 +1561,7 @@ mod tests {
                 Request::CompileContextTrace {
                     agent: None,
                     project: None,
+                    session_id: None,
                 },
                 Request::SyncExport {
                     project: None,

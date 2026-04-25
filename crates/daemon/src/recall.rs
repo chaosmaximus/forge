@@ -2065,26 +2065,27 @@ pub fn compile_context(conn: &Connection, agent: &str, project: Option<&str>) ->
 /// excluded entry rather than silently appearing in the
 /// considered/included list.
 ///
-/// **Caveat (W5 review M3)**: the `Request::CompileContextTrace`
-/// variant has no `session_id`, so per-scope overrides set via
-/// `forge-next config set ... --scope <type>=<id>` are NOT reflected
-/// here. To trace a session-scoped compile, drive the trace through
-/// `Request::CompileContext` against the live request path. Closing
-/// this gap requires a protocol change (add `session_id` to
-/// `Request::CompileContextTrace`) — left as a follow-up rather than
-/// expanding W5 scope.
+/// **Phase P3-2 W1 (closes W5 review M3)**: `Request::CompileContextTrace`
+/// now carries `session_id`. The caller threads scoped
+/// `context_injection` overrides (org / team / user / reality / agent /
+/// session) into this fn via the `inj` parameter, so per-scope flags
+/// set via `forge-next config set ... --scope <type>=<id>` are honored
+/// — the trace surface matches the actual compile surface end-to-end.
+/// The handler resolves overrides via
+/// `crate::config::resolve_context_injection_for_session` before
+/// calling here.
 pub fn compile_context_trace(
     conn: &Connection,
     _agent: &str,
     project: Option<&str>,
     ctx_config: &crate::config::ContextConfig,
+    inj: &crate::config::ContextInjectionConfig,
 ) -> ContextTraceData {
     use forge_core::protocol::TraceEntry;
 
     let budget: usize = ctx_config.budget_chars;
     let decisions_limit = ctx_config.decisions_limit;
     let lessons_limit = ctx_config.lessons_limit;
-    let inj = crate::config::load_config().context_injection;
     let mut used = 0usize;
     let mut considered = Vec::new();
     let mut included = Vec::new();

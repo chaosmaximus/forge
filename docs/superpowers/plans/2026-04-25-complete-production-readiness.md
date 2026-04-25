@@ -76,18 +76,19 @@
 
 ---
 
-## Phase P3-2 — 2A-4d follow-up drain (~25 commits)
+## Phase P3-2 — 2A-4d follow-up drain + production hardening (~30 commits)
 
-**Source:** HANDOFF.md "Deferred backlog — what's still open" + `docs/superpowers/plans/2026-04-24-forge-identity-observability.md`.
+**Source:** HANDOFF.md "Deferred backlog — what's still open" + `docs/superpowers/plans/2026-04-24-forge-identity-observability.md` + W5 review HIGH-1 strategic fix lifted from P3-1 deferred backlog (per user sign-off 2026-04-25).
 
 | Wave | Scope | Acceptance |
 |------|-------|------------|
-| **W1** | Tier 3 review M3 — add `session_id` to `Request::CompileContextTrace`. Protocol change: forge-core enum + handler + CLI + harness propagation. | trace fn now sees per-scope overrides; harness-sync (from P3-1 W4) catches the change cleanly. |
+| **W1** | Tier 3 review M3 — add `session_id` to `Request::CompileContextTrace`. Protocol change: forge-core enum + handler + CLI + harness propagation. | trace fn now sees per-scope overrides; harness-sync (from P3-1 W4) catches the change cleanly; sync-protocol-hash.sh re-syncs. |
 | **W2** | Tier 3 review M2 — batch the 6 independent `resolve_scoped_config` calls per CompileContext via existing `resolve_effective_config`. | 6 → 1 call; tests prove no behavior change; latency benchmark shows reduction. |
 | **W3** | Tier 1 #5 — T10 OTLP-path latency variant (Variant C harness with real `BatchSpanProcessor` + no-op span sink). | results doc updated with OTLP path numbers; budget within prior limits. |
 | **W4** | Tier 1 #2 — `record()` span-scope refactor across remaining 22 phases (phase 19 = reference pattern). | every phase calls record() AFTER span scope drops; instrumentation-layer warns no longer attributed to phase span. |
 | **W5** | Tier 3 #5 — `shape_bench_run_summary` percentile-cap CTE rewrite (`RANK() OVER (PARTITION BY group_key ORDER BY timestamp DESC)`). | per-group cap enforced in SQL; mirrors `shape_latency` pattern. |
 | **W6** | Tier 3 #6 cosmetic batch — M1 `#[serial]` mark, M2 git-cluster, M3 chrono swap for `civil_from_days`, L1 `i64::from` cast, L2 `u32::try_from` cast. | last open items in 2A-4d.3.1 closed. |
+| **W7** | **NEW** — Daemon SIGTERM handler (P3-1 W5 review HIGH-1 strategic fix). `tokio::signal::unix::signal(SignalKind::terminate())` in `crates/daemon/src/main.rs` so SIGTERM also triggers graceful socket-drain. Update rollback playbook to document `kill PID` is now safe (alongside the existing `kill -INT` for cross-platform). | `kill PID` (SIGTERM) and `kill -INT PID` (SIGINT) both produce identical graceful-shutdown traces; `systemctl stop` exits cleanly without abrupt kill; W5 §HIGH-1 closed strategically. |
 
 **Phase P3-2 close:** version bump to `0.6.0-rc.2`. HANDOFF rewrite. Halt.
 
