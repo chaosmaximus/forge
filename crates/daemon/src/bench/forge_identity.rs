@@ -1267,7 +1267,10 @@ fn check_preference_table_schema() -> InfrastructureCheck {
     InfrastructureCheck {
         name: "preference_table_schema".to_string(),
         passed: true,
-        detail: "FlipPreference / ListFlipped / ReaffirmPreference variants: compile-time-verified"
+        // Phase 2A-4d.3.1 #6 M4 (W8): mark as compile-time tautology so
+        // operators reading the dashboard understand "passed: true" rests
+        // on the binary having compiled at all, not on a runtime probe.
+        detail: "compile-time-tautology: FlipPreference / ListFlipped / ReaffirmPreference variants exist"
             .to_string(),
     }
 }
@@ -1284,7 +1287,8 @@ fn check_skill_table_schema() -> InfrastructureCheck {
     InfrastructureCheck {
         name: "skill_table_schema".to_string(),
         passed: true,
-        detail: "RecordToolUse / ListToolCalls variants: compile-time-verified".to_string(),
+        // Phase 2A-4d.3.1 #6 M4 (W8): see #3 for tautology rationale.
+        detail: "compile-time-tautology: RecordToolUse / ListToolCalls variants exist".to_string(),
     }
 }
 

@@ -82,7 +82,13 @@ pub fn reap_once(
     ordered.sort_by(|a, b| a.0.cmp(b.0));
     for (event_type, days) in ordered {
         let cutoff = now_secs().saturating_sub(u64::from(*days) * 86_400);
-        tracing::info!(
+        // Phase 2A-4d.3.1 #6 L3 (W8): downgrade per-type pass-start to
+        // `debug` — it fires once per configured override regardless
+        // of whether any rows are reapable, which floods info-level
+        // logs. The actual delete work below logs at info only when
+        // `batch_deleted > 0`, so operators still see the meaningful
+        // signal.
+        tracing::debug!(
             target: "forge::kpi_reaper",
             event_type = %event_type,
             retention_days = *days,
