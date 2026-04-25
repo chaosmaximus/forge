@@ -723,20 +723,25 @@ the element (per master v6 D4 — "always emit, even empty"); un-ignore tests.
 
 **Why deferred:** daemon-layer change beyond Tier 3 bench scope.
 
-#### 2. Dim 2 disposition drift — `StepDispositionOnce` Request variant missing
+#### 2. Dim 2 disposition drift — `StepDispositionOnce` Request variant missing — **CLOSED 2026-04-25**
 
-**Finding:** master v6 §13 D7 specifies `Request::StepDispositionOnce {
-synthetic_sessions: Vec<SessionFixture> }` to drive 1 cycle at a time. The
-variant is not yet in `crates/core/src/protocol/request.rs`. Without it
-Dim 2 cannot run; current stub returns 0.0 / pass false. The composite
-score caps at 0.85 until this is fixed.
+**Closed by:** `f07219f` (StepDispositionOnce variant + handler arm + Dim 2 body) +
+`9da7e83` (Claude review BLOCKERs B1+B2 + HIGHs H1-H4 fixes).
 
-**Fix plan:** add bench-gated `StepDispositionOnce` variant + handler that
-calls into disposition worker's step function with synthetic session
-fixtures. Then implement Dim 2 body per master v6 §4 Dim 2.
+**What landed:**
+- Bench-gated `Request::StepDispositionOnce { agent, synthetic_sessions: Vec<SessionFixture> }` variant.
+- Bench-gated `ResponseData::DispositionStep { summary }` with `DispositionStepSummary` + `DispositionTraitState`.
+- `workers::disposition::step_for_bench` mirrors `tick_for_agent` math 1:1; `MAX_DELTA` promoted to `pub(crate)` per master v6 §13.
+- Handler arm dispatches the variant; tier mapping skips it.
+- Dim 2 body: 10 cycles × 5 short fixtures, continuous scoring (22 events: 20 delta-bound + 2 final-value), `Request::ForceConsolidate` invocation per master v6 §7 line 200 mandate.
+- Parity test (master v6 §13 line 216 mandate): `step_for_bench` vs `tick_for_agent` produce byte-identical disposition rows on logically-equivalent inputs.
+- Compile-time `const _: () = assert!(MAX_DELTA == 0.05)` per master v6 §6 #2.
+- `duration_secs >= 0` validation.
 
-**Why deferred:** new Request variant + handler = T6 scope creep when
-parallel-dispatched. Best landed sequentially after Tier 3 closes.
+**Calibration:** 5/5 seeds {1, 2, 3, 7, 42} produce composite=0.9990, every
+dim ≥ minimum, score.pass=true. Wall 937-952ms. kpi_events row v1 written
+end-to-end. **Master v6 1.0 composite gate is closed.** Composite ceiling
+0.999 (Dim 6 retains 0.996 — see backlog #5).
 
 #### 3. Forge harness context-injection volume
 
