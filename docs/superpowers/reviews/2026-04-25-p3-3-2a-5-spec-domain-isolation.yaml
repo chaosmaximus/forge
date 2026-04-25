@@ -1,0 +1,251 @@
+schema_version: 1
+slug: 2026-04-25-p3-3-2a-5-spec-domain-isolation
+target_paths:
+  - docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+  - crates/daemon/src/db/schema.rs
+  - crates/daemon/src/db/ops.rs
+  - crates/daemon/src/recall.rs
+  - crates/daemon/src/bench/common.rs
+  - crates/daemon/src/bench/scoring.rs
+  - crates/daemon/src/bench/forge_identity.rs
+  - crates/daemon/src/bench/forge_consolidation.rs
+  - crates/daemon/src/bench/telemetry.rs
+  - crates/daemon/src/bin/forge-bench.rs
+  - crates/core/src/protocol/request.rs
+  - docs/architecture/events-namespace.md
+  - .github/workflows/ci.yml
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 56185d2
+  head: aa14763
+verdict: not-lockable
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-3-2a-5-spec-domain-isolation.transcript.md
+findings:
+  - id: B1
+    severity: BLOCKER
+    summary: >
+      Recon §8.1 cites `bench/common.rs::deterministic_embedding(seed_text)`
+      as the assumed embedder fixture, but that function does not exist in
+      `bench/common.rs` (only `bytes_to_hex`, `seeded_rng`, `sha256_hex`
+      are exported). The deterministic embedder lives privately at
+      `bench/forge_consolidation.rs:1684-1729` with `EMBEDDING_DIM = 768`,
+      not the 384 the spec implies via `RAW_EMBEDDING_DIM` reference.
+      Spec must either lift the helper into `common.rs` (preferred) or
+      pin the dim and inline it.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 264
+    status: open
+    rationale: >
+      Spec lock-time fix; no implementation impact. Add the helper
+      lift to T2 and update §3.2 / §8.1 to cite the correct location
+      and dim.
+  - id: B2
+    severity: BLOCKER
+    summary: >
+      Recon §2 fact 12 claims "`bench/scoring.rs` exports composite scorer
+      + per-dim weighted-mean helpers". The actual exports are
+      `recall_any_at_k`, `recall_all_at_k`, `ndcg_at_k`, `dcg_from_rels`
+      — no composite or weighted-mean. The composite-score logic for
+      forge-identity lives privately at `forge_identity.rs:1632
+      composite_score(&[DimensionScore; 6])` and is hardcoded for 6 dims.
+      Forge-isolation must either (a) generalize and lift this into
+      `scoring.rs`, or (b) replicate the private function with a 5-dim
+      array — spec says nothing about either.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 64
+    status: open
+    rationale: >
+      Spec lock-time fix. Add T2.1 "lift composite-mean to scoring.rs
+      with N-dim signature" or pin "replicate locally" decision in §3.3.
+  - id: B3
+    severity: BLOCKER
+    summary: >
+      D1 cross_project_precision uses `query = ""` (broad). The
+      production code path `recall_bm25_project_org_flipped` calls
+      `sanitize_fts5_query` which returns empty for empty input, causing
+      the function to short-circuit with `Ok(Vec::new())` at
+      `db/ops.rs:569-571`. D1 with empty query therefore always returns
+      0 memories, scoring 1.0 trivially and providing zero leakage
+      signal. Either redefine D1's broad query (e.g., the shared
+      `"isolation_bench"` tag, then exclude global memories from the
+      foreign-token set) or change probe shape.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 76
+    status: open
+    rationale: >
+      Spec lock-time fix; D1 is the highest-weighted dim and currently
+      un-implementable as written. Pin the broad-probe query in §3.1.
+  - id: H1
+    severity: HIGH
+    summary: >
+      Dimension coverage gap. v1 ships 5 dims that exercise only
+      `Request::Recall` against the `memory` table via
+      `recall_bm25_project_org_flipped`. The production cross-project
+      context-assembly entrypoint is `compile_context` (recall.rs:2047)
+      which orchestrates 9+ project-scoped helpers — search_skills,
+      search_declared, domain_dna, list_entities,
+      list_unconsumed_perceptions, session selection, graph-neighbor
+      expansion, decisions/lessons SQL with
+      `(project = ?1 OR project IS NULL OR project = '')`. A leakage
+      bug in any of these (missing WHERE, OR-clause typo) is invisible
+      to memory-only probes. Spec's success metric ("did this commit
+      leak project X into project Y's recall?") is then deceptively
+      narrow.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 213
+    status: open
+    rationale: >
+      Either add a Dim 6 driving `compile_context` and asserting full
+      XML contains no foreign-project token, or land a strong §5
+      caveat that v1 only audits `Recall` API. Recommend the former
+      because compile_context is the actual user-facing surface.
+  - id: H2
+    severity: HIGH
+    summary: >
+      D5(a) "empty-string project must not match any memory with
+      non-empty project" contradicts the actual SQL at db/ops.rs:705:
+      `m.project = ?2 OR m.project IS NULL OR m.project = ''`. With
+      `?2 = ""`, this returns ALL rows with empty-or-NULL project
+      (the global pool). The spec's expectation is inverted relative
+      to implementation — bench will trivially pass or trivially
+      fail depending on interpretation, but never measure what the
+      spec claims to measure. Probe must be redefined.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 80
+    status: open
+    rationale: >
+      Spec lock-time fix. Either accept "empty string == request
+      global pool only" as the contract and probe that, or change
+      D5(a) to a different edge case.
+  - id: H3
+    severity: HIGH
+    summary: >
+      D5 probe set incomplete. Missing canonical edge cases: SQL
+      injection (`"alpha'; DROP TABLE memory;--"`), prefix collision
+      (`"alpha"` vs `"alphabet"`), case sensitivity (`"Alpha"` vs
+      `"alpha"`), trailing whitespace (`" alpha"`). Three probes
+      means single failure = 33% drop, dragging dim below 0.85 min.
+      Recommend expanding to 6-8 probes with `pass_count /
+      total_probes` scoring; tighten min to 0.90 if probe count > 5.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 80
+    status: open
+    rationale: >
+      Surface-area gap. SQL-injection probe in particular is
+      cheap-to-add and load-bearing for a security-claim bench.
+  - id: M1
+    severity: MEDIUM
+    summary: >
+      Spec does not pin "single shared DaemonState per seed" vs
+      "per-dim isolated DaemonState" architecture. Forge-identity
+      uses per-dim isolation (`forge_identity.rs:1703 run_dim_isolated`
+      spins fresh `:memory:` per dim). For an isolation bench,
+      per-dim isolation actively HIDES cross-dim project leakage
+      (because each dim sees a fresh DB). Recommend §3 explicitly
+      mandate "single shared corpus per seed; all 5 dims read from
+      the same DaemonState" to preserve leakage-detection signal.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 70
+    status: open
+    rationale: >
+      Architecture decision missing from spec. Lock-time text edit.
+  - id: M2
+    severity: MEDIUM
+    summary: >
+      Org_id dimension not addressed. `Recall` accepts
+      `organization_id: Option<String>` (request.rs:556+); the BM25
+      SQL filter at `db/ops.rs:691-694` adds `COALESCE(organization_id,
+      'default') = ?4` when present. Bench corpus says nothing about
+      org_id — implicit `None` → all memories share org `default`
+      and the org-filter is off. Recommend §3.2 either pin
+      `organization_id = "isolation_bench_org"` to exercise the
+      org-filter path, or land a §5 disclaimer.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 99
+    status: open
+    rationale: >
+      Cross-org leakage is a separate concern from cross-project;
+      reasonable defer but should be explicit.
+  - id: M3
+    severity: MEDIUM
+    summary: >
+      Tag-leakage vector real and well-known. `tags` is part of
+      `memory_fts` (schema.rs:340 — INSERT triggers tag column).
+      A query containing a project name as substring matches
+      foreign-project memories with that name in tags. Spec §8.2
+      mitigates by NOT putting project names in tags. This is fine
+      for v1 but the spec should land a §5 line: "memory_fts
+      indexes tags; cross-project leakage via tag substring is a
+      real attack surface; v1 sidesteps via corpus design, v2 must
+      add a tag-sanitization probe and possibly drop tags from FTS."
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 207
+    status: open
+    rationale: >
+      Documentation hygiene. Real leakage class explicitly deferred
+      with sidestep but lacks §5 disclaimer line.
+  - id: M4
+    severity: MEDIUM
+    summary: >
+      Spec uses `rng.random_range(0.7..0.99)` for confidence
+      (§3.2). rand_chacha 0.10 (just bumped at 891a12c) changed
+      sampling boundaries; while forge-identity composites verified
+      stable, forge-isolation hasn't been calibrated yet, and a
+      single bit-shift in confidence sampling could shift ORDER BY
+      tie-breaking on close BM25 scores. Recommend deriving
+      confidence from integer indices: `0.7 + (idx as f32 *
+      0.01).clamp(0.0, 0.29)` — avoids the rand_range edge entirely.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 106
+    status: open
+    rationale: >
+      Determinism robustness. Cheap fix, removes one calibration
+      risk dimension.
+  - id: L1
+    severity: LOW
+    summary: >
+      §3.4 lists 7 infra checks but spec preamble (§2 fact 6)
+      cites forge-identity precedent of "14 infrastructure
+      assertions". The 7-vs-14 difference is not explained.
+      Recommend §3.4 explicitly note "fewer than forge-identity
+      because isolation surface is smaller — only memory.project +
+      idx_memory_project + corpus shape need pre-flight check".
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 141
+    status: open
+    rationale: >
+      Cosmetic. Could be addressed in lock-time edit pass.
+  - id: L2
+    severity: LOW
+    summary: >
+      Spec §6 "raw_documents.project separately — same column
+      pattern as memory; if v1 catches the memory-layer leakage
+      class, raw layer is by-construction covered" assumes shared
+      SQL predicate. Not verified at recon time. Recommend T1
+      add one grep on `recall_raw_*` to confirm the predicate
+      is structurally identical (`project = ? OR project IS NULL
+      OR project = ''`).
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 220
+    status: open
+    rationale: >
+      Re-verification at impl time, no spec change needed but
+      worth adding a T1 line item.
+  - id: L3
+    severity: LOW
+    summary: >
+      §2 fact 6 says forge-identity has 14 infrastructure
+      assertions; the actual count via `grep -c "^fn check_"
+      forge_identity.rs` is 37 (including helpers). The "14"
+      figure is from forge_identity.rs module doc L23, not the
+      function count. Cosmetic fact-check; spec is consistent
+      with the forge-identity precedent doc.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 58
+    status: open
+    rationale: >
+      Cosmetic. No action needed.
