@@ -154,6 +154,18 @@ pub fn build_proactive_context(
 }
 
 /// Build proactive context with optional organization_id filtering (multi-tenant isolation).
+///
+/// Phase 2A-4d.3.1 #3: knowledge types are filtered by `context_injection`
+/// feature toggles loaded inside the fn:
+///
+/// * `anti_patterns = false` → skip KT_ANTI_PATTERN (the loudest channel).
+/// * `skills = false` → skip KT_SKILL.
+/// * `blast_radius = false` → skip KT_BLAST_RADIUS (already a no-op
+///   content-wise, but suppress relevance scoring for symmetry).
+/// * `active_state = false` → skip KT_NOTIFICATION (active state).
+/// * `session_context = false` → skip KT_DECISION + KT_UAT_LESSON.
+///
+/// Other knowledge types (KT_TEST_REMINDER) are unaffected.
 pub fn build_proactive_context_with_org(
     conn: &Connection,
     hook_event: &str,
@@ -161,6 +173,8 @@ pub fn build_proactive_context_with_org(
     org_id: Option<&str>,
 ) -> Vec<forge_core::protocol::response::ProactiveInjection> {
     use forge_core::protocol::response::ProactiveInjection;
+
+    let inj = crate::config::load_config().context_injection;
 
     let knowledge_types = [
         (KT_BLAST_RADIUS, "blast_radius context"),
@@ -175,6 +189,19 @@ pub fn build_proactive_context_with_org(
     let mut injections = Vec::new();
 
     for (kt, memory_type) in &knowledge_types {
+        // Feature-toggle gating — silently skip suppressed knowledge types.
+        let suppressed = match *kt {
+            KT_ANTI_PATTERN => !inj.anti_patterns,
+            KT_SKILL => !inj.skills,
+            KT_BLAST_RADIUS => !inj.blast_radius,
+            KT_NOTIFICATION => !inj.active_state,
+            KT_DECISION | KT_UAT_LESSON => !inj.session_context,
+            _ => false,
+        };
+        if suppressed {
+            continue;
+        }
+
         let relevance = context_relevance(conn, hook_event, kt, project);
         if relevance < RELEVANCE_THRESHOLD {
             continue;

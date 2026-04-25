@@ -2463,6 +2463,25 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::BlastRadius { file } => {
+            // Phase 2A-4d.3.1 #3: when context_injection.blast_radius = false,
+            // return an empty result. The CLI surface still works for explicit
+            // queries; we only suppress passive injection.
+            if !crate::config::load_config().context_injection.blast_radius {
+                return Response::Ok {
+                    data: ResponseData::BlastRadius {
+                        decisions: Vec::new(),
+                        callers: 0,
+                        importers: Vec::new(),
+                        files_affected: Vec::new(),
+                        cluster_name: None,
+                        cluster_files: Vec::new(),
+                        warnings: vec![
+                            "blast_radius injection suppressed via context_injection.blast_radius = false".to_string(),
+                        ],
+                        calling_files: Vec::new(),
+                    },
+                };
+            }
             let br = crate::guardrails::blast_radius::analyze_blast_radius(&state.conn, &file);
             let decisions: Vec<forge_core::protocol::BlastRadiusDecision> = br
                 .decisions

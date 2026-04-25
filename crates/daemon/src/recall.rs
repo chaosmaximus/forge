@@ -506,7 +506,14 @@ fn xml_escape(s: &str) -> String {
 /// Generated once at session-start, cached by the hook.
 /// DETERMINISTIC: same input = same output, every time.
 /// All XML sections always present (masking, not removal) for KV-cache stability.
+///
+/// Phase 2A-4d.3.1 #3: when `context_injection.session_context = false`
+/// (loaded inside via `crate::config::load_config()`), the `<identity>`
+/// and `<disposition>` blocks emit self-closing tags regardless of
+/// populated content. `<platform>` and `<tools>` describe the host
+/// environment, not the injection surface, so they remain unaffected.
 pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<&str>) -> String {
+    let inj = crate::config::load_config().context_injection;
     let mut xml = String::from("<forge-static>\n");
 
     // Platform (never changes within a session)
@@ -528,7 +535,11 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<
     }
 
     // Identity facets (changes rarely — user-declared)
-    {
+    // Gated on inj.session_context — falsy emits a self-closing tag to
+    // preserve KV-cache schema stability.
+    if !inj.session_context {
+        xml.push_str(&format!("<identity agent=\"{}\"/>\n", xml_escape(agent)));
+    } else {
         let facets = crate::db::manas::list_identity(conn, agent, true).unwrap_or_default();
         if facets.is_empty() {
             xml.push_str(&format!("<identity agent=\"{}\"/>\n", xml_escape(agent)));
@@ -569,7 +580,10 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<
     }
 
     // Disposition (changes slowly — 15min intervals)
-    {
+    // Gated on inj.session_context.
+    if !inj.session_context {
+        xml.push_str("<disposition/>\n");
+    } else {
         let traits = crate::db::manas::list_dispositions(conn, agent).unwrap_or_default();
         if traits.is_empty() {
             xml.push_str("<disposition/>\n");
@@ -779,6 +793,12 @@ pub fn compile_dynamic_suffix(
     let lessons_limit = ctx_config.lessons_limit;
     let entities_limit = ctx_config.entities_limit;
     let entities_min_mentions = ctx_config.entities_min_mentions;
+    // Phase 2A-4d.3.1 #3: a section is disabled when EITHER the request's
+    // `excluded_layers` list names it OR the corresponding feature flag in
+    // `context_injection` is false. The flags compose orthogonally.
+    let inj = crate::config::load_config().context_injection;
+    let section_disabled =
+        |layer: &str, flag: bool| -> bool { excluded_layers.iter().any(|l| l == layer) || !flag };
 
     let mut xml = String::from("<forge-dynamic>\n");
     let mut used = 0usize;
@@ -871,7 +891,7 @@ pub fn compile_dynamic_suffix(
                  END";
 
     // Decisions (accumulate — always show ALL, masking with empty tag if none)
-    if excluded_layers.iter().any(|l| l == "decisions") {
+    if section_disabled("decisions", inj.session_context) {
         xml.push_str("<decisions/>\n");
     } else {
         // Fetch decisions with SQL-computed rank + Domain DNA boost
@@ -964,7 +984,7 @@ pub fn compile_dynamic_suffix(
     // Lessons (accumulate — always present)
     // Recency boost: last 24h *1.5, last 7d *1.2, older *1.0
     // Context feedback: access_count >10 gives 1.3x, >3 gives 1.1x (flywheel ranking)
-    if excluded_layers.iter().any(|l| l == "lessons") {
+    if section_disabled("lessons", inj.session_context) {
         xml.push_str("<lessons/>\n");
     } else {
         // Fetch lessons with SQL-computed rank, then apply Domain DNA boost
@@ -1047,7 +1067,7 @@ pub fn compile_dynamic_suffix(
 
     // Skill summaries (lazy loading — 1-line each, agent pulls details on demand)
     // Skills: project-scoped AND tool-validated
-    if excluded_layers.iter().any(|l| l == "skills") {
+    if section_disabled("skills", inj.skills) {
         xml.push_str("<skills/>\n");
     } else {
         let available_tools = crate::db::manas::available_tool_names(conn).unwrap_or_default();
@@ -1160,7 +1180,7 @@ pub fn compile_dynamic_suffix(
     }
 
     // Entities — recurring concepts with high mention counts
-    if excluded_layers.iter().any(|l| l == "entities") {
+    if section_disabled("entities", inj.active_state) {
         xml.push_str("<entities/>\n");
     } else {
         let entities = crate::db::manas::list_entities(conn, project, entities_limit)
@@ -1191,7 +1211,7 @@ pub fn compile_dynamic_suffix(
     }
 
     // Code structure — clusters from reality engine
-    if excluded_layers.iter().any(|l| l == "code_structure") {
+    if section_disabled("code_structure", inj.session_context) {
         xml.push_str("<code-structure/>\n");
     } else {
         let file_count: usize = conn
@@ -1286,7 +1306,7 @@ pub fn compile_dynamic_suffix(
     }
 
     // Critical perceptions only (warnings/errors, unconsumed, project-scoped)
-    if excluded_layers.iter().any(|l| l == "perceptions") {
+    if section_disabled("perceptions", inj.active_state) {
         xml.push_str("<perceptions/>\n");
     } else {
         let critical: Vec<_> = crate::db::manas::list_unconsumed_perceptions(conn, None, project)
@@ -1323,7 +1343,7 @@ pub fn compile_dynamic_suffix(
 
     // Active sessions — subtle hint, only if other sessions exist.
     // Enables cross-session awareness without aggressive prompting.
-    if excluded_layers.iter().any(|l| l == "active_sessions") {
+    if section_disabled("active_sessions", inj.active_state) {
         // no-op: active-sessions is only rendered when multiple exist, no need for empty tag
     } else {
         let active = crate::sessions::list_sessions(conn, true).unwrap_or_default();
@@ -1348,7 +1368,7 @@ pub fn compile_dynamic_suffix(
     }
 
     // Available agent templates — surfaces agent capabilities for discoverability
-    if !excluded_layers.iter().any(|l| l == "agents") {
+    if !section_disabled("agents", inj.active_state) {
         let agents: Vec<(String, String, String)> = conn
             .prepare(
                 "SELECT name, COALESCE(description, ''), COALESCE(agent_type, 'general')
@@ -1387,7 +1407,7 @@ pub fn compile_dynamic_suffix(
     }
 
     // Working set from last session + predictive prefetch hints
-    if excluded_layers.iter().any(|l| l == "working_set") {
+    if section_disabled("working_set", inj.active_state) {
         xml.push_str("<working-set/>\n");
     } else {
         let ws = crate::sessions::get_last_working_set(conn, agent, project).unwrap_or_default();
@@ -1657,7 +1677,7 @@ pub fn compile_dynamic_suffix(
     }
 
     // Pending messages — budget-exempt (agent MUST see inbox)
-    if !excluded_layers.iter().any(|l| l == "pending_messages") {
+    if !section_disabled("pending_messages", inj.active_state) {
         if let Some(sid) = session_id {
             let messages = crate::sessions::list_messages(conn, sid, Some("pending"), 10, None)
                 .unwrap_or_default();
@@ -1708,7 +1728,7 @@ pub fn compile_dynamic_suffix(
     }
 
     // Meeting context — budget-aware
-    if !excluded_layers.iter().any(|l| l == "meeting_context") {
+    if !section_disabled("meeting_context", inj.active_state) {
         if let Some(sid) = session_id {
             let meetings =
                 crate::teams::get_active_meetings_for_session(conn, sid).unwrap_or_default();
@@ -1779,7 +1799,7 @@ pub fn compile_dynamic_suffix(
     // Master v6 §6 D4: ALWAYS emit `<preferences>` (or self-closing `<preferences/>` when
     // empty) — keeps the XML schema stable so consumers can rely on the element being
     // present. 2A-4d.3.1 backlog #1 closed by this branch.
-    if !excluded_layers.iter().any(|l| l == "preferences") {
+    if !section_disabled("preferences", inj.preferences) {
         let org = organization_id.unwrap_or("default");
         let prefs = crate::db::ops::list_active_preferences(conn, org, 5).unwrap_or_default();
         if prefs.is_empty() {
@@ -1835,7 +1855,7 @@ pub fn compile_dynamic_suffix(
     // Phase 2A-4a: <preferences-flipped> section — shows flipped preferences with both
     // old and new valence rendered inline so the LLM has full context without a
     // follow-up lookup.
-    if !excluded_layers.iter().any(|l| l == "preferences_flipped") {
+    if !section_disabled("preferences_flipped", inj.preferences) {
         let flipped =
             crate::db::ops::list_flipped_with_targets(conn, organization_id, 5).unwrap_or_default();
         if !flipped.is_empty() {

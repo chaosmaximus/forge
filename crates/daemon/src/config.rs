@@ -159,6 +159,8 @@ pub struct ForgeConfig {
     pub a2a: A2aConfig,
     pub workers: WorkerConfig,
     pub context: ContextConfig,
+    #[serde(default)]
+    pub context_injection: ContextInjectionConfig,
     pub consolidation: ConsolidationConfig,
     #[serde(default)]
     pub recall: RecallConfig,
@@ -476,6 +478,62 @@ impl Default for ContextConfig {
             lessons_limit: 5,
             entities_limit: 5,
             entities_min_mentions: 3,
+        }
+    }
+}
+
+/// Phase 2A-4d.3.1 #3 — feature toggles for context injection.
+///
+/// Each boolean controls a specific class of injected content. Defaults
+/// preserve today's behavior (everything `true`). Operators can flip any
+/// toggle mid-session via `forge-next config set context_injection.<key>
+/// <bool>`; handlers re-read the config on every request, so changes take
+/// effect on the next hook call without daemon restart.
+///
+/// Toggles map to user-visible features, not hook-event timing:
+///
+/// * `session_context` — `<identity>`, `<disposition>`, `<decisions>`,
+///   `<lessons>`, `<project-conventions>`, `<guardrails>` blocks in the
+///   SessionStart `<forge-context>`.
+/// * `active_state` — `<notifications>`, `<pending-messages>`,
+///   `<meeting-context>`, `<perceptions>`, `<entities>` blocks (transient
+///   state shown at session start + post-edit).
+/// * `skills` — `<skills>` block in SessionStart **and** the
+///   "Skill: Foo (procedural)" lines surfaced by pre-bash / post-edit
+///   proactive injections.
+/// * `anti_patterns` — "[proactive anti_pattern] ..." warnings surfaced
+///   by pre-bash / post-edit / post-bash hooks. The loudest channel.
+/// * `blast_radius` — post-edit caller / cluster warnings (callers_count,
+///   calling_files, cluster_files in `BlastRadius` and `PostEditCheck`
+///   responses).
+/// * `preferences` — `<preferences>` and `<preferences-flipped>` blocks
+///   in SessionStart context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextInjectionConfig {
+    #[serde(default = "default_true")]
+    pub session_context: bool,
+    #[serde(default = "default_true")]
+    pub active_state: bool,
+    #[serde(default = "default_true")]
+    pub skills: bool,
+    #[serde(default = "default_true")]
+    pub anti_patterns: bool,
+    #[serde(default = "default_true")]
+    pub blast_radius: bool,
+    #[serde(default = "default_true")]
+    pub preferences: bool,
+}
+
+impl Default for ContextInjectionConfig {
+    fn default() -> Self {
+        Self {
+            session_context: true,
+            active_state: true,
+            skills: true,
+            anti_patterns: true,
+            blast_radius: true,
+            preferences: true,
         }
     }
 }
@@ -1522,6 +1580,53 @@ mod tests {
         // Embedding defaults
         assert_eq!(cfg.embedding.model, "nomic-embed-text");
         assert_eq!(cfg.embedding.dimensions, 768);
+
+        // Phase 2A-4d.3.1 #3 — context_injection defaults preserve today's
+        // behavior (everything injected). Operators opt out via SetConfig.
+        let inj = &cfg.context_injection;
+        assert!(inj.session_context, "session_context should default true");
+        assert!(inj.active_state, "active_state should default true");
+        assert!(inj.skills, "skills should default true");
+        assert!(inj.anti_patterns, "anti_patterns should default true");
+        assert!(inj.blast_radius, "blast_radius should default true");
+        assert!(inj.preferences, "preferences should default true");
+    }
+
+    #[test]
+    fn test_context_injection_partial_toml_keeps_unspecified_defaults() {
+        // Operators flipping a single toggle via TOML (e.g., daemon config
+        // file) must NOT lose other defaults. #[serde(default)] on the
+        // struct ensures missing fields fall back to true.
+        let toml_str = r#"
+[context_injection]
+anti_patterns = false
+"#;
+        let cfg: ForgeConfig = toml::from_str(toml_str).expect("parses");
+        assert!(!cfg.context_injection.anti_patterns, "explicit false");
+        assert!(cfg.context_injection.session_context, "default preserved");
+        assert!(cfg.context_injection.skills, "default preserved");
+        assert!(cfg.context_injection.blast_radius, "default preserved");
+    }
+
+    #[test]
+    fn test_context_injection_all_off_toml() {
+        let toml_str = r#"
+[context_injection]
+session_context = false
+active_state = false
+skills = false
+anti_patterns = false
+blast_radius = false
+preferences = false
+"#;
+        let cfg: ForgeConfig = toml::from_str(toml_str).expect("parses");
+        let inj = &cfg.context_injection;
+        assert!(!inj.session_context);
+        assert!(!inj.active_state);
+        assert!(!inj.skills);
+        assert!(!inj.anti_patterns);
+        assert!(!inj.blast_radius);
+        assert!(!inj.preferences);
     }
 
     #[test]
