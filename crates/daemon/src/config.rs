@@ -562,17 +562,20 @@ impl Default for ContextInjectionConfig {
 }
 
 /// Phase 2A-4d.3.1 #3 H1 (W5): resolve a `ContextInjectionConfig` for the
-/// scope chain anchored at `session_id`. Starts from the global config
-/// (loaded via [`load_config`]) and lets per-scope overrides
-/// (organization → team → user → reality → agent → session) replace
-/// flag values via the `resolve_scoped_config` mechanism in
-/// [`crate::db::ops`].
+/// scope chain anchored at `session_id`. Starts from the caller-supplied
+/// `global` baseline (which the caller already loaded via
+/// [`load_config`] for other purposes — passing it in keeps the H6
+/// "load config once per request" invariant intact: the W5 review
+/// flagged a regression where this fn re-loaded the config and
+/// negated H6's gain) and lets per-scope overrides (organization →
+/// team → user → reality → agent → session) replace flag values via
+/// the `resolve_scoped_config` mechanism in [`crate::db::ops`].
 ///
 /// Looks up the session row once to harvest `user_id`, `team_id`,
 /// `organization_id`, `reality_id`. If the session doesn't exist,
-/// returns the global config unchanged. Each of the 6 toggles is
-/// resolved independently — operators can override a single flag
-/// without disturbing the others.
+/// returns `global` unchanged. Each of the 6 toggles is resolved
+/// independently — operators can override a single flag without
+/// disturbing the others.
 ///
 /// The keys queried are
 /// `context_injection.session_context`,
@@ -587,18 +590,18 @@ impl Default for ContextInjectionConfig {
 /// Boolean values are parsed by `value.eq_ignore_ascii_case("true")` —
 /// rationale: `forge-next config set context_injection.<key> true|false`
 /// stores the literal string. Unparseable values fall back to the
-/// global config (with a debug log) so operators don't lock themselves
-/// out of context with a typo.
+/// caller-supplied baseline (with a debug log) so operators don't
+/// lock themselves out of context with a typo.
 pub fn resolve_context_injection_for_session(
     conn: &rusqlite::Connection,
     session_id: Option<&str>,
     agent: Option<&str>,
+    global: &ContextInjectionConfig,
 ) -> ContextInjectionConfig {
-    let global = load_config().context_injection;
     // Without a session anchor there's nothing to resolve against —
     // bail with the global config (the prior path's behavior).
     let Some(sid) = session_id else {
-        return global;
+        return global.clone();
     };
 
     // Look up the session row once for user/team/org/reality scope.

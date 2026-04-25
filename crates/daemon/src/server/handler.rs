@@ -3162,15 +3162,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // compile_static_prefix + compile_dynamic_suffix share a single
             // ContextInjectionConfig instead of each paying for a disk read.
             //
-            // W5 H1: also resolve scoped overrides for context_injection
-            // flags (org / team / user / reality / agent / session) when
-            // the request carries a session_id. With no session anchor,
-            // this collapses to the global config (prior behavior).
+            // W5 H1 (post-review M1 fix): also resolve scoped overrides for
+            // context_injection flags (org / team / user / reality / agent
+            // / session) when the request carries a session_id. The
+            // resolver takes the already-loaded global as a baseline so
+            // we don't re-pay the load cost — the H6 invariant ("one
+            // config load per request") is preserved.
             let config = crate::config::load_config();
             let inj = crate::config::resolve_context_injection_for_session(
                 &state.conn,
                 sid,
                 Some(agent_name),
+                &config.context_injection,
             );
             let static_prefix =
                 crate::recall::compile_static_prefix_with_inj(&state.conn, agent_name, sid, &inj);

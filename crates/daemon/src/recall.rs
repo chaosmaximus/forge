@@ -2058,12 +2058,21 @@ pub fn compile_context(conn: &Connection, agent: &str, project: Option<&str>) ->
 ///
 /// Returns data for the ContextTrace response variant.
 ///
-/// Phase 2A-4d.3.1 #3 H2 (W5): now honors `context_injection` flags so the
-/// trace surface matches the actual compile surface. With `session_context
-/// = false`, decisions and lessons emit a single "excluded: gated by
-/// context_injection.session_context" entry per memory rather than
-/// silently appearing in the considered/included list. Operators using
-/// `forge-next observe` to debug context bloat now see the real story.
+/// Phase 2A-4d.3.1 #3 H2 (W5): now honors GLOBAL `context_injection`
+/// flags so the trace surface matches the actual compile surface for
+/// global-scoped operators. With `session_context = false` at the
+/// global scope, decisions and lessons emit a single "<gated>"
+/// excluded entry rather than silently appearing in the
+/// considered/included list.
+///
+/// **Caveat (W5 review M3)**: the `Request::CompileContextTrace`
+/// variant has no `session_id`, so per-scope overrides set via
+/// `forge-next config set ... --scope <type>=<id>` are NOT reflected
+/// here. To trace a session-scoped compile, drive the trace through
+/// `Request::CompileContext` against the live request path. Closing
+/// this gap requires a protocol change (add `session_id` to
+/// `Request::CompileContextTrace`) — left as a follow-up rather than
+/// expanding W5 scope.
 pub fn compile_context_trace(
     conn: &Connection,
     _agent: &str,
