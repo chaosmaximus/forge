@@ -569,15 +569,29 @@ impl Default for ContextInjectionConfig {
 /// flagged a regression where this fn re-loaded the config and
 /// negated H6's gain) and lets per-scope overrides (organization →
 /// team → user → reality → agent → session) replace flag values via
-/// the `resolve_scoped_config` mechanism in [`crate::db::ops`].
+/// the [`crate::db::ops::resolve_effective_config`] batch lookup.
 ///
 /// Looks up the session row once to harvest `user_id`, `team_id`,
 /// `organization_id`, `reality_id`. If the session doesn't exist,
-/// returns `global` unchanged. Each of the 6 toggles is resolved
-/// independently — operators can override a single flag without
-/// disturbing the others.
+/// returns `global` unchanged. The 6 `context_injection.*` toggles
+/// are resolved in a single pass — operators can override one flag
+/// without disturbing the others.
 ///
-/// The keys queried are
+/// **Phase P3-2 W2 (closes 2A-4d Tier 3 review M2):** previously this
+/// fn issued 6 independent `resolve_scoped_config` calls (one per
+/// toggle, each scanning the entire scope chain). Each call paid for
+/// its own scope-walk + key lookup. The replacement is one
+/// [`crate::db::ops::resolve_effective_config`] call which (a) lists
+/// keys present at any scope via `list_scoped_config` (≤ 6 small
+/// queries) and (b) resolves only the keys actually overridden via
+/// `resolve_scoped_config` (typically 0 in production). For a session
+/// with no overrides the new path issues 6 list queries; the old path
+/// issued 36 unconditional resolutions. Behavior is preserved
+/// byte-for-byte: same key set, same boolean parse, same fallback to
+/// `global` on unparseable values, same DB-error → return-global
+/// failure mode.
+///
+/// The keys consulted are
 /// `context_injection.session_context`,
 /// `context_injection.active_state`,
 /// `context_injection.skills`,
@@ -624,46 +638,50 @@ pub fn resolve_context_injection_for_session(
 
     let mut resolved = global.clone();
 
-    let resolve_bool = |key: &str, current: bool| -> bool {
-        match crate::db::ops::resolve_scoped_config(
-            conn,
-            key,
-            Some(sid),
-            agent,
-            reality_id.as_deref(),
-            user_id.as_deref(),
-            team_id.as_deref(),
-            org_id.as_deref(),
-        ) {
-            Ok(Some(rv)) => {
-                if rv.value.eq_ignore_ascii_case("true") {
-                    true
-                } else if rv.value.eq_ignore_ascii_case("false") {
-                    false
-                } else {
-                    tracing::debug!(
-                        target: "forge::config",
-                        key,
-                        value = %rv.value,
-                        "scoped context_injection value not a bool — falling back to global"
-                    );
-                    current
-                }
-            }
-            _ => current,
+    // P3-2 W2: single batch resolve in place of 6 independent calls.
+    // Errors → fall back to global (same behavior as the old per-key
+    // `match … _ => current` arm).
+    let effective = match crate::db::ops::resolve_effective_config(
+        conn,
+        Some(sid),
+        agent,
+        reality_id.as_deref(),
+        user_id.as_deref(),
+        team_id.as_deref(),
+        org_id.as_deref(),
+    ) {
+        Ok(map) => map,
+        Err(_) => return resolved,
+    };
+
+    let take_bool = |key: &str, current: bool| -> bool {
+        let Some(rv) = effective.get(key) else {
+            return current;
+        };
+        if rv.value.eq_ignore_ascii_case("true") {
+            true
+        } else if rv.value.eq_ignore_ascii_case("false") {
+            false
+        } else {
+            tracing::debug!(
+                target: "forge::config",
+                key,
+                value = %rv.value,
+                "scoped context_injection value not a bool — falling back to global"
+            );
+            current
         }
     };
 
-    resolved.session_context = resolve_bool(
+    resolved.session_context = take_bool(
         "context_injection.session_context",
         resolved.session_context,
     );
-    resolved.active_state = resolve_bool("context_injection.active_state", resolved.active_state);
-    resolved.skills = resolve_bool("context_injection.skills", resolved.skills);
-    resolved.anti_patterns =
-        resolve_bool("context_injection.anti_patterns", resolved.anti_patterns);
-    resolved.blast_radius = resolve_bool("context_injection.blast_radius", resolved.blast_radius);
-    resolved.preferences = resolve_bool("context_injection.preferences", resolved.preferences);
+    resolved.active_state = take_bool("context_injection.active_state", resolved.active_state);
+    resolved.skills = take_bool("context_injection.skills", resolved.skills);
+    resolved.anti_patterns = take_bool("context_injection.anti_patterns", resolved.anti_patterns);
+    resolved.blast_radius = take_bool("context_injection.blast_radius", resolved.blast_radius);
+    resolved.preferences = take_bool("context_injection.preferences", resolved.preferences);
 
     resolved
 }
@@ -1832,6 +1850,197 @@ preferences = false
         assert!(!inj.anti_patterns);
         assert!(!inj.blast_radius);
         assert!(!inj.preferences);
+    }
+
+    // ── P3-2 W2: resolve_context_injection_for_session behavior tests ─────
+    //
+    // Behavior pinned by these tests so the W2 batch refactor (6
+    // resolve_scoped_config calls → 1 resolve_effective_config call) can be
+    // verified to preserve semantics. Pre-W2 the fn paid for 36 unconditional
+    // key×scope resolutions per request; post-W2 it pays for ≤6 list queries
+    // + ≤6 resolves only for keys actually overridden. Same boolean parse,
+    // same fallback, same DB-error handling.
+
+    fn ci_test_db() -> rusqlite::Connection {
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        conn
+    }
+
+    fn ci_insert_session(
+        conn: &rusqlite::Connection,
+        sid: &str,
+        agent: &str,
+        user_id: Option<&str>,
+        org_id: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO session (id, agent, started_at, status, user_id, organization_id) \
+             VALUES (?1, ?2, datetime('now'), 'active', ?3, ?4)",
+            rusqlite::params![sid, agent, user_id, org_id],
+        )
+        .unwrap();
+    }
+
+    fn ci_default_global() -> ContextInjectionConfig {
+        ContextInjectionConfig {
+            session_context: true,
+            active_state: true,
+            skills: true,
+            anti_patterns: true,
+            blast_radius: true,
+            preferences: true,
+        }
+    }
+
+    #[test]
+    fn test_resolve_context_injection_returns_global_when_no_session_id() {
+        let conn = ci_test_db();
+        let global = ci_default_global();
+        let resolved = resolve_context_injection_for_session(&conn, None, None, &global);
+        assert!(resolved.session_context);
+        assert!(resolved.active_state);
+        assert!(resolved.skills);
+        assert!(resolved.anti_patterns);
+        assert!(resolved.blast_radius);
+        assert!(resolved.preferences);
+    }
+
+    #[test]
+    fn test_resolve_context_injection_returns_global_when_session_row_missing() {
+        let conn = ci_test_db();
+        // No session row inserted — fn should fall back to global cleanly.
+        let global = ci_default_global();
+        let resolved = resolve_context_injection_for_session(
+            &conn,
+            Some("missing-sid"),
+            Some("claude-code"),
+            &global,
+        );
+        assert!(resolved.session_context);
+        assert!(resolved.active_state);
+        assert!(resolved.skills);
+        assert!(resolved.anti_patterns);
+        assert!(resolved.blast_radius);
+        assert!(resolved.preferences);
+    }
+
+    #[test]
+    fn test_resolve_context_injection_returns_global_when_no_overrides_present() {
+        let conn = ci_test_db();
+        ci_insert_session(&conn, "s1", "claude-code", Some("u1"), Some("default"));
+        let global = ci_default_global();
+        let resolved =
+            resolve_context_injection_for_session(&conn, Some("s1"), Some("claude-code"), &global);
+        // Session exists but no scoped_config rows → all flags fall through
+        // to global. Post-W2: effective map is empty, take_bool returns
+        // `current` for every key.
+        assert!(resolved.session_context);
+        assert!(resolved.active_state);
+        assert!(resolved.skills);
+        assert!(resolved.anti_patterns);
+        assert!(resolved.blast_radius);
+        assert!(resolved.preferences);
+    }
+
+    #[test]
+    fn test_resolve_context_injection_applies_session_scoped_override() {
+        let conn = ci_test_db();
+        ci_insert_session(&conn, "s1", "claude-code", Some("u1"), Some("default"));
+        crate::db::ops::set_scoped_config(
+            &conn,
+            "session",
+            "s1",
+            "context_injection.session_context",
+            "false",
+            false,
+            None,
+            "test",
+        )
+        .unwrap();
+        let global = ci_default_global();
+        let resolved =
+            resolve_context_injection_for_session(&conn, Some("s1"), Some("claude-code"), &global);
+        // Session-scoped override flips one flag; the other 5 inherit global.
+        assert!(
+            !resolved.session_context,
+            "session-scoped override should flip session_context to false"
+        );
+        assert!(
+            resolved.active_state,
+            "non-overridden flag should stay true"
+        );
+        assert!(resolved.skills);
+        assert!(resolved.anti_patterns);
+        assert!(resolved.blast_radius);
+        assert!(resolved.preferences);
+    }
+
+    #[test]
+    fn test_resolve_context_injection_falls_back_to_global_on_unparseable_value() {
+        let conn = ci_test_db();
+        ci_insert_session(&conn, "s1", "claude-code", Some("u1"), Some("default"));
+        crate::db::ops::set_scoped_config(
+            &conn,
+            "session",
+            "s1",
+            "context_injection.skills",
+            "maybe",
+            false,
+            None,
+            "test",
+        )
+        .unwrap();
+        let global = ci_default_global();
+        let resolved =
+            resolve_context_injection_for_session(&conn, Some("s1"), Some("claude-code"), &global);
+        // Unparseable scoped value → debug log + fall back to global (= true).
+        assert!(
+            resolved.skills,
+            "unparseable scoped value should fall back to global"
+        );
+    }
+
+    #[test]
+    fn test_resolve_context_injection_session_overrides_organization() {
+        // Scope precedence: session > agent > reality > user > team > org.
+        // Org sets one value; session overrides with the opposite. Result
+        // should reflect the session value (the override wins).
+        let conn = ci_test_db();
+        ci_insert_session(&conn, "s1", "claude-code", Some("u1"), Some("default"));
+        crate::db::ops::set_scoped_config(
+            &conn,
+            "organization",
+            "default",
+            "context_injection.preferences",
+            "false",
+            false,
+            None,
+            "test",
+        )
+        .unwrap();
+        crate::db::ops::set_scoped_config(
+            &conn,
+            "session",
+            "s1",
+            "context_injection.preferences",
+            "true",
+            false,
+            None,
+            "test",
+        )
+        .unwrap();
+        let global = ContextInjectionConfig {
+            preferences: false, // global also says false; only session says true
+            ..ci_default_global()
+        };
+        let resolved =
+            resolve_context_injection_for_session(&conn, Some("s1"), Some("claude-code"), &global);
+        assert!(
+            resolved.preferences,
+            "session-scope override (true) should beat organization-scope (false) and global (false)"
+        );
     }
 
     #[test]
