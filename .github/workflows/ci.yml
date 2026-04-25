@@ -146,6 +146,18 @@ jobs:
       - name: Protocol-hash interlock validation
         run: bash scripts/check-protocol-hash.sh
 
+      # Closes W5 review G1: the .github/pending-rollback flag is set
+      # by Step 0 of docs/operations/2P-1-rollback.md to signal that
+      # master is in a rollback freeze. The CI guard refuses to merge
+      # while the file exists, giving the playbook step real teeth
+      # without depending on GitHub branch-protection settings.
+      - name: Pending-rollback flag guard
+        run: |
+          if [ -f .github/pending-rollback ]; then
+            echo "::error::.github/pending-rollback flag is set — master is in rollback freeze. Remove the flag once the rollback is complete (see docs/operations/2P-1-rollback.md Step 5)."
+            exit 1
+          fi
+
   bench-fast:
     # Phase 2A-4d.3 T13: per-commit fast benches (forge-consolidation,
     # forge-identity). In-process harnesses run in <1s on ubuntu-latest

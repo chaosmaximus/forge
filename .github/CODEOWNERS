@@ -20,3 +20,32 @@
 /CONTRIBUTING.md                    @chaosmaximus
 /LICENSE                            @chaosmaximus
 /NOTICE                             @chaosmaximus
+
+# Phase 2P-1b harness gate scripts + fixtures (W1-W4 invariants).
+# Touching these files means changing the CI invariant itself; route
+# review accordingly.
+/scripts/check-harness-sync.sh           @chaosmaximus
+/scripts/check_review_artifacts.py       @chaosmaximus
+/scripts/check-review-artifacts.sh       @chaosmaximus
+/scripts/check_license_manifest.py       @chaosmaximus
+/scripts/check-license-manifest.sh       @chaosmaximus
+/scripts/check_protocol_hash.py          @chaosmaximus
+/scripts/check-protocol-hash.sh          @chaosmaximus
+/scripts/sync-protocol-hash.sh           @chaosmaximus
+/tests/scripts/                          @chaosmaximus
+/tests/fixtures/harness-sync/            @chaosmaximus
+/tests/fixtures/review-artifacts/        @chaosmaximus
+/tests/fixtures/license-manifest/        @chaosmaximus
+/tests/fixtures/protocol-hash/           @chaosmaximus
+
+# Audit trail + operations — every adversarial review of a wave/phase
+# lands here and must clear the CI gate before merge.
+/docs/superpowers/reviews/               @chaosmaximus
+/docs/operations/                        @chaosmaximus
+
+# Self-protect: meta-config files mutate the gate itself.
+/.github/CODEOWNERS                      @chaosmaximus
+/.github/dependabot.yml                  @chaosmaximus
+/.github/workflows/                      @chaosmaximus
+/.github/PULL_REQUEST_TEMPLATE.md        @chaosmaximus
+/.github/ISSUE_TEMPLATE/                 @chaosmaximus
