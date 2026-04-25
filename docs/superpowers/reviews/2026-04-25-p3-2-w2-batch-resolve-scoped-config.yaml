@@ -18,13 +18,13 @@ findings:
     summary: DB-error semantics diverge — Err short-circuits all 6 keys vs. old per-key fallback
     file: crates/daemon/src/config.rs
     status: resolved
-    fixed_by: pending
+    fixed_by: 97eb5cd
   - id: MED-2
     severity: MEDIUM
     summary: Test suite lacks team-only / user-only scope precedence cases
     file: crates/daemon/src/config.rs
     status: resolved
-    fixed_by: pending
+    fixed_by: 97eb5cd
   - id: LOW-1
     severity: LOW
     summary: Commit-msg arithmetic ambiguity — "36 unconditional resolutions" vs. SELECT count

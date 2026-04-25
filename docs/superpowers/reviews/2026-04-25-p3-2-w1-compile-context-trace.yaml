@@ -26,4 +26,4 @@ findings:
     summary: P3-1 deferred backlog SIGTERM bullet not crossed off after W7 lift; orphan reference in plan + HANDOFF
     file: docs/superpowers/plans/2026-04-25-complete-production-readiness.md
     status: resolved
-    fixed_by: pending
+    fixed_by: 899bac2

@@ -24,31 +24,31 @@ findings:
     summary: Provider built before Tokio runtime ownership transferred — BatchSpanProcessor worker may race shutdown
     file: crates/daemon/tests/t10_instrumentation_latency.rs
     status: resolved
-    fixed_by: pending
+    fixed_by: c37f59d
   - id: HIGH-2
     severity: HIGH
     summary: Ceiling 1.50× too generous — would mask a 45% regression
     file: crates/daemon/tests/t10_instrumentation_latency.rs
     status: resolved
-    fixed_by: pending
+    fixed_by: c37f59d
   - id: MED-1
     severity: MEDIUM
     summary: similarity_threshold test still uses post-construction reassignment after struct-update conversion
     file: crates/daemon/src/config.rs
     status: resolved
-    fixed_by: pending
+    fixed_by: c37f59d
   - id: LOW-1
     severity: LOW
     summary: worker_threads=2 is the bare minimum — no margin for future harness-path tokio spawns
     file: crates/daemon/tests/t10_instrumentation_latency.rs
     status: resolved
-    fixed_by: pending
+    fixed_by: c37f59d
   - id: LOW-2
     severity: LOW
     summary: Variant A re-measured in-test rationale could be more explicit
     file: crates/daemon/tests/t10_instrumentation_latency.rs
     status: resolved
-    fixed_by: pending
+    fixed_by: c37f59d
   - id: LOW-3
     severity: LOW
     summary: Commit bundles unrelated clippy cleanup with W3 feature

@@ -49,4 +49,4 @@ findings:
     summary: No new tests for M3 negative-epoch clamp
     file: crates/daemon/src/bench/forge_identity.rs
     status: resolved
-    fixed_by: pending
+    fixed_by: f97832e
