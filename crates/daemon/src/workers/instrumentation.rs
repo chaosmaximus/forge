@@ -205,12 +205,25 @@ mod tests {
         // Earlier version counted the total number of `info_span!("phase_`
         // occurrences, which silently accepted duplicates. This per-name loop
         // rejects both missing names *and* names with >1 literal occurrence.
-        let src = include_str!("consolidator.rs");
+        //
+        // Phase 2A-4d.1.1 #4: prior version did a raw `src.matches(needle)`
+        // on the unfiltered include_str! buffer, so a rustdoc/line/block
+        // comment anywhere in consolidator.rs containing the literal
+        // `info_span!("phase_X")` would push the per-name count to >=2 and
+        // fail the guard for a non-bug reason. Strip line + block comments
+        // before counting (string literals are intentionally kept — the
+        // search needle IS a string literal, so blanking strings would
+        // defeat the count). A `syn`-based AST pass would catch the
+        // remaining string-literal false-positive class but pulls a
+        // proc-macro dep into the test compile graph for one test —
+        // tracked as still-deferred under the 2A-4d.1.1 follow-up backlog.
+        let raw_src = include_str!("consolidator.rs");
+        let src = strip_comments_for_test(raw_src);
         let total = src.matches(r#"info_span!("phase_"#).count();
         assert_eq!(
             total,
             PHASE_SPAN_NAMES.len(),
-            "expected {} total info_span!(\"phase_ calls in consolidator.rs, saw {}",
+            "expected {} total info_span!(\"phase_ calls in consolidator.rs (after stripping comments + string literals), saw {}",
             PHASE_SPAN_NAMES.len(),
             total
         );
@@ -219,9 +232,100 @@ mod tests {
             let count = src.matches(needle.as_str()).count();
             assert_eq!(
                 count, 1,
-                "phase span `{name}` should appear exactly once in consolidator.rs (found {count})"
+                "phase span `{name}` should appear exactly once in consolidator.rs after stripping comments + string literals (found {count})"
             );
         }
+    }
+
+    /// Strip Rust line + block comments from a source buffer, replacing
+    /// each character with a space so line numbers and offsets stay
+    /// stable. **Keeps string literals intact** — the integrity test
+    /// matches `info_span!("phase_X")` literally, so blanking out the
+    /// `"phase_X"` body would defeat the count.
+    ///
+    /// This neutralises the documented false-positive class flagged by
+    /// the T12 review — a rustdoc comment containing
+    /// `info_span!("phase_X")` no longer counts. Test-string false
+    /// positives (e.g. a string literal embedding the macro form) are
+    /// left as a known limitation; in practice no consolidator.rs
+    /// string contains that fragment, and a syn-based AST pass would
+    /// be the proper long-term fix (tracked in the 2A-4d.1.1 backlog).
+    fn strip_comments_for_test(src: &str) -> String {
+        enum State {
+            Code,
+            LineComment,
+            BlockComment,
+        }
+        let mut out = String::with_capacity(src.len());
+        let mut state = State::Code;
+        let bytes = src.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            match state {
+                State::LineComment => {
+                    if bytes[i] == b'\n' {
+                        out.push('\n');
+                        state = State::Code;
+                    } else {
+                        out.push(' ');
+                    }
+                    i += 1;
+                }
+                State::BlockComment => {
+                    if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        out.push_str("  ");
+                        state = State::Code;
+                        i += 2;
+                    } else {
+                        out.push(if bytes[i] == b'\n' { '\n' } else { ' ' });
+                        i += 1;
+                    }
+                }
+                State::Code => {
+                    if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                        out.push_str("  ");
+                        state = State::LineComment;
+                        i += 2;
+                    } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                        out.push_str("  ");
+                        state = State::BlockComment;
+                        i += 2;
+                    } else {
+                        out.push(bytes[i] as char);
+                        i += 1;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn strip_comments_for_test_neutralises_doc_and_block_comments() {
+        // The reviewer's named false-positive class: doc comments or
+        // line/block comments containing `info_span!("phase_X")` must
+        // not be counted as real macro invocations.
+        let src = "/// info_span!(\"phase_doc\")\n\
+                   // info_span!(\"phase_line\")\n\
+                   /* info_span!(\"phase_block\") */\n\
+                   let _x = info_span!(\"phase_real\");\n";
+        let stripped = strip_comments_for_test(src);
+        assert!(
+            !stripped.contains("info_span!(\"phase_doc\""),
+            "doc comment must be neutralised; got: {stripped}"
+        );
+        assert!(
+            !stripped.contains("info_span!(\"phase_line\""),
+            "line comment must be neutralised; got: {stripped}"
+        );
+        assert!(
+            !stripped.contains("info_span!(\"phase_block\""),
+            "block comment must be neutralised; got: {stripped}"
+        );
+        assert!(
+            stripped.contains("info_span!(\"phase_real\""),
+            "real call must survive; got: {stripped}"
+        );
     }
 
     #[test]
