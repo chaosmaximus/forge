@@ -104,13 +104,15 @@ jobs:
       - name: Scrub fixture tests
         run: bash tests/scripts/test-migrate-scrub.sh
 
+      # Fixture tests run BEFORE the real-repo drift check so a parser
+      # regression can't mask its own broken self-test (W1 review L2).
+      - name: Harness sync fixture tests
+        run: bash tests/scripts/test-harness-sync.sh
+
       - name: Harness drift (auto-flips to fail-closed on 2026-05-09)
         # Script self-determines mode from $AMNESTY_END_DATE — no env var needed.
         # Override via FORGE_HARNESS_SYNC_ENFORCE if early-flip is desired.
         run: bash scripts/check-harness-sync.sh
-
-      - name: Harness sync fixture tests
-        run: bash tests/scripts/test-harness-sync.sh
 
   bench-fast:
     # Phase 2A-4d.3 T13: per-commit fast benches (forge-consolidation,

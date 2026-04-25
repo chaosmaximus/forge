@@ -77,7 +77,7 @@ output=$(runner --root "$CLEAN_FIXTURE" 2>&1)
 status=$?
 set -e
 assert_exit 0 "$status" "$output"
-assert_contains "no drift" "$output"
+assert_contains "authoritative, no drift" "$output"
 
 # ============================================================================
 # Test 2: drift fixture warn mode (override date-based auto-flip)

@@ -49,6 +49,13 @@
 
 **Phase P3-1 close:** version bump to `0.6.0-rc.1`. HANDOFF rewrite. Halt for user sign-off.
 
+### P3-1 deferred backlog (per-wave review residue)
+
+* **W1 M1** — `FORGE_HARNESS_SYNC_ENFORCE=garbage` (any non-`1` value) silently downgrades to WARN. Reason: matches the existing `FORCE_FAIL=1` legacy contract. Defer; revisit if a future CI matrix sets the var to `"on"`/`"true"`.
+* **W1 M4** — neither script sets `LC_ALL=C`. `date -u +%Y-%m-%d` is stable in practice and the YYYY-MM-DD lexicographic compare is byte-safe, but the awk pascal-to-snake transform's `[A-Z]` ranges could shift under non-C locale. Defer; not seen in any production runner.
+* **W1 M5** — drift fixtures use 6-variant clean Pascal enums with no doc-comments / cfg attrs / nested generics. Awk-extractor regression on those edge forms wouldn't be caught. Defer to a fixture-expansion follow-up; current fixtures cover the happy path.
+* **W1 L1** — `--help` uses `sed -n '1,/^set -euo/p' "$0" | sed '$d'` which is brittle if `set -e` ever moves. Defer; cosmetic.
+
 ---
 
 ## Phase P3-2 — 2A-4d follow-up drain (~25 commits)

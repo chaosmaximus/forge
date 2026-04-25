@@ -45,6 +45,12 @@ while [ $# -gt 0 ]; do
                 echo "ERROR: --root requires a path" >&2
                 exit 2
             fi
+            case "$2" in
+                -*)
+                    echo "ERROR: --root path must not start with '-' (got: $2)" >&2
+                    exit 2
+                    ;;
+            esac
             REPO_ROOT_OVERRIDE="$2"
             shift 2
             ;;
@@ -124,8 +130,15 @@ pascal_to_kebab() {
     }'
 }
 
-request_methods_file="$(mktemp)"
+# Initialize all temp-file vars before installing the trap so an early exit
+# (e.g. parser-regression sanity check) doesn't trip `set -u` inside the
+# cleanup handler and corrupt the exit code (W1 review HIGH-1).
+request_methods_file=""
+cli_commands_file=""
+refs_file=""
 trap 'rm -f "$request_methods_file" "$cli_commands_file" "$refs_file" 2>/dev/null || true' EXIT
+
+request_methods_file="$(mktemp)"
 
 grep -E '^\s+[A-Z][a-zA-Z0-9]+(\s*\{|,|\s*$)' "$REQ_RS" \
   | grep -vE '^\s*//|^\s*#|pub enum' \
