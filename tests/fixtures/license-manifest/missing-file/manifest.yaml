@@ -1,0 +1,6 @@
+schema_version: 1
+package: foo
+license: Apache-2.0
+files:
+  - path: ghost.json
+    license: Apache-2.0

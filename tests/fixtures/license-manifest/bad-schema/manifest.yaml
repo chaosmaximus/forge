@@ -1,0 +1,6 @@
+schema_version: 99
+package: foo
+license: Apache-2.0
+files:
+  - path: dummy.json
+    license: Apache-2.0

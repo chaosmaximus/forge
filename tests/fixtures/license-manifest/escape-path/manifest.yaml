@@ -1,0 +1,6 @@
+schema_version: 1
+package: foo
+license: Apache-2.0
+files:
+  - path: ../../../../etc/passwd
+    license: Apache-2.0

@@ -1,0 +1,1 @@
+Reference target for the clean manifest fixture.

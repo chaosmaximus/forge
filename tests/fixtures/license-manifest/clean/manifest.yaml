@@ -1,0 +1,12 @@
+schema_version: 1
+package: forge-clean-fixture
+license: Apache-2.0
+coverage_paths:
+  - covered
+files:
+  - path: covered/a.json
+    license: Apache-2.0
+  - path: covered/b.json
+    license: Apache-2.0 OR MIT
+references:
+  - LICENSE-NOTE.txt

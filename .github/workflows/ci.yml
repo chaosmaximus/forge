@@ -124,6 +124,16 @@ jobs:
       - name: Review artifacts validation
         run: bash scripts/check-review-artifacts.sh
 
+      # Phase 2P-1b §3: SPDX sidecar manifest at .claude-plugin/LICENSES.yaml
+      # declares licenses for every shipped JSON file (which can't carry
+      # inline SPDX-License-Identifier comments without breaking schema-
+      # validated parsers). Fixture tests precede the real-repo run.
+      - name: License manifest fixture tests
+        run: bash tests/scripts/test-license-manifest.sh
+
+      - name: License manifest validation
+        run: bash scripts/check-license-manifest.sh
+
   bench-fast:
     # Phase 2A-4d.3 T13: per-commit fast benches (forge-consolidation,
     # forge-identity). In-process harnesses run in <1s on ubuntu-latest
