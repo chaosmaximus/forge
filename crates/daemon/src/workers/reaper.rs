@@ -62,6 +62,13 @@ pub async fn run_session_reaper(
     }
 }
 
+// Phase 2A-4d.3.1 #7 — LOW: the reaper today is a single-tenant pass.
+// Per-org tenancy is on the roadmap (Phase 2A-4a T11) — when that lands,
+// `reap_stale_sessions` should accept an `org_id` filter so a multi-org
+// daemon can scope its reaper schedule per organization (different orgs
+// may want different idle/timeout thresholds, or staggered reap windows
+// to flatten the lock contention). For now the WHERE clauses don't
+// filter by org and every session goes through the same thresholds.
 fn reap_stale_sessions(
     db_path: &str,
     timeout_secs: u64,

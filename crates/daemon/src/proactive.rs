@@ -20,6 +20,15 @@ pub const HOOK_POST_COMPACT: &str = "PostCompact";
 
 // ── Knowledge Types ──
 
+/// `KT_BLAST_RADIUS` participates in the bootstrap relevance matrix and
+/// the `context_injection.blast_radius` toggle, but the per-knowledge-type
+/// content fetch in `build_proactive_context_with_inj` is a deliberate
+/// `continue` — blast-radius output is computed per-file by the
+/// `BlastRadius` handler arm (server/handler.rs), not surfaced from
+/// memory rows here. The flag exists so operators have a single
+/// off-switch for the entire blast-radius surface (handler arm + this
+/// channel for symmetry) without having to reason about "do I need to
+/// disable it in two places?"
 pub const KT_BLAST_RADIUS: &str = "blast_radius";
 pub const KT_ANTI_PATTERN: &str = "anti_pattern";
 pub const KT_UAT_LESSON: &str = "uat_lesson";
