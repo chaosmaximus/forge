@@ -63,6 +63,10 @@
 * **W3 MED-2** — `os.walk(followlinks=False)` means a directory symlink under `coverage_paths[]` is NOT recursed; a contributor could in principle hide a JSON file behind a symlink and bypass the gate. Defer; the safer-default behavior is intentional (symlink-following has its own attack surface). Document the behavior if a need surfaces.
 * **W3 MED-3** — if `coverage_paths` were ever set to `[.]` the validator would walk the entire repo (including `target/`, `.git/`, `node_modules/`). Not a current risk (manifest pins `.claude-plugin` + `hooks`), but a future maintainer could regress. Defer; consider a default exclude list if this footgun ever fires.
 * **W3 LOW-5** — Windows-style path traversal (backslashes) is not normalised by `os.path` on Linux, so a malicious manifest could in principle hide an escape. CI runs Linux-only; defer the Windows-aware guard.
+* **W4 M-2** — sync-protocol-hash.sh's `re.subn(..., count=1)` rewrites only the first `protocol_hash` match. If a future contributor introduces duplicate keys (malformed JSON), python's `json.load` accepts last-wins so the validator passes silently. Defer; duplicate-key plugin.json is already broken JSON and would surface elsewhere.
+* **W4 L-1** — `check-protocol-hash.sh` forwards `--protocol-file`/`--plugin-file` flags but `sync-protocol-hash.sh` does not. CLI surface is asymmetric. Defer; sync-side flags would only matter for fixture-test variants we don't currently exercise.
+* **W4 L-3** — empty-string or whitespace-only `protocol_hash` is detected via the drift comparison, but the message says "drift" not "empty value" — slightly misleading. Defer; cosmetic.
+* **W4 L-4** — initial-add error phrasing differs slightly between the validator (`Add it: "protocol_hash": "<sha>"`) and the sync helper (`add manually first; Suggested line: …`). Both copy-pasteable. Defer.
 
 ---
 

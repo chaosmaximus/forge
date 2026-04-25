@@ -7,6 +7,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CHECK="$REPO_ROOT/scripts/check-protocol-hash.sh"
+SYNC="$REPO_ROOT/scripts/sync-protocol-hash.sh"
 FIXTURES="$REPO_ROOT/tests/fixtures/protocol-hash"
 
 [ -x "$CHECK" ] || { echo "missing or non-executable: $CHECK" >&2; exit 2; }
@@ -95,8 +96,8 @@ assert_exit 1 "$status" "$output"
 assert_contains "must be a string" "$output"
 
 # ============================================================================
-# Test 5: sync round-trip — modify request.rs in a tempdir, run sync,
-#         re-check passes.
+# Test 5: sync round-trip — modify request.rs in a tempdir, run the
+#         actual sync helper (W4-review HIGH-2 fix), re-check passes.
 # ============================================================================
 echo "Test 5: sync round-trip in scratch dir"
 SCRATCH=$(mktemp -d)
@@ -112,14 +113,13 @@ status=$?
 set -e
 assert_exit 1 "$status" "$output"
 
-# Now run the sync helper directly (it derives REPO_ROOT from `git rev-parse`,
-# which won't work in $SCRATCH). Test by computing + writing the new hash via
-# the script's `--protocol-file` / `--plugin-file` path — call the python
-# script directly with --root.
-NEW_HASH=$(sha256sum "$SCRATCH/crates/core/src/protocol/request.rs" | awk '{print $1}')
-sed -E "s|\"protocol_hash\":\s*\"[a-f0-9]+\"|\"protocol_hash\": \"$NEW_HASH\"|" \
-    "$SCRATCH/.claude-plugin/plugin.json" > "$SCRATCH/.claude-plugin/plugin.json.new"
-mv "$SCRATCH/.claude-plugin/plugin.json.new" "$SCRATCH/.claude-plugin/plugin.json"
+# Run the real sync helper (now portable via python3) against the scratch.
+set +e
+output=$(bash "$SYNC" --root "$SCRATCH" 2>&1)
+status=$?
+set -e
+assert_exit 0 "$status" "$output"
+assert_contains "protocol-hash synced" "$output"
 
 # Re-check should pass.
 set +e
@@ -128,6 +128,41 @@ status=$?
 set -e
 assert_exit 0 "$status" "$output"
 assert_contains "protocol-hash: OK" "$output"
+
+# ============================================================================
+# Test 6: sync robustness — multi-line layout (W4-review HIGH-3 fix).
+#         JSON formatters sometimes wrap key/value onto separate lines;
+#         the python+re sync handles this, the prior sed-based one didn't.
+# ============================================================================
+echo "Test 6: sync handles multi-line plugin.json layout"
+SCRATCH2=$(mktemp -d)
+mkdir -p "$SCRATCH2/.claude-plugin" "$SCRATCH2/crates/core/src/protocol"
+cat > "$SCRATCH2/crates/core/src/protocol/request.rs" <<'RS'
+pub enum Request { Health }
+RS
+# Plugin.json with key/value split + uppercase hex (worst case for naive sed).
+cat > "$SCRATCH2/.claude-plugin/plugin.json" <<'JSON'
+{
+  "name": "fixture-multiline",
+  "protocol_hash":
+    "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"
+}
+JSON
+set +e
+output=$(bash "$SYNC" --root "$SCRATCH2" 2>&1)
+status=$?
+set -e
+assert_exit 0 "$status" "$output"
+assert_contains "protocol-hash synced" "$output"
+
+# Verify the plugin.json now has the correct hash.
+set +e
+output=$(bash "$CHECK" --root "$SCRATCH2" 2>&1)
+status=$?
+set -e
+assert_exit 0 "$status" "$output"
+
+rm -rf "$SCRATCH2"
 
 echo
 echo "protocol-hash fixture tests: $PASS passed, $FAIL failed"
