@@ -236,8 +236,8 @@ Highlight items worth surfacing here:
 * **Daemon SIGTERM handler** — strategic fix for the W5 HIGH-1
   finding. Requires `tokio::signal::unix::signal(SignalKind::terminate())`
   in `crates/daemon/src/main.rs`. Until landed, `systemctl stop` and
-  any default `kill PID` skip graceful shutdown. Track for P3-2 or
-  earlier.
+  any default `kill PID` skip graceful shutdown. **→ Lifted to P3-2 W7
+  per user sign-off 2026-04-25** (no longer P3-1 deferred).
 * **W5 §G4: pre-migration DB snapshot** — DB compatibility matrix
   in the rollback playbook flags this as a real production-safety
   hole when rolling back across schema boundaries.

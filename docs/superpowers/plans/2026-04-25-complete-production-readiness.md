@@ -71,7 +71,7 @@
 * **W5 §G4** — DB compatibility matrix flags `2P-1b §5a TODO: add pre-migration DB snapshot`. Genuine production-safety hole when rolling back across schema boundaries. Defer to a P3-3+ item.
 * **W5 §G5** — quarterly drill cadence is documented in the playbook's tabletop checklist but no calendar/cron reminder mechanism exists. Defer; consider a recurring HANDOFF entry or GitHub Actions cron workflow.
 * **W5 §G2** — `gh release delete --cleanup-tag=false` is non-idiomatic but functionally correct; the playbook now omits the flag in the default form (keep-tag) and shows bare `--cleanup-tag` in the optional opt-in branch. Closed by W5.
-* **W5 review HIGH-1 (daemon SIGTERM handler)** — the daemon currently registers only `tokio::signal::ctrl_c()` (= SIGINT). `systemctl stop` and any default `kill PID` send SIGTERM, which kills the daemon abruptly without running the socket-drain path. The W5 playbook fix uses `kill -INT` as a tactical workaround; the strategic fix is a `tokio::signal::unix::signal(SignalKind::terminate())` handler in `crates/daemon/src/main.rs` so SIGTERM also triggers graceful shutdown. Track for next P3-1 wave or P3-2.
+* **W5 review HIGH-1 (daemon SIGTERM handler)** — the daemon currently registers only `tokio::signal::ctrl_c()` (= SIGINT). `systemctl stop` and any default `kill PID` send SIGTERM, which kills the daemon abruptly without running the socket-drain path. The W5 playbook fix uses `kill -INT` as a tactical workaround; the strategic fix is a `tokio::signal::unix::signal(SignalKind::terminate())` handler in `crates/daemon/src/main.rs` so SIGTERM also triggers graceful shutdown. **→ Lifted to P3-2 W7 per user sign-off 2026-04-25.** No longer in P3-1 deferred state.
 * **W7 L4** — `${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}` with unset `$HOME` falls back to `/.claude/settings.json` and exits 0 with "nothing to check". Benign in practice (every CI runner has `$HOME` set); not worth a fix.
 
 ---
@@ -91,6 +91,10 @@
 | **W7** | **NEW** — Daemon SIGTERM handler (P3-1 W5 review HIGH-1 strategic fix). `tokio::signal::unix::signal(SignalKind::terminate())` in `crates/daemon/src/main.rs` so SIGTERM also triggers graceful socket-drain. Update rollback playbook to document `kill PID` is now safe (alongside the existing `kill -INT` for cross-platform). | `kill PID` (SIGTERM) and `kill -INT PID` (SIGINT) both produce identical graceful-shutdown traces; `systemctl stop` exits cleanly without abrupt kill; W5 §HIGH-1 closed strategically. |
 
 **Phase P3-2 close:** version bump to `0.6.0-rc.2`. HANDOFF rewrite. Halt.
+
+### P3-2 deferred backlog (per-wave review residue)
+
+* **P3-2 W1 review note (behavioral test gap)** — the W1 diff lands a structural+contract guarantee that `session_id` threads end-to-end through the trace surface. There is no behavioral unit/integration test that flips a session-scoped `context_injection` flag (e.g. via `forge-next config set context_injection.session_context=false --scope session=<id>`) and asserts the resulting `compile_context_trace` output mirrors the override (decisions/lessons appear in `excluded` rather than `considered`). The original bug class — handler dropping `inj` on the floor — is caught by the type system once the param threads through. A behavioral test would be additive only. Track for P3-2 W6 cosmetic batch (pairs naturally with the existing CompileContext+session-scope test if one exists; otherwise a green-add).
 
 ---
 

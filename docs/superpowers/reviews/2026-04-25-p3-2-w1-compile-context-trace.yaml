@@ -1,0 +1,29 @@
+schema_version: 1
+slug: 2026-04-25-p3-2-w1-compile-context-trace
+target_paths:
+  - crates/core/src/protocol/request.rs
+  - crates/core/src/protocol/contract_tests.rs
+  - crates/daemon/src/recall.rs
+  - crates/daemon/src/server/handler.rs
+  - crates/daemon/src/server/writer.rs
+  - crates/cli/src/main.rs
+  - crates/cli/src/commands/system.rs
+  - .claude-plugin/plugin.json
+  - docs/superpowers/plans/2026-04-25-complete-production-readiness.md
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 03a6a8b
+  head: a52cbc9
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-2-w1-compile-context-trace.transcript.md
+findings:
+  - id: LOW-1
+    severity: LOW
+    summary: P3-1 deferred backlog SIGTERM bullet not crossed off after W7 lift; orphan reference in plan + HANDOFF
+    file: docs/superpowers/plans/2026-04-25-complete-production-readiness.md
+    status: resolved
+    fixed_by: pending
