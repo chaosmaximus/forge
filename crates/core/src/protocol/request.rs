@@ -26,6 +26,21 @@ pub struct RecallQuery {
     pub limit: Option<usize>,
 }
 
+/// Phase 2A-4d.3.1 #2 (bench/test only): a synthetic session for
+/// driving one disposition-worker cycle without writing rows to the
+/// `session` table. Mirrors the only field consumed by the disposition
+/// trait-update math (`duration_secs`).
+///
+/// Used by `Request::StepDispositionOnce` for forge-identity Dim 2.
+#[cfg(any(test, feature = "bench"))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionFixture {
+    /// Session duration in seconds. The disposition worker buckets these
+    /// against `SHORT_SESSION_THRESHOLD_SECS` (60) and
+    /// `LONG_SESSION_THRESHOLD_SECS` (600).
+    pub duration_secs: i64,
+}
+
 /// A part of a session message (A2A-inspired).
 /// Supports text, file references, structured data, and memory references.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -150,6 +165,18 @@ pub enum Request {
     #[cfg(any(test, feature = "bench"))]
     ProbePhase {
         phase_name: String,
+    },
+    /// Phase 2A-4d.3.1 #2 (bench/test only): drive one disposition-worker
+    /// cycle on caller-provided synthetic sessions. Bypasses the
+    /// `session` table entirely so Dim 2 can deterministically push
+    /// per-trait deltas without polluting the bench DB. Returns the
+    /// per-trait before/after/delta state for the requested agent.
+    ///
+    /// Master v6 §13 D7. Used by forge-identity Dim 2.
+    #[cfg(any(test, feature = "bench"))]
+    StepDispositionOnce {
+        agent: String,
+        synthetic_sessions: Vec<SessionFixture>,
     },
     Health,
     /// Health counts grouped by project

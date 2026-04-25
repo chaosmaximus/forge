@@ -14,7 +14,11 @@ use tokio::sync::{watch, Mutex};
 // (default: 900 = 15 minutes)
 
 /// Maximum change per cycle.
-const MAX_DELTA: f64 = 0.05;
+///
+/// `pub(crate)` so the forge-identity bench (`bench::forge_identity` Dim 2)
+/// and `step_for_bench` below can echo the canonical value back to the
+/// caller without a second source of truth.
+pub(crate) const MAX_DELTA: f64 = 0.05;
 
 /// Default trait value for new dispositions.
 const DEFAULT_VALUE: f64 = 0.5;
@@ -187,6 +191,138 @@ fn tick_for_agent(conn: &rusqlite::Connection, agent_name: &str) {
 /// A minimal session summary for heuristic analysis.
 struct SessionSummary {
     duration_secs: i64,
+}
+
+/// Phase 2A-4d.3.1 #2 (bench/test only): drive one disposition-worker cycle
+/// on caller-provided synthetic sessions. Bypasses the `session` table so
+/// forge-identity Dim 2 can deterministically push per-trait deltas without
+/// polluting the bench DB.
+///
+/// Mirrors `tick_for_agent` steps 2-5 verbatim — same heuristics, same
+/// `clamp(-MAX_DELTA, MAX_DELTA)` enforcement, same `manas::store_disposition`
+/// upsert. The only divergence is the input source: caller-provided
+/// `Vec<SessionFixture>` instead of `query_recent_sessions_for_agent`.
+///
+/// Returns the per-trait before/after/delta state for both Caution and
+/// Thoroughness (the only traits the worker currently mutates — Autonomy /
+/// Verbosity / Creativity remain at their defaults). Returns `Err` only on
+/// SQL failure during read or write.
+///
+/// Gate is `feature = "bench"` (not `any(test, feature = "bench")`) because
+/// `cfg(test)` does not propagate across crates: forge-core's
+/// `SessionFixture` / `DispositionStepSummary` types are only visible to
+/// daemon when daemon's `bench` feature pulls in `forge-core/bench`.
+#[cfg(feature = "bench")]
+pub(crate) fn step_for_bench(
+    conn: &rusqlite::Connection,
+    agent_name: &str,
+    fixtures: &[forge_core::protocol::SessionFixture],
+) -> Result<forge_core::protocol::DispositionStepSummary, String> {
+    use forge_core::protocol::{DispositionStepSummary, DispositionTraitState};
+
+    // Empty fixture list = nothing to compute. Mirror tick_for_agent's
+    // early-return on empty sessions, but expose it as an Err so the bench
+    // doesn't silently get stale traits back.
+    if fixtures.is_empty() {
+        return Err("step_for_bench requires at least one synthetic session".to_string());
+    }
+
+    // 1. Heuristics — identical to tick_for_agent.
+    let total = fixtures.len();
+    let short_count = fixtures
+        .iter()
+        .filter(|s| s.duration_secs < SHORT_SESSION_THRESHOLD_SECS)
+        .count();
+    let long_count = fixtures
+        .iter()
+        .filter(|s| s.duration_secs >= LONG_SESSION_THRESHOLD_SECS)
+        .count();
+    let short_ratio = short_count as f64 / total as f64;
+    let long_ratio = long_count as f64 / total as f64;
+
+    // 2. Deltas — identical to tick_for_agent.
+    let caution_delta = if short_ratio > 0.5 {
+        MAX_DELTA * short_ratio
+    } else {
+        -MAX_DELTA * 0.5
+    }
+    .clamp(-MAX_DELTA, MAX_DELTA);
+
+    let thoroughness_delta = if long_ratio > 0.3 {
+        MAX_DELTA * long_ratio
+    } else if short_ratio > 0.5 {
+        -MAX_DELTA * short_ratio
+    } else {
+        0.0
+    }
+    .clamp(-MAX_DELTA, MAX_DELTA);
+
+    // 3. Current values.
+    let caution_before = get_current_value(conn, agent_name, DispositionTrait::Caution);
+    let thoroughness_before = get_current_value(conn, agent_name, DispositionTrait::Thoroughness);
+
+    let caution_after = (caution_before + caution_delta).clamp(0.0, 1.0);
+    let thoroughness_after = (thoroughness_before + thoroughness_delta).clamp(0.0, 1.0);
+
+    let evidence = vec![format!(
+        "agent={} sessions={} short={} long={} short_ratio={:.2} long_ratio={:.2} (bench)",
+        agent_name, total, short_count, long_count, short_ratio, long_ratio
+    )];
+
+    // 4. Store updated dispositions — same path as production.
+    let now = manas::now_offset(0);
+    let caution_trend = compute_trend(caution_before, caution_after);
+    let thoroughness_trend = compute_trend(thoroughness_before, thoroughness_after);
+
+    let caution = Disposition {
+        id: format!("{agent_name}-caution"),
+        agent: agent_name.to_string(),
+        disposition_trait: DispositionTrait::Caution,
+        domain: None,
+        value: caution_after,
+        trend: caution_trend.clone(),
+        updated_at: now.clone(),
+        evidence: evidence.clone(),
+    };
+    let thoroughness = Disposition {
+        id: format!("{agent_name}-thoroughness"),
+        agent: agent_name.to_string(),
+        disposition_trait: DispositionTrait::Thoroughness,
+        domain: None,
+        value: thoroughness_after,
+        trend: thoroughness_trend.clone(),
+        updated_at: now,
+        evidence,
+    };
+
+    manas::store_disposition(conn, &caution).map_err(|e| format!("store caution: {e}"))?;
+    manas::store_disposition(conn, &thoroughness)
+        .map_err(|e| format!("store thoroughness: {e}"))?;
+
+    // 5. Build summary — observed delta (after-before) so the caller sees
+    //    the post-clamp value, not the pre-clamp delta.
+    let traits = vec![
+        DispositionTraitState {
+            trait_name: "caution".to_string(),
+            value_before: caution_before,
+            value_after: caution_after,
+            delta: caution_after - caution_before,
+            trend: format!("{caution_trend:?}"),
+        },
+        DispositionTraitState {
+            trait_name: "thoroughness".to_string(),
+            value_before: thoroughness_before,
+            value_after: thoroughness_after,
+            delta: thoroughness_after - thoroughness_before,
+            trend: format!("{thoroughness_trend:?}"),
+        },
+    ];
+
+    Ok(DispositionStepSummary {
+        agent: agent_name.to_string(),
+        traits,
+        max_delta: MAX_DELTA,
+    })
 }
 
 /// Query distinct agent names from sessions in the last 24 hours (active or recently ended).
@@ -563,5 +699,142 @@ mod tests {
             vec![DEFAULT_AGENT_NAME.to_string()],
             "should fallback to default agent"
         );
+    }
+
+    // ── Phase 2A-4d.3.1 #2 — step_for_bench tests ────────────────
+    //
+    // Gated on `feature = "bench"` because step_for_bench's signature
+    // references forge-core bench-only types (SessionFixture,
+    // DispositionStepSummary). cfg(test) doesn't reach forge-core.
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn test_step_for_bench_rejects_empty_fixtures() {
+        let conn = open_db();
+        let err =
+            step_for_bench(&conn, "bench-agent", &[]).expect_err("empty fixtures should error");
+        assert!(
+            err.contains("at least one"),
+            "error message should explain the empty-fixture rejection: {err}"
+        );
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn test_step_for_bench_short_sessions_raise_caution_lower_thoroughness() {
+        let conn = open_db();
+        // 5 short sessions (30s each) — short_ratio = 1.0, long_ratio = 0.0.
+        let fixtures = vec![forge_core::protocol::SessionFixture { duration_secs: 30 }; 5];
+        let summary =
+            step_for_bench(&conn, "bench-agent", &fixtures).expect("first cycle succeeds");
+
+        assert_eq!(summary.agent, "bench-agent");
+        assert_eq!(summary.traits.len(), 2);
+        assert!(
+            (summary.max_delta - MAX_DELTA).abs() < f64::EPSILON,
+            "summary echoes MAX_DELTA verbatim"
+        );
+
+        let caution = summary
+            .traits
+            .iter()
+            .find(|t| t.trait_name == "caution")
+            .expect("caution trait reported");
+        assert!(
+            (caution.value_before - DEFAULT_VALUE).abs() < f64::EPSILON,
+            "fresh DB → caution starts at default 0.5"
+        );
+        assert!(
+            (caution.delta - MAX_DELTA).abs() < 1e-9,
+            "all-short fixtures → caution rises by exactly +MAX_DELTA, got delta {}",
+            caution.delta
+        );
+        assert!(caution.value_after > caution.value_before);
+        assert_eq!(caution.trend, "Rising");
+
+        let thoroughness = summary
+            .traits
+            .iter()
+            .find(|t| t.trait_name == "thoroughness")
+            .expect("thoroughness trait reported");
+        assert!(
+            (thoroughness.delta + MAX_DELTA).abs() < 1e-9,
+            "all-short fixtures → thoroughness falls by exactly -MAX_DELTA, got delta {}",
+            thoroughness.delta
+        );
+        assert_eq!(thoroughness.trend, "Falling");
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn test_step_for_bench_long_sessions_raise_thoroughness() {
+        let conn = open_db();
+        // 5 long sessions (700s each) — long_ratio = 1.0 (>0.3), short_ratio = 0.0.
+        // Worker math: caution_delta = -MAX_DELTA*0.5 = -0.025 (no short evidence).
+        //              thoroughness_delta = +MAX_DELTA*1.0 = +0.05.
+        let fixtures = vec![forge_core::protocol::SessionFixture { duration_secs: 700 }; 5];
+        let summary = step_for_bench(&conn, "bench-agent", &fixtures).expect("step succeeds");
+
+        let caution = summary
+            .traits
+            .iter()
+            .find(|t| t.trait_name == "caution")
+            .unwrap();
+        let thoroughness = summary
+            .traits
+            .iter()
+            .find(|t| t.trait_name == "thoroughness")
+            .unwrap();
+
+        assert!(
+            (caution.delta + MAX_DELTA * 0.5).abs() < 1e-9,
+            "all-long → caution falls by -MAX_DELTA/2, got {}",
+            caution.delta
+        );
+        assert!(
+            (thoroughness.delta - MAX_DELTA).abs() < 1e-9,
+            "all-long → thoroughness rises by +MAX_DELTA, got {}",
+            thoroughness.delta
+        );
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn test_step_for_bench_compounds_across_cycles() {
+        let conn = open_db();
+        let fixtures = vec![forge_core::protocol::SessionFixture { duration_secs: 30 }; 5];
+        // 10 cycles. Caution should reach 1.0 (cap at 1.0); thoroughness 0.0 (floor).
+        for _ in 0..10 {
+            step_for_bench(&conn, "bench-agent", &fixtures).expect("cycle succeeds");
+        }
+        let caution = get_current_value(&conn, "bench-agent", DispositionTrait::Caution);
+        let thoroughness = get_current_value(&conn, "bench-agent", DispositionTrait::Thoroughness);
+        assert!(
+            (caution - 1.0).abs() < 0.01,
+            "10 all-short cycles → caution ≈ 1.0, got {caution}"
+        );
+        assert!(
+            (thoroughness - 0.0).abs() < 0.01,
+            "10 all-short cycles → thoroughness ≈ 0.0, got {thoroughness}"
+        );
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn test_step_for_bench_respects_max_delta_under_extreme_ratio() {
+        let conn = open_db();
+        // 5 sessions all just under threshold = 100% short. Pre-clamp delta would be
+        // MAX_DELTA * 1.0 = 0.05 — at the boundary. The clamp must hold.
+        let fixtures = vec![forge_core::protocol::SessionFixture { duration_secs: 30 }; 5];
+        let summary = step_for_bench(&conn, "bench-agent", &fixtures).expect("step succeeds");
+        for t in &summary.traits {
+            assert!(
+                t.delta.abs() <= MAX_DELTA + 1e-9,
+                "trait {} delta {} exceeded max_delta {}",
+                t.trait_name,
+                t.delta,
+                MAX_DELTA
+            );
+        }
     }
 }

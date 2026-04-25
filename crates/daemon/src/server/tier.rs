@@ -306,6 +306,10 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         #[cfg(feature = "bench")]
         Request::ProbePhase { .. } => None,
 
+        // === Phase 2A-4d.3.1 #2: disposition step (bench/test only — no tier gate) ===
+        #[cfg(feature = "bench")]
+        Request::StepDispositionOnce { .. } => None,
+
         // === Phase 2A-4d.2: Observability API (always allowed — read-only diagnostics) ===
         Request::Inspect { .. } => None,
     }

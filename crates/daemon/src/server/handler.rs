@@ -1430,6 +1430,26 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        // Phase 2A-4d.3.1 #2: StepDispositionOnce — drive one disposition
+        // worker cycle on caller-provided synthetic sessions. Bench-only,
+        // mirrors `tick_for_agent` math without touching the session table.
+        #[cfg(feature = "bench")]
+        Request::StepDispositionOnce {
+            agent,
+            synthetic_sessions,
+        } => match crate::workers::disposition::step_for_bench(
+            &state.conn,
+            &agent,
+            &synthetic_sessions,
+        ) {
+            Ok(summary) => Response::Ok {
+                data: ResponseData::DispositionStep { summary },
+            },
+            Err(e) => Response::Error {
+                message: format!("step_disposition_once failed: {e}"),
+            },
+        },
+
         // Phase 2A-4b: ComputeRecencyFactor handler — T12.
         #[cfg(feature = "bench")]
         Request::ComputeRecencyFactor { memory_id } => {

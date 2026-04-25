@@ -10,6 +10,8 @@ pub use inspect::{
     default_inspect_window, BenchRunRow, ErrorRateRow, InspectData, InspectFilter, InspectGroupBy,
     InspectShape, LatencyRow, LayerRow, PhaseRunRow, ThroughputRow,
 };
+#[cfg(any(test, feature = "bench"))]
+pub use request::SessionFixture;
 pub use request::{EvaluationFinding, MessagePart, RecallQuery, Request};
 pub use response::{
     BlastRadiusDecision, ConflictPair, ConflictVersion, DiagnosticEntry, ExportEdge,
@@ -17,3 +19,5 @@ pub use response::{
     MemoryEdge, MemoryResult, RawDocumentInfo, RawSearchHit, Response, ResponseData, SessionInfo,
     SessionMessage, TraceEntry,
 };
+#[cfg(any(test, feature = "bench"))]
+pub use response::{DispositionStepSummary, DispositionTraitState};

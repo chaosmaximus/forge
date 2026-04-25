@@ -204,22 +204,129 @@ fn dim_1_identity_facet_persistence(
 
 /// Dim 2: disposition drift within the master v6 bounded-delta envelope.
 ///
-/// BLOCKED at T6 time — master v6 §13 D7 "Disposition worker bench
-/// fixtures" specifies a `Request::StepDispositionOnce { synthetic_sessions }`
-/// API that would let the bench drive 1 cycle at a time. That Request
-/// variant does NOT exist in `crates/core/src/protocol/request.rs`; adding
-/// it would expand scope beyond T6 (T6's contract explicitly forbids
-/// adding new Request variants). Deferred to the 2A-4d.3.1 backlog.
+/// Master v6 §4 Dim 2: "Scripted session-duration fixtures across 10 cycles;
+/// every cycle's per-trait delta ≤ 0.05 exactly; final values match expected
+/// trajectory within ±0.01."
 ///
-/// Until then this dimension returns score 0.0 / pass false; the composite
-/// degrades by 0.15 and T12 calibration will treat Dim 2 as a known gap.
-fn dim_2_disposition_drift(_state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> DimensionScore {
-    // BLOCKER: StepDispositionOnce Request variant missing (see fn doc).
+/// Bench design (Phase 2A-4d.3.1 #2 — `Request::StepDispositionOnce`):
+///
+///   * 10 cycles. Each cycle calls `Request::StepDispositionOnce` with 5
+///     short sessions (30s each, well below `SHORT_SESSION_THRESHOLD_SECS=60`).
+///     `short_ratio = 1.0`, `long_ratio = 0.0`.
+///   * Worker delta math (mirrored from `tick_for_agent`):
+///     `caution_delta = MAX_DELTA * short_ratio = +0.05`,
+///     `thoroughness_delta = -MAX_DELTA * short_ratio = -0.05`,
+///     both clamp to `±MAX_DELTA = ±0.05`.
+///   * Trajectory from default 0.5:
+///     caution: 0.5, 0.55, 0.6, …, 0.95, 1.00 (cycle 10 hits clamp(0..=1) cap)
+///     thoroughness: 0.5, 0.45, 0.4, …, 0.05, 0.00 (cycle 10 hits floor)
+///   * Per-dim isolation (master v6 §13 D7) means a fresh `:memory:` daemon
+///     so the `disposition` table starts empty → `get_current_value`
+///     returns DEFAULT_VALUE (0.5) on cycle 1.
+///
+/// Scoring is binary per master v6 §4:
+///   * If every observed delta satisfies `|delta| <= max_delta + 1e-9`
+///     AND final caution = 1.0 ± 0.01 AND final thoroughness = 0.0 ± 0.01
+///     → score 1.0.
+///   * Else → score 0.0.
+///
+/// Pass at score >= DIM_MINIMUMS[1] = 0.85.
+fn dim_2_disposition_drift(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> DimensionScore {
+    use forge_core::protocol::{Request, Response, ResponseData, SessionFixture};
+
+    const N_CYCLES: usize = 10;
+    const SESSIONS_PER_CYCLE: usize = 5;
+    const SHORT_DURATION: i64 = 30; // < SHORT_SESSION_THRESHOLD_SECS (60)
+    const FINAL_TOLERANCE: f64 = 0.01;
+    const DELTA_EPSILON: f64 = 1e-9;
+    const EXPECTED_FINAL_CAUTION: f64 = 1.0;
+    const EXPECTED_FINAL_THOROUGHNESS: f64 = 0.0;
+
+    let agent = "bench-dim2-agent";
+    let fixtures: Vec<SessionFixture> = (0..SESSIONS_PER_CYCLE)
+        .map(|_| SessionFixture {
+            duration_secs: SHORT_DURATION,
+        })
+        .collect();
+
+    let mut all_deltas_in_bound = true;
+    let mut last_caution = 0.0_f64;
+    let mut last_thoroughness = 0.0_f64;
+
+    for cycle in 0..N_CYCLES {
+        let req = Request::StepDispositionOnce {
+            agent: agent.to_string(),
+            synthetic_sessions: fixtures.clone(),
+        };
+        let resp = crate::server::handler::handle_request(state, req);
+        let summary = match resp {
+            Response::Ok {
+                data: ResponseData::DispositionStep { summary },
+            } => summary,
+            other => {
+                tracing::warn!("dim_2 step request failed at cycle {cycle}: {other:?}");
+                return DimensionScore {
+                    name: "disposition_drift".to_string(),
+                    score: 0.0,
+                    min: DIM_MINIMUMS[1],
+                    pass: false,
+                };
+            }
+        };
+
+        // Per-cycle delta-bound check on every trait the worker reports.
+        for ts in &summary.traits {
+            if ts.delta.abs() > summary.max_delta + DELTA_EPSILON {
+                tracing::warn!(
+                    "dim_2 cycle {} trait {} observed delta {} exceeds max_delta {}",
+                    cycle,
+                    ts.trait_name,
+                    ts.delta,
+                    summary.max_delta
+                );
+                all_deltas_in_bound = false;
+            }
+            match ts.trait_name.as_str() {
+                "caution" => last_caution = ts.value_after,
+                "thoroughness" => last_thoroughness = ts.value_after,
+                _ => {}
+            }
+        }
+    }
+
+    let caution_match = (last_caution - EXPECTED_FINAL_CAUTION).abs() <= FINAL_TOLERANCE;
+    let thoroughness_match =
+        (last_thoroughness - EXPECTED_FINAL_THOROUGHNESS).abs() <= FINAL_TOLERANCE;
+
+    if !caution_match {
+        tracing::warn!(
+            "dim_2 final caution {} not within ±{} of {}",
+            last_caution,
+            FINAL_TOLERANCE,
+            EXPECTED_FINAL_CAUTION
+        );
+    }
+    if !thoroughness_match {
+        tracing::warn!(
+            "dim_2 final thoroughness {} not within ±{} of {}",
+            last_thoroughness,
+            FINAL_TOLERANCE,
+            EXPECTED_FINAL_THOROUGHNESS
+        );
+    }
+
+    let score = if all_deltas_in_bound && caution_match && thoroughness_match {
+        1.0
+    } else {
+        0.0
+    };
+    let pass = score >= DIM_MINIMUMS[1];
+
     DimensionScore {
         name: "disposition_drift".to_string(),
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[1],
-        pass: false,
+        pass,
     }
 }
 
@@ -1780,10 +1887,10 @@ mod tests {
     #[tokio::test]
     async fn test_run_bench_infra_passes_on_fresh_state() {
         // 14 infra assertions pass on a fresh :memory: daemon; run_bench
-        // proceeds to dimensions. Dim 2 is still a stub (StepDispositionOnce
-        // Request variant missing — tracked in 2A-4d.3.1 backlog #2), so
-        // the overall composite cannot reach the 0.95 pass threshold and
-        // `score.pass` must remain false.
+        // proceeds through all 6 dimensions. With 2A-4d.3.1 #2 closed
+        // (StepDispositionOnce + Dim 2 body), every dimension scores ≥
+        // its per-dim minimum, the composite clears the 0.95 threshold,
+        // and `score.pass` is true on a clean run.
         let tmp = tempfile::tempdir().unwrap();
         let cfg = BenchConfig {
             seed: 42,
@@ -1801,17 +1908,28 @@ mod tests {
             score.infrastructure_checks.iter().all(|c| c.passed),
             "every infra check must pass on a fresh :memory: daemon"
         );
-        // Dim 2 must still be a stub (BLOCKED on StepDispositionOnce).
-        assert_eq!(
-            score.dimensions[1].score, 0.0,
-            "Dim 2 must still be a stub until StepDispositionOnce ships"
-        );
-        assert!(!score.dimensions[1].pass, "Dim 2 stub cannot pass");
-        // Composite stays below threshold while Dim 2 is missing → overall
-        // pass must remain false.
+        // Dim 2 now ships — score 1.0 / pass on the all-short trajectory.
         assert!(
-            !score.pass,
-            "Dim 2 stub keeps composite below 0.95 threshold"
+            score.dimensions[1].score >= DIM_MINIMUMS[1],
+            "Dim 2 (disposition_drift) should score ≥ {} after StepDispositionOnce, got {}",
+            DIM_MINIMUMS[1],
+            score.dimensions[1].score
+        );
+        assert!(score.dimensions[1].pass, "Dim 2 should pass");
+        // All dimensions clear their per-dim minimums.
+        for d in &score.dimensions {
+            assert!(d.pass, "dimension {} did not pass: {:?}", d.name, d);
+        }
+        // Composite ≥ 0.95 → overall pass true.
+        assert!(
+            score.composite >= COMPOSITE_THRESHOLD,
+            "composite {} below threshold {}",
+            score.composite,
+            COMPOSITE_THRESHOLD
+        );
+        assert!(
+            score.pass,
+            "overall pass should be true on a clean seed-42 run"
         );
         assert!(tmp.path().join("summary.json").exists());
     }

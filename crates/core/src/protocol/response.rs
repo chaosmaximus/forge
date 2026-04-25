@@ -78,6 +78,36 @@ pub struct HealthCheck {
     pub message: String,
 }
 
+/// Phase 2A-4d.3.1 #2 (bench/test only): per-trait before/after state from
+/// one disposition-worker cycle driven by `Request::StepDispositionOnce`.
+/// `delta` is the observed `value_after - value_before`; the worker enforces
+/// `|delta| <= MAX_DELTA` (0.05). `trend` mirrors the stored `Trend` enum
+/// as a string ("Rising"|"Falling"|"Stable").
+#[cfg(any(test, feature = "bench"))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DispositionTraitState {
+    pub trait_name: String,
+    pub value_before: f64,
+    pub value_after: f64,
+    pub delta: f64,
+    pub trend: String,
+}
+
+/// Phase 2A-4d.3.1 #2 (bench/test only): summary returned by
+/// `Request::StepDispositionOnce`. Contains the agent that was stepped,
+/// the per-trait state, and the worker's `MAX_DELTA` constant echoed back
+/// so the caller (typically forge-identity Dim 2) can verify enforcement
+/// without recompiling against the daemon.
+#[cfg(any(test, feature = "bench"))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DispositionStepSummary {
+    pub agent: String,
+    pub traits: Vec<DispositionTraitState>,
+    /// Echo of `workers::disposition::MAX_DELTA`. Worker contract: every
+    /// `traits[i].delta` satisfies `delta.abs() <= max_delta + epsilon`.
+    pub max_delta: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResponseData {
@@ -134,6 +164,12 @@ pub enum ResponseData {
     PhaseProbe {
         executed_at_phase_index: usize,
         executed_after: Vec<String>,
+    },
+    /// Phase 2A-4d.3.1 #2 (bench/test only): success response for
+    /// `Request::StepDispositionOnce`.
+    #[cfg(any(test, feature = "bench"))]
+    DispositionStep {
+        summary: DispositionStepSummary,
     },
     Health {
         decisions: usize,
