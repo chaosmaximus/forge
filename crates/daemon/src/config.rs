@@ -561,6 +561,110 @@ impl Default for ContextInjectionConfig {
     }
 }
 
+/// Phase 2A-4d.3.1 #3 H1 (W5): resolve a `ContextInjectionConfig` for the
+/// scope chain anchored at `session_id`. Starts from the global config
+/// (loaded via [`load_config`]) and lets per-scope overrides
+/// (organization → team → user → reality → agent → session) replace
+/// flag values via the `resolve_scoped_config` mechanism in
+/// [`crate::db::ops`].
+///
+/// Looks up the session row once to harvest `user_id`, `team_id`,
+/// `organization_id`, `reality_id`. If the session doesn't exist,
+/// returns the global config unchanged. Each of the 6 toggles is
+/// resolved independently — operators can override a single flag
+/// without disturbing the others.
+///
+/// The keys queried are
+/// `context_injection.session_context`,
+/// `context_injection.active_state`,
+/// `context_injection.skills`,
+/// `context_injection.anti_patterns`,
+/// `context_injection.blast_radius`,
+/// `context_injection.preferences` —
+/// the same flat keys used by the global TOML, env overrides, and the
+/// `forge-next config set` CLI dispatch arms.
+///
+/// Boolean values are parsed by `value.eq_ignore_ascii_case("true")` —
+/// rationale: `forge-next config set context_injection.<key> true|false`
+/// stores the literal string. Unparseable values fall back to the
+/// global config (with a debug log) so operators don't lock themselves
+/// out of context with a typo.
+pub fn resolve_context_injection_for_session(
+    conn: &rusqlite::Connection,
+    session_id: Option<&str>,
+    agent: Option<&str>,
+) -> ContextInjectionConfig {
+    let global = load_config().context_injection;
+    // Without a session anchor there's nothing to resolve against —
+    // bail with the global config (the prior path's behavior).
+    let Some(sid) = session_id else {
+        return global;
+    };
+
+    // Look up the session row once for user/team/org/reality scope.
+    // Treat any DB error as "no session row" — fall back to global.
+    type SessionScope = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let scope: Option<SessionScope> = conn
+        .query_row(
+            "SELECT user_id, team_id, organization_id, reality_id \
+             FROM session WHERE id = ?1",
+            rusqlite::params![sid],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .ok();
+    let (user_id, team_id, org_id, reality_id) = scope.unwrap_or((None, None, None, None));
+
+    let mut resolved = global.clone();
+
+    let resolve_bool = |key: &str, current: bool| -> bool {
+        match crate::db::ops::resolve_scoped_config(
+            conn,
+            key,
+            Some(sid),
+            agent,
+            reality_id.as_deref(),
+            user_id.as_deref(),
+            team_id.as_deref(),
+            org_id.as_deref(),
+        ) {
+            Ok(Some(rv)) => {
+                if rv.value.eq_ignore_ascii_case("true") {
+                    true
+                } else if rv.value.eq_ignore_ascii_case("false") {
+                    false
+                } else {
+                    tracing::debug!(
+                        target: "forge::config",
+                        key,
+                        value = %rv.value,
+                        "scoped context_injection value not a bool — falling back to global"
+                    );
+                    current
+                }
+            }
+            _ => current,
+        }
+    };
+
+    resolved.session_context = resolve_bool(
+        "context_injection.session_context",
+        resolved.session_context,
+    );
+    resolved.active_state = resolve_bool("context_injection.active_state", resolved.active_state);
+    resolved.skills = resolve_bool("context_injection.skills", resolved.skills);
+    resolved.anti_patterns =
+        resolve_bool("context_injection.anti_patterns", resolved.anti_patterns);
+    resolved.blast_radius = resolve_bool("context_injection.blast_radius", resolved.blast_radius);
+    resolved.preferences = resolve_bool("context_injection.preferences", resolved.preferences);
+
+    resolved
+}
+
 /// Consolidation batch configuration — limits for consolidation phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

@@ -522,6 +522,49 @@ pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<
     compile_static_prefix_with_inj(conn, agent, session_id, &inj)
 }
 
+/// Phase 2A-4d.3.1 #3 H3 (W5): count the layers actually present in a
+/// compiled context for the `layers_used` field on the
+/// `context_compiled` event and `CompiledContext` response. Mirrors the
+/// 4-layer (static-only) / 9-layer (full) accounting used pre-W5, but
+/// adjusts for sections that `ContextInjectionConfig` flags suppress
+/// (which still emit self-closing tags but are conventionally not
+/// counted as "layers" for HUD operator-visibility purposes).
+///
+/// Static-only count includes:
+///   * `<platform>` and `<tools>` (always present — describe host env,
+///     not the injection surface)
+///   * `<identity>` and `<disposition>` (gated on `inj.session_context`)
+///
+/// Full count adds the dynamic-suffix headline sections:
+///   * `<decisions>` + `<lessons>` (gated on `inj.session_context`)
+///   * `<skills>` (gated on `inj.skills`)
+///   * `<perceptions>` + `<working-set>` (gated on `inj.active_state`)
+///
+/// Sub-sections like `<active-protocols>`, `<project-conventions>`,
+/// `<guardrails>`, `<deferred-items>`, `<notifications>`,
+/// `<pending-messages>`, `<meeting-context>`, `<preferences>`, etc.
+/// are NOT counted — they're operator-visible by their own absence
+/// markers, and the historical 9-layer accounting predates them.
+pub fn count_layers_used(inj: &crate::config::ContextInjectionConfig, static_only: bool) -> usize {
+    let mut count = 2; // <platform> + <tools>
+    if inj.session_context {
+        count += 2; // <identity> + <disposition>
+    }
+    if static_only {
+        return count;
+    }
+    if inj.session_context {
+        count += 2; // <decisions> + <lessons>
+    }
+    if inj.skills {
+        count += 1; // <skills>
+    }
+    if inj.active_state {
+        count += 2; // <perceptions> + <working-set>
+    }
+    count
+}
+
 /// Phase 2A-4d.3.1 #3 H6: variant of [`compile_static_prefix`] that
 /// accepts a pre-loaded [`crate::config::ContextInjectionConfig`].
 /// Use this when the same request compiles more than one context
@@ -849,6 +892,16 @@ pub fn compile_dynamic_suffix_with_inj(
     // Phase 2A-4d.3.1 #3: a section is disabled when EITHER the request's
     // `excluded_layers` list names it OR the corresponding feature flag in
     // `context_injection` is false. The flags compose orthogonally.
+    //
+    // Compose direction (H4): the OR is intentionally "operator-disable
+    // wins". A request that explicitly excludes a layer via
+    // `excluded_layers` always suppresses it, even if the global
+    // `context_injection.<flag>` is true. Likewise, a globally-disabled
+    // flag suppresses its sections even when the request didn't list
+    // them in `excluded_layers`. There is NO "force-include" semantic:
+    // a request that wants a flag-disabled section back must flip the
+    // global flag (operators control coarse policy; per-request the
+    // only verb is "disable further").
     let section_disabled =
         |layer: &str, flag: bool| -> bool { excluded_layers.iter().any(|l| l == layer) || !flag };
 
@@ -2004,6 +2057,13 @@ pub fn compile_context(conn: &Connection, agent: &str, project: Option<&str>) ->
 /// trace entries showing why each memory was considered, included, or excluded.
 ///
 /// Returns data for the ContextTrace response variant.
+///
+/// Phase 2A-4d.3.1 #3 H2 (W5): now honors `context_injection` flags so the
+/// trace surface matches the actual compile surface. With `session_context
+/// = false`, decisions and lessons emit a single "excluded: gated by
+/// context_injection.session_context" entry per memory rather than
+/// silently appearing in the considered/included list. Operators using
+/// `forge-next observe` to debug context bloat now see the real story.
 pub fn compile_context_trace(
     conn: &Connection,
     _agent: &str,
@@ -2015,14 +2075,16 @@ pub fn compile_context_trace(
     let budget: usize = ctx_config.budget_chars;
     let decisions_limit = ctx_config.decisions_limit;
     let lessons_limit = ctx_config.lessons_limit;
+    let inj = crate::config::load_config().context_injection;
     let mut used = 0usize;
     let mut considered = Vec::new();
     let mut included = Vec::new();
     let mut excluded = Vec::new();
     let mut layer_chars: HashMap<String, usize> = HashMap::new();
 
-    // Decisions
-    {
+    // Decisions — gated on inj.session_context (matches the recall
+    // section_disabled rule for the "decisions" layer).
+    if inj.session_context {
         let decisions: Vec<(String, String, f64, f64)> = if let Some(proj) = project {
             conn.prepare(&format!(
                 "SELECT id, title, confidence, COALESCE(activation_level, 0.0) FROM memory
@@ -2080,10 +2142,24 @@ pub fn compile_context_trace(
             }
         }
         layer_chars.insert("decisions".into(), decision_chars);
+    } else {
+        // Section gated off — surface a single synthetic exclusion entry
+        // so operators see the suppression in the trace without leaking
+        // the gated contents.
+        excluded.push(TraceEntry {
+            id: "<gated>".to_string(),
+            title: "<decisions section gated off>".to_string(),
+            memory_type: "decision".into(),
+            confidence: 0.0,
+            activation_level: 0.0,
+            reason: "excluded: gated by context_injection.session_context".to_string(),
+        });
+        layer_chars.insert("decisions".into(), 0);
     }
 
-    // Lessons
-    {
+    // Lessons — gated on inj.session_context (matches the recall
+    // section_disabled rule for the "lessons" layer).
+    if inj.session_context {
         let lessons: Vec<(String, String, f64, f64)> = if let Some(proj) = project {
             conn.prepare(&format!(
                 "SELECT id, title, confidence, COALESCE(activation_level, 0.0) FROM memory
@@ -2141,6 +2217,16 @@ pub fn compile_context_trace(
             }
         }
         layer_chars.insert("lessons".into(), lesson_chars);
+    } else {
+        excluded.push(TraceEntry {
+            id: "<gated>".to_string(),
+            title: "<lessons section gated off>".to_string(),
+            memory_type: "lesson".into(),
+            confidence: 0.0,
+            activation_level: 0.0,
+            reason: "excluded: gated by context_injection.session_context".to_string(),
+        });
+        layer_chars.insert("lessons".into(), 0);
     }
 
     ContextTraceData {

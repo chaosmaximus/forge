@@ -2485,7 +2485,17 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         cluster_name: None,
                         cluster_files: Vec::new(),
                         warnings: vec![
-                            "blast_radius injection suppressed via context_injection.blast_radius = false".to_string(),
+                            // Phase 2A-4d.3.1 #3 H5 (W5): give the operator
+                            // an actionable next step rather than a bare
+                            // "suppressed" notice — they shouldn't have to
+                            // grep the source to learn how to re-enable.
+                            "blast-radius injection is currently disabled. \
+                             To re-enable: `forge-next config set context_injection.blast_radius true` \
+                             (or set FORGE_CONTEXT_INJECTION_BLAST_RADIUS=true). \
+                             This message and the empty result come from the \
+                             daemon's gate at `handler::Request::BlastRadius`; \
+                             the analysis itself was not run."
+                                .to_string(),
                         ],
                         calling_files: Vec::new(),
                     },
@@ -3151,8 +3161,17 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // Phase 2A-4d.3.1 #3 H6: load config once for the whole arm so
             // compile_static_prefix + compile_dynamic_suffix share a single
             // ContextInjectionConfig instead of each paying for a disk read.
+            //
+            // W5 H1: also resolve scoped overrides for context_injection
+            // flags (org / team / user / reality / agent / session) when
+            // the request carries a session_id. With no session anchor,
+            // this collapses to the global config (prior behavior).
             let config = crate::config::load_config();
-            let inj = config.context_injection.clone();
+            let inj = crate::config::resolve_context_injection_for_session(
+                &state.conn,
+                sid,
+                Some(agent_name),
+            );
             let static_prefix =
                 crate::recall::compile_static_prefix_with_inj(&state.conn, agent_name, sid, &inj);
 
@@ -3174,7 +3193,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         context: static_prefix.clone(),
                         static_prefix,
                         dynamic_suffix: String::new(),
-                        layers_used: 4, // platform, identity, disposition, tools
+                        // Phase 2A-4d.3.1 #3 H3 (W5): count actual present
+                        // layers given inj flags rather than hard-coding 4.
+                        layers_used: crate::recall::count_layers_used(&inj, true),
                         chars,
                     },
                 }
@@ -3214,6 +3235,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     }
                 }
                 // Emit context_compiled event
+                // Phase 2A-4d.3.1 #3 H3 (W5): layers_used reflects the
+                // actually-present sections given the inj flags, not a
+                // hard-coded 9.
+                let layers_used_full = crate::recall::count_layers_used(&inj, false);
                 crate::events::emit(
                     &state.events,
                     "context_compiled",
@@ -3221,7 +3246,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         "static_chars": static_prefix.len(),
                         "dynamic_chars": dynamic_suffix.len(),
                         "total_chars": chars,
-                        "layers_used": 9,
+                        "layers_used": layers_used_full,
                     }),
                 );
                 // Touch the exact decisions+lessons that were included in context compilation.
@@ -3250,7 +3275,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         context: full,
                         static_prefix,
                         dynamic_suffix,
-                        layers_used: 9, // platform, identity, disposition, tools, decisions, lessons, skills, perceptions, working-set
+                        // Phase 2A-4d.3.1 #3 H3 (W5): same dynamic count
+                        // already computed above for the event payload.
+                        layers_used: layers_used_full,
                         chars,
                     },
                 }
