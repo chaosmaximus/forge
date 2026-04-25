@@ -11,8 +11,9 @@ if ! command -v shellcheck &>/dev/null; then
 fi
 
 errors=0
-# Scan both scripts/ and scripts/hooks/ — the latter carries the agent-facing
-# hook surface and used to be excluded by the top-level glob (2P-1b §10).
+# Scan scripts/ (incl. scripts/hooks/) plus tests/scripts/ — the latter carries
+# fixture/integration test runners that ship as part of the public surface
+# (run from CI, called by operators reproducing dogfood failures).
 while IFS= read -r script; do
   name="${script#"$PLUGIN_ROOT"/}"
   if shellcheck -x -S warning "$script" 2>&1; then
@@ -21,6 +22,11 @@ while IFS= read -r script; do
     echo "[FAIL] $name has shellcheck warnings"
     errors=$((errors + 1))
   fi
-done < <(find "$PLUGIN_ROOT/scripts" -maxdepth 2 -type f -name '*.sh' | sort)
+done < <(
+  {
+    find "$PLUGIN_ROOT/scripts" -maxdepth 2 -type f -name '*.sh'
+    find "$PLUGIN_ROOT/tests/scripts" -maxdepth 1 -type f -name '*.sh' 2>/dev/null
+  } | sort
+)
 
 [ $errors -eq 0 ] && echo "=== All scripts pass shellcheck ===" || { echo "=== $errors script(s) have warnings ==="; exit 1; }

@@ -7,23 +7,80 @@
 # methods + CLI subcommands that actually exist in the public daemon.
 #
 # Run modes:
-#   default           WARN — prints every unknown reference to stderr, exits 0
-#   FORCE_FAIL=1      FAIL — exits non-zero if any unknown is found
+#   default                          auto-derived from $AMNESTY_END_DATE:
+#                                    WARN before, FAIL on/after.
+#   FORGE_HARNESS_SYNC_ENFORCE=1     FAIL — exits non-zero on any drift.
+#   FORGE_HARNESS_SYNC_ENFORCE=0     WARN — explicit override (escape hatch).
+#   FORCE_FAIL=1                     legacy alias for FORGE_HARNESS_SYNC_ENFORCE=1.
 #
 # Exit codes:
-#   0  — all referenced symbols resolve (or WARN mode with drift)
-#   1  — FORCE_FAIL set AND drift detected
-#   2  — usage error / missing authoritative source
+#   0  — no drift, OR drift in WARN mode
+#   1  — drift detected and mode == FAIL
+#   2  — usage error / missing authoritative source / parser regression
 #
-# Plan to flip to fail-closed: 2 weeks from 2026-04-24 → 2026-05-08. After
-# that, the CI step that wraps this script sets FORCE_FAIL=1.
+# Arguments:
+#   --root <dir>      override the inferred repo root (used by integration tests
+#                     against fixture directories).
+#
+# Threshold overrides (used by fixture tests with synthetic small enums):
+#   FORGE_HARNESS_SYNC_MIN_REQUEST   minimum Request enum variants the parser
+#                                    must extract (default 50).
+#   FORGE_HARNESS_SYNC_MIN_CLI       minimum CLI subcommands (default 20).
+#
+# Amnesty: this script lands 2026-04-25 in WARN mode. Auto-flips to FAIL on
+# AMNESTY_END_DATE below. CI workflow doesn't need to set FORGE_HARNESS_SYNC_ENFORCE
+# — the date check inside the script handles the flip without a workflow edit.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# 14-day amnesty from 2026-04-25 (W1 land date) — fail-closed kicks in
+# automatically once `date -u` reaches or exceeds this value.
+AMNESTY_END_DATE="2026-05-09"
+
+REPO_ROOT_OVERRIDE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --root)
+            if [ -z "${2:-}" ]; then
+                echo "ERROR: --root requires a path" >&2
+                exit 2
+            fi
+            REPO_ROOT_OVERRIDE="$2"
+            shift 2
+            ;;
+        --help|-h)
+            sed -n '1,/^set -euo/p' "$0" | sed '$d'
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [ -n "$REPO_ROOT_OVERRIDE" ]; then
+    REPO_ROOT="$REPO_ROOT_OVERRIDE"
+else
+    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+fi
 REQ_RS="$REPO_ROOT/crates/core/src/protocol/request.rs"
 CLI_MAIN="$REPO_ROOT/crates/cli/src/main.rs"
-MODE="${FORCE_FAIL:-0}"
+
+# Mode resolution. Explicit env vars override; otherwise auto-flip on date.
+TODAY=$(date -u +%Y-%m-%d)
+if [ -n "${FORGE_HARNESS_SYNC_ENFORCE:-}" ]; then
+    MODE="$FORGE_HARNESS_SYNC_ENFORCE"
+elif [ -n "${FORCE_FAIL:-}" ]; then
+    MODE="$FORCE_FAIL"
+elif [ "$TODAY" \> "$AMNESTY_END_DATE" ] || [ "$TODAY" = "$AMNESTY_END_DATE" ]; then
+    MODE=1
+else
+    MODE=0
+fi
+
+MIN_REQUEST_VARIANTS="${FORGE_HARNESS_SYNC_MIN_REQUEST:-50}"
+MIN_CLI_SUBCOMMANDS="${FORGE_HARNESS_SYNC_MIN_CLI:-20}"
 
 [ -f "$REQ_RS" ] || { echo "missing $REQ_RS" >&2; exit 2; }
 [ -f "$CLI_MAIN" ] || { echo "missing $CLI_MAIN" >&2; exit 2; }
@@ -79,10 +136,10 @@ grep -E '^\s+[A-Z][a-zA-Z0-9]+(\s*\{|,|\s*$)' "$REQ_RS" \
     done \
   | sort -u > "$request_methods_file"
 
-# Sanity: at least 50 variants expected.
+# Sanity: at least MIN_REQUEST_VARIANTS variants expected.
 req_count=$(wc -l < "$request_methods_file")
-if [ "$req_count" -lt 50 ]; then
-    echo "error: extracted only $req_count Request variants from $REQ_RS — parser regression?" >&2
+if [ "$req_count" -lt "$MIN_REQUEST_VARIANTS" ]; then
+    echo "error: extracted only $req_count Request variants from $REQ_RS (min $MIN_REQUEST_VARIANTS) — parser regression?" >&2
     exit 2
 fi
 
@@ -110,8 +167,8 @@ cli_commands_file="$(mktemp)"
 } | sort -u > "$cli_commands_file"
 
 cli_count=$(wc -l < "$cli_commands_file")
-if [ "$cli_count" -lt 20 ]; then
-    echo "error: extracted only $cli_count CLI subcommands from $CLI_MAIN — parser regression?" >&2
+if [ "$cli_count" -lt "$MIN_CLI_SUBCOMMANDS" ]; then
+    echo "error: extracted only $cli_count CLI subcommands from $CLI_MAIN (min $MIN_CLI_SUBCOMMANDS) — parser regression?" >&2
     exit 2
 fi
 
