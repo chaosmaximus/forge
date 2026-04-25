@@ -176,12 +176,21 @@ impl DaemonState {
     /// Shares the event bus, HLC, and started_at from the write state so that
     /// read handlers (e.g. CompileContext, GuardrailsCheck) can emit events
     /// and Status can report uptime.
+    ///
+    /// Phase 2A-4d.2.1 #1: `metrics` plumbs the daemon-wide
+    /// `Arc<ForgeMetrics>` so the per-request reader can lazy-refresh
+    /// the gauge snapshot for `/inspect row_count` (otherwise the
+    /// snapshot stays at `refreshed_at_secs == 0` on daemons that
+    /// never get a `/metrics` scrape, and `row_count` always returns
+    /// `stale: true`). Pass `None` from health probes, skills lookups,
+    /// and other paths that never call `Inspect`.
     pub fn new_reader(
         db_path: &str,
         events: EventSender,
         hlc: Arc<crate::sync::Hlc>,
         started_at: Instant,
         writer_tx: Option<tokio::sync::mpsc::Sender<super::writer::WriteCommand>>,
+        metrics: Option<Arc<crate::server::metrics::ForgeMetrics>>,
     ) -> Result<Self, String> {
         // Must init sqlite-vec extension before opening any connection
         crate::db::vec::init_sqlite_vec();
@@ -201,7 +210,7 @@ impl DaemonState {
             diagnostics_tx: None,
             writer_tx,
             raw_embedder: None,
-            metrics: None,
+            metrics,
         })
     }
 }

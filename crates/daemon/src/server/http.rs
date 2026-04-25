@@ -179,12 +179,15 @@ async fn api_handler(
 
     let response = if is_read_only(&request) {
         // Open per-request read-only connection (same pattern as socket.rs)
+        // Phase 2A-4d.2.1 #1: thread the daemon-wide metrics Arc so
+        // `/inspect row_count` can lazy-refresh the gauge snapshot.
         match DaemonState::new_reader(
             &state.db_path,
             state.events.clone(),
             Arc::clone(&state.hlc),
             state.started_at,
             Some(state.write_tx.clone()),
+            state.metrics.clone(),
         ) {
             Ok(mut reader) => handle_request(&mut reader, request),
             Err(e) => {
@@ -283,6 +286,7 @@ async fn skills_handler(
         state.events.clone(),
         Arc::clone(&state.hlc),
         state.started_at,
+        None,
         None,
     ) {
         Ok(reader) => {

@@ -47,6 +47,7 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
         std::sync::Arc::clone(&state.hlc),
         state.started_at,
         None,
+        None,
     ) {
         Ok(reader) => {
             // Verify DB is actually responsive with a simple query
@@ -104,6 +105,7 @@ pub async fn startupz(State(state): State<AppState>) -> impl IntoResponse {
         state.events.clone(),
         std::sync::Arc::clone(&state.hlc),
         state.started_at,
+        None,
         None,
     ) {
         Ok(reader) => {

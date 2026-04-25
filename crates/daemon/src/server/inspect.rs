@@ -346,6 +346,12 @@ fn shape_latency(
         total_seen += 1;
         if total_seen > MAX_TOTAL_ROWS {
             hit_total_cap = true;
+            // Phase 2A-4d.2.1 #6: credit the cap-triggering row to its
+            // group's `truncated_samples`. Previously this row was
+            // counted in `total_seen` but never accounted for in any
+            // bucket — undercounting per-group truncation by 1 for the
+            // affected group whenever the global cap fired.
+            *truncated_by_group.entry(k).or_insert(0) += 1;
             break;
         }
         let bucket = buckets.entry(k.clone()).or_default();

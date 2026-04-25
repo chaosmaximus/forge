@@ -91,6 +91,8 @@ impl ForgeService for ForgeServiceImpl {
                 Arc::clone(&self.state.hlc),
                 self.state.started_at,
                 Some(self.state.write_tx.clone()),
+                None, // GrpcState lacks a metrics field today; row_count
+                      // lazy-refresh runs only on the HTTP /api path.
             ) {
                 Ok(mut reader) => handle_request(&mut reader, req),
                 Err(e) => {

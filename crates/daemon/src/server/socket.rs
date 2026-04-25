@@ -181,6 +181,7 @@ pub async fn run_server(
                     let mut reader_state = match DaemonState::new_reader(
                         &db_path, events.clone(), hlc, started_at,
                         Some(write_tx.clone()),
+                        None,
                     ) {
                         Ok(s) => s,
                         Err(e) => {

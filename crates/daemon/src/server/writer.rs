@@ -973,6 +973,7 @@ mod tests {
             hlc,
             started_at,
             None,
+            None,
         )
         .unwrap();
 
@@ -1071,6 +1072,7 @@ mod tests {
             hlc,
             started_at,
             None,
+            None,
         )
         .unwrap();
 
@@ -1150,6 +1152,7 @@ mod tests {
             hlc,
             started_at,
             None,
+            None,
         )
         .unwrap();
 
@@ -1226,6 +1229,7 @@ mod tests {
             hlc,
             started_at,
             None,
+            None,
         )
         .unwrap();
 
@@ -1297,6 +1301,7 @@ mod tests {
             events,
             hlc,
             started_at,
+            None,
             None,
         )
         .unwrap();

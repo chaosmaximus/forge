@@ -2661,6 +2661,16 @@ Phase 2A-4d.2 observability API. Queries `kpi_events` or the per-layer `GaugeSna
 
 `stale=true` indicates `shape=row_count` was served from a stale or empty snapshot. `truncated=true` indicates at least one group hit the per-group sample cap during percentile calculation. See `docs/superpowers/specs/2026-04-24-forge-identity-observability-tier2-design.md` §2 for the full validity matrix.
 
+**Percentile convention.** `p50_ms` / `p95_ms` / `p99_ms` use **ceiling-rank percentiles** on the sorted samples — `sorted[ceil(p * n) - 1]`, clamped to `[0, n-1]`. This means percentiles are always concrete observed sample values (no interpolation between adjacent samples), which keeps the units of the response identical to the underlying `latency_ms` values from `kpi_events`.
+
+Edge cases worth knowing:
+
+- For `n = 1` every percentile (`p50` / `p95` / `p99`) returns the single sample.
+- For `n = 2`, `p50` returns `sorted[0]` (the **minimum**, not the average) — `ceil(0.5 * 2) - 1 = 0`. With more samples, `p50` gravitates to the median as expected.
+- For empty groups, percentiles return `0.0` and `count = 0`; this is reachable only when filters reduce the group to zero rows after the global cap.
+
+Choose this convention vs interpolated percentiles (PERCENTILE_CONT) deliberately — the consumers of `/inspect` are operator dashboards that benefit from "this is a real observed sample" semantics. If you need interpolated percentiles, compute them client-side from the underlying events.
+
 ### get_stats
 
 Get aggregated metrics for a time period.

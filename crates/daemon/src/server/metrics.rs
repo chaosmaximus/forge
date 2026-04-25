@@ -341,6 +341,7 @@ fn refresh_gauges(metrics: &ForgeMetrics, state: &AppState) {
         std::sync::Arc::clone(&state.hlc),
         state.started_at,
         None,
+        None,
     ) {
         Ok(r) => r,
         Err(e) => {
