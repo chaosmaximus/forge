@@ -100,7 +100,7 @@ fastembed = "5"
 # Using rand 0.9 / rand_chacha 0.9 to stay on the same major tree as the
 # existing transitive dependencies (tokio-tungstenite, axum, etc. already
 # pull rand 0.9.2), avoiding a dual rand 0.8 + 0.9 ecosystem.
-rand = "0.9"
+rand = "0.10"
 rand_chacha = "0.9"
 thiserror = "1"
 
