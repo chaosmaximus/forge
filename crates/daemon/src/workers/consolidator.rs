@@ -22,7 +22,7 @@ use forge_core::types::memory::{Memory, MemoryType};
 use rusqlite::Connection;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::watch;
 
 // Interval is now configurable via ForgeConfig.workers.consolidation_interval_secs
 // (default: 1800 = 30 minutes)
@@ -2624,35 +2624,64 @@ pub fn apply_quality_pressure_with_errors(
     (accel_decayed + normal_decayed + boosted, errors)
 }
 
+/// Phase 2A-4d.1.1 #1 (W6): the consolidator now owns its own SQLite
+/// connection rather than locking `Arc<Mutex<DaemonState>>` for the
+/// duration of each pass. Workers (`perception`, `indexer`,
+/// `diagnostics`, the writer actor) that share the state mutex no
+/// longer block on the consolidator's 2–30 s pass.
+///
+/// Callers pass `db_path`, `events`, and `metrics` directly — same
+/// pattern used by the writer actor and the session/kpi reapers.
+/// SQLite WAL mode handles concurrent readers + a single writer, and
+/// the writer actor still serializes mutating requests, so the
+/// consolidator's owned writer connection contends with at most one
+/// other writer at a time (busy_timeout pragma absorbs that).
 pub async fn run_consolidator(
-    state: Arc<Mutex<crate::server::handler::DaemonState>>,
+    db_path: String,
+    events: crate::events::EventSender,
+    metrics: Option<Arc<crate::server::metrics::ForgeMetrics>>,
     mut shutdown_rx: watch::Receiver<bool>,
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
     tracing::info!(target: "forge::consolidator", ?interval, "started");
 
+    // sqlite-vec extension must be loaded on the connection that runs
+    // any vector ops. Initialize once before opening.
+    crate::db::vec::init_sqlite_vec();
+    let conn = match Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                target: "forge::consolidator",
+                error = %e,
+                db_path = %db_path,
+                "failed to open consolidator-owned connection — exiting worker"
+            );
+            return;
+        }
+    };
+    if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;") {
+        tracing::warn!(
+            target: "forge::consolidator",
+            error = %e,
+            "PRAGMA setup failed (continuing — defaults may add lock contention)"
+        );
+    }
+
     loop {
         tokio::select! {
             _ = tokio::time::sleep(interval) => {
-                // Clone event sender before any phase
-                let event_tx = {
-                    let locked = state.lock().await;
-                    locked.events.clone()
-                };
-
-                // Run all 23 phases (acquires conn from state). event_tx was
-                // cloned above BEFORE the lock was taken, so passing `&event_tx`
-                // here is deadlock-safe (broadcast::Sender::send never awaits).
-                let stats = {
-                    let consol_config = crate::config::load_config().consolidation.validated();
-                    let locked = state.lock().await;
-                    let metrics = locked.metrics.as_deref();
-                    run_all_phases(&locked.conn, &consol_config, metrics, Some(&event_tx))
-                };
+                let consol_config = crate::config::load_config().consolidation.validated();
+                let stats = run_all_phases(
+                    &conn,
+                    &consol_config,
+                    metrics.as_deref(),
+                    Some(&events),
+                );
 
                 // Emit consolidation event with stats
-                events::emit(&event_tx, "consolidation", serde_json::json!({
+                events::emit(&events, "consolidation", serde_json::json!({
                     "exact_dedup": stats.exact_dedup,
                     "semantic_dedup": stats.semantic_dedup,
                     "linked": stats.linked,
@@ -2671,7 +2700,7 @@ pub async fn run_consolidator(
 
                 // Emit contradiction_detected event if any contradictions were found
                 if stats.contradictions > 0 {
-                    events::emit(&event_tx, "contradiction_detected", serde_json::json!({
+                    events::emit(&events, "contradiction_detected", serde_json::json!({
                         "count": stats.contradictions,
                     }));
                 }

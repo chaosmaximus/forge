@@ -354,7 +354,10 @@ async fn main() {
     };
     tokio::spawn(async move { writer.run(write_rx).await });
 
-    // Spawn background workers (they keep Arc<Mutex<DaemonState>> — unchanged).
+    // Spawn background workers. The consolidator now owns its connection
+    // (W6 / Tier 1 #1) so the shared `Arc<Mutex<DaemonState>>` mutex no
+    // longer blocks workers like perception/indexer/diagnostics during
+    // multi-second consolidator passes.
     let _worker_handles = forge_daemon::workers::spawn_workers(
         Arc::clone(&state),
         config.clone(),
@@ -362,6 +365,7 @@ async fn main() {
         db_path.clone(),
         events.clone(),
         Some(write_tx.clone()),
+        Some(Arc::clone(&shared_metrics)),
     );
 
     // I3: Spawn signal handler that sends on shutdown channel instead of process::exit

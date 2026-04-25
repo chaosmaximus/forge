@@ -60,6 +60,7 @@ pub fn open_read_conn(db_path: &str) -> Option<rusqlite::Connection> {
 ///
 /// Detects installed agent adapters and configures the watcher + extractor
 /// to handle transcripts from Claude Code, Cline, Codex CLI, etc.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_workers(
     state: Arc<Mutex<DaemonState>>,
     config: ForgeConfig,
@@ -67,6 +68,11 @@ pub fn spawn_workers(
     db_path: String,
     events: crate::events::EventSender,
     writer_tx: Option<mpsc::Sender<crate::server::WriteCommand>>,
+    // Phase 2A-4d.1.1 #1 (W6): pass the daemon-wide metrics Arc directly so
+    // the consolidator can stop locking `Arc<Mutex<DaemonState>>` to read
+    // it. Workers that share the state mutex (perception, indexer,
+    // diagnostics, writer) no longer block on the multi-second pass.
+    metrics: Option<Arc<crate::server::metrics::ForgeMetrics>>,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     // Detect installed agent adapters
     let detected = adapters::detect_adapters();
@@ -117,19 +123,26 @@ pub fn spawn_workers(
 
     let extractor_state = Arc::clone(&state);
     let embedder_state = Arc::clone(&state);
-    let consolidator_state = Arc::clone(&state);
+    // W6 (#1): consolidator no longer needs the state mutex.
     let indexer_state = Arc::clone(&state);
     let perception_state = Arc::clone(&state);
     let disposition_state = Arc::clone(&state);
     let diagnostics_state = Arc::clone(&state);
 
+    let consolidator_events = events.clone();
+    let consolidator_metrics = metrics.clone();
+
     let extractor_config = config.clone();
     let embedder_config = config.clone();
     let worker_intervals = config.workers.clone();
 
-    // Clone db_path for each worker that uses read-only connections
+    // Clone db_path for each worker that uses read-only connections.
+    // W6 (#1): consolidator now also takes its own db_path so it can
+    // open an owned writer connection rather than locking the shared
+    // DaemonState mutex.
     let extractor_db_path = db_path.clone();
     let embedder_db_path = db_path.clone();
+    let consolidator_db_path = db_path.clone();
     let disposition_db_path = db_path.clone();
     let reaper_db_path = db_path.clone();
     let diagnostics_db_path = db_path;
@@ -170,7 +183,9 @@ pub fn spawn_workers(
     let consolidator_interval = worker_intervals.consolidation_interval_secs;
     let consolidator_handle = tokio::spawn(async move {
         consolidator::run_consolidator(
-            consolidator_state,
+            consolidator_db_path,
+            consolidator_events,
+            consolidator_metrics,
             consolidator_shutdown,
             consolidator_interval,
         )
