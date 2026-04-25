@@ -64,7 +64,7 @@ assert_contains "review-artifacts: OK" "$output"
 # ============================================================================
 # Test 2: drift fixture — every failure mode triggered
 # ============================================================================
-echo "Test 2: drift fixture (5 malformed YAMLs)"
+echo "Test 2: drift fixture (9 malformed YAMLs)"
 set +e
 output=$(bash "$SCRIPT" --root "$DRIFT_FIXTURE" 2>&1)
 status=$?
@@ -75,6 +75,10 @@ assert_contains "artifacts must be a non-empty list" "$output"
 assert_contains "open BLOCKING-severity findings" "$output"
 assert_contains "verdict must be in" "$output"
 assert_contains "target_paths entry not found" "$output"
+assert_contains "escapes repo root or is absolute" "$output"
+assert_contains "status=resolved requires non-empty 'fixed_by'" "$output"
+assert_contains "status=deferred requires non-empty 'rationale'" "$output"
+assert_contains "invalid YAML or scalar value" "$output"
 
 echo
 echo "review-artifacts fixture tests: $PASS passed, $FAIL failed"

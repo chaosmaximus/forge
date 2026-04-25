@@ -46,13 +46,23 @@ findings:                                   # optional; empty = clean review
 
 The validator asserts:
 
-1. **Schema:** every YAML matches v1; unknown fields warn but don't fail.
-2. **Existence:** every `target_paths` entry exists in the working tree.
+1. **Schema:** every YAML matches v1. Unknown top-level / artifact / finding
+   keys WARN to stderr but don't fail (allows additive evolution).
+2. **Existence + containment:** every `target_paths` and `artifacts[].path`
+   entry must (a) be relative, (b) not escape the repo root via `..`, and
+   (c) exist on disk.
 3. **No open blockers:** any finding with `severity ∈ {BLOCKER, CRITICAL, HIGH}`
    AND `status == open` fails the gate. Resolved + deferred always pass.
-4. **Artifacts non-empty:** at least one entry in `artifacts` (transcript,
+4. **Status-coupled fields:** `status: resolved` requires `fixed_by`
+   (commit SHA); `status: deferred` requires `rationale` (one-line why).
+   `status: open` has no extra requirement (but blocks at item 3 if severity
+   is BLOCKING).
+5. **Artifacts non-empty:** at least one entry in `artifacts` (transcript,
    test output, dogfood log, etc.).
-5. **Verdict in allowed set:** lockable-as-is | lockable-with-fixes | not-lockable.
+6. **Verdict in allowed set:** lockable-as-is | lockable-with-fixes | not-lockable.
+7. **Robust YAML decoding:** scalars decoded by PyYAML (e.g. `date: 2026-13-45`
+   → `datetime.date(...)` raises `ValueError`) are caught and reported as a
+   single FAIL line per file, never a stack trace.
 
 ## Workflow per wave
 

@@ -34,10 +34,32 @@ ALLOWED_VERDICTS = {"lockable-as-is", "lockable-with-fixes", "not-lockable"}
 ALLOWED_STATUSES = {"resolved", "deferred", "open"}
 ALLOWED_SEVERITIES = {"BLOCKER", "CRITICAL", "HIGH", "MEDIUM", "LOW", "NIT"}
 OPEN_BLOCKING_SEVERITIES = {"BLOCKER", "CRITICAL", "HIGH"}
+KNOWN_TOP_KEYS = {
+    "schema_version", "slug", "target_paths", "reviewer", "commit_range",
+    "verdict", "artifacts", "findings",
+}
+KNOWN_FINDING_KEYS = {
+    "id", "severity", "summary", "file", "line", "status",
+    "fixed_by", "rationale",
+}
+KNOWN_ARTIFACT_KEYS = {"kind", "path"}
 
 
 def err(rel: str, msg: str) -> None:
     sys.stderr.write(f"FAIL [{rel}]: {msg}\n")
+
+
+def warn(rel: str, msg: str) -> None:
+    sys.stderr.write(f"WARN [{rel}]: {msg}\n")
+
+
+def _path_within_repo(repo_root: str, p: str) -> bool:
+    """Reject absolute paths and paths whose realpath escapes repo_root."""
+    if os.path.isabs(p):
+        return False
+    full = os.path.realpath(os.path.join(repo_root, p))
+    root = os.path.realpath(repo_root)
+    return full == root or full.startswith(root + os.sep)
 
 
 def validate_review(rel: str, data: Any, repo_root: str) -> int:
@@ -47,6 +69,10 @@ def validate_review(rel: str, data: Any, repo_root: str) -> int:
     if not isinstance(data, dict):
         err(rel, "top-level must be a mapping")
         return 1
+
+    unknown_top = set(data.keys()) - KNOWN_TOP_KEYS
+    if unknown_top:
+        warn(rel, f"unknown top-level keys: {sorted(unknown_top)}")
 
     sv = data.get("schema_version")
     if sv != SCHEMA_VERSION:
@@ -61,6 +87,10 @@ def validate_review(rel: str, data: Any, repo_root: str) -> int:
         for p in target_paths:
             if not isinstance(p, str):
                 err(rel, f"target_paths entry must be a string (got {p!r})")
+                errors += 1
+                continue
+            if not _path_within_repo(repo_root, p):
+                err(rel, f"target_paths entry escapes repo root or is absolute: {p}")
                 errors += 1
                 continue
             if not os.path.exists(os.path.join(repo_root, p)):
@@ -82,6 +112,9 @@ def validate_review(rel: str, data: Any, repo_root: str) -> int:
                 err(rel, f"artifacts[{ai}]: must be a mapping")
                 errors += 1
                 continue
+            unknown_a = set(a.keys()) - KNOWN_ARTIFACT_KEYS
+            if unknown_a:
+                warn(rel, f"artifacts[{ai}]: unknown keys: {sorted(unknown_a)}")
             if "kind" not in a or "path" not in a:
                 err(rel, f"artifacts[{ai}]: must have 'kind' and 'path' keys")
                 errors += 1
@@ -89,6 +122,10 @@ def validate_review(rel: str, data: Any, repo_root: str) -> int:
             ap = a["path"]
             if not isinstance(ap, str):
                 err(rel, f"artifacts[{ai}].path must be a string (got {ap!r})")
+                errors += 1
+                continue
+            if not _path_within_repo(repo_root, ap):
+                err(rel, f"artifacts[{ai}].path escapes repo root or is absolute: {ap}")
                 errors += 1
                 continue
             if not os.path.exists(os.path.join(repo_root, ap)):
@@ -107,6 +144,9 @@ def validate_review(rel: str, data: Any, repo_root: str) -> int:
             err(rel, f"findings[{fi}]: must be a mapping")
             errors += 1
             continue
+        unknown_f = set(finding.keys()) - KNOWN_FINDING_KEYS
+        if unknown_f:
+            warn(rel, f"findings[{fi}]: unknown keys: {sorted(unknown_f)}")
         sev = finding.get("severity")
         status = finding.get("status")
         if sev not in ALLOWED_SEVERITIES:
@@ -121,6 +161,23 @@ def validate_review(rel: str, data: Any, repo_root: str) -> int:
                 rel,
                 f"findings[{fi}].status must be in {sorted(ALLOWED_STATUSES)}, "
                 f"got {status!r}",
+            )
+            errors += 1
+        # Status-coupled field requirements per README schema doc:
+        # - resolved → must have `fixed_by` (commit SHA closing the finding)
+        # - deferred → must have `rationale` (one-line why-deferred)
+        # - open    → no extra requirement
+        if status == "resolved" and not finding.get("fixed_by"):
+            err(
+                rel,
+                f"findings[{fi}]: status=resolved requires non-empty 'fixed_by' "
+                f"(commit SHA)",
+            )
+            errors += 1
+        if status == "deferred" and not finding.get("rationale"):
+            err(
+                rel,
+                f"findings[{fi}]: status=deferred requires non-empty 'rationale'",
             )
             errors += 1
         if sev in OPEN_BLOCKING_SEVERITIES and status == "open":
@@ -171,8 +228,12 @@ def main() -> int:
         try:
             with open(path) as f:
                 data = yaml.safe_load(f)
-        except yaml.YAMLError as e:
-            err(rel, f"invalid YAML: {e}")
+        except (yaml.YAMLError, ValueError, TypeError) as e:
+            # PyYAML constructs datetime.date for "YYYY-MM-DD" scalars and
+            # raises ValueError on bad values (e.g. "2026-13-45") DURING
+            # safe_load. Catch it here so a typo'd date prints a clean
+            # FAIL line instead of a stack trace.
+            err(rel, f"invalid YAML or scalar value: {e}")
             total_errors += 1
             continue
         total_errors += validate_review(rel, data, repo_root)

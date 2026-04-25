@@ -55,6 +55,11 @@
 * **W1 M4** — neither script sets `LC_ALL=C`. `date -u +%Y-%m-%d` is stable in practice and the YYYY-MM-DD lexicographic compare is byte-safe, but the awk pascal-to-snake transform's `[A-Z]` ranges could shift under non-C locale. Defer; not seen in any production runner.
 * **W1 M5** — drift fixtures use 6-variant clean Pascal enums with no doc-comments / cfg attrs / nested generics. Awk-extractor regression on those edge forms wouldn't be caught. Defer to a fixture-expansion follow-up; current fixtures cover the happy path.
 * **W1 L1** — `--help` uses `sed -n '1,/^set -euo/p' "$0" | sed '$d'` which is brittle if `set -e` ever moves. Defer; cosmetic.
+* **W2 L-1** — validator does not enforce per-PR-changed-file coverage (every changed `skills/`/`agents/`/`hooks/` file having a corresponding review YAML). Defensible scope cut for W2; matches harness-sync deferred-coverage pattern. Reopen if a missed-review incident surfaces.
+* **W2 L-2** — `scripts/check-review-artifacts.sh` is largely a passthrough wrapper around the python validator (its only real value-add is `--root` arg-eat hardening + a `python3` presence check). Defer — convention parity with `check-harness-sync.sh` is justification enough.
+* **W2 L-3** — `reviewer.agent` is an open enum (README documents three values + `<other>`). Defer; consistent with the doc.
+* **W2 L-4** — PyYAML's `safe_load` is last-wins on duplicate top-level keys (e.g. two `target_paths:`). Acceptable risk; multi-doc YAML (probe 11) was already covered cleanly.
+* **W2 M-4 (post-commit)** — the W2 commit message body says "1 HIGH + 3 MED + 1 LOW resolved; 3 MED + 1 LOW deferred" while the actual W1-backfill YAML has 1 HIGH + 2 MED + 1 LOW resolved and 3 MED + 1 LOW deferred. Off-by-one in the narrative, not the data. The artifact YAML is the source of truth.
 
 ---
 
