@@ -144,17 +144,26 @@ Sideload users: pull + rebuild after the revert lands:
     cargo build --release --bin forge-daemon --bin forge-next
 
     # Restart daemon — use the pidfile written at $FORGE_DIR/forge.pid
-    # (forge-daemon's main.rs::acquire_pid_lock) rather than
-    # `pkill -f 'forge-daemon'`. The substring match is unsafe — drill
-    # 2026-04-25 §G3 showed it false-matches any process whose cmdline
-    # mentions forge-daemon, including shells whose cwd is a forge repo.
+    # (path computed by forge_core::default_pid_path; lock acquired via
+    # main.rs::acquire_pid_lock) rather than `pkill -f 'forge-daemon'`.
+    # The substring match is unsafe — drill 2026-04-25 §G3 showed it
+    # false-matches any process whose cmdline mentions forge-daemon,
+    # including shells whose cwd is a forge repo.
+    #
+    # NOTE: send SIGINT (`kill -INT`), not the default SIGTERM. The
+    # daemon registers `tokio::signal::ctrl_c()` (= SIGINT) but does
+    # NOT handle SIGTERM; default `kill` would terminate abruptly,
+    # bypassing the 5s drain in socket.rs. Tracked: §G6 SIGTERM
+    # handler is a daemon-side follow-up (P3-1 W5 review HIGH-1).
     DAEMON_PID=$(cat "${FORGE_DIR:-$HOME/.forge}/forge.pid" 2>/dev/null || true)
     if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
-        kill "$DAEMON_PID"
+        kill -INT "$DAEMON_PID"
         for _ in 1 2 3 4 5; do
             kill -0 "$DAEMON_PID" 2>/dev/null || break
             sleep 1
         done
+    else
+        echo "no live daemon detected at $DAEMON_PID — relaunching fresh"
     fi
     /path/to/target/release/forge-daemon &
 ```
@@ -197,13 +206,24 @@ TODO: add pre-migration DB snapshot**.
 
 ## Tabletop exercise checklist
 
-Run this drill quarterly on a clone of the public repo:
+Two cadences:
 
-- [ ] Seed the clone with a fake v0.99.0 tag + release.
-- [ ] Execute Step 1-3 against the clone — time each step.
+- **Paper drill (quarterly):** read-only walkthrough against a scratch
+  clone, syntax-check each command, log gaps. Latest: 2026-04-25 (W5).
+- **Full drill (annual):** end-to-end including a fake tag/release on a
+  test repo, brew/cargo install verification, dogfood-script run, RTO
+  measurement under realistic operator load.
+
+Per-drill items (apply both cadences unless noted):
+
+- [ ] Read every step of this playbook in order. *(paper + full)*
+- [ ] Syntax-check every shell command in a scratch clone. *(paper + full)*
+- [ ] Time each step; record wallclock. *(paper + full)*
+- [ ] Seed the clone with a fake v0.99.0 tag + release. *(full only)*
+- [ ] Execute Step 1-3 against the clone end-to-end. *(full only)*
 - [ ] Verify `brew install` (or `cargo install`) against the reverted
-      state returns the pre-v0.99.0 binary.
+      state returns the pre-v0.99.0 binary. *(full only)*
 - [ ] Run `docs/benchmarks/results/*` dogfood script on the reverted
-      daemon to confirm end-to-end path still works.
+      daemon to confirm end-to-end path still works. *(full only)*
 - [ ] File dated log under `docs/operations/rollback-drills/` with
-      timings and findings.
+      timings + findings. *(paper + full)*

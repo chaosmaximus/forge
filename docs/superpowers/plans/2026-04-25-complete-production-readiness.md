@@ -70,7 +70,8 @@
 * **W5 §G1** — `.github/pending-rollback` flag has no enforcement. Drill 2026-04-25 §G1 documented two fixes: (a) a CI step that fails when the file exists (in-repo, self-contained), or (b) a GitHub branch-protection rule. Defer; next rollback drill or the GitHub repo governance W6 picks one.
 * **W5 §G4** — DB compatibility matrix flags `2P-1b §5a TODO: add pre-migration DB snapshot`. Genuine production-safety hole when rolling back across schema boundaries. Defer to a P3-3+ item.
 * **W5 §G5** — quarterly drill cadence is documented in the playbook's tabletop checklist but no calendar/cron reminder mechanism exists. Defer; consider a recurring HANDOFF entry or GitHub Actions cron workflow.
-* **W5 §G2** — `gh release delete --cleanup-tag=false` is non-idiomatic but functionally correct; the playbook now uses bare `--cleanup-tag` syntax. Closed by W5.
+* **W5 §G2** — `gh release delete --cleanup-tag=false` is non-idiomatic but functionally correct; the playbook now omits the flag in the default form (keep-tag) and shows bare `--cleanup-tag` in the optional opt-in branch. Closed by W5.
+* **W5 review HIGH-1 (daemon SIGTERM handler)** — the daemon currently registers only `tokio::signal::ctrl_c()` (= SIGINT). `systemctl stop` and any default `kill PID` send SIGTERM, which kills the daemon abruptly without running the socket-drain path. The W5 playbook fix uses `kill -INT` as a tactical workaround; the strategic fix is a `tokio::signal::unix::signal(SignalKind::terminate())` handler in `crates/daemon/src/main.rs` so SIGTERM also triggers graceful shutdown. Track for next P3-1 wave or P3-2.
 
 ---
 
