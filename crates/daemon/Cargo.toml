@@ -44,7 +44,7 @@ tempfile = "3"
 # HTTP transport (opt-in)
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors", "fs"] }
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 base64 = "0.22"
 
 # TLS (self-signed localhost certs)
