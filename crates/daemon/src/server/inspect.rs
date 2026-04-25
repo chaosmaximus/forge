@@ -554,9 +554,17 @@ fn shape_phase_run_summary(
     window_start_secs: u64,
     filter: &InspectFilter,
 ) -> Result<InspectData, String> {
+    // Phase 2A-4d.2.1 #4 (W7 follow-up): the `run_id` column added in
+    // schema migration shadows any `AS run_id` alias on a JSON
+    // expression — SQLite GROUP BY can resolve to the table column,
+    // which is NULL for rows inserted before backfill. Use
+    // `COALESCE(run_id, json_extract(metadata_json, '$.run_id'))` so
+    // the query reads the indexed column when populated and falls
+    // back to the JSON value for legacy / partial rows. The alias is
+    // renamed to `effective_run_id` to remove the shadowing.
     let sql = r#"
         SELECT
-            json_extract(metadata_json, '$.run_id') AS run_id,
+            COALESCE(run_id, json_extract(metadata_json, '$.run_id')) AS effective_run_id,
             MIN(timestamp) AS start_ts_secs,
             SUM(COALESCE(latency_ms, 0)) AS phases_duration_ms_sum,
             COUNT(*) AS phase_count,
@@ -568,8 +576,8 @@ fn shape_phase_run_summary(
           AND event_type = 'phase_completed'
           AND (:project IS NULL OR project = :project)
           AND (:phase IS NULL OR json_extract(metadata_json, '$.phase_name') = :phase)
-        GROUP BY run_id
-        HAVING run_id IS NOT NULL
+        GROUP BY effective_run_id
+        HAVING effective_run_id IS NOT NULL
         ORDER BY start_ts_secs DESC
         LIMIT :limit
     "#;

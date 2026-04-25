@@ -424,19 +424,22 @@ fn build_consolidation_from_event(
     // Phase 2A-4d.2.1 #4 (W7): use the indexed `run_id` column rather
     // than `json_extract(metadata_json, '$.run_id')` so the planner
     // can dedupe via the `idx_kpi_events_run_id_timestamp` index walk
-    // instead of parsing JSON for every 24h-window row. Pre-W7 rows
-    // were backfilled at schema-migration time, so the column is
-    // populated for all surviving rows.
+    // instead of parsing JSON for every 24h-window row.
+    //
+    // COALESCE with the JSON value as a safety fallback for rows
+    // that bypass the writer (test fixtures, manually inserted rows)
+    // OR rows that landed before the schema migration backfill ran —
+    // the indexed-column path stays fast for production rows that
+    // populate run_id at write time.
     let (pass_count, error_passes): (u64, u64) = conn
         .query_row(
             r#"SELECT
-                COUNT(DISTINCT run_id) AS pass_count,
+                COUNT(DISTINCT COALESCE(run_id, json_extract(metadata_json, '$.run_id'))) AS pass_count,
                 SUM(CASE WHEN COALESCE(json_extract(metadata_json, '$.error_count'), 0) > 0
                          THEN 1 ELSE 0 END) AS err_passes
                FROM kpi_events
                WHERE timestamp >= ?1
-                 AND event_type = 'phase_completed'
-                 AND run_id IS NOT NULL"#,
+                 AND event_type = 'phase_completed'"#,
             rusqlite::params![cutoff_secs],
             |r| {
                 let pc: i64 = r.get(0)?;
