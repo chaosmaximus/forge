@@ -130,19 +130,56 @@ pub fn spawn_hud_writer(tx: &EventSender) {
                         }
                     }
 
-                    // Build full HUD state by querying the DB
-                    let mut state = build_hud_state(&db_path, &event);
-                    if let Some(team) = state.get_mut("team") {
-                        *team = serde_json::json!(team_state);
-                    }
-                    if let Some(sessions) = state.get_mut("sessions") {
-                        *sessions = serde_json::json!(session_state);
-                    }
+                    // Phase 2A-4d.2.1 #3: the prior path ran synchronous
+                    // `build_hud_state` (DB queries + file read) plus a
+                    // non-atomic `fs::write` directly on the tokio runtime.
+                    // On bursty event rates that blocks the worker, and a
+                    // partial-write of hud-state.json could be observed by
+                    // the HUD binary mid-flight.
+                    //
+                    // Fix: move the whole synchronous block into
+                    // `tokio::task::spawn_blocking` (so DB + I/O happen on
+                    // the blocking pool) and write via tmpfile + atomic
+                    // rename so readers always see a complete file.
+                    let db_path_for_blocking = db_path.clone();
+                    let hud_path_for_blocking = hud_path.clone();
+                    let team_state_clone = team_state.clone();
+                    let session_state_clone = session_state.clone();
+                    let event_for_blocking = event.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let mut state = build_hud_state(&db_path_for_blocking, &event_for_blocking);
+                        if let Some(team) = state.get_mut("team") {
+                            *team = serde_json::json!(team_state_clone);
+                        }
+                        if let Some(sessions) = state.get_mut("sessions") {
+                            *sessions = serde_json::json!(session_state_clone);
+                        }
 
-                    // Write to the shared HUD state file (all sessions see the same file).
-                    // The HUD binary uses stdin.cwd to scope stats to the current project,
-                    // so the shared file contains global + per-project breakdowns.
-                    let _ = std::fs::write(&hud_path, state.to_string());
+                        // Atomic write: serialize → tmpfile → rename.
+                        // Rename is atomic on the same filesystem, so the
+                        // HUD binary never observes a half-written file.
+                        let tmp_path = hud_path_for_blocking.with_extension("json.tmp");
+                        let payload = state.to_string();
+                        match std::fs::write(&tmp_path, &payload) {
+                            Ok(()) => {
+                                if let Err(e) = std::fs::rename(&tmp_path, &hud_path_for_blocking) {
+                                    tracing::warn!(
+                                        target: "forge::hud",
+                                        error = %e,
+                                        "hud-state.json atomic rename failed"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "forge::hud",
+                                    error = %e,
+                                    "hud-state.json tmpfile write failed"
+                                );
+                            }
+                        }
+                    })
+                    .await;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::debug!(skipped = n, "HUD writer lagged, catching up");
