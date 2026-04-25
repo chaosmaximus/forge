@@ -138,10 +138,13 @@ pub async fn run_indexer(
     }
 }
 
-/// Derive the project directory from the most recent active session's CWD.
+/// Derive the project directory from the most recent live session's CWD.
 /// This is the most reliable source — sessions register with their actual working directory.
+/// "Live" = `status IN ('active', 'idle')` so dormant-but-not-ended sessions
+/// still answer the project-dir question (a user who walked away should
+/// still get the project directory inferred when they come back).
 pub fn find_project_dir_from_db(conn: &Connection) -> Option<String> {
-    let sql = "SELECT cwd FROM session WHERE status = 'active' AND cwd IS NOT NULL AND cwd != '' AND cwd != '/tmp' ORDER BY started_at DESC LIMIT 1";
+    let sql = "SELECT cwd FROM session WHERE status IN ('active', 'idle') AND cwd IS NOT NULL AND cwd != '' AND cwd != '/tmp' ORDER BY started_at DESC LIMIT 1";
     conn.query_row(sql, [], |row| row.get::<_, String>(0))
         .ok()
         .and_then(|cwd| {

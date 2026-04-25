@@ -2256,7 +2256,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // Uses SQLite datetime() for cutoff calculation — no chrono dependency needed
             if let Some(secs) = older_than_secs {
                 let age_ended: usize = state.conn.execute(
-                    &format!("UPDATE session SET status = 'ended' WHERE status = 'active' AND created_at < datetime('now', '-{secs} seconds')"),
+                    &format!("UPDATE session SET status = 'ended' WHERE status IN ('active', 'idle') AND created_at < datetime('now', '-{secs} seconds')"),
                     [],
                 ).unwrap_or(0);
                 total_ended += age_ended;
@@ -3125,21 +3125,20 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
             let excluded = excluded_layers.unwrap_or_default();
             // Verify session ownership: if session_id provided, it must be active and match the agent
-            let sid =
-                if let Some(ref sid_str) = session_id {
-                    let session_ok: bool = state.conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM session WHERE id = ?1 AND status = 'active')",
+            let sid = if let Some(ref sid_str) = session_id {
+                let session_ok: bool = state.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session WHERE id = ?1 AND status IN ('active', 'idle'))",
                     rusqlite::params![sid_str],
                     |row| row.get(0),
                 ).unwrap_or(false);
-                    if session_ok {
-                        Some(sid_str.as_str())
-                    } else {
-                        None
-                    }
+                if session_ok {
+                    Some(sid_str.as_str())
                 } else {
                     None
-                };
+                }
+            } else {
+                None
+            };
             let static_prefix = crate::recall::compile_static_prefix(&state.conn, agent_name, sid);
 
             if static_only.unwrap_or(false) {
@@ -5976,7 +5975,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::SetCurrentTask { session_id, task } => {
             match state.conn.execute(
-                "UPDATE session SET current_task = ?1 WHERE id = ?2 AND status = 'active'",
+                "UPDATE session SET current_task = ?1 WHERE id = ?2 AND status IN ('active', 'idle')",
                 rusqlite::params![task, session_id],
             ) {
                 Ok(n) if n > 0 => {

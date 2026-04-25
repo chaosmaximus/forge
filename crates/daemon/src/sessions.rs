@@ -114,7 +114,7 @@ fn detect_project_name(cwd: &str) -> String {
 /// Mark a session as ended. Returns true if the session existed.
 pub fn end_session(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     let updated = conn.execute(
-        "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE id = ?1 AND status = 'active'",
+        "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE id = ?1 AND status IN ('active', 'idle')",
         params![id],
     )?;
     Ok(updated > 0)
@@ -123,7 +123,7 @@ pub fn end_session(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 /// List sessions. If active_only is true, only return active sessions.
 pub fn list_sessions(conn: &Connection, active_only: bool) -> rusqlite::Result<Vec<Session>> {
     let sql = if active_only {
-        "SELECT id, agent, project, cwd, started_at, ended_at, status, capabilities, current_task FROM session WHERE status = 'active' ORDER BY started_at DESC"
+        "SELECT id, agent, project, cwd, started_at, ended_at, status, capabilities, current_task FROM session WHERE status IN ('active', 'idle') ORDER BY started_at DESC"
     } else {
         "SELECT id, agent, project, cwd, started_at, ended_at, status, capabilities, current_task FROM session ORDER BY started_at DESC"
     };
@@ -147,7 +147,7 @@ pub fn list_sessions(conn: &Connection, active_only: bool) -> rusqlite::Result<V
 /// Get the most recent active session ID for a given agent.
 pub fn get_active_session_id(conn: &Connection, agent: &str) -> rusqlite::Result<String> {
     conn.query_row(
-        "SELECT id FROM session WHERE agent = ?1 AND status = 'active' ORDER BY started_at DESC LIMIT 1",
+        "SELECT id FROM session WHERE agent = ?1 AND status IN ('active', 'idle') ORDER BY started_at DESC LIMIT 1",
         params![agent],
         |row| row.get(0),
     )
@@ -162,7 +162,7 @@ pub fn get_active_session_id(conn: &Connection, agent: &str) -> rusqlite::Result
 /// path was found to miss real Claude Code sessions (agent="claude-code").
 pub fn get_latest_active_session_id(conn: &Connection) -> rusqlite::Result<Option<String>> {
     conn.query_row(
-        "SELECT id FROM session WHERE status = 'active' ORDER BY started_at DESC LIMIT 1",
+        "SELECT id FROM session WHERE status IN ('active', 'idle') ORDER BY started_at DESC LIMIT 1",
         [],
         |row| row.get::<_, String>(0),
     )
@@ -296,12 +296,12 @@ pub fn cleanup_sessions(conn: &Connection, prefix: Option<&str>) -> rusqlite::Re
         Some(pfx) => {
             let pattern = format!("{pfx}%");
             conn.execute(
-                "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status = 'active' AND id LIKE ?1",
+                "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status IN ('active', 'idle') AND id LIKE ?1",
                 params![pattern],
             )
         }
         None => conn.execute(
-            "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status = 'active'",
+            "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status IN ('active', 'idle')",
             [],
         ),
     }
@@ -312,16 +312,33 @@ pub fn cleanup_sessions(conn: &Connection, prefix: Option<&str>) -> rusqlite::Re
 /// Called on daemon startup to prevent unbounded session accumulation.
 pub fn cleanup_stale_sessions(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
-        "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status = 'active' AND started_at < datetime('now', '-24 hours')",
+        "UPDATE session SET status = 'ended', ended_at = datetime('now') WHERE status IN ('active', 'idle') AND started_at < datetime('now', '-24 hours')",
         [],
     )
 }
 
-/// Update the heartbeat timestamp for an active session.
-/// Returns true if updated (session exists and is active), false otherwise.
+/// Update the heartbeat timestamp for a live (active OR idle) session.
+///
+/// Phase 2A-4d.3.1 #7 review B1: previously this filter was
+/// `status = 'active'`, but with the new `active → idle → ended`
+/// lifecycle, a heartbeat from a client whose session was just flipped
+/// to `idle` by the reaper must NOT be silently dropped — that
+/// zombifies the session (heartbeats land nowhere, and on the next
+/// reaper pass it gets ended even though the client is alive).
+///
+/// Now: `IN ('active', 'idle')`. When the row is `'idle'`, this UPDATE
+/// also flips it back to `'active'` atomically, restoring the live
+/// state. Caller can detect the resume by checking the previous status
+/// — but for simplicity we just emit `last_heartbeat_at = now` and
+/// `status = 'active'` together; downstream observers see the session
+/// re-enter the active set on the next read.
+///
+/// Returns true if updated (session exists and was live), false if the
+/// session is missing or already ended.
 pub fn update_heartbeat(conn: &Connection, session_id: &str) -> rusqlite::Result<bool> {
     let rows = conn.execute(
-        "UPDATE session SET last_heartbeat_at = datetime('now') WHERE id = ?1 AND status = 'active'",
+        "UPDATE session SET last_heartbeat_at = datetime('now'), status = 'active' \
+         WHERE id = ?1 AND status IN ('active', 'idle')",
         params![session_id],
     )?;
     Ok(rows > 0)
@@ -370,15 +387,16 @@ pub fn send_message(
         let sessions = match project {
             Some(proj) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id FROM session WHERE status = 'active' AND project = ?1 AND id != ?2",
+                    "SELECT id FROM session WHERE status IN ('active', 'idle') AND project = ?1 AND id != ?2",
                 )?;
                 let rows =
                     stmt.query_map(params![proj, from_session], |row| row.get::<_, String>(0))?;
                 rows.collect::<rusqlite::Result<Vec<String>>>()?
             }
             None => {
-                let mut stmt =
-                    conn.prepare("SELECT id FROM session WHERE status = 'active' AND id != ?1")?;
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM session WHERE status IN ('active', 'idle') AND id != ?1",
+                )?;
                 let rows = stmt.query_map(params![from_session], |row| row.get::<_, String>(0))?;
                 rows.collect::<rusqlite::Result<Vec<String>>>()?
             }
@@ -718,7 +736,7 @@ pub fn compile_session_kpis(
 /// Count active sessions.
 pub fn count_active_sessions(conn: &Connection) -> rusqlite::Result<usize> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM session WHERE status = 'active'",
+        "SELECT COUNT(*) FROM session WHERE status IN ('active', 'idle')",
         [],
         |row| row.get(0),
     )?;

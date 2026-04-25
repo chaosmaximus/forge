@@ -272,7 +272,7 @@ pub fn list_agents(
                  FROM session s
                  JOIN team_member tm ON tm.session_id = s.id
                  JOIN team t ON t.id = tm.team_id
-                 WHERE s.template_id IS NOT NULL AND s.status = 'active'
+                 WHERE s.template_id IS NOT NULL AND s.status IN ('active', 'idle')
                    AND t.name = ?1
                  ORDER BY s.last_activity_at DESC
                  LIMIT ?2"
@@ -296,7 +296,7 @@ pub fn list_agents(
             let mut stmt = conn.prepare(
                 "SELECT id, agent, template_id, agent_status, current_task, last_activity_at, project
                  FROM session
-                 WHERE template_id IS NOT NULL AND status = 'active'
+                 WHERE template_id IS NOT NULL AND status IN ('active', 'idle')
                  ORDER BY last_activity_at DESC
                  LIMIT ?1"
             )?;
@@ -483,7 +483,7 @@ pub fn team_status(conn: &Connection, team_name: &str) -> rusqlite::Result<Value
         .query_row(
             "SELECT COUNT(*) FROM team_member tm
          JOIN session s ON s.id = tm.session_id
-         WHERE tm.team_id = ?1 AND s.status = 'active' AND s.template_id IS NOT NULL",
+         WHERE tm.team_id = ?1 AND s.status IN ('active', 'idle') AND s.template_id IS NOT NULL",
             params![team_id],
             |row| row.get(0),
         )
@@ -620,7 +620,7 @@ pub fn stop_team(conn: &Connection, team_name: &str) -> rusqlite::Result<usize> 
     let mut stmt = conn.prepare(
         "SELECT tm.session_id FROM team_member tm
          JOIN session s ON s.id = tm.session_id
-         WHERE tm.team_id = ?1 AND s.status = 'active'",
+         WHERE tm.team_id = ?1 AND s.status IN ('active', 'idle')",
     )?;
     let session_ids: Vec<String> = stmt
         .query_map(params![team_id], |row| row.get(0))?
@@ -724,7 +724,7 @@ pub fn budget_status(
             "SELECT s.id, s.agent, COALESCE(s.budget_spent, 0), at.budget_limit, at.name
              FROM session s
              LEFT JOIN agent_template at ON at.id = s.template_id
-             WHERE s.status = 'active' AND s.template_id IS NOT NULL
+             WHERE s.status IN ('active', 'idle') AND s.template_id IS NOT NULL
              ORDER BY s.started_at DESC LIMIT 50",
         )?;
         let rows = stmt

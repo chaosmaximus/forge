@@ -743,26 +743,60 @@ dim ≥ minimum, score.pass=true. Wall 937-952ms. kpi_events row v1 written
 end-to-end. **Master v6 1.0 composite gate is closed.** Composite ceiling
 0.999 (Dim 6 retains 0.996 — see backlog #5).
 
-#### 3. Forge harness context-injection volume
+#### 3. Forge harness context-injection volume — **CLOSED 2026-04-25**
 
-**Finding (raised 2026-04-24):** every tool call from a sub-agent triggers
-`<forge-bash-check>` (PreToolUse) + `<forge-post-edit>` (PostToolUse)
-hooks injecting "Skill: ..." and "[proactive anti_pattern] ..." nudges
-that are unrelated to the current task. SessionStart additionally injects
-~60-line `<forge-context>` block with identity facets, decisions, lessons,
-skills, agents, active-protocols, deferred-items. Over a 30-tool-call
-agent run this adds ~90+ lines of background noise that crowds out task
-instructions.
+**Closed by:** `a406dfb` (initial six-toggle implementation) + `307581f`
+(BLOCKERs from adversarial review).
 
-**Fix plan:** add `forge-next config set context_injection.mode = off |
-session-only | full` (or per-project equivalent). When `off`, the
-SessionStart `<forge-context>` and per-tool skill nudges are suppressed.
-Default remains `full` to preserve current behavior.
+**What landed (revised from `mode` enum to feature-based booleans per
+user direction):**
 
-**Why deferred:** harness ergonomics, not Tier 3 scope. Important for
-agent reliability though — orchestration failures during 2A-4d.3 T3-T6
-parallel dispatch may have been amplified by hook noise diluting agent
-focus.
+* New `[context_injection]` config block with 6 booleans, all default
+  true (preserves today's behavior):
+  - `session_context` — identity, disposition, decisions, lessons,
+    project-conventions, guardrails, deferred-items, active-protocols,
+    code-structure.
+  - `active_state` — notifications, pending-messages, meeting-context,
+    perceptions, entities, working-set, active-sessions, agents.
+  - `skills` — `<skills>` block + KT_SKILL proactive nudges.
+  - `anti_patterns` — KT_ANTI_PATTERN proactive warnings (loudest channel).
+  - `blast_radius` — Request::BlastRadius response + KT_BLAST_RADIUS proactive.
+  - `preferences` — `<preferences>` + `<preferences-flipped>` blocks.
+* `recall.rs` — `compile_static_prefix` + `compile_dynamic_suffix`
+  honor flags via internal `load_config()` and `section_disabled(layer, flag)`
+  helper that composes `excluded_layers` (per-request) with config flags
+  (operator-wide). All sections emit self-closing tags when disabled to
+  preserve XML schema stability for KV-cache consumers.
+* `proactive.rs::build_proactive_context_with_org` — per-knowledge-type
+  gating before relevance scoring.
+* `handler.rs::Request::BlastRadius` — short-circuit when
+  `blast_radius = false`.
+* `config.rs::update_config_at` — 6 dispatch arms enabling
+  `forge-next config set context_injection.<key> <bool>` (initial commit
+  was missing these — caught by review BLOCKER B1).
+* `config.rs::apply_env_overrides` — 6 env vars
+  `FORGE_CONTEXT_INJECTION_*` for Docker / CI flipping.
+* `config/default.toml` — sample `[context_injection]` block.
+
+**Live-reload:** daemon re-reads config on every request, so flipping
+toggles takes effect on the next hook call without daemon/plugin
+restart.
+
+**Deferred from review (HIGHs/MEDIUMs noted but non-blocking):**
+- H1 — scoped-config wiring (per-project / per-org overrides via
+  `resolve_scoped_config`). The global toggle works today;
+  scoped-config requires moderate refactor.
+- H2 — `compile_context_trace` not honoring flags (debug-only path).
+- H3 — `layers_used: 4` / `9` hard-coded constants.
+- H4 — Compose direction doc note (operator-disable wins; OR semantic).
+- H5 — BlastRadius CLI suppress-message clarity.
+- H6 — Thread `&ContextInjectionConfig` through 4 call sites instead of
+  `load_config()` per-request (3-4× disk reads on hot hook path).
+- M1 — Tests exercising actual gating (only config parsing tests today).
+- M3-M6 — Cosmetic + KT_BLAST_RADIUS doc.
+
+These are tracked under "Deferred from #3 review" below for the next
+cosmetic / polish PR.
 
 #### 4. Sub-agent commit-discipline failures — **CLOSED 2026-04-25**
 
@@ -839,4 +873,83 @@ Logged for traceability; none affect correctness or operator UX.
 
 **Why deferred:** all cosmetic. Batch into a single cleanup PR when
 the bench harness sees its first major-version operator polish.
+
+#### 7. Session state — `active → idle → ended` lifecycle — **CLOSED 2026-04-25**
+
+**Closed by:** `72a2b07`. New backlog item raised by user when
+discussing #3 — they observed many sessions showing as `active` when
+actually unused because the previous reaper had a binary
+`active → ended` transition.
+
+**What landed:**
+
+* `WorkerConfig.heartbeat_idle_secs` (default 600s = 10 min) —
+  active → idle threshold.
+* `WorkerConfig.heartbeat_timeout_secs` default bumped 60 → 14400
+  (4h) — was unrealistically aggressive for real-world usage.
+* `reaper.rs::reap_stale_sessions` gains `idle_secs` arg, runs Phase 0
+  (active→idle) before Phase 1 (active|idle→ended). Phase 2 (orphan)
+  unchanged.
+* `sessions.rs::register_session` seeds `last_heartbeat_at = now` so
+  the lifecycle tracks from registration.
+* `validated()` clamps idle relative to timeout (idle must be < timeout
+  to be reachable; 0 disables the idle phase).
+* New `session_idled` event payload `{session_id, idle_secs}`.
+* 4 new reaper tests + 2 new config tests covering the lifecycle.
+
+**Behavior change:** existing operators relying on 60s
+heartbeat_timeout_secs default will now see sessions live 240× longer
+(4h). Set `heartbeat_timeout_secs = 60` explicitly to restore the old
+aggressive reaping.
+
+#### Deferred from #3 adversarial review (2026-04-25)
+
+Tracked as a follow-up commit when convenient. None block any
+production behavior — the toggles work, the tests pass, dogfood is
+clean. Items:
+
+* **H1** — `recall.rs` and `proactive.rs` should call
+  `crate::db::ops::resolve_scoped_config` for per-project / per-org
+  overrides, not the flat `load_config().context_injection`. The
+  global toggle works today; scoped resolution is its own change.
+* **H2** — `recall.rs::compile_context_trace` doesn't replicate
+  the new gating, so `forge-next context-trace` can mislead operators
+  investigating what was suppressed. Replicate `let inj = ...; let
+  section_disabled = ...;` + thread predicates through trace entries.
+* **H3** — `handler.rs::CompileContext` hard-codes `layers_used: 4`
+  and `layers_used: 9`. With toggles flipped these counts are
+  meaningfully wrong. Compute dynamically OR remove the field
+  entirely.
+* **H4** — Doc note at `recall.rs:section_disabled` and
+  `config.rs::ContextInjectionConfig` documenting that operator-disable
+  is a hard ceiling (composes via OR — once disabled, requests can't
+  re-enable).
+* **H5** — `cli/src/commands/system.rs::blast_radius` should detect
+  `warnings[0].contains("suppressed via context_injection")` and
+  print a single explanatory line instead of "Decisions: 0, Callers:
+  0, ..." which reads like a successful empty result.
+* **H6** — Thread `&ContextInjectionConfig` through 4 call sites
+  (`recall::compile_static_prefix`, `recall::compile_dynamic_suffix`,
+  `proactive::build_proactive_context_with_org`,
+  `handler::Request::BlastRadius`) instead of `load_config()` per
+  request. Saves 3 disk reads per hook call. Reviewer estimated 4
+  call sites in production + ~4 test sites; achievable in one focused
+  commit if the test infrastructure is teed up.
+* **M1** — Tests exercising the actual gating (currently only config
+  parse tests). Requires test infrastructure for config overrides —
+  either a thread-local override or temp-config-file fixture.
+  Recommend: 3 tests minimum:
+  1. `compile_dynamic_suffix_session_context_off_emits_self_closing` —
+     parse output, assert `<decisions/>` etc.
+  2. `compile_dynamic_suffix_excluded_and_flag_compose_orthogonally` —
+     all 4 cells of the truth table.
+  3. `blast_radius_short_circuit` — flag off, assert empty + warning.
+* **M3** — Doc note: `KT_BLAST_RADIUS` gate skips the redundant
+  `context_relevance` SQL query (small perf win, not just symmetry).
+* **M4** — Bench harness `compile_context_xml_for_infra` reads the
+  operator's live config; should pass `&ContextInjectionConfig::default()`
+  explicitly to be reproducible across hosts.
+* **M5** — TOCTOU: two concurrent `Request::SetConfig` writes can
+  interleave. Wrap `update_config_at` in a `Mutex`.
+* **M6** — ~~`config/default.toml` sample~~ closed in `307581f`.
 

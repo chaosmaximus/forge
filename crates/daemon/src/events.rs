@@ -296,9 +296,9 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
                 serde_json::json!({ "sections": sections, "density": density })
             });
 
-    // CWD from active session or daemon process
+    // CWD from any live (active|idle) session or daemon process.
     let cwd: Option<String> = conn.query_row(
-        "SELECT cwd FROM session WHERE status = 'active' AND cwd IS NOT NULL ORDER BY last_active DESC LIMIT 1",
+        "SELECT cwd FROM session WHERE status IN ('active', 'idle') AND cwd IS NOT NULL ORDER BY last_active DESC LIMIT 1",
         [], |r| r.get(0),
     ).ok().or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
 

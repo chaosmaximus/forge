@@ -281,7 +281,7 @@ pub fn team_session_ids(
             )
             SELECT s.id FROM session s
             WHERE s.team_id IN (SELECT id FROM team_tree)
-              AND s.status = 'active'"
+              AND s.status IN ('active', 'idle')"
         ))?;
         let rows = stmt.query_map(params![team_name], |row| row.get(0))?;
         rows.collect()
@@ -289,7 +289,7 @@ pub fn team_session_ids(
         let mut stmt = conn.prepare(
             "SELECT s.id FROM session s
              JOIN team t ON s.team_id = t.id
-             WHERE t.name = ?1 AND s.status = 'active'",
+             WHERE t.name = ?1 AND s.status IN ('active', 'idle')",
         )?;
         let rows = stmt.query_map(params![team_name], |row| row.get(0))?;
         rows.collect()

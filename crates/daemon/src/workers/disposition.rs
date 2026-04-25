@@ -339,9 +339,9 @@ pub(crate) fn step_for_bench(
 /// Query distinct agent names from sessions in the last 24 hours (active or recently ended).
 fn query_active_agents(conn: &rusqlite::Connection) -> Vec<String> {
     let cutoff = manas::now_offset(-86400);
-    let mut stmt = match conn
-        .prepare("SELECT DISTINCT agent FROM session WHERE status = 'active' OR started_at > ?1")
-    {
+    let mut stmt = match conn.prepare(
+        "SELECT DISTINCT agent FROM session WHERE status IN ('active', 'idle') OR started_at > ?1",
+    ) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "forge::disposition", error = %e, "failed to prepare agent query");

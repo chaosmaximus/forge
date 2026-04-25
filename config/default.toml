@@ -11,3 +11,34 @@ endpoint = "http://localhost:11434"
 [embedding]
 model = "nomic-embed-text"
 dimensions = 768
+
+# Phase 2A-4d.3.1 #3 — context-injection feature toggles.
+# Each boolean controls a class of injected content; defaults preserve
+# today's full-context experience. Flip individual toggles to silence
+# specific noise channels without losing useful context.
+#
+# Mid-session: `forge-next config set context_injection.<key> <bool>`
+# Env vars:    FORGE_CONTEXT_INJECTION_<UPPERKEY>=true|false
+[context_injection]
+# SessionStart `<forge-context>` — identity, disposition, decisions,
+# lessons, project-conventions, guardrails, deferred-items, code-structure.
+session_context = true
+# Transient state — notifications, pending-messages, meeting-context,
+# perceptions, entities, working-set, active-sessions, agents.
+active_state = true
+# `<skills>` block in SessionStart + "Skill: ..." nudges in pre-bash/post-edit.
+skills = true
+# "[proactive anti_pattern] ..." warnings in pre-bash/post-edit/post-bash.
+# The loudest channel; flip to false to silence per-tool spam.
+anti_patterns = true
+# Post-edit caller / cluster warnings; Request::BlastRadius response.
+blast_radius = true
+# `<preferences>` and `<preferences-flipped>` blocks in SessionStart.
+# Note: master v6 §6 D4 mandates the element always emit (self-closing
+# when suppressed), so consumers can rely on the schema.
+preferences = true
+
+# Phase 2A-4d.3.1 #7 — session lifecycle thresholds (workers section).
+# [workers]
+# heartbeat_idle_secs = 600       # active → idle (10 min)
+# heartbeat_timeout_secs = 14400  # active|idle → ended (4 hours)
