@@ -1685,7 +1685,7 @@ const EMBEDDING_DIM: usize = 768;
 
 /// Generate a deterministic unit vector of dimension EMBEDDING_DIM from a seed string.
 pub fn generate_base_embedding(seed_key: &str) -> Vec<f32> {
-    use rand::Rng;
+    use rand::RngExt;
     let hash = sha256_hex(seed_key);
     let mut rng = seeded_rng(u64::from_str_radix(&hash[0..16], 16).unwrap_or(0));
     let raw: Vec<f32> = (0..EMBEDDING_DIM)
@@ -1698,7 +1698,7 @@ pub fn generate_base_embedding(seed_key: &str) -> Vec<f32> {
 /// Perturb a base embedding to achieve a target cosine distance.
 /// Target distance 0 = identical; 1 = orthogonal.
 pub fn perturb_embedding(base: &[f32], target_distance: f32, seed_key: &str) -> Vec<f32> {
-    use rand::Rng;
+    use rand::RngExt;
     let hash = sha256_hex(&format!("{seed_key}-perturb"));
     let mut rng = seeded_rng(u64::from_str_radix(&hash[0..16], 16).unwrap_or(0));
 

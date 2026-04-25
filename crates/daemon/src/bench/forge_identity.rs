@@ -146,7 +146,7 @@ fn dim_1_identity_facet_persistence(
     state: &mut DaemonState,
     rng: &mut ChaCha20Rng,
 ) -> DimensionScore {
-    use rand::Rng;
+    use rand::RngExt;
 
     const N: usize = 5;
     const TOLERANCE: f64 = 0.001;

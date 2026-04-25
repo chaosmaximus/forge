@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn test_seeded_rng_deterministic() {
-        use rand::Rng;
+        use rand::RngExt;
         let mut rng1 = seeded_rng(42);
         let mut rng2 = seeded_rng(42);
         let v1: u64 = rng1.random();
