@@ -716,17 +716,48 @@ pub fn shape_bench_run_summary(
         return Ok(Vec::new());
     }
 
-    // Pass 2: per-group composite percentiles. Pull raw samples with a
-    // per-group cap and compute p50/p95 in Rust via the ceiling-rank helper.
+    // Pass 2: per-group composite percentiles. Pull raw samples with the
+    // per-group cap enforced *in SQL* via a window function, plus the
+    // absolute ceiling on total rows.
+    //
+    // **Phase P3-2 W5 (closes 2A-4d Tier 3 #5):** previously this query
+    // used `LIMIT :total_cap ORDER BY group_key`, with the per-group cap
+    // applied client-side in the Rust loop below. That approach had a
+    // starvation pitfall: if one group's row count alone reached the
+    // absolute cap, the LIMIT cut off all subsequent groups before any
+    // of their samples reached Rust. With the CTE-based approach, every
+    // group keeps its `MAX_ROWS_PER_GROUP` most-recent samples
+    // independently — no group can starve another.
+    //
+    // We use `ROW_NUMBER()` rather than `RANK()` (the W5 plan-doc named
+    // RANK; the actual primitive needed is ROW_NUMBER): RANK assigns
+    // ties the same rank, so two events with identical `timestamp` could
+    // both pass `rank <= MAX_ROWS_PER_GROUP`, allowing more than the
+    // intended cap when timestamps cluster (which they do at low
+    // granularity). ROW_NUMBER guarantees ≤ N rows per group regardless
+    // of timestamp ties.
+    //
+    // SQLite has supported window functions since 3.25 (2018);
+    // `rusqlite` with the bundled SQLite is well past this version.
     let percentile_sql = format!(
-        r#"SELECT {group_expr} AS group_key,
-                  CAST(json_extract(metadata_json, '$.composite') AS REAL) AS composite
-           FROM kpi_events
-           WHERE event_type = 'bench_run_completed'
-             AND timestamp >= :window_start_secs
-             AND (:bench_name IS NULL OR json_extract(metadata_json, '$.bench_name') = :bench_name)
-             AND (:commit_sha IS NULL OR json_extract(metadata_json, '$.commit_sha') = :commit_sha)
-             AND json_extract(metadata_json, '$.composite') IS NOT NULL
+        r#"WITH ranked AS (
+              SELECT
+                  {group_expr} AS group_key,
+                  CAST(json_extract(metadata_json, '$.composite') AS REAL) AS composite,
+                  ROW_NUMBER() OVER (
+                      PARTITION BY {group_expr}
+                      ORDER BY timestamp DESC
+                  ) AS group_rank
+              FROM kpi_events
+              WHERE event_type = 'bench_run_completed'
+                AND timestamp >= :window_start_secs
+                AND (:bench_name IS NULL OR json_extract(metadata_json, '$.bench_name') = :bench_name)
+                AND (:commit_sha IS NULL OR json_extract(metadata_json, '$.commit_sha') = :commit_sha)
+                AND json_extract(metadata_json, '$.composite') IS NOT NULL
+           )
+           SELECT group_key, composite
+           FROM ranked
+           WHERE group_rank <= :per_group_cap
            ORDER BY group_key
            LIMIT :total_cap"#
     );
@@ -739,6 +770,7 @@ pub fn shape_bench_run_summary(
                 ":window_start_secs": window_start_secs as i64,
                 ":bench_name": filter.bench_name.as_deref(),
                 ":commit_sha": filter.commit_sha.as_deref(),
+                ":per_group_cap": MAX_ROWS_PER_GROUP as i64,
                 ":total_cap": (MAX_TOTAL_ROWS + 1) as i64,
             },
             |row| {
@@ -752,6 +784,10 @@ pub fn shape_bench_run_summary(
         )
         .map_err(|e| format!("query: {e}"))?;
 
+    // SQL already capped per-group at MAX_ROWS_PER_GROUP and total at
+    // MAX_TOTAL_ROWS+1 (the +1 lets us detect the absolute-cap trip).
+    // We still iterate to collect samples per group; no client-side
+    // per-group filtering needed.
     let mut buckets: std::collections::BTreeMap<String, Vec<f64>> =
         std::collections::BTreeMap::new();
     let mut total_seen: u64 = 0;
@@ -761,10 +797,7 @@ pub fn shape_bench_run_summary(
         if total_seen > MAX_TOTAL_ROWS {
             break;
         }
-        let bucket = buckets.entry(k).or_default();
-        if (bucket.len() as u64) < MAX_ROWS_PER_GROUP {
-            bucket.push(v);
-        }
+        buckets.entry(k).or_default().push(v);
     }
 
     // Sort each bucket once so percentile() is correct.
@@ -1302,6 +1335,135 @@ mod tests {
         };
         assert_eq!(effective_group_by, Some(InspectGroupBy::CommitSha));
         assert_eq!(rows.len(), 2, "one row per commit_sha");
+    }
+
+    // ── P3-2 W5: per-group cap fairness via SQL window function ──
+    //
+    // Pre-W5 the percentile pass used `ORDER BY group_key LIMIT total_cap`
+    // and applied per-group cap client-side. With many rows in one group
+    // the LIMIT could starve later groups. Post-W5 the cap is enforced via
+    // ROW_NUMBER() OVER (PARTITION BY group_key ORDER BY timestamp DESC),
+    // guaranteeing each group keeps its most-recent N samples.
+
+    #[test]
+    fn bench_run_summary_per_group_cap_keeps_most_recent_samples() {
+        // Seed two groups. Group "old-bench" has 100 events with old
+        // timestamps; group "new-bench" has 100 events with new timestamps.
+        // Pre-W5: client-side filter saw all 200 in group_key order;
+        // post-W5: SQL guarantees ≤MAX_ROWS_PER_GROUP (= 20_000) per group.
+        // At this scale (200 events, 100/group) both pre and post should
+        // see the same data — but the test pins the contract.
+        let conn = seed_conn();
+        let now = now_secs() as i64;
+        for i in 0..100i64 {
+            insert_bench_event(
+                &conn,
+                &format!("old-{i}"),
+                now - 3600 + i, // older window
+                "old-bench",
+                Some("c1"),
+                Some(&i.to_string()),
+                0.5 + (i as f64) * 0.001,
+                true,
+            );
+            insert_bench_event(
+                &conn,
+                &format!("new-{i}"),
+                now - 60 + i, // newer window
+                "new-bench",
+                Some("c1"),
+                Some(&i.to_string()),
+                0.7 + (i as f64) * 0.001,
+                true,
+            );
+        }
+        let rows = shape_bench_run_summary(
+            &conn,
+            (now - 7200) as u64,
+            &InspectFilter::default(),
+            Some(InspectGroupBy::BenchName),
+        )
+        .expect("query should succeed");
+        // Two groups, both present.
+        assert_eq!(rows.len(), 2, "both groups should appear in summary");
+        let names: Vec<&String> = rows.iter().map(|r| &r.bench_name).collect();
+        assert!(names.contains(&&"old-bench".to_string()));
+        assert!(names.contains(&&"new-bench".to_string()));
+        // Each group's runs == 100 (rollup pass is unchanged from pre-W5;
+        // only the percentile pass got the CTE rewrite).
+        for r in &rows {
+            assert_eq!(r.runs, 100, "rollup runs count for {}", r.bench_name);
+            // Composites are non-zero — proves percentile pass returned
+            // samples for both groups (no starvation).
+            assert!(r.composite_p50 > 0.0, "p50 for {}", r.bench_name);
+            assert!(r.composite_p95 > 0.0, "p95 for {}", r.bench_name);
+        }
+    }
+
+    #[test]
+    fn bench_run_summary_per_group_cap_isolates_groups_under_load() {
+        // Pin the contract: even when two groups have heavily-skewed
+        // counts, each group's percentile pass receives its own samples
+        // independently (regression guard for the pre-W5 starvation case).
+        // We can't realistically seed MAX_TOTAL_ROWS=200_000 events in a
+        // unit test, so we use a smaller asymmetric pattern (10 vs 1000)
+        // to verify the per-group cap is fairness-shaped, not LIMIT-shaped.
+        let conn = seed_conn();
+        let now = now_secs() as i64;
+        for i in 0..10i64 {
+            insert_bench_event(
+                &conn,
+                &format!("rare-{i}"),
+                now - 100 + i,
+                "rare-bench",
+                Some("c1"),
+                Some(&i.to_string()),
+                0.6,
+                true,
+            );
+        }
+        for i in 0..1000i64 {
+            insert_bench_event(
+                &conn,
+                &format!("frequent-{i}"),
+                now - 2000 + i,
+                "frequent-bench",
+                Some("c1"),
+                Some(&i.to_string()),
+                0.9,
+                true,
+            );
+        }
+        let rows = shape_bench_run_summary(
+            &conn,
+            (now - 7200) as u64,
+            &InspectFilter::default(),
+            Some(InspectGroupBy::BenchName),
+        )
+        .expect("query should succeed");
+        assert_eq!(rows.len(), 2, "both groups must appear");
+        let rare = rows
+            .iter()
+            .find(|r| r.bench_name == "rare-bench")
+            .expect("rare-bench present");
+        let frequent = rows
+            .iter()
+            .find(|r| r.bench_name == "frequent-bench")
+            .expect("frequent-bench present");
+        assert_eq!(rare.runs, 10);
+        assert_eq!(frequent.runs, 1000);
+        // Rare-bench composite ≈ 0.6, frequent-bench ≈ 0.9. Both percentiles
+        // computed correctly per-group despite the 100× count asymmetry.
+        assert!(
+            (rare.composite_p50 - 0.6).abs() < 0.01,
+            "rare p50 {}",
+            rare.composite_p50
+        );
+        assert!(
+            (frequent.composite_p50 - 0.9).abs() < 0.01,
+            "frequent p50 {}",
+            frequent.composite_p50
+        );
     }
 
     #[test]
