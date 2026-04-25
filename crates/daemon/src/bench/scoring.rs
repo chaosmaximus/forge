@@ -82,6 +82,34 @@ fn dcg_from_rels(rels: &[f64]) -> f64 {
         .sum()
 }
 
+/// Weighted-mean composite score for an N-dimensional bench evaluation.
+/// Lifted from `bench/forge_identity.rs:1632` per 2A-5 spec §2 fact 12 / T2.2
+/// so multi-bench harnesses (forge-identity, forge-isolation, future) share
+/// one generalized scorer. Each bench supplies its own weight vector.
+///
+/// Returns `Σ weights[i] * scores[i]`. With weights summing to 1.0 this
+/// produces a value in `[min(scores), max(scores)]`. Caller MUST pre-validate
+/// score values are in `[0, 1]` if a bounded composite is required.
+///
+/// Debug-asserts `scores.len() == weights.len()` and `|sum(weights) − 1.0| < 1e-9`.
+/// Both checks are zero-cost in release builds; production callers (none
+/// today — bench-only) get release behavior.
+pub fn composite_score(scores: &[f64], weights: &[f64]) -> f64 {
+    debug_assert_eq!(
+        scores.len(),
+        weights.len(),
+        "composite_score: scores ({}) vs weights ({}) length mismatch",
+        scores.len(),
+        weights.len(),
+    );
+    let weight_sum: f64 = weights.iter().sum();
+    debug_assert!(
+        (weight_sum - 1.0).abs() < 1e-9,
+        "composite_score: weights must sum to 1.0 (got {weight_sum})",
+    );
+    scores.iter().zip(weights.iter()).map(|(s, w)| s * w).sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +196,61 @@ mod tests {
             (ndcg - expected).abs() < 1e-6,
             "got {ndcg}, expected {expected}"
         );
+    }
+
+    // ── composite_score (lifted from forge_identity per 2A-5 T2.2) ─────
+
+    #[test]
+    fn composite_score_uniform_weights() {
+        let scores = [0.5, 0.5, 0.5, 0.5];
+        let weights = [0.25, 0.25, 0.25, 0.25];
+        assert!((composite_score(&scores, &weights) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn composite_score_forge_identity_six_dim_weights() {
+        // Replays the forge-identity DIM_WEIGHTS [0.15×5, 0.25] config with
+        // perfect 1.0 scores. Result must be exactly 1.0.
+        let scores = [1.0; 6];
+        let weights = [0.15, 0.15, 0.15, 0.15, 0.15, 0.25];
+        assert!((composite_score(&scores, &weights) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn composite_score_isolation_six_dim_weights() {
+        // 2A-5 spec §3.3 weights: D1 0.25, D2 0.15, D3 0.10, D4 0.10,
+        // D5 0.15, D6 0.25. With all 1.0 scores, composite must be 1.0.
+        let scores = [1.0; 6];
+        let weights = [0.25, 0.15, 0.10, 0.10, 0.15, 0.25];
+        assert!((composite_score(&scores, &weights) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn composite_score_d1_below_min_with_others_perfect() {
+        // 2A-5 calibration scenario: D1 = 0.84 (below 0.95 min) others
+        // perfect. Composite would be 0.96 — but the per-dim min gate
+        // catches this case. The math here proves composite alone could
+        // mislead; per-dim min is load-bearing.
+        let scores = [0.84, 1.0, 1.0, 1.0, 1.0, 1.0];
+        let weights = [0.25, 0.15, 0.10, 0.10, 0.15, 0.25];
+        let composite = composite_score(&scores, &weights);
+        // 0.25 * 0.84 + 0.75 * 1.0 = 0.21 + 0.75 = 0.96
+        assert!((composite - 0.96).abs() < 1e-9, "got {composite}");
+    }
+
+    #[test]
+    #[should_panic(expected = "length mismatch")]
+    fn composite_score_panics_on_length_mismatch() {
+        let scores = [1.0; 6];
+        let weights = [0.25; 5];
+        let _ = composite_score(&scores, &weights);
+    }
+
+    #[test]
+    #[should_panic(expected = "weights must sum to 1.0")]
+    fn composite_score_panics_on_weight_sum_drift() {
+        let scores = [1.0; 6];
+        let weights = [0.10; 6]; // sums to 0.60, not 1.0
+        let _ = composite_score(&scores, &weights);
     }
 }

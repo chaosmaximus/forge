@@ -1681,19 +1681,13 @@ pub fn seed_corpus(
 
 // ── Synthetic embeddings ─────────────────────────────────────────
 
-const EMBEDDING_DIM: usize = 768;
+// Lifted to bench::common for cross-harness reuse (2A-5 T2.1).
+// Local alias preserves the EMBEDDING_DIM identifier used by perturb_embedding.
+use crate::bench::common::DETERMINISTIC_EMBEDDING_DIM as EMBEDDING_DIM;
 
-/// Generate a deterministic unit vector of dimension EMBEDDING_DIM from a seed string.
-pub fn generate_base_embedding(seed_key: &str) -> Vec<f32> {
-    use rand::RngExt;
-    let hash = sha256_hex(seed_key);
-    let mut rng = seeded_rng(u64::from_str_radix(&hash[0..16], 16).unwrap_or(0));
-    let raw: Vec<f32> = (0..EMBEDDING_DIM)
-        .map(|_| rng.random_range(-1.0_f32..1.0_f32))
-        .collect();
-    let norm: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
-    raw.into_iter().map(|x| x / norm).collect()
-}
+/// Re-export of the deterministic embedder under the historical name used
+/// by ~12 callsites in this module. Lifted to bench::common per 2A-5 T2.1.
+pub use crate::bench::common::deterministic_embedding as generate_base_embedding;
 
 /// Perturb a base embedding to achieve a target cosine distance.
 /// Target distance 0 = identical; 1 = orthogonal.

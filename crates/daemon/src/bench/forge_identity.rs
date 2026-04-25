@@ -1628,13 +1628,11 @@ fn compile_context_xml_for_infra(state: &DaemonState) -> String {
 
 // ── Composite scoring helper ─────────────────────────────────────
 
-/// Weighted sum of per-dimension scores (master v6 §4).
+/// Weighted sum of per-dimension scores (master v6 §4). Thin wrapper around
+/// the lifted [`crate::bench::scoring::composite_score`] (2A-5 T2.2).
 fn composite_score(dimensions: &[DimensionScore; 6]) -> f64 {
-    let mut total = 0.0;
-    for (i, d) in dimensions.iter().enumerate() {
-        total += DIM_WEIGHTS[i] * d.score;
-    }
-    total
+    let scores: [f64; 6] = std::array::from_fn(|i| dimensions[i].score);
+    crate::bench::scoring::composite_score(&scores, &DIM_WEIGHTS)
 }
 
 /// Evaluate per-dimension pass (score ≥ min).
