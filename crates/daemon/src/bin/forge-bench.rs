@@ -158,6 +158,20 @@ enum Commands {
         #[arg(long)]
         expected_composite: Option<f64>,
     },
+    /// Run the Forge-Isolation benchmark (cross-project memory leakage prevention).
+    /// See docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md.
+    ForgeIsolation {
+        /// ChaCha20 seed for deterministic dataset generation.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Output directory for summary.json.
+        #[arg(long, default_value = "bench_results_forge_isolation")]
+        output: PathBuf,
+        /// Expected composite score for pass/fail gate.
+        /// Omit for first calibration run; observed composite will be printed.
+        #[arg(long)]
+        expected_composite: Option<f64>,
+    },
     /// Run the LoCoMo benchmark.
     Locomo {
         /// Path to locomo10.json (from snap-research/locomo).
@@ -247,6 +261,11 @@ async fn main() {
             output,
             expected_composite,
         } => run_forge_identity(seed, output, expected_composite).await,
+        Commands::ForgeIsolation {
+            seed,
+            output,
+            expected_composite,
+        } => run_forge_isolation(seed, output, expected_composite),
         Commands::ForgeConsolidation {
             seed,
             output,
@@ -786,6 +805,95 @@ async fn run_forge_identity(
         Ok(())
     } else {
         Err("forge-identity FAIL: composite below threshold or per-dim minimum".to_string())
+    }
+}
+
+fn run_forge_isolation(
+    seed: u64,
+    output: PathBuf,
+    expected_composite: Option<f64>,
+) -> Result<(), String> {
+    use forge_daemon::bench::forge_isolation::{run_bench, BenchConfig};
+    eprintln!("[forge-isolation] starting seed={seed}");
+    let cfg = BenchConfig {
+        seed,
+        output_dir: output.clone(),
+        expected_composite,
+    };
+    let score = run_bench(&cfg);
+
+    eprintln!("[forge-isolation] === results ===");
+    eprintln!("[forge-isolation] composite={:.4}", score.composite);
+    eprintln!("[forge-isolation] pass={}", score.pass);
+    for d in &score.dimensions {
+        eprintln!(
+            "[forge-isolation] {} = {:.4} (min {:.2}, pass={})",
+            d.name, d.score, d.min, d.pass
+        );
+    }
+    let infra_passed = score
+        .infrastructure_checks
+        .iter()
+        .filter(|c| c.passed)
+        .count();
+    let infra_total = score.infrastructure_checks.len();
+    eprintln!("[forge-isolation] infrastructure_checks={infra_passed}/{infra_total} passed",);
+    eprintln!(
+        "[forge-isolation] wall_duration_ms={}",
+        score.wall_duration_ms
+    );
+    eprintln!(
+        "[forge-isolation] {}",
+        if score.pass { "PASS" } else { "FAIL" }
+    );
+
+    // Telemetry: emit bench_run_completed event.
+    let dimensions: Vec<DimensionEntry> = score
+        .dimensions
+        .iter()
+        .map(|d| DimensionEntry {
+            name: d.name.to_string(),
+            score: d.score,
+            min: d.min,
+            pass: d.pass,
+        })
+        .collect();
+    let mut dimension_scores = HashMap::new();
+    for d in &dimensions {
+        dimension_scores.insert(d.name.clone(), d.score);
+    }
+    let bench_specific = serde_json::json!({
+        "infrastructure_checks_passed": infra_passed,
+        "infrastructure_checks_total": infra_total,
+        "wall_duration_ms": score.wall_duration_ms,
+    });
+    emit_bench_telemetry(
+        "forge-isolation",
+        BenchRunPayload {
+            bench_name: "forge-isolation".to_string(),
+            seed,
+            composite: score.composite,
+            pass: score.pass,
+            dimensions: dimensions.clone(),
+            dimension_scores,
+            bench_specific_stats: bench_specific,
+            wall_duration_ms: score.wall_duration_ms,
+            result_count: dimensions.len() as u64,
+        },
+    );
+
+    if let Some(expected) = expected_composite {
+        if (score.composite - expected).abs() > 0.05 {
+            return Err(format!(
+                "composite {:.4} drifted from expected {:.4} by > 0.05",
+                score.composite, expected
+            ));
+        }
+    }
+    if score.pass {
+        Ok(())
+    } else {
+        Err("forge-isolation FAIL: composite below threshold or per-dim minimum".to_string())
     }
 }
 

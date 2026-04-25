@@ -123,8 +123,9 @@ Field reference:
 - `event_schema_version` (int, required): `1`. Readers must check this.
 - `bench_name` (string, required): one of the canonical bench names —
   `forge-identity`, `forge-consolidation`, `forge-context`,
-  `forge-persist`, `longmemeval-<mode>`, `locomo-<mode>` (where `<mode>`
-  is `raw` / `extract` etc., composed at the call site).
+  `forge-persist`, `forge-isolation`, `longmemeval-<mode>`,
+  `locomo-<mode>` (where `<mode>` is `raw` / `extract` etc., composed
+  at the call site).
 - `seed` (u64, required): the seed passed to the bench (`0` for the
   recall-probe benches `longmemeval` / `locomo` which don't take a seed).
 - `composite` (f64 in `[0.0, 1.0]`, required): bench-specific composite
@@ -167,6 +168,7 @@ break (see "Version bump protocol" below).
 | `forge-identity`        | 6 | `identity_facet_persistence`, `disposition_drift`, `preference_time_ordering`, `valence_flipping`, `behavioral_skill_inference`, `preference_staleness` |
 | `forge-consolidation`   | 5 | `dedup`, `contradictions`, `reweave`, `lifecycle`, `recall_improvement` |
 | `forge-context`         | 4 | `context_assembly`, `guardrails`, `completion`, `layer_recall` |
+| `forge-isolation`       | 6 | `cross_project_precision`, `self_recall_completeness`, `global_memory_visibility`, `unscoped_query_breadth`, `edge_case_resilience`, `compile_context_isolation` |
 | `forge-persist`         | 0 | _(survival probe — empty `dimensions`; composite = `recovery_rate`)_ |
 | `longmemeval-<mode>`    | 0 | _(recall@K probe — empty `dimensions`; composite = `mean_recall_at_5`)_ |
 | `locomo-<mode>`         | 0 | _(recall@K probe — empty `dimensions`; composite = `mean_recall_at_10`)_ |

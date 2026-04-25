@@ -133,11 +133,17 @@ pub struct IsolationScore {
 #[derive(Debug, Clone)]
 pub struct BenchConfig {
     pub seed: u64,
+    pub output_dir: std::path::PathBuf,
+    pub expected_composite: Option<f64>,
 }
 
 impl Default for BenchConfig {
     fn default() -> Self {
-        Self { seed: 42 }
+        Self {
+            seed: 42,
+            output_dir: std::path::PathBuf::from("bench_results_forge_isolation"),
+            expected_composite: None,
+        }
     }
 }
 
@@ -866,8 +872,8 @@ pub fn run_bench_in_state(state: &mut DaemonState, corpus: &Corpus, seed: u64) -
 /// [`seed_corpus`], then dispatches to [`run_bench_in_state`] for the 6
 /// dimension probes + 8 infrastructure checks.
 ///
-/// Returns the [`IsolationScore`]; caller is responsible for serializing
-/// summary.json.
+/// Writes `summary.json` to `config.output_dir` (mirrors forge-identity).
+/// Returns the [`IsolationScore`].
 pub fn run_bench(config: &BenchConfig) -> IsolationScore {
     let mut rng = seeded_rng(config.seed);
     let corpus = generate_corpus(&mut rng);
@@ -880,7 +886,27 @@ pub fn run_bench(config: &BenchConfig) -> IsolationScore {
         "seed_corpus should insert exactly TOTAL_CORPUS_SIZE rows"
     );
 
-    run_bench_in_state(&mut state, &corpus, config.seed)
+    let score = run_bench_in_state(&mut state, &corpus, config.seed);
+
+    // Best-effort: write summary.json. Don't panic on failure — bench
+    // is informational; CLI also captures stderr summary.
+    if let Err(e) = std::fs::create_dir_all(&config.output_dir) {
+        tracing::warn!(error = %e, dir = %config.output_dir.display(),
+            "failed to create forge-isolation output_dir");
+    } else {
+        let path = config.output_dir.join("summary.json");
+        match serde_json::to_string_pretty(&score) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    tracing::warn!(error = %e, path = %path.display(),
+                        "failed to write forge-isolation summary.json");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "summary.json serialization failed"),
+        }
+    }
+
+    score
 }
 
 #[cfg(test)]
@@ -911,7 +937,11 @@ mod tests {
     #[test]
     fn end_to_end_run_passes_on_seed_42() {
         // Post-T6: real impl. Composite should hit ≥ 0.95 with all dims passing.
-        let score = run_bench(&BenchConfig { seed: 42 });
+        let score = run_bench(&BenchConfig {
+            seed: 42,
+            output_dir: std::path::PathBuf::from("/tmp"),
+            expected_composite: None,
+        });
         assert_eq!(score.seed, 42);
         assert_eq!(score.dimensions.len(), 6);
         assert_eq!(score.infrastructure_checks.len(), 8);
