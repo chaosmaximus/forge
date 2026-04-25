@@ -1,0 +1,28 @@
+schema_version: 1
+slug: 2026-04-25-p3-2-w7-sigterm-handler
+target_paths:
+  - crates/daemon/src/main.rs
+  - docs/operations/2P-1-rollback.md
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: f97832e
+  head: 07cc70d
+verdict: lockable-as-is
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-2-w7-sigterm-handler.transcript.md
+findings:
+  - id: LOW-1
+    severity: LOW
+    summary: Playbook version reference precedes the actual version bump (v0.6.0-rc.2 lands at P3-2 close, not at W7)
+    file: docs/operations/2P-1-rollback.md
+    status: deferred
+    rationale: forward-reference window is hours/days at most, owned by same engineer driving P3-2 close. Cargo.toml is source of truth. Cosmetic.
+  - id: LOW-2
+    severity: LOW
+    summary: No automated regression test for the SIGTERM path (dogfood-only verification)
+    file: crates/daemon/src/main.rs
+    status: deferred
+    rationale: subprocess-based signal tests are heavier than typical unit tests; dogfood evidence in commit body is sufficient for the simplicity of the diff. Tracked as future backlog (tests/integration/signal_shutdown.rs).
