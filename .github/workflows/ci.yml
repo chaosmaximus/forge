@@ -114,6 +114,16 @@ jobs:
         # Override via FORGE_HARNESS_SYNC_ENFORCE if early-flip is desired.
         run: bash scripts/check-harness-sync.sh
 
+      # Phase 2P-1b §2: every adversarial review of a wave/phase lands as a
+      # YAML in docs/superpowers/reviews/. Validates schema + closes-open
+      # blocker invariant. Fixture tests run first to guard the validator
+      # itself from parser regressions (mirrors harness-sync ordering).
+      - name: Review artifacts fixture tests
+        run: bash tests/scripts/test-review-artifacts.sh
+
+      - name: Review artifacts validation
+        run: bash scripts/check-review-artifacts.sh
+
   bench-fast:
     # Phase 2A-4d.3 T13: per-commit fast benches (forge-consolidation,
     # forge-identity). In-process harnesses run in <1s on ubuntu-latest

@@ -1,0 +1,79 @@
+schema_version: 1
+slug: 2026-04-25-w1-harness-sync
+target_paths:
+  - scripts/check-harness-sync.sh
+  - tests/scripts/test-harness-sync.sh
+  - tests/fixtures/harness-sync/clean/crates/core/src/protocol/request.rs
+  - tests/fixtures/harness-sync/clean/crates/cli/src/main.rs
+  - tests/fixtures/harness-sync/clean/skills/sample.md
+  - tests/fixtures/harness-sync/clean/agents/sample.md
+  - tests/fixtures/harness-sync/drift/crates/core/src/protocol/request.rs
+  - tests/fixtures/harness-sync/drift/crates/cli/src/main.rs
+  - tests/fixtures/harness-sync/drift/skills/drift.md
+  - tests/fixtures/harness-sync/drift/agents/drift.md
+  - tests/static/run-shellcheck.sh
+  - .github/workflows/ci.yml
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 442a9b4
+  head: c261e99
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-w1-harness-sync.transcript.md
+findings:
+  - id: H1
+    severity: HIGH
+    summary: trap leak on parser-regression early exit returns wrong exit code
+    file: scripts/check-harness-sync.sh
+    line: 71
+    status: resolved
+    fixed_by: beeb2be
+  - id: M2
+    severity: MEDIUM
+    summary: --root with flag-like next arg silently treats it as path
+    file: scripts/check-harness-sync.sh
+    line: 42
+    status: resolved
+    fixed_by: beeb2be
+  - id: M3
+    severity: MEDIUM
+    summary: assert_contains "no drift" too loose; future banner text could mask real failure
+    file: tests/scripts/test-harness-sync.sh
+    line: 71
+    status: resolved
+    fixed_by: beeb2be
+  - id: L2
+    severity: LOW
+    summary: CI step ordering — fixture tests should run before real-repo drift check
+    file: .github/workflows/ci.yml
+    status: resolved
+    fixed_by: beeb2be
+  - id: M1
+    severity: MEDIUM
+    summary: mode value not validated — FORGE_HARNESS_SYNC_ENFORCE=garbage downgrades to WARN
+    file: scripts/check-harness-sync.sh
+    line: 78
+    status: deferred
+    rationale: matches FORCE_FAIL=1 legacy contract; revisit if a CI matrix sets the var to "on"/"true"
+  - id: M4
+    severity: MEDIUM
+    summary: LC_ALL=C not set; pascal-to-snake awk and grep/sort pipelines could shift under non-C locale
+    file: scripts/check-harness-sync.sh
+    status: deferred
+    rationale: real-world locale stability holds; date -u +%Y-%m-%d and YYYY-MM-DD compare are byte-safe
+  - id: M5
+    severity: MEDIUM
+    summary: fixtures only exercise awk extractor happy path; no doc-comments/cfg/generics variants
+    file: tests/fixtures/harness-sync/clean/crates/core/src/protocol/request.rs
+    status: deferred
+    rationale: happy-path coverage sufficient for W1; expand fixtures in a future maintenance pass
+  - id: L1
+    severity: LOW
+    summary: --help sed parsing brittle if `set -e` ever moves
+    file: scripts/check-harness-sync.sh
+    line: 52
+    status: deferred
+    rationale: cosmetic

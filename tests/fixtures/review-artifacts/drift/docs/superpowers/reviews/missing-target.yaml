@@ -1,0 +1,12 @@
+schema_version: 1
+slug: missing-target
+target_paths:
+  - this/file/does/not/exist.txt
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+verdict: lockable-as-is
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/transcript.md
+findings: []

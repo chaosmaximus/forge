@@ -1,0 +1,16 @@
+schema_version: 1
+slug: open-blocker
+target_paths:
+  - target.txt
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/transcript.md
+findings:
+  - id: H1
+    severity: HIGH
+    summary: this should fail validation because status=open
+    status: open

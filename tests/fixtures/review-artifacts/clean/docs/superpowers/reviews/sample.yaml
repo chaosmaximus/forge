@@ -1,0 +1,15 @@
+schema_version: 1
+slug: sample
+target_paths:
+  - target.txt
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: aaaaaaa
+  head: bbbbbbb
+verdict: lockable-as-is
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/sample.transcript.md
+findings: []

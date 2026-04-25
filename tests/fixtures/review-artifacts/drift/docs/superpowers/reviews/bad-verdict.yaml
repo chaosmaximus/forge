@@ -1,0 +1,12 @@
+schema_version: 1
+slug: bad-verdict
+target_paths:
+  - target.txt
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+verdict: looks-good-to-me
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/transcript.md
+findings: []

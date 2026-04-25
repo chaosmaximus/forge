@@ -1,0 +1,12 @@
+schema_version: 99
+slug: bad-schema
+target_paths:
+  - target.txt
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+verdict: lockable-as-is
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/transcript.md
+findings: []
