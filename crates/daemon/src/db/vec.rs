@@ -4,7 +4,7 @@
 // Replaces the in-memory hnsw_rs VectorIndex.
 
 use rusqlite::{params, Connection};
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Register sqlite-vec as an auto-extension. Must be called before opening any connection.
 /// Safe to call multiple times (uses std::sync::Once internally).

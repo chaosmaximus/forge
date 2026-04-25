@@ -6,7 +6,7 @@
 // published retrieval systems (see docs/benchmarks/plan.md).
 
 use rusqlite::{params, Connection};
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 use crate::db::ops;
 
