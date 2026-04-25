@@ -67,6 +67,10 @@
 * **W4 L-1** — `check-protocol-hash.sh` forwards `--protocol-file`/`--plugin-file` flags but `sync-protocol-hash.sh` does not. CLI surface is asymmetric. Defer; sync-side flags would only matter for fixture-test variants we don't currently exercise.
 * **W4 L-3** — empty-string or whitespace-only `protocol_hash` is detected via the drift comparison, but the message says "drift" not "empty value" — slightly misleading. Defer; cosmetic.
 * **W4 L-4** — initial-add error phrasing differs slightly between the validator (`Add it: "protocol_hash": "<sha>"`) and the sync helper (`add manually first; Suggested line: …`). Both copy-pasteable. Defer.
+* **W5 §G1** — `.github/pending-rollback` flag has no enforcement. Drill 2026-04-25 §G1 documented two fixes: (a) a CI step that fails when the file exists (in-repo, self-contained), or (b) a GitHub branch-protection rule. Defer; next rollback drill or the GitHub repo governance W6 picks one.
+* **W5 §G4** — DB compatibility matrix flags `2P-1b §5a TODO: add pre-migration DB snapshot`. Genuine production-safety hole when rolling back across schema boundaries. Defer to a P3-3+ item.
+* **W5 §G5** — quarterly drill cadence is documented in the playbook's tabletop checklist but no calendar/cron reminder mechanism exists. Defer; consider a recurring HANDOFF entry or GitHub Actions cron workflow.
+* **W5 §G2** — `gh release delete --cleanup-tag=false` is non-idiomatic but functionally correct; the playbook now uses bare `--cleanup-tag` syntax. Closed by W5.
 
 ---
 

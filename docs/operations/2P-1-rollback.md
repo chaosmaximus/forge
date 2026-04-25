@@ -7,7 +7,10 @@ from private `forge-app` into public `chaosmaximus/forge`) and Phase
 **Audience:** release operator with commit access to `chaosmaximus/forge`,
 maintainer access to the Homebrew tap, and GitHub Release delete rights.
 **RTO target:** 20 minutes from decision to revoked release.
-**Last tabletop exercise:** — (update when first drill completes).
+**Last tabletop exercise:** 2026-04-25 — see
+`docs/operations/rollback-drills/2026-04-25-tabletop.md` for findings
+(5 gaps surfaced; Step 4 pkill issue closed in this revision; G1, G4, G5
+tracked as backlog).
 
 ---
 
@@ -36,6 +39,11 @@ Fix forward and cut a new patch release.
 - Set `.github/pending-rollback` flag (branch protection hook — add a
   rule that refuses merges to master while this file exists). Commit
   the flag with message `rollback: block merges until vX.Y.Z revoked`.
+  **Caveat (drill 2026-04-25 §G1):** the flag file alone is
+  informational. Enforcement requires either (a) a GitHub branch
+  protection rule rejecting merges while the file exists, or (b) a CI
+  step that fails when the file is present. Option (b) is in-repo and
+  recommended; not yet wired (P3-1 W5 backlog).
 
 ---
 
@@ -45,12 +53,14 @@ Fix forward and cut a new patch release.
 # Replace TAG with the version being rolled back.
 TAG=v0.5.0
 
-# Delete the release (binaries go with it) — keeps the tag so history
-# stays intact; a later repush can be a new tag like v0.5.1.
-gh release delete "$TAG" --yes --cleanup-tag=false
+# Delete the release (binaries go with it). Default behavior keeps the
+# tag intact so Git history and third-party tag references don't break;
+# a later repush can be a new tag like v0.5.1.
+gh release delete "$TAG" --yes
 
 # If we DO want to delete the tag (e.g. nothing else will ever reference
-# it), also run:
+# it), pass --cleanup-tag (or run the API + push commands explicitly):
+# gh release delete "$TAG" --yes --cleanup-tag
 # gh api --method DELETE "repos/chaosmaximus/forge/git/refs/tags/$TAG"
 # git push origin --delete "$TAG"
 ```
@@ -132,8 +142,21 @@ Sideload users: pull + rebuild after the revert lands:
     git fetch
     git reset --hard origin/master    # discards WIP — back up first
     cargo build --release --bin forge-daemon --bin forge-next
-    # Restart daemon (selective kill, not killall)
-    pkill -f 'forge-daemon' && /path/to/target/release/forge-daemon &
+
+    # Restart daemon — use the pidfile written at $FORGE_DIR/forge.pid
+    # (forge-daemon's main.rs::acquire_pid_lock) rather than
+    # `pkill -f 'forge-daemon'`. The substring match is unsafe — drill
+    # 2026-04-25 §G3 showed it false-matches any process whose cmdline
+    # mentions forge-daemon, including shells whose cwd is a forge repo.
+    DAEMON_PID=$(cat "${FORGE_DIR:-$HOME/.forge}/forge.pid" 2>/dev/null || true)
+    if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+        kill "$DAEMON_PID"
+        for _ in 1 2 3 4 5; do
+            kill -0 "$DAEMON_PID" 2>/dev/null || break
+            sleep 1
+        done
+    fi
+    /path/to/target/release/forge-daemon &
 ```
 
 Private-plugin sideload users (pre-ban-lift) should follow
