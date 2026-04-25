@@ -30,12 +30,22 @@ fi
 
 fail=0
 
-# Strip line/block comments and double-quoted string literals before regex
-# matching. Keeps line numbers by replacing comment/string bodies with spaces
-# of the same length so downstream greps still report the right `file:line`.
-# Not a full Rust lexer, but it is enough to neutralise the two documented
-# CI-guard false-positive classes: `// tokio::spawn(...)` and "mod tests" in
-# a string literal.
+# Strip line/block comments and string literals (regular and raw) before
+# regex matching. Keeps line numbers by replacing comment/string bodies
+# with spaces of the same length so downstream greps still report the
+# right `file:line`.
+#
+# Phase 2A-4d.1.1 #3: extended to handle Rust raw strings of the form
+# `r"..."`, `r#"..."#`, `r##"..."##`, ... up to 3 hashes (in practice
+# 1–2 covers everything in this codebase, 3+ is exotic). Without this,
+# a raw string containing `{` / `}` would corrupt the brace-balance
+# scope detection that Check 2 uses to find #[cfg(test)] modules.
+#
+# Not a full Rust lexer (the long-term fix is a `syn`-based rewrite,
+# tracked under #4 in the same backlog). Sufficient to neutralise the
+# documented false-positive classes: `// tokio::spawn(...)` in a line
+# comment, "mod tests" inside a string literal, and `r#"...{...}..."#`
+# in a raw string.
 strip_comments_and_strings() {
   local file="$1"
   # Remove block comments via awk state machine (/* … */ across lines).
@@ -66,6 +76,37 @@ strip_comments_and_strings() {
           for (k = 0; k < rest_len; k++) out = out " "
           i = length(line) + 1
           continue
+        }
+        # Raw string: r"..." | r#"..."# | r##"..."## | r###"..."###
+        if (ch == "r") {
+          # Count opening hashes (0..3 supported).
+          hash_count = 0
+          j = i + 1
+          while (j <= length(line) && substr(line, j, 1) == "#" && hash_count < 4) {
+            hash_count++; j++
+          }
+          if (j <= length(line) && substr(line, j, 1) == "\"") {
+            # Confirmed raw string opening: blank `r`, hashes, opening quote.
+            for (k = 0; k <= hash_count + 1; k++) out = out " "
+            i = j + 1
+            # Scan for matching `"` followed by exactly hash_count #.
+            while (i <= length(line)) {
+              if (substr(line, i, 1) == "\"") {
+                ok = 1
+                for (k = 1; k <= hash_count; k++) {
+                  if (substr(line, i + k, 1) != "#") { ok = 0; break }
+                }
+                if (ok) {
+                  for (k = 0; k <= hash_count; k++) out = out " "
+                  i = i + hash_count + 1
+                  break
+                }
+              }
+              out = out " "; i++
+            }
+            continue
+          }
+          # Not a raw string opener — fall through and treat r as literal.
         }
         if (ch == "\"") {
           # Consume string until unescaped closing quote. Blank out the body.
@@ -158,14 +199,21 @@ while IFS= read -r -d '' file; do
   # "mod tests" in a string can't trigger or exempt the guard.
   scrubbed=$(strip_comments_and_strings "$file")
 
-  # Locate every `#[cfg(test)]` annotation on a test-scope module — the
+  # Locate every test-scope `#[cfg(...)]` annotation on a module — the
   # module itself is declared on the very next `mod X {` line (in
   # practice, inner_attributes-in-test-modules convention).
-  # Parse all `#[cfg(test)]` line numbers and the adjacent `mod X {` line.
   # A `tokio::spawn(` inside any such module (by line range to the matching
   # closing brace of that mod) is exempt.
+  #
+  # Phase 2A-4d.1.1 #3: the prior regex anchored on the literal
+  # `#[cfg(test)]` form only, missing `#[cfg(all(test, feature="foo"))]`,
+  # `#[cfg(any(test, ...))]`, and other compound forms. Broaden to any
+  # `#[cfg(...)]` whose argument list contains the bare word `test`
+  # delimited by non-identifier characters. Skip `#[cfg(not(test))]`
+  # since that gates the inverse — code there is non-test and should
+  # still be subject to the spawn whitelist.
   cfg_test_modules=$(printf '%s\n' "$scrubbed" | awk '
-    /^[[:space:]]*#\[cfg\(test\)\]/ {
+    /^[[:space:]]*#\[cfg\(/ && /[^a-zA-Z0-9_]test([^a-zA-Z0-9_]|$)/ && !/not\([^)]*test/ {
       cfg_line = NR
       in_expect = 1
       next
