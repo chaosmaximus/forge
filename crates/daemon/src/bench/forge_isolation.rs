@@ -1,0 +1,386 @@
+//! Forge-Isolation bench (2A-5) — domain-transfer isolation correctness.
+//!
+//! Spec: `docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md`
+//! v2.1 LOCKED.
+//!
+//! Validates that project scoping prevents cross-project memory leakage at
+//! both the `Request::Recall` API and the `compile_dynamic_suffix_with_inj`
+//! context-assembly entrypoint.
+//!
+//! ## Architecture (spec §3.7)
+//!
+//! Single shared corpus per seed; all 6 dimensions read from the same
+//! `Connection` to preserve cross-dim leakage signal. Per-dim isolated
+//! `:memory:` databases (as in `forge_identity::run_dim_isolated`) would
+//! actively HIDE cross-dim regression — wrong primitive for an isolation
+//! bench.
+//!
+//! ## Dimensions (§3.1, §3.3)
+//!
+//! | Dim | Probe | Min | Weight |
+//! |-----|-------|-----|--------|
+//! | D1 cross_project_precision     | Recall query=`isolation_bench` per-project; foreign-token rate | 0.95 | 0.25 |
+//! | D2 self_recall_completeness    | Recall query=`{P}_secret`, project=Some(P); recall@10        | 0.85 | 0.15 |
+//! | D3 global_memory_visibility    | Globals appear in every project's recall                      | 0.90 | 0.10 |
+//! | D4 unscoped_query_breadth      | bucket coverage with project=None                             | 0.85 | 0.10 |
+//! | D5 edge_case_resilience        | 7 sub-probes (empty/special/long/SQLi/prefix/case/whitespace) | 0.85 | 0.15 |
+//! | D6 compile_context_isolation   | `compile_dynamic_suffix_with_inj` foreign-token denominator=15 | 0.95 | 0.25 |
+//!
+//! Composite = weighted mean. Pass = composite ≥ 0.95 AND every dim ≥ min.
+
+use rand_chacha::ChaCha20Rng;
+use rusqlite::Connection;
+use serde::Serialize;
+
+use crate::bench::common::{deterministic_embedding, seeded_rng};
+
+// ── Per-bench weights (§3.1, §3.3) ──────────────────────────────────────
+
+/// Weights summing to 1.00 (spec §3.3).
+const DIM_WEIGHTS: [f64; 6] = [0.25, 0.15, 0.10, 0.10, 0.15, 0.25];
+
+/// Per-dimension minimum scores for pass (spec §3.1).
+const DIM_MINIMUMS: [f64; 6] = [0.95, 0.85, 0.90, 0.85, 0.85, 0.95];
+
+/// Composite pass threshold (spec §3.3).
+const COMPOSITE_THRESHOLD: f64 = 0.95;
+
+// ── Corpus parameters (spec §3.2) ───────────────────────────────────────
+
+/// Main projects whose memories must remain isolated from each other.
+pub const MAIN_PROJECTS: [&str; 5] = ["alpha", "beta", "gamma", "delta", "epsilon"];
+
+/// Prefix-collision sentinel project. Exists only to drive D5 probe 5
+/// (`alpha` query must not match `alphabet` memories).
+pub const PREFIX_COLLISION_PROJECT: &str = "alphabet";
+
+/// Memories per main project.
+pub const MEMORIES_PER_MAIN_PROJECT: usize = 30;
+
+/// Memories in the prefix-collision sentinel.
+pub const PREFIX_COLLISION_MEMORIES: usize = 5;
+
+/// Project=None global memories visible in every project's recall.
+pub const GLOBAL_MEMORIES: usize = 10;
+
+/// Total: 5×30 + 5 + 10 = 165.
+pub const TOTAL_CORPUS_SIZE: usize =
+    MAIN_PROJECTS.len() * MEMORIES_PER_MAIN_PROJECT + PREFIX_COLLISION_MEMORIES + GLOBAL_MEMORIES;
+
+/// Shared tag on every bench memory; D1 + D4 use this as a broad query.
+pub const SHARED_TAG: &str = "isolation_bench";
+
+// ── Result structs ──────────────────────────────────────────────────────
+
+/// One bench memory (corpus row).
+#[derive(Debug, Clone)]
+pub struct BenchMemory {
+    pub id: String,
+    /// `Some("alpha")` for project-scoped; `None` for global.
+    pub project: Option<String>,
+    pub title: String,
+    pub content: String,
+    pub tags: Vec<String>,
+    pub confidence: f32,
+    pub embedding: Vec<f32>,
+}
+
+/// Generated dataset for one bench seed.
+#[derive(Debug, Clone)]
+pub struct Corpus {
+    pub memories: Vec<BenchMemory>,
+}
+
+impl Corpus {
+    pub fn count_by_project(&self, project: Option<&str>) -> usize {
+        self.memories
+            .iter()
+            .filter(|m| m.project.as_deref() == project)
+            .count()
+    }
+}
+
+/// One dimension's score with pass/fail eval.
+#[derive(Debug, Clone, Serialize)]
+pub struct DimensionScore {
+    pub name: &'static str,
+    pub score: f64,
+    pub min: f64,
+    pub pass: bool,
+}
+
+/// One infrastructure assertion's outcome.
+#[derive(Debug, Clone, Serialize)]
+pub struct InfrastructureCheck {
+    pub name: &'static str,
+    pub passed: bool,
+    pub detail: String,
+}
+
+/// Top-level summary.json contract — mirrors `forge_identity::IdentityScore`.
+#[derive(Debug, Clone, Serialize)]
+pub struct IsolationScore {
+    pub seed: u64,
+    pub composite: f64,
+    pub dimensions: [DimensionScore; 6],
+    pub infrastructure_checks: Vec<InfrastructureCheck>,
+    pub pass: bool,
+    pub wall_duration_ms: u64,
+}
+
+/// Bench-runner config knobs (mirrors forge_identity::BenchConfig).
+#[derive(Debug, Clone)]
+pub struct BenchConfig {
+    pub seed: u64,
+}
+
+impl Default for BenchConfig {
+    fn default() -> Self {
+        Self { seed: 42 }
+    }
+}
+
+// ── Corpus generator (T3 will fill in) ──────────────────────────────────
+
+/// SKELETON — T3 implementation per spec §3.2.
+///
+/// Generates 165-memory corpus with deterministic confidence
+/// (`0.7 + (idx as f32 * 0.01).clamp(0.0, 0.29)` per M4 fix), shared tag
+/// `"isolation_bench"`, project-specific tokens (e.g., `"alpha_secret_5"`),
+/// and `bench/common::deterministic_embedding`-derived 768-dim vectors.
+pub fn generate_corpus(_rng: &mut ChaCha20Rng) -> Corpus {
+    // T3 will populate this. Skeleton returns empty corpus.
+    Corpus {
+        memories: Vec::new(),
+    }
+}
+
+// ── Dimension stubs (T4-T6 will fill in) ────────────────────────────────
+
+/// SKELETON — T4 implementation per spec §3.1 / §3.3.
+fn dim_1_cross_project_precision(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+    DimensionScore {
+        name: "cross_project_precision",
+        score: 0.0,
+        min: DIM_MINIMUMS[0],
+        pass: false,
+    }
+}
+
+/// SKELETON — T4 implementation per spec §3.1 / §3.3.
+fn dim_2_self_recall_completeness(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+    DimensionScore {
+        name: "self_recall_completeness",
+        score: 0.0,
+        min: DIM_MINIMUMS[1],
+        pass: false,
+    }
+}
+
+/// SKELETON — T5 implementation per spec §3.1 / §3.3.
+fn dim_3_global_memory_visibility(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+    DimensionScore {
+        name: "global_memory_visibility",
+        score: 0.0,
+        min: DIM_MINIMUMS[2],
+        pass: false,
+    }
+}
+
+/// SKELETON — T5 implementation per spec §3.1 / §3.3.
+fn dim_4_unscoped_query_breadth(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+    DimensionScore {
+        name: "unscoped_query_breadth",
+        score: 0.0,
+        min: DIM_MINIMUMS[3],
+        pass: false,
+    }
+}
+
+/// SKELETON — T6 implementation per spec §3.1a (7 sub-probes).
+fn dim_5_edge_case_resilience(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+    DimensionScore {
+        name: "edge_case_resilience",
+        score: 0.0,
+        min: DIM_MINIMUMS[4],
+        pass: false,
+    }
+}
+
+/// SKELETON — T5 implementation per spec §3.1 / §3.3 + N1 fix
+/// (max_possible = decisions_limit + lessons_limit = 15) + N3 fix (pinned
+/// `ContextInjectionConfig { session_context: true, .. }` via
+/// `compile_dynamic_suffix_with_inj`).
+fn dim_6_compile_context_isolation(_conn: &Connection, _corpus: &Corpus) -> DimensionScore {
+    DimensionScore {
+        name: "compile_context_isolation",
+        score: 0.0,
+        min: DIM_MINIMUMS[5],
+        pass: false,
+    }
+}
+
+// ── Composite scorer (uses lifted bench::scoring) ───────────────────────
+
+fn composite_score(dims: &[DimensionScore; 6]) -> f64 {
+    let scores: [f64; 6] = std::array::from_fn(|i| dims[i].score);
+    crate::bench::scoring::composite_score(&scores, &DIM_WEIGHTS)
+}
+
+fn mark_pass(d: DimensionScore) -> DimensionScore {
+    let pass = d.score >= d.min;
+    DimensionScore { pass, ..d }
+}
+
+// ── Infrastructure assertions (T6 will fill in) ─────────────────────────
+
+/// Spec §3.4 — 8 fail-fast checks before dimensions run.
+fn run_infrastructure_checks(_conn: &Connection, _corpus: &Corpus) -> Vec<InfrastructureCheck> {
+    // T6 will populate these. Skeleton stubs all 8 as passed=false so the
+    // run aborts loudly until T6 lands real implementations.
+    vec![
+        InfrastructureCheck {
+            name: "memory_project_index_exists",
+            passed: false,
+            detail: "stub — T6 to implement".into(),
+        },
+        InfrastructureCheck {
+            name: "memory_project_column_exists",
+            passed: false,
+            detail: "stub — T6 to implement".into(),
+        },
+        InfrastructureCheck {
+            name: "recall_accepts_project_filter",
+            passed: false,
+            detail: "stub — T6 to implement".into(),
+        },
+        InfrastructureCheck {
+            name: "seeded_rng_deterministic",
+            passed: false,
+            detail: "stub — T6 to implement".into(),
+        },
+        InfrastructureCheck {
+            name: "corpus_size_matches_spec",
+            passed: false,
+            detail: "stub — T6 to implement".into(),
+        },
+        InfrastructureCheck {
+            name: "project_distribution_correct",
+            passed: false,
+            detail: "stub — T6 to implement".into(),
+        },
+        InfrastructureCheck {
+            name: "embedding_dim_matches_consolidation",
+            passed: false,
+            detail: "stub — T6 to implement".into(),
+        },
+        InfrastructureCheck {
+            name: "compile_context_returns_xml",
+            passed: false,
+            detail: "stub — T6 to implement".into(),
+        },
+    ]
+}
+
+// ── Orchestrator (single shared DaemonState per spec §3.7) ──────────────
+
+/// Run the bench against a pre-seeded `Connection`. T3 builds the corpus
+/// and seeds the connection; this fn runs the 6 dims + infra checks.
+///
+/// Per §3.7, all dims share the SAME connection — per-dim isolation is
+/// the wrong primitive for an isolation bench because it would HIDE
+/// cross-dim leakage.
+pub fn run_bench_in_state(conn: &Connection, corpus: &Corpus, seed: u64) -> IsolationScore {
+    let start = std::time::Instant::now();
+
+    let infra = run_infrastructure_checks(conn, corpus);
+    let infra_pass = infra.iter().all(|c| c.passed);
+
+    let dims_raw = [
+        dim_1_cross_project_precision(conn, corpus),
+        dim_2_self_recall_completeness(conn, corpus),
+        dim_3_global_memory_visibility(conn, corpus),
+        dim_4_unscoped_query_breadth(conn, corpus),
+        dim_5_edge_case_resilience(conn, corpus),
+        dim_6_compile_context_isolation(conn, corpus),
+    ];
+    let dimensions: [DimensionScore; 6] = std::array::from_fn(|i| mark_pass(dims_raw[i].clone()));
+    let composite = if infra_pass {
+        composite_score(&dimensions)
+    } else {
+        0.0 // Abort with failure if infra checks fail.
+    };
+
+    let dims_pass = dimensions.iter().all(|d| d.pass);
+    let pass = infra_pass && dims_pass && composite >= COMPOSITE_THRESHOLD;
+
+    IsolationScore {
+        seed,
+        composite,
+        dimensions,
+        infrastructure_checks: infra,
+        pass,
+        wall_duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+/// Top-level entry point used by the `forge-bench forge-isolation` CLI
+/// (T7) and integration tests. Builds a fresh `:memory:` connection, seeds
+/// the corpus, and runs the bench.
+///
+/// Returns the score; caller is responsible for serializing summary.json.
+pub fn run_bench(config: &BenchConfig) -> IsolationScore {
+    // T3 will replace this stub: open :memory: connection, run schema
+    // migrations, seed corpus rows + their embeddings via the daemon's
+    // memory-store path, then dispatch to run_bench_in_state.
+    let mut rng = seeded_rng(config.seed);
+    let corpus = generate_corpus(&mut rng);
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    // Schema migrations + corpus seeding pending T3.
+    run_bench_in_state(&conn, &corpus, config.seed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dim_weights_sum_to_one() {
+        let sum: f64 = DIM_WEIGHTS.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-9, "DIM_WEIGHTS sum = {sum}");
+    }
+
+    #[test]
+    fn corpus_size_constant_matches_spec() {
+        assert_eq!(TOTAL_CORPUS_SIZE, 165, "5×30 + 5 + 10 = 165 per spec §3.2");
+    }
+
+    #[test]
+    fn dim_minimums_match_spec() {
+        assert_eq!(DIM_MINIMUMS, [0.95, 0.85, 0.90, 0.85, 0.85, 0.95]);
+    }
+
+    #[test]
+    fn composite_threshold_is_0_95() {
+        assert!((COMPOSITE_THRESHOLD - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn skeleton_run_returns_zeroed_failing_score() {
+        let score = run_bench(&BenchConfig { seed: 42 });
+        assert_eq!(score.seed, 42);
+        // Skeleton dims all return 0.0; infra checks all return passed=false.
+        // Composite gets short-circuited to 0.0 via the infra-fail branch.
+        assert_eq!(score.composite, 0.0);
+        assert!(!score.pass);
+        assert_eq!(score.dimensions.len(), 6);
+        assert_eq!(score.infrastructure_checks.len(), 8);
+    }
+
+    #[test]
+    fn deterministic_embedding_call_in_skeleton() {
+        // Sanity: lifted helper is callable from this module.
+        let v = deterministic_embedding("forge-isolation-skeleton-test");
+        assert_eq!(v.len(), 768);
+    }
+}

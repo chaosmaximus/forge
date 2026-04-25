@@ -20,6 +20,12 @@ pub mod forge_context;
 // makes the bench-only enum variants visible here.
 #[cfg(feature = "bench")]
 pub mod forge_identity;
+/// 2A-5 domain-transfer isolation bench. Gated on `feature = "bench"` for
+/// consistency with forge_identity + telemetry; uses production
+/// `Request::Recall` + `compile_dynamic_suffix_with_inj` (no bench-only
+/// Request variants), but emits via `bench::telemetry` which IS bench-gated.
+#[cfg(feature = "bench")]
+pub mod forge_isolation;
 pub mod forge_persist;
 pub mod locomo;
 pub mod longmemeval;
