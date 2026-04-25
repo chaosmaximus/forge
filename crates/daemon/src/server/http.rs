@@ -342,6 +342,57 @@ static SSE_CONNECTION_COUNT: std::sync::atomic::AtomicUsize =
 /// Maximum lifetime for a single SSE connection (1 hour).
 const SSE_MAX_LIFETIME: Duration = Duration::from_secs(3600);
 
+/// Phase 2A-4d.2.1 #2: pure-function filter used by `subscribe_handler`,
+/// extracted so tests can probe the precedence + edge cases (empty
+/// list, multiple events, structured-field matches) without spinning
+/// a whole event bus.
+///
+/// Returns `true` when the event passes every active filter, `false`
+/// when any filter rejects it. An absent filter is a no-op.
+///
+/// Edge cases (locked by tests below):
+/// * `filter_events = Some(&[])` — vacuous filter; **all** events pass.
+/// * `filter_events = Some(&[""])` — non-empty list of one empty string;
+///   the event name is non-empty so this list will reject every real
+///   event. This is the trap the reviewer flagged: callers that pass
+///   `?events=` (empty value) should produce `None` here, not
+///   `Some(vec![""])`.
+fn event_passes_filter(
+    event: &crate::events::ForgeEvent,
+    filter_events: Option<&[String]>,
+    filter_session: Option<&str>,
+    filter_team: Option<&str>,
+) -> bool {
+    if let Some(types) = filter_events {
+        if !types.is_empty() && !types.contains(&event.event) {
+            return false;
+        }
+    }
+    if let Some(sid) = filter_session {
+        let matches = event
+            .data
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(|v| v == sid)
+            .unwrap_or(false);
+        if !matches {
+            return false;
+        }
+    }
+    if let Some(tid) = filter_team {
+        let matches = event
+            .data
+            .get("team_id")
+            .and_then(|v| v.as_str())
+            .map(|v| v == tid)
+            .unwrap_or(false);
+        if !matches {
+            return false;
+        }
+    }
+    true
+}
+
 /// GET /api/subscribe — SSE endpoint for real-time event streaming.
 ///
 /// Streams events as text/event-stream with NDJSON data fields.
@@ -365,9 +416,16 @@ async fn subscribe_handler(
     SSE_CONNECTION_COUNT.fetch_add(1, Ordering::Relaxed);
 
     let mut rx = state.events.subscribe();
-    let filter_events: Option<Vec<String>> = params
-        .events
-        .map(|e| e.split(',').map(|s| s.trim().to_string()).collect());
+    // Phase 2A-4d.2.1 #2: drop blank entries after the comma split so
+    // `?events=` and `?events=,,foo` behave sanely. An entirely-blank
+    // input collapses to an empty vec, which `event_passes_filter`
+    // treats as a vacuous filter (all events pass).
+    let filter_events: Option<Vec<String>> = params.events.as_deref().map(|e| {
+        e.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
     let filter_session = params.session_id;
     let filter_team = params.team_id;
     let deadline = tokio::time::Instant::now() + SSE_MAX_LIFETIME;
@@ -378,31 +436,13 @@ async fn subscribe_handler(
                 result = rx.recv() => {
                     match result {
                         Ok(event) => {
-                            // Apply event type filter
-                            if let Some(ref types) = filter_events {
-                                if !types.is_empty() && !types.contains(&event.event) {
-                                    continue;
-                                }
-                            }
-                            // Apply session_id filter — structured field match, not substring
-                            if let Some(ref sid) = filter_session {
-                                let matches = event.data.get("session_id")
-                                    .and_then(|v| v.as_str())
-                                    .map(|v| v == sid.as_str())
-                                    .unwrap_or(false);
-                                if !matches {
-                                    continue;
-                                }
-                            }
-                            // Apply team_id filter — structured field match
-                            if let Some(ref tid) = filter_team {
-                                let matches = event.data.get("team_id")
-                                    .and_then(|v| v.as_str())
-                                    .map(|v| v == tid.as_str())
-                                    .unwrap_or(false);
-                                if !matches {
-                                    continue;
-                                }
+                            if !event_passes_filter(
+                                &event,
+                                filter_events.as_deref(),
+                                filter_session.as_deref(),
+                                filter_team.as_deref(),
+                            ) {
+                                continue;
                             }
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             yield Ok(Event::default().data(data));
@@ -708,8 +748,149 @@ pub async fn run_http_server_with_listener(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::ForgeEvent;
     use crate::server::handler::DaemonState;
     use crate::sync::Hlc;
+
+    // ── Phase 2A-4d.2.1 #2: SSE filter unit tests ──
+    //
+    // Reviewer flagged: `?events=consolidate_pass_completed` returned 0 events
+    // in one capture. Lock the filter precedence + edge cases here so the
+    // logic can't drift silently.
+
+    fn ev(name: &str) -> ForgeEvent {
+        ForgeEvent {
+            event: name.to_string(),
+            data: serde_json::json!({}),
+            timestamp: "2026-04-25T00:00:00Z".to_string(),
+        }
+    }
+
+    fn ev_with(name: &str, k: &str, v: &str) -> ForgeEvent {
+        ForgeEvent {
+            event: name.to_string(),
+            data: serde_json::json!({ k: v }),
+            timestamp: "2026-04-25T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn sse_filter_no_filters_passes_every_event() {
+        assert!(event_passes_filter(&ev("anything"), None, None, None));
+        assert!(event_passes_filter(
+            &ev("consolidate_pass_completed"),
+            None,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn sse_filter_event_list_with_match_passes() {
+        let types = vec!["consolidate_pass_completed".to_string()];
+        assert!(event_passes_filter(
+            &ev("consolidate_pass_completed"),
+            Some(&types),
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn sse_filter_event_list_without_match_rejects() {
+        let types = vec!["bench_run_completed".to_string()];
+        assert!(!event_passes_filter(
+            &ev("consolidate_pass_completed"),
+            Some(&types),
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn sse_filter_empty_event_list_is_vacuous() {
+        // The reviewer's bug class: an empty list (e.g. `?events=` after
+        // trim+filter) must NOT reject everything.
+        let empty: Vec<String> = Vec::new();
+        assert!(event_passes_filter(&ev("any"), Some(&empty), None, None));
+    }
+
+    #[test]
+    fn sse_filter_event_list_with_blank_string_rejects_real_events() {
+        // The pre-fix parsing path could produce `vec![""]` from
+        // `?events=`. The filter then rejects every real event because
+        // event.event is non-empty. This test documents the trap;
+        // subscribe_handler now strips blanks before calling the filter
+        // so this state is unreachable from real HTTP queries.
+        let blanks = vec!["".to_string()];
+        assert!(!event_passes_filter(
+            &ev("real_event"),
+            Some(&blanks),
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn sse_filter_multi_event_list_matches_any() {
+        let types = vec![
+            "bench_run_completed".to_string(),
+            "consolidate_pass_completed".to_string(),
+        ];
+        assert!(event_passes_filter(
+            &ev("consolidate_pass_completed"),
+            Some(&types),
+            None,
+            None,
+        ));
+        assert!(event_passes_filter(
+            &ev("bench_run_completed"),
+            Some(&types),
+            None,
+            None
+        ));
+        assert!(!event_passes_filter(
+            &ev("agent_status_changed"),
+            Some(&types),
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn sse_filter_session_id_match_passes() {
+        let evt = ev_with("foo", "session_id", "01HABC");
+        assert!(event_passes_filter(&evt, None, Some("01HABC"), None));
+        assert!(!event_passes_filter(&evt, None, Some("01HOTHER"), None));
+        // No session_id field → match fails (avoid false positives).
+        assert!(!event_passes_filter(&ev("foo"), None, Some("01HABC"), None));
+    }
+
+    #[test]
+    fn sse_filter_team_id_match_passes() {
+        let evt = ev_with("foo", "team_id", "team-1");
+        assert!(event_passes_filter(&evt, None, None, Some("team-1")));
+        assert!(!event_passes_filter(&evt, None, None, Some("team-2")));
+    }
+
+    #[test]
+    fn sse_filter_combines_filters_with_and() {
+        let types = vec!["consolidate_pass_completed".to_string()];
+        let evt = ev_with("consolidate_pass_completed", "session_id", "s1");
+        // event matches AND session_id matches
+        assert!(event_passes_filter(&evt, Some(&types), Some("s1"), None));
+        // event matches but session_id mismatch
+        assert!(!event_passes_filter(&evt, Some(&types), Some("s2"), None));
+        // session_id matches but event mismatch
+        let other_types = vec!["bench_run_completed".to_string()];
+        assert!(!event_passes_filter(
+            &evt,
+            Some(&other_types),
+            Some("s1"),
+            None
+        ));
+    }
+
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
     use http_body_util::BodyExt;
