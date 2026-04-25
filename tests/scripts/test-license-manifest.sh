@@ -117,6 +117,62 @@ set -e
 assert_exit 1 "$status" "$output"
 assert_contains "escapes repo root or is absolute" "$output"
 
+# ============================================================================
+# Test 7: whitespace-only license (SPDX strictness — W3 review HIGH-1)
+# ============================================================================
+echo "Test 7: whitespace-license fixture"
+set +e
+output=$(run_fixture whitespace-license)
+status=$?
+set -e
+assert_exit 1 "$status" "$output"
+assert_contains "must be a valid SPDX expression" "$output"
+
+# ============================================================================
+# Test 8: free-form prose license ("mit license" without operator)
+# ============================================================================
+echo "Test 8: prose-license fixture"
+set +e
+output=$(run_fixture prose-license)
+status=$?
+set -e
+assert_exit 1 "$status" "$output"
+assert_contains "must be a valid SPDX expression" "$output"
+
+# ============================================================================
+# Test 9: dangling SPDX operator ("Apache-2.0 OR")
+# ============================================================================
+echo "Test 9: dangling-op-license fixture"
+set +e
+output=$(run_fixture dangling-op-license)
+status=$?
+set -e
+assert_exit 1 "$status" "$output"
+assert_contains "must be a valid SPDX expression" "$output"
+
+# ============================================================================
+# Test 10: stringy schema_version (W3 review MED-1)
+# ============================================================================
+echo "Test 10: stringy-schema fixture"
+set +e
+output=$(run_fixture stringy-schema)
+status=$?
+set -e
+assert_exit 1 "$status" "$output"
+assert_contains "schema_version must be 1" "$output"
+assert_contains "type str" "$output"
+
+# ============================================================================
+# Test 11: references[] entry doesn't exist on disk (W3 review MED-4)
+# ============================================================================
+echo "Test 11: missing-reference fixture"
+set +e
+output=$(run_fixture missing-reference)
+status=$?
+set -e
+assert_exit 1 "$status" "$output"
+assert_contains "references[0] not found in repo" "$output"
+
 echo
 echo "license-manifest fixture tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

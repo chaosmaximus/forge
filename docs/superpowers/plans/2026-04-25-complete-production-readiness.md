@@ -60,6 +60,9 @@
 * **W2 L-3** — `reviewer.agent` is an open enum (README documents three values + `<other>`). Defer; consistent with the doc.
 * **W2 L-4** — PyYAML's `safe_load` is last-wins on duplicate top-level keys (e.g. two `target_paths:`). Acceptable risk; multi-doc YAML (probe 11) was already covered cleanly.
 * **W2 M-4 (post-commit)** — the W2 commit message body says "1 HIGH + 3 MED + 1 LOW resolved; 3 MED + 1 LOW deferred" while the actual W1-backfill YAML has 1 HIGH + 2 MED + 1 LOW resolved and 3 MED + 1 LOW deferred. Off-by-one in the narrative, not the data. The artifact YAML is the source of truth.
+* **W3 MED-2** — `os.walk(followlinks=False)` means a directory symlink under `coverage_paths[]` is NOT recursed; a contributor could in principle hide a JSON file behind a symlink and bypass the gate. Defer; the safer-default behavior is intentional (symlink-following has its own attack surface). Document the behavior if a need surfaces.
+* **W3 MED-3** — if `coverage_paths` were ever set to `[.]` the validator would walk the entire repo (including `target/`, `.git/`, `node_modules/`). Not a current risk (manifest pins `.claude-plugin` + `hooks`), but a future maintainer could regress. Defer; consider a default exclude list if this footgun ever fires.
+* **W3 LOW-5** — Windows-style path traversal (backslashes) is not normalised by `os.path` on Linux, so a malicious manifest could in principle hide an escape. CI runs Linux-only; defer the Windows-aware guard.
 
 ---
 

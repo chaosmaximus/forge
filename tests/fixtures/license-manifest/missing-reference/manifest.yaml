@@ -1,0 +1,8 @@
+schema_version: 1
+package: foo
+license: Apache-2.0
+files:
+  - path: dummy.json
+    license: Apache-2.0
+references:
+  - this-doc-does-not-exist.txt

@@ -36,11 +36,11 @@ except ImportError:
 
 
 SCHEMA_VERSION = 1
-# SPDX license expressions are permissive — we accept any SPDX identifier
-# token (alphanumeric, dot, plus, hyphen). Compound expressions like
-# "Apache-2.0 OR MIT" are also allowed.
-SPDX_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.+\-]+$")
-SPDX_EXPR_RE = re.compile(r"^[A-Za-z0-9.+\-\s()]+$")
+# Per-token SPDX identifier: starts with a letter, then alphanumeric/dot/plus/
+# hyphen. Compound expressions are validated by tokenising the input and
+# checking each token alternates with an operator.
+SPDX_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.+\-]*$")
+SPDX_OPERATORS = {"AND", "OR", "WITH"}
 
 
 def err(msg: str) -> None:
@@ -49,6 +49,44 @@ def err(msg: str) -> None:
 
 def warn(msg: str) -> None:
     sys.stderr.write(f"WARN: {msg}\n")
+
+
+def _is_valid_spdx(expr: object) -> bool:
+    """Validate an SPDX license expression.
+
+    Accepts a single license id (`Apache-2.0`), conjunction/disjunction
+    (`Apache-2.0 OR MIT`, `Apache-2.0 AND MIT`), the WITH operator
+    (`MIT WITH Classpath-exception-2.0`), and parenthesised groups
+    (`(Apache-2.0 OR MIT)`). Rejects whitespace-only strings and any
+    free-form prose.
+    """
+    if not isinstance(expr, str):
+        return False
+    s = expr.strip()
+    if not s:
+        return False
+    # Drop parens (treat them as separators); the resulting token stream
+    # must alternate license-id, operator, license-id, ...
+    cleaned = re.sub(r"[()]", " ", s)
+    tokens = cleaned.split()
+    if not tokens:
+        return False
+    # First token must be a license id.
+    if tokens[0] in SPDX_OPERATORS or not SPDX_TOKEN_RE.match(tokens[0]):
+        return False
+    expecting_op = True
+    for t in tokens[1:]:
+        if expecting_op:
+            if t not in SPDX_OPERATORS:
+                return False
+        else:
+            if t in SPDX_OPERATORS or not SPDX_TOKEN_RE.match(t):
+                return False
+        expecting_op = not expecting_op
+    # After the loop expecting_op must be True (we just consumed a
+    # license-id); False means the expression ended on a dangling
+    # operator (e.g. "Apache-2.0 OR").
+    return expecting_op
 
 
 def _path_within_repo(repo_root: str, p: str) -> bool:
@@ -64,7 +102,12 @@ def validate(manifest: dict, repo_root: str) -> int:
 
     sv = manifest.get("schema_version")
     if sv != SCHEMA_VERSION:
-        err(f"schema_version must be {SCHEMA_VERSION} (got {sv!r})")
+        err(
+            f"schema_version must be {SCHEMA_VERSION} "
+            f"(got {sv!r}, type {type(sv).__name__}) — "
+            f"YAML scalar `1` parses as int; "
+            f"`'1'` (quoted) parses as str and is rejected"
+        )
         errors += 1
 
     pkg = manifest.get("package")
@@ -73,7 +116,7 @@ def validate(manifest: dict, repo_root: str) -> int:
         errors += 1
 
     top_license = manifest.get("license")
-    if not isinstance(top_license, str) or not SPDX_EXPR_RE.match(top_license):
+    if not _is_valid_spdx(top_license):
         err(
             f"top-level `license` must be a valid SPDX expression "
             f"(got {top_license!r})"
@@ -105,7 +148,7 @@ def validate(manifest: dict, repo_root: str) -> int:
         if not os.path.exists(os.path.join(repo_root, p)):
             err(f"files[{fi}].path not found in repo: {p}")
             errors += 1
-        if not isinstance(lic, str) or not SPDX_EXPR_RE.match(lic):
+        if not _is_valid_spdx(lic):
             err(
                 f"files[{fi}].license must be a valid SPDX expression "
                 f"(got {lic!r})"
@@ -119,6 +162,11 @@ def validate(manifest: dict, repo_root: str) -> int:
         err("`coverage_paths` must be a list (or absent)")
         errors += 1
         coverage_paths = []
+    if not coverage_paths:
+        warn(
+            "no `coverage_paths` defined; the coverage gate is effectively "
+            "skipped — only files[] existence is checked"
+        )
 
     discovered_jsons: set[str] = set()
     for ci, cp in enumerate(coverage_paths):
@@ -169,6 +217,10 @@ def validate(manifest: dict, repo_root: str) -> int:
                     f"references[{ri}] escapes repo root or is absolute: {r}"
                 )
                 errors += 1
+                continue
+            if not os.path.exists(os.path.join(repo_root, r)):
+                err(f"references[{ri}] not found in repo: {r}")
+                errors += 1
 
     return errors
 
@@ -217,4 +269,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as e:  # pragma: no cover (defensive top-level)
+        # Any uncaught exception (PermissionError, OSError mid-walk, etc.)
+        # surfaces as a single FAIL line plus exit 2 instead of a stack
+        # trace that obscures the user-facing diagnostic.
+        err(f"unhandled exception: {type(e).__name__}: {e}")
+        sys.exit(2)
