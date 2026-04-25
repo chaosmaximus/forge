@@ -98,6 +98,7 @@ fn reap_stale_sessions(
                 events,
                 "session_idled",
                 serde_json::json!({
+                    "event_schema_version": 1,
                     "session_id": session_id,
                     "idle_secs": idle_secs,
                 }),

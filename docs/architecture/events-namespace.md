@@ -20,6 +20,7 @@ event name.
 | `hud_config_changed`           | `server/handler.rs`                          | HUD section / density config mutation.                               | _(unversioned — legacy)_ |
 | `consolidate_pass_completed`   | `workers/consolidator.rs::run_all_phases`    | Phase 2A-4d.2: one event per consolidation pass (with run_id, trace_id, stats). | **1** |
 | `bench_run_completed`          | `crates/daemon/src/bench/telemetry.rs::emit_bench_run_completed` | After every forge-bench sub-bench run when FORGE_DIR is set | **1** |
+| `session_idled`                | `workers/reaper.rs::reap_stale_sessions`     | Phase 2A-4d.3.1 #7: one event per session transitioned `active → idle` by a reaper pass. | **1** |
 
 New emits that readers will consume (CLI, HUD, external dashboards) should
 carry an `event_schema_version: <int>` field so the protocol can evolve. Older
@@ -203,6 +204,66 @@ fields (`bench_name`, `composite`, `pass`, `seed`, `commit_sha`) —
 introspected. This means bench authors can evolve their
 `bench_specific_stats` shape freely without coordinating a v2 bump, as
 long as no other reader has come to depend on its internal fields.
+
+---
+
+## `session_idled` — `event_schema_version: 1`
+
+Emitted from `workers/reaper.rs::reap_stale_sessions` Phase 0, once per
+session whose `last_heartbeat_at` has fallen behind the
+`heartbeat_idle_secs` threshold (default 600s) but is still ahead of the
+`heartbeat_timeout_secs` ended threshold (default 14400s). The reader
+for this event is the HUD activity panel + any operator dashboard that
+wants a live "session went quiet" signal without polling the `session`
+table.
+
+```json
+{
+  "event_schema_version": 1,
+  "session_id": "01HXYZ...",
+  "idle_secs": 600
+}
+```
+
+Field reference:
+
+- `event_schema_version` (int, required): `1`. Readers must check this.
+- `session_id` (string, required): the ULID of the session that just
+  transitioned `status = 'active' → 'idle'`. Matches `session.id`.
+- `idle_secs` (int, required): the idle threshold (seconds) configured
+  in `WorkerConfig.heartbeat_idle_secs` at the moment of the reaper
+  pass. Surfaced for observers so they don't have to read config
+  separately. **Note:** this is the threshold value, not the actual
+  observed idle duration — derive that from `now - last_heartbeat_at`
+  if needed.
+
+### Lifecycle invariant
+
+The reaper's two phases are sequenced atomically per pass:
+
+1. **Phase 0** transitions `active → idle` via `UPDATE ... RETURNING id`,
+   emitting `session_idled` for each returning row.
+2. **Phase 1** transitions `(active|idle) → ended` via `UPDATE ...
+   RETURNING id` (no event yet — open follow-up).
+
+Because Phase 0 only matches sessions whose heartbeat is between
+`idle_secs` and `timeout_secs`, a single reaper pass cannot fire
+`session_idled` and immediately end the same session. A subsequent pass
+may end it.
+
+### Reviving an idle session
+
+`update_heartbeat` (in `crates/daemon/src/sessions.rs`) atomically
+revives an idle session back to `active` in the same UPDATE statement
+that refreshes `last_heartbeat_at`. There is **no** corresponding
+`session_revived` event today — the absence is intentional: revival is
+a routine client heartbeat, not an operator-attention signal. If a
+consumer needs revival visibility, file a follow-up.
+
+### Version bump protocol
+
+Same as the registry-wide protocol — increment `event_schema_version`
+and add a new section if a reader-visible change ships.
 
 ---
 

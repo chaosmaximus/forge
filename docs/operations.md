@@ -349,6 +349,80 @@ persistence:
 
 ---
 
+## Session Lifecycle
+
+The daemon tracks every connecting client in the `session` table and
+moves rows through a three-state lifecycle as their heartbeats arrive
+(or don't):
+
+```
+   ┌─────────────────────┐  no heartbeat ≥ heartbeat_idle_secs   ┌──────────┐
+   │ active (last write) │ ─────────────────────────────────────▶ │   idle   │
+   └──────────────────────┘ ◀───────── heartbeat ─────────────── └──────────┘
+            │                                                          │
+            │   no heartbeat ≥ heartbeat_timeout_secs                  │
+            ▼                                                          │
+       ┌──────────┐                                                    │
+       │  ended   │ ◀──────────────────────────────────────────────────┘
+       └──────────┘     (no heartbeat ≥ heartbeat_timeout_secs)
+```
+
+**A live heartbeat from an `idle` session atomically revives it back to
+`active` in the same UPDATE that refreshes `last_heartbeat_at`** — so a
+client that was quiet for ten minutes keeps its session ID instead of
+being forced to re-register on the next message.
+
+### Tunables (Phase 2A-4d.3.1 #7)
+
+Both knobs live under `[workers]` in the daemon config and can be
+hot-reloaded by editing the file (no daemon restart required):
+
+| Setting                    | Default      | Earlier default | Meaning                                                             |
+|----------------------------|--------------|-----------------|---------------------------------------------------------------------|
+| `heartbeat_idle_secs`      | `600` (10 m) | _(new in 0.5)_  | After this gap, `active → idle` and `session_idled` event fires.    |
+| `heartbeat_timeout_secs`   | `14400` (4 h)| `60` (1 m)      | After this gap from any live state, the session is reaped to `ended`. |
+
+> **Migration note for 0.5.x:** the `heartbeat_timeout_secs` default
+> jumped from **60 seconds** to **14400 seconds** (4 hours) because
+> the old value was ending healthy sessions during 5-minute user
+> breaks. Operators who relied on the old aggressive reap should set
+> `heartbeat_timeout_secs = 60` explicitly in their config.
+
+Setting `heartbeat_idle_secs = 0` disables the `active → idle` phase
+(sessions stay `active` until they hit the ended threshold). Setting
+`heartbeat_timeout_secs = 0` disables ended-reaping entirely (rows
+accumulate forever — only do this for forensic test runs).
+
+`validated()` clamps `heartbeat_idle_secs` to be **strictly less than**
+`heartbeat_timeout_secs`; an invalid pair is silently corrected at
+load time and a warning is logged.
+
+### Observability
+
+- `forge_session_state{state}` Prometheus counter increments on every
+  state transition.
+- `session_idled` is emitted on the in-process bus (see
+  `docs/architecture/events-namespace.md`) once per session that
+  passes Phase 0 of a reaper tick. The payload is
+  `{event_schema_version: 1, session_id, idle_secs}`.
+- `forge-next inspect sessions` shows the current row state for any
+  session id.
+
+### Operational caveats
+
+- **Long-lived agents** (e.g. Claude Code in a developer's terminal)
+  should not be surprised by the `idle` state — they remain
+  addressable via FISP, and any inbound message revives them. Only
+  the `ended` state forecloses further message delivery.
+- The reaper does **not** transition `idle → active` on its own. Only
+  `update_heartbeat` does that, so a quiet session legitimately stays
+  visible as `idle` in the inspector until the client checks in.
+- When you increase `heartbeat_timeout_secs`, ended sessions take
+  longer to clear from the table — this is normal. The retention
+  reaper still trims `kpi_events` independently per its own schedule.
+
+---
+
 ## Troubleshooting
 
 ### Pod CrashLoopBackOff
