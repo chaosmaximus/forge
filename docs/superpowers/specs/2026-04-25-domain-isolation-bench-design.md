@@ -1,6 +1,6 @@
-# Domain-Transfer Isolation Bench (2A-5) — Design v2
+# Domain-Transfer Isolation Bench (2A-5) — Design v2.1
 
-**Status:** DRAFT v2 — 2026-04-25. Addresses v1 adversarial review (3 BLOCKER + 3 HIGH + 4 MEDIUM + 3 LOW). Awaits second review.
+**Status:** LOCKED v2.1 — 2026-04-25. v1 adversarial review returned `not-lockable` (3 BLOCKER + 3 HIGH + 4 MED + 3 LOW); v2 addressed all 13 findings; v2 second review returned `lockable-with-fixes` (1 NEW HIGH + 3 NEW MED + 2 NEW LOW); v2.1 closes the HIGH + 3 MED. 2 LOWs deferred to backlog with rationale. Implementation cleared to begin at T1.
 **Phase position:** First sub-phase of P3-3.
 **Predecessors:** master v6 / Forge-Identity bench precedent (2A-4d.3 shipped at `9aac8a8`).
 **Successors:** 2A-6 multi-agent coordination bench (depends on isolation primitives).
@@ -87,7 +87,7 @@ Planner re-verifies these at implementation time. T1 **also** greps `recall_raw_
 | **D3** | `global_memory_visibility` | Seed M=10 memories with `project=None` (global). For each project P, recall and assert all M global memories appear. Score = global_recall_rate averaged across projects. Min 0.90. | 0.90 | 0.10 |
 | **D4** | `unscoped_query_breadth` | `Recall { query: "isolation_bench", project: None, limit: 200 }`. Returned set must span all N+1 buckets (N projects + global). Score = `bucket_coverage / (N+1)`. Min 0.85. | 0.85 | 0.10 |
 | **D5** | `edge_case_resilience` | 7 sub-probes (see §3.1a). Score = pass_count / 7. Min 0.85. | 0.85 | 0.15 |
-| **D6** | `compile_context_isolation` | **NEW per H1 fix.** For each project P: `compile_context(conn, "isolation_bench_agent", Some(P))` returns full XML. Search the XML for **foreign-project tokens** (e.g., `"alpha_secret_"`, `"beta_secret_"`, ...). Score = 1 − (foreign_tokens_found / max_possible). Min 0.95. v1 covers only the memory-layer portion of compile_context (skills/declared/etc layers deferred to v2 — see §5). | 0.95 | 0.25 |
+| **D6** | `compile_context_isolation` | **NEW per H1 fix.** For each project P: call `compile_dynamic_suffix_with_inj(conn, "isolation_bench_agent", Some(P), &pinned_inj)` where `pinned_inj = ContextInjectionConfig { session_context: true, .. Default::default() }` (per N3 fix — pinned config avoids brittleness against future default flips). Returns the dynamic XML suffix (decisions + lessons blocks). Search for **foreign-project tokens** (e.g., `"alpha_secret_"`, `"beta_secret_"`, ...). Score = 1 − (foreign_tokens_found / max_possible) where `max_possible = decisions_limit + lessons_limit = 10 + 5 = 15` (per N1 fix — render ceiling at config defaults; structural blocking by `(project = ?1 OR project IS NULL OR project = '')` SQL filter means correct behavior gives foreign_tokens=0 trivially, but the tight denominator means a 1-row leak scores 0.933 < 0.95 min and is CAUGHT). v1 covers only the memory-layer portion of compile_context (skills/declared/etc layers deferred to v2 — see §5 coverage table). | 0.95 | 0.25 |
 
 **Composite:** weighted mean across the 6 dims (weights sum to 1.00).
 **Pass gate (dual):** composite ≥ 0.95 AND every dim ≥ its min. The dual
@@ -106,7 +106,7 @@ Per H3 fix, expanded from 3 to 7 probes:
 1. **`empty_string_targets_global`** — `Recall { project: Some("") }` returns ONLY global-pool memories (NULL or empty `project`); no project-scoped memories. Pass = no `{x}_secret_` tokens from any non-global project in result.
 2. **`special_chars_no_panic`** — `Recall { project: Some("p@#$%") }` does not panic. Returns own (zero) memories. Pass = result is `Ok(Vec::new())` or `Ok(<global only>)`.
 3. **`overlong_project_no_panic`** — 256-char project name. Pass = result is `Ok(...)` (any shape).
-4. **`sql_injection_inert`** — `Recall { project: Some("alpha'; DROP TABLE memory;--") }` does not drop the table. Pass = `memory` table row count post-call equals pre-call count.
+4. **`sql_injection_inert`** — `Recall { project: Some("alpha'; DROP TABLE memory;--") }` does not drop the table OR mutate rows. Pass = (a) `memory` table row count post-call equals pre-call count AND (b) sentinel-row hash unchanged: hash a canary memory `(title, content, project, tags)` pre-call; assert SHA-256-hex equality post-call. Catches DROP TABLE / DELETE FROM **and** UPDATE-class injection (`UPDATE memory SET project = 'attacker'`). Per N4 fix.
 5. **`prefix_collision_isolated`** — Seed an extra project `"alphabet"` with 5 memories. `Recall { project: Some("alpha") }` returns only `alpha`'s memories, not `alphabet`'s. Pass = no `alphabet_secret_` tokens in result.
 6. **`case_sensitivity_strict`** — `Recall { project: Some("ALPHA") }` returns 0 memories (assuming SQL `=` is case-sensitive in SQLite default config); not the lowercase `"alpha"` corpus. Pass = result excludes `alpha_secret_` tokens.
 7. **`trailing_whitespace_strict`** — `Recall { project: Some(" alpha") }` returns 0 memories. Pass = excludes `alpha_secret_` tokens.
@@ -178,13 +178,26 @@ D4 score = bucket_coverage:
 D5 score = pass_count / 7 (per §3.1a)
 
 D6 score per project P:
-   xml = compile_context(&conn, "isolation_bench_agent", Some(P))
+   pinned_inj = ContextInjectionConfig { session_context: true, ..Default::default() }
+   xml = compile_dynamic_suffix_with_inj(&conn, "isolation_bench_agent",
+                                          Some(P), &pinned_inj)
    foreign_tokens = sum(occurrences(xml, "{Q}_secret_") for Q in projects if Q != P)
-   max_possible = (N-1) × 30 (other-projects' memory count)
+   max_possible = decisions_limit + lessons_limit = 10 + 5 = 15  (config defaults)
    score_P = 1 − (foreign_tokens / max_possible)
    D6 = mean across projects.
+
+   Why max_possible = 15 (not 120 = (N-1)×30):
+     compile_dynamic_suffix renders at most decisions_limit (10) +
+     lessons_limit (5) rows per project (recall.rs:1008 + 1101). The
+     SQL filter (project = ?1 OR project IS NULL OR project = '')
+     blocks foreign-project rows structurally, so foreign_tokens=0
+     trivially under correct behavior. Tight denominator (15 not 120)
+     ensures a 1-row regression scores 0.933 < 0.95 min and is CAUGHT;
+     with denominator 120, a 5-row leak would score 0.958 and PASS — D6
+     would be blind to small leaks (per N1 fix).
+
    Note: covers memory-layer portion of compile_context only;
-   skills/declared/perception layers deferred to v2 (§5).
+   skills/declared/perception layers deferred to v2 (§5 coverage table).
 
 Composite = 0.25*D1 + 0.15*D2 + 0.10*D3 + 0.10*D4 + 0.15*D5 + 0.25*D6
 ```
@@ -298,7 +311,23 @@ that state. `infrastructure_checks` runs first against the same state.
   only `memory` table layer + the memory-layer portion of `compile_context`.
   A leakage bug in `search_skills`, `list_unconsumed_perceptions`, or the
   graph-neighbor helpers would NOT be caught by v1. v2 extends the corpus
-  to seed these tables.
+  to seed these tables. **Per N2 fix, consolidated coverage table:**
+
+  | compile_context-invoked helper | Site | v1 coverage | Reason |
+  |---|---|---|---|
+  | decisions/lessons SQL (memory layer) | recall.rs:1003-1101 | **covered (D6)** | corpus seeds `memory` table with project tag |
+  | `search_skills` | recall.rs:938 | not-covered | corpus does NOT seed `skill` table |
+  | `search_declared` | recall.rs:1291 | not-covered | corpus does NOT seed `declared` table |
+  | `list_entities` | recall.rs (entity helper) | not-covered | corpus does NOT seed `entity` table |
+  | `list_unconsumed_perceptions` | recall.rs:1417 | not-covered | corpus does NOT seed `perception` table |
+  | graph-neighbor expansion | recall.rs (graph helper) | not-covered | corpus does NOT seed `edge` table |
+  | domain_dna lookup | recall.rs (domain helper) | not-covered | corpus does NOT seed `domain_dna` table |
+  | session selection | recall.rs (session helper) | not-covered | corpus does NOT seed `session` table |
+  | raw_documents helpers | recall.rs (raw helper) | partial via shared SQL shape | predicate structurally identical (T1 verifies); raw-specific BM25 helper not exercised |
+
+  v2 of this bench extends the corpus to seed each not-covered table
+  with one row per project (minimum), then re-uses D6 to assert no
+  foreign tokens in the full XML output.
 - **CrossProjectRecall request type.** Out of scope; isolation is a one-way
   property.
 - **Network probes.** All in-process.
@@ -453,3 +482,12 @@ that state. `infrastructure_checks` runs first against the same state.
     is smaller" rationale.
   - **L2 fix:** T1 task line item added for `recall_raw_*` predicate grep.
   - **L3:** acknowledged as cosmetic; no spec change.
+- **v2.1 (2026-04-25):** Address v2 second-review findings (verdict
+  `lockable-with-fixes`; all 13 v1 findings independently verified
+  resolved by reviewer at code level). v2.1 changes:
+  - **N1 fix (HIGH):** §3.1 D6 + §3.3 formula — `max_possible = decisions_limit + lessons_limit = 15` (not 120). Tight denominator catches 1-row regressions (0.933 < 0.95 min); loose denominator was blind to ≤5-row leaks.
+  - **N2 fix (MED):** §5 consolidated coverage table enumerating each compile_context-invoked helper with v1 coverage status (covered / not-covered / partial). Replaces fragmented disclaimers across §3.1, §4 D10, §5 third bullet.
+  - **N3 fix (MED):** §3.1 D6 row + §3.3 formula switched from `compile_context()` to `compile_dynamic_suffix_with_inj()` with pinned `ContextInjectionConfig { session_context: true, .. }`. Avoids brittleness against future `Default::default()` flips that would silently zero the probe.
+  - **N4 fix (MED):** §3.1a D5 probe 4 SQL-injection assertion tightened with sentinel-row hash check. Catches UPDATE-class injection that preserves row count but corrupts scoping.
+  - **N5 deferred (LOW):** Calibration scenario table in §4 D4 — defer to v2.2 / on-impl. Math walked in v2 review YAML; reviewer confirms dual gate is load-bearing.
+  - **N6 deferred (LOW):** `f32 → f64` in §3.2 confidence formula. Determinism is preserved per-run already; the f32→f64 widening risk is a cross-compiler-version edge that hasn't manifested. Reopen if calibration drifts across rustc upgrades.

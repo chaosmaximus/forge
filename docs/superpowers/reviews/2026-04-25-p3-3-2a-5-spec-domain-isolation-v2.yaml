@@ -1,0 +1,319 @@
+schema_version: 1
+slug: 2026-04-25-p3-3-2a-5-spec-domain-isolation-v2
+target_paths:
+  - docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+  - crates/daemon/src/db/schema.rs
+  - crates/daemon/src/db/ops.rs
+  - crates/daemon/src/recall.rs
+  - crates/daemon/src/bench/common.rs
+  - crates/daemon/src/bench/scoring.rs
+  - crates/daemon/src/bench/forge_identity.rs
+  - crates/daemon/src/bench/forge_consolidation.rs
+  - crates/daemon/src/bench/telemetry.rs
+  - crates/daemon/src/bin/forge-bench.rs
+  - crates/core/src/protocol/request.rs
+  - crates/daemon/src/config.rs
+  - docs/architecture/events-namespace.md
+  - .github/workflows/ci.yml
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: aa14763
+  head: c1389bd
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-3-2a-5-spec-domain-isolation-v2.transcript.md
+findings:
+  # ── v1 findings — verified closed ──────────────────────────────────
+  - id: V1-B1
+    severity: BLOCKER
+    summary: >
+      v1 B1 (deterministic_embedding fixture) — closed by §2 fact 13 +
+      T2.1 lift. Verified: `forge_consolidation.rs:1687` exposes
+      `pub fn generate_base_embedding(seed_key: &str) -> Vec<f32>`;
+      `EMBEDDING_DIM = 768` at L1684. T2.1 plan to re-export from
+      forge_consolidation preserves all 12 in-repo call sites
+      (L1752, 1763, 1773, 3558, 3566, 3574, 3582, 3583, 3609, 3618, 3631).
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 70
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Lift signature sound; backward-compat re-export preserves callers.
+  - id: V1-B2
+    severity: BLOCKER
+    summary: >
+      v1 B2 (composite_score lift) — closed by §2 fact 12 + T2.2 lift.
+      Verified: `forge_identity.rs:1632 fn composite_score(&[DimensionScore; 6])`,
+      uses `DIM_WEIGHTS: [f64; 6] = [0.15, 0.15, 0.15, 0.15, 0.15, 0.25]`
+      (L82, sum = 1.00, NON-uniform). Tests at L1848 + L1857 enforce
+      byte-identical output for zeroed and ones inputs. T2.2 N-dim signature
+      `composite_score(dims: &[DimensionScore], weights: &[f64]) -> f64`
+      with sum-near-1 debug_assert is sound.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 69
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Forge-identity caller updates trivially: pass `&DIM_WEIGHTS[..]`.
+  - id: V1-B3
+    severity: BLOCKER
+    summary: >
+      v1 B3 (D1 query fix) — closed by D1 query change to
+      `"isolation_bench"` tag + foreign-token denominator excludes globals.
+      Verified: `db/ops.rs:506-528 sanitize_fts5_query` filters
+      non-alphanumeric — `"isolation_bench"` (alphanumeric + `_`) survives.
+      L569-571 short-circuit only on empty-after-sanitize; new query does
+      NOT trigger it. Excluding globals from foreign-token set and
+      including the alphabet sentinel is correct.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 85
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Probe is now non-trivial; signal preserved.
+  - id: V1-H1
+    severity: HIGH
+    summary: >
+      v1 H1 (compile_context coverage via D6) — partially closed by Dim 6
+      `compile_context_isolation`. Verified: `recall.rs:2047 compile_context`
+      → `compile_dynamic_suffix` → memory-table SQL with
+      `(project = ?1 OR project IS NULL OR project = '')` at L1003-1008
+      (decisions) + L1100 (lessons). D6 exercises the memory layer.
+      Skills/declared/domain_dna/perception/entity layers (L938, L1291,
+      L1417) NOT seeded. v2 §3.1 + §4 D10 + §5 disclaim. Adequate for v1
+      scope but see N2 for disclaimer hygiene + N1 for denominator math
+      gap that limits D6's signal.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 90
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Disclaimer adequate; see new findings N1, N2, N3 for residual gaps.
+  - id: V1-H2
+    severity: HIGH
+    summary: >
+      v1 H2 (D5(a) empty-string semantics) — closed by D5 probe 1
+      redefinition to `empty_string_targets_global`. Verified: `db/ops.rs:705`
+      SQL `m.project = ?2 OR m.project IS NULL OR m.project = ''` returns
+      global pool when `?2 = ""`. Probe assertion "no `{x}_secret_` tokens
+      from any non-global project in result" matches actual semantics.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 106
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Spec now consistent with implementation.
+  - id: V1-H3
+    severity: HIGH
+    summary: >
+      v1 H3 (D5 expansion) — closed by 7 sub-probes. Each non-redundant.
+      Probe 6 case-sensitivity assumption verified: `grep -in COLLATE
+      crates/daemon/src/db/schema.rs` returns NOTHING; memory.project at
+      L324 has no collation override → SQLite default BINARY for `=` →
+      `'ALPHA' != 'alpha'`. Probe 4 SQL injection: bind params at
+      `db/ops.rs:726, 729` via `params![safe_query, proj, ...]` make
+      injection structurally impossible (see N4 for assertion-strength
+      improvement).
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 102
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Probe set sound; one assertion-strength tightening flagged in N4.
+  - id: V1-M1
+    severity: MEDIUM
+    summary: >
+      v1 M1 (single shared DaemonState) — closed by §3.7 mandate.
+      Architecturally sound for an isolation bench; per-dim isolation
+      would actively hide cross-dim leakage signal.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 236
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Correct architectural call.
+  - id: V1-M2
+    severity: MEDIUM
+    summary: >
+      v1 M2 (organization_id deferred) — closed by §4 D9 + §5
+      explicit disclaimer. Cross-org isolation deferred to a future
+      bench; v1 explicitly leaves `organization_id = None`.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 277
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Documented defer with rationale.
+  - id: V1-M3
+    severity: MEDIUM
+    summary: >
+      v1 M3 (tag-leakage) — closed by §5 disclaimer + §8 Q2 v2 trigger.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 315
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Explicit defer documented.
+  - id: V1-M4
+    severity: MEDIUM
+    summary: >
+      v1 M4 (confidence sampling edge) — closed by deterministic-integer
+      formula `0.7 + (idx as f32 * 0.01).clamp(0.0, 0.29)`. Math walked:
+      idx=0 → 0.70; idx=29 → 0.99; idx=30+ → clamp engages → 0.99.
+      All values in [0.70, 0.99]. CORRECT. (See N6 for f32-vs-f64
+      cleanness suggestion.)
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 131
+    status: resolved
+    fixed_by: c1389bd
+    rationale: >
+      Removes random_range sampling-edge risk.
+  - id: V1-L1
+    severity: LOW
+    summary: >
+      v1 L1 (assertion count rationale) — closed by §3.4 "fewer than
+      forge-identity because the isolation surface is smaller" rationale.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 192
+    status: resolved
+    fixed_by: c1389bd
+    rationale: Cosmetic clarity addressed.
+  - id: V1-L2
+    severity: LOW
+    summary: >
+      v1 L2 (recall_raw_* predicate grep) — closed by T1 task-line
+      addition for impl-time verification.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 347
+    status: resolved
+    fixed_by: c1389bd
+    rationale: T1 carries the verify line.
+  - id: V1-L3
+    severity: LOW
+    summary: >
+      v1 L3 (forge-identity 14 vs 37 count) — closed by §2 fact 6
+      reword "documented per module doc; underlying source has 37
+      check_* helper functions (broader than the doc count)".
+      Verified: `grep -c "^fn check_" forge_identity.rs` = 14 strict;
+      v1 reviewer's 37 was loose grep including indented `fn check_`
+      matches inside other functions. Spec wording now reflects both.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 63
+    status: resolved
+    fixed_by: c1389bd
+    rationale: Cosmetic, addressed.
+
+  # ── NEW issues introduced or surfaced by v2 ──────────────────────
+  - id: N1
+    severity: HIGH
+    summary: >
+      D6 max_possible math is wrong. §3.3 sets `max_possible = (N-1) × 30 = 120`,
+      but compile_dynamic_suffix renders at most `decisions_limit (10) +
+      lessons_limit (5) = 15` rows per project (config.rs:500-501;
+      recall.rs:1008 `LIMIT {decisions_limit}` + L1101 `LIMIT
+      {lessons_limit}`). Worse, the SQL filter
+      `(project = ?1 OR project IS NULL OR project = '')` blocks ALL
+      foreign-project rows at the SQL layer — under correct behavior
+      foreign_tokens always equals 0 and D6 trivially scores 1.0. The
+      denominator only matters when a regression breaks the WHERE
+      clause; with `max_possible = 120`, a 5-row leak scores
+      `1 - 5/120 = 0.958` which PASSES the 0.95 min — D6 is blind to
+      small leaks. Recommend `max_possible = decisions_limit +
+      lessons_limit = 15` (then 1-row leak → 0.933, BELOW min, CAUGHT)
+      OR override ContextConfig in the bench to push limits to 30 each
+      so all rows can render → max_possible = 60 per project.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 184
+    status: open
+    rationale: >
+      Spec lock-time fix; D6 is the highest-weighted dim alongside D1
+      and currently has near-zero leakage signal.
+  - id: N2
+    severity: MEDIUM
+    summary: >
+      D6 partial-coverage disclaimer fragmented across 3 spots
+      (§3.1 D6 row note, §4 D10, §5 third bullet). A future reviewer
+      could miss that a leakage bug in `list_entities` (recall.rs:1291)
+      or `list_unconsumed_perceptions` (recall.rs:1417) is invisible
+      to v1. Recommend single consolidated coverage table in §5
+      enumerating each compile_context-invoked helper and v1
+      coverage status (covered / not-covered / partial).
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 282
+    status: open
+    rationale: >
+      Documentation hygiene; the gap is real and easily forgotten.
+  - id: N3
+    severity: MEDIUM
+    summary: >
+      D6 invocation under-specifies config dependency. `compile_context`
+      at recall.rs:2048 calls `crate::config::load_config()` which in a
+      bench `:memory:` context returns `Default::default()`. Currently
+      `inj.session_context = true` so decisions + lessons render — but
+      a future default flip turns it off and the section_disabled branch
+      at L999-1000 emits empty `<decisions/>` + `<lessons/>`,
+      `foreign_tokens = 0`, D6 = 1.0 trivially regardless of leakage.
+      Fix: bench should call `compile_dynamic_suffix_with_inj`
+      (recall.rs:876) directly with a pinned
+      `ContextInjectionConfig { session_context: true, .. }`. Or add
+      infra assertion #9 verifying compile_context output contains
+      non-empty `<decisions>` + `<lessons>` blocks before D6 runs.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 206
+    status: open
+    rationale: >
+      Brittleness against future config defaults; cheap fix.
+  - id: N4
+    severity: MEDIUM
+    summary: >
+      D5 probe 4 SQL-injection assertion is weak. §3.1a probe 4 asserts
+      "memory table row count post-call equals pre-call count" — catches
+      DROP TABLE / DELETE FROM, MISSES mutation-style injection like
+      `UPDATE memory SET project = 'attacker'` (preserves row count,
+      corrupts scoping). Bind params verified at db/ops.rs:726, 729 →
+      injection structurally impossible TODAY, but the bench is a
+      regression detector for FUTURE code that might switch to
+      string-interp. Add a sentinel-row hash check: hash
+      `(title, content, project, tags)` of one canary row pre-call,
+      assert equal post-call.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 109
+    status: open
+    rationale: >
+      Tightens the probe to catch mutation-class regressions cheaply.
+  - id: N5
+    severity: LOW
+    summary: >
+      Composite weighting calibration documentation. Walked scenarios:
+      D2=0.85 (exact min) others perfect → composite 0.9775 (PASS);
+      D1=D6=0.95 (exact mins) others perfect → 0.975 (PASS);
+      D1=D6=0.85 (BELOW min) others perfect → 0.925 (FAIL composite +
+      FAIL per-dim). Math sound and dual gate load-bearing for D1+D6.
+      But D2/D3/D4 at 0.15/0.10/0.10 means a D2 collapse to 0.0 still
+      allows composite ≥ 0.85 (others perfect); ≥0.95 composite gate
+      catches it but only just. Spec §4 D4 should ship a calibration
+      table walking these cases for reviewer-aid.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 263
+    status: open
+    rationale: >
+      Documentation; no behavior change.
+  - id: N6
+    severity: LOW
+    summary: >
+      Confidence formula uses f32 → widens to f64 lossily. `0.7 +
+      (idx as f32 * 0.01).clamp(0.0, 0.29)` → `0.70_f32` is
+      `0.69999998807907104...` when widened. Determinism preserved
+      per-run but ORDER BY tie-breaking on close BM25 scores could
+      shift across compiler versions. Recommend `0.7_f64 +
+      (idx as f64 * 0.01).clamp(0.0, 0.29)` for cleanness.
+    file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
+    line: 131
+    status: open
+    rationale: >
+      Determinism robustness across compiler upgrades.
+</content>
+</invoke>
