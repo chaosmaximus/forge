@@ -1,0 +1,57 @@
+schema_version: 1
+slug: 2026-04-25-w5-rollback-tabletop
+target_paths:
+  - docs/operations/2P-1-rollback.md
+  - docs/operations/rollback-drills/2026-04-25-tabletop.md
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: f683e55
+  head: 1fab0d6
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-1-w2-w8.transcript.md
+  - kind: drill-log
+    path: docs/operations/rollback-drills/2026-04-25-tabletop.md
+findings:
+  - id: HIGH-1
+    severity: HIGH
+    summary: default `kill PID` sends SIGTERM; daemon only handles SIGINT (tokio::signal::ctrl_c) — graceful-wait loop is theatre
+    file: docs/operations/2P-1-rollback.md
+    status: resolved
+    fixed_by: 2a5ed8c
+  - id: MED-1
+    severity: MEDIUM
+    summary: silent skip when pidfile missing; relaunch races against acquire_pid_lock with no operator signal
+    file: docs/operations/2P-1-rollback.md
+    status: resolved
+    fixed_by: 2a5ed8c
+  - id: LOW-1
+    severity: LOW
+    summary: tabletop checklist boxes unchecked while header claims drill completed
+    file: docs/operations/2P-1-rollback.md
+    status: resolved
+    fixed_by: 2a5ed8c
+  - id: LOW-2
+    severity: LOW
+    summary: drill log credits main.rs::acquire_pid_lock for path computation
+    file: docs/operations/rollback-drills/2026-04-25-tabletop.md
+    status: resolved
+    fixed_by: 2a5ed8c
+  - id: LOW-3
+    severity: LOW
+    summary: plan-doc backlog overstated W5 G2 closure scope
+    status: resolved
+    fixed_by: 2a5ed8c
+  - id: LOW-4
+    severity: LOW
+    summary: paper-drill RTO is estimate not measured under operator load
+    status: deferred
+    rationale: acknowledged as paper-drill caveat; full-drill cadence covered separately
+  - id: LOW-5
+    severity: LOW
+    summary: plan-doc backlog ordering G1/G4/G5/G2 is non-chronological
+    status: deferred
+    rationale: cosmetic; reading order preserves wave context

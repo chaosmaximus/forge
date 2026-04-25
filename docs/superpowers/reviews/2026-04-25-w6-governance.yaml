@@ -1,0 +1,74 @@
+schema_version: 1
+slug: 2026-04-25-w6-governance
+target_paths:
+  - .github/CODEOWNERS
+  - .github/ISSUE_TEMPLATE/bug_report.md
+  - .github/ISSUE_TEMPLATE/feature_request.md
+  - .github/ISSUE_TEMPLATE/rollback.md
+  - .github/PULL_REQUEST_TEMPLATE.md
+  - .github/workflows/ci.yml
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 2a5ed8c
+  head: 92e65a3
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-1-w2-w8.transcript.md
+findings:
+  - id: HIGH-1
+    severity: HIGH
+    summary: bug_report.md asks for forge-next health output; version+git_sha live on doctor
+    file: .github/ISSUE_TEMPLATE/bug_report.md
+    status: resolved
+    fixed_by: 49ec70a
+  - id: MED-1
+    severity: MEDIUM
+    summary: PR template review-artifact section unconditional; non-P3 PRs appear to violate gate
+    file: .github/PULL_REQUEST_TEMPLATE.md
+    status: resolved
+    fixed_by: 49ec70a
+  - id: MED-2
+    severity: MEDIUM
+    summary: rollback CI guard placed at end of job; can be masked by harness-sync/fmt failures
+    file: .github/workflows/ci.yml
+    status: resolved
+    fixed_by: 49ec70a
+  - id: MED-3
+    severity: MEDIUM
+    summary: rollback guard error message lacks "did you commit by accident" branch
+    file: .github/workflows/ci.yml
+    status: resolved
+    fixed_by: 49ec70a
+  - id: LOW-1
+    severity: LOW
+    summary: CODEOWNERS rules are advisory not behavioral (default `*` covers all)
+    file: .github/CODEOWNERS
+    status: resolved
+    fixed_by: 49ec70a
+  - id: LOW-2
+    severity: LOW
+    summary: rollback.md "git reset --force-with-lease" is wrong command
+    file: .github/ISSUE_TEMPLATE/rollback.md
+    status: resolved
+    fixed_by: 49ec70a
+  - id: LOW-3
+    severity: LOW
+    summary: rollback.md "v0.x.y-1" reads as semver prerelease
+    file: .github/ISSUE_TEMPLATE/rollback.md
+    status: resolved
+    fixed_by: 49ec70a
+  - id: LOW-4
+    severity: LOW
+    summary: PR template clippy command differs from CI's
+    file: .github/PULL_REQUEST_TEMPLATE.md
+    status: resolved
+    fixed_by: 49ec70a
+  - id: LOW-5
+    severity: LOW
+    summary: feature_request.md doesn't name sync-protocol-hash.sh
+    file: .github/ISSUE_TEMPLATE/feature_request.md
+    status: resolved
+    fixed_by: 49ec70a

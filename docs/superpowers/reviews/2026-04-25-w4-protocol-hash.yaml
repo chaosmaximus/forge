@@ -1,0 +1,64 @@
+schema_version: 1
+slug: 2026-04-25-w4-protocol-hash
+target_paths:
+  - .claude-plugin/plugin.json
+  - scripts/check_protocol_hash.py
+  - scripts/check-protocol-hash.sh
+  - scripts/sync-protocol-hash.sh
+  - tests/fixtures/protocol-hash/clean/.claude-plugin/plugin.json
+  - tests/scripts/test-protocol-hash.sh
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 35808c4
+  head: 7d3dd2f
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-1-w2-w8.transcript.md
+findings:
+  - id: HIGH-1
+    severity: HIGH
+    summary: sha256sum non-portable on macOS (Linux/coreutils only)
+    file: scripts/sync-protocol-hash.sh
+    status: resolved
+    fixed_by: f683e55
+  - id: HIGH-2
+    severity: HIGH
+    summary: round-trip test does not exercise sync-protocol-hash.sh
+    file: tests/scripts/test-protocol-hash.sh
+    status: resolved
+    fixed_by: f683e55
+  - id: HIGH-3
+    severity: HIGH
+    summary: sed grep guard single-line + lower-hex-only; multi-line JSON layout breaks
+    file: scripts/sync-protocol-hash.sh
+    status: resolved
+    fixed_by: f683e55
+  - id: M-1
+    severity: MEDIUM
+    summary: BSD grep `\s` quirk (related to HIGH-1 portability)
+    file: scripts/sync-protocol-hash.sh
+    status: resolved
+    fixed_by: f683e55
+  - id: M-2
+    severity: MEDIUM
+    summary: count=1 rewrites only first match; duplicate keys silently accepted
+    status: deferred
+    rationale: duplicate-key plugin.json is malformed JSON anyway
+  - id: L-1
+    severity: LOW
+    summary: asymmetric CLI surface between check (--protocol-file/--plugin-file) and sync
+    status: deferred
+    rationale: sync-side flags would only matter for fixture variants we don't currently exercise
+  - id: L-3
+    severity: LOW
+    summary: empty-string protocol_hash detected as drift but message says "drift" not "empty"
+    status: deferred
+    rationale: cosmetic
+  - id: L-4
+    severity: LOW
+    summary: phrasing differences between check vs sync error messages
+    status: deferred
+    rationale: both copy-pasteable

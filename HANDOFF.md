@@ -1,280 +1,292 @@
-# Handoff — Phase 2A-4d backlog drained (2026-04-25, post-W8)
+# Handoff — Phase P3-1 closed at v0.6.0-rc.1 (2026-04-25)
 
-**Public HEAD:** `17f3436`.
-**forge-app master:** `665c372c7c461016a8b5953d91e792b7b7221636` (unchanged).
-**Current version:** **v0.5.0**.
+**Public HEAD (pre-close commit):** `55c693d`.
+**Forge-app master:** `665c372c7c461016a8b5953d91e792b7b7221636` (unchanged).
+**Version:** **v0.6.0-rc.1** (bumped from v0.5.0 at this close).
+**Plan:** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`
+**Halt:** awaiting user sign-off before opening Phase P3-2.
 
 ## State in one paragraph
 
-This session continued the autonomous backlog drain through Waves 5–8,
-closing every actionable observability-backlog item that was still tagged
-"deferred" after Phase B's W1–W4. **W5** closed all 5 #3-review HIGHs
-(scoped-config wiring, compile_context_trace honoring inj, dynamic
-layers_used, compose-direction doc, BlastRadius CLI message). **W6**
-shipped the highest-risk single item — Tier 1 #1 — by giving the
-consolidator its own SQLite connection so the shared
-`Arc<Mutex<DaemonState>>` no longer gates worker progress during 2–30s
-passes. **W7** added a real `kpi_events.run_id` column + index for the
-HUD 24h rollup, with a backfill UPDATE for existing rows; a follow-up
-fix disambiguated SQL alias shadowing in `shape_phase_run_summary` and
-the HUD query via COALESCE. **W8** swept two items from the cosmetic
-batch (compile-time-tautology markers, kpi_reaper log downgrade). Net
-result: **6 commits** on top of the prior `d319e98` baseline; **1506
-daemon-lib tests pass + 1 documented timing flake**; 0 clippy warnings
-on the workspace `--features bench` gate; fmt clean. Adversarial reviews
-on W5 and W6 returned `lockable-with-fixes` and `lockable-as-is`
-respectively; both follow-ups landed.
+This session executed all 8 waves of Phase P3-1 (2P-1b harness
+hardening) under the autonomous-mode authorization granted on
+2026-04-25, plus the formal phase close. **W1** built
+`scripts/check-harness-sync.sh` enhancements (auto-amnesty timer,
+`FORGE_HARNESS_SYNC_ENFORCE` env var, `--root` flag for fixture
+testing) + drift fixtures + a 7-assertion bash test runner. **W2**
+shipped the evidence-gated YAML audit contract (`docs/superpowers/
+reviews/<slug>.yaml` schema v1, Python validator, 12-assertion
+fixture suite, CI gate that refuses open BLOCKER/HIGH findings).
+**W3** rewrote `.claude-plugin/LICENSES.yaml` as a coverage manifest
+declaring SPDX licenses for every shipped JSON file (now 3:
+plugin.json, marketplace.json, hooks.json) + a 25-assertion
+validator. **W4** added the 2A-4d interlock: SHA-256 of
+`crates/core/src/protocol/request.rs` mirrored as `protocol_hash` in
+plugin.json, with a portable Python+regex sync helper and 18-assertion
+round-trip tests. **W5** ran the 2P-1 rollback tabletop dry-run,
+caught a substring-collision bug in the playbook's `pkill -f
+'forge-daemon'` step (replaced with pidfile + SIGINT — the daemon
+only handles SIGINT, not SIGTERM), and surfaced 5 gaps. **W6**
+landed GitHub repo governance: CODEOWNERS extended to W1-W5
+surfaces, three issue templates + a PR template, and a
+`.github/pending-rollback` CI guard wired as the FIRST step of the
+check job (closes W5 §G1). **W7** added a user-side sideload-state
+detector with 15-assertion fixture coverage. **W8** ran a 14-cell
+multi-OS dogfood matrix — 6 cells PASS on Linux, 8 cells handed off
+(3 release-blocked, 2 by-design negative, 3 macOS-best-effort). The
+phase close bumped all 7 version anchors (4 Cargo.toml + Formula +
+plugin.json + marketplace.json), backfilled YAMLs for W2-W8 in the
+review-artifacts tree, and verified all 11 CI gates green.
 
-The biggest live behavior changes since `d319e98`:
-
-1. **Consolidator no longer holds the state mutex across passes** —
-   workers (perception, indexer, diagnostics, writer) that share the
-   mutex are no longer blocked during the multi-second consolidation
-   pass. Major operator-visibility win when consolidator runs are
-   frequent.
-2. **`/inspect` and the HUD 24h rollup are JSON-parse-free for run_id**
-   — the new `run_id TEXT` column with `idx_kpi_events_run_id_timestamp`
-   lets the planner walk the index instead of re-extracting JSON for
-   every 24h-window row.
-3. **Per-organization context-injection toggles work** —
-   `forge-next config set context_injection.<flag> true|false --scope
-   organization=acme` now actually takes effect; the resolver walks the
-   org → team → user → reality → agent → session chain on every
-   CompileContext request, with the global config as the baseline.
-4. **`compile_context_trace` honors `context_injection.session_context`**
-   — operators using the trace shape no longer see misleading
-   "considered/included" entries for sections that the actual compile
-   would suppress.
-
-## First actions after `/compact`
+## First actions after `/compact` or session resume
 
 ```bash
 cd /mnt/colab-disk/DurgaSaiK/forge/forge
-git log --oneline -10                                                     # expect 17f3436 at top
-git status --short                                                        # expect clean
-export LD_LIBRARY_PATH="$(pwd)/.tools/onnxruntime-linux-x64-1.23.0/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-cargo clippy --workspace --features bench -- -W clippy::all -D warnings   # 0 warnings
-cargo test -p forge-daemon --lib --features bench                         # 1506 pass + 1 known flake
-bash scripts/ci/check_spans.sh                                            # OK
+git log --oneline -25                              # most recent at top
+git status --short                                 # expect clean
+bash scripts/check-harness-sync.sh                 # 154 + 107, no drift
+bash scripts/check-review-artifacts.sh             # 8 reviews valid
+bash scripts/check-license-manifest.sh             # 3 files, coverage clean
+bash scripts/check-protocol-hash.sh                # in sync (9a38d781…)
+bash tests/scripts/test-harness-sync.sh            # 7/0
+bash tests/scripts/test-review-artifacts.sh        # 12/0
+bash tests/scripts/test-license-manifest.sh        # 25/0
+bash tests/scripts/test-protocol-hash.sh           # 18/0
+bash tests/scripts/test-sideload-state.sh          # 15/0
+bash tests/static/run-shellcheck.sh                # all PASS
+bash scripts/ci/check_spans.sh                     # OK
+cargo fmt --all --check                            # clean
 ```
 
-## Session commits — 6 total (most recent first)
+## Phase P3-1 commits (most recent first)
 
-| #   | SHA       | Wave | Title |
-|-----|-----------|------|-------|
-|  6  | `17f3436` | W7-fix | fix(2A-4d.2.1 #4 W7 follow-up): disambiguate run_id column shadowing |
-|  5  | `11aa2a1` | W8 | docs(2A-4d.3.1 #6): W8 cosmetic batch — M4 + L3 |
-|  4  | `f160bc4` | W7 | feat(2A-4d.2.1 #4): add kpi_events.run_id column + index + HUD query |
-|  3  | `3c979ee` | W6 | refactor(2A-4d.1.1 #1): consolidator owns its own SQLite connection |
-|  2  | `59a84df` | W5-fix | fix(2A-4d.3.1 #3 W5 review): pass global config to resolver + clarify trace scope |
-|  1  | `3ee65f8` | W5 | fix(2A-4d.3.1 #3): close W5 — H1+H2+H3+H4+H5 review HIGHs |
-| (carryover) | `d319e98` | — | docs(2A-4d): close Phase B autonomous run — HANDOFF rewrite |
+| #   | SHA          | Wave  | Title |
+|-----|--------------|-------|-------|
+| 18  | _next_       | close | docs(P3-1 close): v0.6.0-rc.1 + W2-W8 review backfill + HANDOFF |
+| 17  | `55c693d`    | W8-fix | fix(P3-1 W8 review): table/transcript drift + macOS setup guard + quoting |
+| 16  | `47d0da4`    | W8 | docs(P3-1 W8): multi-OS dogfood matrix — 2026-04-25 |
+| 15  | `5a26af7`    | W7-fix | fix(P3-1 W7 review): source.repo fixture + flag-eat guard + scope comment |
+| 14  | `b10d1ed`    | W7 | feat(P3-1 W7): sideload-state detector + Linux/macOS migration notes |
+| 13  | `49ec70a`    | W6-fix | fix(P3-1 W6 review): bug template fields + PR template scope + guard ordering |
+| 12  | `92e65a3`    | W6 | feat(P3-1 W6): GitHub repo governance — templates + CODEOWNERS + rollback CI guard |
+| 11  | `2a5ed8c`    | W5-fix | fix(P3-1 W5 review): SIGINT not SIGTERM + drill checklist semantics |
+| 10  | `1fab0d6`    | W5 | docs(P3-1 W5): rollback playbook tabletop drill — 2026-04-25 |
+|  9  | `f683e55`    | W4-fix | fix(P3-1 W4 review): portable sync helper + real round-trip test coverage |
+|  8  | `7d3dd2f`    | W4 | feat(P3-1 W4): 2A-4d interlock — plugin.json protocol_hash gate |
+|  7  | `35808c4`    | W3-fix | fix(P3-1 W3 review): tighter SPDX validation + reference existence + diagnostics |
+|  6  | `82db6f0`    | W3 | feat(P3-1 W3): SPDX sidecar manifest + coverage validator |
+|  5  | `f9971e2`    | W2-fix | fix(P3-1 W2 review): yaml-load robustness + path traversal + status-coupled fields |
+|  4  | `ed6950e`    | W2 | feat(P3-1 W2): evidence-gated YAML audit contract |
+|  3  | `beeb2be`    | W1-fix | fix(P3-1 W1 review): trap leak + --root guard + assertion + CI order |
+|  2  | `c261e99`    | W1 | feat(P3-1 W1): harness-sync auto-amnesty + drift fixtures + tests |
+|  1  | `442a9b4`    | plan | docs(P3): complete production-readiness plan — autonomous drain |
+| (carryover) | `1862a43` | — | docs(2A-4d): close W5-W8 — HANDOFF rewrite + final state |
 
-## What shipped — by item
+17 P3-1 commits + plan + carryover.
 
-### Wave 5 — close 5 of the 5 deferred #3-review HIGHs
+## What shipped — by wave
 
-* **H1 — scoped-config wiring.** New
-  `config::resolve_context_injection_for_session(conn, session_id,
-  agent, &global)` walks the org → team → user → reality → agent →
-  session chain via `db::ops::resolve_scoped_config` for each of the
-  6 toggles. Boolean values parsed `eq_ignore_ascii_case("true"|
-  "false")` with global-fallback on parse failure (debug-logged).
-  CompileContext arm uses this instead of `config.context_injection
-  .clone()`. With no session anchor, collapses to the global config
-  (prior behavior). The W5 review spotted that the original draft
-  re-loaded config inside the resolver, defeating H6's "load once"
-  invariant — fix passes the global as a parameter.
+### W1 — harness-sync hardening (`c261e99` + `beeb2be`)
 
-* **H2 — compile_context_trace honors `inj` flags.** Loads
-  `ContextInjectionConfig` at the top, gates the decisions and
-  lessons blocks on `inj.session_context`. When gated off, surfaces
-  a single synthetic `<gated>` excluded entry per layer so operators
-  see the suppression in the trace without leaking the gated
-  contents. Docstring caveats that the trace fn sees only the GLOBAL
-  config (CompileContextTrace has no session_id) — closing that gap
-  needs a protocol change tracked as follow-up.
+* Auto-amnesty self-flip: WARN before 2026-05-09, FAIL on/after.
+* `FORGE_HARNESS_SYNC_ENFORCE={0,1}` env var (canonical) +
+  `FORCE_FAIL=1` legacy alias.
+* `--root <dir>` for fixture testing.
+* `FORGE_HARNESS_SYNC_MIN_REQUEST` / `FORGE_HARNESS_SYNC_MIN_CLI`
+  thresholds for fixture trees with synthetic 6-variant enums.
+* `tests/fixtures/harness-sync/{clean,drift}` + 7 assertions in
+  `tests/scripts/test-harness-sync.sh`.
+* CI integration (fixture-test step ordered BEFORE the real-repo
+  drift check after the W1 review caught the masking).
+* W1 review fixes: trap leak (early-exit unbound-var on
+  parser-regression branch), `--root <flag>` swallows next flag,
+  loose `assert_contains "no drift"` precision, CI step ordering.
 
-* **H3 — `layers_used: 4`/`9` hard-coded constants** replaced with
-  `recall::count_layers_used(inj, static_only)`. Static-only count
-  reflects platform+tools (always) plus identity+disposition (gated
-  on `session_context`). Full count adds decisions+lessons
-  (`session_context`), skills (`skills`), perceptions+working-set
-  (`active_state`). The `context_compiled` event payload and
-  `CompiledContext.layers_used` response field now match what the
-  consumer actually sees.
+### W2 — evidence-gated YAML audit contract (`ed6950e` + `f9971e2`)
 
-* **H4 — compose-direction doc note.** New comment block on
-  `section_disabled` documents the OR semantics — operator-disable
-  wins via either `excluded_layers` membership OR a falsy `inj
-  .<flag>`. There is NO force-include semantic; per-request the
-  only verb is "disable further". Operators set coarse policy via
-  `context_injection`; per-request `excluded_layers` refines down.
+* Schema v1 documented in `docs/superpowers/reviews/README.md`.
+* `scripts/check_review_artifacts.py` — Python+PyYAML validator.
+  Asserts schema_version, target_paths exist + repo-contained,
+  artifacts non-empty, every BLOCKING-severity finding (BLOCKER/
+  CRITICAL/HIGH) is resolved or deferred (no open).
+* W2 review fixes: ValueError catch on bad date scalars
+  (PyYAML constructs `datetime.date`), path-traversal containment
+  guard, status-coupled field requirements (`resolved` →
+  `fixed_by`, `deferred` → `rationale`), unknown-key warnings.
+* 12 assertions across clean + 9 drift YAMLs.
+* First real artifact backfilled for W1 in
+  `2026-04-25-w1-harness-sync.yaml` + `.transcript.md`.
 
-* **H5 — BlastRadius CLI suppress message** replaced the bare
-  "blast_radius injection suppressed" notice with an actionable form
-  that tells the operator how to re-enable
-  (`forge-next config set` or `FORGE_CONTEXT_INJECTION_BLAST_RADIUS`),
-  flags that the analysis was not run, and points at the daemon-side
-  gate so they don't grep the source.
+### W3 — SPDX sidecar manifest (`82db6f0` + `35808c4`)
 
-### Wave 6 — Tier 1 #1 consolidator owns its own connection
+* `.claude-plugin/LICENSES.yaml` rewritten as v1 schema with
+  `coverage_paths` + repo-relative paths. Now declares 3 JSONs
+  (plugin.json + marketplace.json + hooks/hooks.json — the latter
+  was previously uncovered).
+* `scripts/check_license_manifest.py` validator: SPDX expression
+  tokenizer, coverage-walk, containment guard, references
+  existence check.
+* W3 review fixes: tightened SPDX regex (rejects whitespace-only,
+  free-form prose, dangling operators), schema_version diagnostic
+  prints type, references[] existence enforced, WARN on missing
+  coverage_paths, top-level Exception catch.
+* 25 assertions across clean + 8 drift fixtures.
 
-* `crates/daemon/src/workers/consolidator.rs::run_consolidator` —
-  new signature `(db_path, events, metrics, shutdown_rx,
-  interval_secs)`. Initializes sqlite-vec, opens its own
-  `Connection`, applies `WAL` + `busy_timeout=5000` pragmas, then
-  loops on the consolidation interval. Connection held for the
-  worker's lifetime — no re-open per pass.
-* `crates/daemon/src/workers/mod.rs::spawn_workers` gains a
-  `metrics: Option<Arc<ForgeMetrics>>` parameter and clones it +
-  `events` + `db_path` into the consolidator handle.
-* `crates/daemon/src/main.rs` passes
-  `Some(Arc::clone(&shared_metrics))` to spawn_workers.
-* SQLite WAL allows multiple readers + a single writer — the
-  consolidator's owned writer connection contends with at most the
-  writer actor at a time, and `busy_timeout=5000` absorbs that
-  contention. Startup-consolidation in `main.rs` still uses the
-  brief-lock pattern (one phase at a time) — intentionally untouched.
+### W4 — 2A-4d interlock (`7d3dd2f` + `f683e55`)
 
-### Wave 7 — Tier 2 #4 HUD 24h rollup index
+* SHA-256 of `crates/core/src/protocol/request.rs` mirrored as
+  `protocol_hash` in plugin.json (initial: `9a38d781…`).
+* `scripts/check_protocol_hash.py` validator + bash wrapper.
+* `scripts/sync-protocol-hash.sh` refresh helper — Python+re.subn
+  rather than sha256sum+sed for cross-platform (W4 review HIGH-1)
+  + multi-line layout robustness (HIGH-3) + `--root` for testability
+  (HIGH-2).
+* 18 assertions including a real sync round-trip + multi-line
+  layout regression test.
 
-* `crates/daemon/src/db/schema.rs` migration:
-  `ALTER TABLE kpi_events ADD COLUMN run_id TEXT;`
-  one-time `UPDATE` to backfill from `json_extract(metadata_json,
-  '$.run_id')` on existing rows;
-  `CREATE INDEX idx_kpi_events_run_id_timestamp ON kpi_events(run_id,
-  timestamp)`.
-* `workers/instrumentation.rs::record` writes `outcome.run_id` to
-  the column (and keeps it in metadata_json for v1-schema
-  compatibility).
-* `bench/telemetry.rs::emit_bench_run_completed` populates `run_id`
-  with the same Ulid that doubles as the kpi_events PK.
-* `events.rs` HUD 24h rollup query reads
-  `COUNT(DISTINCT COALESCE(run_id, json_extract(metadata_json,
-  '$.run_id')))` so the indexed column wins for production rows and
-  the JSON value remains a fallback for legacy or test-fixture rows.
-* W7 follow-up: `shape_phase_run_summary` had its
-  `json_extract(...) AS run_id` alias shadowed by the new column,
-  causing `GROUP BY run_id` / `HAVING run_id IS NOT NULL` to evaluate
-  against the column value (NULL for test fixtures) and drop every
-  group. Renamed the alias to `effective_run_id` and sourced via
-  COALESCE.
+### W5 — rollback tabletop drill (`1fab0d6` + `2a5ed8c`)
 
-### Wave 8 — cosmetic batch (#6 M4 + L3)
+* `docs/operations/rollback-drills/2026-04-25-tabletop.md` — full
+  drill log with per-step status + 5 discovered gaps.
+* `docs/operations/2P-1-rollback.md` updated:
+  - Step 4 daemon shutdown rewritten to use `$FORGE_DIR/forge.pid`
+    + `kill -INT` (W5 review HIGH-1: daemon only handles SIGINT,
+    not SIGTERM; default `kill PID` would skip the socket-drain).
+    Strategic fix (add SIGTERM handler in main.rs) tracked in
+    plan-doc backlog.
+  - Step 0 caveat that the `.github/pending-rollback` flag needs
+    enforcement (G1 deferred to W6 — landed via CI guard).
+  - Step 1 `--cleanup-tag` syntax cleanup.
+  - Tabletop checklist split into "paper drill" (this run) vs
+    "full drill (annual)" cadences.
 
-* M4 — `compile-time-tautology:` prefix on `detail` strings for the
-  bench infra checks #3 (preference_table_schema) and #4
-  (skill_table_schema) so operators reading the dashboard see
-  "passed: true" tagged with honest semantics.
-* L3 — `workers/kpi_reaper.rs` per-type pass-start log downgraded
-  from `info!` to `debug!` (it fires once per configured override
-  per pass regardless of whether any rows are reapable, flooding
-  info-level logs).
-* The other 5 cosmetic items (M1 #[serial], M2 git-cluster, M3
-  chrono swap, L1/L2 cast nits) and Tier 1 #2 record() span scope
-  remain deferred per the original "batch when bench harness sees
-  major-version polish" / "wait for phase-span UI" rationales.
+### W6 — GitHub repo governance (`92e65a3` + `49ec70a`)
 
-## Tests + verification (final state)
+* `.github/CODEOWNERS` extended to cover W1-W5 surfaces +
+  meta-protect the .github/ tree itself.
+* 3 issue templates (bug, feature, rollback) + PR template with
+  scope checklist, test-plan mirroring CI's exact commands, and
+  conditional adversarial-review section ("(P3 waves only)").
+* `.github/workflows/ci.yml` Pending-rollback flag guard (closes
+  W5 §G1) — W6 review moved it to the FIRST step of the check job
+  so a rollback freeze can't be masked by harness-sync failures.
+* W6 review fixes: bug template field source (`doctor` not
+  `health`), PR template review scope, guard ordering, guard
+  message hint, rollback.md `git push --force-with-lease` typo,
+  semver placeholder `v<bad-version>`, clippy command alignment,
+  feature_request mentions sync-protocol-hash.sh.
+
+### W7 — sideload-state detector (`b10d1ed` + `5a26af7`)
+
+* `scripts/check-sideload-state.sh` — bash + python3 user-side
+  detector. Reads `~/.claude/settings.json`, reports forge-app /
+  forge-private references in enabledPlugins or
+  extraKnownMarketplaces source.path/repo.
+* Inline `_has_private_fragment()` helper unifies plugin + market
+  scans (refactor pulled in via W7 review M1+M2 fixes).
+* `docs/operations/sideload-migration.md` + Auto-detection
+  section, Platform notes (Linux/macOS quit semantics with W5 §G3
+  pkill caveat).
+* 15 assertions across clean + 5 drift fixtures (incl. the
+  source.repo branch added in W7 review M1 fix).
+
+### W8 — multi-OS dogfood matrix (`47d0da4` + `55c693d`)
+
+* `docs/benchmarks/results/2P-1b-dogfood-matrix.md` — 14-cell
+  matrix.
+  - 6 PASS on Linux: source-build cycle (health/doctor/recall/
+    stats/realities) + sideload (running daemon validates the path).
+  - 8 cells handed off: 3 release-blocked (cargo install, brew,
+    tarball), 2 by-design negative (mid-session kill + parallel
+    sessions — both with full reproduction steps), 3 macOS
+    (best-effort per locked decision #2).
+* W8 review fixes: 171→174 transcript drift, macOS
+  `setup-dev-env.sh` is Linux-only guard, shell-quoting in
+  user-reproduction snippets, hook WARN dual-case explanation,
+  acceptance precision (6/14 PASS, 8 handoff with reproduction).
+
+## Tests + verification (final state at v0.6.0-rc.1)
 
 * `cargo fmt --all --check` — clean
-* `cargo check --workspace --features bench` — clean
-* `cargo clippy --workspace --features bench -- -W clippy::all -D warnings` — 0 warnings
-* `cargo test -p forge-daemon --lib --features bench` — **1506 pass, 1 fail, 1 ignored**
-  (the 1 fail = `test_daemon_state_new_is_fast` — pre-existing flake unchanged)
-* `bash scripts/ci/check_spans.sh` — OK (23 names matched, 0 violations)
-* W5 adversarial review: `lockable-with-fixes` → M1 (resolver re-loading config) +
-  M3 (trace docstring scope) addressed in `59a84df`.
-* W6 adversarial review: `lockable-as-is` (verified WAL semantics + busy_timeout
-  symmetry + sqlite-vec global init + no lock-ordering regression).
-* No live dogfood this session — code-only changes; the test suite + structural
-  reviews + integrity tests are the verification surface.
+* `bash scripts/ci/check_spans.sh` — OK (23 names matched)
+* `bash tests/static/run-shellcheck.sh` — all 19 scripts PASS
+* **5 fixture-test runners (77 total assertions, all PASS):**
+  - `test-harness-sync.sh` — 7/0
+  - `test-review-artifacts.sh` — 12/0
+  - `test-license-manifest.sh` — 25/0
+  - `test-protocol-hash.sh` — 18/0
+  - `test-sideload-state.sh` — 15/0
+* **4 real-repo gates (all PASS):**
+  - harness-sync — 154 methods + 107 subcommands, no drift
+  - review-artifacts — 8 review YAMLs valid, no open blockers
+  - license-manifest — 3 files declared, coverage clean
+  - protocol-hash — request.rs ↔ plugin.json synced (`9a38d781…`)
+* **8 review YAMLs in `docs/superpowers/reviews/`** covering W1-W8;
+  every BLOCKER/HIGH/MEDIUM resolved or deferred with rationale.
 
-## Deferred backlog — what's still open
+## Deferred backlog — single source of truth
 
-Single source of truth:
-**`docs/superpowers/plans/2026-04-24-forge-identity-observability.md`**.
+`docs/superpowers/plans/2026-04-25-complete-production-readiness.md`
+§"P3-1 deferred backlog" — currently 21 items across W1-W8 reviews,
+all classified resolved/deferred per their wave's review YAML. None
+block P3-2 entry.
 
-### Tier 1 (2A-4d.1.1) — 3 still open
+Highlight items worth surfacing here:
 
-* **#2 record() inside span scope** (22 sites). Phase 19 already
-  refactored to call record() AFTER the span scope drops. The
-  remaining 22 phases still call record() inside the span. **Why
-  deferred:** zero user-visible benefit until a Tier 4+ surface
-  attributes instrumentation-layer errors per phase by name. HUD
-  shows aggregate, not per-phase, today.
-* **#5 T10 OTLP-path latency variant** — separate latency study
-  with its own numbers. No Tier 2/3 path constructs a real OTLP
-  exporter to substitute.
+* **Daemon SIGTERM handler** — strategic fix for the W5 HIGH-1
+  finding. Requires `tokio::signal::unix::signal(SignalKind::terminate())`
+  in `crates/daemon/src/main.rs`. Until landed, `systemctl stop` and
+  any default `kill PID` skip graceful shutdown. Track for P3-2 or
+  earlier.
+* **W5 §G4: pre-migration DB snapshot** — DB compatibility matrix
+  in the rollback playbook flags this as a real production-safety
+  hole when rolling back across schema boundaries.
+* **W5 §G5: quarterly drill cadence reminder** — no automated
+  reminder mechanism; documented in the playbook checklist.
 
-(Tier 1 #1 closed in W6; #3 + #4 closed in W3.)
+## P3-1 → P3-2 transition
 
-### Tier 2 (2A-4d.2.1) — 0 still open
+**Halt-and-ask point per locked decision #5:** before opening P3-2,
+user reviews:
 
-All 7 items closed across W2 + W7.
+1. The 17 P3-1 commits (this HANDOFF table).
+2. The 8 review YAMLs and the consolidated transcript at
+   `docs/superpowers/reviews/2026-04-25-p3-1-w2-w8.transcript.md`.
+3. The deferred backlog tail in the plan doc.
+4. The acceptance bullets in
+   `docs/benchmarks/results/2P-1b-dogfood-matrix.md` for any
+   handoff cells worth running on macOS / against a release.
 
-### Tier 3 (2A-4d.3.1) — partially still open
+**Phase P3-2 scope (queued, not started):** 6 waves of 2A-4d
+follow-up — Tier 3 M3 protocol change (`Request::CompileContextTrace`
+gains `session_id`), Tier 3 M2 (batch `resolve_scoped_config`),
+Tier 1 #5 (T10 OTLP-path latency variant), Tier 1 #2 (record() span
+scope refactor — 22 sites), Tier 3 #5 (`shape_bench_run_summary`
+CTE rewrite), Tier 3 #6 cosmetic batch. Close at v0.6.0-rc.2.
 
-* **#3 review M2** — six independent `resolve_scoped_config` calls
-  per request could batch via `resolve_effective_config` (already
-  exists in db/ops.rs). Defer until profiling shows it matters.
-* **#3 review M3 protocol gap** — `Request::CompileContextTrace`
-  has no `session_id`, so per-scope overrides don't reach the
-  trace fn. Closing requires a protocol change.
-* **#6 cosmetic batch** — 5 of 7 items still open: M1 #[serial]
-  test mark, M2 git-cluster, M3 chrono swap for civil_from_days,
-  L1 i64::from cast style, L2 u32::try_from cast style. **Why
-  deferred:** "batch when bench harness sees major-version
-  operator polish" — that condition still hasn't surfaced.
+The harness-sync CI gate (W1) and protocol-hash interlock (W4) are
+specifically designed to guard P3-2's first wave (the protocol
+change touching `request.rs`). When P3-2 W1 lands, both gates
+should fire as expected — the contributor must run `bash scripts/
+sync-protocol-hash.sh` after editing the Request enum.
 
-## Known quirks
+## Known quirks (P3-1)
 
-* `test_daemon_state_new_is_fast` remains the documented timing
-  flake (pre-existing since 2P-1a). Unchanged.
-* The W7 column addition created a SQL alias-shadowing trap that
-  cost one follow-up commit (`17f3436`). Future schema changes that
-  introduce columns matching JSON-extract alias names should audit
-  every shape SQL for the same pattern (`AS <colname>` collisions).
-* Rust-analyzer often shows stale `cfg(feature = "bench")` diagnostics
-  during incremental edits — `cargo check --workspace --features
-  bench` is the ground truth.
-
-## Next — recommended path
-
-The 2A-4d daemon-side observability backlog is now structurally
-empty modulo the explicitly-deferred items (Tier 1 #2/#5, Tier 3
-review M2/M3, cosmetic #6). Recommended next directions:
-
-1. **2P-1b harness hardening** — the public-resplit spec
-   (`docs/superpowers/specs/2026-04-23-forge-public-resplit-design.md`)
-   carved out a 2P-1b phase covering harness-sync CI checks (daemon ↔
-   plugin ↔ hooks ↔ skills ↔ agents in lockstep), multi-OS dogfood
-   matrix (incl. macOS), marketplace republication ownership,
-   2A-4d interlock (link bench-fast CI to daemon changes),
-   rollback playbook, and SPDX header backfill for JSON files. None
-   started; whole new domain.
-2. **Tier 1 #2 record() span-scope refactor** if/when Tier 4+
-   surfaces phase-span-by-name UI. 22 mechanical sites; phase 19 is
-   the reference pattern.
-3. **Tier 3 review M2 / M3 protocol surface** — batch
-   `resolve_effective_config` and add `session_id` to
-   `Request::CompileContextTrace` if operator usage of trace
-   warrants it.
-
-## Parked (manual / temporal)
-
-* v0.5.0 GitHub release + tag push.
-* Marketplace publication.
-* macOS dogfood.
-* T17 — bench-fast CI gate promotion to required (after 14
-  consecutive green master CI runs).
+* `test_daemon_state_new_is_fast` — pre-existing timing flake
+  (since 2P-1a). Unchanged.
+* `gh release delete --cleanup-tag=false` (legacy form) is accepted
+  by gh CLI but its `--help` only shows bare `--cleanup-tag`. The
+  W5-updated playbook now uses the bare form for clarity.
+* The harness-sync amnesty auto-flips to fail-closed on 2026-05-09
+  via the script's `date -u` check — no CI workflow edit needed at
+  that date. Test contributor environments where `date` returns
+  non-UTC may behave unexpectedly (locked to `-u` so this should
+  hold).
 
 ## One-line summary
 
-HEAD `17f3436`; W5–W8 close every actionable Phase 2A-4d backlog
-item; consolidator no longer locks state mutex across passes;
-`/inspect` and HUD rollup index-backed via `kpi_events.run_id`;
-scoped-config overrides take effect end-to-end; 1506 tests green,
-0 clippy warnings; recommended next: 2P-1b harness hardening or
-the smaller Tier 1 #2 / Tier 3 M2-M3 follow-ups.
+P3-1 closed: 17 commits, 8 waves of 2P-1b harness hardening (each
+shipped + adversarially reviewed + fix-committed), v0.6.0-rc.1
+across 8 version anchors, 11 CI gates green (4 real-repo + 5
+fixture-runners + shellcheck + spans), 8 review YAMLs validated
+zero open blocking findings. Halt for user sign-off before P3-2.

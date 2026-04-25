@@ -1,0 +1,63 @@
+schema_version: 1
+slug: 2026-04-25-w2-review-artifacts
+target_paths:
+  - docs/superpowers/reviews/README.md
+  - scripts/check_review_artifacts.py
+  - scripts/check-review-artifacts.sh
+  - tests/fixtures/review-artifacts/clean/docs/superpowers/reviews/sample.yaml
+  - tests/fixtures/review-artifacts/drift/docs/superpowers/reviews/bad-schema.yaml
+  - tests/scripts/test-review-artifacts.sh
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: c261e99
+  head: ed6950e
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-1-w2-w8.transcript.md
+findings:
+  - id: M-1
+    severity: MEDIUM
+    summary: yaml.safe_load raises ValueError on bad date scalars; only YAMLError caught → stack trace
+    file: scripts/check_review_artifacts.py
+    status: resolved
+    fixed_by: f9971e2
+  - id: M-2
+    severity: MEDIUM
+    summary: target_paths/artifacts paths not validated for repo-root containment
+    file: scripts/check_review_artifacts.py
+    status: resolved
+    fixed_by: f9971e2
+  - id: M-3
+    severity: MEDIUM
+    summary: README claims "unknown fields warn" but validator was silent; status-coupled fields (resolved→fixed_by, deferred→rationale) not enforced
+    file: scripts/check_review_artifacts.py
+    status: resolved
+    fixed_by: f9971e2
+  - id: L-1
+    severity: LOW
+    summary: validator does not enforce per-PR-changed-file coverage
+    status: deferred
+    rationale: defensible scope cut; matches harness-sync deferred coverage pattern
+  - id: L-2
+    severity: LOW
+    summary: scripts/check-review-artifacts.sh is largely a passthrough wrapper
+    status: deferred
+    rationale: convention parity with check-harness-sync.sh
+  - id: L-3
+    severity: LOW
+    summary: reviewer.agent is an open enum
+    status: deferred
+    rationale: consistent with the README documentation
+  - id: L-4
+    severity: LOW
+    summary: PyYAML safe_load is last-wins on duplicate keys
+    status: deferred
+    rationale: acceptable risk; multi-doc YAML covered by ComposerError catch
+  - id: M-4
+    severity: MEDIUM
+    summary: post-commit message off-by-one count vs YAML truth
+    status: deferred
+    rationale: artifact YAML is source of truth; commit body cannot be edited

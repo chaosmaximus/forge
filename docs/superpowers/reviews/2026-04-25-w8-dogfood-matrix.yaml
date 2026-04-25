@@ -1,0 +1,45 @@
+schema_version: 1
+slug: 2026-04-25-w8-dogfood-matrix
+target_paths:
+  - docs/benchmarks/results/2P-1b-dogfood-matrix.md
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 5a26af7
+  head: 47d0da4
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-1-w2-w8.transcript.md
+findings:
+  - id: HIGH-1
+    severity: HIGH
+    summary: matrix table row 1.A.1 says 171 decisions but transcript reports 174
+    file: docs/benchmarks/results/2P-1b-dogfood-matrix.md
+    status: resolved
+    fixed_by: 55c693d
+  - id: HIGH-2
+    severity: HIGH
+    summary: macOS reproduction calls Linux-only setup-dev-env.sh unconditionally
+    file: docs/benchmarks/results/2P-1b-dogfood-matrix.md
+    status: resolved
+    fixed_by: 55c693d
+  - id: MED-1
+    severity: MEDIUM
+    summary: inconsistent shell quoting in sections 1.F + 1.G snippets
+    file: docs/benchmarks/results/2P-1b-dogfood-matrix.md
+    status: resolved
+    fixed_by: 55c693d
+  - id: MED-2
+    severity: MEDIUM
+    summary: hook WARN explanation only covers contributor case; marketplace-broken case missing
+    file: docs/benchmarks/results/2P-1b-dogfood-matrix.md
+    status: resolved
+    fixed_by: 55c693d
+  - id: LOW-1
+    severity: LOW
+    summary: acceptance bullet wording too optimistic (8 of 14 cells unexercised)
+    file: docs/benchmarks/results/2P-1b-dogfood-matrix.md
+    status: resolved
+    fixed_by: 55c693d

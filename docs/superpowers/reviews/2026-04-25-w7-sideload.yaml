@@ -1,0 +1,60 @@
+schema_version: 1
+slug: 2026-04-25-w7-sideload
+target_paths:
+  - scripts/check-sideload-state.sh
+  - docs/operations/sideload-migration.md
+  - tests/fixtures/sideload-state/clean.json
+  - tests/fixtures/sideload-state/drift-marketplace-repo.json
+  - tests/scripts/test-sideload-state.sh
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 49ec70a
+  head: b10d1ed
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-1-w2-w8.transcript.md
+findings:
+  - id: M-1
+    severity: MEDIUM
+    summary: extraKnownMarketplaces.source.repo branch checked but no fixture exercised it
+    file: tests/scripts/test-sideload-state.sh
+    status: resolved
+    fixed_by: 5a26af7
+  - id: M-2
+    severity: MEDIUM
+    summary: detection scope hardcoded; needs ground-truth comment per 2P-1a inventory
+    file: scripts/check-sideload-state.sh
+    status: resolved
+    fixed_by: 5a26af7
+  - id: L-1
+    severity: LOW
+    summary: enabledPlugins[name]=false flagged as drift but message implies active
+    file: scripts/check-sideload-state.sh
+    status: resolved
+    fixed_by: 5a26af7
+  - id: L-2
+    severity: LOW
+    summary: --settings flag-eat guard missing (asymmetric with W1-W4)
+    file: scripts/check-sideload-state.sh
+    status: resolved
+    fixed_by: 5a26af7
+  - id: L-3
+    severity: LOW
+    summary: doc cites W5 §G3 too broadly; pkill-by-name pattern not generalized in §G3
+    file: docs/operations/sideload-migration.md
+    status: resolved
+    fixed_by: 5a26af7
+  - id: L-5
+    severity: LOW
+    summary: migration message leads with relative path users can't resolve
+    file: scripts/check-sideload-state.sh
+    status: resolved
+    fixed_by: 5a26af7
+  - id: L-4
+    severity: LOW
+    summary: $HOME unset fallback to /.claude/settings.json
+    status: deferred
+    rationale: benign in practice; every CI runner has $HOME

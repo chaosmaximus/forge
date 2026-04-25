@@ -1,0 +1,70 @@
+schema_version: 1
+slug: 2026-04-25-w3-license-manifest
+target_paths:
+  - .claude-plugin/LICENSES.yaml
+  - scripts/check_license_manifest.py
+  - scripts/check-license-manifest.sh
+  - tests/fixtures/license-manifest/clean/manifest.yaml
+  - tests/scripts/test-license-manifest.sh
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: f9971e2
+  head: 82db6f0
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-1-w2-w8.transcript.md
+findings:
+  - id: HIGH-1
+    severity: HIGH
+    summary: SPDX regex too permissive; accepts whitespace-only or free-form prose
+    file: scripts/check_license_manifest.py
+    status: resolved
+    fixed_by: 35808c4
+  - id: HIGH-2
+    severity: HIGH
+    summary: SPDX_TOKEN_RE defined but never wired in
+    file: scripts/check_license_manifest.py
+    status: resolved
+    fixed_by: 35808c4
+  - id: MED-1
+    severity: MEDIUM
+    summary: stringy schema_version error message lacks type info
+    file: scripts/check_license_manifest.py
+    status: resolved
+    fixed_by: 35808c4
+  - id: MED-4
+    severity: MEDIUM
+    summary: references[] paths not existence-checked despite header claim
+    file: scripts/check_license_manifest.py
+    status: resolved
+    fixed_by: 35808c4
+  - id: LOW-1
+    severity: LOW
+    summary: empty coverage_paths silently skips coverage gate
+    file: scripts/check_license_manifest.py
+    status: resolved
+    fixed_by: 35808c4
+  - id: LOW-3
+    severity: LOW
+    summary: unhandled exception in main() prints stack trace not FAIL line
+    file: scripts/check_license_manifest.py
+    status: resolved
+    fixed_by: 35808c4
+  - id: MED-2
+    severity: MEDIUM
+    summary: os.walk(followlinks=False) means symlink directories are silently not recursed
+    status: deferred
+    rationale: safer-default behavior intentional; symlink-following has its own attack surface
+  - id: MED-3
+    severity: MEDIUM
+    summary: coverage_paths=['.'] would walk entire repo (target/, .git/, node_modules/)
+    status: deferred
+    rationale: not currently exercised; consider a default exclude list later
+  - id: LOW-5
+    severity: LOW
+    summary: Windows-style backslash path traversal not normalised on Linux
+    status: deferred
+    rationale: CI runs Linux-only
