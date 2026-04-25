@@ -542,9 +542,19 @@ pass. `/metrics` already avoids the problem via `new_reader`; HTTP handlers shar
 **Fix plan:** move the consolidator to its own SQLite connection (mirror `WriterActor`),
 or acquire-release the state lock per phase.
 
-**Why deferred:** structural refactor affecting many assumptions. Acceptable for Tier 1
-dogfood on a local daemon. Reopen when Tier 2 introduces concurrent readers that can't
-tolerate multi-second blocking.
+**Why deferred:** structural refactor affecting many assumptions.
+
+**Status (W3 review):** Tier 2 reader paths use `DaemonState::new_reader` and
+do NOT contend on this `Mutex` (verified across `grpc.rs`, `http.rs`,
+`socket.rs`, `health.rs`, `metrics.rs`). However, **workers** still take
+`state.lock().await`: `workers/perception.rs` (3 sites), `workers/indexer.rs`
+(several sites), `workers/diagnostics.rs` (multiple sites), and
+`server/writer.rs` (3 sites). During a multi-second consolidator pass these
+workers ARE blocked. The reader-contention claim that originally motivated
+deferral is met; the worker-contention failure mode is real but not
+user-visible at HUD aggregate level today. Reopen this when an operator
+reports HUD/perception/indexer staleness correlated with consolidator runs,
+or when a Tier 4+ feature surfaces per-worker latency to users.
 
 #### 2. Claude HIGH-4 from T8 — `record()` inside span scope
 

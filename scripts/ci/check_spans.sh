@@ -36,10 +36,12 @@ fail=0
 # right `file:line`.
 #
 # Phase 2A-4d.1.1 #3: extended to handle Rust raw strings of the form
-# `r"..."`, `r#"..."#`, `r##"..."##`, ... up to 3 hashes (in practice
-# 1–2 covers everything in this codebase, 3+ is exotic). Without this,
-# a raw string containing `{` / `}` would corrupt the brace-balance
-# scope detection that Check 2 uses to find #[cfg(test)] modules.
+# `r"..."`, `r#"..."#`, `r##"..."##`, ..., up to 16 hashes (Rust's
+# practical max — anything higher is reserved syntax / vanishingly
+# rare). In practice 1–2 covers everything in this codebase, 3+ is
+# exotic. Without this, a raw string containing `{` / `}` would
+# corrupt the brace-balance scope detection that Check 2 uses to find
+# #[cfg(test)] modules.
 #
 # Not a full Rust lexer (the long-term fix is a `syn`-based rewrite,
 # tracked under #4 in the same backlog). Sufficient to neutralise the
@@ -82,7 +84,7 @@ strip_comments_and_strings() {
           # Count opening hashes (0..3 supported).
           hash_count = 0
           j = i + 1
-          while (j <= length(line) && substr(line, j, 1) == "#" && hash_count < 4) {
+          while (j <= length(line) && substr(line, j, 1) == "#" && hash_count < 16) {
             hash_count++; j++
           }
           if (j <= length(line) && substr(line, j, 1) == "\"") {
