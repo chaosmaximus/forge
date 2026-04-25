@@ -27,8 +27,9 @@ assignees: []
 
 - [ ] daemon (`crates/daemon/`)
 - [ ] CLI (`crates/cli/`)
-- [ ] core protocol (`crates/core/src/protocol/`) — note: bumps
-      `protocol_hash` in `.claude-plugin/plugin.json`
+- [ ] core protocol (`crates/core/src/protocol/`) — bumps
+      `protocol_hash` in `.claude-plugin/plugin.json` via
+      `bash scripts/sync-protocol-hash.sh` (W4 interlock)
 - [ ] plugin manifest (`.claude-plugin/`)
 - [ ] hooks (`hooks/`, `scripts/hooks/`)
 - [ ] skills (`skills/`)

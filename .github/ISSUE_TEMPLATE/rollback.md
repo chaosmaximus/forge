@@ -30,17 +30,18 @@ If either is unchecked, the right tool is fix-forward, not rollback.
 - [ ] Step 1 — `gh release delete <TAG> --yes`
 - [ ] Step 2 — Homebrew formula reverted (if Formula/forge.rb was
       bumped)
-- [ ] Step 3 — public source reverted (`git revert` or
-      `git reset --force-with-lease`)
+- [ ] Step 3 — public source reverted (`git revert` for forward-revert,
+      or `git reset --hard` + `git push --force-with-lease` for the
+      destructive Mode B)
 - [ ] Step 4 — sideload-user advisory posted
 - [ ] Step 5 — post-mortem scheduled, `.github/pending-rollback`
       removed
 
 ## Affected versions
 
-| From (bad) | To (rollback target) |
-|------------|----------------------|
-| v0.x.y     | v0.x.y-1             |
+| From (bad)     | To (rollback target)            |
+|----------------|---------------------------------|
+| v<bad-version> | v<previous-known-good-version>  |
 
 DB compatibility: <!-- check matrix in playbook §"DB compatibility matrix" -->
 

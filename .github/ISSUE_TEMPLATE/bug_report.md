@@ -12,7 +12,7 @@ assignees: []
 
 ## Reproduction
 
-**Forge version:** <!-- forge-next health  →  paste version + commit_sha -->
+**Forge version:** <!-- forge-next doctor  →  paste version + git_sha -->
 **Platform:** <!-- linux x86_64 / macOS arm64 / etc -->
 **Install method:** <!-- cargo install / homebrew / sideload / source build -->
 **Plugin / harness layer involved:** <!-- daemon, cli, hooks, skills, agents, marketplace -->

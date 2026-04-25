@@ -1,6 +1,12 @@
 # Forge public repo owners.
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 #
+# Note on file enumeration: the default `* @chaosmaximus` rule already
+# covers every path. The explicit per-area entries below are kept for
+# human auditability — they document the intent that future co-owners
+# (when added) should be opinionated per surface (protocol, release,
+# audit) rather than blanketing everything.
+#
 # Default owner for everything
 *                                   @chaosmaximus
 
