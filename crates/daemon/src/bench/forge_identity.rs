@@ -1578,17 +1578,22 @@ fn table_indexes(conn: &rusqlite::Connection, table: &str) -> Result<Vec<String>
 
 /// Compile a CompileContext-equivalent XML string for the infra checks.
 ///
-/// We deliberately call the low-level `recall::compile_static_prefix` +
-/// `recall::compile_dynamic_suffix` helpers (both take `&Connection`)
+/// We deliberately call the low-level `recall::compile_static_prefix_with_inj` +
+/// `recall::compile_dynamic_suffix_with_inj` helpers (both take `&Connection`)
 /// instead of `Request::CompileContext` so the infra check path stays on
 /// the T2-locked `&DaemonState` signature. The XML produced is identical
 /// to what the handler would concatenate (see `handler.rs:3100`-ish).
+///
+/// Phase 2A-4d.3.1 #3 H6: load `context_injection` once and share between
+/// both compile fns to mirror the handler's request-scoped pattern.
 fn compile_context_xml_for_infra(state: &DaemonState) -> String {
     let agent_name = "claude-code";
-    let static_prefix = crate::recall::compile_static_prefix(&state.conn, agent_name, None);
     let config = crate::config::load_config();
+    let inj = config.context_injection.clone();
+    let static_prefix =
+        crate::recall::compile_static_prefix_with_inj(&state.conn, agent_name, None, &inj);
     let ctx_config = config.context.validated();
-    let (dynamic_suffix, _touched) = crate::recall::compile_dynamic_suffix(
+    let (dynamic_suffix, _touched) = crate::recall::compile_dynamic_suffix_with_inj(
         &state.conn,
         agent_name,
         None,
@@ -1597,6 +1602,7 @@ fn compile_context_xml_for_infra(state: &DaemonState) -> String {
         None,
         None,
         None,
+        &inj,
     );
     format!("{static_prefix}{dynamic_suffix}")
 }

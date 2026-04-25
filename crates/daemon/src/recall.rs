@@ -507,13 +507,31 @@ fn xml_escape(s: &str) -> String {
 /// DETERMINISTIC: same input = same output, every time.
 /// All XML sections always present (masking, not removal) for KV-cache stability.
 ///
-/// Phase 2A-4d.3.1 #3: when `context_injection.session_context = false`
-/// (loaded inside via `crate::config::load_config()`), the `<identity>`
-/// and `<disposition>` blocks emit self-closing tags regardless of
-/// populated content. `<platform>` and `<tools>` describe the host
-/// environment, not the injection surface, so they remain unaffected.
+/// Phase 2A-4d.3.1 #3: when `context_injection.session_context = false`,
+/// the `<identity>` and `<disposition>` blocks emit self-closing tags
+/// regardless of populated content. `<platform>` and `<tools>` describe
+/// the host environment, not the injection surface, so they remain
+/// unaffected.
+///
+/// This entry point loads the current `ContextInjectionConfig` once via
+/// [`crate::config::load_config`]. When a request compiles multiple
+/// context sections (e.g. static prefix + dynamic suffix), prefer
+/// [`compile_static_prefix_with_inj`] to share one config load.
 pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<&str>) -> String {
     let inj = crate::config::load_config().context_injection;
+    compile_static_prefix_with_inj(conn, agent, session_id, &inj)
+}
+
+/// Phase 2A-4d.3.1 #3 H6: variant of [`compile_static_prefix`] that
+/// accepts a pre-loaded [`crate::config::ContextInjectionConfig`].
+/// Use this when the same request compiles more than one context
+/// section so the caller pays the config-load cost once.
+pub fn compile_static_prefix_with_inj(
+    conn: &Connection,
+    agent: &str,
+    session_id: Option<&str>,
+    inj: &crate::config::ContextInjectionConfig,
+) -> String {
     let mut xml = String::from("<forge-static>\n");
 
     // Platform (never changes within a session)
@@ -777,6 +795,11 @@ pub fn compile_prefetch_hints(
 /// Dynamic suffix — things that change per-turn or accumulate.
 /// Regenerated on each compile_context call.
 /// All XML sections always present (masking, not removal) for KV-cache stability.
+///
+/// Loads the current `ContextInjectionConfig` once via
+/// [`crate::config::load_config`]. When a request also compiles the
+/// static prefix (or other context sections), prefer
+/// [`compile_dynamic_suffix_with_inj`] to share one config load.
 #[allow(clippy::too_many_arguments)]
 pub fn compile_dynamic_suffix(
     conn: &Connection,
@@ -788,6 +811,36 @@ pub fn compile_dynamic_suffix(
     focus: Option<&str>,
     organization_id: Option<&str>,
 ) -> (String, Vec<String>) {
+    let inj = crate::config::load_config().context_injection;
+    compile_dynamic_suffix_with_inj(
+        conn,
+        agent,
+        project,
+        ctx_config,
+        excluded_layers,
+        session_id,
+        focus,
+        organization_id,
+        &inj,
+    )
+}
+
+/// Phase 2A-4d.3.1 #3 H6: variant of [`compile_dynamic_suffix`] that
+/// accepts a pre-loaded [`crate::config::ContextInjectionConfig`].
+/// Use this when the same request compiles more than one context
+/// section so the caller pays the config-load cost once.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_dynamic_suffix_with_inj(
+    conn: &Connection,
+    agent: &str,
+    project: Option<&str>,
+    ctx_config: &crate::config::ContextConfig,
+    excluded_layers: &[String],
+    session_id: Option<&str>,
+    focus: Option<&str>,
+    organization_id: Option<&str>,
+    inj: &crate::config::ContextInjectionConfig,
+) -> (String, Vec<String>) {
     let budget = ctx_config.budget_chars;
     let decisions_limit = ctx_config.decisions_limit;
     let lessons_limit = ctx_config.lessons_limit;
@@ -796,7 +849,6 @@ pub fn compile_dynamic_suffix(
     // Phase 2A-4d.3.1 #3: a section is disabled when EITHER the request's
     // `excluded_layers` list names it OR the corresponding feature flag in
     // `context_injection` is false. The flags compose orthogonally.
-    let inj = crate::config::load_config().context_injection;
     let section_disabled =
         |layer: &str, flag: bool| -> bool { excluded_layers.iter().any(|l| l == layer) || !flag };
 

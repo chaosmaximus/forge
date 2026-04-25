@@ -3139,7 +3139,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             } else {
                 None
             };
-            let static_prefix = crate::recall::compile_static_prefix(&state.conn, agent_name, sid);
+            // Phase 2A-4d.3.1 #3 H6: load config once for the whole arm so
+            // compile_static_prefix + compile_dynamic_suffix share a single
+            // ContextInjectionConfig instead of each paying for a disk read.
+            let config = crate::config::load_config();
+            let inj = config.context_injection.clone();
+            let static_prefix =
+                crate::recall::compile_static_prefix_with_inj(&state.conn, agent_name, sid, &inj);
 
             if static_only.unwrap_or(false) {
                 let chars = static_prefix.len();
@@ -3164,18 +3170,19 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     },
                 }
             } else {
-                let config = crate::config::load_config();
                 let ctx_config = config.context.validated();
-                let (dynamic_suffix, ctx_touched_ids) = crate::recall::compile_dynamic_suffix(
-                    &state.conn,
-                    agent_name,
-                    project.as_deref(),
-                    &ctx_config,
-                    &excluded,
-                    sid,
-                    focus.as_deref(),
-                    None, // TODO: wire organization_id from session context (2A-4a T11)
-                );
+                let (dynamic_suffix, ctx_touched_ids) =
+                    crate::recall::compile_dynamic_suffix_with_inj(
+                        &state.conn,
+                        agent_name,
+                        project.as_deref(),
+                        &ctx_config,
+                        &excluded,
+                        sid,
+                        focus.as_deref(),
+                        None, // TODO: wire organization_id from session context (2A-4a T11)
+                        &inj,
+                    );
                 let full = format!(
                     "<forge-context version=\"0.7.0\">\n{static_prefix}\n{dynamic_suffix}\n</forge-context>"
                 );

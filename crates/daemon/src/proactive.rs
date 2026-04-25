@@ -166,15 +166,32 @@ pub fn build_proactive_context(
 /// * `session_context = false` → skip KT_DECISION + KT_UAT_LESSON.
 ///
 /// Other knowledge types (KT_TEST_REMINDER) are unaffected.
+///
+/// When a request already has a loaded `ContextInjectionConfig` in
+/// scope, prefer [`build_proactive_context_with_inj`] to avoid the
+/// extra config-load round-trip.
 pub fn build_proactive_context_with_org(
     conn: &Connection,
     hook_event: &str,
     project: Option<&str>,
     org_id: Option<&str>,
 ) -> Vec<forge_core::protocol::response::ProactiveInjection> {
-    use forge_core::protocol::response::ProactiveInjection;
-
     let inj = crate::config::load_config().context_injection;
+    build_proactive_context_with_inj(conn, hook_event, project, org_id, &inj)
+}
+
+/// Phase 2A-4d.3.1 #3 H6: variant of [`build_proactive_context_with_org`]
+/// that accepts a pre-loaded [`crate::config::ContextInjectionConfig`].
+/// Saves one disk read per hook call when the caller already shares a
+/// config across this and other context-compile fns in the same arm.
+pub fn build_proactive_context_with_inj(
+    conn: &Connection,
+    hook_event: &str,
+    project: Option<&str>,
+    org_id: Option<&str>,
+    inj: &crate::config::ContextInjectionConfig,
+) -> Vec<forge_core::protocol::response::ProactiveInjection> {
+    use forge_core::protocol::response::ProactiveInjection;
 
     let knowledge_types = [
         (KT_BLAST_RADIUS, "blast_radius context"),
