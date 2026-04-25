@@ -46,6 +46,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::server::handler::DaemonState;
 
+// Master v6 §6 #2 — compile-time invariant. If anyone retunes
+// disposition::MAX_DELTA without updating both this assertion and the
+// bench's per-cycle bound check (Dim 2), the build fails immediately.
+const _: () = assert!(crate::workers::disposition::MAX_DELTA == 0.05);
+
 // ── Configuration ────────────────────────────────────────────────
 
 /// Configuration for a single Forge-Identity bench run.
@@ -210,6 +215,9 @@ fn dim_1_identity_facet_persistence(
 ///
 /// Bench design (Phase 2A-4d.3.1 #2 — `Request::StepDispositionOnce`):
 ///
+///   * One `Request::ForceConsolidate` runs first, per master v6 §7 line 200
+///     mandate ("Dim 1, Dim 2, Dim 4, Dim 5 score AFTER a single
+///     ForceConsolidate run").
 ///   * 10 cycles. Each cycle calls `Request::StepDispositionOnce` with 5
 ///     short sessions (30s each, well below `SHORT_SESSION_THRESHOLD_SECS=60`).
 ///     `short_ratio = 1.0`, `long_ratio = 0.0`.
@@ -224,13 +232,18 @@ fn dim_1_identity_facet_persistence(
 ///     so the `disposition` table starts empty → `get_current_value`
 ///     returns DEFAULT_VALUE (0.5) on cycle 1.
 ///
-/// Scoring is binary per master v6 §4:
-///   * If every observed delta satisfies `|delta| <= max_delta + 1e-9`
-///     AND final caution = 1.0 ± 0.01 AND final thoroughness = 0.0 ± 0.01
-///     → score 1.0.
-///   * Else → score 0.0.
+/// Scoring is **continuous** (T14 review B2 fix) so a single transient
+/// drift cycle does not collapse the whole dimension to 0.0:
 ///
-/// Pass at score >= DIM_MINIMUMS[1] = 0.85.
+///   * 22 events total: 20 per-cycle delta-bound checks (10 cycles × 2
+///     traits) + 2 final-value checks (caution, thoroughness).
+///   * `score = passed_events / 22.0`.
+///   * If a request errors mid-loop or either trait is missing from the
+///     response, score collapses to 0.0 (these are infra failures, not
+///     drift).
+///
+/// Pass at score >= DIM_MINIMUMS[1] = 0.85 (so up to 3 of 22 events
+/// can fail before the dimension dips below the floor).
 fn dim_2_disposition_drift(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> DimensionScore {
     use forge_core::protocol::{Request, Response, ResponseData, SessionFixture};
 
@@ -241,6 +254,11 @@ fn dim_2_disposition_drift(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> D
     const DELTA_EPSILON: f64 = 1e-9;
     const EXPECTED_FINAL_CAUTION: f64 = 1.0;
     const EXPECTED_FINAL_THOROUGHNESS: f64 = 0.0;
+    const TOTAL_EVENTS: f64 = 22.0; // 10 cycles × 2 traits + 2 final-value events
+
+    // Master v6 §7 line 200 — Dim 2 scores AFTER a single ForceConsolidate.
+    // No-op on a fresh DB but the policy mandate is explicit.
+    let _ = crate::server::handler::handle_request(state, Request::ForceConsolidate);
 
     let agent = "bench-dim2-agent";
     let fixtures: Vec<SessionFixture> = (0..SESSIONS_PER_CYCLE)
@@ -249,9 +267,11 @@ fn dim_2_disposition_drift(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> D
         })
         .collect();
 
-    let mut all_deltas_in_bound = true;
-    let mut last_caution = 0.0_f64;
-    let mut last_thoroughness = 0.0_f64;
+    let mut in_bound_events: u32 = 0;
+    let mut last_caution: Option<f64> = None;
+    let mut last_thoroughness: Option<f64> = None;
+    let mut caution_seen_count: u32 = 0;
+    let mut thoroughness_seen_count: u32 = 0;
 
     for cycle in 0..N_CYCLES {
         let req = Request::StepDispositionOnce {
@@ -263,8 +283,17 @@ fn dim_2_disposition_drift(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> D
             Response::Ok {
                 data: ResponseData::DispositionStep { summary },
             } => summary,
+            Response::Error { message } => {
+                tracing::warn!("dim_2 cycle {cycle} step error: {message}");
+                return DimensionScore {
+                    name: "disposition_drift".to_string(),
+                    score: 0.0,
+                    min: DIM_MINIMUMS[1],
+                    pass: false,
+                };
+            }
             other => {
-                tracing::warn!("dim_2 step request failed at cycle {cycle}: {other:?}");
+                tracing::warn!("dim_2 cycle {cycle} unexpected response shape: {other:?}");
                 return DimensionScore {
                     name: "disposition_drift".to_string(),
                     score: 0.0,
@@ -276,7 +305,9 @@ fn dim_2_disposition_drift(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> D
 
         // Per-cycle delta-bound check on every trait the worker reports.
         for ts in &summary.traits {
-            if ts.delta.abs() > summary.max_delta + DELTA_EPSILON {
+            if ts.delta.abs() <= summary.max_delta + DELTA_EPSILON {
+                in_bound_events += 1;
+            } else {
                 tracing::warn!(
                     "dim_2 cycle {} trait {} observed delta {} exceeds max_delta {}",
                     cycle,
@@ -284,15 +315,42 @@ fn dim_2_disposition_drift(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> D
                     ts.delta,
                     summary.max_delta
                 );
-                all_deltas_in_bound = false;
             }
             match ts.trait_name.as_str() {
-                "caution" => last_caution = ts.value_after,
-                "thoroughness" => last_thoroughness = ts.value_after,
-                _ => {}
+                "caution" => {
+                    last_caution = Some(ts.value_after);
+                    caution_seen_count += 1;
+                }
+                "thoroughness" => {
+                    last_thoroughness = Some(ts.value_after);
+                    thoroughness_seen_count += 1;
+                }
+                _ => {
+                    tracing::warn!("dim_2 unexpected trait_name: {}", ts.trait_name);
+                }
             }
         }
     }
+
+    // Master v6 §13 D7: both Caution and Thoroughness MUST be observed
+    // every cycle. If the worker drops one, the bench can't honestly
+    // score the trajectory — collapse the score so the regression is
+    // visible immediately.
+    if caution_seen_count != N_CYCLES as u32 || thoroughness_seen_count != N_CYCLES as u32 {
+        tracing::warn!(
+            "dim_2 trait observation gap: caution_seen={caution_seen_count}/{N_CYCLES}, \
+             thoroughness_seen={thoroughness_seen_count}/{N_CYCLES}"
+        );
+        return DimensionScore {
+            name: "disposition_drift".to_string(),
+            score: 0.0,
+            min: DIM_MINIMUMS[1],
+            pass: false,
+        };
+    }
+
+    let last_caution = last_caution.expect("caution observed at least once");
+    let last_thoroughness = last_thoroughness.expect("thoroughness observed at least once");
 
     let caution_match = (last_caution - EXPECTED_FINAL_CAUTION).abs() <= FINAL_TOLERANCE;
     let thoroughness_match =
@@ -315,11 +373,9 @@ fn dim_2_disposition_drift(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> D
         );
     }
 
-    let score = if all_deltas_in_bound && caution_match && thoroughness_match {
-        1.0
-    } else {
-        0.0
-    };
+    let final_events = (caution_match as u32) + (thoroughness_match as u32);
+    let passed = in_bound_events + final_events;
+    let score = (passed as f64) / TOTAL_EVENTS;
     let pass = score >= DIM_MINIMUMS[1];
 
     DimensionScore {
@@ -1232,18 +1288,21 @@ fn check_skill_table_schema() -> InfrastructureCheck {
     }
 }
 
-/// #5 — `disposition::MAX_DELTA == 0.05`. The constant is module-private
-/// (`const MAX_DELTA: f64 = 0.05;` at `workers/disposition.rs:17`), so it
-/// can't be referenced from outside the module. All bounded-delta math in
-/// that file clamps against `MAX_DELTA`; the in-module unit tests enforce
-/// the value. From the bench's vantage point this is a compile-time
-/// tautology.
+/// #5 — `disposition::MAX_DELTA == 0.05`. Master v6 §6 #2 explicitly
+/// mandates `const_assert!(MAX_DELTA == 0.05)`. Now enforced as a
+/// crate-scope `const _: () = assert!(...)` (see top of this file) which
+/// fails compilation if the constant ever drifts. The runtime check
+/// re-asserts the value at bench time so `summary.json` carries the
+/// observed value alongside the compile-time guarantee.
 fn check_disposition_max_delta_const() -> InfrastructureCheck {
+    let observed = crate::workers::disposition::MAX_DELTA;
+    let passed = (observed - 0.05).abs() < f64::EPSILON;
     InfrastructureCheck {
         name: "disposition_max_delta_const".to_string(),
-        passed: true,
-        detail: "disposition::MAX_DELTA == 0.05 (private const; enforced by in-module unit tests)"
-            .to_string(),
+        passed,
+        detail: format!(
+            "disposition::MAX_DELTA = {observed} (expected 0.05; compile-time const_assert + runtime check)"
+        ),
     }
 }
 

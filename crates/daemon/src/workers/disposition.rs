@@ -227,6 +227,17 @@ pub(crate) fn step_for_bench(
         return Err("step_for_bench requires at least one synthetic session".to_string());
     }
 
+    // Negative durations are nonsensical (production reads `started_at` /
+    // `ended_at` strings whose lex-comparison floors at 0). Reject so a
+    // bug in fixture construction surfaces immediately rather than being
+    // silently bucketed as "short" via `duration_secs < SHORT_THRESHOLD`.
+    if let Some(bad) = fixtures.iter().find(|f| f.duration_secs < 0) {
+        return Err(format!(
+            "step_for_bench: SessionFixture.duration_secs must be >= 0, got {}",
+            bad.duration_secs
+        ));
+    }
+
     // 1. Heuristics — identical to tick_for_agent.
     let total = fixtures.len();
     let short_count = fixtures
@@ -836,5 +847,120 @@ mod tests {
                 MAX_DELTA
             );
         }
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn test_step_for_bench_rejects_negative_durations() {
+        let conn = open_db();
+        let fixtures = vec![
+            forge_core::protocol::SessionFixture { duration_secs: 30 },
+            forge_core::protocol::SessionFixture {
+                duration_secs: -100,
+            },
+        ];
+        let err = step_for_bench(&conn, "bench-agent", &fixtures)
+            .expect_err("negative duration should error");
+        assert!(
+            err.contains("duration_secs must be >= 0"),
+            "error explains the negative-duration rejection: {err}"
+        );
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn test_step_for_bench_medium_sessions_keep_thoroughness_stable() {
+        // T14 review M3 — exercise the Stable trend branch.
+        // Medium duration (60 ≤ d < 600): short_ratio = 0, long_ratio = 0.
+        // Worker math: thoroughness_delta = 0.0 → trend = Stable.
+        let conn = open_db();
+        let fixtures = vec![forge_core::protocol::SessionFixture { duration_secs: 300 }; 5];
+        let summary = step_for_bench(&conn, "bench-agent", &fixtures).expect("step succeeds");
+
+        let thoroughness = summary
+            .traits
+            .iter()
+            .find(|t| t.trait_name == "thoroughness")
+            .expect("thoroughness trait reported");
+        assert!(
+            thoroughness.delta.abs() < 1e-9,
+            "medium fixtures → thoroughness delta = 0, got {}",
+            thoroughness.delta
+        );
+        assert_eq!(thoroughness.trend, "Stable");
+    }
+
+    #[cfg(feature = "bench")]
+    #[test]
+    fn test_step_for_bench_parity_with_tick_for_agent() {
+        // T14 review B1 / master v6 §13 line 216 — every bench-only helper
+        // must have a parity test confirming it calls the same underlying
+        // production logic. step_for_bench's math (lines 244-258) is hand-
+        // copied from tick_for_agent (lines 119-134). This test catches
+        // any silent divergence by populating the same logical input on
+        // both code paths and comparing the persisted disposition rows.
+        let agent = "parity-agent";
+
+        // Fixed-duration session strings for tick path. estimate_duration_secs
+        // parses the time component (HH:MM:SS) from "YYYY-MM-DD HH:MM:SS"
+        // strings and returns the difference in seconds. So 5 sessions
+        // 30 seconds long → all short (< 60s threshold), short_ratio = 1.0.
+        let started = "2026-04-25 10:00:00";
+        let ended = "2026-04-25 10:00:30";
+
+        // ── Tick path: insert 5 ended sessions into session table ──
+        let conn_tick = open_db();
+        for i in 0..5 {
+            conn_tick
+                .execute(
+                    "INSERT INTO session (id, agent, project, cwd, status, started_at, ended_at)
+                 VALUES (?1, ?2, 'parity-proj', '/tmp', 'ended', ?3, ?4)",
+                    rusqlite::params![format!("parity-tick-sess-{i}"), agent, started, ended],
+                )
+                .unwrap();
+        }
+        tick_for_agent(&conn_tick, agent);
+
+        // ── Bench path: same fixtures via SessionFixture ──
+        let conn_bench = open_db();
+        let fixtures = vec![forge_core::protocol::SessionFixture { duration_secs: 30 }; 5];
+        let summary = step_for_bench(&conn_bench, agent, &fixtures).expect("step succeeds");
+
+        // ── Compare persisted disposition rows ──
+        let read_value = |conn: &rusqlite::Connection, trait_name: &str| -> f64 {
+            conn.query_row(
+                "SELECT value FROM disposition WHERE id = ?1",
+                rusqlite::params![format!("{agent}-{trait_name}")],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("read {trait_name} value: {e}"))
+        };
+
+        let caution_tick = read_value(&conn_tick, "caution");
+        let caution_bench = read_value(&conn_bench, "caution");
+        assert!(
+            (caution_tick - caution_bench).abs() < 1e-9,
+            "caution drift: tick={caution_tick} bench={caution_bench}"
+        );
+
+        let thor_tick = read_value(&conn_tick, "thoroughness");
+        let thor_bench = read_value(&conn_bench, "thoroughness");
+        assert!(
+            (thor_tick - thor_bench).abs() < 1e-9,
+            "thoroughness drift: tick={thor_tick} bench={thor_bench}"
+        );
+
+        // Bench summary's value_after must match the persisted bench-side row.
+        let summary_caution = summary
+            .traits
+            .iter()
+            .find(|t| t.trait_name == "caution")
+            .unwrap()
+            .value_after;
+        assert!(
+            (summary_caution - caution_bench).abs() < 1e-9,
+            "summary value_after must match persisted row: summary={summary_caution} \
+             persisted={caution_bench}"
+        );
     }
 }
