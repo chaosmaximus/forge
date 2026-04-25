@@ -1,0 +1,38 @@
+schema_version: 1
+slug: 2026-04-25-p3-2-w2-batch-resolve-scoped-config
+target_paths:
+  - crates/daemon/src/config.rs
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-25
+commit_range:
+  base: 899bac2
+  head: 5b24f8d
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-25-p3-2-w2-batch-resolve-scoped-config.transcript.md
+findings:
+  - id: MED-1
+    severity: MEDIUM
+    summary: DB-error semantics diverge — Err short-circuits all 6 keys vs. old per-key fallback
+    file: crates/daemon/src/config.rs
+    status: resolved
+    fixed_by: pending
+  - id: MED-2
+    severity: MEDIUM
+    summary: Test suite lacks team-only / user-only scope precedence cases
+    file: crates/daemon/src/config.rs
+    status: resolved
+    fixed_by: pending
+  - id: LOW-1
+    severity: LOW
+    summary: Commit-msg arithmetic ambiguity — "36 unconditional resolutions" vs. SELECT count
+    status: deferred
+    rationale: cosmetic; commit history is immutable, future commit-message hygiene captured in P3-2 deferred backlog
+  - id: LOW-2
+    severity: LOW
+    summary: resolve_effective_config redundant per-key resolve pass when overrides present
+    file: crates/daemon/src/db/ops.rs
+    status: deferred
+    rationale: production hot path has K=0 overrides so the regression case is rare; defer as P3-3+ optimization candidate, recorded in plan-doc P3-2 deferred backlog

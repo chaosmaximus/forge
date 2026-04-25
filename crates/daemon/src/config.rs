@@ -583,13 +583,29 @@ impl Default for ContextInjectionConfig {
 /// its own scope-walk + key lookup. The replacement is one
 /// [`crate::db::ops::resolve_effective_config`] call which (a) lists
 /// keys present at any scope via `list_scoped_config` (≤ 6 small
-/// queries) and (b) resolves only the keys actually overridden via
-/// `resolve_scoped_config` (typically 0 in production). For a session
-/// with no overrides the new path issues 6 list queries; the old path
-/// issued 36 unconditional resolutions. Behavior is preserved
-/// byte-for-byte: same key set, same boolean parse, same fallback to
-/// `global` on unparseable values, same DB-error → return-global
-/// failure mode.
+/// SELECTs — one per active scope) and (b) resolves only the keys
+/// actually overridden via `resolve_scoped_config` (typically 0 in
+/// production). For a session with no overrides the new path issues
+/// up to 6 SELECTs; the old path issued up to 36 SELECTs (6 keys ×
+/// up to 6 scopes via internal scope-walk).
+///
+/// **Success-path behavior is preserved exactly:** same key set, same
+/// boolean parse, same case-folding, same fallback to `global` on
+/// unparseable / empty / whitespace values, same scope precedence
+/// (session > agent > reality > user > team > org).
+///
+/// **Error-path behavior change (W2 review MED-1):** when
+/// `resolve_effective_config` returns `Err` (rare — fires only on
+/// schema corruption or transient SQLite I/O failure), the new path
+/// returns `global` for all 6 toggles in one shot. The old path
+/// caught `Err` per-key and could return `global` for some keys
+/// while honoring others if the error were truly per-key (in
+/// practice, `rusqlite::Error` is systemic — a corrupt
+/// `config_scope` schema fails every key alike). The observable
+/// regression surface is therefore near-zero: any DB error here
+/// already means the daemon has bigger problems than which
+/// `context_injection` flag survives. We intentionally accept this
+/// trade for the perf win on the success path.
 ///
 /// The keys consulted are
 /// `context_injection.session_context`,
@@ -2040,6 +2056,108 @@ preferences = false
         assert!(
             resolved.preferences,
             "session-scope override (true) should beat organization-scope (false) and global (false)"
+        );
+    }
+
+    // P3-2 W2 review MED-2: explicit non-session-scope coverage so a
+    // future regression that drops user_id / team_id from the chain
+    // assembly is caught. Session has the chain anchors but no
+    // session-scope override; the override sits on a parent scope.
+
+    #[test]
+    fn test_resolve_context_injection_team_scope_override_propagates() {
+        let conn = ci_test_db();
+        // Session anchors: user u1, org default. Add team_id directly via
+        // ALTER-applied column.
+        ci_insert_session(&conn, "s1", "claude-code", Some("u1"), Some("default"));
+        conn.execute("UPDATE session SET team_id = 't1' WHERE id = 's1'", [])
+            .unwrap();
+        crate::db::ops::set_scoped_config(
+            &conn,
+            "team",
+            "t1",
+            "context_injection.skills",
+            "false",
+            false,
+            None,
+            "test",
+        )
+        .unwrap();
+        let global = ci_default_global();
+        let resolved =
+            resolve_context_injection_for_session(&conn, Some("s1"), Some("claude-code"), &global);
+        assert!(
+            !resolved.skills,
+            "team-scope override should propagate when session has team_id"
+        );
+        // Other flags untouched.
+        assert!(resolved.session_context);
+        assert!(resolved.preferences);
+    }
+
+    #[test]
+    fn test_resolve_context_injection_user_scope_override_propagates() {
+        let conn = ci_test_db();
+        ci_insert_session(&conn, "s1", "claude-code", Some("u1"), Some("default"));
+        crate::db::ops::set_scoped_config(
+            &conn,
+            "user",
+            "u1",
+            "context_injection.anti_patterns",
+            "false",
+            false,
+            None,
+            "test",
+        )
+        .unwrap();
+        let global = ci_default_global();
+        let resolved =
+            resolve_context_injection_for_session(&conn, Some("s1"), Some("claude-code"), &global);
+        assert!(
+            !resolved.anti_patterns,
+            "user-scope override should propagate when session has user_id"
+        );
+    }
+
+    #[test]
+    fn test_resolve_context_injection_session_beats_team() {
+        // Ensure precedence: session > team. Both scopes set the SAME key
+        // to opposite values; session must win.
+        let conn = ci_test_db();
+        ci_insert_session(&conn, "s1", "claude-code", Some("u1"), Some("default"));
+        conn.execute("UPDATE session SET team_id = 't1' WHERE id = 's1'", [])
+            .unwrap();
+        crate::db::ops::set_scoped_config(
+            &conn,
+            "team",
+            "t1",
+            "context_injection.blast_radius",
+            "false",
+            false,
+            None,
+            "test",
+        )
+        .unwrap();
+        crate::db::ops::set_scoped_config(
+            &conn,
+            "session",
+            "s1",
+            "context_injection.blast_radius",
+            "true",
+            false,
+            None,
+            "test",
+        )
+        .unwrap();
+        let global = ContextInjectionConfig {
+            blast_radius: false,
+            ..ci_default_global()
+        };
+        let resolved =
+            resolve_context_injection_for_session(&conn, Some("s1"), Some("claude-code"), &global);
+        assert!(
+            resolved.blast_radius,
+            "session-scope (true) should win over team-scope (false) and global (false)"
         );
     }
 
