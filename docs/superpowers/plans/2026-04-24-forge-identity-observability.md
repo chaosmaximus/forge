@@ -775,3 +775,52 @@ how I'm working post-T3, but worth codifying).
 
 **Why deferred:** harness-layer fix; orthogonal to Tier 3 deliverables.
 
+#### 5. shape_bench_run_summary percentile cap pulls all rows into Rust
+
+**Finding (T14 review HIGH H2):** `crates/daemon/src/server/inspect.rs::shape_bench_run_summary`
+binds an absolute `LIMIT 200_001` for the rollup pass, then enforces the
+per-group `MAX_ROWS_PER_GROUP = 50_001` cap in Rust. With 200k rows
+skewed onto 1 group, the SQL pulls all 200k, and Rust silently drops
+the overflow. Latency shape's `shape_latency` does the per-group LIMIT
+in SQL via `RANK() OVER (PARTITION BY ...)`. Memory cost is bounded
+(~200k f64s) but the silent drop hides truncation in mixed-cardinality
+workloads.
+
+**Fix plan:** rewrite the rollup query as a CTE with `RANK() OVER (PARTITION
+BY group_key ORDER BY timestamp DESC)` so the per-group cap is in SQL.
+Mirrors `shape_latency`'s pattern.
+
+**Why deferred:** zero current production rows (T13 CI hasn't run yet);
+re-architecting the SQL is a >50-LoC change. Reopen when bench
+cardinality crosses ~10k rows in a single window.
+
+#### 6. Cosmetic — T14 LOW + MEDIUM items
+
+Logged for traceability; none affect correctness or operator UX.
+
+- **MEDIUM M1**: `bench/telemetry.rs::payload_serializes_with_v1_schema`
+  test isn't `#[serial]`-marked. Today it doesn't touch env vars so
+  it's safe. Convention drift only.
+- **MEDIUM M2**: `detect_commit_metadata` shells out 3× per bench run
+  (`rev-parse`, `status --porcelain`, `show -s --format=%ct`). Forks
+  add up on a busy CI runner; cluster into one `git log -1 --format=%H::%ct::%s` later.
+- **MEDIUM M3**: `forge_identity.rs::epoch_to_iso` reimplements Howard
+  Hinnant's `civil_from_days` rather than depending on `chrono` or
+  `time`. Untested for negative epochs (pre-1970). Add a guard or
+  swap for a tested calendar lib if the bench ever needs to look at
+  arbitrary historical dates.
+- **MEDIUM M4**: 4 of the 14 infrastructure checks (#3, #4, #5, #14)
+  are compile-time tautologies — they pass iff the binary compiles.
+  Operators reading the dashboard will see "passed: true" without
+  proof of run-time invariant. Add `detail = "compile-time-tautology"`
+  to surface honest semantics.
+- **LOW L1**: `bench/telemetry.rs::204` — `i64::from(payload.pass)` could
+  read as `payload.pass as i64` next to the f64 fields.
+- **LOW L2**: `forge_identity.rs::civil_from_days` cast soup; consider
+  `u32::try_from`.
+- **LOW L3**: kpi_reaper logs "per-type pass starting" even when the
+  pass deletes 0 rows; downgrade to `tracing::trace!` when count is 0.
+
+**Why deferred:** all cosmetic. Batch into a single cleanup PR when
+the bench harness sees its first major-version operator polish.
+
