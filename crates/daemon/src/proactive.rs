@@ -551,6 +551,16 @@ mod tests {
     // pairs:
     //   (a) default-on baseline — knowledge type DOES appear
     //   (b) gated-off probe   — same fixture, knowledge type GONE
+    //
+    // NOTE: `blast_radius` is intentionally not covered by a fixture
+    // pair here. KT_BLAST_RADIUS injections are computed per-file in the
+    // BlastRadius handler arm, not surfaced from stored memory rows
+    // (see line ~235 — `KT_BLAST_RADIUS => continue;`). The
+    // suppress-check at line ~213 still gates the loop, but with the
+    // unconditional `continue` no fixture in this module can produce
+    // a baseline injection to compare against. Coverage for the
+    // `blast_radius` flag lives in the handler::BlastRadius arm short-
+    // circuit (see handler.rs ~2469).
 
     fn inj_off(field: &str) -> crate::config::ContextInjectionConfig {
         let mut inj = crate::config::ContextInjectionConfig::default();

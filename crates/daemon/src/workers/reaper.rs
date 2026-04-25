@@ -94,6 +94,13 @@ fn reap_stale_sessions(
             .collect();
 
         for session_id in &idle_ids {
+            // Phase 2A-4d.3.1 #7: `idle_secs` here is the *configured threshold*
+            // (WorkerConfig.heartbeat_idle_secs at the moment of the pass), not
+            // the observed `now - last_heartbeat_at`. The v1 schema in
+            // docs/architecture/events-namespace.md defines the field this way
+            // — do not "fix" it to emit observed duration without bumping the
+            // schema version, because external readers (HUD, dashboards) parse
+            // the threshold value to correlate with their own config view.
             events::emit(
                 events,
                 "session_idled",

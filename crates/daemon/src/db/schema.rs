@@ -394,13 +394,18 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         --   ended   — reaped after no heartbeat for heartbeat_timeout_secs
         --
         -- A separate column agent_status (added by the agent-template migration
-        -- below) tracks the agent current WORK state:
-        --   idle / thinking / working / retired
+        -- below) tracks the agent current WORK state. The canonical values
+        -- mirror the AgentStatus enum in crates/core/src/types/team.rs:
+        --   idle / thinking / responding / in_meeting / error / retired
+        -- The column is stored as a freeform TEXT (not constrained at the SQL
+        -- level), so older rows or external writers may carry legacy values
+        -- (e.g. busy / active / working) — readers should treat unknowns as
+        -- equivalent to idle.
         -- The shared word idle across the two columns is intentional but
         -- distinct: session.status=idle means no-heartbeat-lately; while
         -- agent_status=idle means agent-is-between-turns. A session can be
         -- session.status=active AND agent_status=idle (alive, awaiting work)
-        -- or session.status=idle AND agent_status=working (heartbeat lapsed
+        -- or session.status=idle AND agent_status=responding (heartbeat lapsed
         -- mid-task — operator should investigate).
         CREATE TABLE IF NOT EXISTS session (
             id TEXT PRIMARY KEY,
@@ -1063,11 +1068,17 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Agent lifecycle: session gains template tracking, agent status, last activity.
     //
     // NOTE on the column naming: `session.agent_status` is the agent's WORK
-    // state ('idle' | 'thinking' | 'working' | 'retired') — distinct from
-    // `session.status` (lifecycle: 'active' | 'idle' | 'ended', see CREATE
-    // TABLE above for full disambiguation). Both columns can hold the value
-    // 'idle' for the same row, with different meanings: session.status='idle'
-    // means heartbeat-lapsed; agent_status='idle' means awaiting work.
+    // state — canonical values mirror `AgentStatus` in
+    // crates/core/src/types/team.rs ('idle' | 'thinking' | 'responding' |
+    // 'in_meeting' | 'error' | 'retired'), but the SQL column is freeform
+    // TEXT, so readers may also encounter legacy values like 'busy' /
+    // 'active' / 'working' from older rows or external writers.
+    //
+    // This is distinct from `session.status` (lifecycle: 'active' | 'idle' |
+    // 'ended' — see CREATE TABLE above for the full state machine). Both
+    // columns can hold the value 'idle' on the same row with different
+    // meanings: session.status='idle' means heartbeat-lapsed;
+    // agent_status='idle' means awaiting work.
     let _ = conn.execute("ALTER TABLE session ADD COLUMN template_id TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE session ADD COLUMN agent_status TEXT DEFAULT 'idle'",
