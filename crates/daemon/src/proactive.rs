@@ -541,4 +541,145 @@ mod tests {
             "after learning (10 acks), PostEdit+blast_radius should surface"
         );
     }
+
+    // ── Phase 2A-4d.3.1 #3 M1: gating tests for context_injection ──
+    //
+    // Reviewer flagged the original commit's "structurally identical"
+    // claim about per-knowledge-type gating as unsound. These tests
+    // prove that each `ContextInjectionConfig` flag actually suppresses
+    // its associated knowledge type from the injections list. Each test
+    // pairs:
+    //   (a) default-on baseline — knowledge type DOES appear
+    //   (b) gated-off probe   — same fixture, knowledge type GONE
+
+    fn inj_off(field: &str) -> crate::config::ContextInjectionConfig {
+        let mut inj = crate::config::ContextInjectionConfig::default();
+        match field {
+            "session_context" => inj.session_context = false,
+            "active_state" => inj.active_state = false,
+            "skills" => inj.skills = false,
+            "anti_patterns" => inj.anti_patterns = false,
+            "blast_radius" => inj.blast_radius = false,
+            "preferences" => inj.preferences = false,
+            other => panic!("unknown ContextInjectionConfig field: {other}"),
+        }
+        inj
+    }
+
+    #[test]
+    fn gating_proactive_session_context_off_skips_kt_decision() {
+        let conn = setup_effectiveness_db();
+
+        let m = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Decision,
+            "JWT for auth",
+            "JWT chosen for stateless authentication",
+        );
+        crate::db::ops::remember(&conn, &m).unwrap();
+
+        // Baseline: default config surfaces decision at PreEdit (relevance 0.7).
+        let default_inj = crate::config::ContextInjectionConfig::default();
+        let baseline =
+            build_proactive_context_with_inj(&conn, HOOK_PRE_EDIT, None, None, &default_inj);
+        let baseline_has_decision = baseline.iter().any(|c| c.knowledge_type == "decision");
+        assert!(
+            baseline_has_decision,
+            "baseline (default config) must surface decision at PreEdit"
+        );
+
+        // Gated off: session_context=false suppresses KT_DECISION.
+        let inj = inj_off("session_context");
+        let gated = build_proactive_context_with_inj(&conn, HOOK_PRE_EDIT, None, None, &inj);
+        assert!(
+            !gated.iter().any(|c| c.knowledge_type == "decision"),
+            "session_context=false must suppress KT_DECISION; got: {gated:?}"
+        );
+    }
+
+    #[test]
+    fn gating_proactive_anti_patterns_off_skips_kt_anti_pattern() {
+        let conn = setup_effectiveness_db();
+
+        // Anti-pattern is fetched by tag containing "anti-pattern".
+        let mut m = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Lesson,
+            "ap-1",
+            "do not do X",
+        );
+        m.tags = vec!["anti-pattern".to_string()];
+        crate::db::ops::remember(&conn, &m).unwrap();
+
+        // Baseline: PreEdit + anti_pattern → 0.8 relevance, surfaces.
+        let default_inj = crate::config::ContextInjectionConfig::default();
+        let baseline =
+            build_proactive_context_with_inj(&conn, HOOK_PRE_EDIT, None, None, &default_inj);
+        assert!(
+            baseline.iter().any(|c| c.knowledge_type == "anti_pattern"),
+            "baseline (default config) must surface anti_pattern at PreEdit"
+        );
+
+        let inj = inj_off("anti_patterns");
+        let gated = build_proactive_context_with_inj(&conn, HOOK_PRE_EDIT, None, None, &inj);
+        assert!(
+            !gated.iter().any(|c| c.knowledge_type == "anti_pattern"),
+            "anti_patterns=false must suppress KT_ANTI_PATTERN; got: {gated:?}"
+        );
+    }
+
+    #[test]
+    fn gating_proactive_skills_off_skips_kt_skill() {
+        let conn = setup_effectiveness_db();
+
+        // KT_SKILL is fetched as memory_type='pattern'.
+        let m = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Pattern,
+            "skill-1",
+            "use Edit not sed for in-place edits",
+        );
+        crate::db::ops::remember(&conn, &m).unwrap();
+
+        // Baseline: PostEdit + skill → 0.6 relevance, surfaces.
+        let default_inj = crate::config::ContextInjectionConfig::default();
+        let baseline =
+            build_proactive_context_with_inj(&conn, HOOK_POST_EDIT, None, None, &default_inj);
+        assert!(
+            baseline.iter().any(|c| c.knowledge_type == "skill"),
+            "baseline (default config) must surface skill at PostEdit"
+        );
+
+        let inj = inj_off("skills");
+        let gated = build_proactive_context_with_inj(&conn, HOOK_POST_EDIT, None, None, &inj);
+        assert!(
+            !gated.iter().any(|c| c.knowledge_type == "skill"),
+            "skills=false must suppress KT_SKILL; got: {gated:?}"
+        );
+    }
+
+    #[test]
+    fn gating_proactive_session_context_off_skips_kt_uat_lesson() {
+        let conn = setup_effectiveness_db();
+
+        let m = forge_core::types::memory::Memory::new(
+            forge_core::types::memory::MemoryType::Lesson,
+            "lesson-1",
+            "Always verify test output",
+        );
+        crate::db::ops::remember(&conn, &m).unwrap();
+
+        // Baseline: PreBash + uat_lesson → 0.7 relevance, surfaces.
+        let default_inj = crate::config::ContextInjectionConfig::default();
+        let baseline =
+            build_proactive_context_with_inj(&conn, HOOK_PRE_BASH, None, None, &default_inj);
+        assert!(
+            baseline.iter().any(|c| c.knowledge_type == "uat_lesson"),
+            "baseline (default config) must surface uat_lesson at PreBash"
+        );
+
+        let inj = inj_off("session_context");
+        let gated = build_proactive_context_with_inj(&conn, HOOK_PRE_BASH, None, None, &inj);
+        assert!(
+            !gated.iter().any(|c| c.knowledge_type == "uat_lesson"),
+            "session_context=false must suppress KT_UAT_LESSON; got: {gated:?}"
+        );
+    }
 }

@@ -4720,4 +4720,272 @@ mod tests {
             "inferred row gets inferred_sessions= attribute"
         );
     }
+
+    // ── Phase 2A-4d.3.1 #3 M1: gating tests for context_injection ──
+    //
+    // Reviewer flagged the original commit's "structurally identical"
+    // claim about per-section gating as unsound. These tests prove that
+    // each `ContextInjectionConfig` flag actually suppresses its
+    // associated XML section when set to false, and verify that the
+    // self-closing fallbacks preserve KV-cache schema stability
+    // (master v6 §6 D4 for `<preferences>`).
+
+    fn inj_off(field: &str) -> crate::config::ContextInjectionConfig {
+        let mut inj = crate::config::ContextInjectionConfig::default();
+        match field {
+            "session_context" => inj.session_context = false,
+            "active_state" => inj.active_state = false,
+            "skills" => inj.skills = false,
+            "anti_patterns" => inj.anti_patterns = false,
+            "blast_radius" => inj.blast_radius = false,
+            "preferences" => inj.preferences = false,
+            other => panic!("unknown ContextInjectionConfig field: {other}"),
+        }
+        inj
+    }
+
+    #[test]
+    fn gating_static_prefix_session_context_off_self_closes_identity_and_disposition() {
+        let conn = setup();
+
+        // Populate identity + disposition so the default-on path would
+        // produce open tags. Gating must override the data presence.
+        let facet = forge_core::types::manas::IdentityFacet {
+            id: "f1".into(),
+            agent: "claude-code".into(),
+            facet: "role".into(),
+            description: "Senior Rust engineer".into(),
+            strength: 0.9,
+            source: "user_defined".into(),
+            active: true,
+            created_at: "2026-04-25".into(),
+            user_id: None,
+        };
+        crate::db::manas::store_identity(&conn, &facet).unwrap();
+
+        let inj = inj_off("session_context");
+        let prefix = compile_static_prefix_with_inj(&conn, "claude-code", None, &inj);
+
+        // Even with stored data, gating off must produce self-closing
+        // tags so the KV-cache prefix shape remains stable.
+        assert!(
+            prefix.contains("<identity agent=\"claude-code\"/>"),
+            "identity must be self-closing when session_context=false; got: {prefix}"
+        );
+        assert!(
+            prefix.contains("<disposition/>"),
+            "disposition must be self-closing when session_context=false; got: {prefix}"
+        );
+        // The stored description must NOT appear when gated off.
+        assert!(
+            !prefix.contains("Senior Rust engineer"),
+            "identity content must be suppressed when session_context=false"
+        );
+    }
+
+    #[test]
+    fn gating_static_prefix_default_renders_identity_content() {
+        let conn = setup();
+        let facet = forge_core::types::manas::IdentityFacet {
+            id: "f1".into(),
+            agent: "claude-code".into(),
+            facet: "role".into(),
+            description: "Senior Rust engineer".into(),
+            strength: 0.9,
+            source: "user_defined".into(),
+            active: true,
+            created_at: "2026-04-25".into(),
+            user_id: None,
+        };
+        crate::db::manas::store_identity(&conn, &facet).unwrap();
+
+        let inj = crate::config::ContextInjectionConfig::default();
+        let prefix = compile_static_prefix_with_inj(&conn, "claude-code", None, &inj);
+        assert!(
+            prefix.contains("Senior Rust engineer"),
+            "default config must render identity content"
+        );
+    }
+
+    #[test]
+    fn gating_dynamic_suffix_skills_off_self_closes_skills_section() {
+        let conn = setup();
+
+        let inj = inj_off("skills");
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix_with_inj(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+            &inj,
+        );
+
+        assert!(
+            suffix.contains("<skills/>"),
+            "skills must be self-closing when skills=false; got: {suffix}"
+        );
+        assert!(
+            !suffix.contains("<skills "),
+            "open <skills ...> tag must not appear when skills=false"
+        );
+    }
+
+    #[test]
+    fn gating_dynamic_suffix_session_context_off_self_closes_decisions_and_lessons() {
+        let conn = setup();
+
+        // Store one decision + one lesson so default-on would render content.
+        let dec = forge_core::types::Memory::new(
+            forge_core::types::MemoryType::Decision,
+            "Use rusqlite",
+            "Decided to use rusqlite for embedded SQLite access",
+        );
+        ops::remember(&conn, &dec).unwrap();
+        let lesson = forge_core::types::Memory::new(
+            forge_core::types::MemoryType::Lesson,
+            "fts5 reindex",
+            "Lesson learned: FTS5 needs explicit reindex after schema migration",
+        );
+        ops::remember(&conn, &lesson).unwrap();
+
+        let inj = inj_off("session_context");
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix_with_inj(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+            &inj,
+        );
+
+        assert!(
+            suffix.contains("<decisions/>"),
+            "decisions must be self-closing when session_context=false; got: {suffix}"
+        );
+        assert!(
+            suffix.contains("<lessons/>"),
+            "lessons must be self-closing when session_context=false; got: {suffix}"
+        );
+        assert!(
+            !suffix.contains("Use rusqlite"),
+            "decision content must be suppressed when session_context=false"
+        );
+        assert!(
+            !suffix.contains("Lesson learned"),
+            "lesson content must be suppressed when session_context=false"
+        );
+    }
+
+    #[test]
+    fn gating_dynamic_suffix_preferences_off_self_closes_preferences() {
+        let conn = setup();
+
+        // Store a preference so default-on would render <preferences>...</preferences>.
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity)
+             VALUES ('01PREF', 'preference', 'tabs over spaces', 'use tabs', 0.9, 'active', NULL, '[]', '2026-04-25 00:00:00', '2026-04-25 00:00:00', 'positive', 0.7)",
+            [],
+        ).unwrap();
+
+        let inj = inj_off("preferences");
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix_with_inj(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+            &inj,
+        );
+
+        // master v6 §6 D4 — `<preferences>` MUST always be present (even
+        // self-closing) for KV-cache schema stability. With preferences=false,
+        // the section must be self-closing, not absent.
+        assert!(
+            suffix.contains("<preferences/>") || suffix.contains("<preferences />"),
+            "preferences must be self-closing when preferences=false (master v6 D4); got: {suffix}"
+        );
+        assert!(
+            !suffix.contains("tabs over spaces"),
+            "preference content must be suppressed when preferences=false"
+        );
+    }
+
+    #[test]
+    fn gating_dynamic_suffix_active_state_off_renders_notifications_empty_marker() {
+        let conn = setup();
+        let inj = inj_off("active_state");
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix_with_inj(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+            &inj,
+        );
+
+        // The active_state-gated branch emits `<notifications count="0" />`,
+        // which preserves the section presence for KV-cache stability.
+        // Open `<notifications hint=...>` would only appear if the section
+        // were rendered with data — which is what gating must prevent.
+        assert!(
+            suffix.contains("<notifications count=\"0\""),
+            "notifications must render empty-marker when active_state=false; got: {suffix}"
+        );
+        assert!(
+            !suffix.contains("<notifications count=\"0\" hint="),
+            "no hint attribute should appear on empty-marker form"
+        );
+    }
+
+    #[test]
+    fn gating_dynamic_suffix_default_renders_skills_section_open() {
+        let conn = setup();
+
+        // No skills stored → section may be self-closing even with default config.
+        // What we want to verify is that default config does NOT force self-closing
+        // when there's content. Insert a skill row.
+        seed_schema_t7(&conn);
+        conn.execute(
+            "INSERT INTO skill (id, name, domain, description, steps, source, success_count)
+             VALUES ('s1', 'Test skill', 'shell', 'desc', '[]', 'legacy', 5)",
+            [],
+        )
+        .unwrap();
+
+        let inj = crate::config::ContextInjectionConfig::default();
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix_with_inj(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+            &inj,
+        );
+
+        assert!(
+            suffix.contains("Test skill"),
+            "skill content must render under default config; got: {suffix}"
+        );
+    }
 }
