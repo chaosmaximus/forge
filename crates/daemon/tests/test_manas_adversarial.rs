@@ -141,6 +141,8 @@ fn test_identity_sql_injection_description() {
         &mut state,
         Request::ListIdentity {
             agent: "forge-test".into(),
+            project: None,
+            include_global_identity: None,
         },
     );
     match resp {
@@ -202,6 +204,8 @@ fn test_identity_strength_clamping() {
         &mut state,
         Request::ListIdentity {
             agent: "forge-test".into(),
+            project: None,
+            include_global_identity: None,
         },
     );
     match resp {
@@ -443,6 +447,8 @@ fn test_identity_unicode_description() {
         &mut state,
         Request::ListIdentity {
             agent: "forge-test".into(),
+            project: None,
+            include_global_identity: None,
         },
     );
     match resp {

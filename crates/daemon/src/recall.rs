@@ -562,9 +562,14 @@ fn xml_escape(s: &str) -> String {
 /// [`crate::config::load_config`]. When a request compiles multiple
 /// context sections (e.g. static prefix + dynamic suffix), prefer
 /// [`compile_static_prefix_with_inj`] to share one config load.
-pub fn compile_static_prefix(conn: &Connection, agent: &str, session_id: Option<&str>) -> String {
+pub fn compile_static_prefix(
+    conn: &Connection,
+    agent: &str,
+    session_id: Option<&str>,
+    project: Option<&str>,
+) -> String {
     let inj = crate::config::load_config().context_injection;
-    compile_static_prefix_with_inj(conn, agent, session_id, &inj)
+    compile_static_prefix_with_inj(conn, agent, session_id, project, &inj)
 }
 
 /// Phase 2A-4d.3.1 #3 H3 (W5): count the layers actually present in a
@@ -618,6 +623,7 @@ pub fn compile_static_prefix_with_inj(
     conn: &Connection,
     agent: &str,
     session_id: Option<&str>,
+    project: Option<&str>,
     inj: &crate::config::ContextInjectionConfig,
 ) -> String {
     let mut xml = String::from("<forge-static>\n");
@@ -646,7 +652,16 @@ pub fn compile_static_prefix_with_inj(
     if !inj.session_context {
         xml.push_str(&format!("<identity agent=\"{}\"/>\n", xml_escape(agent)));
     } else {
-        let facets = crate::db::manas::list_identity(conn, agent, true).unwrap_or_default();
+        // P3-3.11 W30 (closes F16): when a project is in scope, list
+        // only that project's facets + the `_global_` sentinel ("I am a
+        // careful engineer" applies everywhere, "Lead on Forge daemon"
+        // does not). When project is None, fall back to the legacy
+        // unscoped list (sync paths and unit tests still rely on it).
+        let facets = match project {
+            Some(p) => crate::db::manas::list_identity_for_project(conn, agent, p, true, true)
+                .unwrap_or_default(),
+            None => crate::db::manas::list_identity(conn, agent, true).unwrap_or_default(),
+        };
         if facets.is_empty() {
             xml.push_str(&format!("<identity agent=\"{}\"/>\n", xml_escape(agent)));
         } else {
@@ -2092,7 +2107,7 @@ pub fn compile_dynamic_suffix_with_inj(
 pub fn compile_context(conn: &Connection, agent: &str, project: Option<&str>) -> String {
     let config = crate::config::load_config();
     let ctx_config = config.context.validated();
-    let prefix = compile_static_prefix(conn, agent, None);
+    let prefix = compile_static_prefix(conn, agent, None, project);
     let (suffix, _touched) =
         compile_dynamic_suffix(conn, agent, project, &ctx_config, &[], None, None, None);
     format!("<forge-context version=\"0.7.0\">\n{prefix}\n{suffix}\n</forge-context>")
@@ -2668,8 +2683,8 @@ mod tests {
         crate::db::manas::store_platform(&conn, &pe1).unwrap();
         crate::db::manas::store_platform(&conn, &pe2).unwrap();
 
-        let prefix1 = compile_static_prefix(&conn, "claude-code", None);
-        let prefix2 = compile_static_prefix(&conn, "claude-code", None);
+        let prefix1 = compile_static_prefix(&conn, "claude-code", None, None);
+        let prefix2 = compile_static_prefix(&conn, "claude-code", None, None);
         assert_eq!(
             prefix1, prefix2,
             "static prefix should be identical across calls"
@@ -2680,7 +2695,7 @@ mod tests {
     fn test_compile_static_prefix_all_sections_present_empty_db() {
         let conn = setup();
 
-        let prefix = compile_static_prefix(&conn, "claude-code", None);
+        let prefix = compile_static_prefix(&conn, "claude-code", None, None);
         assert!(
             prefix.contains("<forge-static>"),
             "should contain opening tag"
@@ -2716,7 +2731,7 @@ mod tests {
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
-        let prefix = compile_static_prefix(&conn, "claude-code", None);
+        let prefix = compile_static_prefix(&conn, "claude-code", None, None);
         assert!(
             prefix.contains("Senior Rust engineer"),
             "should contain identity facet"
@@ -4908,7 +4923,7 @@ mod tests {
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
         let inj = inj_off("session_context");
-        let prefix = compile_static_prefix_with_inj(&conn, "claude-code", None, &inj);
+        let prefix = compile_static_prefix_with_inj(&conn, "claude-code", None, None, &inj);
 
         // Even with stored data, gating off must produce self-closing
         // tags so the KV-cache prefix shape remains stable.
@@ -4945,7 +4960,7 @@ mod tests {
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
         let inj = crate::config::ContextInjectionConfig::default();
-        let prefix = compile_static_prefix_with_inj(&conn, "claude-code", None, &inj);
+        let prefix = compile_static_prefix_with_inj(&conn, "claude-code", None, None, &inj);
         assert!(
             prefix.contains("Senior Rust engineer"),
             "default config must render identity content"

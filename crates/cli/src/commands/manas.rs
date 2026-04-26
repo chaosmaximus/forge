@@ -62,9 +62,16 @@ pub async fn manas_health() {
 }
 
 /// List identity facets for an agent.
-pub async fn identity_list(agent: String) {
+///
+/// P3-3.11 W30 (closes F16): `project` + `include_global_identity` flags
+/// scope the list to per-(agent, project), so the forge agent's identity
+/// no longer cross-pollinates with other projects' facets. Both default
+/// to None / false for backward compatibility.
+pub async fn identity_list(agent: String, project: Option<String>, include_global_identity: bool) {
     let request = Request::ListIdentity {
         agent: agent.clone(),
+        project,
+        include_global_identity: Some(include_global_identity),
     };
 
     match client::send(&request).await {
@@ -100,8 +107,16 @@ pub async fn identity_list(agent: String) {
     }
 }
 
-/// Set an identity facet.
-pub async fn identity_set(facet: String, description: String, agent: String, strength: f64) {
+/// Set an identity facet. P3-3.11 W30: `project` field — when omitted the
+/// facet stores under the `_global_` sentinel (visible to every project
+/// that opts in via `identity list --include-global-identity`).
+pub async fn identity_set(
+    facet: String,
+    description: String,
+    agent: String,
+    strength: f64,
+    project: Option<String>,
+) {
     // Generate a timestamp-based ID
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -119,9 +134,9 @@ pub async fn identity_set(facet: String, description: String, agent: String, str
         active: true,
         created_at,
         user_id: None,
-        // P3-3.11 W30: project filled by `--project` CLI flag in c3 of
-        // this wave. None defaults to `_global_` via the DAO helper.
-        project: None,
+        // None falls through to '_global_' via the DAO helper at the
+        // daemon side. Some(name) tags the facet to that project.
+        project,
     };
 
     let request = Request::StoreIdentity {

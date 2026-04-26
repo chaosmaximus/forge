@@ -2823,7 +2823,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::ListIdentity { agent } => {
+        Request::ListIdentity {
+            agent,
+            project,
+            include_global_identity,
+        } => {
             // Use list_identity_for_user to include user-scoped facets.
             // Default to "local" user (single-user daemon); the fallback path in
             // list_identity_for_user(None, ...) delegates to plain list_identity.
@@ -2831,12 +2835,27 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 .ok()
                 .flatten()
                 .map(|u| u.id);
-            match crate::db::manas::list_identity_for_user(
-                &state.conn,
-                user_id.as_deref(),
-                &agent,
-                true,
-            ) {
+            // P3-3.11 W30 (closes F16): when a project is supplied, route
+            // through the project-scoped variant; `include_global_identity`
+            // (default false) gates the `_global_` sentinel into the
+            // result, mirroring the W29 `Recall.include_globals` opt-in.
+            let result = match project.as_deref() {
+                Some(p) => crate::db::manas::list_identity_for_user_project(
+                    &state.conn,
+                    user_id.as_deref(),
+                    &agent,
+                    p,
+                    include_global_identity.unwrap_or(false),
+                    true,
+                ),
+                None => crate::db::manas::list_identity_for_user(
+                    &state.conn,
+                    user_id.as_deref(),
+                    &agent,
+                    true,
+                ),
+            };
+            match result {
                 Ok(facets) => {
                     let count = facets.len();
                     Response::Ok {
@@ -3239,8 +3258,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 Some(agent_name),
                 &config.context_injection,
             );
-            let static_prefix =
-                crate::recall::compile_static_prefix_with_inj(&state.conn, agent_name, sid, &inj);
+            let static_prefix = crate::recall::compile_static_prefix_with_inj(
+                &state.conn,
+                agent_name,
+                sid,
+                project.as_deref(),
+                &inj,
+            );
 
             if static_only.unwrap_or(false) {
                 let chars = static_prefix.len();
@@ -7919,6 +7943,8 @@ mod tests {
             &mut state,
             Request::ListIdentity {
                 agent: "forge-test".into(),
+                project: None,
+                include_global_identity: None,
             },
         );
         match resp {
@@ -7955,6 +7981,8 @@ mod tests {
             &mut state,
             Request::ListIdentity {
                 agent: "forge-test".into(),
+                project: None,
+                include_global_identity: None,
             },
         );
         match resp {

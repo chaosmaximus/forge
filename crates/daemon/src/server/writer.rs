@@ -519,6 +519,8 @@ mod tests {
 
         assert!(is_read_only(&Request::ListIdentity {
             agent: "test".into(),
+            project: None,
+            include_global_identity: None,
         }));
 
         assert!(is_read_only(&Request::ListDisposition {

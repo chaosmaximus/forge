@@ -371,9 +371,21 @@ pub enum Request {
     StoreIdentity {
         facet: crate::types::manas::IdentityFacet,
     },
-    /// List identity facets for an agent (Layer 6)
+    /// List identity facets for an agent (Layer 6).
+    ///
+    /// P3-3.11 W30 (closes F16): project scoping. When `project` is
+    /// `Some(P)`, the result is filtered to facets tagged for project P;
+    /// `include_global_identity = true` additionally admits `_global_`
+    /// facets (the same opt-in semantic as `Recall.include_globals`).
+    /// When `project` is `None`, the legacy unscoped agent-only list is
+    /// returned. Both fields default to `None` / unset for backward
+    /// compatibility — older clients see the legacy behaviour.
     ListIdentity {
         agent: String,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        include_global_identity: Option<bool>,
     },
     /// Deactivate an identity facet (Layer 6)
     DeactivateIdentity {

@@ -1250,6 +1250,16 @@ enum IdentityAction {
         /// Agent name (default: claude-code)
         #[arg(long, default_value = "claude-code")]
         agent: String,
+        /// P3-3.11 W30: scope listing to a project (closes F16 cross-
+        /// project identity pollution). When unset, the legacy unscoped
+        /// agent-only list is returned.
+        #[arg(long)]
+        project: Option<String>,
+        /// When `--project` is set, also include `_global_`-tagged
+        /// facets in the result. Mirrors the W29 `recall
+        /// --include-globals` opt-in.
+        #[arg(long)]
+        include_global_identity: bool,
     },
     /// Set an identity facet
     Set {
@@ -1265,6 +1275,11 @@ enum IdentityAction {
         /// Strength (0.0-1.0)
         #[arg(long, default_value = "0.5")]
         strength: f64,
+        /// P3-3.11 W30: project to scope this facet to. When unset the
+        /// facet is stored as `_global_` (visible to every project that
+        /// opts in via `identity list --include-global-identity`).
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Remove (deactivate) an identity facet
     Remove {
@@ -1548,16 +1563,21 @@ async fn main() {
             commands::manas::manas_health().await;
         }
         Commands::Identity { action } => match action {
-            IdentityAction::List { agent } => {
-                commands::manas::identity_list(agent).await;
+            IdentityAction::List {
+                agent,
+                project,
+                include_global_identity,
+            } => {
+                commands::manas::identity_list(agent, project, include_global_identity).await;
             }
             IdentityAction::Set {
                 facet,
                 description,
                 agent,
                 strength,
+                project,
             } => {
-                commands::manas::identity_set(facet, description, agent, strength).await;
+                commands::manas::identity_set(facet, description, agent, strength, project).await;
             }
             IdentityAction::Remove { id } => {
                 commands::manas::identity_remove(id).await;
@@ -3531,7 +3551,11 @@ mod tests {
         );
         match cli.unwrap().command {
             Commands::Identity { action } => match action {
-                IdentityAction::List { agent } => {
+                IdentityAction::List {
+                    agent,
+                    project: _,
+                    include_global_identity: _,
+                } => {
                     assert_eq!(agent, "claude-code");
                 }
                 other => panic!("expected IdentityAction::List, got {other:?}"),

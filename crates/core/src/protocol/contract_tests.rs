@@ -299,6 +299,8 @@ mod tests {
                 "list_identity",
                 Request::ListIdentity {
                     agent: "claude-code".into(),
+                    project: None,
+                    include_global_identity: None,
                 },
             ),
             (
@@ -1542,7 +1544,11 @@ mod tests {
                     agent: None,
                     limit: None,
                 },
-                Request::ListIdentity { agent: "a".into() },
+                Request::ListIdentity {
+                    agent: "a".into(),
+                    project: None,
+                    include_global_identity: None,
+                },
                 Request::DeactivateIdentity { id: "i".into() },
                 Request::ListDisposition { agent: "a".into() },
                 Request::ContextRefresh {

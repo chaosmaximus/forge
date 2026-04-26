@@ -1614,7 +1614,7 @@ fn compile_context_xml_for_infra(state: &DaemonState) -> String {
     let config = crate::config::load_config();
     let inj = config.context_injection.clone();
     let static_prefix =
-        crate::recall::compile_static_prefix_with_inj(&state.conn, agent_name, None, &inj);
+        crate::recall::compile_static_prefix_with_inj(&state.conn, agent_name, None, None, &inj);
     let ctx_config = config.context.validated();
     let (dynamic_suffix, _touched) = crate::recall::compile_dynamic_suffix_with_inj(
         &state.conn,
