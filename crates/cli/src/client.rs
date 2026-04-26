@@ -12,6 +12,24 @@ const MAX_RESPONSE_LINE_BYTES: usize = 16 * 1_048_576;
 /// NEW-7: Read timeout for daemon responses (30 seconds).
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Env vars forwarded from CLI to the auto-spawned daemon process.
+///
+/// `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` / `DYLD_FALLBACK_LIBRARY_PATH` carry
+/// the bundled ONNX runtime location on Linux/macOS hosts whose system libs
+/// don't include onnxruntime — without forwarding them, the daemon dies at
+/// load time with `error while loading shared libraries: libonnxruntime.so.1`.
+const FORWARDED_ENV_KEYS: &[&str] = &[
+    "FORGE_PROJECT",
+    "FORGE_PROJECT_DIR",
+    "FORGE_DB",
+    "FORGE_SOCKET",
+    "HOME",
+    "PATH",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+];
+
 /// NEW-1: Read a newline-terminated line with a size cap using fill_buf/consume.
 ///
 /// Prevents unbounded allocation: the BufReader's internal buffer (8 KB) is
@@ -109,16 +127,9 @@ pub async fn connect() -> Result<UnixStream, String> {
     let daemon_path = find_daemon_binary();
     let log_path = format!("{}/daemon.log", forge_core::forge_dir());
 
-    // Build env vars to forward
+    // Build env vars to forward (see FORWARDED_ENV_KEYS for rationale)
     let mut envs: Vec<(String, String)> = Vec::new();
-    for key in &[
-        "FORGE_PROJECT",
-        "FORGE_PROJECT_DIR",
-        "FORGE_DB",
-        "FORGE_SOCKET",
-        "HOME",
-        "PATH",
-    ] {
+    for key in FORWARDED_ENV_KEYS {
         if let Ok(v) = std::env::var(key) {
             envs.push((key.to_string(), v));
         }
@@ -250,4 +261,33 @@ async fn send_on_stream(stream: UnixStream, request: &Request) -> Result<Respons
     }
 
     serde_json::from_str(trimmed).map_err(|e| format!("response parse error: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FORWARDED_ENV_KEYS;
+
+    #[test]
+    fn forwarded_env_keys_include_dynamic_loader_paths() {
+        for required in [
+            "LD_LIBRARY_PATH",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FALLBACK_LIBRARY_PATH",
+        ] {
+            assert!(
+                FORWARDED_ENV_KEYS.contains(&required),
+                "FORWARDED_ENV_KEYS missing {required} — auto-spawned daemon will fail to load libonnxruntime"
+            );
+        }
+    }
+
+    #[test]
+    fn forwarded_env_keys_include_forge_runtime_basics() {
+        for required in ["FORGE_PROJECT", "FORGE_DB", "FORGE_SOCKET", "HOME", "PATH"] {
+            assert!(
+                FORWARDED_ENV_KEYS.contains(&required),
+                "FORWARDED_ENV_KEYS missing {required}"
+            );
+        }
+    }
 }
