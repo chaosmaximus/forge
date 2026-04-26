@@ -1,0 +1,119 @@
+name: Bench Regression Detection (P3-3 2C-2)
+
+# Triggered after the main CI workflow completes on master pushes.
+# Compares this run's bench composite scores against the most recent
+# successful master CI run; if any bench dropped by ≥ 5%, opens a
+# GitHub Issue with the diff + per-bench breakdown + last-5-runs trend.
+#
+# Bench-fast jobs in `ci.yml` upload their summary.json files as artifacts
+# named `bench-{name}-{sha}` (14-day retention per `actions/upload-artifact@v4`
+# config). This workflow downloads the latest two successful runs and
+# diffs them.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  check-regression:
+    name: Compare bench composites vs prior master run
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download current run's bench artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: current
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: bench-*
+
+      - name: Find prior successful CI run on master
+        id: prior
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find the second-most-recent successful "CI" run on master,
+          # excluding this run itself.
+          PRIOR_ID=$(gh run list \
+              --workflow ci.yml \
+              --branch master \
+              --status success \
+              --limit 5 \
+              --json databaseId,headSha \
+              --jq '[.[] | select(.databaseId != ${{ github.event.workflow_run.id }})] | .[0].databaseId')
+          if [[ -z "$PRIOR_ID" || "$PRIOR_ID" == "null" ]]; then
+              echo "no prior successful master CI run found; nothing to compare"
+              echo "prior_id=" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          echo "prior_id=$PRIOR_ID" >> "$GITHUB_OUTPUT"
+          echo "Found prior run: $PRIOR_ID"
+
+      - name: Download prior run's bench artifacts
+        if: steps.prior.outputs.prior_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          path: prior
+          run-id: ${{ steps.prior.outputs.prior_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: bench-*
+
+      - name: Run regression check
+        if: steps.prior.outputs.prior_id != ''
+        id: check
+        continue-on-error: true
+        run: |
+          python3 scripts/ci/check_bench_regression.py \
+              --current current \
+              --prior prior \
+              --threshold 0.05 \
+              --output regression-report.md
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Open regression issue if needed
+        if: steps.prior.outputs.prior_id != '' && steps.check.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="Bench composite regression detected on master ${{ github.event.workflow_run.head_sha }}"
+          {
+              echo "## Automated regression alert"
+              echo
+              echo "The bench-fast matrix detected a composite drop ≥ 5% on this"
+              echo "master commit vs the prior successful CI run."
+              echo
+              echo "- **Current commit:** ${{ github.event.workflow_run.head_sha }}"
+              echo "- **Current run:** ${{ github.event.workflow_run.html_url }}"
+              echo "- **Prior run:** https://github.com/${{ github.repository }}/actions/runs/${{ steps.prior.outputs.prior_id }}"
+              echo
+              echo "---"
+              echo
+              cat regression-report.md
+              echo
+              echo "---"
+              echo
+              echo "*Filed automatically by \`.github/workflows/bench-regression.yml\` (P3-3 2C-2).*"
+          } > issue-body.md
+          gh issue create \
+              --title "$TITLE" \
+              --body-file issue-body.md \
+              --label "bench-regression,automated" \
+              --repo "${{ github.repository }}"
+
+      - name: Upload regression report (for inspection even when no issue is filed)
+        if: steps.prior.outputs.prior_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-regression-report-${{ github.event.workflow_run.head_sha }}
+          path: regression-report.md
+          retention-days: 30
