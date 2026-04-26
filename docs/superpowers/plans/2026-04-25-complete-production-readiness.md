@@ -127,6 +127,16 @@ Each new bench follows the master v6 / Forge-Identity precedent: design spec →
 
 * **opentelemetry 0.27 → 0.31 cluster bump (PR #2 deferred 2026-04-25).** Cannot bump `opentelemetry` in isolation; the daemon Cargo.toml has 4 interlocked OTel deps (`opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`, `tracing-opentelemetry`) all pinned at the 0.27/0.28 line. Holistic bump requires migrating across 4 minor versions (0.28 stabilization, 0.29 Prometheus deprecation, 0.30 Metrics SDK stable, 0.31 SpanExporter unification) plus rewriting the T10 OTLP-path latency test's custom `NoopSpanExporter` impl (`opentelemetry_sdk::export::trace::SpanExporter` moved/unified in 0.31). Estimated 4–6 commits with calibration check that T10 ratio still ≤ 1.20×. Track for P3-3 dedicated wave or P3-4 pre-release task. Memory: `feedback_dependabot_ecosystem_cluster.md`.
 
+### P3-3 Stage 2 deferred backlog (2A-6 impl review residue)
+
+Adversarial impl review verdict `lockable-as-is` (see
+`docs/superpowers/reviews/2026-04-26-p3-3-2a-6-impl-multi-agent-coordination.yaml`).
+0 BLOCKER/HIGH/MED/LOW findings; 12 RESOLVED items in transcript. **No
+items deferred.** Spec v2.1 changelog already deferred N5/N6 cosmetic
+(calibration scenario table + f32→f64 in confidence formula) consistent
+with 2A-5 deferral pattern; both remain backlog candidates if
+recalibration drift surfaces.
+
 ### P3-3 Stage 1 deferred backlog (2A-5 impl review residue)
 
 Adversarial impl review (verdict `lockable-with-fixes`, see `docs/superpowers/reviews/2026-04-25-p3-3-2a-5-impl-domain-isolation.yaml`) closed 2 HIGH + 3 MED at fix-wave commit `1d5416f`. Remaining items deferred:
