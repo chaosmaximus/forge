@@ -34,10 +34,11 @@ findings:
   # ── MEDIUM ────────────────────────────────────────────────────────────
   - id: MED-1
     severity: MEDIUM
-    summary: "W26 partial-spawn rollback leaves orphaned `team_member` rows in pre-existing teams (no foreign-key cascade, no explicit DELETE)"
+    summary: "W26 partial-spawn rollback left orphaned `team_member` rows in pre-existing teams (no foreign-key cascade, no explicit DELETE)"
     file: crates/daemon/src/teams.rs:611
-    status: open
-    rationale: "On the F6 idempotent path (team_pre_existed=true), if `spawn_agent` succeeds for the first N templates and fails on N+1, the rollback retires/ends the N already-spawned sessions but does NOT delete the `team_member` rows that those N spawns inserted (line 250 INSERT OR IGNORE INTO team_member). The team-row delete is correctly skipped (`!team_pre_existed`), but the member rows remain. Schema check: `team_member` has `PRIMARY KEY (team_id, user_id)` and NO foreign key referencing `team(id)` (db/schema.rs:610-616), and the daemon does not set `PRAGMA foreign_keys = ON`. So even if a future migration adds the FK, the cascade wouldn't fire. The next `team members` listing for the pre-existing team will join `team_member` to `session` and show the now-retired sessions because `list_team_members` does NOT filter by session.status. This is a real data leak: every partial-failure run inflates the visible-member count of the pre-existing team by the number of agents that successfully spawned before the failure. **Fix:** in the `Err(e)` rollback arm, also `DELETE FROM team_member WHERE team_id = (SELECT id FROM team WHERE name = ?1) AND session_id IN (?, ?, ...)` for each session_id in the partial set."
+    status: resolved
+    fixed_by: 118f0db
+    rationale: "Resolved in W28 fix-wave (`118f0db`): the rollback arm in `crate::teams::run_team` now `DELETE`s the `team_member` rows for every session_id in the partial set, scoped to the team_id resolved from `team_name`. Correct on both paths: pre-existing teams keep prior member rows untouched (only in-flight ones are cleaned), freshly-created teams clean everything because the team-row DELETE follows. Original concern: schema check showed `team_member` had `PRIMARY KEY (team_id, user_id)` and NO foreign key referencing `team(id)`; the daemon does not run `PRAGMA foreign_keys = ON`; `list_team_members` does NOT filter by session.status — so every partial-failure run inflated the visible-member count of the pre-existing team by the number of agents that successfully spawned before the failure."
   - id: MED-2
     severity: MEDIUM
     summary: "W25 F1 stale-version detection compares CARGO_PKG_VERSION strings only — misses the common dev workflow where commits diverge but Cargo.toml is stable"
@@ -47,10 +48,11 @@ findings:
   # ── LOW ───────────────────────────────────────────────────────────────
   - id: LOW-1
     severity: LOW
-    summary: "W27 no .trim() on CLI message-read input — trailing-space copy-paste silently fails both exact and prefix match"
+    summary: "W27 had no .trim() on CLI message-read input — trailing-space copy-paste silently failed both exact and prefix match"
     file: crates/cli/src/commands/system.rs:984
-    status: open
-    rationale: "`pub async fn message_read(id: String)` passes `id` straight to `Request::SessionMessageRead { id: id.clone() }` without trimming whitespace. Common copy-paste hazard: terminal selection captures a trailing space, so `id = '01ABC...Z '`. Daemon's exact match (`WHERE id = ?1`) fails because of the trailing space; prefix match (`WHERE id LIKE ?1 || '%'`) fails because no real id ends with a literal space. User sees `message not found: 01ABC...Z ` (the offending space is invisible in monospaced rendering). **Fix:** `let id = id.trim().to_string();` at the top of `message_read`, or `let id_or_prefix = id_or_prefix.trim();` at the top of `read_message_by_id_or_prefix`. CLI-side trim is preferable because it's the user-facing surface and avoids requiring every future caller to trim."
+    status: resolved
+    fixed_by: 118f0db
+    rationale: "Resolved in W28 fix-wave (`118f0db`): `commands::system::message_read` now calls `id.trim().to_string()` at the entry, before constructing `Request::SessionMessageRead`. CLI-side trim is the user-facing surface and avoids requiring every future caller to trim. Original concern: terminal selection commonly captures a trailing space, so `id = '01ABC...Z '` failed exact match (`WHERE id = ?1`) AND prefix match (`WHERE id LIKE ?1 || '%'`) since no real id ends with a literal space; user saw `message not found: 01ABC...Z ` with the offending space invisible in monospaced rendering."
   - id: LOW-2
     severity: LOW
     summary: "W27 LIKE wildcard literalness — `%` and `_` in input are interpreted as SQL wildcards (no ESCAPE clause)"
