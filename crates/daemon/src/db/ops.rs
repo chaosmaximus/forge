@@ -2999,6 +2999,41 @@ pub fn get_reality_by_path(
     ).optional()
 }
 
+/// Get a reality by its name, scoped to the given organization.
+///
+/// Companion to `get_reality_by_path`. Used by callers that have a
+/// project NAME (e.g. `code_file.project` after the W1.2 c1 column
+/// flip from PATH to NAME) and need to resolve the underlying reality
+/// row for clustering / config lookup. Returns the most recently active
+/// reality if multiple share a name (idempotent ordering).
+pub fn get_reality_by_name(
+    conn: &Connection,
+    name: &str,
+    org_id: &str,
+) -> rusqlite::Result<Option<Reality>> {
+    conn.query_row(
+        "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
+         FROM reality WHERE name = ?1 AND organization_id = ?2 ORDER BY last_active DESC LIMIT 1",
+        params![name, org_id],
+        |row| Ok(Reality {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            reality_type: row.get(2)?,
+            detected_from: row.get(3)?,
+            project_path: row.get(4)?,
+            domain: row.get(5)?,
+            organization_id: row.get(6)?,
+            owner_type: row.get(7)?,
+            owner_id: row.get(8)?,
+            engine_status: row.get(9)?,
+            engine_pid: row.get(10)?,
+            created_at: row.get(11)?,
+            last_active: row.get(12)?,
+            metadata: row.get(13)?,
+        }),
+    ).optional()
+}
+
 /// List realities in an organization.
 pub fn list_realities(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<Reality>> {
     let mut stmt = conn.prepare(

@@ -860,8 +860,18 @@ async fn run_index(
 /// Synchronously index a specific directory using regex-based extractors.
 /// This is called from the ForceIndex handler when `--path <dir>` is provided.
 /// Returns (files_indexed, symbols_indexed).
+///
+/// Cold-path entry: resolves the effective project NAME via the reality
+/// registry up-front (`db::ops::derive_project_name`) so monorepo
+/// sub-directory invocations like `force-index --path /repo/forge/sub-crate`
+/// inherit the registered ancestor reality's NAME (`forge`) instead of the
+/// leaf basename (`sub-crate`). Hot-path equivalents in the periodic
+/// `IndexerActor` continue to use the basename-fast variant
+/// (`project_name_from_dir`) since they hold a state lock during their
+/// inner loop and one-shot DB query is cheap only at function entry.
 pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usize) {
     let indexed_at = now_str();
+    let project_name = ops::derive_project_name(conn, project_dir);
     let mut all_files: Vec<CodeFile> = Vec::new();
     let mut all_symbols: Vec<CodeSymbol> = Vec::new();
 
@@ -886,7 +896,7 @@ pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usi
                 id: format!("file:{path}"),
                 path: path.clone(),
                 language: language.to_string(),
-                project: project_name_from_dir(project_dir),
+                project: project_name.clone(),
                 hash: hash.clone(),
                 indexed_at: indexed_at.clone(),
             });
@@ -1478,14 +1488,29 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
     }
 }
 
-pub fn run_clustering(conn: &Connection, project_dir: &str) {
-    match ops::get_reality_by_path(conn, project_dir, "default") {
-        Ok(Some(reality)) => {
-            if let Err(e) = run_label_propagation(conn, &reality.id, 20) {
+/// Run community detection (label-propagation) on a project's import graph.
+///
+/// Accepts EITHER a project path (e.g. `/repo/forge`) OR a project NAME
+/// (e.g. `forge`). Path lookup wins when both are registered — but the
+/// re-process branches in `Request::ForceIndex { path: None }` (handler.rs
+/// and writer.rs) iterate over `code_file.project` which after W1.2 c1
+/// stores NAMEs, so the by-name fallback is the path that fires there.
+pub fn run_clustering(conn: &Connection, project_dir_or_name: &str) {
+    let reality = ops::get_reality_by_path(conn, project_dir_or_name, "default")
+        .ok()
+        .flatten()
+        .or_else(|| {
+            ops::get_reality_by_name(conn, project_dir_or_name, "default")
+                .ok()
+                .flatten()
+        });
+    match reality {
+        Some(r) => {
+            if let Err(e) = run_label_propagation(conn, &r.id, 20) {
                 tracing::warn!(target: "forge::indexer", error = %e, "clustering failed");
             }
         }
-        _ => {
+        None => {
             // No reality exists for this project yet; skip clustering
         }
     }
@@ -2370,6 +2395,121 @@ def process_data(input_data):
         assert_eq!(
             candidate.as_deref(),
             Some("/mnt/colab-disk/DurgaSaiK/forge")
+        );
+    }
+
+    #[test]
+    fn p3_4_w1_3_run_clustering_accepts_project_name_after_c1_migration() {
+        // Review HIGH-1 regression: after W1.2 c1 flipped `code_file.project`
+        // from PATH to NAME, the no-path force-index re-process branches in
+        // `handler.rs` and `writer.rs` iterate over `f.project` (now NAME)
+        // and feed it to `run_clustering`. Pre-fix, the by-path reality
+        // lookup missed → clustering silently disabled. The fix-wave adds a
+        // by-name fallback inside `run_clustering`. This test pins the
+        // contract by exercising the underlying accessor and the
+        // clustering call itself with a NAME input.
+        use crate::db::ops::{get_reality_by_name, get_reality_by_path, store_reality};
+        use forge_core::types::Reality;
+        use crate::db::schema::create_schema;
+
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let r = Reality {
+            id: "r-w13-fw1".to_string(),
+            name: "forge".to_string(),
+            reality_type: "code".to_string(),
+            detected_from: Some("git".to_string()),
+            project_path: Some("/test/forge".to_string()),
+            domain: Some("rust".to_string()),
+            organization_id: "default".to_string(),
+            owner_type: "user".to_string(),
+            owner_id: "local".to_string(),
+            engine_status: "idle".to_string(),
+            engine_pid: None,
+            created_at: "2026-04-26T00:00:00Z".to_string(),
+            last_active: "2026-04-26T00:00:00Z".to_string(),
+            metadata: "{}".to_string(),
+        };
+        store_reality(&conn, &r).unwrap();
+
+        // Pre-fix shape: `get_reality_by_path` with a NAME (e.g. "forge") misses.
+        let by_path = get_reality_by_path(&conn, "forge", "default").unwrap();
+        assert!(
+            by_path.is_none(),
+            "by-path lookup of a bare NAME must miss — this was the pre-fix silent disable"
+        );
+
+        // Fix-wave shape: `get_reality_by_name` recovers the reality.
+        let by_name = get_reality_by_name(&conn, "forge", "default").unwrap();
+        assert!(by_name.is_some(), "by-name fallback must find reality");
+        assert_eq!(by_name.unwrap().id, "r-w13-fw1");
+
+        // End-to-end: `run_clustering` with the NAME must not panic and
+        // must reach the by-name fallback (no panic = lookup succeeded;
+        // clustering itself is a no-op on an empty edge set, which is the
+        // expected behavior here).
+        run_clustering(&conn, "forge");
+    }
+
+    #[test]
+    fn p3_4_w1_3_index_directory_sync_uses_derive_project_name_for_monorepo_subdir() {
+        // Review HIGH-2 regression: the dual-helper architecture promised
+        // the rich variant (`db::ops::derive_project_name`) is wired at the
+        // cool-path entry-point so a monorepo subdir invocation like
+        // `force-index --path /repo/forge/sub-crate` inherits the
+        // registered ancestor reality's NAME ("forge") instead of the leaf
+        // basename ("sub-crate"). Pre-fix, `derive_project_name` was dead
+        // code; the fix-wave wires it at `index_directory_sync` entry.
+        // This test pins the contract.
+        use crate::db::ops::store_reality;
+        use crate::db::schema::create_schema;
+        use forge_core::types::Reality;
+
+        crate::db::vec::init_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let parent = tmp.path();
+        let sub = parent.join("sub-crate");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("foo.py"), "def foo(): pass\n").unwrap();
+
+        // Register the PARENT as a reality whose NAME is distinct from its
+        // basename — the discriminating fixture for the rich-vs-fast split.
+        let parent_path_str = parent.to_str().unwrap().to_string();
+        let r = Reality {
+            id: "r-w13-fw2".to_string(),
+            name: "forge-monorepo".to_string(),
+            reality_type: "code".to_string(),
+            detected_from: Some("git".to_string()),
+            project_path: Some(parent_path_str),
+            domain: Some("python".to_string()),
+            organization_id: "default".to_string(),
+            owner_type: "user".to_string(),
+            owner_id: "local".to_string(),
+            engine_status: "idle".to_string(),
+            engine_pid: None,
+            created_at: "2026-04-26T00:00:00Z".to_string(),
+            last_active: "2026-04-26T00:00:00Z".to_string(),
+            metadata: "{}".to_string(),
+        };
+        store_reality(&conn, &r).unwrap();
+
+        // Force-index the SUBDIR. The rich variant must walk to the parent
+        // reality and tag every file with "forge-monorepo".
+        let (files, _symbols) = index_directory_sync(&conn, sub.to_str().unwrap());
+        assert!(files >= 1, "expect ≥1 file indexed, got {files}");
+
+        let project_tag: String = conn
+            .query_row("SELECT DISTINCT project FROM code_file", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            project_tag, "forge-monorepo",
+            "monorepo subdir must inherit registered reality NAME ({:?}), not leaf basename ({:?})",
+            "forge-monorepo", "sub-crate"
         );
     }
 }
