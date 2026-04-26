@@ -5042,11 +5042,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     .prepare(sql)
                     .and_then(|mut stmt| {
                         let map_row = |row: &rusqlite::Row<'_>| {
+                            // P3-4 W1.24 (W1.3 LOW-5): JSON key is
+                            // `file_path` to match what the CLI
+                            // consumer reads (`hit.get("file_path")`
+                            // in commands/system.rs). Pre-W1.24 this
+                            // emitted `path` and the CLI silently
+                            // rendered `?` for every hit's location
+                            // (the json_macro_silent_drift trap).
                             Ok(serde_json::json!({
                                 "id": row.get::<_, String>(0)?,
                                 "name": row.get::<_, String>(1)?,
                                 "kind": row.get::<_, String>(2)?,
-                                "path": row.get::<_, String>(3)?,
+                                "file_path": row.get::<_, String>(3)?,
                                 "line_start": row.get::<_, Option<i64>>(4)?,
                             }))
                         };
@@ -5071,11 +5078,12 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     "SELECT id, name, kind, file_path, line_start FROM code_symbol WHERE name LIKE ?1 AND kind = ?2 LIMIT ?3"
                 ).and_then(|mut stmt| {
                     stmt.query_map(rusqlite::params![pattern, kind_filter, effective_limit], |row| {
+                        // P3-4 W1.24 — see same-block comment above.
                         Ok(serde_json::json!({
                             "id": row.get::<_, String>(0)?,
                             "name": row.get::<_, String>(1)?,
                             "kind": row.get::<_, String>(2)?,
-                            "path": row.get::<_, String>(3)?,
+                            "file_path": row.get::<_, String>(3)?,
                             "line_start": row.get::<_, Option<i64>>(4)?,
                         }))
                     })?.collect()
@@ -5085,11 +5093,12 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     "SELECT id, name, kind, file_path, line_start FROM code_symbol WHERE name LIKE ?1 LIMIT ?2"
                 ).and_then(|mut stmt| {
                     stmt.query_map(rusqlite::params![pattern, effective_limit], |row| {
+                        // P3-4 W1.24 — see same-block comment above.
                         Ok(serde_json::json!({
                             "id": row.get::<_, String>(0)?,
                             "name": row.get::<_, String>(1)?,
                             "kind": row.get::<_, String>(2)?,
-                            "path": row.get::<_, String>(3)?,
+                            "file_path": row.get::<_, String>(3)?,
                             "line_start": row.get::<_, Option<i64>>(4)?,
                         }))
                     })?.collect()
@@ -11317,6 +11326,88 @@ mod tests {
                 assert_eq!(hits.len(), 1, "should find 1 class matching 'Daemon'");
                 assert_eq!(hits[0]["name"], "DaemonState");
             }
+            other => panic!("expected CodeSearchResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_w1_24_code_search_emits_file_path_key() {
+        // W1.3 LOW-5 contract test: the daemon's CodeSearchResult JSON
+        // must use the key `file_path` (not `path`). Pre-W1.24 the
+        // daemon emitted `path` and the CLI consumer read `file_path`,
+        // so every hit's location rendered as `?` in user output —
+        // the silent serde_json macro drift trap captured by the
+        // `feedback_json_macro_silent_drift` auto-memory.
+        //
+        // Exercise all three branches in the CodeSearch handler
+        // (project-scoped, kind-filter, no-filter) since each builds
+        // its own `serde_json::json!({...})` literal — a regression
+        // could land in any one of them independently.
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        let sym = forge_core::types::CodeSymbol {
+            id: "s1".into(),
+            name: "find_target".into(),
+            kind: "function".into(),
+            file_path: "src/lib.rs".into(),
+            line_start: 42,
+            line_end: Some(50),
+            signature: None,
+        };
+        crate::db::ops::store_symbol(&state.conn, &sym).unwrap();
+
+        let assert_file_path_key = |hits: &[serde_json::Value], branch: &str| {
+            assert!(
+                !hits.is_empty(),
+                "{branch}: should produce at least one hit"
+            );
+            for hit in hits {
+                assert!(
+                    hit.get("file_path").is_some(),
+                    "{branch}: hit must carry `file_path` key, got {hit:?}"
+                );
+                assert!(
+                    hit.get("path").is_none(),
+                    "{branch}: hit must NOT carry legacy `path` key, got {hit:?}"
+                );
+                assert_eq!(
+                    hit["file_path"], "src/lib.rs",
+                    "{branch}: file_path value must match stored row"
+                );
+            }
+        };
+
+        // Branch 1: no project, no kind.
+        let resp = handle_request(
+            &mut state,
+            Request::CodeSearch {
+                query: "find".into(),
+                kind: None,
+                limit: None,
+                project: None,
+            },
+        );
+        match resp {
+            Response::Ok {
+                data: ResponseData::CodeSearchResult { hits },
+            } => assert_file_path_key(&hits, "no-filter"),
+            other => panic!("expected CodeSearchResult, got {other:?}"),
+        }
+
+        // Branch 2: kind filter, no project.
+        let resp = handle_request(
+            &mut state,
+            Request::CodeSearch {
+                query: "find".into(),
+                kind: Some("function".into()),
+                limit: None,
+                project: None,
+            },
+        );
+        match resp {
+            Response::Ok {
+                data: ResponseData::CodeSearchResult { hits },
+            } => assert_file_path_key(&hits, "kind-filter"),
             other => panic!("expected CodeSearchResult, got {other:?}"),
         }
     }
