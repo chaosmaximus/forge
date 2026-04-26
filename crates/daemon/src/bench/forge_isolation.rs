@@ -1234,3 +1234,166 @@ mod tests {
         assert_eq!(globals as usize, GLOBAL_MEMORIES);
     }
 }
+
+/// Drift-fixture tests (P3-3.7 W17). Adversarial sensitivity tests that plant
+/// the regression class each dimension is supposed to catch and assert that
+/// the dimension's score drops below its `min` threshold.
+///
+/// Pattern:
+///   1. Seed clean corpus → dim score should be ≥ min on a healthy state.
+///   2. INSERT a regression directly into the DB.
+///   3. Re-run the dimension scoring fn.
+///   4. Assert `dim.score < dim.min`.
+///
+/// If a planted regression FAILS to drop the score, the dim is INSENSITIVE
+/// to that regression class — file as a HIGH-severity finding.
+#[cfg(test)]
+mod drift_fixtures {
+    use super::*;
+    use crate::bench::common::{deterministic_embedding, seeded_rng};
+
+    /// Helper: clean seeded state on seed=42 (matches the existing
+    /// `tests::*_on_seeded_corpus` setup pattern).
+    fn setup_clean_state() -> (DaemonState, Corpus) {
+        let mut rng = seeded_rng(42);
+        let corpus = generate_corpus(&mut rng);
+        let mut state = DaemonState::new(":memory:").expect("daemonstate");
+        seed_corpus(&mut state, &corpus).expect("seed");
+        (state, corpus)
+    }
+
+    /// **D1 drift**: plant a cross-project leak class — INSERT N memories in
+    /// every main project whose title carries a *foreign* project's
+    /// `_secret_` token. Models a realistic "scoping bug" where a buggy
+    /// WHERE clause lets foreign rows through in bulk (the per-project
+    /// denominator is 125, so a single leak per project only drops the score
+    /// to 0.992 — to drive the cross-project mean below the 0.95 min we plant
+    /// 10 leaks per project, dropping the mean to 0.92).
+    #[test]
+    fn d1_catches_planted_cross_project_leak() {
+        let (mut state, corpus) = setup_clean_state();
+
+        // Sanity: clean state scores ≥ 0.95.
+        let clean = dim_1_cross_project_precision(&mut state, &corpus);
+        assert!(
+            clean.score >= clean.min,
+            "clean state must score ≥ min (got {} vs min {})",
+            clean.score,
+            clean.min,
+        );
+
+        // Plant: in each main project, insert 10 rows whose title starts
+        // with a foreign-project `_secret_` token. The shared `isolation_bench`
+        // tag puts each in the BM25 result set for the host project's
+        // "isolation_bench" query; `is_foreign_token` then flags them.
+        const PLANTS_PER_PROJECT: usize = 10;
+        for project in MAIN_PROJECTS {
+            // Pick a stable foreign neighbour (next in MAIN_PROJECTS, wrapping).
+            let idx = MAIN_PROJECTS.iter().position(|p| *p == project).unwrap();
+            let foreign = MAIN_PROJECTS[(idx + 1) % MAIN_PROJECTS.len()];
+            for k in 0..PLANTS_PER_PROJECT {
+                let title = format!("{foreign}_secret_plant_{k}");
+                let id = format!("drift_d1_{project}_{k}");
+                let emb = deterministic_embedding(&title);
+                state
+                    .conn
+                    .execute(
+                        "INSERT INTO memory
+                            (id, memory_type, title, content, confidence, status,
+                             project, tags, created_at, accessed_at, organization_id)
+                         VALUES (?1, 'lesson', ?2, ?3, 0.9, 'active', ?4,
+                                 ?5,
+                                 '2026-04-25T00:00:00Z', '2026-04-25T00:00:00Z', 'default')",
+                        rusqlite::params![
+                            id,
+                            title,
+                            "Planted cross-project leak: row labelled host \
+                             project but title carries foreign _secret_ token.",
+                            project,
+                            format!("[\"{project}\",\"isolation_bench\"]"),
+                        ],
+                    )
+                    .expect("insert planted leak");
+                crate::db::vec::store_embedding(&state.conn, &id, &emb).expect("store planted emb");
+            }
+        }
+
+        let after = dim_1_cross_project_precision(&mut state, &corpus);
+        assert!(
+            after.score < after.min,
+            "D1 must catch planted cross-project leak \
+             (got score={} ≥ min={}; clean was {}); \
+             dimension is INSENSITIVE to its target regression class",
+            after.score,
+            after.min,
+            clean.score,
+        );
+    }
+
+    /// **D6 drift**: plant a compile-context leak — for *every* main project,
+    /// INSERT a high-confidence `decision` whose title carries a foreign
+    /// project's `_secret_` token. `compile_dynamic_suffix_with_inj` selects
+    /// these into the `<decisions>` XML for the host project; D6 scans the
+    /// XML for `<other>_secret_` substrings, max_possible=15. One foreign
+    /// token per project drops each per-project score to `1 - 1/15 = 0.933`,
+    /// and since every project leaks, the mean is 0.933 < 0.95 min.
+    ///
+    /// Per-spec note (recall.rs:1006-1008): the decisions WHERE clause is
+    /// `(project = ?1 OR project IS NULL OR project = '')`. We label the
+    /// planted decisions with `project = host_project` so they are properly
+    /// project-scoped (not globals); the leak is in the *title*, modelling
+    /// the regression class "row was correctly project-scoped at the row
+    /// level but contains foreign content that the XML render exposes".
+    #[test]
+    fn d6_catches_planted_compile_context_leak() {
+        let (mut state, corpus) = setup_clean_state();
+
+        let clean = dim_6_compile_context_isolation(&mut state, &corpus);
+        assert!(
+            clean.score >= clean.min,
+            "clean state must score ≥ min (got {} vs min {})",
+            clean.score,
+            clean.min,
+        );
+
+        // Plant one foreign-token decision in every main project. High
+        // confidence + recent timestamp ensures it ranks into the top
+        // decisions_limit (10) window so the title appears in the XML.
+        for project in MAIN_PROJECTS {
+            let idx = MAIN_PROJECTS.iter().position(|p| *p == project).unwrap();
+            let foreign = MAIN_PROJECTS[(idx + 1) % MAIN_PROJECTS.len()];
+            let title = format!("{foreign}_secret_planted");
+            let id = format!("drift_d6_{project}");
+            state
+                .conn
+                .execute(
+                    "INSERT INTO memory
+                        (id, memory_type, title, content, confidence, status,
+                         project, tags, created_at, accessed_at, organization_id)
+                     VALUES (?1, 'decision', ?2, ?3, 0.99, 'active', ?4,
+                             ?5,
+                             datetime('now'), datetime('now'), 'default')",
+                    rusqlite::params![
+                        id,
+                        title,
+                        "Planted compile-context leak: host-scoped decision \
+                         whose title leaks foreign _secret_ token into XML.",
+                        project,
+                        format!("[\"{project}\"]"),
+                    ],
+                )
+                .expect("insert planted leak");
+        }
+
+        let after = dim_6_compile_context_isolation(&mut state, &corpus);
+        assert!(
+            after.score < after.min,
+            "D6 must catch planted compile-context leak \
+             (got score={} ≥ min={}; clean was {}); \
+             dimension is INSENSITIVE to its target regression class",
+            after.score,
+            after.min,
+            clean.score,
+        );
+    }
+}
