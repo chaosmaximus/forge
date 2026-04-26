@@ -161,10 +161,12 @@ nice-to-haves, then pre-iteration backlog re-eval.
 |---|---|---|
 | #153 | iteration umbrella (1st pass closed) | completed |
 | #163 .. #181 | first-pass tasks | all completed |
-| #182 .. #203 | second-pass drain (22 tasks) | **all pending** ← next-session queue |
+| #182 .. #203 | second-pass drain (22 tasks) | **21 pending** ← next-session queue |
 | #192 | (W28 MED-2 — closed early by Wave Z Z11) | **completed** |
 | #204 .. #214 | **Wave Z (CC voice unblock)** | **all completed** |
-| #101 | P3-4 release v0.6.0 stack | DEFERRED — opens after #203 closes |
+| #215 | **ZR — internal `reality`→`project` rename + dead-code cleanup** | **pending** — opens after #203 closes, before #101 |
+| #216 .. #219 | **Wave Z deferred (review residue)**: MED-1 (Z8 TOCTOU msg), MED-3 (project rename/delete/relocate), LOW-2 (doctor XDG paths), LOW-3 (cc-voice e2e integration test) | **all pending** — v0.6.1+ candidates |
+| #101 | P3-4 release v0.6.0 stack | DEFERRED — opens after #215 closes |
 
 **Per-task standard procedure (unchanged from Plan A §6):** verify
 clean tree → TDD-first if behavior change → fmt+clippy+tests green →
@@ -219,12 +221,39 @@ rules), `feedback_json_macro_silent_drift.md` (informs #185).
    stack (multi-OS verify + version bump → `0.6.0` + `gh release
    create` + marketplace bundle + branch protection).
 
+## Daemon-binary state (end of session)
+
+**Action required before live dogfood next session.** The daemon
+running at the end of this session was built at 2026-04-26 17:19
+(pre-Wave-Z). After this session's commits, the binary on disk at
+`target/release/forge-daemon` was rebuilt fresh; the old daemon
+process was sent SIGINT and respawned. State at session end (or
+post-compact resume verification): `pgrep -af forge-daemon` should
+match a binary newer than the source HEAD or post-Wave-Z mtime.
+If the running daemon is stale, expect old `<code-structure>`
+behavior (missing Z2 leak fix, missing Z7 auto-create) until restart.
+
+**Local dogfood respawn pattern** (also documented for cc-voice in
+`docs/onboarding/local-plugin-cc-voice.md`):
+
+```bash
+cargo build --release -p forge-cli -p forge-daemon
+kill -INT $(pgrep -f "target/release/forge-daemon")    # graceful — drains writer
+forge-next health                                      # auto-respawns the new build
+forge-next doctor                                      # version + git_sha drift check
+```
+
+cc-voice is told the same in `feedback/2026-04-26-forge-team-response.md`.
+
 ## One-line summary
 
-**HEAD `b02bfcd`. P3-4 Wave Z (CC voice unblock) CLOSED — 11 tasks +
-fix-wave + docs (10 commits). cc-voice can use Forge cleanly:
-project vocabulary everywhere, cross-project leak fixed, auto-create
-on first contact, --dry-run audit, update-session recovery, doctor
-git_sha + backup hygiene warnings. 22-task drain queue at #182-#203
-unchanged; resume at #182. ZR (internal rename) and #101 (release
-stack) stay DEFERRED until #203 closes.**
+**HEAD post-Wave-Z (38d7acc + this HANDOFF tweak). P3-4 Wave Z
+(CC voice unblock) CLOSED — 11 tasks + fix-wave + docs (10
+commits). cc-voice can use Forge cleanly: project vocabulary
+everywhere, cross-project leak fixed, auto-create on first contact,
+--dry-run audit, update-session recovery, doctor git_sha + backup
+hygiene warnings. 22-task drain queue at #182-#203 unchanged
+(21 pending — #192 closed early by Z11). ZR (internal rename — #215)
+opens after #203 closes; Wave Z review-residue items #216-#219 are
+v0.6.1+ candidates; #101 release stack opens after #215 closes.
+Resume at #182.**
