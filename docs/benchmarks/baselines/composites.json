@@ -1,0 +1,60 @@
+{
+  "$schema_version": 1,
+  "locked_at": "2026-04-26",
+  "locked_at_sha": "3449649",
+  "locked_by": "P3-3.5 W3",
+  "description": "Locked composite floors for the 6 functional Forge benches. Tracks the spec-intended pass threshold (composite_min) plus the calibrated value at lock time. The 2C-2 auto-PR-on-regression workflow consults this floor in addition to its pairwise current-vs-prior comparison. Recalibration follows the protocol in README.md and requires a planned-regression note + adversarial review + user sign-off.",
+  "benches": {
+    "forge-consolidation": {
+      "composite_min": 0.95,
+      "calibrated_value": 1.0,
+      "code_threshold": 0.80,
+      "code_threshold_path": "crates/daemon/src/bench/forge_consolidation.rs:2799",
+      "calibrated_at_doc": "docs/benchmarks/results/2026-04-26-forge-consolidation-pre-release.md",
+      "note": "Code threshold is intentionally looser than spec floor to allow first-calibration runs (recall_delta=0 case scored as INVALID); composites.json floor is the spec-intended steady-state minimum."
+    },
+    "forge-context": {
+      "composite_min": 0.95,
+      "calibrated_value": 1.0,
+      "code_threshold": 0.50,
+      "code_threshold_path": "crates/daemon/src/bench/forge_context.rs:1153",
+      "calibrated_at_doc": "docs/benchmarks/results/2026-04-26-forge-context-pre-release.md",
+      "note": "Code threshold is stale first-calibration value; calibrated 1.0 across all 5 dims since 2026-04-16. Tighten to 0.95 as backlog cleanup."
+    },
+    "forge-identity": {
+      "composite_min": 0.95,
+      "calibrated_value": 0.999,
+      "code_threshold": 0.95,
+      "code_threshold_path": "crates/daemon/src/bench/forge_identity.rs:88",
+      "calibrated_at_doc": "docs/benchmarks/results/2026-04-25-forge-identity-master-v6-close.md",
+      "note": "Master v6 fix-regression locked at 0.999; 1-row drift in any of the 6 dims would push composite below 0.95 and CATCH it."
+    },
+    "forge-isolation": {
+      "composite_min": 0.95,
+      "calibrated_value": 1.0,
+      "code_threshold": 0.95,
+      "code_threshold_path": "crates/daemon/src/bench/forge_isolation.rs:46",
+      "calibrated_at_doc": "docs/benchmarks/results/2026-04-25-forge-isolation-stage1.md"
+    },
+    "forge-coordination": {
+      "composite_min": 0.95,
+      "calibrated_value": 1.0,
+      "code_threshold": 0.95,
+      "code_threshold_path": "crates/daemon/src/bench/forge_coordination.rs:45",
+      "calibrated_at_doc": "docs/benchmarks/results/2026-04-26-forge-coordination-stage2.md"
+    },
+    "forge-persist": {
+      "composite_min": 1.0,
+      "calibrated_value": 1.0,
+      "code_threshold": 1.0,
+      "code_threshold_path": "crates/daemon/src/bench/forge_persist.rs (recovery_rate == 1.0)",
+      "calibrated_at_doc": "docs/benchmarks/results/2026-04-26-forge-persist-pre-release.md",
+      "note": "Survival probe — composite = recovery_rate; floor is 1.0 because any data loss is unacceptable."
+    }
+  },
+  "regression_policy": {
+    "alarm_at": "calibrated_value - 0.05",
+    "fail_at": "composite_min",
+    "rationale": "5% drop alerts; floor enforces the spec contract. Both checked by scripts/ci/check_bench_regression.py + .github/workflows/bench-regression.yml."
+  }
+}
