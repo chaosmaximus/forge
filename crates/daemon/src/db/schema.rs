@@ -959,23 +959,39 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // `memory.project` (W29) and `identity.project` (W30) store the
     // human-readable NAME (`forge`). That made `--project forge` filters
     // useless on find-symbol/code-search/blast-radius — symbols from
-    // every indexed project leaked through. Repaired here in two passes:
+    // every indexed project leaked through. Repaired here in three passes:
     //
-    // 1. Backfill the basename-equivalent for any path-tagged legacy row.
-    //    Use SQLite string functions (no `Path::file_name` available in
-    //    SQL) — `substr` after the last `/` is sufficient for the POSIX
-    //    paths we know about. Hosts with backslash separators (none in
-    //    production today) would need a more elaborate normaliser.
-    // 2. Defensive sentinel fallback for any row that's NULL / empty
-    //    after the basename pass — should be unreachable but cheap to
-    //    keep correct under malformed writes.
+    // 1. Strip trailing slashes from rooted paths (W1.3 fw2 review MED-3
+    //    fix). A path like `/foo/` would otherwise produce a basename
+    //    of '' under the next pass (the trailing slash makes the "last
+    //    separator" look like position 0), and the sentinel UPDATE
+    //    would silently demote the real project NAME `foo` to
+    //    `_global_`. RTRIM removes any trailing `/` chars before the
+    //    basename pass runs.
+    // 2. Backfill the basename-equivalent for any path-tagged legacy
+    //    row. SQLite has no built-in `REVERSE()`, so we use the standard
+    //    SQLite basename idiom: `REPLACE(p, RTRIM(p, REPLACE(p, '/', '')), '')`
+    //    yields the suffix following the last `/` — see W1.3 fw2 review
+    //    note (the original c1 SUBSTR/INSTR/REVERSE form silently no-op'd
+    //    against `REVERSE()` not existing in SQLite, so on every legacy
+    //    DB the basename rewrite never fired; the live `forge|188`
+    //    verification only looked clean because the DB had been wiped
+    //    fresh, never tested against a pre-W1.2 row).
+    // 3. Defensive sentinel fallback for any row that's NULL / empty /
+    //    root-only after the basename pass.
     //
     // Idempotent — re-running on already-migrated rows is a no-op
-    // because basename(forge) = forge.
+    // because basename(forge) = forge, RTRIM('forge', '/') = 'forge',
+    // and the WHERE LIKE '/%' excludes already-basename rows from the
+    // basename pass.
+    let _ = conn.execute(
+        "UPDATE code_file SET project = RTRIM(project, '/') WHERE project LIKE '%/'",
+        [],
+    );
     let _ = conn.execute(
         "UPDATE code_file
-         SET project = SUBSTR(project, LENGTH(project) - INSTR(REVERSE(project), '/') + 2)
-         WHERE project LIKE '/%' AND INSTR(REVERSE(project), '/') > 0",
+         SET project = REPLACE(project, RTRIM(project, REPLACE(project, '/', '')), '')
+         WHERE project LIKE '/%'",
         [],
     );
     let _ = conn.execute(
@@ -984,6 +1000,62 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     );
     let _ = conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_code_file_project ON code_file(project)",
+        [],
+    );
+
+    // P3-4 W1.3 fw2 (review HIGH-3) — companion DELETE for pre-W1.2
+    // foreign-project pollution.
+    //
+    // Pre-W1.2, `find_project_dir`'s decode-fallback could land at a
+    // shallow filesystem root (`/mnt`, `/home`, `/usr`, etc.) when the
+    // Claude transcript dirname's dash↔slash decode round-trip failed
+    // (live-verified — 10,005 jupyterlab files leaked from a different
+    // user's $HOME via `/mnt`). The W1.2 c3 depth guard prevents future
+    // leaks; this companion DELETE cleans up DBs that already accrued
+    // the pollution before upgrading. The c1 SUBSTR backfill renames
+    // those rows from `project='/mnt'` to `project='mnt'`, so the
+    // detection predicate is doubly-anchored: `project=basename(root)`
+    // AND `path LIKE '/<root>/%'`. A legitimate project at
+    // `/repo/foo/mnt` named `mnt` is therefore NOT touched (its `path`
+    // wouldn't start with `/mnt/`).
+    //
+    // Cascade — there is no FK cascade configured. Order: edges that
+    // reference symbols of polluted files → those symbols → the files
+    // themselves.
+    //
+    // Idempotent — second run finds no matching rows, deletes 0.
+    const POLLUTION_PREDICATE: &str = "((project = 'mnt' AND path LIKE '/mnt/%') \
+        OR (project = 'home' AND path LIKE '/home/%') \
+        OR (project = 'usr' AND path LIKE '/usr/%') \
+        OR (project = 'var' AND path LIKE '/var/%') \
+        OR (project = 'tmp' AND path LIKE '/tmp/%') \
+        OR (project = 'etc' AND path LIKE '/etc/%') \
+        OR (project = 'opt' AND path LIKE '/opt/%') \
+        OR (project = 'srv' AND path LIKE '/srv/%') \
+        OR (project = 'proc' AND path LIKE '/proc/%') \
+        OR (project = 'sys' AND path LIKE '/sys/%') \
+        OR (project = 'boot' AND path LIKE '/boot/%') \
+        OR (project = 'dev' AND path LIKE '/dev/%') \
+        OR (project = 'run' AND path LIKE '/run/%'))";
+
+    let polluted_paths_subquery =
+        format!("SELECT path FROM code_file WHERE {POLLUTION_PREDICATE}");
+
+    let _ = conn.execute(
+        &format!(
+            "DELETE FROM edge WHERE from_id IN (SELECT id FROM code_symbol WHERE file_path IN ({polluted_paths_subquery})) \
+                                OR to_id IN (SELECT id FROM code_symbol WHERE file_path IN ({polluted_paths_subquery}))"
+        ),
+        [],
+    );
+    let _ = conn.execute(
+        &format!(
+            "DELETE FROM code_symbol WHERE file_path IN ({polluted_paths_subquery})"
+        ),
+        [],
+    );
+    let _ = conn.execute(
+        &format!("DELETE FROM code_file WHERE {POLLUTION_PREDICATE}"),
         [],
     );
 
@@ -2969,5 +3041,299 @@ mod tests {
             project_after_heal, "_global_",
             "defensive UPDATE must heal explicit empty-string project values"
         );
+    }
+
+    #[test]
+    fn p3_4_w1_2_code_file_project_basename_backfill() {
+        // P3-4 W1.2 c1 + W1.3 fw2: code_file.project basename migration —
+        // backfill leg. Mirror of the W29/W30 sentinel tests, extended for
+        // the SUBSTR/REVERSE/INSTR PATH→basename rewrite and the
+        // trailing-slash hygiene pass added in W1.3 fw2.
+        //
+        // Verifies the data-side migration: pre-W1.2 rows tagged with the
+        // full project PATH (`/repo/forge`, `/repo/forge/`, `/`) are
+        // rewritten to basename (`forge`, `forge`, sentinel). Already-
+        // basename rows (`forge`) are unchanged. NULL / empty rows fall
+        // through to `_global_`. Idempotent across reruns.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Build the pre-W1.2 code_file table shape and seed rows
+        // representative of the PATH-tagging surface plus the corner
+        // cases reviewer MED-3 flagged (trailing slash, root, already-
+        // basename, NULL, empty).
+        conn.execute_batch(
+            "CREATE TABLE code_file (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                language TEXT NOT NULL,
+                project TEXT,
+                hash TEXT NOT NULL,
+                indexed_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_file (id, path, language, project, hash, indexed_at) VALUES \
+             ('rooted',         '/x/a.rs',  'rust',   '/repo/forge',  'h', '2026-01-01'), \
+             ('rooted-deep',    '/x/b.rs',  'rust',   '/mnt/colab-disk/DurgaSaiK/forge', 'h', '2026-01-01'), \
+             ('trailing-slash', '/x/c.rs',  'rust',   '/repo/forge/', 'h', '2026-01-01'), \
+             ('root-only',      '/x/d.rs',  'rust',   '/',            'h', '2026-01-01'), \
+             ('already-name',   '/x/e.rs',  'rust',   'forge',        'h', '2026-01-01'), \
+             ('null-project',   '/x/f.rs',  'rust',   NULL,           'h', '2026-01-01'), \
+             ('empty-project',  '/x/g.rs',  'rust',   '',             'h', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+
+        // Apply the migration.
+        create_schema(&conn).unwrap();
+
+        // Backfill must produce expected basename / sentinel for each row.
+        for (id, expected) in [
+            ("rooted", "forge"),
+            ("rooted-deep", "forge"),
+            ("trailing-slash", "forge"),
+            ("root-only", "_global_"),
+            ("already-name", "forge"),
+            ("null-project", "_global_"),
+            ("empty-project", "_global_"),
+        ] {
+            let actual: String = conn
+                .query_row(
+                    "SELECT project FROM code_file WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                actual, expected,
+                "basename backfill must produce expected project for id={id}"
+            );
+        }
+
+        // Sanity: no row carries NULL / empty / a leading-slash path post-migration.
+        let bad_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM code_file WHERE project IS NULL OR project = '' OR project LIKE '/%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            bad_rows, 0,
+            "after migration no code_file row may have NULL/empty/PATH-shaped project"
+        );
+
+        // Idempotence: re-running create_schema is a no-op for already-
+        // migrated rows (RTRIM('forge', '/')='forge', SUBSTR rooted-only,
+        // sentinel WHERE matches nothing).
+        create_schema(&conn).unwrap();
+        let bad_rows_after_rerun: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM code_file WHERE project IS NULL OR project = '' OR project LIKE '/%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            bad_rows_after_rerun, 0,
+            "re-running migration must be a no-op"
+        );
+        let still_forge: String = conn
+            .query_row(
+                "SELECT project FROM code_file WHERE id = 'rooted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            still_forge, "forge",
+            "idempotent rerun must NOT re-mangle already-basename rows"
+        );
+    }
+
+    #[test]
+    fn p3_4_w1_3_code_file_foreign_pollution_cleanup() {
+        // P3-4 W1.3 fw2 (review HIGH-3): companion DELETE for pre-W1.2
+        // foreign-project pollution. Pre-W1.2 the indexer's `find_project_dir`
+        // could fall back to `/mnt`/`/home`/etc. and walk every subtree,
+        // pulling foreign files into the code graph. After c1's basename
+        // backfill those rows carry `project='mnt'` / `'home'` / etc.,
+        // alongside any legitimate project rows. The companion DELETE
+        // is doubly-anchored: project=basename(root) AND path begins
+        // with /<root>/ — so it removes pollution but spares a real
+        // project that just happens to be named 'mnt'.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Pre-W1.2 row shape — the migration rewrites `project` from
+        // PATH to basename, then the cleanup arm runs.
+        conn.execute_batch(
+            "CREATE TABLE code_file (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                language TEXT NOT NULL,
+                project TEXT,
+                hash TEXT NOT NULL,
+                indexed_at TEXT NOT NULL
+            );
+            CREATE TABLE code_symbol (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                line_start INTEGER,
+                line_end INTEGER,
+                signature TEXT
+            );
+            CREATE TABLE edge (
+                id TEXT PRIMARY KEY,
+                from_id TEXT NOT NULL,
+                to_id TEXT NOT NULL,
+                edge_type TEXT NOT NULL,
+                properties TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                valid_from TEXT NOT NULL,
+                valid_until TEXT
+            );",
+        )
+        .unwrap();
+
+        // Pollution: tagged with PATH (which c1 rewrites to 'mnt'/'home'/etc.),
+        // path under that root.
+        conn.execute(
+            "INSERT INTO code_file (id, path, language, project, hash, indexed_at) VALUES \
+             ('pollute-mnt',  '/mnt/foreign/user/.cache/jupyter/file.py', 'python', '/mnt',  'h', '2026-01-01'), \
+             ('pollute-home', '/home/other-user/repo/file.py',            'python', '/home', 'h', '2026-01-01'), \
+             ('pollute-tmp',  '/tmp/scratch/file.py',                     'python', '/tmp',  'h', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        // Legitimate project: real rows under a plausible repo path.
+        conn.execute(
+            "INSERT INTO code_file (id, path, language, project, hash, indexed_at) VALUES \
+             ('legit-forge', '/repo/forge/main.rs', 'rust', '/repo/forge', 'h', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        // Adversarial: a real project that happens to be named 'mnt' but
+        // whose PATH does NOT start with /mnt/. Must NOT be cleaned up.
+        conn.execute(
+            "INSERT INTO code_file (id, path, language, project, hash, indexed_at) VALUES \
+             ('legit-mnt-named', '/repo/mnt-tool/lib.rs', 'rust', '/repo/mnt-tool', 'h', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+
+        // Symbols of every file (including pollution) — so we can verify
+        // cascading DELETE through code_symbol → edge.
+        conn.execute(
+            "INSERT INTO code_symbol (id, name, kind, file_path, line_start, line_end, signature) VALUES \
+             ('sym-pollute-mnt',  'foreign_fn',     'function', '/mnt/foreign/user/.cache/jupyter/file.py', 1, 1, ''), \
+             ('sym-pollute-home', 'other_fn',       'function', '/home/other-user/repo/file.py',            1, 1, ''), \
+             ('sym-pollute-tmp',  'scratch_fn',     'function', '/tmp/scratch/file.py',                     1, 1, ''), \
+             ('sym-legit-forge',  'main',           'function', '/repo/forge/main.rs',                      1, 1, ''), \
+             ('sym-legit-mnt',    'mnt_named_fn',   'function', '/repo/mnt-tool/lib.rs',                    1, 1, '')",
+            [],
+        )
+        .unwrap();
+        // Edge connecting two pollution symbols (should be cleaned), one
+        // edge connecting two legit symbols (should survive).
+        conn.execute(
+            "INSERT INTO edge (id, from_id, to_id, edge_type, properties, created_at, valid_from) VALUES \
+             ('e-pollute', 'sym-pollute-mnt',  'sym-pollute-home', 'imports', '{}', '2026-01-01', '2026-01-01'), \
+             ('e-cross',   'sym-legit-forge',  'sym-pollute-tmp',  'imports', '{}', '2026-01-01', '2026-01-01'), \
+             ('e-legit',   'sym-legit-forge',  'sym-legit-mnt',    'imports', '{}', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+
+        // Apply the migration.
+        create_schema(&conn).unwrap();
+
+        // Pollution rows are gone from code_file.
+        for id in ["pollute-mnt", "pollute-home", "pollute-tmp"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM code_file WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "pollution row {id} must be deleted");
+        }
+        // Legit rows survive — both the typical case and the adversarial
+        // 'mnt'-named-but-not-/mnt-rooted case.
+        for id in ["legit-forge", "legit-mnt-named"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM code_file WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "legit row {id} must survive cleanup");
+        }
+        // The 'mnt'-named legit row's project should be the basename of
+        // its path post-migration: 'mnt-tool'.
+        let legit_mnt_project: String = conn
+            .query_row(
+                "SELECT project FROM code_file WHERE id = 'legit-mnt-named'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legit_mnt_project, "mnt-tool");
+
+        // Symbols of polluted files cascade-deleted; symbols of legit
+        // files survive.
+        for sym_id in ["sym-pollute-mnt", "sym-pollute-home", "sym-pollute-tmp"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM code_symbol WHERE id = ?1",
+                    rusqlite::params![sym_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "polluted symbol {sym_id} must be cascaded out");
+        }
+        for sym_id in ["sym-legit-forge", "sym-legit-mnt"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM code_symbol WHERE id = ?1",
+                    rusqlite::params![sym_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "legit symbol {sym_id} must survive");
+        }
+
+        // Edges with EITHER endpoint in pollution are cascade-deleted;
+        // the legit-only edge survives.
+        let count_pollute: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edge WHERE id IN ('e-pollute','e-cross')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_pollute, 0, "polluted-endpoint edges must be cascaded out");
+        let count_legit: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edge WHERE id = 'e-legit'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_legit, 1, "legit-only edge must survive");
+
+        // Idempotence: second create_schema is a no-op (no rows match the
+        // pollution predicate after the first run).
+        create_schema(&conn).unwrap();
+        let total_files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_files, 2, "second pass deletes nothing further");
     }
 }
