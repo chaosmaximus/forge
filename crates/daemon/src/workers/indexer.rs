@@ -291,18 +291,51 @@ pub fn find_project_dir() -> Option<String> {
         let decoded = name.replace('-', "/");
         // Walk backwards from the full decoded path to find a real directory
         // e.g. "/mnt/colab/disk/..." — try progressively shorter prefixes
-        // Only check at slash boundaries
+        // Only check at slash boundaries.
+        //
+        // P3-4 W1.2 c2 (I-7): require ≥4 path segments. Without this
+        // floor, the fallback returns shallow filesystem roots like
+        // `/mnt` when the path can't be reconstructed (e.g. underscores
+        // in original components don't survive the dash↔slash decode
+        // round-trip — `dhruvishah_finexos_io` stays as-is, breaking
+        // the path lookup, and the loop terminates at `/mnt`). The
+        // indexer then walks every project under that root, pulling
+        // in foreign users' homes (live-verified during W1 dogfood —
+        // 10,005 jupyterlab/IPython files leaked into the forge code
+        // graph from a different user's $HOME). 4 segments is the
+        // empirical floor that excludes `/`, `/mnt`, `/home`, `/usr`,
+        // `/var`, but accepts genuine project paths like
+        // `/mnt/colab-disk/DurgaSaiK/forge` (4 segments).
         let bytes = decoded.as_bytes();
         for i in (1..bytes.len()).rev() {
             if bytes[i] == b'/' {
                 let candidate = &decoded[..i];
-                if std::path::Path::new(candidate).is_dir() {
+                if candidate.matches('/').count() >= 4 && std::path::Path::new(candidate).is_dir() {
                     return Some(candidate.to_string());
                 }
             }
         }
     }
 
+    None
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn find_project_dir_candidate_for_test(decoded: &str) -> Option<String> {
+    // Mirrors the inner loop of `find_project_dir` for unit-testing the
+    // shallow-prefix guard (P3-4 W1.2 c2 / I-7) without needing real
+    // directory entries on disk. Production callers should use
+    // `find_project_dir` directly.
+    let bytes = decoded.as_bytes();
+    for i in (1..bytes.len()).rev() {
+        if bytes[i] == b'/' {
+            let candidate = &decoded[..i];
+            if candidate.matches('/').count() >= 4 {
+                return Some(candidate.to_string());
+            }
+        }
+    }
     None
 }
 
@@ -2115,7 +2148,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(db_files, 2, "should store 2 files in DB tagged with project name '{project_name}'");
+        assert_eq!(
+            db_files, 2,
+            "should store 2 files in DB tagged with project name '{project_name}'"
+        );
 
         // Verify symbols stored
         let db_symbols: usize = conn
@@ -2302,6 +2338,38 @@ def process_data(input_data):
         assert!(
             mt >= old_mt,
             "max ({mt:?}) must be ≥ both recorded mtimes (older was {old_mt:?})"
+        );
+    }
+
+    #[test]
+    fn p3_4_w1_2_find_project_dir_rejects_shallow_filesystem_roots() {
+        // I-7 root cause regression: when Claude Code's transcript dir
+        // name has un-decodable underscores (e.g. `dhruvishah_finexos_io`),
+        // the dash↔slash decode round-trip fails to reconstruct the
+        // original path. Pre-W1.2 the fallback loop happily returned
+        // `/mnt` (or any other shallow real directory) as the project
+        // dir, and the indexer walked that whole subtree, leaking
+        // foreign users' homes into the code graph (live-verified —
+        // 10,005 jupyterlab/IPython files from a different user).
+        //
+        // The guard now requires ≥4 path-segment slashes; this test
+        // pins that contract.
+        assert_eq!(find_project_dir_candidate_for_test("/mnt"), None);
+        assert_eq!(find_project_dir_candidate_for_test("/mnt/foo"), None);
+        assert_eq!(
+            find_project_dir_candidate_for_test("/mnt/colab/disk"),
+            None,
+            "3 slashes is below the floor — would still leak from /mnt-rooted decodes"
+        );
+        // 4-segment path qualifies — typical mounted-disk project layout.
+        let candidate = find_project_dir_candidate_for_test("/mnt/colab-disk/DurgaSaiK/forge/leaf");
+        assert!(
+            candidate.is_some(),
+            "/mnt/colab-disk/DurgaSaiK/forge has 4 slash segments and should be admitted"
+        );
+        assert_eq!(
+            candidate.as_deref(),
+            Some("/mnt/colab-disk/DurgaSaiK/forge")
         );
     }
 }
