@@ -10,7 +10,7 @@ groups:
         annotations:
           summary: "Forge worker {{ $labels.worker }} is down"
           description: "Worker {{ $labels.worker }} has been unhealthy for more than 5 minutes."
-          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/worker-down"
+          runbook_url: "docs/operations/runbooks/worker-down.md"
 
       - alert: ForgeExtractionSlow
         expr: histogram_quantile(0.95, rate(forge_extraction_duration_seconds_bucket[5m])) > 60
@@ -20,7 +20,7 @@ groups:
         annotations:
           summary: "Forge extraction p95 latency exceeds 60s"
           description: "The 95th percentile extraction duration has exceeded 60 seconds for 5 minutes. Current value: {{ $value | humanizeDuration }}."
-          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/extraction-slow"
+          runbook_url: "docs/operations/runbooks/extraction-slow.md"
 
       - alert: ForgeMemoryStale
         expr: delta(forge_memories_total[1h]) == 0
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "Forge memory count unchanged for over 1 hour"
           description: "The total memory count has not changed in the last hour. This may indicate the extraction pipeline is stalled or no new data is being ingested."
-          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/memory-stale"
+          runbook_url: "docs/operations/runbooks/memory-stale.md"
 
       - alert: ForgeHighRecallLatency
         expr: histogram_quantile(0.99, rate(forge_recall_latency_seconds_bucket[5m])) > 5
@@ -40,6 +40,7 @@ groups:
         annotations:
           summary: "Forge recall p99 latency exceeds 5s"
           description: "The 99th percentile recall latency has exceeded 5 seconds for 10 minutes. Current value: {{ $value | humanizeDuration }}."
+          runbook_url: "docs/operations/runbooks/high-recall-latency.md"
 
       - alert: ForgeNoActiveSessions
         expr: forge_active_sessions == 0
@@ -49,6 +50,7 @@ groups:
         annotations:
           summary: "No active Forge sessions for 30 minutes"
           description: "There have been zero active sessions for 30 minutes. This may be expected during off-hours."
+          runbook_url: "docs/operations/runbooks/no-active-sessions.md"
 
       - alert: ForgeAllWorkersDown
         expr: count(forge_worker_healthy == 1) == 0
@@ -58,7 +60,7 @@ groups:
         annotations:
           summary: "All Forge workers are down"
           description: "No healthy workers detected. The daemon may be non-functional."
-          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/all-workers-down"
+          runbook_url: "docs/operations/runbooks/all-workers-down.md"
 
       # ---------------------------------------------------------------
       # Phase-error family alerts (added in P3-3.5 W5)
@@ -74,7 +76,7 @@ groups:
         annotations:
           summary: "Phase {{ $labels.phase_name }} persistence error rate elevated"
           description: "The {{ $labels.phase_name }} consolidation phase is producing persistence errors at > 0.01/s for 5 minutes. May indicate DB lock contention, schema drift, or write-amp under load. Current rate: {{ $value }}/s."
-          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/phase-persistence-error"
+          runbook_url: "docs/operations/runbooks/phase-persistence-error.md"
 
       - alert: ForgeLayerFreshnessStaleHour
         expr: forge_layer_freshness_seconds > 3600
@@ -84,7 +86,7 @@ groups:
         annotations:
           summary: "Layer {{ $labels.layer }} not updated in over 1 hour"
           description: "The {{ $labels.layer }} layer's freshness gauge has exceeded 3600s (1 hour) for 10 minutes. May indicate the layer's worker has stalled or its source is empty. Current age: {{ $value | humanizeDuration }}."
-          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/layer-stale"
+          runbook_url: "docs/operations/runbooks/layer-stale.md"
 
       - alert: ForgePhaseStuck
         expr: histogram_quantile(0.95, sum by (phase_name, le) (rate(forge_phase_duration_seconds_bucket[5m]))) > 5
@@ -94,4 +96,4 @@ groups:
         annotations:
           summary: "Phase {{ $labels.phase_name }} p95 duration > 5s"
           description: "The {{ $labels.phase_name }} consolidation phase's 95th-percentile duration exceeds 5 seconds for 5 minutes. May indicate a runaway query, lock contention, or workload regression. Current p95: {{ $value | humanizeDuration }}."
-          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/phase-stuck"
+          runbook_url: "docs/operations/runbooks/phase-stuck.md"
