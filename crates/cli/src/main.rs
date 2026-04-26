@@ -298,6 +298,10 @@ enum Commands {
         /// Timeout in seconds (for requests)
         #[arg(long)]
         timeout: Option<u64>,
+        /// Caller session ID — recorded as the message's `from_session`.
+        /// Falls back to FORGE_SESSION_ID env var if unset.
+        #[arg(long)]
+        from: Option<String>,
     },
     /// Get pending messages for a session
     #[command(name = "messages")]
@@ -1434,8 +1438,9 @@ async fn main() {
             text,
             project,
             timeout,
+            from,
         } => {
-            commands::system::send_message(to, kind, topic, text, project, timeout).await;
+            commands::system::send_message(to, kind, topic, text, project, timeout, from).await;
         }
         Commands::Messages {
             session,

@@ -843,6 +843,31 @@ pub async fn cleanup_sessions(
 
 // ── A2A Inter-Session Messaging ──
 
+/// Resolve the caller-identity `from_session` for outbound FISP messages.
+///
+/// Order: explicit `--from <session_id>` flag > `FORGE_SESSION_ID` env var > `None`
+/// (which the daemon converts to the literal `"api"`).
+///
+/// Emits a one-time stderr warning when neither source is present so that
+/// scripts which previously relied on the silent `"api"` fallback are nudged
+/// toward setting an identity. Returns the resolved session id (or `None`).
+pub fn resolve_from_session(explicit: Option<String>) -> Option<String> {
+    if let Some(v) = explicit.filter(|s| !s.is_empty()) {
+        return Some(v);
+    }
+    match std::env::var("FORGE_SESSION_ID") {
+        Ok(v) if !v.is_empty() => Some(v),
+        _ => {
+            eprintln!(
+                "[cli] WARN: outbound FISP message has no caller identity — \
+                falling back to from_session=\"api\". \
+                Pass --from <session_id> or set FORGE_SESSION_ID to identify the caller."
+            );
+            None
+        }
+    }
+}
+
 pub async fn send_message(
     to: String,
     kind: String,
@@ -850,6 +875,7 @@ pub async fn send_message(
     text: String,
     project: Option<String>,
     timeout: Option<u64>,
+    from: Option<String>,
 ) {
     let parts = vec![forge_core::protocol::MessagePart {
         kind: "text".to_string(),
@@ -866,7 +892,7 @@ pub async fn send_message(
         project,
         timeout_secs: timeout,
         meeting_id: None,
-        from_session: None,
+        from_session: resolve_from_session(from),
     };
     match client::send(&req).await {
         Ok(Response::Ok {
@@ -2782,4 +2808,47 @@ pub async fn init() {
 
 fn chrono_now() -> String {
     forge_core::time::timestamp_now()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_from_session;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn explicit_from_flag_wins_over_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FORGE_SESSION_ID", "ses-from-env");
+        let resolved = resolve_from_session(Some("ses-from-flag".to_string()));
+        std::env::remove_var("FORGE_SESSION_ID");
+        assert_eq!(resolved.as_deref(), Some("ses-from-flag"));
+    }
+
+    #[test]
+    fn env_var_used_when_flag_absent() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FORGE_SESSION_ID", "ses-from-env");
+        let resolved = resolve_from_session(None);
+        std::env::remove_var("FORGE_SESSION_ID");
+        assert_eq!(resolved.as_deref(), Some("ses-from-env"));
+    }
+
+    #[test]
+    fn returns_none_when_neither_present() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("FORGE_SESSION_ID");
+        let resolved = resolve_from_session(None);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn empty_flag_falls_through_to_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FORGE_SESSION_ID", "ses-from-env");
+        let resolved = resolve_from_session(Some(String::new()));
+        std::env::remove_var("FORGE_SESSION_ID");
+        assert_eq!(resolved.as_deref(), Some("ses-from-env"));
+    }
 }

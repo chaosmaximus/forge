@@ -1161,7 +1161,7 @@ pub async fn team_send(
         kind,
         topic,
         parts,
-        from_session: from,
+        from_session: super::system::resolve_from_session(from),
         recursive,
     };
     match client::send(&req).await {
