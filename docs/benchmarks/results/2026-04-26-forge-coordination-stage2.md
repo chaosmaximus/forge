@@ -15,14 +15,20 @@ checks pass; all 6 dimensions hit 1.0000.
 
 ## Per-seed results
 
-| Seed   | composite | inbox_precision | roundtrip | broadcast | authz | edge_case | pipeline | infra | wall_ms | verdict |
-|--------|-----------|-----------------|-----------|-----------|-------|-----------|----------|-------|---------|---------|
-| 7      | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 5       | PASS    |
-| 13     | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 5       | PASS    |
-| 42     | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 5       | PASS    |
-| 100    | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 5       | PASS    |
-| 1234   | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 6       | PASS    |
-| 99999  | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 5       | PASS    |
+| Seed   | composite | inbox_precision | roundtrip | broadcast | authz | edge_case | pipeline | infra | wall_ms¹ | verdict |
+|--------|-----------|-----------------|-----------|-----------|-------|-----------|----------|-------|----------|---------|
+| 7      | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 2        | PASS    |
+| 13     | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 2        | PASS    |
+| 42     | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 2        | PASS    |
+| 100    | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 2        | PASS    |
+| 1234   | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 2        | PASS    |
+| 99999  | 1.0000    | 1.0000          | 1.0000    | 1.0000    | 1.0000| 1.0000    | 1.0000   | 9/9   | 2        | PASS    |
+
+¹ Re-measured at HEAD `5a49799` in **release build** per P3-3.5 W4.
+The original Stage 2 close numbers (5–6 ms) were captured in **debug
+build**; release-build is consistently 2 ms across all 6 seeds. The
+debug overhead came from `assert!`/`debug_assert!` checks in the
+inner D1 / D6 paths.
 
 ## Why all seeds converge identically
 
@@ -88,7 +94,8 @@ init, ONNX runtime cold-load, and binary load run outside that timer.
 
 **CI implication:** the matrix step's effective overhead is ~152 ms ×
 runner overhead factor; matrix entry adds ~60 s wall-clock per matrix
-run (matches the forge-isolation precedent at spec §3 line 97).
+run (matches the forge-isolation precedent at
+[`docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md` line 247](../../superpowers/specs/2026-04-25-domain-isolation-bench-design.md)).
 
 ## Reproduction
 

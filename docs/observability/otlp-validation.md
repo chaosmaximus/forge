@@ -96,7 +96,7 @@ variable.
 ### 3. Spans appear but lack `phase_name` attributes
 
 This is a regression in the consolidator instrumentation
-(`crates/daemon/src/consolidator/mod.rs`). Verify with
+(`crates/daemon/src/workers/consolidator.rs`). Verify with
 `bash scripts/ci/check_spans.sh` — the static check ensures every
 phase has `info_span!(...)` + `record(phase_outcome)` pairs.
 

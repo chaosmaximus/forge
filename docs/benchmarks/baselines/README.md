@@ -30,7 +30,7 @@ Baselines are locked at **release boundaries** only:
 |-------|--------|
 | Release candidate cut (e.g. `v0.6.0-rc.3`) | `composite_min` stays, `calibrated_value` updated from re-run results. |
 | GA release (e.g. `v0.6.0`) | Both fields updated; `locked_at` + `locked_at_sha` bumped. |
-| Spec change (D1 weight changes, dim added/removed) | Hard re-lock: bump `$schema_version` if shape changed, otherwise refresh both fields. |
+| Spec change (D1 weight changes, dim added/removed) | Hard re-lock: bump `schema_version` if shape changed, otherwise refresh both fields. |
 | Daemon bug fix that improves a dim | `calibrated_value` only; `composite_min` stays. Don't ratchet the floor up reactively. |
 
 ## How to recalibrate
