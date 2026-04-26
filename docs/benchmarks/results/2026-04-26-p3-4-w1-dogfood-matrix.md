@@ -389,3 +389,87 @@ forge-next force-index
 
 Per Plan A decision #2: macOS is best-effort; cells noted as best-effort
 with reproduction steps for user to execute.
+
+## §20 Sync surfaces — ✓ partial (#176 closed 2026-04-26)
+
+`forge-next sync-*` family on the live daemon at HEAD `13ed0c8`:
+
+* `sync-export` → 1 NDJSON line per active memory + summary
+  `Exported 1 entries from node 824b7353`. HLC timestamp +
+  organization_id present on each row. ✓
+* `sync-import` roundtrip — re-importing the same NDJSON correctly
+  reports `Imported: 0, Conflicts: 0` (HLC dedup recognises the
+  re-import as same write). ✓
+* `sync-conflicts` → `No unresolved sync conflicts.` ✓
+* `export` (full JSON) → emits `count: {edges, ...}` summary, structurally valid. ✓
+
+`sync-pull` / `sync-push` require a remote SSH endpoint so cannot be
+dogfooded standalone; their CLI shape is exposed and documented.
+Deferred to a paired-host follow-up post-iteration.
+
+## §21 Healing system — ✓ (#177 closed 2026-04-26)
+
+* `forge-next healing-status` →
+  `Total healed: 0, Auto-superseded: 0, Auto-faded: 0, Last cycle: never, Stale candidates: 0`.
+  Zero-state on freshly-respawned daemon. ✓
+* `forge-next healing-run` →
+  `Healing cycle complete: Topic superseded: 0, Session faded: 0, Quality adjusted: 1`.
+  Quality pass touched 1 row (the surviving Session 17 lesson). ✓
+* `memory_self_heal` worker is in the running set (`forge-next doctor`
+  Workers: …, consolidator, …, perception, disposition, diagnostics).
+
+Functional. The `Quality adjusted: 1` matches the Phase 22 quality
+pressure log line emitted during force_consolidate (cross-checked).
+
+## §22 Guardrails — ✓ (#178 closed 2026-04-26)
+
+| Surface | Probe | Observed |
+|---------|-------|----------|
+| `check --file <path>` | `crates/daemon/src/db/ops.rs` | `Safe to proceed — no decisions linked to crates/daemon/src/db/ops.rs` ✓ |
+| `post-edit-check --file <path>` | `crates/daemon/src/workers/indexer.rs` | (silent — no callers/lessons surface for an in-tree edit) ✓ |
+| `pre-bash-check --command 'rm -rf /tmp/test'` | destructive command | `Destructive: rm -rf -- Recursive force delete -- verify path before running` + `[proactive uat_lesson] Session 17 — P3-4 W1.3 close` ✓ |
+| `pre-bash-check --command 'ls /tmp'` | benign command | proactive lesson only (no destructive flag) ✓ |
+| `post-bash-check --command 'cargo test' --exit-code 1` | failed command | (silent — no skill mining surface for a generic failure) ✓ |
+| `context-refresh`, `completion-check`, `task-completion-check` | hook entry-points | exposed as separate CLI subcommands, expected to be triggered by Claude Code hooks not direct invocation. |
+
+**Live verification side-effect:** the `pre-bash-check` ran via the
+PreToolUse hook on a real `rm -rf` Bash call elsewhere in this
+session, surfacing the same `forge-bash-check` xml block back to the
+agent. End-to-end loop closed.
+
+## §23 Config + scope resolver — ✓ (#179 closed 2026-04-26)
+
+End-to-end scope precedence verification on the live daemon:
+
+```
+$ forge-next config set-scoped --scope organization --scope-id default \
+    --key context_injection.session_context --value true
+Scoped config set: context_injection.session_context at organization/default
+
+$ forge-next config get-effective --organization default
+  context_injection.session_context = true
+    from: organization/default (locked: false)
+
+$ forge-next config set-scoped --scope user --scope-id local \
+    --key context_injection.session_context --value false
+Scoped config set: context_injection.session_context at user/local
+
+$ forge-next config get-effective --organization default --user local
+  context_injection.session_context = false
+    from: user/local (locked: false)
+```
+
+User scope correctly overrides organization scope; the resolver
+honors the documented precedence (`user > organization`). `--locked`
+flag and `--ceiling` exist but were not exercised. Cleanup via
+`delete-scoped` works.
+
+**Issues found (logged):**
+* **I-13 (LOW)** — PreToolUse `forge-bash-check` hook performs
+  substring-match on the bash command text including content of
+  arguments and quoted strings. Running a benign `forge-next
+  pre-bash-check --command 'rm -rf /tmp/test'` (which has 'rm -rf'
+  inside an `--command` arg) triggers the destructive-pattern
+  warning. Not security-critical (warning, not block) but a
+  precision issue. Defer.
+
