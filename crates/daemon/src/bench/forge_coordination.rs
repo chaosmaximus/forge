@@ -200,15 +200,16 @@ pub fn generate_corpus(_rng: &mut ChaCha20Rng) -> Corpus {
                 continue;
             }
             for idx_in_pair in 0..MSGS_PER_PAIR {
-                let kind = if idx_global.is_multiple_of(10) { "request" } else { "notification" };
+                let kind = if idx_global.is_multiple_of(10) {
+                    "request"
+                } else {
+                    "notification"
+                };
                 let id = format!(
                     "seed_{}_{}_to_{}_{}_{}",
                     sender.role, sender.project, recipient.role, recipient.project, idx_in_pair
                 );
-                let topic = format!(
-                    "seed_{}_{}_{}",
-                    sender.role, recipient.role, idx_in_pair
-                );
+                let topic = format!("seed_{}_{}_{}", sender.role, recipient.role, idx_in_pair);
                 let parts = format!(
                     "[{{\"text\":\"{}_{}_to_{}_{}: m_{}\"}}]",
                     sender.role, sender.project, recipient.role, recipient.project, idx_in_pair
@@ -288,27 +289,35 @@ pub fn seed_corpus(state: &mut DaemonState, corpus: &Corpus) -> rusqlite::Result
 /// touches this row; comparing pre/post hash detects DROP TABLE / DELETE /
 /// UPDATE-class mutations.
 /// Tuple alias for the 8 canonical sentinel-row columns.
-type SentinelRow = (String, String, String, String, String, String, String, Option<String>);
+type SentinelRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+);
 
 fn sentinel_row_hash(state: &DaemonState) -> Option<String> {
-    let row: rusqlite::Result<SentinelRow> =
-        state.conn.query_row(
-            "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to
+    let row: rusqlite::Result<SentinelRow> = state.conn.query_row(
+        "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to
              FROM session_message WHERE id = ?1",
-            rusqlite::params![SENTINEL_ROW_ID],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                ))
-            },
-        );
+        rusqlite::params![SENTINEL_ROW_ID],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        },
+    );
     match row {
         Ok((id, fs, ts, k, top, p, st, irt)) => {
             let irt_str = irt.unwrap_or_default();
@@ -403,18 +412,30 @@ fn dim_2_roundtrip_correctness(state: &mut DaemonState, corpus: &Corpus) -> Dime
         };
 
         // Retrieve and find by id.
-        let inbox = list_messages(&state.conn, &to.id, Some("pending"), 1000, None)
-            .unwrap_or_default();
+        let inbox =
+            list_messages(&state.conn, &to.id, Some("pending"), 1000, None).unwrap_or_default();
         let row = inbox.iter().find(|m| m.id == msg_id);
 
         if let Some(r) = row {
             pass += 1; // (a) row found
-            if r.from_session == from.id { pass += 1; } // (b) from
-            if r.to_session == to.id { pass += 1; } // (c) to
-            if r.topic == topic { pass += 1; } // (d) topic
-            if r.parts == parts { pass += 1; } // (e) parts
-            if r.kind == "notification" { pass += 1; } // (f) kind
-            if r.project.as_deref() == Some(TEAM_ALPHA) { pass += 1; } // (g) project
+            if r.from_session == from.id {
+                pass += 1;
+            } // (b) from
+            if r.to_session == to.id {
+                pass += 1;
+            } // (c) to
+            if r.topic == topic {
+                pass += 1;
+            } // (d) topic
+            if r.parts == parts {
+                pass += 1;
+            } // (e) parts
+            if r.kind == "notification" {
+                pass += 1;
+            } // (f) kind
+            if r.project.as_deref() == Some(TEAM_ALPHA) {
+                pass += 1;
+            } // (g) project
         }
     }
 
@@ -506,14 +527,16 @@ fn dim_3_broadcast_project_scoping(state: &mut DaemonState, corpus: &Corpus) -> 
             .unwrap_or_default();
 
         // (b) all new rows have project = sender's project
-        if !new_rows.is_empty()
-            && new_rows.iter().all(|(_, p)| p.as_deref() == Some(*project))
-        {
+        if !new_rows.is_empty() && new_rows.iter().all(|(_, p)| p.as_deref() == Some(*project)) {
             pass += 1;
         }
 
         // (c) zero new rows addressed to other-project sessions
-        let other_project = if *project == TEAM_ALPHA { TEAM_BETA } else { TEAM_ALPHA };
+        let other_project = if *project == TEAM_ALPHA {
+            TEAM_BETA
+        } else {
+            TEAM_ALPHA
+        };
         let other_session_ids: Vec<&String> = corpus
             .sessions
             .iter()
@@ -555,9 +578,15 @@ fn dim_4_authorization_enforcement(state: &mut DaemonState, corpus: &Corpus) -> 
 
     // Pick stable session triplet in team-alpha avoiding sentinel pair (planner_alpha, generator_alpha):
     // sender = generator_alpha, recipient = evaluator_alpha, attacker = planner_alpha.
-    let a = corpus.session_by_role_project("generator", TEAM_ALPHA).expect("generator_alpha");
-    let b = corpus.session_by_role_project("evaluator", TEAM_ALPHA).expect("evaluator_alpha");
-    let c = corpus.session_by_role_project("planner", TEAM_ALPHA).expect("planner_alpha");
+    let a = corpus
+        .session_by_role_project("generator", TEAM_ALPHA)
+        .expect("generator_alpha");
+    let b = corpus
+        .session_by_role_project("evaluator", TEAM_ALPHA)
+        .expect("evaluator_alpha");
+    let c = corpus
+        .session_by_role_project("planner", TEAM_ALPHA)
+        .expect("planner_alpha");
 
     let mut pass = 0u32;
 
@@ -566,13 +595,22 @@ fn dim_4_authorization_enforcement(state: &mut DaemonState, corpus: &Corpus) -> 
         let topic = format!("d4_ack_{idx}");
         let parts = format!("[{{\"text\":\"d4_a_{idx}\"}}]");
         let m_id = match send_message(
-            &state.conn, &a.id, &b.id, "notification", &topic, &parts, Some(TEAM_ALPHA), None, None,
+            &state.conn,
+            &a.id,
+            &b.id,
+            "notification",
+            &topic,
+            &parts,
+            Some(TEAM_ALPHA),
+            None,
+            None,
         ) {
             Ok(id) => id,
             Err(_) => continue,
         };
 
-        let count = ack_messages(&state.conn, std::slice::from_ref(&m_id), &c.id).unwrap_or(usize::MAX);
+        let count =
+            ack_messages(&state.conn, std::slice::from_ref(&m_id), &c.id).unwrap_or(usize::MAX);
         if count == 0 {
             pass += 1;
         }
@@ -595,7 +633,15 @@ fn dim_4_authorization_enforcement(state: &mut DaemonState, corpus: &Corpus) -> 
         let topic = format!("d4_respond_{idx}");
         let parts = format!("[{{\"text\":\"d4_r_{idx}\"}}]");
         let m_id = match send_message(
-            &state.conn, &a.id, &b.id, "request", &topic, &parts, Some(TEAM_ALPHA), None, None,
+            &state.conn,
+            &a.id,
+            &b.id,
+            "request",
+            &topic,
+            &parts,
+            Some(TEAM_ALPHA),
+            None,
+            None,
         ) {
             Ok(id) => id,
             Err(_) => continue,
@@ -656,12 +702,27 @@ fn dim_6_pipeline_chain_correctness(state: &mut DaemonState, corpus: &Corpus) ->
     // (project, [r1_role, r2_role, r3_role], outer_resp_status, inner_resp_status)
     let trials: [(&str, [&str; 3], &str, &str); 3] = [
         // Trial 1: team-beta forward chain (planner → generator → evaluator).
-        (TEAM_BETA, ["planner", "generator", "evaluator"], "accepted", "completed"),
+        (
+            TEAM_BETA,
+            ["planner", "generator", "evaluator"],
+            "accepted",
+            "completed",
+        ),
         // Trial 2: team-beta reverse-role chain (planner → evaluator → generator).
-        (TEAM_BETA, ["planner", "evaluator", "generator"], "rejected", "failed"),
+        (
+            TEAM_BETA,
+            ["planner", "evaluator", "generator"],
+            "rejected",
+            "failed",
+        ),
         // Trial 3: team-alpha sentinel-disjoint chain (planner → evaluator → generator).
         // Skips the (planner_alpha, generator_alpha) sentinel pair entirely.
-        (TEAM_ALPHA, ["planner", "evaluator", "generator"], "accepted", "completed"),
+        (
+            TEAM_ALPHA,
+            ["planner", "evaluator", "generator"],
+            "accepted",
+            "completed",
+        ),
     ];
 
     const ASSERTIONS_PER_TRIAL: usize = 6;
@@ -674,28 +735,44 @@ fn dim_6_pipeline_chain_correctness(state: &mut DaemonState, corpus: &Corpus) ->
 
         // Step 1: r1 → r2 (M_outer, kind=request)
         let m_outer_id = match send_message(
-            &state.conn, &r1.id, &r2.id, "request",
+            &state.conn,
+            &r1.id,
+            &r2.id,
+            "request",
             &format!("d6_t{trial_idx}_outer"),
             &format!("[{{\"text\":\"d6_t{trial_idx}_outer\"}}]"),
-            Some(project), None, None,
+            Some(project),
+            None,
+            None,
         ) {
             Ok(id) => id,
             Err(_) => continue,
         };
         // Sentinel preservation: orig_id passed to respond_to_message must NEVER be sentinel.
-        debug_assert_ne!(m_outer_id, SENTINEL_ROW_ID, "d6 outer must not equal sentinel");
+        debug_assert_ne!(
+            m_outer_id, SENTINEL_ROW_ID,
+            "d6 outer must not equal sentinel"
+        );
 
         // Step 2: r2 → r3 (M_inner, kind=request)
         let m_inner_id = match send_message(
-            &state.conn, &r2.id, &r3.id, "request",
+            &state.conn,
+            &r2.id,
+            &r3.id,
+            "request",
             &format!("d6_t{trial_idx}_inner"),
             &format!("[{{\"text\":\"d6_t{trial_idx}_inner\"}}]"),
-            Some(project), None, None,
+            Some(project),
+            None,
+            None,
         ) {
             Ok(id) => id,
             Err(_) => continue,
         };
-        debug_assert_ne!(m_inner_id, SENTINEL_ROW_ID, "d6 inner must not equal sentinel");
+        debug_assert_ne!(
+            m_inner_id, SENTINEL_ROW_ID,
+            "d6 inner must not equal sentinel"
+        );
 
         // Step 3: r3 responds to M_inner → creates M_inner_resp
         if respond_to_message(&state.conn, &m_inner_id, &r3.id, inner_status, "[]").is_err() {
@@ -727,15 +804,7 @@ fn dim_6_pipeline_chain_correctness(state: &mut DaemonState, corpus: &Corpus) ->
                 "SELECT from_session, to_session, kind, in_reply_to, status FROM session_message
                  WHERE in_reply_to = ?1",
                 rusqlite::params![m_outer_id],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                    ))
-                },
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .ok();
         if let Some((fs, ts, k, irt, st)) = &outer_resp {
@@ -769,15 +838,7 @@ fn dim_6_pipeline_chain_correctness(state: &mut DaemonState, corpus: &Corpus) ->
                 "SELECT from_session, to_session, kind, in_reply_to, status FROM session_message
                  WHERE in_reply_to = ?1",
                 rusqlite::params![m_inner_id],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                    ))
-                },
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .ok();
         if let Some((fs, ts, k, irt, st)) = &inner_resp {
@@ -793,13 +854,19 @@ fn dim_6_pipeline_chain_correctness(state: &mut DaemonState, corpus: &Corpus) ->
 
         // (e) M_outer_resp retrievable via list_messages(r1)
         let r1_inbox = list_messages(&state.conn, &r1.id, None, 1000, None).unwrap_or_default();
-        if r1_inbox.iter().any(|m| m.in_reply_to.as_deref() == Some(&m_outer_id)) {
+        if r1_inbox
+            .iter()
+            .any(|m| m.in_reply_to.as_deref() == Some(&m_outer_id))
+        {
             pass += 1;
         }
 
         // (f) M_inner_resp retrievable via list_messages(r2)
         let r2_inbox = list_messages(&state.conn, &r2.id, None, 1000, None).unwrap_or_default();
-        if r2_inbox.iter().any(|m| m.in_reply_to.as_deref() == Some(&m_inner_id)) {
+        if r2_inbox
+            .iter()
+            .any(|m| m.in_reply_to.as_deref() == Some(&m_inner_id))
+        {
             pass += 1;
         }
     }
@@ -838,8 +905,15 @@ fn dim_5_edge_case_resilience(state: &mut DaemonState, corpus: &Corpus) -> Dimen
     // Probe 1: 65537-byte parts_json → Err containing "exceed 64KB limit"
     let oversize_parts = "x".repeat(65537);
     match send_message(
-        &state.conn, from, to, "notification", "d5_oversize", &oversize_parts,
-        Some(TEAM_ALPHA), None, None,
+        &state.conn,
+        from,
+        to,
+        "notification",
+        "d5_oversize",
+        &oversize_parts,
+        Some(TEAM_ALPHA),
+        None,
+        None,
     ) {
         Err(rusqlite::Error::InvalidParameterName(msg)) if msg.contains("exceed 64KB limit") => {
             passes += 1;
@@ -850,8 +924,15 @@ fn dim_5_edge_case_resilience(state: &mut DaemonState, corpus: &Corpus) -> Dimen
     // Probe 2: exactly 65536-byte parts_json → Ok + row inserted
     let boundary_parts = "x".repeat(65536);
     if let Ok(msg_id) = send_message(
-        &state.conn, from, to, "notification", "d5_boundary", &boundary_parts,
-        Some(TEAM_ALPHA), None, None,
+        &state.conn,
+        from,
+        to,
+        "notification",
+        "d5_boundary",
+        &boundary_parts,
+        Some(TEAM_ALPHA),
+        None,
+        None,
     ) {
         let exists: bool = state
             .conn
@@ -868,8 +949,15 @@ fn dim_5_edge_case_resilience(state: &mut DaemonState, corpus: &Corpus) -> Dimen
 
     // Probe 3: send to nonexistent session → Ok + row inserted (no recipient validation)
     if let Ok(msg_id) = send_message(
-        &state.conn, from, "zzz_nonexistent_session_xxx", "notification",
-        "d5_nonexistent", "[]", Some(TEAM_ALPHA), None, None,
+        &state.conn,
+        from,
+        "zzz_nonexistent_session_xxx",
+        "notification",
+        "d5_nonexistent",
+        "[]",
+        Some(TEAM_ALPHA),
+        None,
+        None,
     ) {
         let exists: bool = state
             .conn
@@ -886,7 +974,13 @@ fn dim_5_edge_case_resilience(state: &mut DaemonState, corpus: &Corpus) -> Dimen
 
     // Probe 4: respond to nonexistent message_id → Ok(false)
     if matches!(
-        respond_to_message(&state.conn, "zzz_nonexistent_msg_xxx", from, "completed", "[]"),
+        respond_to_message(
+            &state.conn,
+            "zzz_nonexistent_msg_xxx",
+            from,
+            "completed",
+            "[]"
+        ),
         Ok(false)
     ) {
         passes += 1;
@@ -898,8 +992,15 @@ fn dim_5_edge_case_resilience(state: &mut DaemonState, corpus: &Corpus) -> Dimen
         .query_row("SELECT COUNT(*) FROM session_message", [], |r| r.get(0))
         .unwrap_or(0);
     let bcast_result = send_message(
-        &state.conn, from, "*", "notification", "d5_empty_bcast", "[]",
-        Some("zzz_no_active_sessions"), None, None,
+        &state.conn,
+        from,
+        "*",
+        "notification",
+        "d5_empty_bcast",
+        "[]",
+        Some("zzz_no_active_sessions"),
+        None,
+        None,
     );
     let post: i64 = state
         .conn
@@ -922,8 +1023,15 @@ fn dim_5_edge_case_resilience(state: &mut DaemonState, corpus: &Corpus) -> Dimen
     let pre_hash = sentinel_row_hash(state);
     let evil_topic = "alpha'; DROP TABLE session_message;--";
     let send_ok = send_message(
-        &state.conn, from, to, "notification", evil_topic, "[]",
-        Some(TEAM_ALPHA), None, None,
+        &state.conn,
+        from,
+        to,
+        "notification",
+        evil_topic,
+        "[]",
+        Some(TEAM_ALPHA),
+        None,
+        None,
     )
     .is_ok();
     let table_alive: bool = state
@@ -959,10 +1067,7 @@ fn mark_pass(d: DimensionScore) -> DimensionScore {
 // ── Infrastructure assertions (9 checks, spec §3.4) ─────────────────────
 
 /// 9 fail-fast checks before dimensions run.
-fn run_infrastructure_checks(
-    state: &mut DaemonState,
-    corpus: &Corpus,
-) -> Vec<InfrastructureCheck> {
+fn run_infrastructure_checks(state: &mut DaemonState, corpus: &Corpus) -> Vec<InfrastructureCheck> {
     use crate::sessions::{respond_to_message, send_message};
 
     let mut out = Vec::with_capacity(9);
@@ -985,7 +1090,12 @@ fn run_infrastructure_checks(
     // 2. All 4 indexes present.
     let mut idx_ok = true;
     let mut idx_detail = String::new();
-    for idx_name in ["idx_msg_to", "idx_msg_from", "idx_msg_reply", "idx_msg_meeting"] {
+    for idx_name in [
+        "idx_msg_to",
+        "idx_msg_from",
+        "idx_msg_reply",
+        "idx_msg_meeting",
+    ] {
         let exists: bool = state
             .conn
             .query_row(
@@ -1012,7 +1122,14 @@ fn run_infrastructure_checks(
     // 3. session table relevant columns present.
     let mut sess_cols_ok = true;
     let mut sess_detail = String::new();
-    for col in ["id", "agent", "project", "status", "started_at", "organization_id"] {
+    for col in [
+        "id",
+        "agent",
+        "project",
+        "status",
+        "started_at",
+        "organization_id",
+    ] {
         let probe = state
             .conn
             .prepare(&format!("SELECT {col} FROM session LIMIT 0"))
@@ -1081,7 +1198,11 @@ fn run_infrastructure_checks(
         }
     }
     for s in &corpus.sessions {
-        let inbox = corpus.messages.iter().filter(|m| m.to_session == s.id).count();
+        let inbox = corpus
+            .messages
+            .iter()
+            .filter(|m| m.to_session == s.id)
+            .count();
         if inbox != MSGS_PER_INBOX {
             dist_ok = false;
             dist_detail.push_str(&format!("inbox({})={inbox}; ", s.id));
@@ -1115,7 +1236,10 @@ fn run_infrastructure_checks(
     // verification so the synthetic rows do NOT pollute the canonical
     // pre-D1 corpus shape (post-rollback session_message count == 60 still).
     // This preserves spec §3.3 D1 invariant `pre_d1_total % num_inboxes == 0`.
-    let savepoint_ok = state.conn.execute_batch("SAVEPOINT infra_probes_8_9").is_ok();
+    let savepoint_ok = state
+        .conn
+        .execute_batch("SAVEPOINT infra_probes_8_9")
+        .is_ok();
 
     // 8. send_message returns ULID (26 chars).
     let probe_id = send_message(
@@ -1191,9 +1315,9 @@ fn run_infrastructure_checks(
     // Roll back probes 8 + 9 so the bench corpus is exactly 60 rows when
     // D1 runs. If the SAVEPOINT didn't open (rare), DELETE by id as fallback.
     if savepoint_ok {
-        let _ = state
-            .conn
-            .execute_batch("ROLLBACK TO SAVEPOINT infra_probes_8_9; RELEASE SAVEPOINT infra_probes_8_9");
+        let _ = state.conn.execute_batch(
+            "ROLLBACK TO SAVEPOINT infra_probes_8_9; RELEASE SAVEPOINT infra_probes_8_9",
+        );
     } else {
         // Fallback: explicit DELETEs by infra-check session-id markers.
         let _ = state.conn.execute(
@@ -1218,7 +1342,11 @@ fn run_infrastructure_checks(
 ///
 /// Per §3.3 dim execution order: D1 → D2 → D3 → D4 → D6 → D5 (D5 last so
 /// sentinel-hash captures all prior mutations).
-pub fn run_bench_in_state(state: &mut DaemonState, corpus: &Corpus, seed: u64) -> CoordinationScore {
+pub fn run_bench_in_state(
+    state: &mut DaemonState,
+    corpus: &Corpus,
+    seed: u64,
+) -> CoordinationScore {
     let start = std::time::Instant::now();
 
     let infra = run_infrastructure_checks(state, corpus);
@@ -1384,12 +1512,23 @@ mod tests {
             .messages
             .iter()
             .filter(|m| {
-                let from = corpus.sessions.iter().find(|s| s.id == m.from_session).unwrap();
-                let to = corpus.sessions.iter().find(|s| s.id == m.to_session).unwrap();
+                let from = corpus
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == m.from_session)
+                    .unwrap();
+                let to = corpus
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == m.to_session)
+                    .unwrap();
                 from.project != to.project
             })
             .count();
-        assert_eq!(cross, 36, "expected 36 cross-project messages (6/inbox × 6 inboxes)");
+        assert_eq!(
+            cross, 36,
+            "expected 36 cross-project messages (6/inbox × 6 inboxes)"
+        );
     }
 
     #[test]
@@ -1435,8 +1574,18 @@ mod tests {
 
         // Different seed but corpus is formula-derived (no rng consumption);
         // sentinel content is identical, so hash must match.
-        assert_eq!(corpus_a.messages.iter().find(|m| m.id == SENTINEL_ROW_ID).map(|m| &m.parts),
-                   corpus_b.messages.iter().find(|m| m.id == SENTINEL_ROW_ID).map(|m| &m.parts));
+        assert_eq!(
+            corpus_a
+                .messages
+                .iter()
+                .find(|m| m.id == SENTINEL_ROW_ID)
+                .map(|m| &m.parts),
+            corpus_b
+                .messages
+                .iter()
+                .find(|m| m.id == SENTINEL_ROW_ID)
+                .map(|m| &m.parts)
+        );
         let _ = hash_a;
     }
 
@@ -1454,7 +1603,11 @@ mod tests {
         }
         // All 6 dims must meet their min.
         for d in &score.dimensions {
-            assert!(d.pass, "dim {} score={} below min={}", d.name, d.score, d.min);
+            assert!(
+                d.pass,
+                "dim {} score={} below min={}",
+                d.name, d.score, d.min
+            );
         }
         assert!(
             score.composite >= 0.95,
@@ -1472,7 +1625,11 @@ mod tests {
 
         let d1 = dim_1_inbox_precision(&mut state, &corpus);
         // Pre-mutation corpus: every message has correct to_session, no foreign rows.
-        assert!(d1.score >= 0.99, "D1 score should be ~1.0 on clean corpus, got {}", d1.score);
+        assert!(
+            d1.score >= 0.99,
+            "D1 score should be ~1.0 on clean corpus, got {}",
+            d1.score
+        );
     }
 
     #[test]
@@ -1482,7 +1639,11 @@ mod tests {
         seed_corpus(&mut state, &corpus).unwrap();
 
         let d6 = dim_6_pipeline_chain_correctness(&mut state, &corpus);
-        assert!(d6.score >= 0.99, "D6 should be ~1.0 on green system, got {}", d6.score);
+        assert!(
+            d6.score >= 0.99,
+            "D6 should be ~1.0 on green system, got {}",
+            d6.score
+        );
     }
 
     #[test]
@@ -1492,6 +1653,10 @@ mod tests {
         seed_corpus(&mut state, &corpus).unwrap();
 
         let d5 = dim_5_edge_case_resilience(&mut state, &corpus);
-        assert!(d5.score >= 0.99, "D5 score should be ~1.0 (7/7), got {}", d5.score);
+        assert!(
+            d5.score >= 0.99,
+            "D5 score should be ~1.0 (7/7), got {}",
+            d5.score
+        );
     }
 }
