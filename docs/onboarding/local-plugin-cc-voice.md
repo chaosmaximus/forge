@@ -8,12 +8,35 @@ the plugin directly from the source tree at
 
 ```bash
 cd /mnt/colab-disk/DurgaSaiK/forge/forge
+# First time only: download the manylinux_2_17 ONNX Runtime to .tools/
+# (skip on macOS or glibc >= 2.38 hosts; harmless either way)
+bash scripts/setup-dev-env.sh
 cargo build --release -p forge-cli -p forge-daemon
 ln -sf "$(pwd)/target/release/forge-next"   ~/.local/bin/forge-next
 ln -sf "$(pwd)/target/release/forge-daemon" ~/.local/bin/forge-daemon
 ```
 
-Verify they're on PATH:
+### Linux glibc < 2.38 caveat (Ubuntu 22.04 LTS, Debian 12)
+
+The release binary links against `libonnxruntime.so.1` from `.tools/`
+but does NOT bake an RPATH (planned fix; tracked as task #220). On
+glibc < 2.38 you need to either:
+
+**Option 1 — set `LD_LIBRARY_PATH` in your shell rc:**
+```bash
+echo 'export LD_LIBRARY_PATH="/mnt/colab-disk/DurgaSaiK/forge/forge/.tools/onnxruntime-linux-x64-1.23.0/lib:$LD_LIBRARY_PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**Option 2 — wrap calls via `scripts/with-ort.sh`:**
+```bash
+alias forge-next="bash /mnt/colab-disk/DurgaSaiK/forge/forge/scripts/with-ort.sh forge-next"
+```
+
+macOS and glibc ≥ 2.38 hosts use pyke's default ORT binary and
+don't need either workaround — the `.tools/` directory is unused.
+
+### Verify
 
 ```bash
 forge-next --version
