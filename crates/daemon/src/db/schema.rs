@@ -1557,6 +1557,67 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         [],
     );
 
+    // ── Phase P3-3.11 W29: project sentinel '_global_' ──
+    //
+    // Historic bug: extractor and write paths could leave memory.project as
+    // NULL or empty. Several INSERT sites omit the project column entirely
+    // (e.g. crates/daemon/src/db/vec.rs:317-322 and
+    // crates/daemon/src/teams.rs:1144), producing rows with NULL project.
+    // These NULL/empty-project memories were admitted into every
+    // project-scoped recall query via the historic soft-scope clause
+    // `m.project IS NULL OR m.project = ''`, causing the F15/F17
+    // cross-project content leak observed in the P3-3.8 dogfood.
+    //
+    // Fix (this migration): backfill all existing NULL/empty `project` rows
+    // to the explicit '_global_' sentinel. Future writes are gated by the
+    // application-layer `project_or_global()` helper (see W29 commit 2 in
+    // crates/daemon/src/db/ops.rs) — every memory-INSERT call site routes
+    // its `project` parameter through that helper, which substitutes the
+    // sentinel for `None` / `Some("")`. A schema-level AFTER INSERT trigger
+    // was considered for defence in depth but is incompatible with the
+    // `memory_fts` external-content FTS5 index: the trigger's nested UPDATE
+    // perturbs FTS5's invariant on the just-inserted rowid and corrupts the
+    // index with `database disk image is malformed (11)`. Application-layer
+    // enforcement is sufficient because every memory write goes through
+    // Rust code in this crate — there is no out-of-band SQL writer.
+    //
+    // Recall semantics (see crates/daemon/src/db/ops.rs::recall_bm25_project_org_flipped):
+    //   - `Request::Recall { project: Some("forge"), include_globals: false }`
+    //     is STRICT — only `m.project = 'forge'` rows match.
+    //   - `Request::Recall { project: Some("forge"), include_globals: true }`
+    //     matches `m.project IN ('forge', '_global_')`.
+    //   - `Request::Recall { project: None, ... }` is unscoped (returns all).
+    //
+    // Idempotent: re-running on an already-migrated DB is a no-op (no rows
+    // satisfy the backfill WHERE clause).
+    //
+    // FTS5 sync defence: the backfill UPDATE fires the `memory_fts_update`
+    // trigger (defined at the top of this fn), which issues FTS5's 'delete'
+    // command for every updated rowid. On a database where some rows in
+    // `memory` are not mirrored in `memory_fts` (e.g., historical FTS sync
+    // drift, or legacy rows that pre-date the FTS triggers), the 'delete'
+    // corrupts the FTS index with `database disk image is malformed (11)`.
+    // We pre-rebuild memory_fts only when the backfill is actually going to
+    // run, so the rebuild cost is paid at most once per database (on the
+    // upgrade that introduces this migration) and is a no-op on every
+    // subsequent daemon startup once the table converges.
+    let needs_backfill: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM memory WHERE project IS NULL OR project = '')",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n == 1)
+        .unwrap_or(false);
+    if needs_backfill {
+        let _ = conn.execute("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')", []);
+        let _ = conn.execute(
+            "UPDATE memory SET project = '_global_' \
+             WHERE project IS NULL OR project = ''",
+            [],
+        );
+    }
+
     Ok(())
 }
 
@@ -2584,5 +2645,105 @@ mod tests {
                 "legacy column {legacy_col} must still exist"
             );
         }
+    }
+
+    #[test]
+    fn p3_3_11_w29_project_sentinel_backfill() {
+        // Phase P3-3.11 W29: project='_global_' sentinel migration —
+        // backfill leg.
+        //
+        // Verifies the data-side migration: pre-existing rows with `project
+        // IS NULL` or `project = ''` are rewritten to '_global_' the first
+        // time `create_schema` runs against the DB. The forward-going
+        // enforcement (every memory-INSERT call site routes its `project`
+        // parameter through `db::ops::project_or_global`) is covered in
+        // commit 2 of the W29 series. This test deliberately stays on the
+        // schema layer: pre-W29 row shape, run create_schema, assert
+        // backfill, assert idempotence.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Build the pre-W29 memory table shape (project nullable, no
+        // sentinel) and seed three rows representative of the F15/F17 leak
+        // surface: one true global (NULL), one defensive-empty, one
+        // properly tagged.
+        conn.execute_batch(
+            "CREATE TABLE memory (
+                id TEXT PRIMARY KEY,
+                memory_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.8,
+                status TEXT NOT NULL DEFAULT 'active',
+                project TEXT,
+                tags TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                accessed_at TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'default'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory (id, memory_type, title, content, project, created_at, accessed_at)
+             VALUES
+                ('legacy-null',  'lesson',  't', 'c', NULL,    '2026-01-01', '2026-01-01'),
+                ('legacy-empty', 'lesson',  't', 'c', '',      '2026-01-01', '2026-01-01'),
+                ('legacy-forge', 'decision','t', 'c', 'forge', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+
+        // Apply the migration.
+        create_schema(&conn).unwrap();
+
+        // Backfill: NULL and empty rows now read '_global_'; tagged row is
+        // unchanged.
+        for (id, expected) in [
+            ("legacy-null", "_global_"),
+            ("legacy-empty", "_global_"),
+            ("legacy-forge", "forge"),
+        ] {
+            let actual: String = conn
+                .query_row(
+                    "SELECT project FROM memory WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                actual, expected,
+                "backfill must produce expected project for id={id}"
+            );
+        }
+
+        // Sanity: no row in the table has NULL or empty project after
+        // migration.
+        let bad_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE project IS NULL OR project = ''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            bad_rows, 0,
+            "after migration no row may have NULL or empty project"
+        );
+
+        // Idempotence: re-running create_schema must be a no-op (the
+        // needs_backfill predicate skips the rebuild + UPDATE because no
+        // rows match the WHERE clause any more).
+        create_schema(&conn).unwrap();
+        let bad_rows_after_rerun: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory WHERE project IS NULL OR project = ''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            bad_rows_after_rerun, 0,
+            "re-running migration must be a no-op"
+        );
     }
 }
