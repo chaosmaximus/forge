@@ -1557,14 +1557,29 @@ fn source_priority(source: &str) -> u8 {
 }
 
 pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Result<()> {
-    // Dedup check: merge with existing facet that has the same description for this agent.
-    // Scoped by user_id for multi-user isolation.
+    // P3-3.11 W30: project scoping. None / Some("") normalises to the
+    // '_global_' sentinel via db::ops::project_or_global. Same shape as the
+    // W29 memory.project enforcement.
+    let project = crate::db::ops::project_or_global(facet.project.as_deref());
+
+    // Dedup check: merge with existing facet that has the same description
+    // for this (agent, project). Two projects can independently hold a
+    // facet with the same description without colliding. The dedup query
+    // also tolerates legacy NULL/empty rows that pre-date the W30
+    // migration via COALESCE(NULLIF(project, ''), '_global_').
     let existing: Option<(String, f64, String)> = match conn.query_row(
         "SELECT id, strength, COALESCE(source, 'extracted') FROM identity
          WHERE agent = ?1 AND description = ?2 AND active = 1
          AND COALESCE(user_id, '') = COALESCE(?3, '')
+         AND COALESCE(NULLIF(project, ''), ?5) = ?4
          LIMIT 1",
-        params![facet.agent, facet.description, facet.user_id],
+        params![
+            facet.agent,
+            facet.description,
+            facet.user_id,
+            project,
+            crate::db::ops::GLOBAL_PROJECT_SENTINEL
+        ],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ) {
         Ok(row) => Some(row),
@@ -1592,14 +1607,22 @@ pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Res
         return Ok(());
     }
 
-    // Also check for same facet TYPE with a CLI-set facet (fuzzy dedup)
-    // If a CLI facet exists for the same type + user, don't let extracted facets accumulate
+    // Also check for same facet TYPE with a CLI-set facet (fuzzy dedup),
+    // also project-scoped — a CLI facet for "expertise" in project A does
+    // not suppress an extracted facet for "expertise" in project B.
     let same_type_cli: Option<String> = match conn.query_row(
         "SELECT id FROM identity WHERE agent = ?1 AND facet = ?2 AND active = 1
          AND source IN ('cli', 'user_defined', 'manual')
          AND COALESCE(user_id, '') = COALESCE(?3, '')
+         AND COALESCE(NULLIF(project, ''), ?5) = ?4
          LIMIT 1",
-        params![facet.agent, facet.facet, facet.user_id],
+        params![
+            facet.agent,
+            facet.facet,
+            facet.user_id,
+            project,
+            crate::db::ops::GLOBAL_PROJECT_SENTINEL
+        ],
         |row| row.get(0),
     ) {
         Ok(id) => Some(id),
@@ -1614,10 +1637,10 @@ pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Res
         return Ok(());
     }
 
-    // No duplicate — insert normally
+    // No duplicate — insert normally.
     conn.execute(
-        "INSERT INTO identity (id, agent, facet, description, strength, source, active, created_at, user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO identity (id, agent, facet, description, strength, source, active, created_at, user_id, project)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET
             agent = excluded.agent,
             facet = excluded.facet,
@@ -1625,7 +1648,8 @@ pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Res
             strength = excluded.strength,
             source = excluded.source,
             active = excluded.active,
-            user_id = excluded.user_id",
+            user_id = excluded.user_id,
+            project = excluded.project",
         params![
             facet.id,
             facet.agent,
@@ -1636,22 +1660,28 @@ pub fn store_identity(conn: &Connection, facet: &IdentityFacet) -> rusqlite::Res
             facet.active as i32,
             facet.created_at,
             facet.user_id,
+            project,
         ],
     )?;
     Ok(())
 }
 
 /// List identity facets for an agent, optionally only active ones.
+///
+/// **Unscoped by project** — returns every facet for the agent regardless of
+/// project. Used by sync export (peers exchange the full facet set; the
+/// receiver's own project filter applies on read) and by tests. For
+/// project-scoped reads use `list_identity_for_project` (W30) instead.
 pub fn list_identity(
     conn: &Connection,
     agent: &str,
     active_only: bool,
 ) -> rusqlite::Result<Vec<IdentityFacet>> {
     let sql = if active_only {
-        "SELECT id, agent, facet, description, strength, source, active, created_at
+        "SELECT id, agent, facet, description, strength, source, active, created_at, project
          FROM identity WHERE agent = ?1 AND active = 1 ORDER BY strength DESC"
     } else {
-        "SELECT id, agent, facet, description, strength, source, active, created_at
+        "SELECT id, agent, facet, description, strength, source, active, created_at, project
          FROM identity WHERE agent = ?1 ORDER BY strength DESC"
     };
 
@@ -1664,6 +1694,9 @@ pub fn list_identity(
 ///
 /// When user_id is provided, returns facets that either belong to that user or have no user_id
 /// (shared/system facets), filtered by agent. When user_id is None, delegates to `list_identity`.
+///
+/// **Unscoped by project** — same caveat as `list_identity`. Project-aware
+/// callers must use `list_identity_for_user_project` (W30).
 pub fn list_identity_for_user(
     conn: &Connection,
     user_id: Option<&str>,
@@ -1673,13 +1706,13 @@ pub fn list_identity_for_user(
     match user_id {
         Some(uid) => {
             let sql = if only_active {
-                "SELECT id, agent, facet, description, strength, source, active, created_at
+                "SELECT id, agent, facet, description, strength, source, active, created_at, project
                  FROM identity
                  WHERE (user_id = ?1 OR user_id IS NULL) AND agent = ?2
                  AND active = 1
                  ORDER BY strength DESC"
             } else {
-                "SELECT id, agent, facet, description, strength, source, active, created_at
+                "SELECT id, agent, facet, description, strength, source, active, created_at, project
                  FROM identity
                  WHERE (user_id = ?1 OR user_id IS NULL) AND agent = ?2
                  ORDER BY strength DESC"
@@ -1690,6 +1723,85 @@ pub fn list_identity_for_user(
         }
         None => list_identity(conn, agent, only_active),
     }
+}
+
+/// List identity facets for an `(agent, project)` scope.
+///
+/// P3-3.11 W30: closes F16 cross-project identity pollution.
+///
+/// * `project = "_global_"` returns only globally-scoped facets.
+/// * `project = "<project>"` strict-by-default — returns only rows tagged
+///   for that project. Set `include_globals = true` to also admit
+///   `_global_` rows (mirrors the W29 `Recall.include_globals` semantic).
+/// * `project = ""` is normalised to `_global_` via `project_or_global`.
+///
+/// Active-only filter mirrors the existing helpers. Sort order matches
+/// `list_identity`.
+pub fn list_identity_for_project(
+    conn: &Connection,
+    agent: &str,
+    project: &str,
+    include_globals: bool,
+    active_only: bool,
+) -> rusqlite::Result<Vec<IdentityFacet>> {
+    let project = crate::db::ops::project_or_global(Some(project));
+    let project_predicate = if include_globals {
+        "(COALESCE(NULLIF(project, ''), ?3) = ?2 \
+          OR COALESCE(NULLIF(project, ''), ?3) = ?3)"
+    } else {
+        "COALESCE(NULLIF(project, ''), ?3) = ?2"
+    };
+    let active_clause = if active_only { " AND active = 1" } else { "" };
+    let sql = format!(
+        "SELECT id, agent, facet, description, strength, source, active, created_at, project
+         FROM identity
+         WHERE agent = ?1 AND {project_predicate}{active_clause}
+         ORDER BY strength DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![agent, project, crate::db::ops::GLOBAL_PROJECT_SENTINEL],
+        row_to_identity,
+    )?;
+    rows.collect()
+}
+
+/// User+project scoped list. When `user_id` is `Some`, results are filtered
+/// to facets belonging to that user (or to no user — system/shared
+/// facets). When `user_id` is `None`, delegates to
+/// `list_identity_for_project`. P3-3.11 W30.
+pub fn list_identity_for_user_project(
+    conn: &Connection,
+    user_id: Option<&str>,
+    agent: &str,
+    project: &str,
+    include_globals: bool,
+    active_only: bool,
+) -> rusqlite::Result<Vec<IdentityFacet>> {
+    let Some(uid) = user_id else {
+        return list_identity_for_project(conn, agent, project, include_globals, active_only);
+    };
+    let project = crate::db::ops::project_or_global(Some(project));
+    let project_predicate = if include_globals {
+        "(COALESCE(NULLIF(project, ''), ?4) = ?3 \
+          OR COALESCE(NULLIF(project, ''), ?4) = ?4)"
+    } else {
+        "COALESCE(NULLIF(project, ''), ?4) = ?3"
+    };
+    let active_clause = if active_only { " AND active = 1" } else { "" };
+    let sql = format!(
+        "SELECT id, agent, facet, description, strength, source, active, created_at, project
+         FROM identity
+         WHERE (user_id = ?1 OR user_id IS NULL) AND agent = ?2
+         AND {project_predicate}{active_clause}
+         ORDER BY strength DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![uid, agent, project, crate::db::ops::GLOBAL_PROJECT_SENTINEL],
+        row_to_identity,
+    )?;
+    rows.collect()
 }
 
 /// Deactivate an identity facet.
@@ -1712,6 +1824,11 @@ fn row_to_identity(row: &rusqlite::Row) -> rusqlite::Result<IdentityFacet> {
         active: row.get::<_, i32>(6)? != 0,
         created_at: row.get(7)?,
         user_id: None,
+        // P3-3.11 W30: project column is NOT NULL DEFAULT '_global_' on
+        // post-migration DBs. The Option<_> get tolerates legacy rows
+        // that may sit in the table prior to the schema migration
+        // running on this connection.
+        project: row.get::<_, Option<String>>(8).ok().flatten(),
     })
 }
 
@@ -2677,6 +2794,7 @@ mod tests {
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
             user_id: None,
+            project: None,
         };
         store_identity(&conn, &facet).unwrap();
 
@@ -2821,6 +2939,7 @@ mod tests {
                 active: true,
                 created_at: "2026-04-03 12:00:00".into(),
                 user_id: None,
+                project: None,
             },
         )
         .unwrap();
@@ -3236,6 +3355,7 @@ mod tests {
             active: true,
             created_at: "2026-04-04 12:00:00".into(),
             user_id: None,
+            project: None,
         };
         store_identity(&conn, &f1).unwrap();
 
@@ -3250,6 +3370,7 @@ mod tests {
             active: true,
             created_at: "2026-04-04 12:00:01".into(),
             user_id: None,
+            project: None,
         };
         store_identity(&conn, &f2).unwrap();
 
@@ -3281,6 +3402,7 @@ mod tests {
             active: true,
             created_at: "2026-04-04 12:00:00".into(),
             user_id: None,
+            project: None,
         };
         store_identity(&conn, &f1).unwrap();
 
@@ -3295,6 +3417,7 @@ mod tests {
             active: true,
             created_at: "2026-04-04 12:00:01".into(),
             user_id: None,
+            project: None,
         };
         store_identity(&conn, &f2).unwrap();
 
@@ -3321,6 +3444,7 @@ mod tests {
             active: true,
             created_at: "2026-04-04 12:00:00".into(),
             user_id: None,
+            project: None,
         };
         store_identity(&conn, &f1).unwrap();
 
@@ -3335,6 +3459,7 @@ mod tests {
             active: true,
             created_at: "2026-04-04 12:00:01".into(),
             user_id: None,
+            project: None,
         };
         store_identity(&conn, &f2).unwrap();
 
@@ -3569,5 +3694,207 @@ mod tests {
         let all_errors =
             list_unconsumed_perceptions(&conn, Some(&PerceptionKind::Error), None).unwrap();
         assert_eq!(all_errors.len(), 2, "should return both error perceptions");
+    }
+
+    // ──────────────────────────────────────────────
+    // P3-3.11 W30 — identity per-(agent, project) tests
+    // ──────────────────────────────────────────────
+
+    fn make_facet(id: &str, agent: &str, desc: &str, project: Option<&str>) -> IdentityFacet {
+        IdentityFacet {
+            id: id.into(),
+            agent: agent.into(),
+            facet: "expertise".into(),
+            description: desc.into(),
+            strength: 0.9,
+            source: "extracted".into(),
+            active: true,
+            created_at: "2026-04-26 12:00:00".into(),
+            user_id: None,
+            project: project.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn p3_3_11_w30_store_identity_writes_global_sentinel_for_none_project() {
+        let conn = open_db();
+        store_identity(&conn, &make_facet("g1", "claude-code", "Some role", None)).unwrap();
+        let proj: String = conn
+            .query_row("SELECT project FROM identity WHERE id = 'g1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(proj, "_global_");
+    }
+
+    #[test]
+    fn p3_3_11_w30_store_identity_preserves_explicit_project() {
+        let conn = open_db();
+        store_identity(
+            &conn,
+            &make_facet("f1", "claude-code", "Forge architect", Some("forge")),
+        )
+        .unwrap();
+        let proj: String = conn
+            .query_row("SELECT project FROM identity WHERE id = 'f1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(proj, "forge");
+    }
+
+    #[test]
+    fn p3_3_11_w30_store_identity_writes_global_for_empty_string() {
+        let conn = open_db();
+        store_identity(&conn, &make_facet("e1", "claude-code", "Empty", Some(""))).unwrap();
+        let proj: String = conn
+            .query_row("SELECT project FROM identity WHERE id = 'e1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(proj, "_global_");
+    }
+
+    #[test]
+    fn p3_3_11_w30_dedup_separates_same_description_across_projects() {
+        // Same (agent, description) in two different projects — must NOT
+        // dedup; they are distinct identities. F16 closure.
+        let conn = open_db();
+        store_identity(
+            &conn,
+            &make_facet("p1", "claude-code", "Architect", Some("forge")),
+        )
+        .unwrap();
+        store_identity(
+            &conn,
+            &make_facet("p2", "claude-code", "Architect", Some("hive-platform")),
+        )
+        .unwrap();
+        let all = list_identity(&conn, "claude-code", true).unwrap();
+        assert_eq!(
+            all.len(),
+            2,
+            "same description in two projects must be two rows"
+        );
+    }
+
+    #[test]
+    fn p3_3_11_w30_dedup_merges_same_description_within_project() {
+        let conn = open_db();
+        store_identity(
+            &conn,
+            &make_facet("a", "claude-code", "Architect", Some("forge")),
+        )
+        .unwrap();
+        let mut hi = make_facet("b", "claude-code", "Architect", Some("forge"));
+        hi.strength = 0.99;
+        store_identity(&conn, &hi).unwrap();
+        let all = list_identity(&conn, "claude-code", true).unwrap();
+        assert_eq!(all.len(), 1, "same (agent, desc, project) must dedup");
+        assert!(
+            (all[0].strength - 0.99).abs() < 1e-9,
+            "higher strength wins: got {}",
+            all[0].strength
+        );
+    }
+
+    #[test]
+    fn p3_3_11_w30_list_for_project_strict_excludes_globals() {
+        let conn = open_db();
+        store_identity(
+            &conn,
+            &make_facet("f", "claude-code", "Forge architect", Some("forge")),
+        )
+        .unwrap();
+        store_identity(
+            &conn,
+            &make_facet(
+                "h",
+                "claude-code",
+                "Hive Finance credit pipeline",
+                Some("hive-platform"),
+            ),
+        )
+        .unwrap();
+        store_identity(
+            &conn,
+            &make_facet("g", "claude-code", "Always learning", None),
+        )
+        .unwrap();
+        let forge = list_identity_for_project(&conn, "claude-code", "forge", false, true).unwrap();
+        assert_eq!(forge.len(), 1, "strict: only forge row matches");
+        assert_eq!(forge[0].description, "Forge architect");
+    }
+
+    #[test]
+    fn p3_3_11_w30_list_for_project_with_globals_admits_global_alongside_project() {
+        let conn = open_db();
+        store_identity(
+            &conn,
+            &make_facet("f", "claude-code", "Forge architect", Some("forge")),
+        )
+        .unwrap();
+        store_identity(
+            &conn,
+            &make_facet("g", "claude-code", "Always learning", None),
+        )
+        .unwrap();
+        store_identity(
+            &conn,
+            &make_facet("h", "claude-code", "Hive thing", Some("hive-platform")),
+        )
+        .unwrap();
+        let forge_plus =
+            list_identity_for_project(&conn, "claude-code", "forge", true, true).unwrap();
+        let descs: Vec<&str> = forge_plus.iter().map(|f| f.description.as_str()).collect();
+        assert!(
+            descs.contains(&"Forge architect") && descs.contains(&"Always learning"),
+            "include_globals must surface both: got {descs:?}"
+        );
+        assert!(
+            !descs.contains(&"Hive thing"),
+            "include_globals must NOT leak other-project rows: got {descs:?}"
+        );
+    }
+
+    #[test]
+    fn p3_3_11_w30_list_for_project_normalises_empty_to_global() {
+        let conn = open_db();
+        store_identity(&conn, &make_facet("g", "claude-code", "Global A", None)).unwrap();
+        let scoped = list_identity_for_project(&conn, "claude-code", "", false, true).unwrap();
+        assert_eq!(scoped.len(), 1, "empty project normalises to '_global_'");
+        assert_eq!(scoped[0].description, "Global A");
+    }
+
+    #[test]
+    fn p3_3_11_w30_list_for_user_project_filters_user_and_project() {
+        let conn = open_db();
+        let mut alice_forge = make_facet("af", "claude-code", "Alice forge", Some("forge"));
+        alice_forge.user_id = Some("alice".into());
+        store_identity(&conn, &alice_forge).unwrap();
+        let mut bob_forge = make_facet("bf", "claude-code", "Bob forge", Some("forge"));
+        bob_forge.user_id = Some("bob".into());
+        store_identity(&conn, &bob_forge).unwrap();
+        let mut shared = make_facet("sg", "claude-code", "Shared global", None);
+        shared.user_id = None;
+        store_identity(&conn, &shared).unwrap();
+        let alice_view = list_identity_for_user_project(
+            &conn,
+            Some("alice"),
+            "claude-code",
+            "forge",
+            true,
+            true,
+        )
+        .unwrap();
+        let descs: Vec<&str> = alice_view.iter().map(|f| f.description.as_str()).collect();
+        assert!(
+            descs.contains(&"Alice forge") && descs.contains(&"Shared global"),
+            "alice should see her forge row + the unowned shared global: got {descs:?}"
+        );
+        assert!(
+            !descs.contains(&"Bob forge"),
+            "alice must NOT see bob's forge row: got {descs:?}"
+        );
     }
 }

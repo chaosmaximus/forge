@@ -692,6 +692,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                 active: row.get::<_, i32>(6)? != 0,
                                 created_at: row.get(7)?,
                                 user_id: None,
+                                project: None,
                             })
                         })?.collect()
                     }).unwrap_or_default();
@@ -7901,6 +7902,7 @@ mod tests {
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
             user_id: None,
+            project: None,
         };
         let resp = handle_request(&mut state, Request::StoreIdentity { facet });
         match resp {
@@ -8524,6 +8526,7 @@ mod tests {
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
             user_id: None,
+            project: None,
         };
         handle_request(&mut state, Request::StoreIdentity { facet });
 
@@ -8660,6 +8663,7 @@ mod tests {
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
             user_id: None,
+            project: None,
         };
         handle_request(&mut state, Request::StoreIdentity { facet });
 

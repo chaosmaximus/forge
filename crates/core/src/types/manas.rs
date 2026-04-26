@@ -207,6 +207,13 @@ pub struct IdentityFacet {
     /// User who owns this facet (v2.0: per-user identity isolation)
     #[serde(default)]
     pub user_id: Option<String>,
+    /// Project scope for this facet (P3-3.11 W30: per-(agent, project)
+    /// identity isolation — closes F16 cross-project identity pollution).
+    /// `None` is normalised to the sentinel `_global_` at every write
+    /// site by `db::ops::project_or_global` — see W30 c2 in the commit
+    /// log for the full architecture.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 // ──────────────────────────────────────────────
@@ -423,6 +430,7 @@ mod tests {
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
             user_id: None,
+            project: Some("forge".into()),
         };
         let json = serde_json::to_string(&f).expect("serialize IdentityFacet");
         let restored: IdentityFacet =

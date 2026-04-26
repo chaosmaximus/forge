@@ -2712,6 +2712,7 @@ mod tests {
             active: true,
             created_at: "2026-04-03".into(),
             user_id: None,
+            project: None,
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
@@ -2925,6 +2926,7 @@ mod tests {
             active: true,
             created_at: "2026-04-03".into(),
             user_id: None,
+            project: None,
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
@@ -4901,6 +4903,7 @@ mod tests {
             active: true,
             created_at: "2026-04-25".into(),
             user_id: None,
+            project: None,
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
@@ -4937,6 +4940,7 @@ mod tests {
             active: true,
             created_at: "2026-04-25".into(),
             user_id: None,
+            project: None,
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 

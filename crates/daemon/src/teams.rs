@@ -1,5 +1,5 @@
 use forge_core::types::team::AgentTemplate;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 // ── Agent Template CRUD ──
@@ -219,6 +219,21 @@ pub fn spawn_agent(
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.8);
 
+            // P3-3.11 W30: tag the template's identity facets with the
+            // spawned session's project, so the agent's identity is
+            // scoped per-(agent, project) rather than agent-wide.
+            // Templates encode role/values/expertise that almost always
+            // make sense only inside the project that spawned the
+            // session — falling through to '_global_' is wrong for
+            // agent-template identity. F16 closure.
+            let session_project: Option<String> = conn
+                .query_row(
+                    "SELECT project FROM session WHERE id = ?1 \
+                     AND project IS NOT NULL AND project != ''",
+                    params![session_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
             let identity = forge_core::types::manas::IdentityFacet {
                 id: ulid::Ulid::new().to_string(),
                 agent: template.agent_type.clone(),
@@ -229,6 +244,7 @@ pub fn spawn_agent(
                 active: true,
                 created_at: now.clone(),
                 user_id: None,
+                project: session_project,
             };
             crate::db::manas::store_identity(conn, &identity)?;
         }

@@ -291,6 +291,7 @@ mod tests {
                         active: true,
                         created_at: "2026-04-03 12:00:00".into(),
                         user_id: None,
+                        project: None,
                     },
                 },
             ),
@@ -1504,6 +1505,7 @@ mod tests {
                         active: true,
                         created_at: "2026-01-01 00:00:00".into(),
                         user_id: None,
+                        project: None,
                     },
                 },
                 Request::Supersede {

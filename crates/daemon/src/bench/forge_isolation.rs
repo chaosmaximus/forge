@@ -255,6 +255,12 @@ pub fn seed_corpus(state: &mut DaemonState, corpus: &Corpus) -> rusqlite::Result
 
     for m in &corpus.memories {
         let tags_json = serde_json::to_string(&m.tags).unwrap_or_else(|_| "[]".to_string());
+        // P3-3.11 W29: bench seed must mirror production semantics —
+        // None / empty project normalises to the '_global_' sentinel via
+        // the DAO helper. Without this, raw INSERT puts NULL into
+        // memory.project which the W29 strict-by-default WHERE clause
+        // excludes from every recall (D3 then scores 0 on globals).
+        let project = crate::db::ops::project_or_global(m.project.as_deref());
         state.conn.execute(
             "INSERT INTO memory
                 (id, memory_type, title, content, confidence, status,
@@ -266,7 +272,7 @@ pub fn seed_corpus(state: &mut DaemonState, corpus: &Corpus) -> rusqlite::Result
                 m.title,
                 m.content,
                 f64::from(m.confidence),
-                m.project,
+                project,
                 tags_json,
                 NOW_ISO,
             ],
@@ -379,17 +385,30 @@ fn dim_2_self_recall_completeness(state: &mut DaemonState, _corpus: &Corpus) -> 
 
 /// **D3 — global_memory_visibility** (T5, weight 0.10, min 0.90).
 ///
-/// Per spec §3.1 + §3.3. Globals (project=None) must appear in every main
-/// project's recall — they're meant to be visible cross-project. For each
-/// project P: `Recall { query: "global_pattern", project: Some(P), limit: 50 }`;
+/// Per spec §3.1 + §3.3. Globals (`project = '_global_'` post-W29) must
+/// appear in every main project's recall when the caller opts in to
+/// global visibility — they're meant to be visible cross-project. For
+/// each project P:
+/// `Recall { query: "global_pattern", project: Some(P), limit: 50,
+///           include_globals: true }`;
 /// score = (globals seen / total globals) averaged across projects.
+///
+/// Pre-W29 this used `recall_bm25_project` (the unscoped legacy wrapper)
+/// which admitted NULL/empty rows as globals via the soft-scope WHERE
+/// clause; W29 made strict-by-default the production semantic and gated
+/// global visibility behind the explicit `include_globals` flag. The
+/// dimension still measures the same property, just via the opt-in path.
 fn dim_3_global_memory_visibility(state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
     let mut sum_rate = 0.0;
 
     for project in MAIN_PROJECTS {
-        let results =
-            crate::db::ops::recall_bm25_project(&state.conn, "global_pattern", Some(project), 50)
-                .unwrap_or_default();
+        let results = crate::db::ops::recall_bm25_project_with_globals(
+            &state.conn,
+            "global_pattern",
+            Some(project),
+            50,
+        )
+        .unwrap_or_default();
 
         let globals_seen = results
             .iter()
@@ -1222,11 +1241,14 @@ mod tests {
             assert_eq!(n as usize, MEMORIES_PER_MAIN_PROJECT);
         }
 
-        // Globals (project IS NULL) — 10.
+        // Globals (project = '_global_' post-W29 sentinel) — 10.
+        // Pre-W29 this asserted `project IS NULL` because the corpus
+        // seeded globals as None; W29 routed the bench seed through
+        // `db::ops::project_or_global` so None now lands as the sentinel.
         let globals: i64 = state
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM memory WHERE project IS NULL",
+                "SELECT COUNT(*) FROM memory WHERE project = '_global_'",
                 [],
                 |r| r.get(0),
             )

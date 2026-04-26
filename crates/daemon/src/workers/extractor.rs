@@ -657,6 +657,28 @@ async fn process_file(
                         .first()
                         .cloned()
                         .unwrap_or_else(|| "expertise".to_string());
+                    // P3-3.11 W30: tag identity facets with the session's
+                    // project so per-(agent, project) scoping closes F16
+                    // cross-project identity pollution. Mirror of the W29
+                    // memory.project propagation. Falls through to None
+                    // (→ `_global_` sentinel via `project_or_global`) when
+                    // the session is unknown or the row carries no project.
+                    let session_project: Option<String> = if session_id.is_empty() {
+                        None
+                    } else {
+                        let locked_for_proj = state.lock().await;
+                        let p = locked_for_proj
+                            .conn
+                            .query_row(
+                                "SELECT project FROM session WHERE id = ?1 \
+                                 AND project IS NOT NULL AND project != ''",
+                                rusqlite::params![&session_id],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .ok();
+                        drop(locked_for_proj);
+                        p
+                    };
                     let facet = forge_core::types::manas::IdentityFacet {
                         id: format!("identity-{}", ulid::Ulid::new()),
                         agent: adapter.name().to_string(),
@@ -667,6 +689,7 @@ async fn process_file(
                         active: true,
                         created_at: forge_core::time::now_iso(),
                         user_id: None,
+                        project: session_project,
                     };
                     if let Err(e) = crate::db::manas::store_identity(&locked.conn, &facet) {
                         tracing::error!(target: "forge::extractor", title = %em.title, error = %e, "failed to store identity");

@@ -124,6 +124,7 @@ fn test_identity_sql_injection_description() {
         active: true,
         created_at: "2026-04-03 12:00:00".into(),
         user_id: None,
+        project: None,
     };
     let resp = handle_request(&mut state, Request::StoreIdentity { facet });
     match &resp {
@@ -177,6 +178,7 @@ fn test_identity_strength_clamping() {
         active: true,
         created_at: "2026-04-03 12:00:00".into(),
         user_id: None,
+        project: None,
     };
     handle_request(&mut state, Request::StoreIdentity { facet: facet_high });
 
@@ -191,6 +193,7 @@ fn test_identity_strength_clamping() {
         active: true,
         created_at: "2026-04-03 12:00:00".into(),
         user_id: None,
+        project: None,
     };
     handle_request(&mut state, Request::StoreIdentity { facet: facet_neg });
 
@@ -431,6 +434,7 @@ fn test_identity_unicode_description() {
         active: true,
         created_at: "2026-04-03 12:00:00".into(),
         user_id: None,
+        project: None,
     };
     handle_request(&mut state, Request::StoreIdentity { facet });
 
@@ -646,6 +650,7 @@ fn test_manas_health_after_mass_insert() {
             active: true,
             created_at: "2026-04-03 12:00:00".into(),
             user_id: None,
+            project: None,
         };
         handle_request(&mut state, Request::StoreIdentity { facet });
     }
@@ -1122,6 +1127,7 @@ fn test_manas_health_includes_all_layers() {
         active: true,
         created_at: "2026-04-03 12:00:00".into(),
         user_id: None,
+        project: None,
     };
     handle_request(&mut state, Request::StoreIdentity { facet });
 
@@ -1224,6 +1230,7 @@ fn test_doctor_includes_manas_counts() {
         active: true,
         created_at: "2026-04-03 12:00:00".into(),
         user_id: None,
+        project: None,
     };
     handle_request(&mut state, Request::StoreIdentity { facet });
 

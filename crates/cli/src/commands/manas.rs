@@ -119,6 +119,9 @@ pub async fn identity_set(facet: String, description: String, agent: String, str
         active: true,
         created_at,
         user_id: None,
+        // P3-3.11 W30: project filled by `--project` CLI flag in c3 of
+        // this wave. None defaults to `_global_` via the DAO helper.
+        project: None,
     };
 
     let request = Request::StoreIdentity {

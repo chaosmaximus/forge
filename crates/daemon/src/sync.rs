@@ -612,6 +612,14 @@ fn import_identity_facet(conn: &Connection, val: &serde_json::Value) -> rusqlite
                     .unwrap_or("")
                     .to_string(),
                 user_id: None,
+                // P3-3.11 W30: pass through remote project tagging. Older
+                // peers that pre-date the schema migration omit the field;
+                // `store_identity` normalises None to '_global_' via
+                // `db::ops::project_or_global`.
+                project: val
+                    .get("project")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
             };
             crate::db::manas::store_identity(conn, &facet_obj)
         }
@@ -1292,6 +1300,7 @@ mod tests {
             active: true,
             created_at: "2026-04-03".into(),
             user_id: None,
+            project: None,
         };
         crate::db::manas::store_identity(&conn, &facet).unwrap();
 
