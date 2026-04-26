@@ -1014,33 +1014,64 @@ Force-trigger the code indexer and show current index counts.
 forge-next force-index
 ```
 
-### detect-reality
+### project init
 
-Detect the project type (reality) for a path.
+Explicitly create a project record so `compile-context --project <name>`
+binds cleanly from turn 1 of the agent's session.
 
 ```
-forge-next detect-reality [--path PATH]
+forge-next project init <NAME> [--path PATH] [--domain DOMAIN]
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--path PATH` | *(cwd)* | Path to detect. Defaults to current directory. |
+| Arg / Flag | Default | Description |
+|---|---|---|
+| `<NAME>` | *(required)* | User-chosen project name (the label the agent sees). |
+| `--path PATH` | *(cwd)* | Canonical path the project lives at. |
+| `--domain DOMAIN` | *(auto-detect)* | Language hint (`rust`, `python`, `typescript`, `go`, …). |
 
 ```bash
-forge-next detect-reality --path /home/user/my-rust-project
+forge-next project init cc-voice --path /home/user/cc-voice
+forge-next project init backend --domain rust
 ```
 
-### realities
+### project list
 
-List all known realities (projects) in the system.
+List all known projects.
 
 ```
-forge-next realities [--organization ORG]
+forge-next project list [--organization ORG]
 ```
 
 | Flag | Default | Description |
-|------|---------|-------------|
-| `--organization ORG` | `default` | Organization ID |
+|---|---|---|
+| `--organization ORG` | `default` | Organization scope. |
+
+### project show
+
+Show details for a single project (path, domain, indexed file/symbol counts).
+
+```
+forge-next project show <NAME>
+```
+
+### project detect
+
+Detect what kind of project lives at a path. Auto-creates a project
+record on first contact so subsequent `compile-context --project <name>`
+calls work without an explicit `init`.
+
+```
+forge-next project detect [<PATH>]
+```
+
+| Arg | Default | Description |
+|---|---|---|
+| `<PATH>` | *(cwd)* | Path to detect. Defaults to current directory. |
+
+```bash
+forge-next project detect /home/user/my-rust-project
+forge-next project detect      # uses cwd
+```
 
 ---
 

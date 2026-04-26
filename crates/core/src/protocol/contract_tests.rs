@@ -496,7 +496,7 @@ mod tests {
             ),
             (
                 "detect_reality",
-                Request::DetectReality {
+                Request::ProjectDetect {
                     path: "/tmp/my-project".into(),
                 },
             ),
@@ -525,7 +525,7 @@ mod tests {
             ),
             (
                 "list_realities",
-                Request::ListRealities {
+                Request::ProjectList {
                     organization_id: Some("default".into()),
                 },
             ),
@@ -1667,7 +1667,7 @@ mod tests {
                     scope_type: "organization".into(),
                     scope_id: "default".into(),
                 },
-                Request::DetectReality {
+                Request::ProjectDetect {
                     path: "/tmp/my-project".into(),
                 },
                 Request::CrossEngineQuery {
@@ -1684,7 +1684,7 @@ mod tests {
                     limit: None,
                     project: None,
                 },
-                Request::ListRealities {
+                Request::ProjectList {
                     organization_id: Some("default".into()),
                 },
                 Request::GetStats { hours: Some(24) },

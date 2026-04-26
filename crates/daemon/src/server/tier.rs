@@ -182,11 +182,13 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::SetScopedConfig { .. }
         | Request::DeleteScopedConfig { .. }
         | Request::ListScopedConfig { .. }
-        | Request::DetectReality { .. }
+        | Request::ProjectDetect { .. }
+        | Request::ProjectInit { .. }
+        | Request::ProjectShow { .. }
         | Request::CrossEngineQuery { .. }
         | Request::FileMemoryMap { .. }
         | Request::CodeSearch { .. }
-        | Request::ListRealities { .. }
+        | Request::ProjectList { .. }
         | Request::ForceIndex { .. }
         | Request::ListContradictions { .. }
         | Request::ResolveContradiction { .. }

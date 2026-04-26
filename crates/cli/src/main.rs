@@ -428,22 +428,15 @@ enum Commands {
         session_id: Option<String>,
     },
 
-    /// Detect the reality (project type) for a path
-    #[command(name = "detect-reality")]
-    DetectReality {
-        /// Path to detect (positional or via --path; defaults to current directory)
-        #[arg(value_name = "PATH")]
-        path_pos: Option<String>,
-        /// Path to detect via flag form (kept for backwards compat with scripts that pass --path)
-        #[arg(long = "path", value_name = "PATH")]
-        path: Option<String>,
-    },
-    /// List all known realities (projects)
-    #[command(name = "realities")]
-    Realities {
-        /// Organization ID (default: "default")
-        #[arg(long)]
-        organization: Option<String>,
+    /// Manage projects — Forge's user-facing unit (one project per code repo / workspace).
+    ///
+    /// P3-4 Wave Z (Z3) replaces the legacy `realities` and `detect-reality`
+    /// commands (hard cut, no aliases) per "no inconsistencies" — user-facing
+    /// vocabulary is "project" everywhere.
+    #[command(name = "project")]
+    Project {
+        #[command(subcommand)]
+        sub: ProjectSub,
     },
     /// Search code symbols by name pattern
     #[command(name = "code-search")]
@@ -968,6 +961,43 @@ enum Commands {
         /// Output format. If omitted, uses Table when stdout is a TTY, else Json.
         #[arg(long, value_enum)]
         format: Option<commands::observe::OutputFormat>,
+    },
+}
+
+/// Subcommands for `forge-next project ...`
+///
+/// P3-4 Wave Z (Z3) — replaces the old `realities` and `detect-reality`
+/// top-level commands. User-facing vocabulary is "project" everywhere.
+#[derive(Subcommand, Debug)]
+enum ProjectSub {
+    /// Explicitly create a project record (so SessionStart binds cleanly).
+    Init {
+        /// User-chosen project name (the label shown to the agent).
+        name: String,
+        /// Path the project lives at (defaults to current directory).
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
+        /// Language hint (auto-detected when omitted).
+        #[arg(long, value_name = "DOMAIN")]
+        domain: Option<String>,
+    },
+    /// List all known projects.
+    List {
+        /// Organization scope (default: "default").
+        #[arg(long)]
+        organization: Option<String>,
+    },
+    /// Show details for a single project.
+    Show {
+        /// Project name from `forge-next project list`.
+        name: String,
+    },
+    /// Detect what kind of project lives at a path
+    /// (auto-creates a project record on first contact).
+    Detect {
+        /// Path to detect (defaults to current directory).
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
     },
 }
 
@@ -1658,14 +1688,20 @@ async fn main() {
             commands::manas::perceptions(project, limit, offset).await;
         }
 
-        Commands::DetectReality { path_pos, path } => {
-            // Z6: prefer positional `<path>`; fall back to `--path` flag for
-            // backwards compatibility with existing scripts.
-            commands::system::detect_reality(path_pos.or(path)).await;
-        }
-        Commands::Realities { organization } => {
-            commands::system::list_realities(organization).await;
-        }
+        Commands::Project { sub } => match sub {
+            ProjectSub::Init { name, path, domain } => {
+                commands::system::project_init(name, path, domain).await;
+            }
+            ProjectSub::List { organization } => {
+                commands::system::project_list(organization).await;
+            }
+            ProjectSub::Show { name } => {
+                commands::system::project_show(name).await;
+            }
+            ProjectSub::Detect { path } => {
+                commands::system::project_detect(path).await;
+            }
+        },
         Commands::CodeSearch {
             query,
             kind,
@@ -2357,59 +2393,108 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn test_detect_reality_command_parse() {
-        let cli = Cli::try_parse_from(["forge-next", "detect-reality", "--path", "/tmp/myproject"]);
-        assert!(cli.is_ok(), "detect-reality should parse: {:?}", cli.err());
+    fn p3_4_z3_project_detect_accepts_positional_path() {
+        // P3-4 Wave Z (Z3) — `forge-next project detect <path>` (positional)
+        // is the canonical "tell me about this directory" CLI. Z6's earlier
+        // ergonomic fix (positional path on `detect-reality`) carries forward
+        // into the new `project detect` subcommand. CC voice feedback §2.3.
+        let cli = Cli::try_parse_from(["forge-next", "project", "detect", "/tmp/myproject"]);
+        assert!(
+            cli.is_ok(),
+            "project detect with positional path should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
-            Commands::DetectReality { path_pos, path } => {
-                assert!(
-                    path_pos.is_none(),
-                    "positional should be None when --path used"
-                );
+            Commands::Project {
+                sub: ProjectSub::Detect { path },
+            } => {
                 assert_eq!(path.as_deref(), Some("/tmp/myproject"));
             }
-            other => panic!("expected DetectReality, got {other:?}"),
+            other => panic!("expected Project::Detect, got {other:?}"),
         }
     }
 
     #[test]
-    fn p3_4_z6_detect_reality_accepts_positional_path() {
-        // Z6 (CC voice feedback §2.3): `forge-next detect-reality /tmp/myproject`
-        // (positional, no flag) used to error with `unexpected argument`.
-        // Most CLIs accept positional `<path>` for "tell me about this directory"
-        // (`git status`, `du`, `ls`). Pin both forms.
-        let cli = Cli::try_parse_from(["forge-next", "detect-reality", "/tmp/myproject"]);
+    fn p3_4_z3_project_detect_no_path() {
+        let cli = Cli::try_parse_from(["forge-next", "project", "detect"]);
         assert!(
             cli.is_ok(),
-            "detect-reality with positional path should parse: {:?}",
+            "project detect without path should parse: {:?}",
             cli.err()
         );
         match cli.unwrap().command {
-            Commands::DetectReality { path_pos, path } => {
-                assert_eq!(path_pos.as_deref(), Some("/tmp/myproject"));
-                assert!(
-                    path.is_none(),
-                    "--path flag should be None when positional given"
-                );
-            }
-            other => panic!("expected DetectReality, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_detect_reality_command_parse_no_path() {
-        let cli = Cli::try_parse_from(["forge-next", "detect-reality"]);
-        assert!(
-            cli.is_ok(),
-            "detect-reality without --path should parse: {:?}",
-            cli.err()
-        );
-        match cli.unwrap().command {
-            Commands::DetectReality { path_pos, path } => {
-                assert!(path_pos.is_none());
+            Commands::Project {
+                sub: ProjectSub::Detect { path },
+            } => {
                 assert!(path.is_none());
             }
-            other => panic!("expected DetectReality, got {other:?}"),
+            other => panic!("expected Project::Detect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_z3_project_init_with_path_and_domain() {
+        // CC voice feedback §2.4 — `forge-next project init cc-voice
+        // --path /path --domain rust` is the explicit pre-create path
+        // that lets compile-context bind cleanly from turn 1.
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "project",
+            "init",
+            "cc-voice",
+            "--path",
+            "/mnt/colab-disk/playground/cc-voice",
+            "--domain",
+            "rust",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "project init should parse with name + path + domain: {:?}",
+            cli.err()
+        );
+        match cli.unwrap().command {
+            Commands::Project {
+                sub: ProjectSub::Init { name, path, domain },
+            } => {
+                assert_eq!(name, "cc-voice");
+                assert_eq!(path.as_deref(), Some("/mnt/colab-disk/playground/cc-voice"));
+                assert_eq!(domain.as_deref(), Some("rust"));
+            }
+            other => panic!("expected Project::Init, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_z3_project_init_minimal() {
+        let cli = Cli::try_parse_from(["forge-next", "project", "init", "minimal"]);
+        assert!(
+            cli.is_ok(),
+            "project init with just a name should parse: {:?}",
+            cli.err()
+        );
+        match cli.unwrap().command {
+            Commands::Project {
+                sub: ProjectSub::Init { name, path, domain },
+            } => {
+                assert_eq!(name, "minimal");
+                assert!(path.is_none());
+                assert!(domain.is_none());
+            }
+            other => panic!("expected Project::Init, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_z3_project_show_takes_name() {
+        let cli = Cli::try_parse_from(["forge-next", "project", "show", "forge"]);
+        assert!(cli.is_ok(), "project show should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::Project {
+                sub: ProjectSub::Show { name },
+            } => {
+                assert_eq!(name, "forge");
+            }
+            other => panic!("expected Project::Show, got {other:?}"),
         }
     }
 
@@ -2464,14 +2549,16 @@ mod tests {
     }
 
     #[test]
-    fn test_realities_command_parse() {
-        let cli = Cli::try_parse_from(["forge-next", "realities"]);
-        assert!(cli.is_ok(), "realities should parse: {:?}", cli.err());
+    fn p3_4_z3_project_list_command_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "project", "list"]);
+        assert!(cli.is_ok(), "project list should parse: {:?}", cli.err());
         match cli.unwrap().command {
-            Commands::Realities { organization } => {
+            Commands::Project {
+                sub: ProjectSub::List { organization },
+            } => {
                 assert!(organization.is_none());
             }
-            other => panic!("expected Realities, got {other:?}"),
+            other => panic!("expected Project::List, got {other:?}"),
         }
     }
 

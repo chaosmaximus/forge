@@ -2132,21 +2132,25 @@ fn service_uninstall() {
     }
 }
 
-/// Detect the reality (project type) for a path.
-pub async fn detect_reality(path: Option<String>) {
+/// Detect what kind of project lives at a path
+/// (`forge-next project detect [<path>]`).
+///
+/// P3-4 Wave Z (Z3): renamed from `detect_reality`. Same behavior;
+/// user-facing vocabulary is "project" everywhere.
+pub async fn project_detect(path: Option<String>) {
     let path = path.unwrap_or_else(|| {
         std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string())
     });
-    let req = Request::DetectReality { path: path.clone() };
+    let req = Request::ProjectDetect { path: path.clone() };
     match client::send(&req).await {
         Ok(Response::Ok {
             data:
-                ResponseData::RealityDetected {
-                    reality_id,
+                ResponseData::ProjectDetected {
+                    id,
                     name,
-                    reality_type,
+                    engine,
                     domain,
                     detected_from,
                     confidence,
@@ -2155,10 +2159,10 @@ pub async fn detect_reality(path: Option<String>) {
                 },
         }) => {
             let status = if is_new { "NEW" } else { "existing" };
-            println!("Reality detected ({status}):");
-            println!("  ID:            {reality_id}");
+            println!("Project detected ({status}):");
+            println!("  ID:            {id}");
             println!("  Name:          {name}");
-            println!("  Type:          {reality_type}");
+            println!("  Engine:        {engine}");
             println!("  Domain:        {domain}");
             println!("  Detected from: {detected_from}");
             println!("  Confidence:    {confidence:.2}");
@@ -2175,32 +2179,124 @@ pub async fn detect_reality(path: Option<String>) {
     }
 }
 
-/// List all known realities (projects).
-pub async fn list_realities(organization: Option<String>) {
-    let req = Request::ListRealities {
+/// List all known projects (`forge-next project list`).
+///
+/// P3-4 Wave Z (Z3): renamed from `list_realities`.
+pub async fn project_list(organization: Option<String>) {
+    let req = Request::ProjectList {
         organization_id: organization,
     };
     match client::send(&req).await {
         Ok(Response::Ok {
-            data: ResponseData::RealitiesList { realities },
+            data: ResponseData::ProjectList { projects },
         }) => {
-            if realities.is_empty() {
-                println!("No realities registered.");
-                println!("Tip: Use 'forge-next detect-reality --path <dir>' to detect and register a project.");
+            if projects.is_empty() {
+                println!("No projects registered.");
+                println!("Tip: Use 'forge-next project init <name> --path <dir>' to create one,");
+                println!(
+                    "     or 'forge-next project detect <path>' to auto-detect from contents."
+                );
                 return;
             }
-            println!("{} reality(ies):\n", realities.len());
-            for r in &realities {
-                let domain = r.domain.as_deref().unwrap_or("unknown");
-                let path = r.project_path.as_deref().unwrap_or("(no path)");
+            println!("{} project(s):\n", projects.len());
+            for p in &projects {
+                let domain = p.domain.as_deref().unwrap_or("unknown");
+                let path = p.project_path.as_deref().unwrap_or("(no path)");
                 println!(
                     "  {} ({}) — {} [{}]",
-                    r.name, r.reality_type, domain, r.engine_status
+                    p.name, p.reality_type, domain, p.engine_status
                 );
-                println!("    ID:   {}", r.id);
+                println!("    ID:   {}", p.id);
                 println!("    Path: {path}");
-                println!("    Last: {}", r.last_active);
+                println!("    Last: {}", p.last_active);
             }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Explicitly create a project record before any code exists
+/// (`forge-next project init <name> [--path <cwd>] [--domain <kind>]`).
+///
+/// P3-4 Wave Z (Z3) per CC voice feedback §2.4 — gives users a way
+/// to say "I'm starting work on cc-voice at /path" so the very first
+/// `compile-context --project cc-voice` call binds cleanly.
+pub async fn project_init(name: String, path: Option<String>, domain: Option<String>) {
+    let req = Request::ProjectInit {
+        name: name.clone(),
+        path,
+        domain,
+        organization_id: None,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data:
+                ResponseData::ProjectInitialized {
+                    id,
+                    name,
+                    path,
+                    domain,
+                    is_new,
+                },
+        }) => {
+            let status = if is_new { "created" } else { "already existed" };
+            println!("Project '{name}' {status}:");
+            println!("  ID:     {id}");
+            println!("  Path:   {path}");
+            println!("  Domain: {domain}");
+            if is_new {
+                println!();
+                println!("Next: open Claude Code in {path} — SessionStart will bind to '{name}'.");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Show details for a single project (`forge-next project show <name>`).
+pub async fn project_show(name: String) {
+    let req = Request::ProjectShow {
+        name: name.clone(),
+        organization_id: None,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data:
+                ResponseData::ProjectInfo {
+                    id,
+                    name,
+                    path,
+                    domain,
+                    engine,
+                    last_active,
+                    files_indexed,
+                    symbols_indexed,
+                },
+        }) => {
+            println!("Project '{name}':");
+            println!("  ID:               {id}");
+            println!("  Path:             {path}");
+            println!("  Domain:           {domain}");
+            println!("  Engine:           {engine}");
+            println!("  Files indexed:    {files_indexed}");
+            println!("  Symbols indexed:  {symbols_indexed}");
+            println!("  Last active:      {last_active}");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

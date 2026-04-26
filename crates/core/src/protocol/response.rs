@@ -672,16 +672,42 @@ pub enum ResponseData {
         entries: Vec<crate::types::entity::ConfigScopeEntry>,
     },
 
-    /// A reality was detected (or already existed) for a project path.
-    RealityDetected {
-        reality_id: String,
+    /// A project record was detected (or already existed) for a path.
+    ///
+    /// P3-4 Wave Z (Z3): replaces the old `RealityDetected` variant.
+    /// `id` renamed from `reality_id`; `engine` renamed from
+    /// `reality_type` (the "code"/"data" engine discriminator). `kind`
+    /// is reserved as the ResponseData serde tag.
+    ProjectDetected {
+        id: String,
         name: String,
-        reality_type: String,
+        engine: String,
         domain: String,
         detected_from: String,
         confidence: f64,
         is_new: bool,
         metadata: serde_json::Value,
+    },
+
+    /// A project record was newly created (or upserted) by ProjectInit.
+    ProjectInitialized {
+        id: String,
+        name: String,
+        path: String,
+        domain: String,
+        is_new: bool,
+    },
+
+    /// Detail view for a single project (`project show <name>`).
+    ProjectInfo {
+        id: String,
+        name: String,
+        path: String,
+        domain: String,
+        engine: String,
+        last_active: String,
+        files_indexed: usize,
+        symbols_indexed: usize,
     },
 
     /// Cross-engine query result: symbols + callers + cluster + related memories for a file.
@@ -705,9 +731,13 @@ pub enum ResponseData {
         hits: Vec<serde_json::Value>,
     },
 
-    /// List of known realities (projects).
-    RealitiesList {
-        realities: Vec<crate::types::entity::Reality>,
+    /// List of known projects.
+    ///
+    /// P3-4 Wave Z (Z3): replaces the old `RealitiesList` variant.
+    /// `projects` was renamed from `realities`; the underlying struct
+    /// keeps its name (ZR will rename the type).
+    ProjectList {
+        projects: Vec<crate::types::entity::Reality>,
     },
 
     /// Code index counts after a force-index trigger.

@@ -108,7 +108,8 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::CrossEngineQuery { .. }
             | Request::FileMemoryMap { .. }
             | Request::CodeSearch { .. }
-            | Request::ListRealities { .. }
+            | Request::ProjectList { .. }
+            | Request::ProjectShow { .. }
             | Request::ListContradictions { .. }
             | Request::ListAgentTemplates { .. }
             | Request::GetAgentTemplate { .. }
@@ -135,7 +136,7 @@ pub fn is_read_only(req: &Request) -> bool {
                                           // NOTE: SetHudConfig is a write — modifies config_scope table
                                           // NOTE: HealingRun is a write — triggers healing cycle
                                           // NOTE: AckNotification, DismissNotification, ActOnNotification are writes
-                                          // NOTE: DetectReality is NOT read-only — it may create a reality record
+                                          // NOTE: ProjectDetect and ProjectInit are NOT read-only — they create project records
                                           // NOTE: CreateMeeting, MeetingSynthesize, MeetingDecide, MeetingVote are writes
                                           // NOTE: ForceIndex is NOT read-only — it triggers indexing
                                           // NOTE: SpawnAgent, UpdateAgentStatus, RetireAgent, CreateTeam, SetTeamOrchestrator are writes
@@ -647,8 +648,8 @@ mod tests {
             project: None,
         }));
 
-        // ListRealities: read-only
-        assert!(is_read_only(&Request::ListRealities {
+        // ProjectList: read-only
+        assert!(is_read_only(&Request::ProjectList {
             organization_id: Some("default".into()),
         }));
 

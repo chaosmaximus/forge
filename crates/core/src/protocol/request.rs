@@ -637,10 +637,47 @@ pub enum Request {
         scope_id: String,
     },
 
-    /// Detect what kind of reality a project path represents.
-    /// Auto-creates a reality record if one doesn't exist for the path.
-    DetectReality {
+    /// Detect what kind of project lives at a filesystem path
+    /// (Rust / Python / TypeScript / Go / etc.). Auto-creates the
+    /// project record on first contact so subsequent
+    /// `compile-context --project <name>` calls can bind cleanly.
+    ///
+    /// P3-4 Wave Z (Z3): replaces the old `DetectReality` variant.
+    /// User-facing vocabulary is "project" everywhere; the underlying
+    /// SQL table keeps the legacy name for now (ZR will rename).
+    ProjectDetect {
         path: String,
+    },
+
+    /// Explicitly create a project record before any code exists.
+    /// Lets `compile-context --project <name>` return clean
+    /// `<code-structure project="<name>" resolution="exact"/>` from
+    /// turn 1 of the agent's session, instead of waiting for
+    /// detect-on-index. P3-4 Wave Z (Z3) per CC voice feedback §2.4.
+    ProjectInit {
+        /// User-chosen name (the label shown to the agent).
+        name: String,
+        /// Canonical path the project lives at. If `None`, the daemon
+        /// uses the session's CWD via the standard resolver.
+        #[serde(default)]
+        path: Option<String>,
+        /// Optional language hint; auto-detected from path contents
+        /// when omitted.
+        #[serde(default)]
+        domain: Option<String>,
+        /// Organization scope (default: "default").
+        #[serde(default)]
+        organization_id: Option<String>,
+    },
+
+    /// Show details for a single project by name (path, domain,
+    /// indexed file count, last activity).
+    ProjectShow {
+        /// Project name as shown by `forge-next project list`.
+        name: String,
+        /// Organization scope (default: "default").
+        #[serde(default)]
+        organization_id: Option<String>,
     },
 
     /// Cross-engine query: given a file, return its symbols, callers, cluster, and related memories.
@@ -667,8 +704,11 @@ pub enum Request {
         project: Option<String>,
     },
 
-    /// List all known realities (projects) in an organization.
-    ListRealities {
+    /// List all known projects in an organization.
+    ///
+    /// P3-4 Wave Z (Z3): replaces the old `ListRealities` variant.
+    /// Same data shape; user-facing vocabulary is "project" everywhere.
+    ProjectList {
         organization_id: Option<String>,
     },
 

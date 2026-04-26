@@ -1,35 +1,102 @@
 ---
 name: forge-setup
-description: "Use on first run in a new project directory, or when Forge prerequisites need checking. Example triggers: 'set up forge', 'check forge prereqs', 'forge doctor', 'is forge ready', 'initialize forge'."
+description: "Use on first run in a new project directory, or when Forge prerequisites need checking. Example triggers: 'set up forge', 'check forge prereqs', 'forge doctor', 'is forge ready', 'initialize forge', 'set up cc-voice'."
 ---
 
 # Forge Setup
 
-Run through this checklist and report status:
+Get a new project bound to Forge in two minutes. Run through this in order; each step has a verify command.
 
-## Prerequisites
+## 1. Prerequisites
 
-1. Claude Code version:
-   ```bash
-   claude --version
-   ```
-   Requires >= 2.1.32.
+Claude Code version:
+```bash
+claude --version
+```
+Requires >= 2.1.32.
 
-2. Agent orchestration:
-   Agent orchestration is handled by the host agent. No special env vars needed.
+Forge binary on PATH:
+```bash
+forge-next --version
+```
+If `forge-next` is missing, install from the public repo. Note that the
+crate name is `forge-cli` but the **binary** it produces is `forge-next`
+— same for `forge-daemon` (crate `forge-daemon`, binary `forge-daemon`):
 
-3. Forge daemon health:
-   Run `forge-next health` to check daemon status.
-   Run `forge-next doctor` to check full system health.
-   Run `forge-next manas-health` to check 8-layer memory health.
-   Run `forge-next identity` to check agent identity (Ahankara).
-   If not responding: check that `forge-next` binary is on PATH. Install from the public repo: `cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli`.
+```bash
+cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
+# Symlink onto PATH:
+ln -sf ~/.cargo/bin/forge-next ~/.local/bin/forge-next
+ln -sf ~/.cargo/bin/forge-daemon ~/.local/bin/forge-daemon
+```
 
-4. Two CLIs are available — know when to use each:
-   - `forge` — code operations: index, scan, query, verify, test, research, review, hook
-   - `forge-next` — memory/daemon operations: recall, remember, forget, health, doctor, manas-health, identity, blast-radius, check, sessions
+Daemon health:
+```bash
+forge-next health         # should print "ok"
+forge-next doctor         # full system health
+forge-next manas-health   # 8-layer memory health
+forge-next identity       # agent identity (Ahankara)
+```
 
-## Companion Plugins (check and recommend)
+If the daemon isn't running, the first `forge-next` invocation that needs
+it will auto-spawn one. Verify with `pgrep -af forge-daemon`.
+
+## 2. Bind this project to Forge (one-time)
+
+Forge identifies what you're working on by **project name** — a stable
+label you choose (e.g., `cc-voice`, `forge`, `my-app`). Each project has
+its own indexed code graph, memories, and identity scope, so two projects
+on the same daemon don't leak knowledge into each other.
+
+Initialize the project:
+```bash
+forge-next project init cc-voice --path "$(pwd)"
+# or with an explicit domain hint:
+forge-next project init cc-voice --path "$(pwd)" --domain rust
+```
+
+Verify:
+```bash
+forge-next project show cc-voice
+```
+
+You should see the path, domain, and `Files indexed: 0` for a fresh
+project. Once Claude Code starts indexing, the count climbs.
+
+If you skip this step, the SessionStart hook will auto-create a project
+record from the session's CWD on first contact. Explicit `init` is
+preferred when you want to set the name yourself or pre-set the domain.
+
+## 3. Ingest existing Claude memory (optional but high-value)
+
+If you have a `~/.claude/projects/<project>/memory/` tree from prior
+Claude Code sessions, import it into Forge so the agent recalls
+previously-saved decisions and lessons:
+
+```bash
+forge-next ingest-claude
+```
+
+This reads the local Claude memory dir and seeds Forge's memory layers.
+Per-project memories stay scoped to their project; global ones get the
+`_global_` sentinel.
+
+## 4. Trust-but-verify the SessionStart context
+
+Before opening Claude Code, dry-run what Forge will inject into the
+agent's first turn:
+
+```bash
+forge-next compile-context --project cc-voice --dry-run
+```
+
+The output is the literal `<forge-context>` XML the SessionStart hook
+will inject. Check the `<code-structure>` tag — for a fresh project
+you should see `resolution="no-match"` (or `resolution="auto-created"`
+if you skipped step 2). If it shows `resolution="exact"` with a file
+count from a different project, something's wrong — file an issue.
+
+## 5. Companion plugins (check and recommend)
 
 > Install commands below are based on standard Claude Code plugin syntax. If a command fails, check the plugin's documentation for updated install instructions.
 
@@ -40,29 +107,55 @@ Run through this checklist and report status:
 | context7 | [check] | Library documentation lookup | `/plugin install context7@claude-plugins-official` |
 | playwright | [optional] | Browser E2E testing | `/plugin install playwright@claude-plugins-official` |
 
-**Note:** Forge now includes built-in skills for TDD (`forge-tdd`), debugging (`forge-debug`), verification (`forge-verify`), and memory (`forge-next recall/remember`). The `superpowers` and `episodic-memory` plugins are no longer needed.
+**Note:** Forge ships its own skills for TDD (`forge-tdd`), debugging
+(`forge-debug`), verification (`forge-verify`), and memory
+(`forge-next recall/remember`). The legacy `superpowers` and
+`episodic-memory` plugins are no longer needed.
 
-## Production Path Configuration
+## 6. Production path configuration
 
-Your project may use non-standard production directory names. Would you like to customize the production path patterns for Codex hard gating? Current defaults: `infrastructure/**`, `terraform/**`, `k8s/**`, `helm/**`, `production/**`.
+If your project uses non-standard production directory names, customize
+the patterns enforced by `forge-bash-check` (Codex hard gating):
 
-Common additions: `prod/**`, `deploy/**`, `live/**`, or project-specific patterns.
+Defaults: `infrastructure/**`, `terraform/**`, `k8s/**`, `helm/**`, `production/**`.
 
-## Initial Project Files
+Common additions: `prod/**`, `deploy/**`, `live/**`, or project-specific
+patterns. Set via `forge-next config set guardrails.production_paths
+'["infrastructure/**", "deploy/**"]'`.
 
-If no CONSTITUTION.md exists, offer to create one:
-"Want to set up a project constitution? This defines immutable principles
-(e.g., 'test-first', 'library-first', 'no raw SQL') that Forge enforces. Takes 2 minutes."
+## 7. Project files
+
+If no `CONSTITUTION.md` exists, offer to create one:
+> "Want to set up a project constitution? This defines immutable
+> principles (e.g., 'test-first', 'library-first', 'no raw SQL') that
+> Forge enforces. Takes 2 minutes."
 
 If yes: ask 3-5 questions, create from template.
 If no: skip.
 
-Create STATE.md with initial state.
+Create `STATE.md` with initial state.
 
-## Stitch MCP (Optional)
+## 8. Stitch MCP (optional)
 
-Stitch MCP is configured in the plugin's .mcp.json. If you don't use visual design, you can delete that file from the plugin directory to avoid loading it: `rm ${CLAUDE_PLUGIN_ROOT}/.mcp.json`
+Stitch MCP is configured in the plugin's `.mcp.json`. If you don't use
+visual design, delete that file to avoid loading it:
+
+```bash
+rm "${CLAUDE_PLUGIN_ROOT}/.mcp.json"
+```
 
 ## Done
 
-"Forge is set up. Run `/forge:new` for a new project or `/forge:feature` for existing code."
+"Forge is set up for `<project>`. Run `/forge:new` for a new project or
+`/forge:feature` for existing code."
+
+## Reference: project commands cheat sheet
+
+```bash
+forge-next project init <name> [--path PATH] [--domain DOMAIN]   # one-time bind
+forge-next project list                                          # what's tracked
+forge-next project show <name>                                   # detail view
+forge-next project detect [<path>]                               # introspect a path
+forge-next compile-context --project <name> --dry-run            # preview agent context
+forge-next ingest-claude                                         # import local Claude memory
+```

@@ -4562,7 +4562,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::DetectReality { path } => {
+        Request::ProjectDetect { path } => {
+            // P3-4 Wave Z (Z3): renamed from DetectReality. Same behavior:
+            // run domain detection, upsert a project record, return the
+            // detection metadata. CC voice feedback §1.2/§2.4.
             use crate::reality::CodeRealityEngine;
             use forge_core::types::reality_engine::RealityEngine;
             use std::path::Path;
@@ -4572,13 +4575,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             match engine.detect(project_path) {
                 Some(detection) => {
-                    // Check if a reality already exists for this path
+                    // Check if a project already exists for this path
                     match ops::get_reality_by_path(&state.conn, &path, "default") {
                         Ok(Some(existing)) => Response::Ok {
-                            data: ResponseData::RealityDetected {
-                                reality_id: existing.id,
+                            data: ResponseData::ProjectDetected {
+                                id: existing.id,
                                 name: existing.name,
-                                reality_type: existing.reality_type,
+                                engine: existing.reality_type.clone(),
                                 domain: existing.domain.unwrap_or_default(),
                                 detected_from: existing.detected_from.unwrap_or_default(),
                                 confidence: detection.confidence,
@@ -4588,8 +4591,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             },
                         },
                         Ok(None) => {
-                            // Create a new reality record
-                            let reality_id = ulid::Ulid::new().to_string();
+                            // Create a new project record
+                            let project_id = ulid::Ulid::new().to_string();
                             let now = chrono_now();
                             let name = project_path
                                 .file_name()
@@ -4598,8 +4601,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             let metadata_str = serde_json::to_string(&detection.metadata)
                                 .unwrap_or_else(|_| "{}".to_string());
 
-                            let reality = forge_core::types::Reality {
-                                id: reality_id.clone(),
+                            let project = forge_core::types::Reality {
+                                id: project_id.clone(),
                                 name: name.clone(),
                                 reality_type: detection.reality_type.clone(),
                                 detected_from: Some(detection.detected_from.clone()),
@@ -4615,22 +4618,22 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                 metadata: metadata_str,
                             };
 
-                            match ops::store_reality(&state.conn, &reality) {
+                            match ops::store_reality(&state.conn, &project) {
                                 Ok(()) => {
                                     crate::events::emit(
                                         &state.events,
-                                        "reality_detected",
+                                        "project_detected",
                                         serde_json::json!({
-                                            "reality_id": reality_id,
+                                            "project_id": project_id,
                                             "domain": detection.domain,
-                                            "reality_type": detection.reality_type,
+                                            "engine": detection.reality_type,
                                         }),
                                     );
                                     Response::Ok {
-                                        data: ResponseData::RealityDetected {
-                                            reality_id,
+                                        data: ResponseData::ProjectDetected {
+                                            id: project_id,
                                             name,
-                                            reality_type: detection.reality_type,
+                                            engine: detection.reality_type.clone(),
                                             domain: detection.domain,
                                             detected_from: detection.detected_from,
                                             confidence: detection.confidence,
@@ -4640,12 +4643,12 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                     }
                                 }
                                 Err(e) => Response::Error {
-                                    message: format!("failed to store reality: {e}"),
+                                    message: format!("failed to store project: {e}"),
                                 },
                             }
                         }
                         Err(e) => Response::Error {
-                            message: format!("failed to check existing reality: {e}"),
+                            message: format!("failed to check existing project: {e}"),
                         },
                     }
                 }
@@ -4875,14 +4878,161 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::ListRealities { organization_id } => {
+        Request::ProjectList { organization_id } => {
             let org_id = organization_id.as_deref().unwrap_or("default");
             match ops::list_realities(&state.conn, org_id) {
-                Ok(realities) => Response::Ok {
-                    data: ResponseData::RealitiesList { realities },
+                Ok(projects) => Response::Ok {
+                    data: ResponseData::ProjectList { projects },
                 },
                 Err(e) => Response::Error {
-                    message: format!("list_realities failed: {e}"),
+                    message: format!("project_list failed: {e}"),
+                },
+            }
+        }
+
+        Request::ProjectInit {
+            name,
+            path,
+            domain,
+            organization_id,
+        } => {
+            // P3-4 Wave Z (Z3) — explicit project creation. CC voice
+            // feedback §2.4: lets users create a project record before
+            // any code exists, so `compile-context --project <name>`
+            // can bind cleanly from turn 1 of the agent's session
+            // (instead of triggering the auto-create path on first
+            // SessionStart, which still leaves a brief window of
+            // resolution=no-match output).
+            //
+            // Resolves the path: explicit `--path` argument wins;
+            // otherwise tries the canonicalized current working
+            // directory of the daemon (best-effort fallback for
+            // sessions whose CWD wasn't passed through the wire).
+            let org_id = organization_id.as_deref().unwrap_or("default");
+            let project_path = match path {
+                Some(p) => match std::fs::canonicalize(&p) {
+                    Ok(canonical) => canonical.to_string_lossy().to_string(),
+                    Err(e) => {
+                        return Response::Error {
+                            message: format!("cannot resolve path '{p}': {e}"),
+                        };
+                    }
+                },
+                None => match std::env::current_dir() {
+                    Ok(cwd) => cwd.to_string_lossy().to_string(),
+                    Err(e) => {
+                        return Response::Error {
+                            message: format!("no --path supplied and daemon CWD unreadable: {e}"),
+                        };
+                    }
+                },
+            };
+
+            // Auto-detect domain from path contents when not supplied —
+            // reuse the CodeRealityEngine.detect() machinery already
+            // wired for ProjectDetect. Falls back to "unknown" when the
+            // path has no recognizable signature (e.g. an empty dir).
+            let detected_domain = domain.unwrap_or_else(|| {
+                use crate::reality::CodeRealityEngine;
+                use forge_core::types::reality_engine::RealityEngine;
+                CodeRealityEngine
+                    .detect(std::path::Path::new(&project_path))
+                    .map(|d| d.domain)
+                    .unwrap_or_else(|| "unknown".into())
+            });
+
+            // Check for existing project with same (name, organization_id).
+            // ProjectInit is idempotent: returns is_new=false on rerun.
+            let existing = ops::get_reality_by_name(&state.conn, &name, org_id)
+                .ok()
+                .flatten();
+            let (id, is_new) = match existing {
+                Some(r) => (r.id, false),
+                None => (ulid::Ulid::new().to_string(), true),
+            };
+
+            let now = forge_core::time::now_iso();
+            let project = forge_core::types::Reality {
+                id: id.clone(),
+                name: name.clone(),
+                reality_type: "code".to_string(),
+                detected_from: Some("project_init".to_string()),
+                project_path: Some(project_path.clone()),
+                domain: Some(detected_domain.clone()),
+                organization_id: org_id.to_string(),
+                owner_type: "user".to_string(),
+                owner_id: org_id.to_string(),
+                engine_status: "ok".to_string(),
+                engine_pid: None,
+                created_at: now.clone(),
+                last_active: now,
+                metadata: "{}".to_string(),
+            };
+
+            match ops::store_reality(&state.conn, &project) {
+                Ok(()) => Response::Ok {
+                    data: ResponseData::ProjectInitialized {
+                        id,
+                        name,
+                        path: project_path,
+                        domain: detected_domain,
+                        is_new,
+                    },
+                },
+                Err(e) => Response::Error {
+                    message: format!("project_init failed: {e}"),
+                },
+            }
+        }
+
+        Request::ProjectShow {
+            name,
+            organization_id,
+        } => {
+            let org_id = organization_id.as_deref().unwrap_or("default");
+            let project = match ops::get_reality_by_name(&state.conn, &name, org_id) {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    return Response::Error {
+                        message: format!("project '{name}' not found"),
+                    };
+                }
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("project_show failed: {e}"),
+                    };
+                }
+            };
+
+            let files_indexed: usize = state
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM code_file WHERE project = ?1",
+                    rusqlite::params![project.name],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let symbols_indexed: usize = state
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM code_symbol s
+                     JOIN code_file f ON s.file_path = f.path
+                     WHERE f.project = ?1",
+                    rusqlite::params![project.name],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+
+            Response::Ok {
+                data: ResponseData::ProjectInfo {
+                    id: project.id,
+                    name: project.name,
+                    path: project.project_path.unwrap_or_default(),
+                    domain: project.domain.unwrap_or_else(|| "unknown".into()),
+                    engine: project.reality_type,
+                    last_active: project.last_active,
+                    files_indexed,
+                    symbols_indexed,
                 },
             }
         }
@@ -10392,15 +10542,15 @@ mod tests {
 
         let resp = handle_request(
             &mut state,
-            Request::DetectReality {
+            Request::ProjectDetect {
                 path: dir.path().to_string_lossy().to_string(),
             },
         );
         match resp {
             Response::Ok {
                 data:
-                    ResponseData::RealityDetected {
-                        reality_type,
+                    ResponseData::ProjectDetected {
+                        engine,
                         domain,
                         detected_from,
                         confidence,
@@ -10408,13 +10558,13 @@ mod tests {
                         ..
                     },
             } => {
-                assert_eq!(reality_type, "code");
+                assert_eq!(engine, "code");
                 assert_eq!(domain, "rust");
                 assert_eq!(detected_from, "Cargo.toml");
                 assert!((confidence - 0.95).abs() < f64::EPSILON);
                 assert!(is_new, "first detection should create a new reality");
             }
-            other => panic!("expected RealityDetected, got {other:?}"),
+            other => panic!("expected ProjectDetected, got {other:?}"),
         }
     }
 
@@ -10427,18 +10577,15 @@ mod tests {
         let path = dir.path().to_string_lossy().to_string();
 
         // First call should create
-        let resp = handle_request(&mut state, Request::DetectReality { path: path.clone() });
+        let resp = handle_request(&mut state, Request::ProjectDetect { path: path.clone() });
         let reality_id = match resp {
             Response::Ok {
-                data:
-                    ResponseData::RealityDetected {
-                        reality_id, is_new, ..
-                    },
+                data: ResponseData::ProjectDetected { id, is_new, .. },
             } => {
                 assert!(is_new, "first detection should create new reality");
-                reality_id
+                id
             }
-            other => panic!("expected RealityDetected, got {other:?}"),
+            other => panic!("expected ProjectDetected, got {other:?}"),
         };
 
         // Verify it's in the DB
@@ -10459,33 +10606,27 @@ mod tests {
         let path = dir.path().to_string_lossy().to_string();
 
         // First call creates
-        let resp1 = handle_request(&mut state, Request::DetectReality { path: path.clone() });
+        let resp1 = handle_request(&mut state, Request::ProjectDetect { path: path.clone() });
         let id1 = match resp1 {
             Response::Ok {
-                data:
-                    ResponseData::RealityDetected {
-                        reality_id, is_new, ..
-                    },
+                data: ResponseData::ProjectDetected { id, is_new, .. },
             } => {
                 assert!(is_new);
-                reality_id
+                id
             }
-            other => panic!("expected RealityDetected, got {other:?}"),
+            other => panic!("expected ProjectDetected, got {other:?}"),
         };
 
         // Second call reuses
-        let resp2 = handle_request(&mut state, Request::DetectReality { path: path.clone() });
+        let resp2 = handle_request(&mut state, Request::ProjectDetect { path: path.clone() });
         let id2 = match resp2 {
             Response::Ok {
-                data:
-                    ResponseData::RealityDetected {
-                        reality_id, is_new, ..
-                    },
+                data: ResponseData::ProjectDetected { id, is_new, .. },
             } => {
                 assert!(!is_new, "second detection should reuse existing reality");
-                reality_id
+                id
             }
-            other => panic!("expected RealityDetected, got {other:?}"),
+            other => panic!("expected ProjectDetected, got {other:?}"),
         };
 
         assert_eq!(id1, id2, "both calls should return the same reality ID");
@@ -10500,7 +10641,7 @@ mod tests {
 
         let resp = handle_request(
             &mut state,
-            Request::DetectReality {
+            Request::ProjectDetect {
                 path: dir.path().to_string_lossy().to_string(),
             },
         );
@@ -10542,7 +10683,7 @@ mod tests {
             other => panic!("expected SessionRegistered, got {other:?}"),
         }
 
-        // Check that the session now has a reality_id
+        // Check that the session now has a id
         let reality_id: Option<String> = state
             .conn
             .query_row(
