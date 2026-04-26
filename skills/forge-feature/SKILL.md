@@ -36,9 +36,11 @@ This returns stored architectural decisions, lessons, and patterns relevant to t
 
 **Step 2: Check blast radius** (ISSUE-19: conditional — skip if not indexed)
 
-First check if the project is indexed:
+First check if the project is indexed (always pass `--project` so the
+search is scoped to the active project — without it the daemon's code
+graph mixes hits from every indexed project on the same host):
 ```bash
-forge-next code-search "main" 2>&1 | head -3
+forge-next code-search "main" --project <project-name> 2>&1 | head -3
 ```
 If you see "No symbols found" or an empty result, the project hasn't been indexed yet. In that case:
 - Skip blast-radius (it will return empty/zeros for unindexed projects)
@@ -46,9 +48,12 @@ If you see "No symbols found" or an empty result, the project hasn't been indexe
 - Use `grep -r` and `git log` for impact analysis as a fallback
 - Suggest `forge-next force-index --path <project-dir>` to the user
 
-If the project IS indexed, check blast radius for every key file:
+If the project IS indexed, check blast radius for every key file. The
+`--project` flag scopes callers and clusters to the active project; on
+a multi-project daemon, omitting it reports cross-project import edges
+which are noise for impact analysis:
 ```bash
-forge-next blast-radius --file <path/to/file>
+forge-next blast-radius --file <path/to/file> --project <project-name>
 ```
 
 This tells you which other files, decisions, and clusters are affected. Use it to:

@@ -21,8 +21,10 @@ Find root cause BEFORE attempting fixes. Symptom fixes are failure.
 # Check if this issue was seen before
 forge-next recall "<error message or symptom keywords>" --type lesson --limit 5
 
-# Understand what depends on the broken code
-forge-next blast-radius --file <broken-file>
+# Understand what depends on the broken code (always scope by --project
+# so the call graph and clusters reflect THIS project; without --project
+# the daemon mixes results from every indexed project on the same host)
+forge-next blast-radius --file <broken-file> --project <project-name>
 
 # Check project conventions for test/lint commands
 forge-next compile-context --agent claude-code | grep -A 2 "test_command"
@@ -77,11 +79,15 @@ Strip away everything except the failing path. Create the smallest test that fai
 
 **Technique 3: Symbol tracing**
 ```bash
-# Find the function definition
-forge-next find-symbol <function_name>
+# Find the function definition (--project keeps the search scoped to
+# THIS project — without it you'll get matches from every indexed
+# project, including unrelated namesakes)
+forge-next find-symbol <function_name> --project <project-name>
 
-# See what calls it
-forge-next blast-radius --file <file_path>
+# See what calls it (--project filters the call graph to within-project
+# callers; cross-project edges via the import graph still show in
+# cluster_files, see HANDOFF backlog LOW-10)
+forge-next blast-radius --file <file_path> --project <project-name>
 
 # Get overview of all symbols in the file
 forge-next symbols --file <file_path>
@@ -138,8 +144,10 @@ After fixing, verify thoroughly:
 # Run lint
 <lint_command>
 
-# Check blast radius — did the fix break anything else?
-forge-next blast-radius --file <fixed-file>
+# Check blast radius — did the fix break anything else? --project keeps
+# the impact analysis scoped to THIS project; without it the daemon
+# mixes results from every indexed project on the same host.
+forge-next blast-radius --file <fixed-file> --project <project-name>
 ```
 
 ### Phase 6: REMEMBER

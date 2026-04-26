@@ -53,13 +53,17 @@ Check STATE.md for `mode: greenfield` or `mode: existing`. Adapt accordingly.
 
 2. **Blast-radius key files** — understand impact before planning:
    ```bash
-   forge-next blast-radius --file <file-that-will-change>
+   # --project scopes the call graph to THIS project. Daemon-wide queries
+   # mix results from every indexed project on the same host.
+   forge-next blast-radius --file <file-that-will-change> --project <project-name>
    ```
    This tells you callers, importers, and linked decisions. Use it to scope your waves.
 
 3. **Symbol-level understanding** — when you need to understand specific code:
    ```bash
-   forge-next find-symbol <function_or_type_name>
+   # --project keeps the symbol search scoped — without it the daemon
+   # returns matches from every indexed project, including unrelated namesakes.
+   forge-next find-symbol <function_or_type_name> --project <project-name>
    forge-next symbols --file <path>
    ```
 

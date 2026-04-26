@@ -139,7 +139,7 @@ For each acceptance criterion:
 - **Invariants are security gates.** The evaluator checks invariants during Review phase.
 - **Contracts are type definitions.** Generators use contracts to define interfaces.
 - **Ask, don't assume.** If the user hasn't specified error handling, ASK — don't invent.
-- **Blast-radius awareness.** If the feature touches existing code, check `forge-next blast-radius` for each file and include affected modules in the spec's "Impact" section.
+- **Blast-radius awareness.** If the feature touches existing code, check `forge-next blast-radius --file <path> --project <project-name>` for each file and include affected modules in the spec's "Impact" section. Always pass `--project` — without it the daemon mixes call graphs from every indexed project on the same host, polluting impact analysis.
 
 ## What Forge Think Does NOT Do
 

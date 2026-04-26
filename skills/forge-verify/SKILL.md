@@ -59,7 +59,10 @@ Then exercise the feature:
 ### 5. Check for regressions
 
 ```bash
-forge-next blast-radius --file <modified-file>
+# Always pass --project so the regression-scan reflects THIS project's
+# call graph. Daemon-wide blast-radius pulls in every indexed project,
+# adding noise that masks real regression signals.
+forge-next blast-radius --file <modified-file> --project <project-name>
 ```
 
 Are any callers or co-affected files broken by your change?

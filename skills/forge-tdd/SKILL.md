@@ -32,7 +32,10 @@ This tells you: what command runs tests, what test attribute patterns to use, an
 
 ```bash
 forge-next recall "<feature keywords>" --limit 5
-forge-next blast-radius --file <target-file>
+# --project keeps the call graph scoped to THIS project. Without it, on a
+# multi-project daemon, callers from every other indexed project surface
+# as noise.
+forge-next blast-radius --file <target-file> --project <project-name>
 ```
 
 Understand what you're changing and what depends on it BEFORE writing anything.
