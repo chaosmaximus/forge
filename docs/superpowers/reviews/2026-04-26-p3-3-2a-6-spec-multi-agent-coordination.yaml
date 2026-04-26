@@ -1,0 +1,132 @@
+schema_version: 1
+review_id: 2026-04-26-p3-3-2a-6-spec-multi-agent-coordination
+date: 2026-04-26
+phase: P3-3 Stage 2 — 2A-6 multi-agent coordination bench
+target_paths:
+  - docs/superpowers/specs/2026-04-26-multi-agent-coordination-bench-design.md
+target_sha: d64fe83
+reviewer:
+  agent: claude
+  model: claude-opus-4-7
+  invocation: general-purpose
+verdict: not-lockable
+artifacts:
+  - kind: transcript
+    path: docs/superpowers/reviews/2026-04-26-p3-3-2a-6-spec-multi-agent-coordination.transcript.md
+findings:
+  - id: BLOCKER-1
+    severity: blocker
+    section: §2 fact 1 / §3.4 check 1
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      Spec claims session_message has 11 columns; actual schema has 13 columns
+      via base CREATE plus 14th column meeting_id added by ALTER at
+      db/schema.rs:1107. Infra check 1 threshold (>= 11) is too loose.
+  - id: BLOCKER-2
+    severity: blocker
+    section: §2 fact 2 / §3.4 check 2
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      Spec claims 3 indexes (idx_msg_to, idx_msg_from, idx_msg_reply); actual
+      schema has 4 (adds idx_msg_meeting at db/schema.rs:1109). Direct INSERT
+      pattern is unaffected but check 2 must enumerate all 4.
+  - id: BLOCKER-3
+    severity: blocker
+    section: §2 fact 13 / §3.2 corpus
+    status: deferred
+    fixed_by: ""
+    rationale: |
+      Reviewer error. session.organization_id IS present, added via ALTER at
+      db/schema.rs:864 ("ALTER TABLE session ADD COLUMN organization_id TEXT
+      DEFAULT 'default'"). Spec was correct as-written. v2 adds a clarifying
+      cite to the ALTER line so future readers don't repeat this verification
+      mistake. Original-finding closure not required.
+    summary: |
+      Reviewer claimed session has no organization_id column. Verification
+      shows the ALTER block at db/schema.rs:864 adds it; spec was correct.
+      v2 adds the cite for clarity.
+  - id: BLOCKER-4
+    severity: blocker
+    section: §3.2 / §3.3 cross-project corpus math
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      Spec claims "6 cross-project messages exist". Actual: each inbox of 10
+      receives 6 cross-project + 4 same-project messages (3 other-project
+      sessions × 2 each = 6 cross-project per inbox; 6 inboxes × 6 = 36 total
+      cross-project messages). Off by 6×.
+  - id: HIGH-1
+    severity: high
+    section: §3.3 D1 denominator
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      Spec hardcodes "max_possible_foreign = 50" for D1 score. Brittle: a
+      future change to dim execution order (D1 not first) would silently
+      drift the denominator. Make denominator runtime-computed at D1 start
+      or assert pre-D1 row count via infra check.
+  - id: HIGH-2
+    severity: high
+    section: §3.7 D5 sentinel-hash dependency
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      D5 probe 6 + 7 use a "sentinel row" but don't specify which row. With
+      D2-D6 inserting ~36 rows before D5, the sentinel must be a guaranteed-
+      unmutated row from the seeded 60. Pin the row id explicitly + prove
+      no prior dim mutates it.
+  - id: HIGH-3
+    severity: high
+    section: §5 disclaimer table
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      Spec lists Request::GrantPermission/RevokePermission as living "at
+      sessions.rs"; actual variants are in crates/core/src/protocol/request.rs:535,542
+      + handler dispatch in crates/daemon/src/server/handler.rs.
+      sessions.rs has check_a2a_permission (line 571) — gate logic, not CRUD.
+  - id: MED-1
+    severity: medium
+    section: §3.1a probe 2
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      Probe 2 uses 65000-byte parts_json; the boundary at sessions.rs:375 is
+      `len() > 65536`. 65000 is far from the cliff. Test exact 65536-byte
+      boundary to actually pin the contract.
+  - id: MED-2
+    severity: medium
+    section: §3.1a probe 1
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      Spec says error message contains "exceed 64KB limit"; exact source at
+      sessions.rs:377 is "message parts exceed 64KB limit". Probe must use
+      .contains() (not equality).
+  - id: MED-3
+    severity: medium
+    section: §2 recon table header
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      Recon table dated "HEAD `1377ee1`"; current HEAD is d64fe83. T1 must
+      re-stamp.
+summary: |
+  v1 NOT lockable: 4 BLOCKERs (column count, index count, false-positive on
+  organization_id, cross-project msg count off by 6×) + 3 HIGHs (D1 denom
+  brittleness, D5 sentinel-row pinning, Grant/Revoke citation) + 3 MEDs.
+  v2 must rewrite §2 facts 1-2 with the meeting_id ALTER, fix the
+  cross-project math to 36, runtime-compute D1 denom, pin D5 sentinel row,
+  fix Grant/Revoke cite, tighten D5 boundaries. Math otherwise sound
+  (composite weights sum=1.00; ULID=26; broadcast fan-out=2 verified).
