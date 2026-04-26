@@ -26,6 +26,11 @@ pub mod forge_identity;
 /// Request variants), but emits via `bench::telemetry` which IS bench-gated.
 #[cfg(feature = "bench")]
 pub mod forge_isolation;
+/// 2A-6 multi-agent coordination bench. Gated on `feature = "bench"`. Uses
+/// production `sessions::send_message` + `respond_to_message` + `list_messages`
+/// + `ack_messages` directly; emits via `bench::telemetry`.
+#[cfg(feature = "bench")]
+pub mod forge_coordination;
 pub mod forge_persist;
 pub mod locomo;
 pub mod longmemeval;
