@@ -785,6 +785,37 @@ pub async fn record_tool_use(
 }
 
 /// End an active agent session.
+/// Update fields on an active session — typically `--project` to fix
+/// a misregistered binding without ending+restarting.
+/// P3-4 Wave Z (Z8) per CC voice feedback §2.6.
+pub async fn update_session(id: String, project: Option<String>, cwd: Option<String>) {
+    if project.is_none() && cwd.is_none() {
+        eprintln!("error: pass --project and/or --cwd (nothing to update)");
+        std::process::exit(2);
+    }
+    let req = Request::SessionUpdate {
+        id: id.clone(),
+        project,
+        cwd,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::SessionUpdated { id, fields },
+        }) => {
+            println!("Session '{id}' updated: {}", fields.join(", "));
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub async fn end_session(id: String) {
     match client::send(&Request::EndSession { id: id.clone() }).await {
         Ok(Response::Ok {

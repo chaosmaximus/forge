@@ -2250,6 +2250,86 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::SessionUpdate { id, project, cwd } => {
+            // P3-4 Wave Z (Z8) — fix misregistered session bindings
+            // (e.g. SessionStart fired in a parent dir, user cd'd into
+            // a subproject, now wants the right project label without
+            // ending+restarting). CC voice feedback §2.6.
+            //
+            // Existence check first so the caller gets a clear "session
+            // not found" message instead of a silent zero-row UPDATE.
+            let exists: bool = state
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session WHERE id = ?1)",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            if !exists {
+                return Response::Error {
+                    message: format!("session '{id}' not found"),
+                };
+            }
+
+            let mut fields = Vec::new();
+            if let Some(ref p) = project {
+                if p.trim().is_empty() {
+                    return Response::Error {
+                        message: "project must be non-empty".into(),
+                    };
+                }
+                let n = state
+                    .conn
+                    .execute(
+                        "UPDATE session SET project = ?1 WHERE id = ?2",
+                        rusqlite::params![p, id],
+                    )
+                    .unwrap_or(0);
+                if n > 0 {
+                    fields.push("project".to_string());
+                }
+            }
+            if let Some(ref c) = cwd {
+                if c.trim().is_empty() {
+                    return Response::Error {
+                        message: "cwd must be non-empty".into(),
+                    };
+                }
+                let n = state
+                    .conn
+                    .execute(
+                        "UPDATE session SET cwd = ?1 WHERE id = ?2",
+                        rusqlite::params![c, id],
+                    )
+                    .unwrap_or(0);
+                if n > 0 {
+                    fields.push("cwd".to_string());
+                }
+            }
+
+            if fields.is_empty() {
+                return Response::Error {
+                    message: "session_update: no fields supplied (pass --project and/or --cwd)"
+                        .into(),
+                };
+            }
+
+            crate::events::emit(
+                &state.events,
+                "session_changed",
+                serde_json::json!({
+                    "id": id,
+                    "action": "updated",
+                    "fields": fields,
+                }),
+            );
+
+            Response::Ok {
+                data: ResponseData::SessionUpdated { id, fields },
+            }
+        }
+
         Request::SessionHeartbeat { session_id } => {
             match crate::sessions::update_heartbeat(&state.conn, &session_id) {
                 Ok(true) => Response::Ok {
@@ -9203,6 +9283,112 @@ mod tests {
                 assert_eq!(count, 0, "should not find anything for non-matching query");
             }
             other => panic!("expected Memories, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_z8_session_update_fixes_misregistered_project() {
+        // P3-4 Wave Z (Z8) — fix a session whose project label was set
+        // by SessionStart in the wrong dir. CC voice feedback §2.6.
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Register a session with the WRONG project label.
+        let resp = handle_request(
+            &mut state,
+            Request::RegisterSession {
+                id: "s1".into(),
+                agent: "claude-code".into(),
+                project: Some("parent-dir".into()),
+                cwd: Some("/tmp/parent-dir".into()),
+                capabilities: None,
+                current_task: None,
+            },
+        );
+        assert!(matches!(resp, Response::Ok { .. }));
+
+        // Now update it to the correct subproject.
+        let resp = handle_request(
+            &mut state,
+            Request::SessionUpdate {
+                id: "s1".into(),
+                project: Some("cc-voice".into()),
+                cwd: Some("/tmp/parent-dir/cc-voice".into()),
+            },
+        );
+        match resp {
+            Response::Ok {
+                data: ResponseData::SessionUpdated { id, fields },
+            } => {
+                assert_eq!(id, "s1");
+                assert!(fields.contains(&"project".to_string()));
+                assert!(fields.contains(&"cwd".to_string()));
+            }
+            other => panic!("expected SessionUpdated, got {other:?}"),
+        }
+
+        // Verify the row was rewritten.
+        let row: (String, String) = state
+            .conn
+            .query_row(
+                "SELECT project, cwd FROM session WHERE id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "cc-voice");
+        assert_eq!(row.1, "/tmp/parent-dir/cc-voice");
+    }
+
+    #[test]
+    fn p3_4_z8_session_update_unknown_session_errors_clearly() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let resp = handle_request(
+            &mut state,
+            Request::SessionUpdate {
+                id: "ghost".into(),
+                project: Some("x".into()),
+                cwd: None,
+            },
+        );
+        match resp {
+            Response::Error { message } => {
+                assert!(
+                    message.contains("ghost"),
+                    "error must name the missing session: {message}"
+                );
+                assert!(message.contains("not found"));
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_z8_session_update_no_fields_errors() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let _ = handle_request(
+            &mut state,
+            Request::RegisterSession {
+                id: "s2".into(),
+                agent: "claude-code".into(),
+                project: Some("forge".into()),
+                cwd: None,
+                capabilities: None,
+                current_task: None,
+            },
+        );
+        let resp = handle_request(
+            &mut state,
+            Request::SessionUpdate {
+                id: "s2".into(),
+                project: None,
+                cwd: None,
+            },
+        );
+        match resp {
+            Response::Error { message } => {
+                assert!(message.contains("no fields supplied"));
+            }
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 

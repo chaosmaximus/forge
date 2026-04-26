@@ -141,6 +141,7 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::PostEditCheck { .. }
         | Request::BlastRadius { .. }
         | Request::RegisterSession { .. }
+        | Request::SessionUpdate { .. }
         | Request::SessionHeartbeat { .. }
         | Request::ContextRefresh { .. }
         | Request::CompletionCheck { .. }

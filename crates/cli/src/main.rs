@@ -263,6 +263,24 @@ enum Commands {
         #[arg(long)]
         id: String,
     },
+    /// Update the project label or working directory of an active session.
+    ///
+    /// Use this when the SessionStart hook bound the session to the wrong
+    /// project (e.g. fired in a parent dir then `cd`'d into a subproject)
+    /// and you don't want to end+restart. P3-4 Wave Z (Z8) per CC voice
+    /// feedback §2.6.
+    #[command(name = "update-session")]
+    UpdateSession {
+        /// Session ID to update.
+        #[arg(long)]
+        id: String,
+        /// New project label.
+        #[arg(long)]
+        project: Option<String>,
+        /// New working directory.
+        #[arg(long)]
+        cwd: Option<String>,
+    },
     /// Record a tool-call observation into the session_tool_call table
     /// (hook-facing — Phase 23 consumes this).
     #[command(name = "record-tool-use")]
@@ -1537,6 +1555,9 @@ async fn main() {
         } => {
             commands::system::register_session(id, agent, project, cwd, role).await;
         }
+        Commands::UpdateSession { id, project, cwd } => {
+            commands::system::update_session(id, project, cwd).await;
+        }
         Commands::EndSession { id } => {
             commands::system::end_session(id).await;
         }
@@ -2615,6 +2636,31 @@ mod tests {
                 assert!(!dry_run, "default dry_run should be false");
             }
             other => panic!("expected CompileContext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_z8_update_session_command_parse() {
+        // P3-4 Wave Z (Z8) — update-session lets users fix a session's
+        // project label without restarting. CC voice feedback §2.6.
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "update-session",
+            "--id",
+            "abc-123",
+            "--project",
+            "cc-voice",
+            "--cwd",
+            "/mnt/colab-disk/playground/cc-voice",
+        ]);
+        assert!(cli.is_ok(), "update-session should parse: {:?}", cli.err());
+        match cli.unwrap().command {
+            Commands::UpdateSession { id, project, cwd } => {
+                assert_eq!(id, "abc-123");
+                assert_eq!(project.as_deref(), Some("cc-voice"));
+                assert_eq!(cwd.as_deref(), Some("/mnt/colab-disk/playground/cc-voice"));
+            }
+            other => panic!("expected UpdateSession, got {other:?}"),
         }
     }
 

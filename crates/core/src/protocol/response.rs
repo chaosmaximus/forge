@@ -672,6 +672,13 @@ pub enum ResponseData {
         entries: Vec<crate::types::entity::ConfigScopeEntry>,
     },
 
+    /// A session record was updated. `fields` lists which columns
+    /// actually changed (for CLI confirmation). P3-4 Wave Z (Z8).
+    SessionUpdated {
+        id: String,
+        fields: Vec<String>,
+    },
+
     /// A project record was detected (or already existed) for a path.
     ///
     /// P3-4 Wave Z (Z3): replaces the old `RealityDetected` variant.

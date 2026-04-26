@@ -289,6 +289,23 @@ pub enum Request {
         session_id: String,
     },
 
+    /// Update fields on an already-registered session — typically used
+    /// to fix a misregistered project label (e.g. SessionStart fired in
+    /// a parent dir, then the user `cd`'d into a subproject and now
+    /// wants the session bound correctly without ending+restarting).
+    ///
+    /// Either `project` or `cwd` (or both) may be supplied; missing
+    /// fields are left unchanged. Returns `Updated { id, fields }` so
+    /// the CLI can confirm what changed. P3-4 Wave Z (Z8) per CC voice
+    /// feedback §2.6.
+    SessionUpdate {
+        id: String,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        cwd: Option<String>,
+    },
+
     // ── Proactive Context (Prajna) ──
     /// Lightweight per-turn context delta check.
     /// Returns only NEW notifications, anti-pattern warnings, and pending messages since `since`.
