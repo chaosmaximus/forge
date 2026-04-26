@@ -34,16 +34,18 @@ findings:
   # ── MEDIUM ────────────────────────────────────────────────────────────
   - id: MED-1
     severity: MEDIUM
-    summary: "W22 path validation has a TOCTOU window — caller path canonicalised twice (synchronous validate, then again in spawned task) without holding any lock"
+    summary: "W22 path validation had a TOCTOU window — caller path canonicalised twice (synchronous validate, then again in spawned task) without holding any lock"
     file: crates/daemon/src/server/writer.rs:319-340
-    status: open
-    rationale: "`process_force_index_async` calls `std::fs::canonicalize(dir)` synchronously to validate \"is this a directory?\", then `run_force_index_in_task` (line 374) calls `canonicalize(&dir)` *again* on the spawn_blocking thread. Between the two calls, the directory could be (1) renamed (canonicalize succeeds with stale path, indexer walks an empty tree silently); (2) deleted (canonicalize errors, fallback `unwrap_or(dir)` walks the literal pre-canonical relative path); (3) replaced with a symlink to a different tree (path-traversal foothold if the daemon is admin-RBAC-gated and the caller is not the symlink owner). Mitigation: pass the *canonical* path from the synchronous validation into the closure (avoid recanonicalize), or hold an `O_PATH` fd on Linux to pin the inode. Severity MEDIUM because force-index is admin-only (rbac-gated per handler.rs:4674), but the TOCTOU note in handler.rs:4675 reads `For multi-tenant: add workspace boundary enforcement` — this fix introduces a NEW TOCTOU window that didn't exist in the synchronous handler."
+    status: resolved
+    fixed_by: 39f84b2
+    rationale: "Resolved in W23 fix-wave (`39f84b2`): `process_force_index_async` now resolves the caller path to its canonical form once on the writer-actor thread and hands the canonical `String` into the spawn closure. `run_force_index_in_task`'s `Some(canonical)` arm walks the path directly — no second canonicalize. Original concern: between the two canonicalize calls the directory could be renamed (canonicalize succeeds with stale path, indexer walks empty tree silently), deleted (canonicalize errors, fallback `unwrap_or(dir)` walked the pre-canonical relative path), or replaced with a symlink (path-traversal foothold under admin-RBAC). Severity MEDIUM because force-index is admin-only (rbac-gated per handler.rs:4674), but W22 had introduced the TOCTOU that the prior synchronous handler didn't have."
   - id: MED-2
     severity: MEDIUM
-    summary: "W21 `eprintln!` warning fires unconditionally on every send-with-no-identity — doc-comment claims 'one-time' but there's no `Once` guard"
+    summary: "W21 `eprintln!` warning fires unconditionally on every send-with-no-identity — doc-comment claimed 'one-time' but there's no `Once` guard"
     file: crates/cli/src/commands/system.rs:851,861-865
-    status: open
-    rationale: "The doc-comment at line 851 reads `Emits a one-time stderr warning when neither source is present`. The implementation is a bare `eprintln!` — no `std::sync::Once`, no static `AtomicBool`. **In practice** this is harmless because `forge-next` is a one-shot CLI process (one warning per invocation). **But**: (a) future test or library use that calls `resolve_from_session` repeatedly would emit a warning per call, contradicting the doc; (b) any future shift toward a long-lived CLI shell or REPL mode (already hinted at in the daemon-spawn architecture) flips this from one-shot to per-call spam; (c) the comment phrasing 'one-time' is a true regression for a future refactor that loops `send_message` from a script wrapper. Either swap the comment to 'one warning per invocation' OR wrap in `Once::call_once(|| eprintln!(...))`."
+    status: resolved
+    fixed_by: 39f84b2
+    rationale: "Resolved in W23 fix-wave (`39f84b2`): doc-comment rewritten to 'stderr warning per CLI invocation' with an explicit note that long-lived callers (REPL, library) would emit per call. Implementation behaviour unchanged — `forge-next` is a one-shot CLI process, so the per-invocation warning is correct in practice; only the doc-comment was misleading. `Once`-guarding the eprintln was considered and rejected as out-of-scope: scripts that loop `forge-next send` are still per-process so each call already gets its own one-shot warning, and a `Once` would silence the warning entirely for in-process REPL callers (defeating the F11/F13 nudge)."
   - id: MED-3
     severity: MEDIUM
     summary: "W22 backwards-compat heuristic `files_indexed == 0 && symbols_indexed == 0` → 'background started' will mislead users on legitimately-empty projects"
