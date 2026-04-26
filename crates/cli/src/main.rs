@@ -335,6 +335,27 @@ enum Commands {
         #[arg(long)]
         full: bool,
     },
+    /// Respond to a received FISP request (W21/F11+F13 + W23 review HIGH-2).
+    /// Uses the daemon's `Request::SessionRespond` shape and lets the
+    /// caller carry their own session id as the response's `from_session`
+    /// instead of the legacy hardcoded `"api"` sentinel.
+    #[command(name = "respond")]
+    Respond {
+        /// ID of the original request being responded to.
+        #[arg(long = "message-id", value_name = "ID")]
+        message_id: String,
+        /// Response status: "accepted", "rejected", "completed", or "failed".
+        #[arg(long)]
+        status: String,
+        /// Response text body.
+        #[arg(long)]
+        text: String,
+        /// Caller session ID — recorded as the response's `from_session`.
+        /// Falls back to FORGE_SESSION_ID env var if unset; falls back to
+        /// the legacy `"api"` sentinel only when neither is available.
+        #[arg(long)]
+        from: Option<String>,
+    },
     /// Read a single FISP message by ID
     #[command(name = "message-read")]
     MessageRead {
@@ -1525,6 +1546,14 @@ async fn main() {
             from,
         } => {
             commands::system::send_message(to, kind, topic, text, project, timeout, from).await;
+        }
+        Commands::Respond {
+            message_id,
+            status,
+            text,
+            from,
+        } => {
+            commands::system::respond_to_message(message_id, status, text, from).await;
         }
         Commands::Messages {
             session,

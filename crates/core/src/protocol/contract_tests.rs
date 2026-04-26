@@ -1452,6 +1452,7 @@ mod tests {
                     message_id: "m1".into(),
                     status: "completed".into(),
                     parts: vec![],
+                    from_session: None,
                 },
                 Request::SessionMessages {
                     session_id: "s1".into(),

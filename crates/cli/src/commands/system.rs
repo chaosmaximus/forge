@@ -924,6 +924,45 @@ pub async fn send_message(
     }
 }
 
+/// Respond to a received FISP request (W21/F11+F13 + W23 review HIGH-2).
+///
+/// Mirrors `send_message` shape but targets `Request::SessionRespond`,
+/// passing the resolved caller session id through as the response's
+/// `from_session`. Falls back to `FORGE_SESSION_ID` env var when `--from`
+/// is unset; the daemon then falls back to the legacy `"api"` sentinel
+/// when even that is missing (preserves W21 behavior for scripts that
+/// don't carry a session id).
+pub async fn respond_to_message(
+    message_id: String,
+    status: String,
+    text: String,
+    from: Option<String>,
+) {
+    let parts = vec![forge_core::protocol::MessagePart {
+        kind: "text".to_string(),
+        text: Some(text),
+        path: None,
+        data: None,
+        memory_id: None,
+    }];
+    let req = Request::SessionRespond {
+        message_id,
+        status,
+        parts,
+        from_session: resolve_from_session(from),
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::MessageResponded { id, status },
+        }) => {
+            println!("Response sent for {id} (status: {status})");
+        }
+        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+        Ok(_) => eprintln!("unexpected response"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
 pub async fn list_messages(
     session: String,
     status: Option<String>,

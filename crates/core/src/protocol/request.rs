@@ -543,6 +543,13 @@ pub enum Request {
         message_id: String,
         status: String, // "accepted", "rejected", "completed", "failed"
         parts: Vec<MessagePart>,
+        /// P3-4 W1.13 (W23 review HIGH-2): when set, the daemon uses
+        /// this session ID as the response's `from_session` instead of
+        /// the legacy hardcoded `"api"`. Defaults to None to preserve
+        /// the W21 behavior; new agent CLI flows pass their session
+        /// ID so responses carry verifiable provenance.
+        #[serde(default)]
+        from_session: Option<String>,
     },
     /// Get pending messages for a session
     SessionMessages {

@@ -4198,8 +4198,12 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             message_id,
             status,
             parts,
+            from_session,
         } => {
-            let from = "api";
+            // P3-4 W1.13 (W23 review HIGH-2): use the caller's session_id
+            // as `from_session` when provided; fall back to the legacy
+            // "api" sentinel for backward compat with pre-W1.13 callers.
+            let from = from_session.as_deref().unwrap_or("api");
             let parts_json = serde_json::to_string(&parts).unwrap_or_else(|_| "[]".to_string());
             match crate::sessions::respond_to_message(
                 &state.conn,
