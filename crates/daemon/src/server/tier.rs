@@ -241,6 +241,7 @@ fn request_to_feature(request: &Request) -> Option<Feature> {
         | Request::SessionSend { .. }
         | Request::SessionRespond { .. }
         | Request::SessionMessages { .. }
+        | Request::SessionMessageRead { .. }
         | Request::SessionAck { .. } => Some(Feature::TeamMessaging),
 
         // === Team tier: meetings ===

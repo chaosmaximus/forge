@@ -516,6 +516,15 @@ pub enum Request {
         #[serde(default)]
         offset: Option<usize>,
     },
+    /// Read a single FISP message by exact ID or unambiguous prefix.
+    /// (W27/F12+F14: previously, `forge-next message-read` fetched a batch
+    /// inbox snapshot scoped to one session and filtered client-side, which
+    /// failed for messages outside the most-recent 100 of that session and
+    /// for the truncated 8-char prefix shown in the `messages` listing.)
+    SessionMessageRead {
+        /// Message ID — full 26-char ULID OR a unique prefix.
+        id: String,
+    },
     /// Mark messages as read/consumed
     SessionAck {
         message_ids: Vec<String>,

@@ -1284,10 +1284,10 @@ mod tests {
     fn test_variant_count_completeness() {
         // Unit variants: 20 (was 19; +1 Version)
         let unit_count = 20;
-        // Parameterized variants: 103 (was 101; +2 RecordToolUse, ListToolCalls)
-        let param_count = 103;
-        // Total: 123
-        let expected_total = 123;
+        // Parameterized variants: 104 (was 103; +1 SessionMessageRead in W27)
+        let param_count = 104;
+        // Total: 124
+        let expected_total = 124;
 
         assert_eq!(
             unit_count + param_count,
@@ -1447,6 +1447,9 @@ mod tests {
                     status: None,
                     limit: None,
                     offset: Some(5),
+                },
+                Request::SessionMessageRead {
+                    id: "01ABCDEF".into(),
                 },
                 Request::SessionAck {
                     message_ids: vec!["m1".into()],

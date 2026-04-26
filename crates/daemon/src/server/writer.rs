@@ -100,6 +100,7 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::BlastRadius { .. }
             | Request::Export { .. }
             | Request::SessionMessages { .. }
+            | Request::SessionMessageRead { .. }
             | Request::ListEntities { .. }
             | Request::ListPermissions
             | Request::GetEffectiveConfig { .. }

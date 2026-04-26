@@ -627,6 +627,10 @@ pub enum ResponseData {
         messages: Vec<SessionMessage>,
         count: usize,
     },
+    /// A single message looked up by ID/prefix (W27/F12+F14).
+    SessionMessageItem {
+        message: SessionMessage,
+    },
     /// Messages were acknowledged
     MessagesAcked {
         count: usize,

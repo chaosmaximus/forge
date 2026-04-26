@@ -982,49 +982,44 @@ pub async fn list_messages(
 
 /// Read a single FISP message by ID.
 pub async fn message_read(id: String) {
-    // No single-message-by-ID endpoint exists, so fetch a batch and filter client-side.
-    let req = Request::SessionMessages {
-        session_id: String::new(),
-        status: None,
-        limit: Some(100),
-        offset: None,
-    };
+    // W27 (F12+F14): use the dedicated single-message endpoint so the lookup
+    // works for full ULIDs AND for the truncated 8-char prefix that the
+    // `messages` listing displays. The daemon resolves exact-match first and
+    // falls back to unambiguous prefix.
+    let req = Request::SessionMessageRead { id: id.clone() };
     match client::send(&req).await {
         Ok(Response::Ok {
-            data: ResponseData::SessionMessageList { messages, .. },
-        }) => match messages.iter().find(|m| m.id == id) {
-            Some(m) => {
-                println!("Message: {}", m.id);
-                println!("From:    {}", m.from_session);
-                println!("To:      {}", m.to_session);
-                println!("Kind:    {}", m.kind);
-                println!("Topic:   {}", m.topic);
-                println!("Status:  {}", m.status);
-                if let Some(ref reply) = m.in_reply_to {
-                    println!("Reply-to:{reply}");
-                }
-                if let Some(ref proj) = m.project {
-                    println!("Project: {proj}");
-                }
-                println!("Created: {}", m.created_at);
-                if let Some(ref delivered) = m.delivered_at {
-                    println!("Delivered:{delivered}");
-                }
-                println!("---");
-                let full_text: String = m
-                    .parts
-                    .iter()
-                    .filter_map(|p| p.text.as_deref())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                println!("{full_text}");
+            data: ResponseData::SessionMessageItem { message: m },
+        }) => {
+            println!("Message: {}", m.id);
+            println!("From:    {}", m.from_session);
+            println!("To:      {}", m.to_session);
+            println!("Kind:    {}", m.kind);
+            println!("Topic:   {}", m.topic);
+            println!("Status:  {}", m.status);
+            if let Some(ref reply) = m.in_reply_to {
+                println!("Reply-to:{reply}");
             }
-            None => {
-                eprintln!("message not found: {id}");
-                std::process::exit(1);
+            if let Some(ref proj) = m.project {
+                println!("Project: {proj}");
             }
-        },
-        Ok(Response::Error { message }) => eprintln!("error: {message}"),
+            println!("Created: {}", m.created_at);
+            if let Some(ref delivered) = m.delivered_at {
+                println!("Delivered:{delivered}");
+            }
+            println!("---");
+            let full_text: String = m
+                .parts
+                .iter()
+                .filter_map(|p| p.text.as_deref())
+                .collect::<Vec<_>>()
+                .join("\n");
+            println!("{full_text}");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
         Ok(_) => eprintln!("unexpected response"),
         Err(e) => eprintln!("error: {e}"),
     }

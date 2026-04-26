@@ -527,6 +527,68 @@ pub fn list_messages(
     rows.into_iter().collect()
 }
 
+/// W27 (F12+F14): look up a single message by exact ID or unambiguous prefix.
+///
+/// Resolution order:
+/// 1. Exact match on `session_message.id`. If a row exists, return it.
+/// 2. Prefix match (`id LIKE prefix || '%'`). If exactly one row matches,
+///    return it. Multiple matches → `Err(NotFound)` with a clearer message
+///    upstream so the user can disambiguate by typing more characters.
+///
+/// The `messages` listing truncates IDs to 8 chars for display, so users
+/// naturally copy-paste the prefix into `message-read`. Supporting prefix
+/// lookup closes that surface gap without sacrificing exact-ID determinism.
+pub fn read_message_by_id_or_prefix(
+    conn: &Connection,
+    id_or_prefix: &str,
+) -> rusqlite::Result<Option<SessionMessageRow>> {
+    let map_row = |row: &rusqlite::Row| -> rusqlite::Result<SessionMessageRow> {
+        Ok(SessionMessageRow {
+            id: row.get(0)?,
+            from_session: row.get(1)?,
+            to_session: row.get(2)?,
+            kind: row.get(3)?,
+            topic: row.get(4)?,
+            parts: row.get(5)?,
+            status: row.get(6)?,
+            in_reply_to: row.get(7)?,
+            project: row.get(8)?,
+            created_at: row.get(9)?,
+            delivered_at: row.get(10)?,
+        })
+    };
+    // Exact match first.
+    let exact = conn.query_row(
+        "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
+         FROM session_message WHERE id = ?1",
+        params![id_or_prefix],
+        map_row,
+    );
+    match exact {
+        Ok(row) => return Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {} // fall through to prefix
+        Err(e) => return Err(e),
+    }
+    // Prefix match — must be unambiguous.
+    let mut stmt = conn.prepare(
+        "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
+         FROM session_message WHERE id LIKE ?1 || '%' LIMIT 2",
+    )?;
+    let rows: Vec<SessionMessageRow> = stmt
+        .query_map(params![id_or_prefix], map_row)?
+        .filter_map(|r| r.ok())
+        .collect();
+    match rows.len() {
+        1 => Ok(Some(rows.into_iter().next().unwrap())),
+        0 => Ok(None),
+        _ => Err(rusqlite::Error::InvalidParameterName(format!(
+            "ambiguous message ID prefix '{id_or_prefix}' — type more characters \
+             (matches at least {} rows)",
+            rows.len()
+        ))),
+    }
+}
+
 /// Mark messages as read/consumed.
 /// Only acks messages addressed TO the given session (ownership validation).
 pub fn ack_messages(

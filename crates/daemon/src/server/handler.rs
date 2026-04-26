@@ -4209,6 +4209,49 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
+        Request::SessionMessageRead { id } => {
+            // W27 (F12+F14): single-message lookup by exact ID or unambiguous
+            // prefix. Replaces the prior client-side "fetch 100 then filter"
+            // pattern in `forge-next message-read` which silently failed for
+            // truncated IDs and for messages outside the most-recent batch.
+            match crate::sessions::read_message_by_id_or_prefix(&state.conn, &id) {
+                Ok(Some(r)) => {
+                    let parts: Vec<forge_core::protocol::request::MessagePart> =
+                        serde_json::from_str(&r.parts).unwrap_or_else(|e| {
+                            tracing::error!(
+                                message_id = %r.id,
+                                error = %e,
+                                "session_message_read: failed to deserialize stored parts JSON"
+                            );
+                            Vec::new()
+                        });
+                    Response::Ok {
+                        data: ResponseData::SessionMessageItem {
+                            message: forge_core::protocol::SessionMessage {
+                                id: r.id,
+                                from_session: r.from_session,
+                                to_session: r.to_session,
+                                kind: r.kind,
+                                topic: r.topic,
+                                parts,
+                                status: r.status,
+                                in_reply_to: r.in_reply_to,
+                                project: r.project,
+                                created_at: r.created_at,
+                                delivered_at: r.delivered_at,
+                            },
+                        },
+                    }
+                }
+                Ok(None) => Response::Error {
+                    message: format!("message not found: {id}"),
+                },
+                Err(e) => Response::Error {
+                    message: format!("session_message_read failed: {e}"),
+                },
+            }
+        }
+
         Request::SessionAck {
             message_ids,
             session_id,
