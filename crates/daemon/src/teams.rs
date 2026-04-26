@@ -612,13 +612,24 @@ pub fn run_team(
                 session_ids.push(session_id);
             }
             Err(e) => {
-                // Rollback: retire all already-spawned agents and end their
-                // sessions. Only delete the team row if WE created it in this
-                // call — if the team pre-existed (F6 idempotent path), leave
-                // the operator's earlier `team create` row intact.
+                // Rollback: retire all already-spawned agents, end their
+                // sessions, and clean the `team_member` rows the failed run
+                // inserted via `spawn_agent` (W28-review MED-1). If the team
+                // pre-existed (F6 idempotent path), leave the operator's
+                // earlier `team create` row intact AND only delete the
+                // member rows we added — never touch members from prior runs.
+                // If we created the team in this call, drop the team row
+                // entirely; member rows are cleaned by the same per-session
+                // DELETE since `team_member` lacks an FK cascade.
                 for sid in &session_ids {
                     let _ = retire_agent(conn, sid);
                     let _ = crate::sessions::end_session(conn, sid);
+                    let _ = conn.execute(
+                        "DELETE FROM team_member
+                         WHERE session_id = ?1
+                           AND team_id = (SELECT id FROM team WHERE name = ?2)",
+                        params![sid, team_name],
+                    );
                 }
                 if !team_pre_existed {
                     let _ = conn.execute("DELETE FROM team WHERE name = ?1", params![team_name]);

@@ -986,6 +986,11 @@ pub async fn message_read(id: String) {
     // works for full ULIDs AND for the truncated 8-char prefix that the
     // `messages` listing displays. The daemon resolves exact-match first and
     // falls back to unambiguous prefix.
+    //
+    // W28-review LOW-1: trim caller input — terminal copy-paste commonly
+    // captures a trailing space which silently breaks both exact and prefix
+    // match (no real ULID ends with whitespace).
+    let id = id.trim().to_string();
     let req = Request::SessionMessageRead { id: id.clone() };
     match client::send(&req).await {
         Ok(Response::Ok {
