@@ -172,6 +172,20 @@ enum Commands {
         #[arg(long)]
         expected_composite: Option<f64>,
     },
+    /// Run the Forge-Coordination benchmark (FISP multi-agent coordination correctness).
+    /// See docs/superpowers/specs/2026-04-26-multi-agent-coordination-bench-design.md.
+    ForgeCoordination {
+        /// ChaCha20 seed for deterministic dataset generation.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Output directory for summary.json.
+        #[arg(long, default_value = "bench_results_forge_coordination")]
+        output: PathBuf,
+        /// Expected composite score for pass/fail gate.
+        /// Omit for first calibration run; observed composite will be printed.
+        #[arg(long)]
+        expected_composite: Option<f64>,
+    },
     /// Run the LoCoMo benchmark.
     Locomo {
         /// Path to locomo10.json (from snap-research/locomo).
@@ -266,6 +280,11 @@ async fn main() {
             output,
             expected_composite,
         } => run_forge_isolation(seed, output, expected_composite),
+        Commands::ForgeCoordination {
+            seed,
+            output,
+            expected_composite,
+        } => run_forge_coordination(seed, output, expected_composite),
         Commands::ForgeConsolidation {
             seed,
             output,
@@ -894,6 +913,95 @@ fn run_forge_isolation(
         Ok(())
     } else {
         Err("forge-isolation FAIL: composite below threshold or per-dim minimum".to_string())
+    }
+}
+
+fn run_forge_coordination(
+    seed: u64,
+    output: PathBuf,
+    expected_composite: Option<f64>,
+) -> Result<(), String> {
+    use forge_daemon::bench::forge_coordination::{run_bench, BenchConfig};
+    eprintln!("[forge-coordination] starting seed={seed}");
+    let cfg = BenchConfig {
+        seed,
+        output_dir: output.clone(),
+        expected_composite,
+    };
+    let score = run_bench(&cfg);
+
+    eprintln!("[forge-coordination] === results ===");
+    eprintln!("[forge-coordination] composite={:.4}", score.composite);
+    eprintln!("[forge-coordination] pass={}", score.pass);
+    for d in &score.dimensions {
+        eprintln!(
+            "[forge-coordination] {} = {:.4} (min {:.2}, pass={})",
+            d.name, d.score, d.min, d.pass
+        );
+    }
+    let infra_passed = score
+        .infrastructure_checks
+        .iter()
+        .filter(|c| c.passed)
+        .count();
+    let infra_total = score.infrastructure_checks.len();
+    eprintln!("[forge-coordination] infrastructure_checks={infra_passed}/{infra_total} passed",);
+    eprintln!(
+        "[forge-coordination] wall_duration_ms={}",
+        score.wall_duration_ms
+    );
+    eprintln!(
+        "[forge-coordination] {}",
+        if score.pass { "PASS" } else { "FAIL" }
+    );
+
+    // Telemetry: emit bench_run_completed event.
+    let dimensions: Vec<DimensionEntry> = score
+        .dimensions
+        .iter()
+        .map(|d| DimensionEntry {
+            name: d.name.to_string(),
+            score: d.score,
+            min: d.min,
+            pass: d.pass,
+        })
+        .collect();
+    let mut dimension_scores = HashMap::new();
+    for d in &dimensions {
+        dimension_scores.insert(d.name.clone(), d.score);
+    }
+    let bench_specific = serde_json::json!({
+        "infrastructure_checks_passed": infra_passed,
+        "infrastructure_checks_total": infra_total,
+        "wall_duration_ms": score.wall_duration_ms,
+    });
+    emit_bench_telemetry(
+        "forge-coordination",
+        BenchRunPayload {
+            bench_name: "forge-coordination".to_string(),
+            seed,
+            composite: score.composite,
+            pass: score.pass,
+            dimensions: dimensions.clone(),
+            dimension_scores,
+            bench_specific_stats: bench_specific,
+            wall_duration_ms: score.wall_duration_ms,
+            result_count: dimensions.len() as u64,
+        },
+    );
+
+    if let Some(expected) = expected_composite {
+        if (score.composite - expected).abs() > 0.05 {
+            return Err(format!(
+                "composite {:.4} drifted from expected {:.4} by > 0.05",
+                score.composite, expected
+            ));
+        }
+    }
+    if score.pass {
+        Ok(())
+    } else {
+        Err("forge-coordination FAIL: composite below threshold or per-dim minimum".to_string())
     }
 }
 
