@@ -18,8 +18,35 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::{watch, Mutex};
+
+/// P3-3.11 W32 (closes F20+F22): code-file extensions the indexer
+/// considers "interesting" for fresh-mtime detection. Should be the
+/// union of every language the indexer can process — keeping this in
+/// sync with `extensions_for_language` is enforced by a unit test
+/// below.
+const CODE_FILE_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "py", "go"];
+
+/// P3-3.11 W32: fast-tick cadence for fresh-mtime checks. The full
+/// reindex runs only when (a) the safety-net cron elapsed OR (b) at
+/// least one tracked code file has been modified after the previous
+/// completion timestamp. The fast tick walks the project once per
+/// `FAST_TICK` to find max-mtime among code files — that walk is
+/// O(N) stats, so cheap even on large trees.
+const FAST_TICK: Duration = Duration::from_secs(60);
+
+/// Walk the project directory and return the most-recent mtime among
+/// tracked code files (rs/ts/tsx/js/jsx/py/go). Returns `None` if no
+/// code file is found or every stat fails. Used by the indexer's
+/// fresh-mtime gate (W32).
+pub fn code_files_max_mtime(project_dir: &str) -> Option<SystemTime> {
+    let files = collect_source_files(project_dir, CODE_FILE_EXTENSIONS);
+    files
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()))
+        .max()
+}
 
 // Interval is now configurable via ForgeConfig.workers.indexer_interval_secs
 // (default: 300 = 5 minutes)
@@ -75,18 +102,30 @@ pub async fn run_indexer(
     mut shutdown_rx: watch::Receiver<bool>,
     interval_secs: u64,
 ) {
-    let index_interval = Duration::from_secs(interval_secs);
-    tracing::info!(target: "forge::indexer", ?index_interval, "started");
+    // P3-3.11 W32 (closes F20+F22): the supplied `interval_secs` is the
+    // safety-net interval — a full reindex always runs at least this
+    // often even when the source tree is quiet. Between safety-net
+    // ticks the loop wakes every `FAST_TICK` and only runs a reindex
+    // if at least one tracked code file has an mtime newer than the
+    // previous completion timestamp. Default 300 s safety-net + 60 s
+    // fast tick = worst-case responsiveness 60 s on file save, no
+    // wasted CPU on quiet projects.
+    let safety_net = Duration::from_secs(interval_secs);
+    tracing::info!(target: "forge::indexer", ?safety_net, fast_tick = ?FAST_TICK, "started");
     let mut manager: Option<LspManager> = None;
     let mut first_run = true;
+    let mut last_completed_at: Option<SystemTime> = None;
 
     loop {
-        // Run immediately on first cycle, then every index_interval
+        // First cycle: short startup delay so the daemon has time to
+        // settle before the first index. Subsequent cycles: fast tick
+        // — actual heavy work is gated by the freshness/safety-net
+        // check below.
         let delay = if first_run {
             first_run = false;
-            Duration::from_secs(10) // short delay on startup for daemon to settle
+            Duration::from_secs(10)
         } else {
-            index_interval
+            FAST_TICK
         };
 
         tokio::select! {
@@ -110,6 +149,37 @@ pub async fn run_indexer(
                     continue;
                 }
 
+                // P3-3.11 W32: decide whether this tick should run a
+                // full reindex.
+                //
+                // * `due_for_safety_net = true`  — the safety-net interval
+                //   elapsed since the last completion (or this is the first
+                //   index ever). Run unconditionally.
+                // * `has_fresh_changes = true`   — at least one tracked
+                //   code file has been modified after `last_completed_at`.
+                //   Run.
+                // * Otherwise — skip; the source tree is unchanged.
+                let due_for_safety_net = match last_completed_at {
+                    Some(t) => SystemTime::now()
+                        .duration_since(t)
+                        .map(|d| d >= safety_net)
+                        .unwrap_or(true),
+                    None => true,
+                };
+                let has_fresh_changes = match last_completed_at {
+                    Some(last) => code_files_max_mtime(&project_dir)
+                        .map(|m| m > last)
+                        .unwrap_or(false),
+                    None => true,
+                };
+                if !due_for_safety_net && !has_fresh_changes {
+                    tracing::debug!(
+                        target: "forge::indexer",
+                        "fast tick: no fresh changes, safety-net not due — skipping"
+                    );
+                    continue;
+                }
+
                 // Create or reuse LspManager
                 let mgr = match &mut manager {
                     Some(m) if m.project_dir() == project_dir => m,
@@ -125,6 +195,10 @@ pub async fn run_indexer(
 
                 if let Err(e) = run_index(&project_dir, &state, mgr).await {
                     tracing::error!(target: "forge::indexer", error = %e, "index run failed");
+                } else {
+                    // Mark this completion so the next fresh-mtime
+                    // check can see what's changed *since this run*.
+                    last_completed_at = Some(SystemTime::now());
                 }
             }
             _ = shutdown_rx.changed() => {
@@ -2134,6 +2208,73 @@ def process_data(input_data):
         assert!(
             content.contains("pytest"),
             "should detect Python test command"
+        );
+    }
+
+    // ── P3-3.11 W32 (F20+F22) regression tests ────────────────────────────
+
+    #[test]
+    fn p3_3_11_w32_code_file_extensions_covers_all_supported_languages() {
+        // Every extension that `extensions_for_language` returns for any
+        // supported language MUST also be in `CODE_FILE_EXTENSIONS`. If a
+        // future commit adds (say) `kotlin` -> `kt` to extensions_for_
+        // language without updating CODE_FILE_EXTENSIONS, the fresh-mtime
+        // gate would silently miss .kt edits — fail the build instead.
+        for lang in ["rust", "python", "typescript", "go"] {
+            for ext in extensions_for_language(lang) {
+                assert!(
+                    CODE_FILE_EXTENSIONS.contains(ext),
+                    "language `{lang}` declares extension `{ext}` but \
+                     CODE_FILE_EXTENSIONS does not include it — the \
+                     indexer's fresh-mtime gate would miss edits to \
+                     this file type"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn p3_3_11_w32_code_files_max_mtime_returns_some_when_files_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hello.rs");
+        std::fs::write(&path, "fn main() {}").unwrap();
+        let mt = code_files_max_mtime(dir.path().to_str().unwrap());
+        assert!(
+            mt.is_some(),
+            "should return Some(mtime) for project with .rs"
+        );
+    }
+
+    #[test]
+    fn p3_3_11_w32_code_files_max_mtime_returns_none_when_no_code_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("README.md"), "# nothing").unwrap();
+        std::fs::write(dir.path().join("data.json"), "{}").unwrap();
+        let mt = code_files_max_mtime(dir.path().to_str().unwrap());
+        assert!(
+            mt.is_none(),
+            "no code files in dir → None (gate degrades to safety-net only)"
+        );
+    }
+
+    #[test]
+    fn p3_3_11_w32_code_files_max_mtime_picks_newest_across_extensions() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old.rs");
+        let new = dir.path().join("new.py");
+        std::fs::write(&old, "fn old() {}").unwrap();
+        let old_mt = std::fs::metadata(&old).unwrap().modified().unwrap();
+        // Wait long enough that filesystem mtime granularity (typically
+        // 1 ms on Linux ext4, 1 s on some FATs) records the newer write
+        // as strictly later.
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(&new, "def new(): pass").unwrap();
+        let mt = code_files_max_mtime(dir.path().to_str().unwrap()).unwrap();
+        // The maximum must be at least as recent as the newer write.
+        assert!(
+            mt >= old_mt,
+            "max ({mt:?}) must be ≥ both recorded mtimes (older was {old_mt:?})"
         );
     }
 }
