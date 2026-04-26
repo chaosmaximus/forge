@@ -1,0 +1,173 @@
+schema_version: 1
+slug: 2026-04-26-p3-3-9-pre-ga-high
+target_paths:
+  - crates/cli/src/client.rs
+  - crates/cli/src/commands/system.rs
+  - crates/cli/src/commands/teams.rs
+  - crates/cli/src/main.rs
+  - crates/daemon/src/server/handler.rs
+  - crates/daemon/src/server/writer.rs
+reviewer:
+  agent: claude-opus-4-7
+  date: 2026-04-26
+commit_range:
+  base: 37c90b0
+  head: 611169b
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-26-p3-3-9-pre-ga-high.transcript.md
+findings:
+  # ── HIGH ──────────────────────────────────────────────────────────────
+  - id: HIGH-1
+    severity: HIGH
+    summary: "W22 spawn_blocking task is fire-and-forget — JoinHandle dropped, panics swallowed silently, SIGTERM aborts mid-write"
+    file: crates/daemon/src/server/writer.rs:345
+    status: deferred
+    rationale: "`tokio::task::spawn_blocking(move || run_force_index_in_task(...))` returns a JoinHandle that is dropped immediately. Three concrete problems: (a) **Panic boundary** — if `run_force_index_in_task` panics (regex compile failure, OOM in clustering, sqlite assertion), the panic is captured by `JoinError` but never observed. The panic message goes to the runtime's panic hook (default behavior: print to stderr) but the daemon has no signal that indexing failed; the next CLI call sees no symptom. Compare `kpi_reaper::run_reap_blocking` (line 241) which `await`s the JoinHandle and matches `Ok(Ok)/Ok(Err)/Err` arms. (b) **No shutdown coordination** — the daemon's P3-2 W7 SIGTERM handler routes through a `watch::channel`, but the spawn_blocking task knows nothing about it. On SIGTERM, the runtime is dropped while the indexer is mid-INSERT; SQLite WAL is robust against this (atomic-commit), but a partially-written `code_symbol` table or a clustering pass that wrote half its edges is committed-or-rolled-back at *transaction* granularity, not pass granularity — so the on-disk state is split-brain (some files indexed, others not). The previous synchronous handler held the writer mutex until completion, so SIGTERM blocked until done. (c) **No backpressure / deduplication** — two near-simultaneous `force-index` calls spawn two tasks that both walk the entire tree and both contend on the SQLite writer. Mitigation: at minimum, log panics via `JoinHandle::abort_handle` + supervisor task; track in-flight indexing with an `AtomicBool` and reject overlapping calls with `Response::Error { message: \"index already running\" }`. **Deferred to P3-3.10 follow-up wave** — the fix wave is otherwise lockable, but a supervisor task wrapping the spawn_blocking + concurrency-guard is the most actionable next step."
+  - id: HIGH-2
+    severity: HIGH
+    summary: "W21 plan said `Same for respond` — SessionRespond protocol still has no caller-identity surface (silently descoped)"
+    file: docs/superpowers/plans/2026-04-26-dogfood-fixes-plan.md:67-68
+    status: deferred
+    rationale: "The plan-doc explicitly enumerates `crates/cli/src/main.rs — add --from <SESSION_ID> flag to the Send subcommand. Same for respond.` The implemented commit only touches `Send` and `TeamSend`. `Request::SessionRespond` (request.rs:506-510) carries `message_id`, `status`, `parts` — no `from_session` field at all. **Worse**: there is no `forge-next respond` CLI subcommand at all (verified: `grep -n 'respond' crates/cli/src/main.rs` returns only an unrelated `responding` status string). So a planner→generator→evaluator round-trip CAN'T close the loop via CLI today — receivers can `messages` but cannot `respond` from the CLI. The W21 commit ships only half of F11 — outbound caller identity is fixed for new messages, but the response leg is still inaccessible. Either (a) explicitly note in the commit/HANDOFF that `respond` is descoped to a follow-up, or (b) add the missing `respond` subcommand in this wave. As written, future readers of the plan will assume both halves shipped."
+  # ── MEDIUM ────────────────────────────────────────────────────────────
+  - id: MED-1
+    severity: MEDIUM
+    summary: "W22 path validation has a TOCTOU window — caller path canonicalised twice (synchronous validate, then again in spawned task) without holding any lock"
+    file: crates/daemon/src/server/writer.rs:319-340
+    status: open
+    rationale: "`process_force_index_async` calls `std::fs::canonicalize(dir)` synchronously to validate \"is this a directory?\", then `run_force_index_in_task` (line 374) calls `canonicalize(&dir)` *again* on the spawn_blocking thread. Between the two calls, the directory could be (1) renamed (canonicalize succeeds with stale path, indexer walks an empty tree silently); (2) deleted (canonicalize errors, fallback `unwrap_or(dir)` walks the literal pre-canonical relative path); (3) replaced with a symlink to a different tree (path-traversal foothold if the daemon is admin-RBAC-gated and the caller is not the symlink owner). Mitigation: pass the *canonical* path from the synchronous validation into the closure (avoid recanonicalize), or hold an `O_PATH` fd on Linux to pin the inode. Severity MEDIUM because force-index is admin-only (rbac-gated per handler.rs:4674), but the TOCTOU note in handler.rs:4675 reads `For multi-tenant: add workspace boundary enforcement` — this fix introduces a NEW TOCTOU window that didn't exist in the synchronous handler."
+  - id: MED-2
+    severity: MEDIUM
+    summary: "W21 `eprintln!` warning fires unconditionally on every send-with-no-identity — doc-comment claims 'one-time' but there's no `Once` guard"
+    file: crates/cli/src/commands/system.rs:851,861-865
+    status: open
+    rationale: "The doc-comment at line 851 reads `Emits a one-time stderr warning when neither source is present`. The implementation is a bare `eprintln!` — no `std::sync::Once`, no static `AtomicBool`. **In practice** this is harmless because `forge-next` is a one-shot CLI process (one warning per invocation). **But**: (a) future test or library use that calls `resolve_from_session` repeatedly would emit a warning per call, contradicting the doc; (b) any future shift toward a long-lived CLI shell or REPL mode (already hinted at in the daemon-spawn architecture) flips this from one-shot to per-call spam; (c) the comment phrasing 'one-time' is a true regression for a future refactor that loops `send_message` from a script wrapper. Either swap the comment to 'one warning per invocation' OR wrap in `Once::call_once(|| eprintln!(...))`."
+  - id: MED-3
+    severity: MEDIUM
+    summary: "W22 backwards-compat heuristic `files_indexed == 0 && symbols_indexed == 0` → 'background started' will mislead users on legitimately-empty projects"
+    file: crates/cli/src/commands/system.rs:1716-1727
+    status: open
+    rationale: "The CLI now infers async dispatch from `(0, 0)` counts. But: (1) a brand-new empty project directory legitimately yields `(0, 0)` and the user sees the misleading message 'Indexer dispatched in background. Watch ~/.forge/daemon.log'. (2) Worse, if the spawn_blocking task PANICS during the actual indexing pass, the CLI already returned the same `(0, 0)` ⇒ the user sees 'dispatched in background' and waits indefinitely for nothing. (3) A pre-W22 daemon truly returning `(0, 0)` from a synchronous failure (e.g., empty directory) would also print 'background started' incorrectly. **Better protocol shift**: add a `ResponseData::IndexStarted` variant or a `dispatched: bool` field to disambiguate. Acknowledged as 'acceptable degradation' in the prompt, but flagged because the misleading text is on the user-visible critical path."
+  - id: MED-4
+    severity: MEDIUM
+    summary: "W22 background task runs `init_sqlite_vec` redundantly + executes `PRAGMA journal_mode=WAL` on every dispatch — wasted SQLite I/O on each force-index"
+    file: crates/daemon/src/server/writer.rs:374-385
+    status: open
+    rationale: "`crate::db::vec::init_sqlite_vec()` is `Once::call_once`-guarded (db/vec.rs:13) — calling it from the spawn_blocking task is a no-op after the daemon's first call, so the call is HARMLESS but redundant. More concerning: every dispatch runs `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;` on a **freshly-opened** connection. WAL mode is a persistent file-level setting (verified by SQLite docs: once set, the journal_mode header in the DB file persists), so the PRAGMA is idempotent but the round-trip still serialises through the writer mutex briefly. With 30s indexer passes this is irrelevant; with future <1s targeted dispatches it becomes measurable. Cosmetic at observed scales; structural for performance work in P3-3.10+. Compare kpi_reaper.rs:246 which uses `busy_timeout=5000` — W22 picked 10000 with no documented rationale (different value than the canonical reaper precedent)."
+  # ── LOW ───────────────────────────────────────────────────────────────
+  - id: LOW-1
+    severity: LOW
+    summary: "W21 unit tests use `Mutex<()>` env-guard but a panic between `set_var` and `remove_var` poisons the mutex AND leaks env state into sibling tests"
+    file: crates/cli/src/commands/system.rs:2829-2864
+    status: open
+    rationale: "The test pattern is `let _guard = ENV_LOCK.lock().unwrap(); set_var(...); resolve_from_session(...); remove_var(...);`. If `resolve_from_session` panics mid-call (or any future change adds an `assert!`), the panic propagates *with the lock still held* and the env var still set. Result: (1) sibling tests in the same process see the leaked `FORGE_SESSION_ID`; (2) the next test that calls `ENV_LOCK.lock().unwrap()` fails with `PoisonError`, masking the original panic. Standard Rust pattern is `temp_env::with_var` or a custom `Drop`-based guard that calls `remove_var` regardless of unwind. Today the tests pass because `resolve_from_session` is too simple to panic, but the lock pattern is fragile. Low because tests-only and currently green."
+  - id: LOW-2
+    severity: LOW
+    summary: "W20 forwards LD_LIBRARY_PATH but NOT companion vars (LD_PRELOAD, LD_AUDIT, LD_BIND_NOW) — security debate, but inconsistency unsigned"
+    file: crates/cli/src/client.rs:18-29
+    status: open
+    rationale: "The forwarded set is `{LD_LIBRARY_PATH, DYLD_LIBRARY_PATH, DYLD_FALLBACK_LIBRARY_PATH}`. **Intentionally NOT forwarded**: `LD_PRELOAD` (security: would let an attacker who controls the env preload arbitrary .so files into the daemon — correct to drop); `LD_AUDIT` (similar attack surface); `LD_BIND_NOW`, `LD_DEBUG` (debug aids — could be useful for support but not load-time blocking). On macOS the parallel set includes `DYLD_INSERT_LIBRARIES` (LD_PRELOAD analog) and `DYLD_FRAMEWORK_PATH`. The current allowlist is defensible but the rationale is undocumented in code or commit. Either add a one-liner block-comment to FORWARDED_ENV_KEYS ('LD_PRELOAD/LD_AUDIT intentionally excluded — preload-attack surface'), or mention the security boundary in client.rs's module-doc. Today an auditor must reconstruct the rationale from absence."
+  - id: LOW-3
+    severity: LOW
+    summary: "W20 unit tests are shape-checks only — they verify the const contains the keys but never exercise `std::env::var` propagation through `Command::envs(...)`"
+    file: crates/cli/src/client.rs:267-291
+    status: open
+    rationale: "Both `forwarded_env_keys_include_dynamic_loader_paths` and `forwarded_env_keys_include_forge_runtime_basics` assert `FORWARDED_ENV_KEYS.contains(&\"LD_LIBRARY_PATH\")` — pure constant-array lookup, would also pass if the runtime forwarding loop were deleted. The actual end-to-end behavior (env var reads → `envs.push(...)` → `Command::envs(envs)` → spawned process inherits) is verified only by the live `/proc/<daemon>/environ` check in the commit message. A unit test that mock-spawns a `bash -c 'printenv LD_LIBRARY_PATH'` child after `set_var` would lock the runtime path; today, dropping the `if let Ok(v) = std::env::var(key)` block would not fail any unit test."
+  - id: LOW-4
+    severity: LOW
+    summary: "W22 does not propagate `FORGE_SESSION_ID` or other runtime envs to the spawn_blocking task — irrelevant for indexer today but a precedent trap"
+    file: crates/daemon/src/server/writer.rs:336-347
+    status: open
+    rationale: "The closure captures `db_path` and `path_for_task` only. The indexer pass currently reads no environment, so this is a non-issue. But if a future indexer feature adds env-driven config (e.g., `FORGE_INDEX_PARALLELISM`, `FORGE_INDEXER_PROJECT_FILTER`), the spawn_blocking thread inherits the parent process's env at *spawn time*, which is correct for `std::thread`-style semantics but surprising if the daemon's env was modified post-startup. Documenting the env-capture model now (in the doc-comment) future-proofs the precedent. Cosmetic / forward-looking."
+  - id: LOW-5
+    severity: LOW
+    summary: "W22 `IndexComplete { 0, 0 }` returned synchronously is technically a protocol-shape regression for any client that reads counts — no schema_version bump, no harness sync change"
+    file: crates/daemon/src/server/writer.rs:347-352
+    status: open
+    rationale: "The protocol enum `ResponseData::IndexComplete` keeps its shape (`files_indexed: usize, symbols_indexed: usize`), so JSON consumers parse the same fields. **But** the *meaning* changed: pre-W22, those fields reflected actual on-disk effect; post-W22, they're unconditionally zero. No `protocol/contract_tests.rs` update was made, no docs/api-reference change. A scripted integration test piping `forge-next force-index --json | jq '.symbols_indexed > 0'` was previously a valid smoke-test of indexing-completed; W22 silently breaks that semantics without bumping any version surface. Mitigation: either (a) introduce `ResponseData::IndexStarted { task_id }` as a new variant (real protocol shift, requires harness-sync), or (b) add a regression note in `docs/api-reference.md` for the ForceIndex method. Found no consumers in tests/scripts/ today — but the asymmetry is a footgun."
+  # ── NIT ───────────────────────────────────────────────────────────────
+  - id: NIT-1
+    severity: NIT
+    summary: "W22 spawn_blocking closure tracing call uses `?path_for_task` Debug-format — wrapping `Option<String>` produces ugly output like `path_for_task=Some(\"/foo\")`"
+    file: crates/daemon/src/server/writer.rs:340-344
+    status: open
+    rationale: "`tracing::info!(?path_for_task, ...)` formats as `path_for_task=Some(\"/path\")` for set values and `path_for_task=None` for default. Standard practice: `path = path_for_task.as_deref().unwrap_or(\"<default>\")` for cleaner log lines. Cosmetic only."
+  - id: NIT-2
+    severity: NIT
+    summary: "W22 `path_for_task` rebinding is dead — could just `move || run_force_index_in_task(&db_path, path)` with original `path` name"
+    file: crates/daemon/src/server/writer.rs:337
+    status: open
+    rationale: "`let path_for_task = path;` is a rename with no transformation, then both the tracing call and the closure use `path_for_task`. Eliminating the rebinding by renaming the parameter or using `path` directly throughout is one fewer variable for a future reader. Cosmetic."
+  # ── RESOLVED (verified during review) ─────────────────────────────────
+  - id: RESOLVED-1
+    severity: HIGH
+    summary: "W20 forwarding allowlist correctly extracted as a `const &[&str]` so future refactor cannot silently drop a key"
+    file: crates/cli/src/client.rs:18-29
+    status: resolved
+    fixed_by: 54aeecd
+    rationale: "Verified `FORWARDED_ENV_KEYS` is module-level const, used in the spawn loop at line 132, and asserted by both unit tests. The const-extraction prevents the previous local-array pattern from regressing under future refactors."
+  - id: RESOLVED-2
+    severity: HIGH
+    summary: "W21 explicit-flag-vs-env precedence is correct + empty-string falls through to env (matches reasonable user expectation)"
+    file: crates/cli/src/commands/system.rs:854-869
+    status: resolved
+    fixed_by: 6e27eb4
+    rationale: "Verified `if let Some(v) = explicit.filter(|s| !s.is_empty())` correctly treats `--from \"\"` as 'unset' (falls through to env). Test `empty_flag_falls_through_to_env` pins this. Whitespace-only input (`--from \" \"`) is NOT trimmed and treated as a valid identity — borderline but consistent with not silently mutating user input."
+  - id: RESOLVED-3
+    severity: HIGH
+    summary: "W21 also routes `team_send` through `resolve_from_session` — closes F11 for the team-broadcast surface as well as `send`"
+    file: crates/cli/src/commands/teams.rs:1164
+    status: resolved
+    fixed_by: 6e27eb4
+    rationale: "Verified `from_session: super::system::resolve_from_session(from)` replaces the prior raw `from_session: from`. Pre-W21 team-send: `--from x` worked, but `FORGE_SESSION_ID=x` did NOT (the env path didn't exist). Post-W21: both work. This is a STRENGTHENING of team-send semantics — backwards-compatible because explicit --from continues to win."
+  - id: RESOLVED-4
+    severity: HIGH
+    summary: "W22 synchronous test (`test_force_index_produces_edges`) bypasses the actor and calls `handle_request` directly — kept passing without modification"
+    file: crates/daemon/src/server/handler.rs:10477-10497
+    status: resolved
+    fixed_by: 611169b
+    rationale: "Confirmed the test calls `handle_request(&mut state, Request::ForceIndex { path: None })` directly, so it exercises the synchronous handler path — unaffected by the actor-level dispatch change. The test still validates the actual indexing logic; the W22 refactor only diverts requests at the actor's match arm before reaching `handle_request`."
+  - id: RESOLVED-5
+    severity: MEDIUM
+    summary: "harness-sync clean — `bash scripts/check-harness-sync.sh` returns OK, no plugin/hooks/skills/agents drift"
+    file: scripts/check-harness-sync.sh
+    status: resolved
+    fixed_by: 611169b
+    rationale: "Verified: `harness-sync: OK — 154 JSON methods + 107 CLI subcommands authoritative, no drift`. The new `--from` flag on `Send` is correctly registered in the CLI subcommand surface; no plugin manifest changes required because the subcommand name didn't change. force-index protocol shape is unchanged at the wire level."
+  - id: RESOLVED-6
+    severity: MEDIUM
+    summary: "`init_sqlite_vec` is correctly idempotent via `std::sync::Once` — calling from the spawn_blocking task is safe"
+    file: crates/daemon/src/db/vec.rs:11-20
+    status: resolved
+    fixed_by: 611169b
+    rationale: "Confirmed `pub fn init_sqlite_vec() { use std::sync::Once; static INIT: Once = Once::new(); INIT.call_once(|| ...); }`. Multiple calls across threads are safe and only register the auto-extension once. Per-connection `PRAGMA` setup in `run_force_index_in_task` is correct for opening a fresh connection."
+  - id: RESOLVED-7
+    severity: MEDIUM
+    summary: "All 6 W20+W21 unit tests pass under cargo test"
+    file: crates/cli/src/commands/system.rs:2824-2865
+    status: resolved
+    fixed_by: 6e27eb4
+    rationale: "Verified: `cargo test -p forge-cli --bin forge-next client::tests` → 2 passed; `cargo test -p forge-cli --bin forge-next commands::system::tests` → 4 passed."
+  - id: RESOLVED-8
+    severity: LOW
+    summary: "Windows path is not affected — CI matrix is `[ubuntu-latest, macos-latest]` only; LD_LIBRARY_PATH/DYLD_* forwarding is correct for both targets"
+    file: .github/workflows/ci.yml
+    status: resolved
+    fixed_by: 54aeecd
+    rationale: "Verified CI matrix is Linux + macOS only (no `windows-latest`). `setup-dev-env.sh` only handles Linux glibc<2.38. Windows is not a supported target today, so the absence of `PATH`-based DLL search forwarding is moot. Should Windows support land later, this allowlist needs `PATH` re-evaluated as the DLL-search vector (already in the list, but for a different reason)."
+  - id: RESOLVED-9
+    severity: LOW
+    summary: "WAL mode is per-database file (persistent header), not per-connection — multiple connections from spawn_blocking + writer-actor coexist safely"
+    file: crates/daemon/src/server/writer.rs:382
+    status: resolved
+    fixed_by: 611169b
+    rationale: "Per SQLite docs (https://sqlite.org/wal.html §3): WAL mode is set by `PRAGMA journal_mode=WAL` on any connection and persists in the database header. Subsequent connections automatically use WAL without needing the PRAGMA. The W22 setup PRAGMA is harmless and ensures correct mode if the file is fresh. Inter-connection writes serialize at the transaction level via the WAL-index lock, NOT at the open-connection level — so the writer-actor's connection and the spawn_blocking task's connection coexist correctly. Live verification in the W22 commit message (concurrent send 9.4s instead of 30s timeout) confirms the architecture works."
+  - id: RESOLVED-10
+    severity: LOW
+    summary: "`db_path` propagation through DaemonState constructors is uniform — all 3 (`new`/`new_writer`/`new_reader`) capture the path consistently"
+    file: crates/daemon/src/server/handler.rs:121-211
+    status: resolved
+    fixed_by: 611169b
+    rationale: "Verified each of the 3 constructors stores `db_path: db_path.to_string()`. Tests using `new_writer(\":memory:\", ...)` correctly capture the literal string `:memory:` — but no W22-style background task should ever run against `:memory:` (it would open a fresh, empty in-memory DB) and the synchronous test bypasses the actor anyway, so the in-memory case is unreachable from the new code path."
