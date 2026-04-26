@@ -986,7 +986,7 @@ pub async fn list_messages(
 }
 
 /// Read a single FISP message by ID.
-pub async fn message_read(id: String) {
+pub async fn message_read(id: String, caller_session: Option<String>) {
     // W27 (F12+F14): use the dedicated single-message endpoint so the lookup
     // works for full ULIDs AND for the truncated 8-char prefix that the
     // `messages` listing displays. The daemon resolves exact-match first and
@@ -995,8 +995,17 @@ pub async fn message_read(id: String) {
     // W28-review LOW-1: trim caller input — terminal copy-paste commonly
     // captures a trailing space which silently breaks both exact and prefix
     // match (no real ULID ends with whitespace).
+    //
+    // P3-4 W1.13 (W28 review HIGH-1): pass `--from` session through as
+    // `caller_session` so the daemon scopes the lookup to messages the
+    // caller is a participant in. Defaults to None (open lookup) for
+    // backward compat with existing scripts that don't carry a session
+    // ID at the call-site.
     let id = id.trim().to_string();
-    let req = Request::SessionMessageRead { id: id.clone() };
+    let req = Request::SessionMessageRead {
+        id: id.clone(),
+        caller_session,
+    };
     match client::send(&req).await {
         Ok(Response::Ok {
             data: ResponseData::SessionMessageItem { message: m },

@@ -1461,6 +1461,7 @@ mod tests {
                 },
                 Request::SessionMessageRead {
                     id: "01ABCDEF".into(),
+                    caller_session: None,
                 },
                 Request::SessionAck {
                     message_ids: vec!["m1".into()],

@@ -4298,12 +4298,22 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::SessionMessageRead { id } => {
+        Request::SessionMessageRead { id, caller_session } => {
             // W27 (F12+F14): single-message lookup by exact ID or unambiguous
             // prefix. Replaces the prior client-side "fetch 100 then filter"
             // pattern in `forge-next message-read` which silently failed for
             // truncated IDs and for messages outside the most-recent batch.
-            match crate::sessions::read_message_by_id_or_prefix(&state.conn, &id) {
+            //
+            // P3-4 W1.13 (W28 review HIGH-1): when caller_session is set, the
+            // daemon scopes the lookup to messages the caller is a participant
+            // in. None preserves the W27 default-open semantics for backward
+            // compat (single-tenant Unix-socket deployments without a stable
+            // caller-id concept).
+            match crate::sessions::read_message_by_id_or_prefix(
+                &state.conn,
+                &id,
+                caller_session.as_deref(),
+            ) {
                 Ok(Some(r)) => {
                     let parts: Vec<forge_core::protocol::request::MessagePart> =
                         serde_json::from_str(&r.parts).unwrap_or_else(|e| {

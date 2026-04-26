@@ -560,6 +560,15 @@ pub enum Request {
     SessionMessageRead {
         /// Message ID — full 26-char ULID OR a unique prefix.
         id: String,
+        /// P3-4 W1.13 (W28 review HIGH-1): when set, the daemon scopes
+        /// the lookup to messages where `to_session = ?` OR
+        /// `from_session = ?`. None preserves the W27 default-open
+        /// semantics for backward compat (single-tenant Unix-socket
+        /// deployments without a stable caller-id concept). New
+        /// CLI/agent invocations should pass their session ID here so
+        /// the fetched message is verifiably one they participated in.
+        #[serde(default)]
+        caller_session: Option<String>,
     },
     /// Mark messages as read/consumed
     SessionAck {

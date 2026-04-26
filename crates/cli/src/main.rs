@@ -344,6 +344,13 @@ enum Commands {
         /// Message ID via flag (legacy alias for the positional form).
         #[arg(long = "id", value_name = "ID")]
         id_flag: Option<String>,
+        /// Caller session ID — when set, the daemon scopes the lookup
+        /// to messages where this session is the sender or recipient
+        /// (W28 review HIGH-1 / P3-4 W1.13). Recommended for new
+        /// scripts; backward-compat default (`None`) preserves the
+        /// W27 open-lookup behavior.
+        #[arg(long = "from", value_name = "SESSION_ID")]
+        from: Option<String>,
     },
     /// Acknowledge (mark as read) messages by ID
     #[command(name = "ack")]
@@ -1527,7 +1534,11 @@ async fn main() {
         } => {
             commands::system::list_messages(session, status, limit, full).await;
         }
-        Commands::MessageRead { id_pos, id_flag } => {
+        Commands::MessageRead {
+            id_pos,
+            id_flag,
+            from,
+        } => {
             let id = match (id_pos, id_flag) {
                 (Some(v), None) | (None, Some(v)) => v,
                 (Some(_), Some(_)) => {
@@ -1539,7 +1550,7 @@ async fn main() {
                     std::process::exit(2);
                 }
             };
-            commands::system::message_read(id).await;
+            commands::system::message_read(id, from).await;
         }
         Commands::Ack { ids } => {
             commands::system::ack_messages(ids).await;
@@ -3519,7 +3530,9 @@ mod tests {
             cli.err()
         );
         match cli.unwrap().command {
-            Commands::MessageRead { id_pos, id_flag } => {
+            Commands::MessageRead {
+                id_pos, id_flag, ..
+            } => {
                 assert_eq!(id_pos, None);
                 assert_eq!(id_flag.as_deref(), Some("msg-01ABCDEF"));
             }
@@ -3536,7 +3549,9 @@ mod tests {
             cli.err()
         );
         match cli.unwrap().command {
-            Commands::MessageRead { id_pos, id_flag } => {
+            Commands::MessageRead {
+                id_pos, id_flag, ..
+            } => {
                 assert_eq!(id_pos.as_deref(), Some("msg-01ABCDEF"));
                 assert_eq!(id_flag, None);
             }

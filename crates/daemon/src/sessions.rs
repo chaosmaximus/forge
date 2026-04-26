@@ -535,12 +535,18 @@ pub fn list_messages(
 ///    return it. Multiple matches → `Err(NotFound)` with a clearer message
 ///    upstream so the user can disambiguate by typing more characters.
 ///
+/// P3-4 W1.13 (W28 review HIGH-1): when `caller_session` is `Some`, both
+/// the exact-match and prefix-match SQL are scoped to messages the
+/// caller is a participant in (`to_session = ? OR from_session = ?`).
+/// None preserves the W27 default-open semantics for backward compat.
+///
 /// The `messages` listing truncates IDs to 8 chars for display, so users
 /// naturally copy-paste the prefix into `message-read`. Supporting prefix
 /// lookup closes that surface gap without sacrificing exact-ID determinism.
 pub fn read_message_by_id_or_prefix(
     conn: &Connection,
     id_or_prefix: &str,
+    caller_session: Option<&str>,
 ) -> rusqlite::Result<Option<SessionMessageRow>> {
     let map_row = |row: &rusqlite::Row| -> rusqlite::Result<SessionMessageRow> {
         Ok(SessionMessageRow {
@@ -558,26 +564,47 @@ pub fn read_message_by_id_or_prefix(
         })
     };
     // Exact match first.
-    let exact = conn.query_row(
-        "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
-         FROM session_message WHERE id = ?1",
-        params![id_or_prefix],
-        map_row,
-    );
+    let exact = match caller_session {
+        Some(scope) => conn.query_row(
+            "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
+             FROM session_message WHERE id = ?1 AND (to_session = ?2 OR from_session = ?2)",
+            params![id_or_prefix, scope],
+            map_row,
+        ),
+        None => conn.query_row(
+            "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
+             FROM session_message WHERE id = ?1",
+            params![id_or_prefix],
+            map_row,
+        ),
+    };
     match exact {
         Ok(row) => return Ok(Some(row)),
         Err(rusqlite::Error::QueryReturnedNoRows) => {} // fall through to prefix
         Err(e) => return Err(e),
     }
     // Prefix match — must be unambiguous.
-    let mut stmt = conn.prepare(
-        "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
-         FROM session_message WHERE id LIKE ?1 || '%' LIMIT 2",
-    )?;
-    let rows: Vec<SessionMessageRow> = stmt
-        .query_map(params![id_or_prefix], map_row)?
-        .filter_map(|r| r.ok())
-        .collect();
+    let rows: Vec<SessionMessageRow> = if let Some(scope) = caller_session {
+        let mut stmt = conn.prepare(
+            "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
+             FROM session_message WHERE id LIKE ?1 || '%' AND (to_session = ?2 OR from_session = ?2) LIMIT 2",
+        )?;
+        let collected: Vec<SessionMessageRow> = stmt
+            .query_map(params![id_or_prefix, scope], map_row)?
+            .filter_map(|r| r.ok())
+            .collect();
+        collected
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to, project, created_at, delivered_at
+             FROM session_message WHERE id LIKE ?1 || '%' LIMIT 2",
+        )?;
+        let collected: Vec<SessionMessageRow> = stmt
+            .query_map(params![id_or_prefix], map_row)?
+            .filter_map(|r| r.ok())
+            .collect();
+        collected
+    };
     match rows.len() {
         1 => Ok(Some(rows.into_iter().next().unwrap())),
         0 => Ok(None),
@@ -1762,5 +1789,118 @@ mod tests {
         )
         .unwrap();
         assert_eq!(count_all_messages(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn p3_4_w1_13_read_message_caller_scope_filters_foreign_messages() {
+        // P3-4 W1.13 (W28 review HIGH-1): read_message_by_id_or_prefix
+        // gains an optional `caller_session` parameter. When None, the
+        // function preserves the W27 default-open semantics (any caller
+        // can read any message). When Some, it scopes the lookup to
+        // messages where the caller is a participant
+        // (`to_session = ? OR from_session = ?`), so a caller cannot
+        // read a message belonging to a different session pair.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Seed three messages: one between s1↔s2, one between s3↔s4
+        // (foreign to s1+s2), and one between s1↔s3 (s1 still
+        // participates).
+        let id_a = send_message(
+            &conn,
+            "s1",
+            "s2",
+            "request",
+            "topic-a",
+            "[]",
+            Some("forge"),
+            None,
+            None,
+        )
+        .unwrap();
+        let id_b = send_message(
+            &conn,
+            "s3",
+            "s4",
+            "request",
+            "topic-b",
+            "[]",
+            Some("forge"),
+            None,
+            None,
+        )
+        .unwrap();
+        let id_c = send_message(
+            &conn,
+            "s1",
+            "s3",
+            "request",
+            "topic-c",
+            "[]",
+            Some("forge"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Default-open (None) — caller can read any message regardless
+        // of participation. Backward-compat path.
+        let r_a = read_message_by_id_or_prefix(&conn, &id_a, None)
+            .unwrap()
+            .expect("default-open must find s1↔s2 by id");
+        assert_eq!(r_a.id, id_a);
+        let r_b = read_message_by_id_or_prefix(&conn, &id_b, None)
+            .unwrap()
+            .expect("default-open must find s3↔s4 by id");
+        assert_eq!(r_b.id, id_b);
+
+        // Scoped (Some("s1")) — caller can read only messages they
+        // sent or received. id_a (s1↔s2) and id_c (s1↔s3) are visible;
+        // id_b (s3↔s4) is foreign.
+        let r_a_scoped = read_message_by_id_or_prefix(&conn, &id_a, Some("s1"))
+            .unwrap()
+            .expect("scoped: s1 sees its own outgoing message");
+        assert_eq!(r_a_scoped.id, id_a);
+        let r_c_scoped = read_message_by_id_or_prefix(&conn, &id_c, Some("s1"))
+            .unwrap()
+            .expect("scoped: s1 sees its other outgoing message");
+        assert_eq!(r_c_scoped.id, id_c);
+        let r_b_scoped = read_message_by_id_or_prefix(&conn, &id_b, Some("s1")).unwrap();
+        assert!(
+            r_b_scoped.is_none(),
+            "scoped: s1 must NOT see s3↔s4 message (foreign pair)"
+        );
+
+        // Prefix lookup also honors the scope. The 3 seeded messages
+        // share the leading ULID time component; the 18-char prefix
+        // crosses into the random-bytes section so it's unique to id_b.
+        // Scoped("s1") returns None even on an unambiguous prefix
+        // because s1 is not a participant.
+        let prefix_b: &str = &id_b[..18];
+        let prefix_b_scoped = read_message_by_id_or_prefix(&conn, prefix_b, Some("s1")).unwrap();
+        assert!(
+            prefix_b_scoped.is_none(),
+            "scoped prefix lookup must filter foreign matches"
+        );
+        // Same prefix without scope finds the message (backward compat).
+        let prefix_b_open = read_message_by_id_or_prefix(&conn, prefix_b, None).unwrap();
+        assert!(
+            prefix_b_open.is_some(),
+            "default-open prefix lookup must still find the foreign message"
+        );
+
+        // Recipient-side scope: s2 sees the message it received.
+        let r_a_s2 = read_message_by_id_or_prefix(&conn, &id_a, Some("s2"))
+            .unwrap()
+            .expect("scoped: s2 sees the incoming message it received from s1");
+        assert_eq!(r_a_s2.id, id_a);
+
+        // Adversarial: a session entirely uninvolved (s5) gets nothing.
+        let r_uninvolved = read_message_by_id_or_prefix(&conn, &id_a, Some("s5")).unwrap();
+        assert!(
+            r_uninvolved.is_none(),
+            "scoped: a session that is neither sender nor recipient sees nothing"
+        );
     }
 }
