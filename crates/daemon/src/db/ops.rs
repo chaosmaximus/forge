@@ -8,6 +8,49 @@ use std::collections::HashSet;
 /// Single source of truth — keep in sync with the post-fetch retain in `recall::hybrid_recall_scoped_org`.
 const FLIPPED_INCLUSIVE_STATUS_SQL: &str = "(m.status = 'active' OR (m.status = 'superseded' AND m.valence_flipped_at IS NOT NULL AND m.memory_type = 'preference'))";
 
+/// Sentinel value written to `memory.project` for memories that are not bound
+/// to a specific project — i.e. genuine "global" knowledge that should be
+/// visible to every project (agent-identity preferences, language-level
+/// patterns, cross-project lessons learned, etc.).
+///
+/// Phase P3-3.11 W29 introduced this sentinel as the explicit replacement
+/// for the historic `NULL` / `''` representation of "global". The old
+/// representation conflated genuine globals with extractor bugs that left
+/// project unset, producing the F15/F17 cross-project recall leak. With
+/// the sentinel:
+///
+///   * The schema migration (`db::schema::create_schema`) backfills every
+///     existing NULL/empty `project` row to this value.
+///   * Every memory-write path in this crate routes its `project` value
+///     through [`project_or_global`] before inserting, guaranteeing no
+///     row written by daemon code can have a NULL/empty project.
+///   * The recall WHERE clause becomes a strict-by-default match on the
+///     supplied project, with an `--include-globals` opt-in that admits
+///     `m.project = '_global_'` (rather than `IS NULL OR = ''`).
+///
+/// The literal `_global_` is also embedded directly in the SQL of the
+/// schema migration — keep both in sync if it ever changes.
+pub const GLOBAL_PROJECT_SENTINEL: &str = "_global_";
+
+/// Resolve a possibly-absent `project` value to a non-empty, non-NULL
+/// string suitable for binding to `memory.project`.
+///
+/// Returns the input when it is `Some(non_empty)`; otherwise returns
+/// [`GLOBAL_PROJECT_SENTINEL`]. Use this at every call site that writes a
+/// row to the `memory` table — both to make "this memory is intentionally
+/// global" explicit at the call site and to ensure no `NULL` / `''` value
+/// ever reaches the column.
+///
+/// Callers that already know the project is non-empty (e.g. extractor
+/// paths that read `session.project` and bail when missing) may bypass
+/// this helper — but doing so means they must independently uphold the
+/// non-NULL invariant.
+pub fn project_or_global(project: Option<&str>) -> &str {
+    project
+        .filter(|s| !s.is_empty())
+        .unwrap_or(GLOBAL_PROJECT_SENTINEL)
+}
+
 /// BM25 search result
 #[derive(Debug, Clone)]
 pub struct BM25Result {
@@ -78,13 +121,26 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
         serde_json::to_string(&memory.participants).unwrap_or_else(|_| "[]".to_string());
 
     let org_id = memory.organization_id.as_deref().unwrap_or("default");
+    // Phase P3-3.11 W29: route project through the sentinel helper so no
+    // memory row ever carries NULL or empty project. The dedup SELECT below
+    // matches against the same normalized value so the dedup key remains
+    // stable across the migration boundary.
+    let project = project_or_global(memory.project.as_deref());
 
     // Check for existing memory with same title, type, project, AND organization.
     // Including project+org in the dedup key prevents cross-project and cross-org
     // merging where a decision from one tenant silently overwrites another's.
+    //
+    // Phase P3-3.11 W29: the LHS `COALESCE(NULLIF(project, ''), '_global_')`
+    // collapses both legacy representations (NULL / empty string from any
+    // code path that bypassed the helper between schema migrations) and
+    // the canonical sentinel into the same effective value. The RHS `?3`
+    // already runs through `project_or_global` above, so a write with
+    // `Memory.project = None` correctly dedups against an existing row
+    // carrying any of the three forms.
     let existing_id: Option<String> = conn.query_row(
-        "SELECT id FROM memory WHERE title = ?1 AND memory_type = ?2 AND COALESCE(project, '') = COALESCE(?3, '') AND COALESCE(organization_id, 'default') = ?4 AND status = 'active'",
-        params![memory.title, mt, memory.project, org_id],
+        "SELECT id FROM memory WHERE title = ?1 AND memory_type = ?2 AND COALESCE(NULLIF(project, ''), ?5) = ?3 AND COALESCE(organization_id, 'default') = ?4 AND status = 'active'",
+        params![memory.title, mt, project, org_id, GLOBAL_PROJECT_SENTINEL],
         |row| row.get(0),
     ).optional()?;
 
@@ -113,7 +169,7 @@ pub fn remember(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> {
             params![
                 memory.id, mt, memory.title, memory.content,
                 memory.confidence, status,
-                memory.project, tags_json,
+                project, tags_json,
                 memory.created_at, memory.accessed_at,
                 memory.valence, memory.intensity,
                 memory.hlc_timestamp, memory.node_id,
@@ -138,6 +194,9 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
     let participants_json =
         serde_json::to_string(&memory.participants).unwrap_or_else(|_| "[]".to_string());
     let org_id = memory.organization_id.as_deref().unwrap_or("default");
+    // Phase P3-3.11 W29: route project through the sentinel helper so no
+    // memory row ever carries NULL or empty project.
+    let project = project_or_global(memory.project.as_deref());
 
     conn.execute(
         "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at, valence, intensity, hlc_timestamp, node_id, session_id, access_count, alternatives, participants, organization_id, reaffirmed_at)
@@ -145,7 +204,7 @@ pub fn remember_raw(conn: &Connection, memory: &Memory) -> rusqlite::Result<()> 
         params![
             memory.id, mt, memory.title, memory.content,
             memory.confidence, status,
-            memory.project, tags_json,
+            project, tags_json,
             memory.created_at, memory.accessed_at,
             memory.valence, memory.intensity,
             memory.hlc_timestamp, memory.node_id,
@@ -771,12 +830,12 @@ pub fn health_by_project_org(
 ) -> rusqlite::Result<std::collections::HashMap<String, HealthCounts>> {
     let (sql, use_org) = match org_id {
         Some(_) => (
-            "SELECT COALESCE(NULLIF(project, ''), '_global') as proj, memory_type, count(*) as cnt
+            "SELECT COALESCE(NULLIF(project, ''), '_global_') as proj, memory_type, count(*) as cnt
              FROM memory WHERE status = 'active' AND COALESCE(organization_id, 'default') = ?1 GROUP BY proj, memory_type",
             true,
         ),
         None => (
-            "SELECT COALESCE(NULLIF(project, ''), '_global') as proj, memory_type, count(*) as cnt
+            "SELECT COALESCE(NULLIF(project, ''), '_global_') as proj, memory_type, count(*) as cnt
              FROM memory WHERE status = 'active' GROUP BY proj, memory_type",
             false,
         ),
@@ -3790,9 +3849,20 @@ mod tests {
 
     #[test]
     fn test_recall_project_scoped() {
+        // Phase P3-3.11 W29: strict-by-default project scoping (F15/F17 fix).
+        // Pre-W29 a memory written with `project=None` was admitted into
+        // every project-scoped query via the `m.project IS NULL OR project = ''`
+        // branch of the WHERE clause; the bug surfaced in dogfood as a
+        // dashboard memory bleeding into a `--project forge` query. Post-W29
+        // the write path normalises None/empty to the '_global_' sentinel,
+        // so the historic OR clauses no longer match anything and project
+        // queries become strictly scoped to the named project. The
+        // `--include-globals` opt-in (commit 3) is the explicit way to
+        // surface globals — covered separately when that flag lands.
         let conn = open_db();
 
-        // Insert: 2 forge memories, 1 backend memory, 1 global (project=NULL)
+        // Insert: 2 forge memories, 1 backend memory, 1 global (project=None
+        // — written through the helper so it lands as '_global_').
         let m1 = Memory::new(MemoryType::Decision, "JWT for forge", "auth").with_project("forge");
         remember(&conn, &m1).unwrap();
 
@@ -3808,10 +3878,11 @@ mod tests {
             "Use conventional commits",
             "global rule",
         );
-        // project is None by default — global
         remember(&conn, &m4).unwrap();
 
-        // Project-scoped: forge → 2 forge + 1 global = 3
+        // Project-scoped: forge → strict, only the 2 forge memories.
+        // Globals ('_global_'-tagged) are NOT visible without the
+        // include-globals opt-in.
         let results = recall_bm25_project(
             &conn,
             "forge backend global conventional JWT CORS REST commits",
@@ -3829,8 +3900,8 @@ mod tests {
             "should find forge memory CORS, got: {titles:?}"
         );
         assert!(
-            titles.iter().any(|t| t.contains("conventional")),
-            "should find global memory, got: {titles:?}"
+            !titles.iter().any(|t| t.contains("conventional")),
+            "global memory must NOT appear in strict project query (W29 F15/F17 fix), got: {titles:?}"
         );
         assert!(
             !titles.iter().any(|t| t.contains("REST")),
@@ -3838,11 +3909,11 @@ mod tests {
         );
         assert_eq!(
             results.len(),
-            3,
-            "forge scope should return 2 forge + 1 global = 3"
+            2,
+            "strict forge scope returns only the 2 forge memories"
         );
 
-        // No project filter → all 4
+        // No project filter → all 4 (unchanged).
         let all = recall_bm25_project(
             &conn,
             "forge backend global conventional JWT CORS REST commits",
@@ -3858,40 +3929,76 @@ mod tests {
     }
 
     #[test]
-    fn test_global_memory_in_all_projects() {
+    fn test_global_memory_invisible_in_strict_project_query() {
+        // Phase P3-3.11 W29: globals must NOT bleed into a project-scoped
+        // recall — that was the F15/F17 regression. A memory written with
+        // `project=None` is normalised to '_global_' by the DAO helper;
+        // recall scoped to `Some("forge")` matches `m.project = 'forge'`
+        // strictly and excludes '_global_' rows. Globals reappear only when
+        // the caller passes the explicit `--include-globals` opt-in (added
+        // in commit 3).
         let conn = open_db();
 
         let m = Memory::new(MemoryType::Pattern, "Always test first", "TDD everywhere");
-        remember(&conn, &m).unwrap(); // project = None → global
+        remember(&conn, &m).unwrap(); // project = None → '_global_'
 
-        // Should appear in any project query
+        // Strict project queries do not include globals.
         let r1 = recall_bm25_project(&conn, "test", Some("forge"), 10).unwrap();
-        assert_eq!(r1.len(), 1, "global memory should appear in forge project");
-        let r2 = recall_bm25_project(&conn, "test", Some("backend"), 10).unwrap();
-        assert_eq!(
-            r2.len(),
-            1,
-            "global memory should appear in backend project"
+        assert!(
+            r1.is_empty(),
+            "global memory must not bleed into forge-scoped query: {r1:?}"
         );
+        let r2 = recall_bm25_project(&conn, "test", Some("backend"), 10).unwrap();
+        assert!(
+            r2.is_empty(),
+            "global memory must not bleed into backend-scoped query: {r2:?}"
+        );
+
+        // Unscoped query still finds it (no project filter applied).
+        let unscoped = recall_bm25_project(&conn, "test", None, 10).unwrap();
+        assert_eq!(unscoped.len(), 1, "unscoped query returns the global");
     }
 
     #[test]
-    fn test_recall_project_empty_string_is_global() {
+    fn test_empty_string_project_is_normalized_to_sentinel() {
+        // Phase P3-3.11 W29: a row inserted via raw SQL with `project = ''`
+        // is rewritten by the schema migration's backfill UPDATE to the
+        // '_global_' sentinel (see `db::schema::p3_3_11_w29_project_sentinel_backfill`).
+        // The DAO helper covers the in-Rust write path; this test pins the
+        // legacy raw-SQL path that the schema migration sweeps.
         let conn = open_db();
 
-        // Memory with empty string project should also be treated as global
+        // Direct INSERT bypassing the helper. The migration ran on
+        // `open_db` (via `create_schema`) but applied no rewrite because
+        // there were no rows yet — so this row lands with project='',
+        // exactly as legacy code might have produced.
         conn.execute(
             "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, tags, created_at, accessed_at)
              VALUES ('empty-proj', 'decision', 'Empty project memory', 'content', 0.9, 'active', '', '[]', datetime('now'), datetime('now'))",
             [],
         ).unwrap();
 
+        // Run the migration again to apply the backfill to the row we just
+        // inserted. Idempotent: a third run is a no-op.
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        // Row's project should now read the sentinel.
+        let project: String = conn
+            .query_row(
+                "SELECT project FROM memory WHERE id = 'empty-proj'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(project, GLOBAL_PROJECT_SENTINEL);
+
+        // And a strict project query for "anyproject" returns no results
+        // (the row is now a global, not an "anyproject" memory).
         let results =
             recall_bm25_project(&conn, "empty project memory", Some("anyproject"), 10).unwrap();
-        assert_eq!(
-            results.len(),
-            1,
-            "empty-string project memory should appear as global"
+        assert!(
+            results.is_empty(),
+            "post-migration the empty-string row is a global and must not match anyproject: {results:?}"
         );
     }
 
@@ -3908,16 +4015,16 @@ mod tests {
         remember(&conn, &m2).unwrap();
 
         let m3 = Memory::new(MemoryType::Pattern, "Global pattern", "content");
-        remember(&conn, &m3).unwrap(); // no project → _global
+        remember(&conn, &m3).unwrap(); // no project → '_global_' sentinel (Phase P3-3.11 W29)
 
         let result = health_by_project(&conn).unwrap();
         assert_eq!(result.get("forge").unwrap().decisions, 1);
         assert_eq!(result.get("backend").unwrap().lessons, 1);
-        assert_eq!(result.get("_global").unwrap().patterns, 1);
+        assert_eq!(result.get("_global_").unwrap().patterns, 1);
         assert_eq!(
             result.len(),
             3,
-            "should have 3 projects: forge, backend, _global"
+            "should have 3 projects: forge, backend, _global_"
         );
     }
 
@@ -7065,5 +7172,106 @@ mod tests {
             matches!(err, rusqlite::Error::FromSqlConversionFailure(_, _, _)),
             "expected FromSqlConversionFailure, got {err:?}"
         );
+    }
+
+    // ── Phase P3-3.11 W29: project sentinel helper ──
+
+    #[test]
+    fn project_or_global_substitutes_sentinel_for_none_and_empty() {
+        // Phase P3-3.11 W29: every memory-write call site routes its
+        // `project` parameter through `project_or_global` to guarantee the
+        // column never receives NULL or an empty string. Pinning the four
+        // possible inputs here ensures a refactor to the helper cannot
+        // silently regress that invariant.
+        assert_eq!(project_or_global(None), GLOBAL_PROJECT_SENTINEL);
+        assert_eq!(project_or_global(Some("")), GLOBAL_PROJECT_SENTINEL);
+        assert_eq!(project_or_global(Some("forge")), "forge");
+        assert_eq!(project_or_global(Some("hive-platform")), "hive-platform");
+        // Sentinel is the explicit "I am global" marker — pass-through.
+        assert_eq!(
+            project_or_global(Some(GLOBAL_PROJECT_SENTINEL)),
+            GLOBAL_PROJECT_SENTINEL
+        );
+    }
+
+    #[test]
+    fn remember_writes_global_sentinel_for_none_project() {
+        // Verifies the W29 invariant on the canonical write path: a Memory
+        // constructed without a project (Memory::new defaults to None) is
+        // persisted with `project = '_global_'`, not NULL or empty.
+        let conn = open_db();
+        let mut m = Memory::new(MemoryType::Lesson, "global tip", "no project");
+        assert!(m.project.is_none(), "Memory::new should default to None");
+        m.id = "w29-none".to_string();
+        remember(&conn, &m).unwrap();
+
+        let project: String = conn
+            .query_row(
+                "SELECT project FROM memory WHERE id = 'w29-none'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(project, GLOBAL_PROJECT_SENTINEL);
+    }
+
+    #[test]
+    fn remember_writes_global_sentinel_for_empty_project() {
+        // Same invariant as the None case, but exercises the explicit
+        // `Some("")` branch — historically a defensive fallback that some
+        // call sites used in place of None.
+        let conn = open_db();
+        let mut m = Memory::new(MemoryType::Lesson, "global tip empty", "no project");
+        m.id = "w29-empty".to_string();
+        m.project = Some(String::new());
+        remember(&conn, &m).unwrap();
+
+        let project: String = conn
+            .query_row(
+                "SELECT project FROM memory WHERE id = 'w29-empty'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(project, GLOBAL_PROJECT_SENTINEL);
+    }
+
+    #[test]
+    fn remember_preserves_explicit_project() {
+        // Sanity: the helper is a substitution, not a clobber. Tagged
+        // memories must round-trip through `remember` unchanged.
+        let conn = open_db();
+        let mut m = Memory::new(MemoryType::Decision, "tagged", "in forge");
+        m.id = "w29-forge".to_string();
+        m.project = Some("forge".to_string());
+        remember(&conn, &m).unwrap();
+
+        let project: String = conn
+            .query_row(
+                "SELECT project FROM memory WHERE id = 'w29-forge'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(project, "forge");
+    }
+
+    #[test]
+    fn remember_raw_writes_global_sentinel_for_none_project() {
+        // The no-dedup path (used for sync conflicts) must uphold the same
+        // invariant as `remember`.
+        let conn = open_db();
+        let mut m = Memory::new(MemoryType::Lesson, "raw global", "no project");
+        m.id = "w29-raw-none".to_string();
+        remember_raw(&conn, &m).unwrap();
+
+        let project: String = conn
+            .query_row(
+                "SELECT project FROM memory WHERE id = 'w29-raw-none'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(project, GLOBAL_PROJECT_SENTINEL);
     }
 }

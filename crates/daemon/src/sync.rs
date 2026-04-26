@@ -447,16 +447,35 @@ pub fn sync_import(
         };
 
         let mt = type_str(&remote_mem.memory_type);
-        let proj = remote_mem.project.as_deref().unwrap_or("");
+        // Phase P3-3.11 W29: route the conflict-detection project lookup
+        // through the same sentinel helper used by `db::ops::remember` /
+        // `remember_raw`, so a remote memory with `project=None` matches
+        // a locally-stored memory whose project was normalised to
+        // '_global_' on insert. Without this, the lookup would miss the
+        // local row (its project is now '_global_', not NULL/'') and the
+        // conflict detector would silently treat the remote as a new
+        // import — exactly the test_list_conflicts regression.
+        let proj = crate::db::ops::project_or_global(remote_mem.project.as_deref());
 
-        // Check for existing memory with same title + type + project
+        // Check for existing memory with same title + type + project. The
+        // LHS `COALESCE(NULLIF(project, ''), '_global_')` collapses both
+        // legacy representations (NULL or empty string, possible if a code
+        // path bypasses the W29 DAO helper between schema migrations) and
+        // the canonical sentinel into the same effective value, so a
+        // remote `project=None` reliably matches the local row regardless
+        // of which form it currently carries.
         let existing: Option<(String, String, String, String)> = conn
             .query_row(
                 "SELECT id, content, node_id, hlc_timestamp FROM memory
                  WHERE title = ?1 AND memory_type = ?2
-                 AND COALESCE(project, '') = ?3
+                 AND COALESCE(NULLIF(project, ''), ?4) = ?3
                  AND status = 'active'",
-                params![remote_mem.title, mt, proj],
+                params![
+                    remote_mem.title,
+                    mt,
+                    proj,
+                    crate::db::ops::GLOBAL_PROJECT_SENTINEL
+                ],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;

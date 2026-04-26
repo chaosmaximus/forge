@@ -1686,8 +1686,15 @@ pub fn reweave_memories_with_errors(
                 continue;
             }
 
-            // Must have same project (both None or both same value)
-            if rows[i].project != rows[j].project {
+            // Must have same project. Phase P3-3.11 W29: normalise both
+            // sides through the project-or-global helper so a None / empty
+            // (legacy unmigrated row) compares equal to '_global_' (post-W29
+            // canonical sentinel). Without this normalisation, reweave
+            // silently skips legitimate pairs whenever one side already
+            // went through the W29 write path and the other did not yet.
+            let proj_i = crate::db::ops::project_or_global(rows[i].project.as_deref());
+            let proj_j = crate::db::ops::project_or_global(rows[j].project.as_deref());
+            if proj_i != proj_j {
                 continue;
             }
 

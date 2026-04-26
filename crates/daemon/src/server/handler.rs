@@ -6928,7 +6928,8 @@ mod tests {
             } => {
                 assert_eq!(projects.get("forge").unwrap().decisions, 1);
                 assert_eq!(projects.get("backend").unwrap().lessons, 1);
-                assert_eq!(projects.get("_global").unwrap().patterns, 1);
+                // Phase P3-3.11 W29: globals carry the explicit '_global_' sentinel.
+                assert_eq!(projects.get("_global_").unwrap().patterns, 1);
             }
             other => panic!("expected HealthByProject response, got {other:?}"),
         }

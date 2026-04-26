@@ -1131,19 +1131,27 @@ pub fn decide_meeting(
 ) -> rusqlite::Result<(bool, String)> {
     let now = forge_core::time::now_iso();
 
-    // Get the meeting topic for the memory title
-    let topic: String = conn.query_row(
-        "SELECT topic FROM meeting WHERE id = ?1",
-        params![meeting_id],
-        |row| row.get(0),
+    // Get the meeting topic for the memory title and the project context
+    // (derived from the meeting's team orchestrator session — falls back to
+    // the global sentinel when no team or no orchestrator project is set).
+    // Phase P3-3.11 W29: explicit project ensures the resulting memory row
+    // does not violate the no-NULL-project invariant.
+    let (topic, project): (String, String) = conn.query_row(
+        "SELECT m.topic, COALESCE(s.project, ?2) \
+         FROM meeting m \
+         LEFT JOIN team t ON t.id = m.team_id \
+         LEFT JOIN session s ON s.id = t.orchestrator_session_id \
+         WHERE m.id = ?1",
+        params![meeting_id, crate::db::ops::GLOBAL_PROJECT_SENTINEL],
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
     // Store decision as memory
     let memory_id = ulid::Ulid::new().to_string();
     conn.execute(
-        "INSERT INTO memory (id, memory_type, title, content, confidence, status, created_at, accessed_at)
-         VALUES (?1, 'decision', ?2, ?3, 0.9, 'active', ?4, ?5)",
-        params![memory_id, topic, decision, now, now],
+        "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, created_at, accessed_at)
+         VALUES (?1, 'decision', ?2, ?3, 0.9, 'active', ?4, ?5, ?6)",
+        params![memory_id, topic, decision, project, now, now],
     )?;
 
     // Update meeting
@@ -1359,11 +1367,19 @@ pub fn check_and_resolve_vote(
             params![outcome, now, meeting_id],
         )?;
 
-        // Store decision as memory (following decide_meeting pattern)
-        let topic: String = conn.query_row(
-            "SELECT topic FROM meeting WHERE id = ?1",
-            params![meeting_id],
-            |row| row.get(0),
+        // Store decision as memory (following decide_meeting pattern). Project
+        // is derived from the meeting's team orchestrator session — Phase
+        // P3-3.11 W29 invariant: every memory row carries a non-NULL,
+        // non-empty project; falls back to the global sentinel when no team
+        // or no orchestrator project is set.
+        let (topic, project): (String, String) = conn.query_row(
+            "SELECT m.topic, COALESCE(s.project, ?2) \
+             FROM meeting m \
+             LEFT JOIN team t ON t.id = m.team_id \
+             LEFT JOIN session s ON s.id = t.orchestrator_session_id \
+             WHERE m.id = ?1",
+            params![meeting_id, crate::db::ops::GLOBAL_PROJECT_SENTINEL],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
         let memory_id = ulid::Ulid::new().to_string();
@@ -1372,9 +1388,9 @@ pub fn check_and_resolve_vote(
             topic, outcome, results.votes, results.threshold,
         );
         conn.execute(
-            "INSERT INTO memory (id, memory_type, title, content, confidence, status, created_at, accessed_at)
-             VALUES (?1, 'decision', ?2, ?3, 0.9, 'active', ?4, ?5)",
-            params![memory_id, topic, decision_content, now, now],
+            "INSERT INTO memory (id, memory_type, title, content, confidence, status, project, created_at, accessed_at)
+             VALUES (?1, 'decision', ?2, ?3, 0.9, 'active', ?4, ?5, ?6)",
+            params![memory_id, topic, decision_content, project, now, now],
         )?;
 
         // Update meeting with decision memory reference

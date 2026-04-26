@@ -146,7 +146,11 @@ fn test_full_memory_lifecycle() {
         None, // global
     );
 
-    // -- Recall with project="forge" -> should get forge + global, NOT backend --
+    // -- Recall with project="forge" -> only forge memories. --
+    // Phase P3-3.11 W29: globals (now '_global_' sentinel-tagged) are NOT
+    // returned by a strict project query — that fixes the F15/F17 leak.
+    // The `--include-globals` opt-in (commit 3 of W29) is the explicit way
+    // to surface globals; this lifecycle test exercises the strict default.
     let forge_results = do_recall(
         &mut state,
         "Rust SQLite tests",
@@ -160,12 +164,12 @@ fn test_full_memory_lifecycle() {
         forge_ids.contains(&forge_id1.as_str()) || forge_ids.contains(&forge_id2.as_str()),
         "forge project recall should return at least one forge memory"
     );
-    // Global memory should be visible in forge project
+    // Global memory must NOT bleed into the strict forge query.
     assert!(
-        forge_ids.contains(&global_id.as_str()),
-        "global memory should be visible in forge project recall"
+        !forge_ids.contains(&global_id.as_str()),
+        "global memory must NOT appear in strict forge query (W29 F15/F17 fix), got: {forge_ids:?}"
     );
-    // Backend-only memories should NOT appear
+    // Backend-only memories should NOT appear.
     assert!(
         !forge_ids.contains(&backend_id1.as_str()),
         "backend decision should NOT appear in forge project recall"
@@ -255,8 +259,8 @@ fn test_full_memory_lifecycle() {
             assert_eq!(backend_data.decisions, 1, "backend decisions");
             assert_eq!(backend_data.patterns, 1, "backend patterns");
 
-            // global: 1 preference
-            let global_data = projects.get("_global").expect("_global should exist");
+            // global: 1 preference (Phase P3-3.11 W29 sentinel '_global_').
+            let global_data = projects.get("_global_").expect("_global_ should exist");
             assert_eq!(global_data.preferences, 1, "global preferences");
         }
         other => panic!("expected HealthByProject, got: {other:?}"),
