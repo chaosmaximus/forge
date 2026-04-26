@@ -1,80 +1,74 @@
-# Handoff — P3-3.9 closed (3 HIGH dogfood findings fixed) — 2026-04-26
+# Handoff — P3-3.10 closed (10 dogfood findings fixed) — 2026-04-26
 
-**Public HEAD:** `e190f70` (W23 review-status update closing MED-1+MED-2).
+**Public HEAD:** `7f8a694` (W28 review-status update closing MED-1+LOW-1).
 **Forge-app master:** unchanged.
 **Version:** v0.6.0-rc.3.
-**Plan A (closed sub-phases P3-1..P3-3, P3-4 queued):** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`.
+**Plan A (closed P3-1..P3-3, P3-4 queued):** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`.
 **Plan B (closed):** `docs/superpowers/plans/2026-04-26-v0.6.0-polish-wave.md` (P3-3.5/3.6/3.7).
-**Plan C (active):** `docs/superpowers/plans/2026-04-26-dogfood-fixes-plan.md` (P3-3.9 closed; P3-3.10 next).
-**Halt:** **PHASE-BOUNDARY HALT** — P3-3.9 closed; halt for sign-off before opening P3-3.10. Resume at **P3-3.10 W24**.
+**Plan C (active):** `docs/superpowers/plans/2026-04-26-dogfood-fixes-plan.md` (P3-3.9 closed; P3-3.10 closed; P3-3.11 next).
+**Halt:** **PHASE-BOUNDARY HALT** — P3-3.10 closed; halt for sign-off before opening P3-3.11. Resume at **P3-3.11 W29**.
 
 ## State in one paragraph
 
-**P3-3.9 closed at HEAD `e190f70`** (6 commits since `37c90b0`): W20 LD_LIBRARY_PATH propagation, W21 `--from`/`FORGE_SESSION_ID` for `send`/`team-send`, W22 force-index async-via-spawn_blocking, W23 adversarial review (lockable-with-fixes verdict; 0 BLOCKER, 2 deferred HIGH, 4 MED, 5 LOW, 2 NIT, 10 RESOLVED), W23 fix-wave closing MED-1 (TOCTOU) and MED-2 (doc drift), W23 YAML status update. **All 3 dogfood HIGH findings (F4, F11+F13, F23) end-to-end verified live.** All 11 CI gates green. 23 review YAMLs valid, 0 open blocking findings. The 2 deferred HIGHs (spawn_blocking supervision + `SessionRespond` CLI surface) and remaining LOW/NIT findings carry forward to P3-3.10 follow-up waves per review YAML.
+**P3-3.10 closed at HEAD `7f8a694`** (7 commits since `46d525a`): W24 CLI cosmetics for F5/F10/F19, W25 daemon-spawn polish for F1/F2/F3, W26 team primitives for F6/F7/F8/F9, W27 single-message lookup endpoint for F12/F14, W28 adversarial review (verdict `lockable-with-fixes`; 0 BLOCKER, 1 deferred HIGH, 2 MED, 10 LOW, 3 NIT, 11 RESOLVED), W28 fix-wave closing MED-1 (rollback leak) + LOW-1 (CLI input trim), W28 review-YAML status update. **All 10 P3-3.10-targeted dogfood findings (F1, F2, F3, F5, F6, F7, F8, F9, F10, F12, F14, F19) end-to-end verified live.** All 11 CI gates green. 24 review YAMLs valid, 0 open blocking findings. Three deferred/open carry-forwards into P3-3.11: W23 HIGH-1 spawn_blocking supervisor, W23 HIGH-2 SessionRespond CLI surface, and W28 HIGH-1 SessionMessageRead caller-identity scope.
 
 ## First actions after `/compact` or session resume
 
 ```bash
 cd /mnt/colab-disk/DurgaSaiK/forge/forge
-git log --oneline -10                              # HEAD e190f70
+git log --oneline -10                              # HEAD 7f8a694
 git status --short                                 # expect clean
-bash scripts/check-harness-sync.sh                 # 154 + 107
-bash scripts/check-review-artifacts.sh             # 23 reviews valid
+bash scripts/check-harness-sync.sh                 # 155 + 107
+bash scripts/check-review-artifacts.sh             # 24 reviews valid
 bash scripts/check-license-manifest.sh
 bash scripts/check-protocol-hash.sh
 cargo fmt --all --check                            # clean
 cargo clippy --workspace --tests --features bench -- -W clippy::all -D warnings  # 0 warnings
 
-# Read the dogfood-fixes plan + W23 review for context, then begin P3-3.10 W24.
+# Read the dogfood-fixes plan + W28 review for context, then begin P3-3.11 W29.
 cat docs/superpowers/plans/2026-04-26-dogfood-fixes-plan.md
-cat docs/superpowers/reviews/2026-04-26-p3-3-9-pre-ga-high.yaml
+cat docs/superpowers/reviews/2026-04-26-p3-3-10-quick-fixes.yaml
 
-# W24 first action — locate clap definitions for F5/F10/F19 cosmetics:
-grep -n "identity\|message-read\|blast-radius\|MessageRead\|BlastRadius" crates/cli/src/main.rs | head -20
+# W29 first action — investigate cross-project recall scoping (F15/F17):
+grep -rn "recall_bm25_project\|m\.project = ?" crates/daemon/src/db/ crates/daemon/src/server/ | head -20
 ```
 
-## P3-3.9 close summary
+## P3-3.10 close summary
 
-### What landed (6 commits)
+### What landed (7 commits)
 
-| SHA | Wave | Scope | Files |
-|-----|------|-------|-------|
-| `54aeecd` | W20 | F4: forward `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH`/`DYLD_FALLBACK_LIBRARY_PATH` to auto-spawned daemon. Const-extracted `FORWARDED_ENV_KEYS` + 2 unit tests. | `crates/cli/src/client.rs` |
-| `6e27eb4` | W21 | F11+F13: `--from <SESSION_ID>` clap flag on `Send`. `resolve_from_session(explicit)` helper with order `flag > FORGE_SESSION_ID > None+stderr-warn`. Wire `team_send` through same helper. 4 unit tests. | `crates/cli/src/main.rs`, `commands/system.rs`, `commands/teams.rs` |
-| `611169b` | W22 | F23: `Request::ForceIndex` intercepted in `WriterActor::run` and dispatched to `tokio::task::spawn_blocking` with its own SQLite write connection. Adds `db_path: String` to `DaemonState`. CLI prints "started in background" when daemon returns `IndexComplete{0,0}`. | `crates/daemon/src/server/handler.rs`, `server/writer.rs`, `crates/cli/src/commands/system.rs` |
-| `2ef27e8` | W23 review | Adversarial review on W20-W22. Verdict: `lockable-with-fixes`. 0 BLOCKER / 2 HIGH (deferred) / 4 MED / 5 LOW / 2 NIT / 10 RESOLVED. | `docs/superpowers/reviews/2026-04-26-p3-3-9-pre-ga-high.{yaml,transcript.md}` |
-| `39f84b2` | W23 fix | Address MED-1 (TOCTOU: canonical path resolved once on actor thread, no recanonicalize in spawn closure) + MED-2 (doc-comment honesty: "stderr warning per CLI invocation" not "one-time"). | `crates/daemon/src/server/writer.rs`, `crates/cli/src/commands/system.rs` |
-| `e190f70` | W23 status | Update review YAML statuses for MED-1 and MED-2 from `open` → `resolved`. | `docs/superpowers/reviews/2026-04-26-p3-3-9-pre-ga-high.yaml` |
+| SHA | Wave | Scope |
+|-----|------|-------|
+| `bd1bac6` | W24 | F5/F10/F19: positional `message-read <ID>`/`blast-radius <PATH>` (+ legacy `--id`/`--file` aliases), `identity show` clap alias for `list`. 5 unit tests. |
+| `b965d0b` | W25 | F1: CLI doctor flags stale daemon when `cli_version != daemon.version`. F2: hooks-warning gated on plugin-install root presence (no warn when standalone). F3: socket-bind cold-start 3s→10s. |
+| `eb55a2d` | W26 | F6: `crate::teams::run_team` upserts team by name (idempotent). F7: `team stop` annotates `(team had no spawned agents)` when retired==0. F8: `Request::RunTeam.project: Option<String>` plumbed through to `spawn_agent` → session.project. F9: CLI reads correct JSON keys `role`/`agent_status` (was `template_name`/`status`). 2 new tests + protocol-hash bump. |
+| `85712a8` | W27 | F12+F14: new `Request::SessionMessageRead { id }` + `ResponseData::SessionMessageItem`. Daemon `read_message_by_id_or_prefix` (exact → unambiguous prefix). CLI rewrite to dedicated endpoint. Variant census 124 + harness-sync 155 + protocol-hash bump. |
+| `cd2d733` | W28 review | Adversarial review on W24-W27. Verdict `lockable-with-fixes`. 0 BLOCKER / 1 HIGH (deferred) / 2 MED / 10 LOW / 3 NIT / 11 RESOLVED. |
+| `118f0db` | W28 fix | Address MED-1 (rollback arm now DELETEs partial team_member rows so pre-existing teams don't leak) + LOW-1 (CLI message_read trims input). |
+| `7f8a694` | W28 status | Update review YAML statuses for MED-1 + LOW-1 from `open` → `resolved`. |
 
-### Live verification
+### Live verification (key surfaces)
 
-* **F4 (LD_LIBRARY_PATH):** `/proc/<daemon>/environ` contains `LD_LIBRARY_PATH=…/onnxruntime…/lib`; `forge-next health` succeeds without manual env export. ✓
-* **F11+F13 (`--from`):**
-  * `--from session-1777180469 …` → `from_session=session-1777180469` ✓
-  * `FORGE_SESSION_ID=… forge-next send …` → `from_session=session-1777180469` ✓ (closes F13)
-  * Neither set → stderr warning + `from_session=api` ✓
-* **F23 (force-index async):** `forge-next force-index` returns 0.008 s (was 30 s timeout). Concurrent `health` 0.007 s, `sessions` 0.006 s, `send` 9.4 s (was full 30 s wedge). Read paths unaffected.
+* **F5**: `forge-next identity show` → 41 facets render ✓
+* **F10**: `forge-next message-read <FULL-ULID>` parses; `--id <FULL>` legacy form parses ✓
+* **F19**: `forge-next blast-radius <PATH>` parses; `--file <PATH>` legacy parses ✓
+* **F1**: doctor renders `Version: 0.6.0-rc.3 (bd1bac6)` with no stale-decoration when CLI/daemon match ✓
+* **F2**: doctor shows `[OK] hook: running outside a Claude Code plugin install (no hooks expected)` (was `[WARN]`) ✓
+* **F3**: source confirms 100×100ms = 10s poll ceiling ✓
+* **F6**: `team run --name X` then `team run --name X` again — second succeeds with `1 agent(s) spawned` (was UNIQUE failure) ✓
+* **F8**: `team run --project forge` → all spawned agents `project: forge` (was `(none)`) ✓
+* **F9**: `team members` renders `01KQ…: product-manager [idle]` (was `01KQ…: ? [idle]`) ✓
+* **F12+F14**: `message-read <FULL-ULID>` and `message-read <8-CHAR-PREFIX>` both resolve; nonexistent ID errors cleanly with `message not found: <ID>` ✓
 
-### Carry-forward findings → P3-3.10
+### Carry-forward findings → P3-3.11
 
-* **HIGH-1 (deferred):** W22 `spawn_blocking` is fire-and-forget — JoinHandle dropped, panics swallowed silently, SIGTERM aborts mid-write. Reviewer recommends supervisor task + `AtomicBool` reject-overlap, mirroring `kpi_reaper::run_reap_blocking` pattern. → P3-3.10 follow-up wave.
-* **HIGH-2 (deferred):** W21 plan said "Same for `respond`" but `Request::SessionRespond` still has no `from_session` field, AND there is no `forge-next respond` CLI surface at all. Either descope explicitly OR add the `respond` subcommand. → P3-3.10 follow-up wave.
-* **4 LOW + 2 NIT (open):** env-mutex test fragility, `LD_PRELOAD`-exclusion documentation, tautological shape-tests, env-capture documentation, protocol-meaning shift without wire bump, tracing format niceties, dead `path_for_task` rebinding (already removed in `39f84b2` MED-1 fix). Roll into the P3-3.10 backlog and address opportunistically.
-* **MED-3 / MED-4 (open):** "0,0 background" heuristic false-positives on legitimately empty projects; redundant PRAGMA + busy_timeout drift from `kpi_reaper` precedent (5000 vs 10000). Acknowledge but defer.
+* **W23 HIGH-1 (deferred)** — `tokio::task::spawn_blocking` for force-index drops its `JoinHandle`: panics swallowed, SIGTERM aborts mid-write split-brain risk, no concurrency guard. Reviewer-recommended fix: supervisor task + `AtomicBool` reject-overlap, mirroring `kpi_reaper::run_reap_blocking`.
+* **W23 HIGH-2 (deferred)** — `Request::SessionRespond` still has no `from_session` field, AND there's no `forge-next respond` CLI surface at all. Decide between explicit descope OR adding the `respond` subcommand to close the F11/F13 round-trip.
+* **W28 HIGH-1 (deferred)** — `read_message_by_id_or_prefix` is unscoped (no `to_session`/`from_session` filter). Single-tenant daemon means not a hard auth boundary today, but the architectural contract weakened from W27. Reviewer-recommended fix: optional `caller_session: Option<String>` on `Request::SessionMessageRead` that scopes the SQL when set.
+* **W28 MED-2 (open)** — F1 stale-version detection only catches Cargo.toml version-string drift, not git-sha drift. Common dev workflow (commit, rebuild, daemon stays on prior commit) is silently reported as "matched". Fix path: also compare `option_env!("VERGEN_GIT_SHA")` against daemon-reported `git_sha`.
+* **W28 LOW-2..LOW-10 + NIT-1..NIT-3 (open)** — cosmetic (LIKE wildcards, error wording, partial-retire visibility, contract-test pinning of JSON shape, env-var override for boot timeout, project validation, broken-symlink detection, missing read_message tests, `team_member` retired-row filter, dispatcher message wording, terminal width, ID truncation length). Roll into P3-3.11 W34 close.
 
-## Wave roadmap (P3-3.9 closed; remaining 11 commits to GA)
-
-### P3-3.10 — Quick MED/LOW + W23 carry-forwards (5 commits, ~3-4h)
-
-| Wave | Scope | Task ID | Sources |
-|------|-------|---------|---------|
-| W24 | CLI cosmetics: `identity show` alias, `message-read <ID>` positional, `blast-radius <PATH>` positional | #141 | F5, F10, F19 |
-| W25 | Daemon-spawn polish: doctor version sanity, hooks-warning gate, socket-bind cold-start 10s | #142 | F1, F2, F3 |
-| W26 | Team primitives: idempotent `team run`, role propagation on spawn, `--project` flag, `team stop` wording | #143 | F6, F7, F8, F9 |
-| W27 | `message-read` ULID lookup (full-ID vs displayed-ID inconsistency) | #144 | F12, F14 |
-| W28 | review + HANDOFF + halt + carry-forward W23 HIGHs (spawn_blocking supervisor, respond CLI) | #145 | per-wave-procedure + W23 deferrals |
-
-**Halt at end of W28** for sign-off before P3-3.11.
+## Wave roadmap (P3-3.10 closed; remaining 6 commits to P3-4)
 
 ### P3-3.11 — Investigation MED/LOW (6 commits, ~6-8h, halt-able)
 
@@ -85,7 +79,7 @@ grep -n "identity\|message-read\|blast-radius\|MessageRead\|BlastRadius" crates/
 | W31 | F18 contradiction false-positives (Phase 9a/9b tightening) | #148 | F18 |
 | W32 | F20+F22 indexer .rs file scope (watcher pattern) | #149 | F20, F22 |
 | W33 | F21 force-index error UX (likely no-op after W22) | #150 | F21 |
-| W34 | review + HANDOFF + halt for P3-4 | #151 | per-wave-procedure |
+| W34 | review + HANDOFF + halt + carry-forward W23/W28 deferred HIGHs | #151 | per-wave-procedure + W23/W28 deferrals |
 
 **Halt-and-brief at W30** if F16 needs schema change (defer to v0.6.1).
 **Halt-and-brief at W29** if F15/F17 reveals architectural drift wider than scope.
@@ -101,40 +95,25 @@ Source: `docs/benchmarks/results/2026-04-26-forge-dogfood-findings.md`
 
 ### HIGH (3) — closed in P3-3.9 ✓
 
-* **F4** — daemon auto-spawn doesn't propagate `LD_LIBRARY_PATH` for ONNX → `54aeecd`.
-* **F11** — `forge-next send` defaults `from_session` to `"api"` regardless of any context → `6e27eb4`.
-* **F13** — `FORGE_SESSION_ID` env var doesn't propagate to message `from_session` → `6e27eb4`.
-* **F23** — synchronous `force-index` blocks daemon writer loop for 30s+ → `611169b` + `39f84b2`.
+* **F4** → `54aeecd`. **F11** → `6e27eb4`. **F13** → `6e27eb4`. **F23** → `611169b` + `39f84b2`.
 
-### MEDIUM (7) — open in P3-3.10 (F1-F3, F9) + P3-3.11 (F15/F17, F20, F22)
+### MEDIUM (7) — 4 closed in P3-3.10 ✓ + 3 in P3-3.11
 
-* **F1** — `doctor` reports stale daemon-version after rebuild until restart. → W25.
-* **F2** — `[WARN] hook: plugin hooks.json not found` warning even running in-tree. → W25.
-* **F3** — daemon socket-bind cold-start timeout 3s too tight for ONNX init. → W25.
-* **F9** — `team members` shows role=`?` instead of spawning template name. → W26.
-* **F15+F17** — even with `--project forge`, recall returns hive/dashboard memories. → W29.
-* **F20** — indexer lacks recently-modified files in code graph. → W32.
-* **F22** — `blast-radius --file <path>` reports file not in code graph. → W32.
+* **F1** → `b965d0b` ✓. **F2** → `b965d0b` ✓. **F3** → `b965d0b` ✓. **F9** → `eb55a2d` ✓.
+* **F15+F17** → W29.  **F20** → W32.  **F22** → W32.
 
-### LOW (11) — open in P3-3.10 (F5/F10/F12/F14/F19, F6/F7/F8) + P3-3.11 (F16, F18, F21)
+### LOW (11) — 8 closed in P3-3.10 ✓ + 3 in P3-3.11
 
-* **F5** — `identity show` doesn't exist. → W24.
-* **F6** — `team create` + `team run` aren't compositional (UNIQUE constraint). → W26.
-* **F7** — `team stop` reports "0 agent(s) retired" without context. → W26.
-* **F8** — Templates spawn agents with `project: (none)`. → W26.
-* **F10** — `message-read` requires `--id` flag, not positional. → W24.
-* **F12+F14** — `message-read --id <full-ULID>` returns "message not found" while `messages` lists it. → W27.
-* **F16** — Identity facets cross-pollinate across projects. → W30 (decision needed).
-* **F18** — Contradiction detector false-positives on chronological session summaries. → W31.
-* **F19** — `blast-radius <path>` (positional) errors. → W24.
-* **F21** — `force-index` timeout error UX unclear. → W33 (likely no-op after W22).
+* **F5** → `bd1bac6` ✓. **F6** → `eb55a2d` ✓. **F7** → `eb55a2d` ✓. **F8** → `eb55a2d` ✓.
+* **F10** → `bd1bac6` ✓. **F12+F14** → `85712a8` ✓. **F19** → `bd1bac6` ✓.
+* **F16** → W30 (decision needed).  **F18** → W31.  **F21** → W33 (likely no-op).
 
 ### WORKS-AS-EXPECTED (2) — no fix needed
 
 * Identity (Ahankara) — 41 facets render cleanly in `compile-context` XML.
 * Healing system — 8 layers all populate; manas-health surfaces them.
 
-## Cumulative commit tally (P3-3.5..P3-3.9)
+## Cumulative commit tally (P3-3.5..P3-3.10)
 
 | Range | Phase | Commits |
 |-------|-------|---------|
@@ -142,29 +121,29 @@ Source: `docs/benchmarks/results/2026-04-26-forge-dogfood-findings.md`
 | `8e449a5..d7c5f73` | P3-3.5 polish-review fix-wave + YAML | 2 |
 | `b80ae68..daf6491` | P3-3.6 W9-W13 otel cluster bump | 5 |
 | `daa76ad..6118ec2` | P3-3.7 W14+W17+W19 drift fixtures | 3 |
-| `0ba3f7b` | P3-3.8 dogfood findings | 1 |
-| `44c9094` | P3-3.8 close HANDOFF | 1 |
-| `14279c9` | P3-3.9/3.10/3.11 plan | 1 |
+| `0ba3f7b..14279c9` | P3-3.8 dogfood + plan-doc | 3 |
 | `37c90b0` | pre-compact HANDOFF | 1 |
 | `54aeecd..611169b` | P3-3.9 W20-W22 (3 HIGH dogfood fixes) | 3 |
-| `2ef27e8` | P3-3.9 W23 review | 1 |
-| `39f84b2..e190f70` | P3-3.9 W23 fix-wave + YAML status | 2 |
-| **Total since prior pre-compact** | — | **6** |
-| **Total since `a9fa9af`** | — | **32** |
+| `2ef27e8..e190f70` | P3-3.9 W23 review + fix-wave + YAML status | 3 |
+| `46d525a` | P3-3.9 close HANDOFF | 1 |
+| `bd1bac6..85712a8` | P3-3.10 W24-W27 (10 dogfood fixes) | 4 |
+| `cd2d733..7f8a694` | P3-3.10 W28 review + fix-wave + YAML status | 3 |
+| **Total since `a9fa9af`** | — | **40** |
+| **Total this session (since `37c90b0`)** | — | **14** |
 
-## Tests + verification (final state at HEAD `e190f70`)
+## Tests + verification (final state at HEAD `7f8a694`)
 
 * `cargo fmt --all --check` — clean
 * `cargo clippy --workspace --tests --features bench -- -W clippy::all -D warnings` — 0 warnings
 * `cargo build --workspace --features bench` — clean
-* `cargo test -p forge-cli --bin forge-next commands::system::tests` — 4 passed (W21 resolver matrix)
-* `cargo test -p forge-cli --bin forge-next client::tests` — 2 passed (W20 const)
+* `cargo test -p forge-cli --bin forge-next` — 92 passed (incl. W24's 5 new clap-parse tests)
+* `cargo test -p forge-daemon teams::tests` — 38 passed (incl. W26's 2 new run_team tests)
+* `cargo test -p forge-core --lib protocol::contract_tests` — 37 passed (incl. W27's variant census 124)
 * `cargo test -p forge-daemon test_force_index_produces_edges` — 1 passed (W22 sync path bypass)
-* `bash scripts/check-harness-sync.sh` — OK (154 + 107)
-* `bash scripts/check-review-artifacts.sh` — OK (**23** review(s) valid, 0 open blocking)
+* `bash scripts/check-harness-sync.sh` — OK (**155** + 107)
+* `bash scripts/check-review-artifacts.sh` — OK (**24** review(s) valid, 0 open blocking)
 * `bash scripts/check-license-manifest.sh` — OK
-* `bash scripts/check-protocol-hash.sh` — OK
-* End-to-end live force-index timing: dispatch=0.008s, concurrent health=0.007s, concurrent send=9.4s (was 30s timeout for force-index alone)
+* `bash scripts/check-protocol-hash.sh` — OK (`1dca2da7…`)
 
 ## Cumulative deferred backlog
 
@@ -174,39 +153,40 @@ Source: `docs/benchmarks/results/2026-04-26-forge-dogfood-findings.md`
 * **From P3-3.9 W23 review:** HIGH-1 spawn_blocking supervisor + concurrency-guard;
   HIGH-2 `SessionRespond` CLI surface (descope or add `forge-next respond`);
   4 LOW + 2 NIT cosmetics; MED-3 `(0,0)` background heuristic; MED-4 PRAGMA
-  + busy_timeout consistency. Carried forward into P3-3.10 W28's review/close
-  pass.
-* **Earlier deferrals unchanged:** longmemeval / locomo re-run (datasets unavailable),
-  SIGTERM / SIGINT chaos drill modes, criterion latency benchmarks, Prometheus bench
-  composite gauge, multi-window regression baseline, manual-override label, P3-2 W1
-  trace-handler behavioral test, per-tenant Prometheus labels, OTLP timeline panel.
+  + busy_timeout consistency. **Carry into P3-3.11 W34**.
+* **From P3-3.10 W28 review:** HIGH-1 SessionMessageRead caller-identity scope;
+  MED-2 git-sha drift detection; LOW-2..LOW-10 (LIKE escape, error-wrapping
+  wording, partial-retire visibility, JSON-shape contract test, env-var boot
+  timeout, project validation, broken-symlink detection, missing helper unit
+  tests, retired-row filter on team_member); NIT-1..NIT-3 (clap message
+  wording, terminal-width decoration, ID truncation length). **Carry into
+  P3-3.11 W34**.
+* **Earlier deferrals unchanged:** longmemeval / locomo re-run, SIGTERM/SIGINT
+  chaos drill modes, criterion latency benchmarks, Prometheus bench composite
+  gauge, multi-window regression baseline, manual-override label, P3-2 W1
+  trace-handler behavioral test, per-tenant Prometheus labels, OTLP timeline
+  panel.
 
 ## Tasks (next session)
 
-11 individual tasks remaining (#141-#151) for P3-3.10 + P3-3.11:
+6 individual tasks remaining (#146-#151) for P3-3.11:
 
 | Task ID | Wave | Status |
 |---------|------|--------|
-| #141 | P3-3.10 W24 | pending |
-| #142 | P3-3.10 W25 | pending |
-| #143 | P3-3.10 W26 | pending |
-| #144 | P3-3.10 W27 | pending |
-| #145 | P3-3.10 W28 close (+ W23 HIGH-1/HIGH-2 carry-forwards) | pending |
-| #146 | P3-3.11 W29 | pending |
-| #147 | P3-3.11 W30 | pending |
-| #148 | P3-3.11 W31 | pending |
-| #149 | P3-3.11 W32 | pending |
-| #150 | P3-3.11 W33 | pending |
+| #146 | P3-3.11 W29 (F15+F17) | pending |
+| #147 | P3-3.11 W30 (F16) | pending (halt-and-brief if schema) |
+| #148 | P3-3.11 W31 (F18) | pending |
+| #149 | P3-3.11 W32 (F20+F22) | pending |
+| #150 | P3-3.11 W33 (F21) | pending |
 | #151 | P3-3.11 W34 close | pending |
 
-## Halt-and-ask map (4 sub-phase halts + 2 conditional)
+## Halt-and-ask map (3 sub-phase halts + 2 conditional)
 
-1. **End of P3-3.9 W23** (3 HIGH fixes + W23 review-fix-wave): **HALT NOW** for sign-off.
-2. **End of P3-3.10 W28**: halt for sign-off before P3-3.11.
-3. **P3-3.11 W29** if recall scoping reveals wider architectural drift: halt + brief.
-4. **P3-3.11 W30** if identity scope needs schema change: halt + brief.
-5. **End of P3-3.11 W34**: halt for sign-off, opens P3-4.
+1. **End of P3-3.10 W28**: **HALT NOW** for sign-off before P3-3.11.
+2. **P3-3.11 W29** if recall scoping reveals wider architectural drift: halt + brief.
+3. **P3-3.11 W30** if identity scope needs schema change: halt + brief.
+4. **End of P3-3.11 W34**: halt for sign-off, opens P3-4.
 
 ## One-line summary
 
-**P3-3.9 closed at HEAD `e190f70` (6 commits): all 3 HIGH dogfood findings (F4, F11+F13, F23) end-to-end verified live; W23 adversarial review lockable-with-fixes; MED-1 + MED-2 closed by fix-wave `39f84b2`; 2 deferred HIGHs + cosmetics carry forward to P3-3.10.** All 11 CI gates green, 23 review YAMLs valid, working tree clean. Resume at **W24 (CLI cosmetics: F5/F10/F19)** next session. After P3-3.10 + P3-3.11 close, P3-4 release halts for user sign-off.
+**P3-3.10 closed at HEAD `7f8a694` (7 commits): 10 dogfood findings (F1/F2/F3/F5/F6/F7/F8/F9/F10/F12/F14/F19) end-to-end verified live; W28 adversarial review lockable-with-fixes; MED-1 + LOW-1 closed by fix-wave `118f0db`; 1 deferred HIGH carries forward.** All 11 CI gates green, 24 review YAMLs valid, working tree clean. Resume at **W29 (cross-project recall scoping investigation)** next session. After P3-3.11 closes, P3-4 release halts for user sign-off.
