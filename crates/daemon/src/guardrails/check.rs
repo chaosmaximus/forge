@@ -277,6 +277,39 @@ pub struct PreBashResult {
     pub relevant_skills: Vec<String>,
 }
 
+// P3-4 W1.14 (I-13): strip text inside single- or double-quoted shell
+// strings before destructive-pattern matching. The matcher previously
+// did a raw `cmd.to_lowercase().contains(pattern)`, which produced
+// false positives when a destructive substring appeared inside a
+// quoted argument value (e.g. `forge-next pre-bash-check --command
+// 'rm -rf /tmp'` was itself flagged because `rm -rf` lived in
+// `--command`'s argv even though the OUTER command was a benign Forge
+// invocation). This stripper removes anything between matched single
+// and double quotes before pattern matching. Edge cases out of scope:
+// escaped quotes inside strings (`\'`/`\"`), backtick command
+// substitution, and heredocs. None of the destructive patterns we
+// screen for are commonly buried inside those forms in production
+// scripts; if a real bypass surfaces, escalate to a `shlex`-grade
+// parser.
+fn strip_quoted_arg_text(cmd: &str) -> String {
+    let mut out = String::with_capacity(cmd.len());
+    let mut in_single = false;
+    let mut in_double = false;
+    for c in cmd.chars() {
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            _ if in_single || in_double => {} // strip quoted content
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Pre-bash check: warn about destructive commands, surface relevant lessons/skills.
 ///
 /// 1. **Destructive patterns** — known dangerous command patterns
@@ -310,7 +343,14 @@ pub fn pre_bash_check(conn: &Connection, command: &str) -> PreBashResult {
         ("killall", "Kills all matching processes"),
     ];
 
-    let cmd_lower = command.to_lowercase();
+    // Lower-case + strip quoted argv text so a destructive substring
+    // inside a `--command 'rm -rf /tmp'` or `--message "drop database"`
+    // argument doesn't trigger a false positive on the OUTER command
+    // (W1.3 review I-13). The stripper is conservative — it only
+    // ignores standard single/double quotes, so a real invocation like
+    // `rm -rf "$DIR"` still matches as expected.
+    let cmd_stripped = strip_quoted_arg_text(command);
+    let cmd_lower = cmd_stripped.to_lowercase();
     for (pattern, warning) in destructive_patterns {
         if cmd_lower.contains(pattern) {
             warnings.push(format!("Destructive: {pattern} -- {warning}"));
@@ -1113,6 +1153,53 @@ mod tests {
         let result = pre_bash_check(&conn, "ls -la");
         assert!(result.safe);
         assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn p3_4_w1_14_pre_bash_ignores_destructive_substring_in_quoted_argv() {
+        // I-13: a benign outer command like `forge-next pre-bash-check
+        // --command 'rm -rf /tmp/test'` previously tripped the
+        // destructive-pattern matcher because the substring `rm -rf`
+        // lived inside the QUOTED argv value. The fix strips
+        // single/double-quoted text before pattern matching so the
+        // OUTER command is judged on its own merits.
+        let conn = setup();
+
+        // Adversarial: destructive substring inside single-quoted argv.
+        let outer_single = "forge-next pre-bash-check --command 'rm -rf /tmp/test'";
+        let r = pre_bash_check(&conn, outer_single);
+        assert!(
+            r.safe,
+            "single-quoted argv must not trigger destructive match (was {:?})",
+            r.warnings
+        );
+
+        // Adversarial: destructive substring inside double-quoted argv.
+        let outer_double = "forge-next pre-bash-check --command \"git reset --hard HEAD\"";
+        let r = pre_bash_check(&conn, outer_double);
+        assert!(
+            r.safe,
+            "double-quoted argv must not trigger destructive match (was {:?})",
+            r.warnings
+        );
+
+        // Sanity: real destructive command with a quoted-path argument
+        // must STILL match (only the quoted text is stripped, not the
+        // surrounding command).
+        let real_with_quoted_path = "rm -rf \"$DIR\"";
+        let r = pre_bash_check(&conn, real_with_quoted_path);
+        assert!(
+            !r.safe,
+            "real `rm -rf` outside quotes must still trigger destructive match"
+        );
+
+        // Sanity: real destructive command with no quotes at all.
+        let real_bare = "git reset --hard HEAD";
+        let r = pre_bash_check(&conn, real_bare);
+        assert!(
+            !r.safe,
+            "real `git reset --hard` must still trigger destructive match"
+        );
     }
 
     #[test]

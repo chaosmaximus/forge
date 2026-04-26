@@ -13,6 +13,12 @@ set -euo pipefail
 WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$WORKSPACE"
 
+# IMPORTANT: ORT_VERSION is paired with `crates/daemon/Cargo.toml`'s
+# `fastembed = "=5.11.0"` pin. fastembed 5.12+ depends on ort 2.0.0-rc.12+
+# which links against ONNX Runtime API v24; bumping ORT here without
+# unpinning fastembed (or vice-versa) will silently panic the embedder
+# at startup. Bump both in the same commit. See P3-4 W1.1 (`50ab231`)
+# and W1.3 review LOW-7.
 ORT_VERSION="1.23.0"
 ORT_DIR=".tools/onnxruntime-linux-x64-${ORT_VERSION}"
 ORT_TGZ="onnxruntime-linux-x64-${ORT_VERSION}.tgz"

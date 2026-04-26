@@ -2611,29 +2611,28 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 // existence-check to that project so the warning text
                 // can distinguish "file unknown" from "file indexed
                 // under a different project".
-                let (file_exists, scope_msg): (bool, &str) = match project_filter.as_deref() {
-                    Some(proj) => {
-                        let exists: bool = state
-                            .conn
-                            .query_row(
-                                "SELECT COUNT(*) > 0 FROM code_file WHERE path LIKE ?1 AND project = ?2",
-                                rusqlite::params![format!("%{}", file), proj],
-                                |row| row.get(0),
-                            )
-                            .unwrap_or(false);
-                        (exists, "project")
-                    }
-                    None => {
-                        let exists: bool = state
-                            .conn
-                            .query_row(
-                                "SELECT COUNT(*) > 0 FROM code_file WHERE path LIKE ?1",
-                                rusqlite::params![format!("%{}", file)],
-                                |row| row.get(0),
-                            )
-                            .unwrap_or(false);
-                        (exists, "")
-                    }
+                //
+                // P3-4 W1.14 (W1.3 review LOW-3): compute file_exists
+                // directly; the prior `(bool, &str)` tuple `scope_msg`
+                // was populated but never read (the actual scope hint
+                // is reconstructed below from `project_filter`).
+                let file_exists: bool = match project_filter.as_deref() {
+                    Some(proj) => state
+                        .conn
+                        .query_row(
+                            "SELECT COUNT(*) > 0 FROM code_file WHERE path LIKE ?1 AND project = ?2",
+                            rusqlite::params![format!("%{}", file), proj],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(false),
+                    None => state
+                        .conn
+                        .query_row(
+                            "SELECT COUNT(*) > 0 FROM code_file WHERE path LIKE ?1",
+                            rusqlite::params![format!("%{}", file)],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(false),
                 };
                 if !file_exists {
                     let scope_hint = if let Some(proj) = project_filter.as_deref() {
@@ -2644,7 +2643,6 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     warnings.push(format!(
                         "File '{file}' not found in the code graph{scope_hint}. It may not have been indexed yet."
                     ));
-                    let _ = scope_msg; // suppress unused-binding warning
                 }
             }
             Response::Ok {

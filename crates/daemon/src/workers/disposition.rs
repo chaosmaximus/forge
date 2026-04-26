@@ -899,14 +899,26 @@ mod tests {
         // copied from tick_for_agent (lines 119-134). This test catches
         // any silent divergence by populating the same logical input on
         // both code paths and comparing the persisted disposition rows.
+        //
+        // P3-4 W1.15 (W1.3 review I-15 carry): use `manas::now_offset` to
+        // generate fresh ISO timestamps so the test doesn't bit-rot when
+        // tick_for_agent's 24-hour recency cutoff moves past the
+        // hardcoded fixture date. Earlier hardcoded `"2026-04-25 ..."`
+        // strings worked while we were AT/NEAR that day but excluded
+        // every session once the test ran 24h+ later → "Query returned
+        // no rows" on the disposition read.
         let agent = "parity-agent";
 
         // Fixed-duration session strings for tick path. estimate_duration_secs
         // parses the time component (HH:MM:SS) from "YYYY-MM-DD HH:MM:SS"
         // strings and returns the difference in seconds. So 5 sessions
         // 30 seconds long → all short (< 60s threshold), short_ratio = 1.0.
-        let started = "2026-04-25 10:00:00";
-        let ended = "2026-04-25 10:00:30";
+        // We anchor `started` an hour ago and `ended` 30 seconds after
+        // it, both within the 24h cutoff that `tick_for_agent` enforces.
+        let started = manas::now_offset(-3600); // 1 h ago
+        let ended = manas::now_offset(-3600 + 30); // 30 s after `started`
+        let started: &str = &started;
+        let ended: &str = &ended;
 
         // ── Tick path: insert 5 ended sessions into session table ──
         let conn_tick = open_db();
