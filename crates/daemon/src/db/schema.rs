@@ -502,6 +502,11 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_declared_hash ON declared(hash);
 
         -- Manas Layer 6: Identity
+        -- P3-3.11 W30: 'project' column added (NOT NULL, DEFAULT '_global_')
+        -- so identity facets are scoped to (agent, project) instead of
+        -- (agent) alone. Closes F16 cross-project identity pollution. The
+        -- ALTER TABLE migration for existing DBs lives near the memory
+        -- migrations below. Mirror of the W29 memory.project sentinel.
         CREATE TABLE IF NOT EXISTS identity (
             id TEXT PRIMARY KEY,
             agent TEXT NOT NULL,
@@ -510,11 +515,16 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             strength REAL NOT NULL DEFAULT 0.5,
             source TEXT NOT NULL,
             active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            project TEXT NOT NULL DEFAULT '_global_'
         );
         CREATE INDEX IF NOT EXISTS idx_identity_agent ON identity(agent);
         CREATE INDEX IF NOT EXISTS idx_identity_facet ON identity(facet);
         CREATE INDEX IF NOT EXISTS idx_identity_active ON identity(active);
+        -- W30 project indexes are created in the migration section below,
+        -- after the ALTER TABLE that adds the project column on existing
+        -- DBs (CREATE INDEX cannot reference a column that does not yet
+        -- exist on a pre-W30 schema).
 
         -- Manas Layer 7: Disposition
         CREATE TABLE IF NOT EXISTS disposition (
@@ -902,6 +912,32 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE identity ADD COLUMN user_id TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE identity ADD COLUMN organization_id TEXT DEFAULT 'default'",
+        [],
+    );
+
+    // P3-3.11 W30: identity.project (per-(agent, project) scoping). Mirror of
+    // the W29 memory.project sentinel migration. SQLite's ADD COLUMN with
+    // NOT NULL DEFAULT 'literal' backfills existing rows to '_global_'
+    // automatically, so no separate UPDATE is required for the column-add
+    // path. The defensive UPDATE below (near the W29 backfill block)
+    // re-normalises any NULL/empty values that may exist on a database
+    // produced by a hypothetical pre-release build that ADDed the column
+    // without the DEFAULT clause.
+    let _ = conn.execute(
+        "ALTER TABLE identity ADD COLUMN project TEXT NOT NULL DEFAULT '_global_'",
+        [],
+    );
+    // Project indexes — created here (post-ALTER) rather than in the CREATE
+    // TABLE batch above so they can reference the project column on a
+    // pre-W30 database where the column did not exist at table-creation
+    // time.
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_identity_project ON identity(project)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_identity_agent_project \
+         ON identity(agent, project, active)",
         [],
     );
 
@@ -1617,6 +1653,28 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             [],
         );
     }
+
+    // P3-3.11 W30: identity.project sentinel backfill (defensive).
+    //
+    // The ALTER TABLE above adds the column with NOT NULL DEFAULT '_global_',
+    // so SQLite backfills existing rows automatically. This UPDATE is a
+    // defence in depth for the rare case where a hypothetical prerelease
+    // build added the column without the DEFAULT clause, or where a row was
+    // explicitly set to '' by an out-of-band SQL writer. No FTS5 dependency
+    // here — the identity table has no shadow virtual table.
+    //
+    // Identity scoping semantics (see crates/daemon/src/db/manas.rs):
+    //   - `list_identity_for_project(agent, "forge", include_globals=false)`
+    //     is STRICT — only `project = 'forge'` rows match.
+    //   - `list_identity_for_project(agent, "forge", include_globals=true)`
+    //     matches `project IN ('forge', '_global_')`.
+    //   - `list_identity(agent)` returns all rows for the agent (legacy
+    //     unscoped path, still used by sync export).
+    let _ = conn.execute(
+        "UPDATE identity SET project = '_global_' \
+         WHERE project IS NULL OR project = ''",
+        [],
+    );
 
     Ok(())
 }
@@ -2744,6 +2802,136 @@ mod tests {
         assert_eq!(
             bad_rows_after_rerun, 0,
             "re-running migration must be a no-op"
+        );
+    }
+
+    #[test]
+    fn p3_3_11_w30_identity_project_sentinel_backfill() {
+        // Phase P3-3.11 W30: identity.project='_global_' sentinel migration —
+        // backfill leg. Mirror of the W29 memory.project sentinel test.
+        //
+        // Verifies the data-side migration: pre-W30 identity rows (no
+        // 'project' column at all) are migrated via ALTER TABLE ADD COLUMN
+        // ... NOT NULL DEFAULT '_global_', which SQLite uses to backfill
+        // every existing row. The defensive UPDATE inside create_schema
+        // covers the rare case where the column was added without DEFAULT
+        // (or rows were explicitly set to '' by an out-of-band writer).
+        // The forward-going enforcement (DAO helper at every store_identity
+        // call site) is covered in W30 commit 2.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Build the pre-W30 identity table shape (no project column) and
+        // seed three rows — analogues of the F16 leak surface (one true
+        // global, one project-tagged extracted, one CLI/declared facet).
+        // After ALTER TABLE in create_schema all three should read
+        // '_global_' because the pre-existing rows had no project value at
+        // all; the migration cannot recover the original project (no source
+        // data on the row); future writes will tag explicitly via the DAO
+        // helper.
+        conn.execute_batch(
+            "CREATE TABLE identity (
+                id TEXT PRIMARY KEY,
+                agent TEXT NOT NULL,
+                facet TEXT NOT NULL,
+                description TEXT NOT NULL,
+                strength REAL NOT NULL DEFAULT 0.5,
+                source TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO identity (id, agent, facet, description, strength, source, active, created_at)
+             VALUES
+                ('legacy-1', 'claude-code', 'expertise', 'Hive Finance credit risk pipeline', 0.9, 'extracted', 1, '2026-01-01'),
+                ('legacy-2', 'claude-code', 'role',      'Architect/Lead for Forge project', 0.9, 'extracted', 1, '2026-01-01'),
+                ('legacy-3', 'claude-code', 'values',    'Pragmatic problem solver',         0.9, 'cli',       1, '2026-01-01')",
+            [],
+        )
+        .unwrap();
+
+        // Apply the migration.
+        create_schema(&conn).unwrap();
+
+        // Verify the column was added.
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(identity)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            cols.contains(&"project".to_string()),
+            "ALTER TABLE must add 'project' column; got cols={cols:?}"
+        );
+
+        // Backfill: existing rows now read '_global_' (the migration cannot
+        // recover the original project tagging — that data was never
+        // captured pre-W30).
+        for id in ["legacy-1", "legacy-2", "legacy-3"] {
+            let actual: String = conn
+                .query_row(
+                    "SELECT project FROM identity WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                actual, "_global_",
+                "backfill must produce '_global_' for pre-W30 row id={id}"
+            );
+        }
+
+        // Sanity: no row in the table has NULL or empty project after
+        // migration.
+        let bad_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM identity WHERE project IS NULL OR project = ''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            bad_rows, 0,
+            "after migration no identity row may have NULL or empty project"
+        );
+
+        // Idempotence: re-running create_schema must be a no-op (the
+        // ADD COLUMN errors out silently because the column already exists,
+        // and the defensive UPDATE matches zero rows).
+        create_schema(&conn).unwrap();
+        let bad_rows_after_rerun: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM identity WHERE project IS NULL OR project = ''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            bad_rows_after_rerun, 0,
+            "re-running migration must be a no-op"
+        );
+
+        // Defensive UPDATE leg: a row written with an explicit empty string
+        // (bypassing the DEFAULT) gets normalised to '_global_' on next
+        // create_schema run. This guards against future write sites that
+        // forget the DAO helper.
+        conn.execute("UPDATE identity SET project = '' WHERE id = 'legacy-1'", [])
+            .unwrap();
+        create_schema(&conn).unwrap();
+        let project_after_heal: String = conn
+            .query_row(
+                "SELECT project FROM identity WHERE id = 'legacy-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            project_after_heal, "_global_",
+            "defensive UPDATE must heal explicit empty-string project values"
         );
     }
 }
