@@ -318,32 +318,38 @@ impl WriterActor {
     /// can process the next request — the CLI-side surface treats `0,0` as
     /// "indexer started in background" (see `commands::system::force_index`).
     fn process_force_index_async(&self, path: Option<String>) -> Response {
-        if let Some(ref dir) = path {
-            match std::fs::canonicalize(dir) {
-                Ok(canonical) => {
-                    if !canonical.is_dir() {
+        // Resolve `path` to its canonical form once, on the writer-actor thread,
+        // and hand the canonical string into the spawn closure. Avoids a
+        // canonicalize-twice TOCTOU window where the directory could be
+        // renamed/deleted/symlink-swapped between sync validation and the
+        // spawn_blocking re-resolution. (W23 review MED-1.)
+        let canonical_path: Option<String> = match path {
+            Some(ref dir) => match std::fs::canonicalize(dir) {
+                Ok(p) => {
+                    if !p.is_dir() {
                         return Response::Error {
                             message: format!("'{dir}' is not a directory"),
                         };
                     }
+                    Some(p.to_string_lossy().to_string())
                 }
                 Err(e) => {
                     return Response::Error {
                         message: format!("cannot resolve path '{dir}': {e}"),
                     };
                 }
-            }
-        }
+            },
+            None => None,
+        };
 
         let db_path = self.state.db_path.clone();
-        let path_for_task = path;
         tracing::info!(
             target: "forge_daemon::indexer",
-            ?path_for_task,
+            path = canonical_path.as_deref().unwrap_or("<all-projects>"),
             "force-index dispatched to background task"
         );
         tokio::task::spawn_blocking(move || {
-            run_force_index_in_task(&db_path, path_for_task);
+            run_force_index_in_task(&db_path, canonical_path);
         });
 
         Response::Ok {
@@ -377,10 +383,9 @@ fn run_force_index_in_task(db_path: &str, path: Option<String>) {
     };
     let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;");
 
-    if let Some(dir) = path {
-        let canonical = std::fs::canonicalize(&dir)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(dir);
+    if let Some(canonical) = path {
+        // `canonical` was resolved on the writer-actor thread before spawn —
+        // do NOT re-canonicalize here (W23 review MED-1).
         let (files_indexed, symbols_indexed) =
             crate::workers::indexer::index_directory_sync(&conn, &canonical);
         tracing::info!(

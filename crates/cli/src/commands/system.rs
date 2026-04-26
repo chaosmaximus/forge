@@ -848,9 +848,12 @@ pub async fn cleanup_sessions(
 /// Order: explicit `--from <session_id>` flag > `FORGE_SESSION_ID` env var > `None`
 /// (which the daemon converts to the literal `"api"`).
 ///
-/// Emits a one-time stderr warning when neither source is present so that
-/// scripts which previously relied on the silent `"api"` fallback are nudged
-/// toward setting an identity. Returns the resolved session id (or `None`).
+/// Emits a stderr warning per CLI invocation when neither source is present so
+/// that scripts which previously relied on the silent `"api"` fallback are
+/// nudged toward setting an identity. (Each `forge-next` process is a one-shot
+/// CLI; the warning is not deduplicated within a process — a long-lived REPL
+/// or library caller would emit one warning per call.) Returns the resolved
+/// session id (or `None`).
 pub fn resolve_from_session(explicit: Option<String>) -> Option<String> {
     if let Some(v) = explicit.filter(|s| !s.is_empty()) {
         return Some(v);
