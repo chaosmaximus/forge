@@ -1,6 +1,8 @@
-# Multi-Agent Coordination Bench (2A-6) — Design v1
+# Multi-Agent Coordination Bench (2A-6) — Design v2
 
-**Status:** DRAFT v1 — 2026-04-26. Pending adversarial review.
+**Status:** v2 — 2026-04-26. v1 adversarial review returned `not-lockable`
+(4 BLOCKER + 3 HIGH + 3 MED at SHA `d64fe83`); v2 addresses all 10
+findings. Pending second adversarial review.
 **Phase position:** Second sub-phase of P3-3 (after 2A-5 closed at HEAD `1377ee1`).
 **Predecessors:** 2A-5 domain-isolation bench (v2.1 LOCKED + impl shipped).
 **Successors:** 2A-7 daemon restart drill, 2C-1/C-2 ops dashboards.
@@ -67,12 +69,12 @@ last bench run.
 
 ---
 
-## 2. Verified reconnaissance (2026-04-26, HEAD `1377ee1`)
+## 2. Verified reconnaissance (2026-04-26, HEAD `d64fe83` — re-stamped per v1 MED-3)
 
 | # | Fact | Evidence |
 |---|------|----------|
-| 1 | `session_message` table with 11 columns: `id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL, kind TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '', parts TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', in_reply_to TEXT, project TEXT, timeout_secs INTEGER, created_at TEXT NOT NULL, delivered_at TEXT, expires_at TEXT`. | `db/schema.rs:720-734` |
-| 2 | 3 indexes: `idx_msg_to (to_session, status)`, `idx_msg_from (from_session)`, `idx_msg_reply (in_reply_to)`. | `db/schema.rs:735-737` |
+| 1 | `session_message` table — base CREATE has **13 columns**: `id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL, kind TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '', parts TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', in_reply_to TEXT, project TEXT, timeout_secs INTEGER, created_at TEXT NOT NULL, delivered_at TEXT, expires_at TEXT`. **+ 14th column `meeting_id TEXT` via ALTER at db/schema.rs:1107**, so **post-migration column count is 14** (per v1 BLOCKER-1 fix). | `db/schema.rs:720-734` (base CREATE), `db/schema.rs:1107` (meeting_id ALTER) |
+| 2 | **4 indexes**: `idx_msg_to (to_session, status)`, `idx_msg_from (from_session)`, `idx_msg_reply (in_reply_to)`, **`idx_msg_meeting (meeting_id)`** (added at `db/schema.rs:1109`, paired with the ALTER) — per v1 BLOCKER-2 fix. | `db/schema.rs:735-737, 1109` |
 | 3 | `Request::SessionSend` accepts `to`, `kind ("notification" or "request")`, `topic`, `parts`, `project`, `timeout_secs`, `meeting_id`, `from_session`. | `crates/core/src/protocol/request.rs:488-504` |
 | 4 | `Request::SessionRespond` accepts `message_id`, `status` (one of "accepted", "rejected", "completed", "failed" per protocol), `parts`. | `request.rs:505-510` |
 | 5 | `Request::SessionMessages` accepts `session_id`, optional `status`, `limit`, `offset`. | `request.rs:511-518` |
@@ -83,7 +85,7 @@ last bench run.
 | 10 | `respond_to_message(conn, message_id, from_session, status, parts_json)` at line 430-475: SELECTs original message; if original missing returns `Ok(false)`; if `orig.to_session != from_session` returns `Ok(false)` with a stderr WARN; otherwise UPDATES original.status and INSERTS a new message with `kind='response', from_session=responder, to_session=orig.from_session, in_reply_to=orig_id, project=orig.project, status=<the response status>`. | `sessions.rs:430-475` |
 | 11 | `list_messages(conn, session_id, status_filter, limit, offset)` at line 479: SELECTs `WHERE to_session = ?1` plus optional `AND status = ?2`, `ORDER BY created_at DESC, LIMIT/OFFSET` capped at 1000. | `sessions.rs:479-528` |
 | 12 | `ack_messages(conn, message_ids, caller_session)` at line 532-548: per-id UPDATE `WHERE id = ?1 AND to_session = ?2` setting `status='read', delivered_at=datetime('now')`. Returns total rows affected. Silently no-ops on ID mismatch OR caller-not-recipient. | `sessions.rs:532-548` |
-| 13 | `session` table columns (relevant): `id PRIMARY KEY, agent NOT NULL, project, status DEFAULT 'active'` plus migrations adding `working_set, capabilities, current_task, tool_use_count, organization_id, team_id`. Bench needs only `id, agent, project, status, started_at, organization_id`. | `db/schema.rs:410-418` + ALTER blocks |
+| 13 | `session` table — **base CREATE** at `db/schema.rs:410-418` has 7 cols: `id PRIMARY KEY, agent NOT NULL, project, cwd, started_at, ended_at, status DEFAULT 'active'`. **ALTER blocks** add: `working_set` (line 773), `tool_use_count` (line 829), `capabilities` (line 845), `current_task` (line 849), `organization_id TEXT DEFAULT 'default'` (**line 864 — explicit cite per v1 BLOCKER-3 reviewer-error defusal**), plus other multi-tenant columns (user_id, team_id, reality_id, parent_session_id). Bench-relevant columns: `id, agent, project, status, started_at, organization_id`; bench INSERTs only those six (lets the rest take their `DEFAULT '...'` or NULL). | `db/schema.rs:410-418` (base) + `:864` (organization_id ALTER) |
 | 14 | Forge-Isolation precedent at `crates/daemon/src/bench/forge_isolation.rs` (~970 lines): single shared `DaemonState` per seed (§3.7 mandate); `seed_corpus(state, corpus)` direct-INSERT pattern; `run_bench_in_state(state, corpus, seed)` orchestrator that zeros dimensions when infra fails. Identical primitives reusable. | direct read |
 | 15 | `bench/common.rs::seeded_rng(seed)` returns `ChaCha20Rng`; `deterministic_embedding(seed_key)` returns 768-dim `Vec<f32>`; `sha256_hex(input)` returns hex digest (used in 2A-5 D5 sentinel-row hash). | `bench/common.rs:11,18,31` |
 | 16 | `bench/scoring.rs::composite_score(scores: &[f64], weights: &[f64]) -> f64` lifted in 2A-5 T2.2. Reusable byte-for-byte; no further lift needed. | `bench/scoring.rs` |
@@ -101,12 +103,12 @@ T1 re-verifies these at HEAD-current. Specifically grep `respond_to_message` to 
 
 | Dim | Name | Probe | Min | Weight |
 |-----|------|-------|-----|--------|
-| **D1** | `inbox_precision` | For each session S in 6 sessions (3 roles × 2 projects): `list_messages(conn, &S.id, None, 1000, None)`. Foreign-message denominator = total messages in DB minus messages with `to_session=S.id`. Score = 1 − (foreign_observed / max_possible_foreign) averaged. Min 0.95. | 0.95 | 0.20 |
+| **D1** | `inbox_precision` | For each session S in 6 sessions (3 roles × 2 projects): `list_messages(conn, &S.id, None, 1000, None)`. **Per v1 HIGH-1 fix:** denominator computed at D1 runtime as `pre_d1_total = SELECT COUNT(*) FROM session_message; max_possible_foreign_per_inbox = pre_d1_total - (pre_d1_total / 6)`. Under the seeded corpus this is `60 - 10 = 50`; runtime computation makes the value robust to corpus size changes (e.g. v2 corpus extension). Score = 1 − (foreign_observed / max_possible_foreign) averaged across 6 sessions. Infrastructure check 6 ALSO asserts `pre_d1_total == 60` so a corpus regression is flagged; D1 still computes correctly even if check 6 changes. Min 0.95. | 0.95 | 0.20 |
 | **D2** | `roundtrip_correctness` | For K=10 trials: `send_message(from, to, kind="notification", topic="t_{idx}", parts_json="[{\"text\":\"p_{idx}\"}]", project=Some("alpha"), None, None)`; immediately `list_messages(conn, &to, Some("pending"), 1000, None)` and find the row by id. Assert (a) row found, (b) from_session=expected, (c) to_session=expected, (d) topic=expected, (e) parts roundtrip-equals, (f) kind=expected, (g) project=expected. Score = pass_count / (K × 7). Min 0.95. | 0.95 | 0.15 |
 | **D3** | `broadcast_project_scoping` | For K=4 trials (one per role × project combo): `send_message(from, "*", kind="notification", topic="b_{idx}", parts_json, project=Some(<sender_project>), None, None)`. Pre-broadcast: count matching rows. Post-broadcast: re-count matching rows. Assert (a) delta = 2 (2 same-project peers excluding sender), (b) all delta-rows have `project=<sender_project>`, (c) zero delta-rows have `to_session in <other_project_sessions>`. Score = pass_count / (K × 3). Min 0.95. | 0.95 | 0.15 |
 | **D4** | `authorization_enforcement` | Two sub-classes (combined). **Ack ownership:** for K=3 trials, send M from A to B; have C call `ack_messages(conn, &[M.id], &C.id)`; assert (a) returned count = 0, (b) M.status post-call still 'pending'. **Respond authorization:** for K=3 trials, send M (kind='request') from A to B; have C call `respond_to_message(conn, &M.id, &C.id, "completed", "[]")`; assert (a) returns Ok(false), (b) M.status unchanged, (c) no row exists with `in_reply_to=M.id`. Score = pass_count / (3×2 + 3×3) = pass_count / 15. Min 0.95. | 0.95 | 0.20 |
 | **D5** | `edge_case_resilience` | 7 sub-probes (see §3.1a). Score = pass_count / 7. Min 0.85. | 0.85 | 0.15 |
-| **D6** | `pipeline_chain_correctness` | For K=2 trials (one per project), construct a 4-step pipeline: (1) planner → generator request M1, (2) generator responds to M1 with status='accepted' → creates M2, (3) generator → evaluator request M3, (4) evaluator responds to M3 with status='completed' → creates M4. Assert per-trial: (a) M1.status post-step-2 = 'accepted', (b) M2 exists with `from_session=generator, to_session=planner, kind='response', in_reply_to=M1.id, status='accepted'`, (c) M3.status post-step-4 = 'completed', (d) M4 exists with `from_session=evaluator, to_session=generator, kind='response', in_reply_to=M3.id, status='completed'`, (e) M2 retrievable via `list_messages(planner.id, None, ...)`, (f) M4 retrievable via `list_messages(generator.id, None, ...)`. Score = pass_count / (K × 6). Min 0.90. | 0.90 | 0.15 |
+| **D6** | `pipeline_chain_correctness` | For **K=2 trials**, both run within `team-beta` to avoid touching the sentinel row's pair (per v1 HIGH-2 fix; sentinel is in `team-alpha`). Trial 1 chain: planner_beta → generator_beta (M1, kind=request) → generator responds 'accepted' (M2) → generator_beta → evaluator_beta (M3, kind=request) → evaluator responds 'completed' (M4). Trial 2 chain: planner_beta → evaluator_beta (M5, kind=request) → evaluator responds 'rejected' (M6) → planner_beta → generator_beta (M7, kind=request) → generator responds 'failed' (M8). Trial 2 uses non-overlapping role pairs to prove the chain works for any source/sink combination. Assert per-trial: (a) M1/M5.status post-respond = '<response_status>', (b) M2/M6 exists with `from_session=responder, to_session=requester, kind='response', in_reply_to=M_orig.id, status='<response_status>'`, (c) M3/M7.status post-respond = '<response_status>', (d) M4/M8 exists with `from_session=responder2, to_session=responder1, kind='response', in_reply_to=M_inner.id, status='<response_status>'`, (e) M2/M6 retrievable via `list_messages(requester.id, None, ...)`, (f) M4/M8 retrievable via `list_messages(responder1.id, None, ...)`. Score = pass_count / (K × 6). Min 0.90. | 0.90 | 0.15 |
 
 **Composite:** weighted mean across the 6 dims (weights sum to 1.00).
 **Pass gate (dual):** composite ≥ 0.95 AND every dim ≥ its min.
@@ -121,13 +123,32 @@ walk + in_reply_to round-trip that no other dim probes.
 
 ### 3.1a D5 — 7 sub-probes
 
-1. **`payload_size_limit_enforced`** — `send_message(..., parts_json=<65537-byte string>, ...)` returns `Err`. Pass = `Err(InvalidParameterName(_))` containing "exceed 64KB limit".
-2. **`payload_at_limit_succeeds`** — `send_message(..., parts_json=<65000-byte JSON>, ...)` returns `Ok(<msg_id>)`. Pass = `Ok(_)` AND new row exists in `session_message` with the returned id. (Boundary case companion to probe 1.)
+**Pinned sentinel-row contract (v1 HIGH-2 fix).** Probes 6 + 7 hash a
+**specific seeded row** for invariance. The sentinel id is
+`seed_planner_alpha_to_generator_alpha_0` — the first message of the
+first sender→recipient pair (deterministic position 0 in §3.2 corpus
+generator). **Invariant — no prior dim mutates this row:** D2 sends
+brand-new messages with non-colliding ids; D3 broadcast inserts new rows
+to other sessions; D4 ack-test creates new messages and acks them
+(updates only those new rows); D4 respond-test creates new request
+messages and responses (does not touch seeded inbox); D6 pipeline creates
+new messages between role pairs that exclude the (planner_alpha,
+generator_alpha) pair on purpose (D6 trial 1 uses planner_beta →
+generator_beta → evaluator_beta → generator_beta → planner_beta; D6 trial
+2 uses planner_alpha → generator_beta → evaluator_alpha [cross-project
+on purpose] OR a same-project chain THAT excludes the sentinel pair — see
+§4 D11 below). The infrastructure check 8 ("respond_to_message inverts
+addressing") uses a synthetic from→to pair (`infra_check_from`,
+`infra_check_to`) NOT in the seeded corpus to avoid touching the
+sentinel.
+
+1. **`payload_size_limit_enforced`** — `send_message(..., parts_json=<65537-byte string>, ...)` returns `Err`. **Per v1 MED-2 fix:** Pass = match returns `Err(InvalidParameterName(msg))` AND `msg.contains("exceed 64KB limit")` (substring; exact source string at `sessions.rs:377` is `"message parts exceed 64KB limit"`).
+2. **`payload_at_limit_succeeds`** — **Per v1 MED-1 fix:** use exactly **65536-byte parts_json** (the boundary; source check is `> 65536` so `len() == 65536` passes). Pass = `Ok(<msg_id>)` AND new row exists in `session_message` with the returned id.
 3. **`send_to_nonexistent_session_no_panic`** — `send_message(from=<real>, to="zzz_nonexistent_session_xxx", ...)` returns `Ok(<msg_id>)` (no recipient validation per fact 9). Pass = `Ok(_)` AND row INSERTED.
 4. **`respond_to_nonexistent_message_returns_false`** — `respond_to_message(conn, "zzz_nonexistent_msg_xxx", from_session, "completed", "[]")` returns `Ok(false)` per fact 10 line 473. Pass = `Ok(false)` AND no new rows inserted.
 5. **`empty_broadcast_zero_inserts`** — `send_message(from, "*", ..., project=Some("zzz_no_active_sessions"), ...)` returns `Ok(<broadcast_id>)` with 0 INSERTs. Pass = `Ok(_)` AND `session_message` count delta = 0.
-6. **`empty_ack_returns_zero`** — `ack_messages(conn, &[], "any_caller")` returns `Ok(0)` (no UPDATEs). Pass = `Ok(0)` AND no row mutations (sentinel-row hash unchanged).
-7. **`sql_injection_in_topic_inert`** — `send_message(from, to, kind, topic="alpha'; DROP TABLE session_message;--", parts_json, ...)`. Pass = `Ok(_)` AND `session_message` table still exists (`SELECT 1 FROM session_message LIMIT 1` succeeds) AND sentinel-row hash unchanged. Catches DROP TABLE / DELETE FROM **and** UPDATE-class injection (`UPDATE session_message SET status='read'`). Sentinel hash = SHA-256 of a canary row's `(id, from_session, to_session, kind, topic, parts, status, in_reply_to)`.
+6. **`empty_ack_returns_zero`** — `ack_messages(conn, &[], "any_caller")` returns `Ok(0)` (no UPDATEs). Pass = `Ok(0)` AND **sentinel-row hash unchanged** (per pinned contract above; verifies probes don't accidentally walk past the empty list and mutate something).
+7. **`sql_injection_in_topic_inert`** — `send_message(from, to, kind, topic="alpha'; DROP TABLE session_message;--", parts_json, ...)`. Pass = `Ok(_)` AND `session_message` table still exists (`SELECT 1 FROM session_message LIMIT 1` succeeds) AND **sentinel-row hash unchanged**. Catches DROP TABLE / DELETE FROM **and** UPDATE-class injection (`UPDATE session_message SET status='read'`). Sentinel hash = SHA-256 of `(id, from_session, to_session, kind, topic, parts, status, in_reply_to)` for the pinned `seed_planner_alpha_to_generator_alpha_0` row.
 
 7 probes × `pass_count / 7` scoring: single failure = 14% drop (still ≥ 0.85 min, robust to one regression).
 
@@ -158,12 +179,28 @@ Pre-seeded directed messages (60 total):
     topic: format!("seed_{sender_role}_{recipient_role}_{idx}")
     parts: JSON `[{"text": "<from→to>: m_{idx}"}]`
     status: 'pending'
-    project: <recipient_session.project>  (for D3 cross-project audit:
-             6 cross-project messages exist where sender.project != recipient.project)
+    project: <recipient_session.project>  (for D3 cross-project audit;
+             see cross-project msg count below)
+    id: format!("seed_{from_role}_{from_project}_to_{to_role}_{to_project}_{idx_in_pair}")
+       (e.g. "seed_planner_alpha_to_generator_alpha_0")
     in_reply_to: NULL
     created_at: 2026-04-26T00:00:00Z + idx seconds (deterministic ordering)
 
 Total static rows in session_message after seeding: 60.
+
+**Cross-project message count (v1 BLOCKER-4 fix).** Per inbox of 10:
+- 2 same-project peers × 2 messages = 4 same-project messages
+- 3 other-project peers × 2 messages = **6 cross-project messages per inbox**
+- 6 inboxes × 6 = **36 cross-project messages total** (16 alpha→beta + 20 beta→alpha is symmetric: 18 alpha→beta + 18 beta→alpha)
+- ✓ Verified: 6 inboxes × 6 cross-project = 36 = 6 senders × 6 (3 other-project recipients × 2 each)
+
+(v1 spec said "6 cross-project messages exist" — off by 6× under the
+correct 6-inboxes-of-10 layout.)
+
+The pinned **sentinel row** for §3.1a D5 probes 6 + 7 is
+`seed_planner_alpha_to_generator_alpha_0` (the first row of the first
+sender→recipient pair). Probes touching this row would corrupt the
+SHA-256 invariant — see §3.1a "Pinned sentinel-row contract".
 
 Dynamic operations (run during dim execution; not part of static corpus):
   D2 adds K=10 trial messages.
@@ -189,12 +226,20 @@ signature-consistency with other bench harnesses but not consumed.
 ### 3.3 Score formulas
 
 ```text
-D1 score per session S:
+D1 score per session S (v1 HIGH-1 fix — runtime-computed denominator):
+   pre_d1_total = SELECT COUNT(*) FROM session_message  (== 60 under spec corpus)
+   max_possible_foreign_per_inbox = pre_d1_total - (pre_d1_total / 6)
+                                  = 60 - 10 = 50 (under spec corpus)
    inbox = list_messages(&conn, &S.id, None, 1000, None)
    foreign_count = |{ m in inbox : m.to_session != S.id }|
-   max_possible_foreign = total_seeded_messages - 10  // 50 per inbox
-   score_S = 1 − (foreign_count / max_possible_foreign)
+   score_S = 1 − (foreign_count / max_possible_foreign_per_inbox)
    D1 = mean across 6 sessions.
+
+   Why runtime-compute: future corpus extensions (e.g. v2 grows the
+   per-inbox count from 10 to 20) won't silently shift the scoring scale.
+   Infrastructure check 6 also pins the canonical pre-D1 row count == 60
+   so a corpus regression is caught fail-fast; D1 itself remains correct
+   even if the corpus expands.
 
 D2 (K=10 trials):
    subassertions = [from, to, topic, parts, kind, project, row-found]
@@ -237,14 +282,14 @@ startup — not load-bearing for correctness, but documented for clarity.
 
 8 fail-fast checks before dimensions run (matches 2A-5 cardinality):
 
-1. `session_message_table_exists` — `pragma_table_info('session_message')` returns ≥ 11 rows.
-2. `session_message_indexes_present` — `sqlite_master` contains `idx_msg_to`, `idx_msg_from`, `idx_msg_reply`.
-3. `session_table_columns_present` — `pragma_table_info('session')` includes `id`, `agent`, `project`, `status`.
+1. `session_message_table_exists` — `pragma_table_info('session_message')` returns **≥ 14 rows** (v1 BLOCKER-1 fix: 13 base + meeting_id ALTER = 14 columns post-migration). Cite `db/schema.rs:720-734, 1107`.
+2. `session_message_indexes_present` — `sqlite_master` contains **all 4 indexes**: `idx_msg_to`, `idx_msg_from`, `idx_msg_reply`, **`idx_msg_meeting`** (v1 BLOCKER-2 fix). Cite `db/schema.rs:735-737, 1109`.
+3. `session_table_columns_present` — `pragma_table_info('session')` includes `id`, `agent`, `project`, `status`, `started_at`, `organization_id` (latter via ALTER at `db/schema.rs:864`).
 4. `seeded_rng_deterministic` — `seeded_rng(42)` produces identical first u64 twice.
-5. `corpus_size_matches_spec` — corpus has exactly 6 sessions + 60 directed messages.
-6. `session_distribution_correct` — count by (role, project) matches spec (1 each); 10 incoming per session confirmed.
+5. `corpus_size_matches_spec` — corpus has **exactly 6 sessions + 60 directed messages**.
+6. `session_distribution_correct_and_pre_d1_count_60` — count by (role, project) = 1 each; 10 incoming per session confirmed; `(SELECT COUNT(*) FROM session_message) == 60` (v1 HIGH-1 companion: provides the canonical pre-D1 invariant alongside D1's runtime-computed denominator).
 7. `send_message_returns_ulid` — sanity probe: `send_message(...)` returns `Ok(<id>)` AND `id.len() == 26` (ULID length).
-8. `respond_to_message_inverts_addressing` — sanity probe: send msg, respond, verify the response row has `from_session=responder, to_session=orig.from_session, in_reply_to=orig.id`.
+8. `respond_to_message_inverts_addressing` — sanity probe: send msg via **synthetic from→to pair** (`infra_check_from`, `infra_check_to`) NOT in the seeded 6-session corpus; respond as `infra_check_to`; verify the response row has `from_session=infra_check_to, to_session=infra_check_from, in_reply_to=orig.id`. Synthetic ids avoid mutating any seeded session's inbox state (sentinel-row contract preservation per v1 HIGH-2 fix).
 
 Any check failing → abort with summary failure (composite=0.0, all dims
 zeroed per 2A-5 MED-4 fix precedent).
@@ -329,6 +374,15 @@ D1 → D2 → D3 → D4 → D6 → D5 sequentially against that state.
 - **D10 — `meeting_id` deferred.** `Request::SessionSend` accepts
   `meeting_id` for meeting-participant responses; v1 does not exercise this
   field. Defer to a future bench focused on the meeting / poll surface.
+- **D11 — Sentinel-row pair mandate (v1 HIGH-2 fix).** The pinned
+  sentinel row `seed_planner_alpha_to_generator_alpha_0` lives in the
+  `team-alpha` project. **All D6 pipeline trials run in `team-beta`** to
+  guarantee no in_reply_to chain or status update touches the sentinel
+  pair's seeded inbox. The infrastructure check 8 (respond_to_message
+  inversion) uses **synthetic session ids** outside the 6-session
+  corpus. This invariant is what makes D5 probes 6 + 7 sentinel-hash
+  comparison meaningful; T6 implementation MUST assert pair-disjointness
+  by debug_assert + comment to prevent future drift.
 
 ---
 
@@ -368,7 +422,7 @@ D1 → D2 → D3 → D4 → D6 → D5 sequentially against that state.
   | Request handler permission gate | server/handler.rs (a2a perm check) | not-covered | v2 follow-up |
   | Meeting-participant response path | sessions.rs (meeting_id branches) | not-covered | v2 follow-up |
   | Background reaper (`expires_at`) | workers/reaper.rs | not-covered | reaper bench candidate |
-  | `Request::GrantPermission` / `RevokePermission` | sessions.rs (permission CRUD) | not-covered | permission-bench candidate |
+  | `Request::GrantPermission` / `RevokePermission` | crates/core/src/protocol/request.rs:535,542 (variants) + crates/daemon/src/server/handler.rs (dispatch); sessions.rs:571 has `check_a2a_permission` gate — not CRUD (v1 HIGH-3 fix) | not-covered | permission-bench candidate |
 
 ---
 
@@ -477,4 +531,33 @@ D1 → D2 → D3 → D4 → D6 → D5 sequentially against that state.
   authorization_enforcement + edge_case_resilience +
   pipeline_chain_correctness), 60-message + 6-session corpus, 7-probe D5,
   8 infra checks, single-shared `DaemonState` (§3.7) mirroring 2A-5 v2.1.
-  Pending adversarial review.
+  Adversarial review returned `not-lockable` with 4 BLOCKER + 3 HIGH +
+  3 MED.
+- **v2 (2026-04-26):** Address all v1 review findings. Key changes:
+  - **B1 fix:** §2 fact 1 corrected — base CREATE has 13 columns; `meeting_id`
+    ALTER at `db/schema.rs:1107` makes post-migration count 14.
+    Infrastructure check 1 threshold raised to ≥14.
+  - **B2 fix:** §2 fact 2 corrected — 4 indexes (adds `idx_msg_meeting`).
+    Infrastructure check 2 enumerates all 4.
+  - **B3 defused (reviewer error):** session.organization_id IS present
+    via ALTER at `db/schema.rs:864`; spec was correct as-written. v2 adds
+    explicit cite to fact 13 to prevent future verification mistakes.
+  - **B4 fix:** §3.2 + §3.3 — cross-project messages corrected from "6"
+    to **36 total** (6 per inbox × 6 inboxes). Math derivation made
+    explicit: 5 senders × 2 msgs / inbox; 3 other-project senders × 2 = 6
+    cross-project per inbox.
+  - **H1 fix:** §3.1 D1 + §3.3 formula — denominator computed at runtime
+    as `pre_d1_total - (pre_d1_total / 6)` rather than hardcoded 50.
+    Infrastructure check 6 also pins the canonical 60.
+  - **H2 fix:** §3.1a D5 + §4 D11 — pinned sentinel row
+    `seed_planner_alpha_to_generator_alpha_0`; D6 pipeline trials run in
+    team-beta only; infrastructure check 8 uses synthetic session ids;
+    debug_assert pair-disjointness in T6 implementation.
+  - **H3 fix:** §5 disclaimer table — Grant/Revoke variants moved to
+    `crates/core/src/protocol/request.rs:535,542`; dispatch in
+    `crates/daemon/src/server/handler.rs`; `sessions.rs:571` gate-only.
+  - **M1 fix:** §3.1a probe 2 — uses **65536-byte parts_json** (the
+    boundary; check is `> 65536`).
+  - **M2 fix:** §3.1a probe 1 — explicit `.contains("exceed 64KB limit")`
+    substring assertion against the exact source string at `sessions.rs:377`.
+  - **M3 fix:** §2 header re-stamped to HEAD `d64fe83`.
