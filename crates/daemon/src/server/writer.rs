@@ -349,8 +349,35 @@ impl WriterActor {
             path = canonical_path.as_deref().unwrap_or("<all-projects>"),
             "force-index dispatched to background task"
         );
-        tokio::task::spawn_blocking(move || {
+        // P3-4 W1.13 (W23 review HIGH-1): supervise the spawn_blocking
+        // JoinHandle. Pre-fix it was dropped, swallowing any panic in
+        // the indexer worker. The supervisor logs cancellations
+        // (SIGTERM mid-run) and panics (rusqlite/io failure) so the
+        // operator has a breadcrumb instead of a silent partial index.
+        let logged_path = canonical_path
+            .as_deref()
+            .unwrap_or("<all-projects>")
+            .to_string();
+        let join = tokio::task::spawn_blocking(move || {
             run_force_index_in_task(&db_path, canonical_path);
+        });
+        tokio::spawn(async move {
+            if let Err(e) = join.await {
+                if e.is_panic() {
+                    tracing::error!(
+                        target: "forge_daemon::indexer",
+                        path = %logged_path,
+                        "force-index background task PANICKED — partial state may be on disk"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "forge_daemon::indexer",
+                        path = %logged_path,
+                        error = %e,
+                        "force-index background task cancelled (likely SIGTERM mid-run)"
+                    );
+                }
+            }
         });
 
         Response::Ok {

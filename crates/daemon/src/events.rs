@@ -155,7 +155,14 @@ pub fn spawn_hud_writer(tx: &EventSender) {
                     let team_state_clone = team_state.clone();
                     let session_state_clone = session_state.clone();
                     let event_for_blocking = event.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
+                    // P3-4 W1.13 (W23 review HIGH-1): match the JoinResult
+                    // so a panic inside the blocking pool surfaces as a
+                    // structured tracing line instead of being silently
+                    // discarded by `let _ =`. The work is still
+                    // sequenced (`.await` was already there to keep
+                    // HUD-file rename ordering), only the error
+                    // handling is now visible.
+                    let join = tokio::task::spawn_blocking(move || {
                         let mut state = build_hud_state(&db_path_for_blocking, &event_for_blocking);
                         if let Some(team) = state.get_mut("team") {
                             *team = serde_json::json!(team_state_clone);
@@ -187,8 +194,21 @@ pub fn spawn_hud_writer(tx: &EventSender) {
                                 );
                             }
                         }
-                    })
-                    .await;
+                    });
+                    if let Err(e) = join.await {
+                        if e.is_panic() {
+                            tracing::error!(
+                                target: "forge::hud",
+                                "HUD state writer PANICKED — hud-state.json may be stale"
+                            );
+                        } else {
+                            tracing::warn!(
+                                target: "forge::hud",
+                                error = %e,
+                                "HUD state writer task cancelled"
+                            );
+                        }
+                    }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::debug!(skipped = n, "HUD writer lagged, catching up");

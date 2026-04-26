@@ -279,7 +279,15 @@ async fn main() {
     // into the process-wide `embed::GLOBAL_EMBEDDER` once ready; until then
     // RawIngest / RawSearch handler arms return a clear "not initialized"
     // error. See docs/benchmarks/plan.md §4.3.
-    tokio::task::spawn_blocking(|| {
+    //
+    // P3-4 W1.13 (W23 review HIGH-1): wrap in a logging supervisor so a
+    // panic inside the spawn_blocking pool is observable. Pre-fix the
+    // bare `tokio::task::spawn_blocking(...)` dropped the JoinHandle and
+    // any panic was silently discarded → daemon proceeds, raw embedder
+    // never installs, RawIngest/RawSearch endpoints fail later with a
+    // misleading "not initialized" error and no breadcrumb to the
+    // embedder panic that caused it.
+    let embedder_init = tokio::task::spawn_blocking(|| {
         match forge_daemon::embed::minilm::MiniLMEmbedder::new() {
             Ok(emb) => {
                 let arc: Arc<dyn forge_daemon::embed::Embedder> = Arc::new(emb);
@@ -293,6 +301,17 @@ async fn main() {
             Err(e) => tracing::warn!(
                 "raw layer embedder init failed: {e} — RawIngest/RawSearch will return errors until resolved"
             ),
+        }
+    });
+    tokio::spawn(async move {
+        if let Err(e) = embedder_init.await {
+            if e.is_panic() {
+                tracing::error!(
+                    "raw layer embedder init PANICKED — RawIngest/RawSearch will fail; investigate ONNX/MiniLM stack"
+                );
+            } else {
+                tracing::error!(error = %e, "raw layer embedder init task cancelled");
+            }
         }
     });
 
