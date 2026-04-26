@@ -1,0 +1,124 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Forge daemon operator dashboard — P3-3 Stage 4 (2C-1). Surfaces 5 metric families: phase duration, phase persistence error rate, table rows, layer freshness, bench composite trend. PromQL expressions target the names emitted by `crates/daemon/src/server/metrics.rs`. Bench trend panel queries the daemon's SQLite kpi_events table via `forge-bench`'s telemetry path (or the /inspect bench_run_summary shape from Tier 3); for Grafana use, point an SQLite/Postgres datasource at the kpi_events table or extend the daemon with a Prometheus exporter for bench composites.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Phase duration p95 (by phase_name + outcome)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (phase_name, outcome, le) (rate(forge_phase_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{phase_name}} {{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "description": "p95 latency per consolidator phase, split by outcome (success/error). Sourced from `forge_phase_duration_seconds` histogram. A spike in `error` outcome durations is a strong signal for a stuck-phase regression."
+    },
+    {
+      "id": 2,
+      "title": "Phase persistence error rate (per second)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (phase_name, error_kind) (rate(forge_phase_persistence_errors_total[5m]))",
+          "legendFormat": "{{phase_name}} :: {{error_kind}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Rate of `forge_phase_persistence_errors_total` increments per phase per error_kind. Sustained non-zero rate indicates a broken phase. Acceptable ceiling per ops SLO: < 0.01/s steady-state."
+    },
+    {
+      "id": 3,
+      "title": "Phase output rows total (cumulative)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (phase_name) (rate(forge_phase_output_rows_total[5m]))",
+          "legendFormat": "{{phase_name}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Throughput of consolidator phase outputs. Drop to 0 = phase stuck. Matches `forge_phase_output_rows_total` counter."
+    },
+    {
+      "id": 4,
+      "title": "Table rows (gauge, by table)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "forge_table_rows",
+          "legendFormat": "{{table_name}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Row counts per table, refreshed periodically by the daemon's gauge-refresh worker. Sudden drop = unexpected DELETE / migration regression. Sustained flatline on `memory` = indexer stalled."
+    },
+    {
+      "id": 5,
+      "title": "Layer freshness (seconds since last write, by layer)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "forge_layer_freshness_seconds",
+          "legendFormat": "{{layer}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Seconds since the last write/touch per Manas layer (skill, perception, declared, etc.). Rising monotonically beyond ~3600s = layer is not being updated. Spec source: 2A-4d.2 T4 GaugeSnapshot swap (`crates/daemon/src/server/metrics.rs:258`)."
+    },
+    {
+      "id": 6,
+      "title": "Bench composite trend — last 7 days",
+      "type": "timeseries",
+      "datasource": "SQLite",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "rawQuery": true,
+          "rawSql": "SELECT timestamp AS time, json_extract(metadata_json, '$.bench_name') AS bench, json_extract(metadata_json, '$.composite') AS composite FROM kpi_events WHERE event_type = 'bench_run_completed' AND timestamp > datetime('now', '-7 days') ORDER BY timestamp ASC",
+          "refId": "A"
+        }
+      ],
+      "description": "Composite score over time per bench. Source: `kpi_events` table where `event_type='bench_run_completed'` (Tier 3 §3.2 contract). Requires an SQLite datasource pointing at the daemon DB OR an extracted Prometheus exporter — see `docs/observability/grafana-operator-dashboard.md` for setup. v1 displays a static query; v2 may add the same surface as a Prometheus gauge if continuous polling proves preferable."
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["forge", "operator", "P3-3", "2C-1"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Forge Daemon — Operator (P3-3 2C-1)",
+  "uid": "forge-operator-2c1",
+  "version": 1,
+  "weekStart": ""
+}
