@@ -90,7 +90,16 @@ regex = "1"
 # Raw layer embedder — fastembed-rs provides pure-Rust ONNX inference for
 # all-MiniLM-L6-v2 (384-dim) so raw ingest is LLM-free and reproducible.
 # See docs/benchmarks/plan.md §4.3.
-fastembed = "5"
+#
+# Pinned to 5.11.0 because fastembed 5.12.0+ bumps the transitive ort
+# crate to 2.0.0-rc.12 which requests ONNX Runtime API v24, but the
+# manylinux_2_17 ONNX Runtime 1.23.0 we ship in `.tools/` only provides
+# API v23. Symptom: daemon spawn panics with "Failed to initialize ORT
+# API" on every fresh start; embedder dies silently and new memories
+# never get embeddings. v0.6.1+ should re-evaluate when ONNX Runtime
+# 1.24+ ships in `.tools/` (requires updating scripts/setup-dev-env.sh
+# + .cargo/config.toml + scripts/with-ort.sh).
+fastembed = "=5.11.0"
 
 # Deterministic reproducible PRNG for benchmark workload generation.
 # ChaCha20 gives us platform-independent byte-identical sequences from
