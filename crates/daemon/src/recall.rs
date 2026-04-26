@@ -1376,69 +1376,159 @@ pub fn compile_dynamic_suffix_with_inj(
     }
 
     // Code structure — clusters from reality engine
+    //
+    // P3-4 Wave Z (Z2): cross-project leak fix. CC voice feedback §1.2 —
+    // pre-Z2 this block ignored `project` and rendered whatever code_file
+    // row came first, so `compile-context --project cc-voice` on a host
+    // with forge already indexed emitted `<code-structure reality="forge"
+    // files="188" symbols="8002">` for cc-voice's first turn. The agent
+    // was told it had 188 Rust files when the project had 0. Every
+    // count/domain/cluster query now honors the project filter when set,
+    // and the rendered tag carries a `resolution=` attribute so the agent
+    // can see which path fired (exact / no-match / unscoped). The
+    // attribute name `reality=` was renamed to `project=` for vocabulary
+    // consistency (the user-facing word everywhere is "project").
     if section_disabled("code_structure", inj.session_context) {
         xml.push_str("<code-structure/>\n");
     } else {
-        let file_count: usize = conn
-            .query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0))
-            .unwrap_or(0);
-        let symbol_count: usize = conn
-            .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
-            .unwrap_or(0);
+        let (file_count, symbol_count): (usize, usize) = match project {
+            Some(p) => (
+                conn.query_row(
+                    "SELECT COUNT(*) FROM code_file WHERE project = ?1",
+                    params![p],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+                conn.query_row(
+                    "SELECT COUNT(*) FROM code_symbol s
+                     JOIN code_file f ON s.file_path = f.path
+                     WHERE f.project = ?1",
+                    params![p],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+            ),
+            None => (
+                conn.query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0))
+                    .unwrap_or(0),
+                conn.query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
+                    .unwrap_or(0),
+            ),
+        };
 
         if file_count == 0 {
-            xml.push_str("<code-structure/>\n");
+            // Project filter set but no rows match → emit no-match tag so
+            // the agent knows its scope landed on an empty index. Unscoped
+            // empty (no project filter, no rows) collapses to <code-structure/>.
+            if let Some(p) = project {
+                xml.push_str(&format!(
+                    "<code-structure project=\"{}\" resolution=\"no-match\"/>\n",
+                    xml_escape(p)
+                ));
+            } else {
+                xml.push_str("<code-structure/>\n");
+            }
         } else {
-            // Find the domain from code_file language (most common)
-            let domain: String = conn.query_row(
-                "SELECT language FROM code_file GROUP BY language ORDER BY COUNT(*) DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            ).unwrap_or_else(|_| "unknown".to_string());
+            // Dominant domain — language with most files in scope.
+            let domain: String = match project {
+                Some(p) => conn
+                    .query_row(
+                        "SELECT language FROM code_file WHERE project = ?1
+                         GROUP BY language ORDER BY COUNT(*) DESC LIMIT 1",
+                        params![p],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or_else(|_| "unknown".to_string()),
+                None => conn
+                    .query_row(
+                        "SELECT language FROM code_file
+                         GROUP BY language ORDER BY COUNT(*) DESC LIMIT 1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or_else(|_| "unknown".to_string()),
+            };
 
-            // Find the reality name (project name from code_file)
-            let reality_name: String = conn.query_row(
-                "SELECT COALESCE(project, 'default') FROM code_file WHERE project IS NOT NULL AND project != '' LIMIT 1",
-                [],
-                |r| r.get(0),
-            ).unwrap_or_else(|_| "default".to_string());
+            // Top 5 cluster IDs in scope. Cluster edges set `reality_id`
+            // (cluster.rs:135), so JOIN reality.name = ?project to filter.
+            // Unscoped path keeps original (returns all clusters).
+            let cluster_ids: Vec<String> = match project {
+                Some(p) => conn
+                    .prepare(
+                        "SELECT DISTINCT e.to_id
+                         FROM edge e
+                         JOIN reality r ON r.id = e.reality_id
+                         WHERE e.edge_type = 'belongs_to_cluster' AND r.name = ?1
+                         LIMIT 5",
+                    )
+                    .and_then(|mut stmt| stmt.query_map(params![p], |row| row.get(0))?.collect())
+                    .unwrap_or_default(),
+                None => conn
+                    .prepare(
+                        "SELECT DISTINCT to_id FROM edge
+                         WHERE edge_type = 'belongs_to_cluster' LIMIT 5",
+                    )
+                    .and_then(|mut stmt| stmt.query_map([], |row| row.get(0))?.collect())
+                    .unwrap_or_default(),
+            };
 
-            // Gather top 5 clusters with their file names
             let cluster_rows: Vec<(String, Vec<String>)> = {
-                let cluster_ids: Vec<String> = conn.prepare(
-                    "SELECT DISTINCT to_id FROM edge WHERE edge_type = 'belongs_to_cluster' LIMIT 5"
-                ).and_then(|mut stmt| {
-                    stmt.query_map([], |row| row.get(0))?.collect()
-                }).unwrap_or_default();
-
                 let mut clusters = Vec::new();
                 for cid in &cluster_ids {
-                    let files: Vec<String> = conn.prepare(
-                        "SELECT from_id FROM edge WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1 LIMIT 5"
-                    ).and_then(|mut stmt| {
-                        stmt.query_map(params![cid], |row| row.get(0))?.collect()
-                    }).unwrap_or_default();
+                    let files: Vec<String> = conn
+                        .prepare(
+                            "SELECT from_id FROM edge
+                             WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1 LIMIT 5",
+                        )
+                        .and_then(|mut stmt| {
+                            stmt.query_map(params![cid], |row| row.get(0))?.collect()
+                        })
+                        .unwrap_or_default();
                     clusters.push((cid.clone(), files));
                 }
                 clusters
             };
 
-            // Count total clusters (including beyond top 5)
-            let total_clusters: usize = conn
-                .query_row(
-                    "SELECT COUNT(DISTINCT to_id) FROM edge WHERE edge_type = 'belongs_to_cluster'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
+            let total_clusters: usize = match project {
+                Some(p) => conn
+                    .query_row(
+                        "SELECT COUNT(DISTINCT e.to_id)
+                         FROM edge e
+                         JOIN reality r ON r.id = e.reality_id
+                         WHERE e.edge_type = 'belongs_to_cluster' AND r.name = ?1",
+                        params![p],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0),
+                None => conn
+                    .query_row(
+                        "SELECT COUNT(DISTINCT to_id) FROM edge
+                         WHERE edge_type = 'belongs_to_cluster'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0),
+            };
 
-            let mut cs_xml = format!(
-                "<code-structure reality=\"{}\" domain=\"{}\" files=\"{}\" symbols=\"{}\">",
-                xml_escape(&reality_name),
-                xml_escape(&domain),
-                file_count,
-                symbol_count
-            );
+            // Resolution attribute distinguishes "I scoped to your project
+            // and found N files" from "no scope was passed; here are
+            // aggregate counts" (the unscoped path is exposed only to
+            // legacy/non-hook callers post-Z2).
+            let mut cs_xml = match project {
+                Some(p) => format!(
+                    "<code-structure project=\"{}\" domain=\"{}\" files=\"{}\" symbols=\"{}\" resolution=\"exact\">",
+                    xml_escape(p),
+                    xml_escape(&domain),
+                    file_count,
+                    symbol_count
+                ),
+                None => format!(
+                    "<code-structure domain=\"{}\" files=\"{}\" symbols=\"{}\" resolution=\"unscoped\">",
+                    xml_escape(&domain),
+                    file_count,
+                    symbol_count
+                ),
+            };
 
             if total_clusters > 0 {
                 cs_xml.push_str(&format!("\n  <clusters count=\"{total_clusters}\">"));
@@ -1447,11 +1537,14 @@ pub fn compile_dynamic_suffix_with_inj(
                         .iter()
                         .map(|f| f.rsplit('/').next().unwrap_or(f.as_str()))
                         .collect();
-                    let total_in_cluster: usize = conn.query_row(
-                        "SELECT COUNT(*) FROM edge WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1",
-                        params![cid],
-                        |r| r.get(0),
-                    ).unwrap_or(files.len());
+                    let total_in_cluster: usize = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM edge
+                             WHERE edge_type = 'belongs_to_cluster' AND to_id = ?1",
+                            params![cid],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(files.len());
                     cs_xml.push_str(&format!(
                         "\n    <cluster id=\"{}\" files=\"{}\">{}</cluster>",
                         idx,
@@ -4032,6 +4125,137 @@ mod tests {
         assert!(
             suffix.contains("<code-structure/>"),
             "should contain self-closing code-structure tag when no data"
+        );
+    }
+
+    #[test]
+    fn p3_4_z2_compile_context_filters_code_structure_by_project() {
+        // P3-4 Wave Z (Z2): cross-project leak fix. CC voice feedback §1.2.
+        // Pre-Z2: `compile-context --project cc-voice` on a host with forge
+        // already indexed emitted `<code-structure reality="forge"
+        // files="188" symbols="8002">` for cc-voice's first turn — the
+        // agent thought it had 188 Rust files when the project had 0.
+        // Post-Z2: every count/domain/cluster query honors the project
+        // filter; a `resolution=` attribute names the path.
+        let conn = setup();
+        use forge_core::types::{CodeFile, CodeSymbol, Reality};
+
+        // Seed forge project — the "noise" we DON'T want to leak into
+        // cc-voice's context. Reality row matches the cluster JOIN path.
+        let r = Reality {
+            id: "rid-forge".into(),
+            name: "forge".into(),
+            reality_type: "code".into(),
+            detected_from: None,
+            project_path: Some("/mnt/forge".into()),
+            domain: Some("rust".into()),
+            organization_id: "default".into(),
+            owner_type: "user".into(),
+            owner_id: "default".into(),
+            engine_status: "ok".into(),
+            engine_pid: None,
+            created_at: forge_core::time::now_iso(),
+            last_active: forge_core::time::now_iso(),
+            metadata: "{}".into(),
+        };
+        crate::db::ops::store_reality(&conn, &r).unwrap();
+
+        let forge_file = CodeFile {
+            id: "f-forge-1".into(),
+            path: "/mnt/forge/src/handler.rs".into(),
+            language: "rust".into(),
+            project: "forge".into(),
+            hash: "abc".into(),
+            indexed_at: forge_core::time::now_iso(),
+        };
+        crate::db::ops::store_file(&conn, &forge_file).unwrap();
+
+        let forge_sym = CodeSymbol {
+            id: "s-forge-1".into(),
+            name: "handle_request".into(),
+            kind: "function".into(),
+            file_path: "/mnt/forge/src/handler.rs".into(),
+            line_start: 10,
+            line_end: Some(50),
+            signature: None,
+        };
+        crate::db::ops::store_symbol(&conn, &forge_sym).unwrap();
+
+        let ctx_config = crate::config::ContextConfig::default();
+
+        // Case 1 — fresh project (cc-voice) → no-match resolution.
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            Some("cc-voice"),
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            suffix.contains("<code-structure project=\"cc-voice\" resolution=\"no-match\"/>"),
+            "fresh project must get no-match resolution, not leaked forge data; got:\n{suffix}"
+        );
+        assert!(
+            !suffix.contains("files=\"1\""),
+            "must NOT leak forge file count into cc-voice context; got:\n{suffix}"
+        );
+        assert!(
+            !suffix.contains("project=\"forge\""),
+            "must NOT show forge as project when scope is cc-voice; got:\n{suffix}"
+        );
+
+        // Case 2 — known project (forge) → exact resolution with counts.
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            Some("forge"),
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            suffix.contains("project=\"forge\""),
+            "exact match must show forge as project; got:\n{suffix}"
+        );
+        assert!(
+            suffix.contains("resolution=\"exact\""),
+            "exact match must say so; got:\n{suffix}"
+        );
+        assert!(
+            suffix.contains("files=\"1\""),
+            "exact match must report file count; got:\n{suffix}"
+        );
+
+        // Case 3 — no project filter → unscoped resolution. The unscoped
+        // path renders aggregate counts but does NOT emit a `project=`
+        // attribute (avoids claiming a particular project owns the
+        // aggregate; this protects legacy callers without misleading them).
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            suffix.contains("resolution=\"unscoped\""),
+            "no-project path must label itself unscoped; got:\n{suffix}"
+        );
+        assert!(
+            suffix.contains("files=\"1\""),
+            "unscoped path still shows aggregate count; got:\n{suffix}"
+        );
+        assert!(
+            !suffix.contains("<code-structure project="),
+            "unscoped resolution must omit project= attribute; got:\n{suffix}"
         );
     }
 
