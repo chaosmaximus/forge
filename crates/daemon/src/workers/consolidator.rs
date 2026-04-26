@@ -1169,9 +1169,19 @@ pub fn detect_content_contradictions_with_errors(conn: &Connection) -> (usize, u
 
     let mut errors = 0usize;
 
-    // Fetch active memories grouped by type — only types that can contradict
+    // Fetch active memories grouped by type — only types that can
+    // contradict. P3-3.11 W31 (closes F18): also include `valence` and
+    // `intensity` so we can filter pairs whose stance can't possibly
+    // contradict (Phase 9b's content-shape check is then a tightener
+    // on top of valence opposition, not a replacement for it). The
+    // dogfood F18 case ("Session 17 ... complete" vs "Session 16 ...
+    // complete") was a pair of neutral chronological summaries with
+    // similar boilerplate titles and divergent content — pre-W31 they
+    // tripped the Jaccard heuristic; post-W31 they fail the valence
+    // gate before content overlap is even computed.
     let mut stmt = match conn.prepare(
-        "SELECT id, memory_type, title, content FROM memory
+        "SELECT id, memory_type, title, content, valence, COALESCE(intensity, 0.0)
+         FROM memory
          WHERE status = 'active' AND memory_type IN ('decision', 'pattern', 'protocol')
          ORDER BY memory_type, created_at DESC",
     ) {
@@ -1187,6 +1197,8 @@ pub fn detect_content_contradictions_with_errors(conn: &Connection) -> (usize, u
         memory_type: String,
         title: String,
         content: String,
+        valence: String,
+        intensity: f64,
     }
 
     let rows: Vec<Row> = match stmt.query_map([], |row| {
@@ -1195,6 +1207,8 @@ pub fn detect_content_contradictions_with_errors(conn: &Connection) -> (usize, u
             memory_type: row.get(1)?,
             title: row.get(2)?,
             content: row.get(3)?,
+            valence: row.get(4)?,
+            intensity: row.get(5)?,
         })
     }) {
         Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
@@ -1236,23 +1250,62 @@ pub fn detect_content_contradictions_with_errors(conn: &Connection) -> (usize, u
     let max_comparisons = 5000usize;
     let mut comparisons = 0usize;
 
-    for i in 0..rows.len() {
+    // P3-3.11 W31 (closes F18): pre-filter to memories with strong,
+    // non-neutral valence. Pairs of neutral chronological summaries
+    // ("Session 17 complete" + "Session 16 complete") used to trip
+    // Phase 9b on title-token overlap alone — but neutral statements
+    // by definition can't contradict each other in the
+    // valence-and-stance sense Phase 9 is supposed to detect. Phase 9a
+    // (`db::ops::detect_contradictions`) already gates on
+    // `valence IN ('positive','negative') AND intensity > 0.5`; W31
+    // applies the same floor to Phase 9b for consistency.
+    const VALENCE_INTENSITY_FLOOR: f64 = 0.5;
+    let strong_rows: Vec<&Row> = rows
+        .iter()
+        .filter(|r| {
+            (r.valence == "positive" || r.valence == "negative")
+                && r.intensity > VALENCE_INTENSITY_FLOOR
+        })
+        .collect();
+
+    // P3-3.11 W31 (closes F18): tighter Jaccard floors. Pre-W31 used
+    // 0.5 / 0.3 which let chronological session summaries (high title
+    // boilerplate, divergent content) slip through. Post-W31:
+    //   * `TITLE_OVERLAP_FLOOR = 0.7` — pair must be very clearly
+    //     about the same topic (not just sharing connective tokens
+    //     like "Session", "deployment", "complete").
+    //   * `CONTENT_DIVERGENCE_CEILING = 0.20` — pair must say
+    //     substantively different things (not just describe different
+    //     specifics of the same conclusion).
+    // Combined with the valence gate above, the false-positive rate
+    // on the live forge corpus drops to zero on the F18 fixture.
+    const TITLE_OVERLAP_FLOOR: f64 = 0.7;
+    const CONTENT_DIVERGENCE_CEILING: f64 = 0.20;
+
+    for i in 0..strong_rows.len() {
         if comparisons >= max_comparisons {
             break;
         }
-        let a = &rows[i];
+        let a = strong_rows[i];
         let title_words_a = word_set(&a.title);
         if title_words_a.len() < 2 {
             continue;
         }
 
-        for b in rows.iter().skip(i + 1) {
+        for b in strong_rows.iter().skip(i + 1) {
             if comparisons >= max_comparisons {
                 break;
             }
 
             // Must be same type
             if a.memory_type != b.memory_type {
+                continue;
+            }
+
+            // P3-3.11 W31: must be opposite valence (positive vs
+            // negative). Same-valence pairs aren't contradictions —
+            // they're agreements.
+            if a.valence == b.valence {
                 continue;
             }
 
@@ -1263,17 +1316,19 @@ pub fn detect_content_contradictions_with_errors(conn: &Connection) -> (usize, u
                 continue;
             }
 
-            // High title overlap (>= 50% Jaccard) means they're about the same topic
+            // High title overlap (>= TITLE_OVERLAP_FLOOR Jaccard)
+            // means they're about the same topic.
             let title_overlap = jaccard(&title_words_a, &title_words_b);
-            if title_overlap < 0.5 {
+            if title_overlap < TITLE_OVERLAP_FLOOR {
                 continue;
             }
 
-            // Low content overlap (< 30%) means they say different things
+            // Low content overlap (< CONTENT_DIVERGENCE_CEILING) means
+            // they say different things.
             let content_words_a = word_set(&a.content);
             let content_words_b = word_set(&b.content);
             let content_overlap = jaccard(&content_words_a, &content_words_b);
-            if content_overlap >= 0.3 {
+            if content_overlap >= CONTENT_DIVERGENCE_CEILING {
                 continue;
             }
 
@@ -3833,19 +3888,23 @@ mod tests {
         crate::db::schema::create_schema(&conn).unwrap();
 
         // Two decisions about the same topic ("primary storage backend") but
-        // completely different content conclusions.
+        // completely different content conclusions, with opposite-strong
+        // valence (the W31 contract: only opposite-valence pairs with
+        // intensity > 0.5 are flagged).
         let a = Memory::new(
             MemoryType::Decision,
             "Use Redis for the primary storage backend",
             "Redis provides fast in-memory caching with persistence options and cluster support",
-        );
+        )
+        .with_valence("positive", 0.8);
         ops::remember(&conn, &a).unwrap();
 
         let b = Memory::new(
             MemoryType::Decision,
             "Use SQLite for the primary storage backend",
             "SQLite is a lightweight embedded database that requires no separate server process",
-        );
+        )
+        .with_valence("negative", 0.8);
         ops::remember(&conn, &b).unwrap();
 
         let found = detect_content_contradictions(&conn);
@@ -3952,14 +4011,16 @@ mod tests {
             MemoryType::Decision,
             "Use Redis for the primary storage backend",
             "Redis provides fast in-memory caching with persistence options and cluster support",
-        );
+        )
+        .with_valence("positive", 0.8);
         ops::remember(&conn, &a).unwrap();
 
         let b = Memory::new(
             MemoryType::Decision,
             "Use SQLite for the primary storage backend",
             "SQLite is a lightweight embedded database that requires no separate server process",
-        );
+        )
+        .with_valence("negative", 0.8);
         ops::remember(&conn, &b).unwrap();
 
         let found1 = detect_content_contradictions(&conn);
@@ -3978,33 +4039,39 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::create_schema(&conn).unwrap();
 
-        // Create contradicting decisions with neutral valence (default).
-        // Titles must survive semantic dedup (Phase 2) which uses meaningful_words
-        // with stop words filtered and threshold 0.65 on max(weighted, title_score, content_score).
-        // Title meaningful overlap: 5/8 = 0.625 < 0.65 → survives dedup.
-        // Content meaningful overlap: ~0 → combined = max(0.3125, 0.625, 0) = 0.625 < 0.65.
-        // My Jaccard (3+ char words, no stop filter): 6/12 = 0.50 >= 0.50 threshold.
+        // P3-3.11 W31 (closes F18): the W31 contract requires opposite-
+        // strong valence on the pair AND title Jaccard ≥ 0.7 AND content
+        // Jaccard < 0.20. Phase 9a (valence-tagged) is preferred — it
+        // fires on shared tags rather than title overlap, which is more
+        // robust. The fixture below seeds opposite-valence rows with two
+        // shared tags so Phase 9a picks them up regardless of Phase 9b's
+        // tighter title floor.
         let a = Memory::new(
             MemoryType::Decision,
             "Adopt Redis cluster caching for backend data layer solution",
             "Redis provides blazing fast distributed cache with cluster failover and replication",
-        );
+        )
+        .with_valence("positive", 0.8)
+        .with_tags(vec!["storage".to_string(), "backend".to_string()]);
         ops::remember(&conn, &a).unwrap();
 
         let b = Memory::new(
             MemoryType::Decision,
             "Adopt SQLite embedded storage for backend data layer solution",
             "SQLite offers zero-configuration embedded database with ACID transactions and WAL journaling",
-        );
+        )
+        .with_valence("negative", 0.8)
+        .with_tags(vec!["storage".to_string(), "backend".to_string()]);
         ops::remember(&conn, &b).unwrap();
 
-        // Run full consolidation — Phase 9b should pick these up
+        // Run full consolidation — Phase 9a (valence + shared tags)
+        // should pick these up.
         let config = crate::config::ConsolidationConfig::default();
         let stats = run_all_phases(&conn, &config, None, None);
 
         assert!(
             stats.contradictions >= 1,
-            "run_all_phases should detect content contradictions even with neutral valence, got {}",
+            "run_all_phases should detect tag-and-valence contradiction on opposite-strong pair, got {}",
             stats.contradictions
         );
 
@@ -4019,6 +4086,105 @@ mod tests {
         assert!(
             edge_count >= 1,
             "should have contradicts edge after full consolidation"
+        );
+    }
+
+    // ── P3-3.11 W31 (F18) regression tests ────────────────────────────────
+
+    #[test]
+    fn p3_3_11_w31_skips_neutral_valence_chronological_pair() {
+        // F18 reproducer: two chronological session-summary memories
+        // with shared boilerplate ("Session N: ... complete") and
+        // neutral valence. Pre-W31 these tripped Phase 9b (high title
+        // overlap + low content overlap) — but neutrals can't
+        // contradict each other in the valence-and-stance sense.
+        // Post-W31: filtered out by the valence gate.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let a = Memory::new(
+            MemoryType::Decision,
+            "Session 17: Full prod deployment + backfill fix complete",
+            "Backfill ran clean; 2.3M rows updated; ETA on next milestone is Friday",
+        );
+        ops::remember(&conn, &a).unwrap();
+
+        let b = Memory::new(
+            MemoryType::Decision,
+            "Session 16: Full prod deployment pipeline complete",
+            "Pipeline cut over from staging; observability dashboards green; oncall paged once",
+        );
+        ops::remember(&conn, &b).unwrap();
+
+        let found = detect_content_contradictions(&conn);
+        assert_eq!(
+            found, 0,
+            "W31: neutral chronological pair must NOT be flagged as contradiction"
+        );
+    }
+
+    #[test]
+    fn p3_3_11_w31_skips_same_valence_pair() {
+        // Two positive decisions about the same topic — they're
+        // agreements, not contradictions. Pre-W31 same-valence pairs
+        // could trip Phase 9b (which only required opposite types,
+        // never opposite valence). Post-W31: same-valence skip.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let a = Memory::new(
+            MemoryType::Decision,
+            "Use Redis for the primary storage backend",
+            "Redis provides fast in-memory caching with persistence options and cluster support",
+        )
+        .with_valence("positive", 0.8);
+        ops::remember(&conn, &a).unwrap();
+
+        let b = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for the primary storage backend",
+            "SQLite is a lightweight embedded database that requires no separate server process",
+        )
+        .with_valence("positive", 0.8);
+        ops::remember(&conn, &b).unwrap();
+
+        let found = detect_content_contradictions(&conn);
+        assert_eq!(
+            found, 0,
+            "W31: same-valence pair (both positive) must NOT be flagged"
+        );
+    }
+
+    #[test]
+    fn p3_3_11_w31_skips_low_intensity_pair() {
+        // Opposite valence but intensity is below the 0.5 floor —
+        // Phase 9b's W31 gate (mirroring Phase 9a) excludes them.
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+
+        let a = Memory::new(
+            MemoryType::Decision,
+            "Use Redis for the primary storage backend",
+            "Redis provides fast in-memory caching with persistence options and cluster support",
+        )
+        .with_valence("positive", 0.3);
+        ops::remember(&conn, &a).unwrap();
+
+        let b = Memory::new(
+            MemoryType::Decision,
+            "Use SQLite for the primary storage backend",
+            "SQLite is a lightweight embedded database that requires no separate server process",
+        )
+        .with_valence("negative", 0.3);
+        ops::remember(&conn, &b).unwrap();
+
+        let found = detect_content_contradictions(&conn);
+        assert_eq!(
+            found, 0,
+            "W31: opposite-valence pair with intensity ≤ 0.5 must NOT be flagged"
         );
     }
 
