@@ -1739,8 +1739,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             // 6. Plugin hooks installed (Claude Code plugin surface check — 2P-1a).
             //    Looks for a plugin hooks.json at the canonical install path(s).
-            //    If present, reports OK + event count. Not fatal if absent — a
-            //    daemon user without the plugin is a valid configuration.
+            //    If present, reports OK + event count. If the user has a plugin
+            //    install root (`~/.claude/plugins/forge/` or `CLAUDE_PLUGIN_ROOT`)
+            //    but no hooks.json inside it, that's a real misconfiguration → warn.
+            //    If neither root exists, the daemon is running standalone (e.g.
+            //    in-tree development, server install without the Claude Code
+            //    plugin) — emit OK with an informational message instead of a
+            //    misleading warning. (W25/F2.)
             let hook_paths = [
                 std::env::var("HOME").ok().map(|h| {
                     std::path::PathBuf::from(h).join(".claude/plugins/forge/hooks/hooks.json")
@@ -1750,6 +1755,16 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     .map(|r| std::path::PathBuf::from(r).join("hooks/hooks.json")),
             ];
             let hook_file = hook_paths.iter().flatten().find(|p| p.exists());
+            // F2: detect whether the user has a plugin-install root at all.
+            let plugin_install_dirs = [
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| std::path::PathBuf::from(h).join(".claude/plugins/forge")),
+                std::env::var("CLAUDE_PLUGIN_ROOT")
+                    .ok()
+                    .map(std::path::PathBuf::from),
+            ];
+            let has_plugin_install = plugin_install_dirs.iter().flatten().any(|p| p.is_dir());
             checks.push(match hook_file {
                 Some(p) => {
                     let event_count: usize = std::fs::read_to_string(p)
@@ -1763,10 +1778,16 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         message: format!("plugin hooks installed ({event_count} events)"),
                     }
                 }
-                None => forge_core::protocol::HealthCheck {
+                None if has_plugin_install => forge_core::protocol::HealthCheck {
                     name: "hook".into(),
                     status: "warn".into(),
                     message: "plugin hooks.json not found — install from chaosmaximus/forge marketplace or symlink hooks/hooks.json into ~/.claude/plugins/forge/".into(),
+                },
+                None => forge_core::protocol::HealthCheck {
+                    name: "hook".into(),
+                    status: "ok".into(),
+                    message: "running outside a Claude Code plugin install (no hooks expected)"
+                        .into(),
                 },
             });
 

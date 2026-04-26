@@ -99,7 +99,10 @@ pub async fn connect_no_autostart() -> Result<UnixStream, String> {
 ///
 /// 1. Try connecting to the socket.
 /// 2. If it fails, spawn the `forge-daemon` binary (sibling dir or PATH).
-/// 3. Poll every 100ms for up to 3 seconds for the socket to appear.
+/// 3. Poll every 100ms for up to 10 seconds for the socket to appear
+///    (W25/F3: ONNX cold-start init takes 5–7 s on first daemon boot, so
+///    the prior 3 s ceiling produced spurious "socket not available"
+///    failures on the first call after `restart`).
 /// 4. Connect.
 pub async fn connect() -> Result<UnixStream, String> {
     let socket_path = std::env::var("FORGE_SOCKET").unwrap_or_else(|_| default_socket_path());
@@ -178,8 +181,11 @@ pub async fn connect() -> Result<UnixStream, String> {
 
     eprintln!("[cli] daemon starting (log: {log_path})");
 
-    // Poll for socket availability (up to 3 seconds, every 100ms)
-    let max_attempts = 30;
+    // Poll for socket availability (up to 10 seconds, every 100ms).
+    // The cold-start ONNX runtime init takes 5–7 s on first boot of the
+    // bundled binary; the prior 3 s ceiling caused spurious "socket not
+    // available" errors on the first call after `forge-next restart`. (W25/F3.)
+    let max_attempts = 100;
     for _ in 0..max_attempts {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if let Ok(stream) = UnixStream::connect(&socket_path).await {
@@ -196,7 +202,7 @@ pub async fn connect() -> Result<UnixStream, String> {
     }
 
     Err(format!(
-        "forge-daemon started but socket not available after 3s at {socket_path}"
+        "forge-daemon started but socket not available after 10s at {socket_path}"
     ))
 }
 

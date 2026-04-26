@@ -51,7 +51,17 @@ pub async fn doctor() {
                     .as_deref()
                     .map(|s| format!(" ({s})"))
                     .unwrap_or_default();
-                println!("  Version:     {version}{sha_str}");
+                // F1: detect a stale daemon — running binary's compile-time
+                // version differs from the just-built CLI's compile-time
+                // version → flag with a hint to restart. Matches identical
+                // versions silently (no decoration).
+                let cli_version = env!("CARGO_PKG_VERSION");
+                let stale = if cli_version != version {
+                    format!(" [stale daemon, CLI is v{cli_version} — run `forge-next restart`]")
+                } else {
+                    String::new()
+                };
+                println!("  Version:     {version}{sha_str}{stale}");
             }
             if raw_document_count > 0 || raw_chunk_count > 0 {
                 println!("  Raw docs:    {raw_document_count}");
