@@ -176,11 +176,12 @@ break (see "Version bump protocol" below).
 
 The forge-identity names match the master v6 §4 fixed shape exactly.
 
-**Discrepancy vs spec §3.3:** the spec lists `recall_delta` as
-forge-consolidation's 5th dimension. The actual emit site
-(`forge-bench.rs::run_forge_consolidation`) emits **`recall_improvement`**.
-The code is ground truth; readers should use `recall_improvement`. The
-spec will be reconciled in a follow-up.
+**Naming clarification (forge-consolidation D5):** the dimension
+**name** is `recall_improvement` (per the registry above + the spec's
+§5 Dimension 5 heading). The underlying **raw metric** is
+`recall_delta` = post - pre and is exposed alongside the score in
+`summary.json`. Reconciled with `docs/benchmarks/forge-consolidation-design.md`
+§5 in P3-3.5 W2.
 
 ### Version bump protocol
 

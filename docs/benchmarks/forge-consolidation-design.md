@@ -286,13 +286,17 @@ Each memory in lifecycle categories has an expected post-consolidation value (co
 - **Quality pressure** = `|pressure candidates where quality delta matches expected sign and magnitude| / |pressure candidates|`
 - **Score** = unweighted mean of the 6 sub-accuracies (each already a fraction)
 
-### Dimension 5: Recall improvement delta (weight 0.25) — HEADLINE METRIC
+### Dimension 5: `recall_improvement` (weight 0.25) — HEADLINE METRIC
 
 The bench that proves the thesis: consolidation improves recall.
 
+**Registry name:** `recall_improvement` (per `docs/architecture/events-namespace.md`
+per-bench dim registry; emitted by `forge-bench.rs::run_forge_consolidation`).
+The score is computed from the raw `recall_delta` metric below.
+
 - **Pre-consolidation recall@10** = run all queries on noisy corpus, compute `mean(|retrieved ∩ expected| / |expected|)`
 - **Post-consolidation recall@10** = same queries after consolidation
-- **Delta** = post - pre
+- **`recall_delta`** = post - pre (raw metric exposed in `summary.json`)
 - **Expected delta** = set during calibration (first calibration locks the target; MUST be positive — see below)
 
 **Scoring rules (handles division-by-zero and neutral-delta cases):**
