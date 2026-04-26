@@ -1730,6 +1730,51 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
             });
 
+            // P3-4 Wave Z (Z10) per CC voice feedback §2.7: backup hygiene.
+            // Operator-created `*.bak` files in ~/.forge/ accumulate from
+            // pre-migration safety copies (the CC voice user observed
+            // ~1 GB across 5 files in 2 days). Warn when total exceeds
+            // 1 GB OR the count exceeds 5 — both heuristic floors that
+            // catch the "I forgot to clean these up" footgun without
+            // false-positives on a single recent backup.
+            let forge_dir = std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".forge"));
+            let (backup_count, backup_bytes) = forge_dir
+                .as_deref()
+                .and_then(|d| {
+                    std::fs::read_dir(d).ok().map(|entries| {
+                        entries
+                            .flatten()
+                            .filter(|e| e.file_name().to_string_lossy().ends_with(".bak"))
+                            .filter_map(|e| e.metadata().ok().map(|m| m.len()))
+                            .fold((0usize, 0u64), |(n, b), size| (n + 1, b + size))
+                    })
+                })
+                .unwrap_or((0, 0));
+            const BACKUP_BYTES_WARN: u64 = 1024 * 1024 * 1024; // 1 GB
+            const BACKUP_COUNT_WARN: usize = 5;
+            if backup_count > 0 {
+                let bytes_mb = backup_bytes as f64 / (1024.0 * 1024.0);
+                if backup_bytes >= BACKUP_BYTES_WARN || backup_count >= BACKUP_COUNT_WARN {
+                    checks.push(forge_core::protocol::HealthCheck {
+                        name: "backup_hygiene".into(),
+                        status: "warn".into(),
+                        message: format!(
+                            "{backup_count} *.bak file(s), {bytes_mb:.0} MB in ~/.forge — \
+                             move oldest to ~/.forge/backups/ or compress with \
+                             `gzip ~/.forge/forge.db.pre-*.bak` (CC voice feedback §2.7)"
+                        ),
+                    });
+                } else {
+                    checks.push(forge_core::protocol::HealthCheck {
+                        name: "backup_hygiene".into(),
+                        status: "ok".into(),
+                        message: format!("{backup_count} *.bak file(s), {bytes_mb:.0} MB"),
+                    });
+                }
+            }
+
             // 5. Extraction backend configured
             let config = crate::config::load_config();
             let backend = &config.extraction.backend;

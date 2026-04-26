@@ -56,8 +56,22 @@ pub async fn doctor() {
                 // version → flag with a hint to restart. Matches identical
                 // versions silently (no decoration).
                 let cli_version = env!("CARGO_PKG_VERSION");
+                // P3-4 Wave Z (Z11) per CC voice feedback §1.3 fix #2:
+                // also flag a git_sha drift when versions match but the
+                // daemon was built from an older commit than the CLI.
+                // Catches the "I rebuilt master but forgot to restart"
+                // class of stale-binary bugs where version didn't bump.
+                let cli_git_sha = option_env!("FORGE_GIT_SHA").unwrap_or("");
                 let stale = if cli_version != version {
                     format!(" [stale daemon, CLI is v{cli_version} — run `forge-next restart`]")
+                } else if !cli_git_sha.is_empty()
+                    && git_sha
+                        .as_deref()
+                        .is_some_and(|s| !s.is_empty() && s != cli_git_sha)
+                {
+                    format!(
+                        " [stale daemon, CLI built from {cli_git_sha} — restart with `pkill -INT forge-daemon` then re-run]"
+                    )
                 } else {
                     String::new()
                 };
