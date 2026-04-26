@@ -357,6 +357,8 @@ mod tests {
                     excluded_layers: Some(vec!["decisions".into()]),
                     session_id: None,
                     focus: None,
+                    cwd: None,
+                    dry_run: None,
                 },
             ),
             (
@@ -1579,6 +1581,8 @@ mod tests {
                     excluded_layers: None,
                     session_id: None,
                     focus: None,
+                    cwd: None,
+                    dry_run: None,
                 },
                 Request::CompileContextTrace {
                     agent: None,

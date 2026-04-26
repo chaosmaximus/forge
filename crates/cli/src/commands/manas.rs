@@ -322,6 +322,8 @@ pub async fn compile_context(
     static_only: bool,
     session_id: Option<String>,
     focus: Option<String>,
+    cwd: Option<String>,
+    dry_run: bool,
 ) {
     let request = Request::CompileContext {
         agent: Some(agent),
@@ -330,6 +332,8 @@ pub async fn compile_context(
         excluded_layers: None,
         session_id,
         focus,
+        cwd,
+        dry_run: if dry_run { Some(true) } else { None },
     };
 
     match client::send(&request).await {

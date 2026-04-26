@@ -483,6 +483,8 @@ mod tests {
             excluded_layers: None,
             session_id: None,
             focus: None,
+            cwd: None,
+            dry_run: None,
         }));
 
         assert!(is_read_only(&Request::Sessions { active_only: None }));

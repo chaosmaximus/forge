@@ -67,6 +67,8 @@ fn compile_context_xml(state: &mut DaemonState, project: &str) -> String {
             excluded_layers: None,
             session_id: None,
             focus: None,
+            cwd: None,
+            dry_run: None,
         },
     );
     match resp {

@@ -161,6 +161,8 @@ fn test_flip_preference_end_to_end_flow() {
             excluded_layers: None,
             session_id: None,
             focus: None,
+            cwd: None,
+            dry_run: None,
         },
     );
     match resp {

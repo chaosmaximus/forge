@@ -421,6 +421,8 @@ mod tests {
                 excluded_layers: None,
                 session_id: None,
                 focus: None,
+                cwd: None,
+                dry_run: None,
             },
         ];
         for op in ops {

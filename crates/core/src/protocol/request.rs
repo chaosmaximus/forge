@@ -433,6 +433,24 @@ pub enum Request {
         /// Uses FTS5 MATCH to restrict decisions, lessons, skills, etc. to relevant results only.
         #[serde(default)]
         focus: Option<String>,
+        /// Canonical working directory of the session. When supplied
+        /// alongside an unknown `project`, the daemon auto-creates a
+        /// project record from this path before rendering — so a fresh
+        /// project's first SessionStart sees `resolution="auto-created"`
+        /// in its `<code-structure>` tag instead of `no-match`.
+        ///
+        /// P3-4 Wave Z (Z7) per CC voice feedback §1.2 fix #2.
+        #[serde(default)]
+        cwd: Option<String>,
+        /// Suppress side effects (RecordInjection write, context_compiled
+        /// event emit) so the caller can preview the assembled context
+        /// without polluting the kpi_events log. Used by
+        /// `forge-next compile-context --dry-run` to let users audit
+        /// what Forge will inject before opening Claude Code.
+        ///
+        /// P3-4 Wave Z (Z5) per CC voice feedback §2.9.
+        #[serde(default)]
+        dry_run: Option<bool>,
     },
 
     /// Compile context with full trace of considered/included/excluded memories + reasons.

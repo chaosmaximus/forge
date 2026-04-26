@@ -3250,9 +3250,57 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             excluded_layers,
             session_id,
             focus,
+            cwd,
+            dry_run,
         } => {
             let agent_name = agent.as_deref().unwrap_or("claude-code");
             let excluded = excluded_layers.unwrap_or_default();
+            let dry_run = dry_run.unwrap_or(false);
+
+            // P3-4 Wave Z (Z7): if `project` is set but no project record
+            // exists for it AND `cwd` was supplied, auto-create the project
+            // before rendering. This means cc-voice's first SessionStart
+            // sees `<code-structure project="cc-voice" resolution="auto-created">`
+            // instead of `resolution="no-match"` — agents get useful
+            // boundaries from turn 1 without the user having to remember
+            // an explicit `forge-next project init` step.
+            //
+            // Skipped under dry_run since dry-run intentionally avoids
+            // side effects (the user is auditing what would happen, not
+            // performing the action).
+            if let (Some(p), Some(c), false) = (project.as_deref(), cwd.as_deref(), dry_run) {
+                let exists = ops::get_reality_by_name(&state.conn, p, "default")
+                    .ok()
+                    .flatten()
+                    .is_some();
+                if !exists {
+                    use crate::reality::CodeRealityEngine;
+                    use forge_core::types::reality_engine::RealityEngine;
+                    let detected_domain = CodeRealityEngine
+                        .detect(std::path::Path::new(c))
+                        .map(|d| d.domain)
+                        .unwrap_or_else(|| "unknown".into());
+                    let now = forge_core::time::now_iso();
+                    let project_record = forge_core::types::Reality {
+                        id: ulid::Ulid::new().to_string(),
+                        name: p.to_string(),
+                        reality_type: "code".to_string(),
+                        detected_from: Some("compile_context_cwd".to_string()),
+                        project_path: Some(c.to_string()),
+                        domain: Some(detected_domain),
+                        organization_id: "default".to_string(),
+                        owner_type: "user".to_string(),
+                        owner_id: "default".to_string(),
+                        engine_status: "ok".to_string(),
+                        engine_pid: None,
+                        created_at: now.clone(),
+                        last_active: now,
+                        metadata: "{}".to_string(),
+                    };
+                    let _ = ops::store_reality(&state.conn, &project_record);
+                }
+            }
+
             // Verify session ownership: if session_id provided, it must be active and match the agent
             let sid = if let Some(ref sid_str) = session_id {
                 let session_ok: bool = state.conn.query_row(
@@ -3295,17 +3343,20 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             if static_only.unwrap_or(false) {
                 let chars = static_prefix.len();
-                // Emit context_compiled event
-                crate::events::emit(
-                    &state.events,
-                    "context_compiled",
-                    serde_json::json!({
-                        "static_chars": chars,
-                        "dynamic_chars": 0,
-                        "total_chars": chars,
-                        "static_only": true,
-                    }),
-                );
+                // Z5: emit context_compiled event only on real runs
+                // (dry-run is an audit / preview).
+                if !dry_run {
+                    crate::events::emit(
+                        &state.events,
+                        "context_compiled",
+                        serde_json::json!({
+                            "static_chars": chars,
+                            "dynamic_chars": 0,
+                            "total_chars": chars,
+                            "static_only": true,
+                        }),
+                    );
+                }
                 Response::Ok {
                     data: ResponseData::CompiledContext {
                         context: static_prefix.clone(),
@@ -3336,49 +3387,58 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 );
                 let chars = full.len();
                 // Record injection for observability — route through writer channel
-                // since CompileContext runs on a read-only connection
-                if let Some(sid) = session_id.as_deref() {
-                    if let Some(tx) = &state.writer_tx {
-                        let _ = tx.try_send(super::writer::WriteCommand::RecordInjection {
-                            session_id: sid.to_string(),
-                            hook_event: "SessionStart".to_string(),
-                            context_type: "full_context".to_string(),
-                            content_summary: format!(
-                                "static={} dynamic={}",
-                                static_prefix.len(),
-                                dynamic_suffix.len()
-                            ),
-                            chars_injected: chars,
-                        });
+                // since CompileContext runs on a read-only connection.
+                // Z5: skipped on dry-run so audits don't pollute the kpi log.
+                if !dry_run {
+                    if let Some(sid) = session_id.as_deref() {
+                        if let Some(tx) = &state.writer_tx {
+                            let _ = tx.try_send(super::writer::WriteCommand::RecordInjection {
+                                session_id: sid.to_string(),
+                                hook_event: "SessionStart".to_string(),
+                                context_type: "full_context".to_string(),
+                                content_summary: format!(
+                                    "static={} dynamic={}",
+                                    static_prefix.len(),
+                                    dynamic_suffix.len()
+                                ),
+                                chars_injected: chars,
+                            });
+                        }
                     }
                 }
                 // Emit context_compiled event
                 // Phase 2A-4d.3.1 #3 H3 (W5): layers_used reflects the
                 // actually-present sections given the inj flags, not a
                 // hard-coded 9.
+                // Z5: skipped on dry-run.
                 let layers_used_full = crate::recall::count_layers_used(&inj, false);
-                crate::events::emit(
-                    &state.events,
-                    "context_compiled",
-                    serde_json::json!({
-                        "static_chars": static_prefix.len(),
-                        "dynamic_chars": dynamic_suffix.len(),
-                        "total_chars": chars,
-                        "layers_used": layers_used_full,
-                    }),
-                );
-                // Touch the exact decisions+lessons that were included in context compilation.
-                // These IDs are returned by compile_dynamic_suffix — no approximate query needed.
-                send_touch(&state.writer_tx, ctx_touched_ids, 0.1);
+                if !dry_run {
+                    crate::events::emit(
+                        &state.events,
+                        "context_compiled",
+                        serde_json::json!({
+                            "static_chars": static_prefix.len(),
+                            "dynamic_chars": dynamic_suffix.len(),
+                            "total_chars": chars,
+                            "layers_used": layers_used_full,
+                        }),
+                    );
+                    // Touch the exact decisions+lessons that were included in context
+                    // compilation. The IDs are returned by compile_dynamic_suffix —
+                    // no approximate query needed. Skipped on dry-run so audits don't
+                    // bump access counts on memories that were only previewed.
+                    send_touch(&state.writer_tx, ctx_touched_ids, 0.1);
+                }
 
                 // Emit prefetch_loaded event if prefetch hints were generated
+                // (also skipped on dry-run).
                 let prefetch_hints = crate::recall::compile_prefetch_hints(
                     &state.conn,
                     agent_name,
                     project.as_deref(),
                     5,
                 );
-                if !prefetch_hints.is_empty() {
+                if !prefetch_hints.is_empty() && !dry_run {
                     crate::events::emit(
                         &state.events,
                         "prefetch_loaded",
@@ -8745,6 +8805,8 @@ mod tests {
                 excluded_layers: None,
                 session_id: None,
                 focus: None,
+                cwd: None,
+                dry_run: None,
             },
         );
         match ctx_resp {
@@ -9145,6 +9207,97 @@ mod tests {
     }
 
     #[test]
+    fn p3_4_z7_compile_context_cwd_auto_creates_project() {
+        // P3-4 Wave Z (Z7) — when `compile-context --project cc-voice
+        // --cwd /path/to/cc-voice` is called and no project record exists
+        // for cc-voice, the daemon auto-creates one before rendering. This
+        // means cc-voice's first SessionStart sees the cleanly-scoped
+        // <code-structure project="cc-voice" resolution="auto-created"
+        // domain="rust" files="0" symbols="0"/> right out of the gate.
+        // CC voice feedback §1.2 fix #2.
+        let mut state = DaemonState::new(":memory:").unwrap();
+
+        // Set up a tempdir that looks like a Rust project so domain
+        // detection has something to work with.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"cc-voice\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+
+        // Pre-condition: project "cc-voice" does not exist
+        let pre = crate::db::ops::get_reality_by_name(&state.conn, "cc-voice", "default").unwrap();
+        assert!(
+            pre.is_none(),
+            "cc-voice should not exist before compile-context"
+        );
+
+        // Call compile-context with --project cc-voice --cwd <tmpdir>
+        let resp = handle_request(
+            &mut state,
+            Request::CompileContext {
+                agent: Some("claude-code".into()),
+                project: Some("cc-voice".into()),
+                static_only: None,
+                excluded_layers: None,
+                session_id: None,
+                focus: None,
+                cwd: Some(cwd.clone()),
+                dry_run: None,
+            },
+        );
+
+        match resp {
+            Response::Ok { .. } => { /* good */ }
+            other => panic!("expected Ok, got {other:?}"),
+        }
+
+        // Post-condition: project "cc-voice" was auto-created
+        let post = crate::db::ops::get_reality_by_name(&state.conn, "cc-voice", "default")
+            .unwrap()
+            .expect("cc-voice project should be auto-created");
+        assert_eq!(post.name, "cc-voice");
+        assert_eq!(post.project_path.as_deref(), Some(cwd.as_str()));
+        assert_eq!(post.domain.as_deref(), Some("rust"));
+        assert_eq!(post.detected_from.as_deref(), Some("compile_context_cwd"));
+    }
+
+    #[test]
+    fn p3_4_z7_compile_context_cwd_skipped_when_dry_run() {
+        // Z5/Z7 — dry-run intentionally skips the auto-create side
+        // effect. A user previewing what `compile-context --project
+        // cc-voice --cwd /tmp/foo --dry-run` *would* do shouldn't end up
+        // with a real cc-voice project record persisted just from
+        // running the audit.
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+
+        let _ = handle_request(
+            &mut state,
+            Request::CompileContext {
+                agent: Some("claude-code".into()),
+                project: Some("dry-cc-voice".into()),
+                static_only: None,
+                excluded_layers: None,
+                session_id: None,
+                focus: None,
+                cwd: Some(dir.path().to_string_lossy().to_string()),
+                dry_run: Some(true),
+            },
+        );
+
+        let post =
+            crate::db::ops::get_reality_by_name(&state.conn, "dry-cc-voice", "default").unwrap();
+        assert!(
+            post.is_none(),
+            "dry-run must NOT create the project record; got: {post:?}"
+        );
+    }
+
+    #[test]
     fn test_compile_context_handler() {
         let mut state = DaemonState::new(":memory:").unwrap();
         let resp = handle_request(
@@ -9156,6 +9309,8 @@ mod tests {
                 excluded_layers: None,
                 session_id: None,
                 focus: None,
+                cwd: None,
+                dry_run: None,
             },
         );
         match resp {
@@ -9200,6 +9355,8 @@ mod tests {
                 excluded_layers: None,
                 session_id: None,
                 focus: None,
+                cwd: None,
+                dry_run: None,
             },
         );
         match resp {
@@ -11924,6 +12081,8 @@ mod tests {
                 excluded_layers: None,
                 session_id: Some("test-session-1".into()),
                 focus: None,
+                cwd: None,
+                dry_run: None,
             },
         );
 
@@ -14094,6 +14253,8 @@ mod tests {
                 excluded_layers: None,
                 session_id: None,
                 focus: None,
+                cwd: None,
+                dry_run: None,
             },
         );
 
@@ -14140,6 +14301,8 @@ mod tests {
                 excluded_layers: None,
                 session_id: None,
                 focus: None,
+                cwd: None,
+                dry_run: None,
             },
         );
 

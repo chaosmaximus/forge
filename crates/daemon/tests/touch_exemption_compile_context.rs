@@ -96,6 +96,8 @@ fn touch_exemption_compile_context_preference_not_touched() {
             excluded_layers: None,
             session_id: None,
             focus: None,
+            cwd: None,
+            dry_run: None,
         },
     );
     assert!(

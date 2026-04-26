@@ -492,6 +492,8 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
                 excluded_layers: Some(vec!["skills".to_string()]),
                 session_id: Some(dataset.session_id.clone()),
                 focus: Some(domain.to_string()),
+                cwd: None,
+                dry_run: None,
             },
             expected,
         });
@@ -526,6 +528,8 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
                 excluded_layers: None,
                 session_id: Some(dataset.session_id.clone()),
                 focus: None,
+                cwd: None,
+                dry_run: None,
             },
             expected,
         });
@@ -1676,6 +1680,8 @@ mod tests {
                 excluded_layers: None,
                 session_id: Some(dataset.session_id.clone()),
                 focus: None,
+                cwd: None,
+                dry_run: None,
             },
         );
         let items = extract_result_items(&resp);

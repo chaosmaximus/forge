@@ -225,6 +225,17 @@ enum Commands {
         /// Focus topic: filter context to memories relevant to this topic
         #[arg(long)]
         focus: Option<String>,
+        /// Canonical working directory. When supplied with `--project <name>`
+        /// and the project record doesn't exist yet, the daemon auto-creates
+        /// it from this path so the rendered <code-structure> tag carries
+        /// `resolution="auto-created"` instead of `no-match`. P3-4 Wave Z (Z7).
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Preview the assembled context without recording an injection event
+        /// or touching memory access counts. Use this to audit what Forge
+        /// will inject into Claude Code before opening a session. P3-4 Wave Z (Z5).
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Register an active agent session
     #[command(name = "register-session")]
@@ -1647,8 +1658,19 @@ async fn main() {
             static_only,
             session,
             focus,
+            cwd,
+            dry_run,
         } => {
-            commands::manas::compile_context(agent, project, static_only, session, focus).await;
+            commands::manas::compile_context(
+                agent,
+                project,
+                static_only,
+                session,
+                focus,
+                cwd,
+                dry_run,
+            )
+            .await;
         }
         Commands::ManasHealth => {
             commands::manas::manas_health().await;
@@ -2545,6 +2567,54 @@ mod tests {
                 assert_eq!(limit, 20);
             }
             other => panic!("expected CodeSearch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_z5_z7_compile_context_cwd_and_dry_run_flags_parse() {
+        // P3-4 Wave Z (Z5+Z7) — `compile-context --project cc-voice
+        // --cwd /path --dry-run` is the audit-friendly variant the
+        // forge-setup skill (Z4 step 4) directs new users to run before
+        // opening Claude Code. Pin both flag forms.
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "compile-context",
+            "--project",
+            "cc-voice",
+            "--cwd",
+            "/mnt/colab-disk/playground/cc-voice",
+            "--dry-run",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "compile-context with --cwd + --dry-run should parse: {:?}",
+            cli.err()
+        );
+        match cli.unwrap().command {
+            Commands::CompileContext {
+                project,
+                cwd,
+                dry_run,
+                ..
+            } => {
+                assert_eq!(project.as_deref(), Some("cc-voice"));
+                assert_eq!(cwd.as_deref(), Some("/mnt/colab-disk/playground/cc-voice"));
+                assert!(dry_run, "--dry-run should set dry_run=true");
+            }
+            other => panic!("expected CompileContext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_z5_z7_compile_context_default_flags() {
+        let cli = Cli::try_parse_from(["forge-next", "compile-context", "--project", "forge"]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Commands::CompileContext { cwd, dry_run, .. } => {
+                assert!(cwd.is_none());
+                assert!(!dry_run, "default dry_run should be false");
+            }
+            other => panic!("expected CompileContext, got {other:?}"),
         }
     }
 
