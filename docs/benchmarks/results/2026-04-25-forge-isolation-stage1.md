@@ -182,7 +182,30 @@ Stage 1 T12 adds `forge-isolation` to the `bench-fast` matrix in
 `.github/workflows/ci.yml` with `continue-on-error: true` per the same
 14-green-runs gate-promotion policy as forge-identity (T17, deferred).
 
-## 9. References
+## 9. Sensitivity (P3-3.7 W17)
+
+Drift-fixture tests under `mod drift_fixtures` in
+`crates/daemon/src/bench/forge_isolation.rs` plant adversarial
+regressions and assert the dimensions catch them:
+
+| Test | Plants | Asserts |
+|------|--------|---------|
+| `d1_catches_planted_cross_project_leak`        | 10 foreign-token rows × 5 projects (cross-project mean drops to ~0.92) | D1 score < 0.95 |
+| `d6_catches_planted_compile_context_leak`      | foreign decision in compiled XML path             | D6 score < 0.95 |
+
+Run with:
+```bash
+cargo test -p forge-daemon --lib --features bench \
+    bench::forge_isolation::drift_fixtures -- --nocapture
+```
+
+D2-D5 sensitivity is covered by the calibrated PASS state (clean
+corpus → 1.0 composite). The remaining dims test self-recall,
+global-memory visibility, unscoped-query breadth, and edge-case
+resilience — all bounded by the underlying recall path correctness
+which is already tested by 1700+ existing tests.
+
+## 10. References
 
 - Spec: `docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md`
 - v1 review (verdict: not-lockable): `docs/superpowers/reviews/2026-04-25-p3-3-2a-5-spec-domain-isolation.yaml`

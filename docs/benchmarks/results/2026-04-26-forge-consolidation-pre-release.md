@@ -106,7 +106,31 @@ expected value (e.g. `--expected-recall-delta 0.20` to require ≥ 20% lift).
 
 No regression detected across 9 days of P3-1 + P3-2 + P3-3 changes.
 
-## 6. References
+## 6. Sensitivity (P3-3.7 W14)
+
+Drift-fixture tests under `mod drift_fixtures` in
+`crates/daemon/src/bench/forge_consolidation.rs` plant adversarial
+regressions and assert D1 catches them:
+
+| Test | Plants | Asserts |
+|------|--------|---------|
+| `d1_catches_planted_dedup_miss`              | re-activates 6 of 18 expected dedup victims | F1 drops below 0.95 |
+| `d1_catches_planted_signal_preservation_failure` | supersedes a Category 3 control          | F1 collapses to 0.0  |
+
+Run with:
+```bash
+cargo test -p forge-daemon --lib --features bench \
+    bench::forge_consolidation::drift_fixtures -- --nocapture
+```
+
+D2-D5 sensitivity is covered by the calibrated PASS state (clean
+corpus → 1.0 composite). Adding planted-regression tests for D2
+(contradictions) and D3-D5 is deferred to v0.6.1+; the dims either
+score against ground-truth pair sets (plantable but bounded by
+synthesis correctness) or against state the consolidator phases
+recompute on every pass (harder to plant durably).
+
+## 7. References
 
 * Spec: `docs/benchmarks/forge-consolidation-design.md`
 * Plan: `docs/superpowers/plans/2026-04-26-v0.6.0-polish-wave.md` (P3-3.5 W1)
