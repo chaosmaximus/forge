@@ -59,3 +59,39 @@ groups:
           summary: "All Forge workers are down"
           description: "No healthy workers detected. The daemon may be non-functional."
           runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/all-workers-down"
+
+      # ---------------------------------------------------------------
+      # Phase-error family alerts (added in P3-3.5 W5)
+      # Triggered by metrics added in P3-3 Stage 1: forge_phase_*.
+      # See crates/daemon/src/server/metrics.rs:210-258 for emit sites.
+      # ---------------------------------------------------------------
+
+      - alert: ForgePhasePersistenceErrorRateHigh
+        expr: sum by (phase_name) (rate(forge_phase_persistence_errors_total[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Phase {{ $labels.phase_name }} persistence error rate elevated"
+          description: "The {{ $labels.phase_name }} consolidation phase is producing persistence errors at > 0.01/s for 5 minutes. May indicate DB lock contention, schema drift, or write-amp under load. Current rate: {{ $value }}/s."
+          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/phase-persistence-error"
+
+      - alert: ForgeLayerFreshnessStaleHour
+        expr: forge_layer_freshness_seconds > 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Layer {{ $labels.layer }} not updated in over 1 hour"
+          description: "The {{ $labels.layer }} layer's freshness gauge has exceeded 3600s (1 hour) for 10 minutes. May indicate the layer's worker has stalled or its source is empty. Current age: {{ $value | humanizeDuration }}."
+          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/layer-stale"
+
+      - alert: ForgePhaseStuck
+        expr: histogram_quantile(0.95, sum by (phase_name, le) (rate(forge_phase_duration_seconds_bucket[5m]))) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Phase {{ $labels.phase_name }} p95 duration > 5s"
+          description: "The {{ $labels.phase_name }} consolidation phase's 95th-percentile duration exceeds 5 seconds for 5 minutes. May indicate a runaway query, lock contention, or workload regression. Current p95: {{ $value | humanizeDuration }}."
+          runbook_url: "https://github.com/chaosmaximus/forge/wiki/runbooks/phase-stuck"
