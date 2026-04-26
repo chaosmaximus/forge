@@ -2804,6 +2804,7 @@ pub async fn init() {
         layer: None,
         since: None,
         include_flipped: None,
+        include_globals: None,
         query_embedding: None,
     })
     .await

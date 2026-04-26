@@ -841,6 +841,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
                 layer: Some("skill".to_string()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
             expected,
@@ -874,6 +875,7 @@ pub fn generate_query_bank(dataset: &SeededDataset) -> Vec<QueryCase> {
                 layer: Some("domain_dna".to_string()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
             expected,
@@ -1647,6 +1649,7 @@ mod tests {
                 layer: Some("skill".to_string()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );

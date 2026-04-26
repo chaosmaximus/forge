@@ -87,6 +87,22 @@ pub enum Request {
         /// in the candidate set. Default (None or Some(false)) matches pre-2A-4a behavior.
         #[serde(default)]
         include_flipped: Option<bool>,
+        /// Phase P3-3.11 W29: when `project` is `Some(P)`, controls whether
+        /// global memories (those tagged with the `_global_` sentinel) are
+        /// admitted into the result set alongside `project = P` rows.
+        ///
+        ///   * `None` or `Some(false)` (default) — STRICT scope. Only
+        ///     memories whose `project = P` exactly are returned. This
+        ///     closes the F15/F17 cross-project recall leak.
+        ///   * `Some(true)` — admit `_global_`-tagged memories alongside
+        ///     `P`-tagged memories. Use this when the caller intentionally
+        ///     wants cross-cutting globals to be visible (e.g. agent-
+        ///     identity preferences, language-level patterns).
+        ///
+        /// When `project` is `None` the field is ignored — unscoped queries
+        /// already return memories from every project, including globals.
+        #[serde(default)]
+        include_globals: Option<bool>,
         /// Phase 2A-4d.3 T3: bench/test-only caller-provided query embedding.
         /// In production builds the handler ALWAYS ignores this field and
         /// falls back to the embedder. Under `cfg(any(test, feature = "bench"))`

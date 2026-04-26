@@ -698,12 +698,23 @@ pub(crate) fn recall_bm25_org_flipped(
     }
 }
 
-/// Full-text search using FTS5 BM25 scoring with optional project and organization filter.
+/// Full-text search using FTS5 BM25 scoring with optional project and
+/// organization filter (STRICT scope by default — no globals).
 ///
-/// When `project` is `Some("X")`, returns only memories where `project = 'X'`
-/// OR `project IS NULL` OR `project = ''` (global memories visible in every project).
-/// When `project` is `None`, returns all active memories (existing behavior).
-/// When `org_id` is `Some("X")`, additionally filters to that organization.
+/// When `project` is `Some("X")`, returns only memories where
+/// `project = 'X'`. To also include `_global_`-tagged memories alongside
+/// project-X memories, use [`recall_bm25_project_with_globals`] (or pass
+/// `include_globals = true` to the more granular variants below).
+///
+/// When `project` is `None`, returns all active memories (unscoped query).
+///
+/// Phase P3-3.11 W29: prior to this commit the WHERE clause admitted
+/// `m.project IS NULL OR m.project = ''` as a soft "global" branch,
+/// causing the F15/F17 cross-project recall leak when extractor bugs
+/// produced NULL-project rows tagged with the wrong content. The strict
+/// default closes that leak; the explicit `include_globals` variant
+/// preserves the "globals visible everywhere" semantic when callers
+/// want it.
 pub fn recall_bm25_project(
     conn: &Connection,
     query: &str,
@@ -713,7 +724,20 @@ pub fn recall_bm25_project(
     recall_bm25_project_org(conn, query, project, limit, None)
 }
 
-/// Full-text search with project + organization filtering.
+/// As [`recall_bm25_project`] but also admits `_global_`-tagged memories
+/// alongside `project = P` rows. Equivalent to passing `include_globals
+/// = true` to the granular variants. Use when the caller intentionally
+/// wants cross-cutting globals to be visible.
+pub fn recall_bm25_project_with_globals(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<BM25Result>> {
+    recall_bm25_project_org_flipped(conn, query, project, limit, None, false, true)
+}
+
+/// Full-text search with project + organization filtering (STRICT scope).
 pub fn recall_bm25_project_org(
     conn: &Connection,
     query: &str,
@@ -721,11 +745,22 @@ pub fn recall_bm25_project_org(
     limit: usize,
     org_id: Option<&str>,
 ) -> rusqlite::Result<Vec<BM25Result>> {
-    recall_bm25_project_org_flipped(conn, query, project, limit, org_id, false)
+    recall_bm25_project_org_flipped(conn, query, project, limit, org_id, false, false)
 }
 
-/// Inner implementation with explicit `include_flipped` control.
-/// Called from `hybrid_recall_scoped_org` to thread the flag into the BM25 layer.
+/// Inner implementation with explicit `include_flipped` and
+/// `include_globals` control.
+///
+/// `include_flipped` (Phase 2A-4a) — admit superseded preferences whose
+/// valence flipped.
+///
+/// `include_globals` (Phase P3-3.11 W29) — when `project` is `Some(P)`,
+/// also admit `m.project = '_global_'` rows alongside `m.project = P`
+/// rows. No-op when `project` is `None` (the unscoped query already
+/// returns memories from every project, including globals).
+///
+/// Called from `hybrid_recall_scoped_org` to thread both flags into the
+/// BM25 layer.
 pub(crate) fn recall_bm25_project_org_flipped(
     conn: &Connection,
     query: &str,
@@ -733,6 +768,7 @@ pub(crate) fn recall_bm25_project_org_flipped(
     limit: usize,
     org_id: Option<&str>,
     include_flipped: bool,
+    include_globals: bool,
 ) -> rusqlite::Result<Vec<BM25Result>> {
     let safe_query = sanitize_fts5_query(query);
     if safe_query.is_empty() {
@@ -753,6 +789,18 @@ pub(crate) fn recall_bm25_project_org_flipped(
         ""
     };
 
+    // Phase P3-3.11 W29: strict-by-default project scope, with explicit
+    // opt-in for globals. The strict path is `m.project = ?2`. The
+    // include-globals path admits the `_global_` sentinel alongside the
+    // requested project. Legacy NULL/empty rows (pre-W29 unmigrated) are
+    // not admitted — the migration backfills them, and any survivor is
+    // by definition undefined-state and should be re-tagged manually.
+    let project_predicate = if include_globals {
+        "(m.project = ?2 OR m.project = '_global_')"
+    } else {
+        "m.project = ?2"
+    };
+
     match project {
         Some(proj) => {
             let sql = format!(
@@ -761,7 +809,7 @@ pub(crate) fn recall_bm25_project_org_flipped(
                  JOIN memory m ON memory_fts.rowid = m.rowid
                  WHERE memory_fts MATCH ?1
                    AND {status_predicate}
-                   AND (m.project = ?2 OR m.project IS NULL OR m.project = ''){org_filter}
+                   AND {project_predicate}{org_filter}
                  ORDER BY score
                  LIMIT ?3",
             );
@@ -7254,6 +7302,77 @@ mod tests {
             )
             .unwrap();
         assert_eq!(project, "forge");
+    }
+
+    #[test]
+    fn recall_with_globals_admits_global_alongside_project_rows() {
+        // Phase P3-3.11 W29: when callers explicitly opt in via the
+        // `recall_bm25_project_with_globals` entry point (or
+        // `Request::Recall { include_globals: Some(true) }`), recall
+        // returns BOTH project-tagged and `_global_`-tagged memories
+        // — restoring the historic "globals visible in every project"
+        // semantic on demand without making it the leak-prone default.
+        let conn = open_db();
+
+        // Two project-scoped memories and one global.
+        let m1 = Memory::new(MemoryType::Decision, "JWT for forge", "auth").with_project("forge");
+        remember(&conn, &m1).unwrap();
+        let m2 = Memory::new(MemoryType::Decision, "CORS for forge", "cors").with_project("forge");
+        remember(&conn, &m2).unwrap();
+        let global = Memory::new(MemoryType::Decision, "Conventional commits", "global rule");
+        remember(&conn, &global).unwrap(); // project = None → '_global_'
+
+        let results = recall_bm25_project_with_globals(
+            &conn,
+            "forge global JWT CORS conventional",
+            Some("forge"),
+            10,
+        )
+        .unwrap();
+        let titles: Vec<&str> = results.iter().map(|r| r.title.as_str()).collect();
+        assert!(
+            titles.iter().any(|t| t.contains("JWT")),
+            "include-globals query must still return forge-tagged: {titles:?}"
+        );
+        assert!(
+            titles.iter().any(|t| t.contains("Conventional")),
+            "include-globals query must surface global: {titles:?}"
+        );
+        assert_eq!(
+            results.len(),
+            3,
+            "include-globals recall: 2 forge + 1 global = 3"
+        );
+    }
+
+    #[test]
+    fn recall_with_globals_does_not_leak_other_projects() {
+        // Verifying the opt-in path is still strict against OTHER named
+        // projects — `--include-globals` admits only the `_global_`
+        // sentinel, not arbitrary cross-project leakage. This is the
+        // direct counterfactual to the F15/F17 dogfood report: even
+        // when the operator deliberately broadens the scope to include
+        // globals, a `dashboard` memory must not bleed into a
+        // `--project forge --include-globals` query.
+        let conn = open_db();
+
+        let forge_mem =
+            Memory::new(MemoryType::Decision, "JWT for forge", "auth").with_project("forge");
+        remember(&conn, &forge_mem).unwrap();
+        let dashboard_mem = Memory::new(MemoryType::Decision, "JWT for dashboard", "auth")
+            .with_project("dashboard");
+        remember(&conn, &dashboard_mem).unwrap();
+        let global_mem = Memory::new(MemoryType::Decision, "JWT global rule", "auth");
+        remember(&conn, &global_mem).unwrap(); // → '_global_'
+
+        let results =
+            recall_bm25_project_with_globals(&conn, "JWT auth", Some("forge"), 10).unwrap();
+        let titles: Vec<&str> = results.iter().map(|r| r.title.as_str()).collect();
+        assert!(
+            !titles.iter().any(|t| t.contains("dashboard")),
+            "include-globals must not leak `dashboard`-tagged into forge query: {titles:?}"
+        );
+        assert_eq!(results.len(), 2, "expected forge + global only");
     }
 
     #[test]

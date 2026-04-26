@@ -66,6 +66,7 @@ fn do_recall(state: &mut DaemonState, query: &str, limit: Option<usize>) -> Vec<
             layer: None,
             since: None,
             include_flipped: None,
+            include_globals: None,
             query_embedding: None,
         },
     );

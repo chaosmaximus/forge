@@ -452,6 +452,7 @@ fn dim_3_preference_time_ordering(
         layer: Some("experience".to_string()),
         since: None,
         include_flipped: None,
+        include_globals: None,
         query_embedding: None,
     };
     let resp = crate::server::handler::handle_request(state, req);
@@ -678,6 +679,7 @@ fn dim_4_valence_flipping(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> Di
             layer: Some("experience".to_string()),
             since: None,
             include_flipped: None,
+            include_globals: None,
             query_embedding: None,
         },
     );
@@ -702,6 +704,7 @@ fn dim_4_valence_flipping(state: &mut DaemonState, _rng: &mut ChaCha20Rng) -> Di
             layer: Some("experience".to_string()),
             since: None,
             include_flipped: Some(true),
+            include_globals: None,
             query_embedding: None,
         },
     );
@@ -1118,6 +1121,7 @@ fn dim_6b_mixed_corpus_recall(state: &mut DaemonState) -> f64 {
         layer: Some("experience".to_string()),
         since: None,
         include_flipped: None,
+        include_globals: None,
         query_embedding: Some(v_q),
     };
     let resp = crate::server::handler::handle_request(state, req);

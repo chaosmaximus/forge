@@ -30,7 +30,9 @@ enum Commands {
         /// Filter by memory type (decision, lesson, pattern, preference)
         #[arg(long)]
         r#type: Option<String>,
-        /// Filter by project (global memories always included)
+        /// Filter by project (strict scope — only memories tagged with this
+        /// project are returned; pass `--include-globals` to also admit
+        /// `_global_`-tagged memories)
         #[arg(long)]
         project: Option<String>,
         /// Maximum number of results
@@ -42,6 +44,13 @@ enum Commands {
         /// Only return memories created after this time (e.g., "1h", "7d", "30m", "2026-04-07")
         #[arg(long)]
         since: Option<String>,
+        /// When `--project P` is set, also admit memories tagged with the
+        /// `_global_` sentinel alongside `project = P` rows. Phase
+        /// P3-3.11 W29: strict-scope is the new default; this flag opts
+        /// back into the historic "globals visible everywhere" semantic.
+        /// No-op when `--project` is unset.
+        #[arg(long)]
+        include_globals: bool,
     },
     /// Store a memory
     Remember {
@@ -1280,6 +1289,7 @@ async fn main() {
             limit,
             layer,
             since,
+            include_globals,
         } => {
             // Parse --since: relative durations (1h, 7d, 30m) -> ISO timestamp string
             let since_ts = since.map(|s| {
@@ -1314,7 +1324,16 @@ async fn main() {
                 let (year, month, day) = days_to_ymd(days_since_epoch);
                 format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}")
             });
-            commands::memory::recall(query, r#type, project, limit, layer, since_ts).await;
+            commands::memory::recall(
+                query,
+                r#type,
+                project,
+                limit,
+                layer,
+                since_ts,
+                include_globals,
+            )
+            .await;
         }
         Commands::Remember {
             r#type,

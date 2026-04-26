@@ -555,6 +555,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             layer,
             since,
             include_flipped, // Phase 2A-4a: wired up in T10
+            include_globals, // Phase P3-3.11 W29: opt-in for `_global_` rows in project-scoped queries
             query_embedding,
         } => {
             let lim = limit.unwrap_or(10);
@@ -569,6 +570,12 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 let _ = query_embedding;
                 None
             };
+
+            // Phase P3-3.11 W29: pre-resolve once for both hybrid-recall
+            // call sites (the `experience` layer branch and the
+            // unfiltered fallback). Default is STRICT — globals require
+            // an explicit `Recall.include_globals = Some(true)`.
+            let include_globals = include_globals.unwrap_or(false);
 
             // Multi-tenant: extract org_id from the active session for this project
             let _org_id = {
@@ -592,16 +599,31 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             let results = match layer.as_deref() {
                 // "experience" → only memory table (hybrid_recall, no manas_recall)
-                Some("experience") => hybrid_recall(
-                    &state.conn,
-                    &query,
-                    effective_query_embedding.as_deref(),
-                    memory_type.as_ref(),
-                    project.as_deref(),
-                    lim,
-                    include_flipped.unwrap_or(false),
-                    preference_half_life_days,
-                ),
+                Some("experience") => {
+                    if include_globals {
+                        crate::recall::hybrid_recall_with_globals(
+                            &state.conn,
+                            &query,
+                            effective_query_embedding.as_deref(),
+                            memory_type.as_ref(),
+                            project.as_deref(),
+                            lim,
+                            include_flipped.unwrap_or(false),
+                            preference_half_life_days,
+                        )
+                    } else {
+                        hybrid_recall(
+                            &state.conn,
+                            &query,
+                            effective_query_embedding.as_deref(),
+                            memory_type.as_ref(),
+                            project.as_deref(),
+                            lim,
+                            include_flipped.unwrap_or(false),
+                            preference_half_life_days,
+                        )
+                    }
+                }
                 // "declared" → only declared knowledge
                 Some("declared") => {
                     let declared =
@@ -747,16 +769,29 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 }
                 // None or unknown → current behavior (search everything)
                 _ => {
-                    let mut results = hybrid_recall(
-                        &state.conn,
-                        &query,
-                        effective_query_embedding.as_deref(),
-                        memory_type.as_ref(),
-                        project.as_deref(),
-                        lim,
-                        include_flipped.unwrap_or(false),
-                        preference_half_life_days,
-                    );
+                    let mut results = if include_globals {
+                        crate::recall::hybrid_recall_with_globals(
+                            &state.conn,
+                            &query,
+                            effective_query_embedding.as_deref(),
+                            memory_type.as_ref(),
+                            project.as_deref(),
+                            lim,
+                            include_flipped.unwrap_or(false),
+                            preference_half_life_days,
+                        )
+                    } else {
+                        hybrid_recall(
+                            &state.conn,
+                            &query,
+                            effective_query_embedding.as_deref(),
+                            memory_type.as_ref(),
+                            project.as_deref(),
+                            lim,
+                            include_flipped.unwrap_or(false),
+                            preference_half_life_days,
+                        )
+                    };
                     // Cross-layer search (only if no type filter)
                     if memory_type.is_none() {
                         let manas_results =
@@ -6842,6 +6877,7 @@ mod tests {
             layer: None,
             since: None,
             include_flipped: None,
+            include_globals: None,
             query_embedding: None,
         };
         let response = handle_request(&mut state, recall_req);
@@ -8529,6 +8565,7 @@ mod tests {
                 layer: Some("experience".into()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -8552,6 +8589,7 @@ mod tests {
                 layer: Some("declared".into()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -8593,6 +8631,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -8635,6 +8674,7 @@ mod tests {
                 layer: Some("identity".into()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -8659,6 +8699,7 @@ mod tests {
                 layer: Some("identity".into()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -8700,6 +8741,7 @@ mod tests {
                 layer: Some("perception".into()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -8750,6 +8792,7 @@ mod tests {
                 layer: Some("skill".into()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -8774,6 +8817,7 @@ mod tests {
                 layer: Some("skill".into()),
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -9127,6 +9171,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -9361,6 +9406,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -11035,6 +11081,7 @@ mod tests {
                 layer: None,
                 since: Some("2026-04-01 00:00:00".into()),
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -11071,6 +11118,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -11115,6 +11163,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );
@@ -11434,6 +11483,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
         );

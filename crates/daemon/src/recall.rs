@@ -149,6 +149,10 @@ pub fn hybrid_recall(
     include_flipped: bool,
     preference_half_life_days: f64,
 ) -> Vec<MemoryResult> {
+    // Phase P3-3.11 W29: STRICT scope by default — no `_global_` admixture.
+    // Callers that intentionally want globals visible alongside the named
+    // project must use [`hybrid_recall_with_globals`] (or call
+    // [`hybrid_recall_scoped_org`] directly with `include_globals = true`).
     hybrid_recall_scoped(
         conn,
         query,
@@ -158,6 +162,35 @@ pub fn hybrid_recall(
         limit,
         None,
         include_flipped,
+        preference_half_life_days,
+    )
+}
+
+/// As [`hybrid_recall`] but admits `_global_`-tagged memories alongside
+/// `project = P` rows. Phase P3-3.11 W29 explicit-opt-in entry point for
+/// the `Request::Recall { include_globals: Some(true) }` path.
+#[allow(clippy::too_many_arguments)]
+pub fn hybrid_recall_with_globals(
+    conn: &Connection,
+    query: &str,
+    query_embedding: Option<&[f32]>,
+    memory_type: Option<&MemoryType>,
+    project: Option<&str>,
+    limit: usize,
+    include_flipped: bool,
+    preference_half_life_days: f64,
+) -> Vec<MemoryResult> {
+    hybrid_recall_scoped_org(
+        conn,
+        query,
+        query_embedding,
+        memory_type,
+        project,
+        limit,
+        None,
+        None,
+        include_flipped,
+        true, // include_globals
         preference_half_life_days,
     )
 }
@@ -179,6 +212,7 @@ pub fn hybrid_recall_scoped(
     include_flipped: bool,
     preference_half_life_days: f64,
 ) -> Vec<MemoryResult> {
+    // Phase P3-3.11 W29: defaults to strict scope (no globals admixture).
     hybrid_recall_scoped_org(
         conn,
         query,
@@ -189,6 +223,7 @@ pub fn hybrid_recall_scoped(
         reality_id,
         None,
         include_flipped,
+        false, // include_globals
         preference_half_life_days,
     )
 }
@@ -199,6 +234,12 @@ pub fn hybrid_recall_scoped(
 /// (`valence_flipped_at IS NOT NULL AND memory_type = 'preference'`) are admitted
 /// by both the BM25 SQL predicate and the post-fetch status retain. All other
 /// superseded/deleted memories remain hidden regardless of this flag.
+///
+/// `include_globals` (Phase P3-3.11 W29): when `project` is `Some(P)`,
+/// also admit `m.project = '_global_'` rows alongside `m.project = P`.
+/// Default behavior (e.g. via [`hybrid_recall`] / [`hybrid_recall_scoped`])
+/// is STRICT (false) — globals require an explicit opt-in. No-op when
+/// `project` is `None`.
 #[allow(clippy::too_many_arguments)]
 pub fn hybrid_recall_scoped_org(
     conn: &Connection,
@@ -210,12 +251,15 @@ pub fn hybrid_recall_scoped_org(
     reality_id: Option<&str>,
     org_id: Option<&str>,
     include_flipped: bool,
+    include_globals: bool,
     preference_half_life_days: f64,
 ) -> Vec<MemoryResult> {
     let mut ranked_lists: Vec<Vec<(String, f64)>> = Vec::new();
 
-    // 1. BM25 search (project-scoped + org-scoped: includes global memories).
-    //    Pass include_flipped so the SQL predicate can admit flipped prefs.
+    // 1. BM25 search (project-scoped + org-scoped). Pass include_flipped so
+    //    the SQL predicate can admit flipped prefs; pass include_globals to
+    //    decide whether `_global_` sentinel rows are admitted alongside
+    //    `m.project = ?`.
     match ops::recall_bm25_project_org_flipped(
         conn,
         query,
@@ -223,6 +267,7 @@ pub fn hybrid_recall_scoped_org(
         limit * 3,
         org_id,
         include_flipped,
+        include_globals,
     ) {
         Ok(bm25_results) => {
             let bm25_list: Vec<(String, f64)> =

@@ -399,6 +399,7 @@ mod tests {
                 layer: None,
                 since: None,
                 include_flipped: None,
+                include_globals: None,
                 query_embedding: None,
             },
             Request::Remember {

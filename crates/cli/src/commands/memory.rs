@@ -17,6 +17,7 @@ fn parse_memory_type(s: &str) -> Result<MemoryType, String> {
 }
 
 /// Search memories (hybrid BM25 + vector + graph).
+#[allow(clippy::too_many_arguments)]
 pub async fn recall(
     query: String,
     type_filter: Option<String>,
@@ -24,6 +25,7 @@ pub async fn recall(
     limit: usize,
     layer: Option<String>,
     since: Option<String>,
+    include_globals: bool,
 ) {
     let memory_type = match type_filter {
         Some(t) => match parse_memory_type(&t) {
@@ -44,6 +46,12 @@ pub async fn recall(
         layer,
         since,
         include_flipped: None,
+        // Phase P3-3.11 W29: forward the CLI `--include-globals` flag.
+        // None and Some(false) are wire-equivalent (the daemon defaults
+        // to strict scope), so encode the flag faithfully so a future
+        // daemon could distinguish "explicitly opted out" from "didn't
+        // ask" if it wanted to.
+        include_globals: Some(include_globals),
         query_embedding: None,
     };
 

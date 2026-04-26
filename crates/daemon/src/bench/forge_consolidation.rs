@@ -2002,6 +2002,7 @@ pub fn snapshot_recall(
             layer: None,
             since: None,
             include_flipped: None,
+            include_globals: None,
             query_embedding: None,
         };
         let resp = crate::server::handler::handle_request(state, req);
