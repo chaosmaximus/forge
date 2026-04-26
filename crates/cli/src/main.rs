@@ -153,9 +153,12 @@ enum Commands {
     /// Blast radius analysis for a file
     #[command(name = "blast-radius")]
     BlastRadius {
-        /// File path to analyze
-        #[arg(long)]
-        file: String,
+        /// File path (positional, preferred).
+        #[arg(value_name = "FILE")]
+        file_pos: Option<String>,
+        /// File path via flag (legacy alias for the positional form).
+        #[arg(long = "file", value_name = "FILE")]
+        file_flag: Option<String>,
     },
     /// List active agent sessions
     Sessions {
@@ -322,9 +325,12 @@ enum Commands {
     /// Read a single FISP message by ID
     #[command(name = "message-read")]
     MessageRead {
-        /// Message ID to read
-        #[arg(long)]
-        id: String,
+        /// Message ID (positional, preferred).
+        #[arg(value_name = "ID")]
+        id_pos: Option<String>,
+        /// Message ID via flag (legacy alias for the positional form).
+        #[arg(long = "id", value_name = "ID")]
+        id_flag: Option<String>,
     },
     /// Acknowledge (mark as read) messages by ID
     #[command(name = "ack")]
@@ -1225,7 +1231,8 @@ enum DaemonAction {
 
 #[derive(Subcommand, Debug)]
 enum IdentityAction {
-    /// List identity facets
+    /// List identity facets (alias: `show`)
+    #[command(alias = "show")]
     List {
         /// Agent name (default: claude-code)
         #[arg(long, default_value = "claude-code")]
@@ -1370,7 +1377,21 @@ async fn main() {
         Commands::PostBashCheck { command, exit_code } => {
             commands::system::post_bash_check(command, exit_code).await;
         }
-        Commands::BlastRadius { file } => {
+        Commands::BlastRadius {
+            file_pos,
+            file_flag,
+        } => {
+            let file = match (file_pos, file_flag) {
+                (Some(v), None) | (None, Some(v)) => v,
+                (Some(_), Some(_)) => {
+                    eprintln!("error: pass file path as positional OR --file, not both");
+                    std::process::exit(2);
+                }
+                (None, None) => {
+                    eprintln!("error: blast-radius requires a file path (positional or --file)");
+                    std::process::exit(2);
+                }
+            };
             commands::system::blast_radius(file).await;
         }
         Commands::Sessions { all } => {
@@ -1450,7 +1471,18 @@ async fn main() {
         } => {
             commands::system::list_messages(session, status, limit, full).await;
         }
-        Commands::MessageRead { id } => {
+        Commands::MessageRead { id_pos, id_flag } => {
+            let id = match (id_pos, id_flag) {
+                (Some(v), None) | (None, Some(v)) => v,
+                (Some(_), Some(_)) => {
+                    eprintln!("error: pass message ID as positional OR --id, not both");
+                    std::process::exit(2);
+                }
+                (None, None) => {
+                    eprintln!("error: message-read requires a message ID (positional or --id)");
+                    std::process::exit(2);
+                }
+            };
             commands::system::message_read(id).await;
         }
         Commands::Ack { ids } => {
@@ -3390,14 +3422,95 @@ mod tests {
     // ── message-read tests ──
 
     #[test]
-    fn test_message_read_parse() {
+    fn test_message_read_parse_legacy_flag() {
         let cli = Cli::try_parse_from(["forge-next", "message-read", "--id", "msg-01ABCDEF"]);
-        assert!(cli.is_ok(), "message-read should parse: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "message-read --id should parse: {:?}",
+            cli.err()
+        );
         match cli.unwrap().command {
-            Commands::MessageRead { id } => {
-                assert_eq!(id, "msg-01ABCDEF");
+            Commands::MessageRead { id_pos, id_flag } => {
+                assert_eq!(id_pos, None);
+                assert_eq!(id_flag.as_deref(), Some("msg-01ABCDEF"));
             }
             other => panic!("expected MessageRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_message_read_parse_positional() {
+        let cli = Cli::try_parse_from(["forge-next", "message-read", "msg-01ABCDEF"]);
+        assert!(
+            cli.is_ok(),
+            "message-read <ID> should parse: {:?}",
+            cli.err()
+        );
+        match cli.unwrap().command {
+            Commands::MessageRead { id_pos, id_flag } => {
+                assert_eq!(id_pos.as_deref(), Some("msg-01ABCDEF"));
+                assert_eq!(id_flag, None);
+            }
+            other => panic!("expected MessageRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_blast_radius_parse_positional() {
+        let cli = Cli::try_parse_from(["forge-next", "blast-radius", "src/main.rs"]);
+        assert!(
+            cli.is_ok(),
+            "blast-radius <FILE> should parse: {:?}",
+            cli.err()
+        );
+        match cli.unwrap().command {
+            Commands::BlastRadius {
+                file_pos,
+                file_flag,
+            } => {
+                assert_eq!(file_pos.as_deref(), Some("src/main.rs"));
+                assert_eq!(file_flag, None);
+            }
+            other => panic!("expected BlastRadius, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_blast_radius_parse_legacy_flag() {
+        let cli = Cli::try_parse_from(["forge-next", "blast-radius", "--file", "src/main.rs"]);
+        assert!(
+            cli.is_ok(),
+            "blast-radius --file should parse: {:?}",
+            cli.err()
+        );
+        match cli.unwrap().command {
+            Commands::BlastRadius {
+                file_pos,
+                file_flag,
+            } => {
+                assert_eq!(file_pos, None);
+                assert_eq!(file_flag.as_deref(), Some("src/main.rs"));
+            }
+            other => panic!("expected BlastRadius, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_identity_show_alias_parse() {
+        let cli = Cli::try_parse_from(["forge-next", "identity", "show"]);
+        assert!(
+            cli.is_ok(),
+            "identity show (alias for list) should parse: {:?}",
+            cli.err()
+        );
+        match cli.unwrap().command {
+            Commands::Identity { action } => match action {
+                IdentityAction::List { agent } => {
+                    assert_eq!(agent, "claude-code");
+                }
+                other => panic!("expected IdentityAction::List, got {other:?}"),
+            },
+            other => panic!("expected Identity, got {other:?}"),
         }
     }
 
