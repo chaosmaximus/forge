@@ -9458,16 +9458,19 @@ mod tests {
 
     #[test]
     fn test_daemon_state_new_is_fast() {
-        // DaemonState::new should complete in <3s since consolidation
-        // and ingestion were moved to background tasks.
-        // Threshold is generous to avoid flakes on loaded CI/shared machines.
+        // DaemonState::new should complete quickly since consolidation
+        // and ingestion were moved to background tasks. Threshold is
+        // 10s to absorb cargo's parallel-test scheduler contention on
+        // loaded CI runners (1500+ siblings). Catches the regression
+        // class "consolidation re-introduced into the cold path" — a
+        // synchronous consolidation pass takes minutes, not seconds.
         let start = std::time::Instant::now();
         let _state = DaemonState::new(":memory:").expect("DaemonState::new should succeed");
         let elapsed = start.elapsed();
 
         assert!(
-            elapsed.as_millis() < 3000,
-            "DaemonState::new took {}ms — should be <3000ms (consolidation is now background)",
+            elapsed.as_millis() < 10_000,
+            "DaemonState::new took {}ms — should be <10000ms (consolidation is now background)",
             elapsed.as_millis()
         );
     }
