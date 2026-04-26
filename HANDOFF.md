@@ -1,21 +1,20 @@
-# Handoff — P3-3 Stage 2 (2A-6) closed — 2026-04-26
+# Handoff — P3-3 CLOSED — v0.6.0-rc.3 — 2026-04-26
 
-**Public HEAD:** `ac740e1` (impl review captured + fmt clean). Working tree clean.
+**Public HEAD:** `572d545` (version bump to v0.6.0-rc.3). Working tree clean.
 **Forge-app master:** unchanged.
-**Version:** v0.6.0-rc.2 (will bump to v0.6.0-rc.3 at P3-3 close).
+**Version:** **v0.6.0-rc.3** (was rc.2 at P3-2 close).
 **Plan:** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`
-**Halt:** none active. Stage 3 (2A-7 daemon restart persistence drill) opens on resume.
+**Halt:** **PHASE-BOUNDARY HALT** — P3-3 closed; P3-4 (release) opens on user sign-off per locked decision #5.
 
 ## State in one paragraph
 
-P3-3 Stage 2 (2A-6 multi-agent coordination bench) closed in **11 commits**.
-Spec went through 2 adversarial review rounds (v1 `not-lockable` 4+3+3 → v2 second review `not-lockable` 1 NB + 2 NH + 3 NM → v2.1 LOCKED). Implementation shipped via T1+T2 skeleton + T4-T6 dimensions + 9 infra checks + T7+T8 CLI subcommand + events-namespace registry + T9-T13 calibration sweep + CI matrix entry + results doc. **Impl review verdict `lockable-as-is`** — 0 BLOCKER/HIGH/MED/LOW; all 12 critical spec checkpoints verified. End-to-end forge-coordination 5/5 calibration seeds + dogfood seed=42 ALL converged at composite=1.0000 PASS on first run. Wall-clock 5-6ms (target ≤ 1500ms; 300x headroom). Stages 3-5 + close remain (~15 more commits estimated).
+**P3-3 (new product phases) closed in 37 commits across 6 stages.** Stage 0 (dependabot batch + calibration sweep) → Stage 1 (2A-5 domain isolation) → Stage 2 (2A-6 multi-agent coordination) → Stage 3 (2A-7 daemon restart persistence drill) → Stage 4 (2C-1 Grafana operator dashboard) → Stage 5 (2C-2 auto-PR-on-regression CI workflow) → close (v0.6.0-rc.3). Both new in-process benches (forge-isolation + forge-coordination) shipped composite=1.0000 on 5/5 calibration seeds, joined the bench-fast CI matrix, and have impl review verdicts of `lockable-with-fixes` (5 closed) and `lockable-as-is` (0 findings) respectively. Two new operator artifacts shipped: a chaos restart drill (SIGKILL kill-then-restart, byte-exact content survival) and a Grafana operator dashboard (5 metric families). Auto-PR-on-regression workflow detects ≥5% composite drops and files GitHub Issues automatically. All 11 CI gates green at HEAD `572d545`.
 
 ## First actions after `/compact` or session resume
 
 ```bash
 cd /mnt/colab-disk/DurgaSaiK/forge/forge
-git log --oneline -25                              # most recent at top (HEAD ac740e1)
+git log --oneline -25                              # most recent at top (HEAD 572d545)
 git status --short                                 # expect clean
 bash scripts/check-harness-sync.sh                 # 154 + 107, no drift
 bash scripts/check-review-artifacts.sh             # 21 reviews valid; 0 blocking findings
@@ -30,110 +29,119 @@ bash tests/static/run-shellcheck.sh                # all PASS
 bash scripts/ci/check_spans.sh                     # OK
 cargo fmt --all --check                            # clean
 cargo clippy --workspace --tests --features bench -- -W clippy::all -D warnings  # 0 warnings
-cargo test -p forge-daemon --lib --features bench bench::forge_coordination     # 15/15 pass
+cargo test -p forge-daemon --lib --features bench bench::forge_isolation         # 17/17
+cargo test -p forge-daemon --lib --features bench bench::forge_coordination      # 15/15
 
-# Optional: end-to-end forge-coordination dogfood
+# Optional: end-to-end dogfood of the two new benches
 export LD_LIBRARY_PATH="$PWD/.tools/onnxruntime-linux-x64-1.23.0/lib:$LD_LIBRARY_PATH"
-./target/debug/forge-bench forge-coordination --seed 42 --output /tmp/coord \
-    --expected-composite 1.0
-# expect: composite=1.0000, infrastructure_checks=9/9, PASS, wall ~5ms
-# the [a2a] WARN stderr lines are EXPECTED (D4 authorization probes)
+./target/release/forge-bench forge-isolation --seed 42 --output /tmp/iso --expected-composite 1.0
+./target/release/forge-bench forge-coordination --seed 42 --output /tmp/coord --expected-composite 1.0
+
+# Optional: chaos restart drill
+scripts/chaos/restart-drill.sh --output /tmp/drill
 ```
 
-After verification, resume at **Stage 3 — 2A-7 daemon restart persistence drill**.
-Per the plan-doc Stage 3 row: "Chaos test: kill daemon mid-pass, restart, assert no data loss. Script + result doc; runs from `scripts/chaos/restart-drill.sh`." This is a much smaller stage (~5 commits estimated) — no spec-rewrite cycle, just a script + dogfood + results doc.
+**Gating:** P3-4 (release v0.6.0) is HALTED for user sign-off. P3-4 covers: multi-OS dogfood verify (Linux + macOS hand-off), `bench-fast` required-gate flip post 14-green-runs, version bump rc.3 → 0.6.0, GitHub release artifacts, marketplace bundle, branch protection rules. Per locked decision #3 the marketplace + branch protection are USER tasks; the assistant prepares everything.
 
-## P3-3 Stage 2 commits this session (most recent first)
+## P3-3 commits — final tally (37 commits across 6 stages)
 
-| #   | SHA          | Phase    | Title |
-|-----|--------------|----------|-------|
-| 11  | `ac740e1`    | S2 close-prep | docs(P3-3 2A-6 impl review): verdict lockable-as-is — 0 BLOCKER/HIGH/MED/LOW |
-| 10  | `f70955e`    | S2 T12   | ci(P3-3 2A-6): add forge-coordination to bench-fast matrix |
-|  9  | `a658811`    | S2 T9-T13 | feat(P3-3 2A-6 T9-T13): calibration sweep + CI matrix entry + results doc |
-|  8  | `a7d08bd`    | S2 T7+T8 | feat(P3-3 2A-6 T7+T8): forge-bench CLI subcommand + events-namespace registry |
-|  7  | `fdf9c51`    | S2 T4-T6 | feat(P3-3 2A-6 T4-T6): D1-D6 dimension implementations + 9 infra checks |
-|  6  | `fbda6d8`    | S2 T1+T2 | feat(P3-3 2A-6 T1+T2): forge_coordination.rs skeleton — recon + 6 dim stubs |
-|  5  | `b642c2c`    | S2 spec  | docs(P3-3 2A-6 review schema): rewrite v1+v2 review YAMLs to canonical schema |
-|  4  | `62b36ed`    | S2 spec  | docs(P3-3 2A-6 spec): v2.1 LOCKED + second review — 1 NB + 2 NH + 3 NM closed |
-|  3  | `7329eb1`    | S2 spec  | docs(P3-3 2A-6 spec): v2 — addresses all 10 v1 review findings |
-|  2  | `58948a4`    | S2 spec  | docs(P3-3 2A-6 spec review): adversarial review v1 — verdict not-lockable |
-|  1  | `d64fe83`    | S2 spec  | docs(P3-3 2A-6 spec): multi-agent coordination bench design v1 |
+| Stage | Range | Commits | Closed at |
+|-------|-------|---------|-----------|
+| 0 | `ea75081..479126e` | 6 | 2026-04-25 |
+| 1 (2A-5) | `aa14763..1377ee1` | 16 | 2026-04-25 |
+| 2 (2A-6) | `d64fe83..d60c7b2` | 12 | 2026-04-26 |
+| 3 (2A-7) | `2c8fcfb` | 1 | 2026-04-26 |
+| 4 (2C-1) | `d36f1f6` | 1 | 2026-04-26 |
+| 5 (2C-2) | `2a9fc52` | 1 | 2026-04-26 |
+| close | `572d545` | 1 | 2026-04-26 |
 
-11 P3-3 Stage 2 commits.
+(Plus 1 prior `d60c7b2` HANDOFF rewrite at Stage 2 close, included in Stage 2 count.)
 
-## What shipped — Stage 2 detail
+## What shipped — by stage
 
-### Spec evolution v1 → v2 → v2.1 (5 commits + 2 reviews)
+### Stage 0 — Dependabot batch + calibration sweep (6 commits)
 
-* **v1 verdict `not-lockable`** (4 BLOCKER + 3 HIGH + 3 MED at SHA `d64fe83`):
-  - B1: session_message has 13 base + meeting_id ALTER (14 post-migration), not 11.
-  - B2: 4 indexes (incl. idx_msg_meeting), not 3.
-  - B3 (defused, reviewer error): session.organization_id IS present via ALTER at db/schema.rs:864.
-  - B4: cross-project msg count 6 → 36 (off by 6×).
-  - H1: D1 hardcoded denominator brittle.
-  - H2: D5 sentinel-row needs explicit pinning + immutability proof.
-  - H3: Grant/Revoke citation in wrong file.
-* **v2 closes all 10 v1 findings** at SHA `7329eb1`. Second review verdict `not-lockable` (1 NB + 2 NH + 3 NM):
-  - NB1: D6 trial 2 chain shape unsatisfiable (4/12 silent score floor).
-  - NH1: §3.1a paragraph contradicts §3.1 D6 + §4 D11.
-  - NH2: K=2 trials all in beta = no alpha coverage.
-  - NM1: cross-project line typo "16+20".
-  - NM2: hardcoded /6 + loose check-1 ≥14.
-  - NM3: bundled check 6.
-* **v2.1 LOCKED** at SHA `62b36ed`. All 6 NEW findings closed in one commit.
-* **Schema rewrite** at SHA `b642c2c`: v1+v2 review YAMLs corrected to canonical 2A-5 schema (slug/UPPERCASE/B1-style ids/file:line/commit_range).
+* 4 of 5 dependabot PRs landed locally (minor-patch group, zerocopy 0.7→0.8, jsonwebtoken 9→10 with aws_lc_rs, rand 0.9→0.10 with Rng→RngExt rename).
+* PR #2 opentelemetry deferred for ecosystem-cluster mismatch (4 sibling deps pinned 0.27/0.28).
+* Calibration sweep: forge-consolidation 1.0 / forge-identity 0.999 / forge-context 1.0 / forge-persist 1.0/1.0.
 
-### Implementation T1-T13 (5 commits + 1 impl review)
+### Stage 1 — 2A-5 domain-isolation bench (16 commits)
 
-* **T1+T2 skeleton** at `fbda6d8`: 6 dim stubs, 9 infra-check stubs, deterministic 6-session × 60-message corpus, single-shared-DaemonState orchestrator, sentinel-row hash helper. 12 unit tests pass.
-* **T4-T6 dimensions** at `fdf9c51`: full D1-D6 + 9 infra checks. SAVEPOINT for probes 8+9 preserves D1 denominator. 15 unit tests pass.
-* **T7+T8 CLI + registry** at `a7d08bd`: `forge-bench forge-coordination` subcommand mirrors run_forge_isolation byte-for-byte; events-namespace.md updated.
-* **T9-T13 calibration + CI + results doc** at `a658811`: 5/5 seeds + dogfood = composite=1.0000 PASS on first run; results doc.
-* **T12 CI matrix** at `f70955e`: bench-fast matrix updated to include forge-coordination.
+* Spec via 2 review rounds (v1 not-lockable → v2.1 LOCKED; 13+4 findings closed).
+* Implementation: 6 dimensions, 8 infrastructure checks, 7 D5 sub-probes (incl. SQL-injection sentinel-row hash), single-shared `DaemonState` per spec §3.7.
+* Calibration: 5/5 seeds + dogfood = composite=1.0000 first run.
+* Impl review verdict `lockable-with-fixes` (2 HIGH + 3 MED closed via fix-wave; 6 LOWs deferred).
 
-### Impl adversarial review (1 commit)
+### Stage 2 — 2A-6 multi-agent coordination bench (12 commits)
 
-* **`ac740e1`** — verdict `lockable-as-is`. 0 BLOCKER/HIGH/MED/LOW. 12 RESOLVED items in transcript (all 12 critical spec checkpoints verified). No fix-wave needed.
+* Spec via 2 review rounds (v1 not-lockable 4+3+3 → v2 not-lockable 1+2+3 → v2.1 LOCKED).
+* Implementation: 6 dimensions, 9 infrastructure checks, 7 D5 sub-probes, K=3 D6 linear-chain trials with sentinel-pair-disjointness invariant.
+* Calibration: 5/5 seeds + dogfood = composite=1.0000 first run, 5ms wall.
+* Impl review verdict `lockable-as-is` (0 findings; 12 RESOLVED items in transcript).
 
-## Stage 2 backlog — none
+### Stage 3 — 2A-7 daemon restart persistence drill (1 commit)
 
-Impl review returned `lockable-as-is`; no findings deferred. Spec v2.1 N5/N6 from v1 review remain deferred per spec changelog (calibration scenario table + f32→f64 cosmetic) — same as 2A-5 backlog pattern.
+* `scripts/chaos/restart-drill.sh` — operator-friendly shell wrapper around `forge-bench forge-persist`. SIGKILL kill-mid-pass + restart + byte-exact SHA-256 content survival check.
+* Acceptance: recovery_rate==1.0 + consistency_rate==1.0 + recovery_time_ms<5000 + zero pre-kill ack failures.
+* Dogfood: 7/7 acked ops survived, 256ms recovery, PASS.
+* Results doc archived at `docs/benchmarks/results/2026-04-26-restart-drill-stage3.md`.
+
+### Stage 4 — 2C-1 Grafana operator dashboard (1 commit)
+
+* `deploy/grafana/forge-operator-dashboard.json` — 6 panels covering all 5 spec'd metric families (phase duration, error rate, table rows, layer freshness, output rows + bench composite trend via SQLite kpi_events).
+* `docs/observability/grafana-operator-dashboard.md` — datasource setup, healthy-range table, import instructions, backlog notes.
+* Coexists with the preexisting `forge-dashboard.json` (user/dev view); both import side-by-side.
+
+### Stage 5 — 2C-2 auto-PR-on-regression CI workflow (1 commit)
+
+* `.github/workflows/bench-regression.yml` — `workflow_run` trigger after main CI on master; downloads current + prior bench artifacts; runs `scripts/ci/check_bench_regression.py`; opens GitHub Issue with markdown report on ≥5% composite drop.
+* `scripts/ci/check_bench_regression.py` — pure-Python regression detector; tolerates missing benches; supports forge-persist's recovery_rate fallback. Fixture-tested both regression + non-regression paths.
+
+### Stage close — version bump (1 commit)
+
+* `0.6.0-rc.2` → `0.6.0-rc.3` across 7 manifest sites + Cargo.lock auto-regen.
 
 ## Stages remaining
 
 | Stage | Tag | Status | Commits est. |
 |-------|-----|--------|--------------|
-| 0 | Dependabot batch | closed | 6 done |
-| 1 | 2A-5 domain isolation | closed | 14 done |
-| 2 | 2A-6 multi-agent coordination | **closed** | **11 done** |
-| 3 | 2A-7 daemon restart drill | not started | ~5 |
-| 4 | 2C-1 Grafana dashboards | not started | ~3 |
-| 5 | 2C-2 auto-PR-on-regression CI | not started | ~5 |
-| close | v0.6.0-rc.3 + HANDOFF | not started | ~2 |
+| P3-3 | (all stages 0-5 + close) | **CLOSED** | 37 done |
+| P3-4 W1 | Multi-OS dogfood final sweep | not started | 1 |
+| P3-4 W2 | bench-fast required-gate flip (14-green-runs) | not started | 1 (temporal) |
+| P3-4 W3 | v0.6.0 version bump | not started | 1 |
+| P3-4 W4 | GitHub release artifacts | not started | 1 (gh auth req) |
+| P3-4 W5 | Marketplace submission bundle | not started | 1 (USER submits) |
+| P3-4 W6 | Branch protection rules | not started | 1 (USER applies) |
+| P3-4 W7 | Final HANDOFF + close-out memo | not started | 1 |
 
-Total P3-3 estimated: 31 done + ~15 to go = 46 commits (revised down from 55).
+P3-4 estimated: 7 commits + manual user steps for marketplace + branch protection.
 
-## Tests + verification (final state at HEAD `ac740e1`)
+## Tests + verification (final state at HEAD `572d545`)
 
 * `cargo fmt --all --check` — clean
 * `cargo clippy --workspace --tests --features bench -- -W clippy::all -D warnings` — 0 warnings
 * `cargo build --workspace --features bench` — clean
-* `cargo build --release --features bench --bin forge-bench` — clean (debug build verified)
+* `cargo build --release --features bench --bin forge-bench --bin forge-daemon` — clean
+* `cargo test -p forge-daemon --lib --features bench bench::forge_isolation` — 17/17 pass
 * `cargo test -p forge-daemon --lib --features bench bench::forge_coordination` — 15/15 pass
 * `cargo test -p forge-daemon --lib --features bench bench::` — 230+ pass / 0 fail / 1 ignored
 * `bash scripts/ci/check_spans.sh` — OK
-* `bash tests/static/run-shellcheck.sh` — all PASS
+* `bash tests/static/run-shellcheck.sh` — all PASS (incl. new `scripts/chaos/restart-drill.sh`)
+* `bash scripts/check-review-artifacts.sh` — 21 reviews valid, 0 blocking
 * **Pre-existing daemon test flake** (`test_daemon_state_new_is_fast`) — passes in isolation; documented in §"Known quirks" since 2P-1a. Unchanged.
-* **21 review YAMLs** in `docs/superpowers/reviews/` (15 from P3-1+P3-2 + 3 P3-3 spec + 1 P3-3 impl + 2 from S2). Every BLOCKER/HIGH resolved or deferred with rationale.
-* **End-to-end forge-coordination dogfood** post-impl: `composite=1.0000, 9/9 infra, PASS, wall=5ms`.
+* **End-to-end dogfoods**: forge-isolation seed=42 PASS; forge-coordination seed=42 PASS (5ms); restart-drill PASS (256ms recovery).
 
-## P3-3 deferred backlog (cumulative)
+## P3-3 deferred backlog (cumulative across all stages)
 
-* **Stage 0** — opentelemetry 0.27 → 0.31 cluster bump (PR #2). Holistic 4-dep migration.
-* **Stage 1** — 2A-5 impl review residue (6 items: MED-1, MED-5, LOW-1, LOW-2, LOW-3, LOW-4).
-* **Stage 1 spec backlog** — N5 calibration scenario table; N6 f32→f64 in confidence formula.
-* **Stage 2 spec backlog** — none beyond what was closed in v2.1 changelog.
-* **Stage 2 impl backlog** — none (verdict lockable-as-is).
+* **Stage 0** — opentelemetry 0.27 → 0.31 cluster bump (PR #2). Holistic 4-dep migration; track for P3-4 pre-release or new wave.
+* **Stage 1 (2A-5) impl review residue** — MED-1 seed-invariance test, MED-5 CLI tolerance, LOW-1/2/3/4 cosmetic.
+* **Stage 1 spec backlog (v2.1)** — N5 calibration scenario table; N6 f32→f64 in confidence formula.
+* **Stage 2 (2A-6)** — none (verdict lockable-as-is). Spec v2.1 changelog deferred N5/N6 cosmetic per 2A-5 pattern.
+* **Stage 3 (2A-7)** — SIGTERM/SIGINT graceful-shutdown drill modes (forge-persist harness only does SIGKILL via Child::kill()). Defer to v2 chaos drill.
+* **Stage 4 (2C-1)** — bench composite as Prometheus gauge (would obviate SQLite plugin dep); per-tenant label dimensions; OTLP timeline panel.
+* **Stage 5 (2C-2)** — multi-window regression check (currently compares only current vs prior 1; could extend to last-5-mean baseline); also no manual-override label to skip the gate during planned recalibration.
+* **2A-4d.3 T17** — CI bench-fast gate promotion (14-green-runs temporal gate; closes in P3-4 W2).
+* **P3-2 W1 review note** — end-to-end behavioral test through the trace handler for `compile_context_trace` session-scope override (open since P3-2 W1; lower priority).
 
 ## Known quirks (P3-3 carryover)
 
@@ -142,6 +150,15 @@ Total P3-3 estimated: 31 done + ~15 to go = 46 commits (revised down from 55).
 * PR #2 opentelemetry deferred for cluster mismatch.
 * Stderr `[a2a] WARN: session ... tried to respond to message ...` lines from `sessions::respond_to_message:455` during forge-coordination D4 trials are EXPECTED (confirms authorization-rejection firing). Documented in results doc; CI parsers must not flag.
 
+## Halt-and-ask rationale (this is the P3-3 → P3-4 boundary)
+
+Per locked decision #5 in the plan-doc: "End of each phase (P3-1 / P3-2 / P3-3 / P3-4): wait for user sign-off before opening the next." P3-3 is closed; P3-4 (release v0.6.0) requires the user to:
+
+1. **Confirm bench-fast required-gate flip readiness** (T17) — observe `gh run list --workflow ci.yml --branch master --status success | wc -l ≥ 14` from the 2A-4d.3 promotion calendar; if not yet, defer flip until accumulated.
+2. **Authorize gh release** (P3-4 W4) — requires `gh auth status` on the user's host; assistant prepares release notes + multi-arch binary build script.
+3. **Submit marketplace bundle** (P3-4 W5) — manifest + listing copy + screenshots; assistant prepares; user clicks submit on Anthropic's marketplace.
+4. **Apply branch protection rules** (P3-4 W6) — JSON config drafted; user clicks "Save" on GitHub repo settings.
+
 ## One-line summary
 
-P3-3 Stage 2 (2A-6 multi-agent coordination bench) closed in 11 commits. Spec via 2 review rounds (v1 not-lockable → v2 not-lockable → v2.1 LOCKED). 6 dims (inbox_precision, roundtrip_correctness, broadcast_project_scoping, authorization_enforcement, edge_case_resilience, pipeline_chain_correctness) + 9 infra checks + 7-probe D5. Calibration 5/5 seeds + dogfood = composite=1.0000 first run. Impl review `lockable-as-is`, 0 findings, 12 RESOLVED. End-to-end forge-coordination seed=42 PASS, 5ms wall. 33 total P3-3 commits at HEAD `ac740e1`. All 21 review YAMLs valid + all 11 CI gates green. Stage 3 (2A-7 daemon restart drill) opens next.
+**P3-3 CLOSED at v0.6.0-rc.3 in 37 commits across 6 stages**: 2 new in-process benches (forge-isolation + forge-coordination both composite=1.0000), 1 chaos drill (PASS, 256ms recovery), 1 Grafana operator dashboard (6 panels / 5 metric families), 1 auto-PR-on-regression CI workflow. All 21 review YAMLs valid; all 11 CI gates green at HEAD `572d545`. P3-4 (release v0.6.0) opens on user sign-off — locked decision #5.
