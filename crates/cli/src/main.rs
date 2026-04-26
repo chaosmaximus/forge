@@ -431,8 +431,11 @@ enum Commands {
     /// Detect the reality (project type) for a path
     #[command(name = "detect-reality")]
     DetectReality {
-        /// Path to detect (defaults to current directory)
-        #[arg(long)]
+        /// Path to detect (positional or via --path; defaults to current directory)
+        #[arg(value_name = "PATH")]
+        path_pos: Option<String>,
+        /// Path to detect via flag form (kept for backwards compat with scripts that pass --path)
+        #[arg(long = "path", value_name = "PATH")]
         path: Option<String>,
     },
     /// List all known realities (projects)
@@ -1655,8 +1658,10 @@ async fn main() {
             commands::manas::perceptions(project, limit, offset).await;
         }
 
-        Commands::DetectReality { path } => {
-            commands::system::detect_reality(path).await;
+        Commands::DetectReality { path_pos, path } => {
+            // Z6: prefer positional `<path>`; fall back to `--path` flag for
+            // backwards compatibility with existing scripts.
+            commands::system::detect_reality(path_pos.or(path)).await;
         }
         Commands::Realities { organization } => {
             commands::system::list_realities(organization).await;
@@ -2356,8 +2361,36 @@ mod tests {
         let cli = Cli::try_parse_from(["forge-next", "detect-reality", "--path", "/tmp/myproject"]);
         assert!(cli.is_ok(), "detect-reality should parse: {:?}", cli.err());
         match cli.unwrap().command {
-            Commands::DetectReality { path } => {
+            Commands::DetectReality { path_pos, path } => {
+                assert!(
+                    path_pos.is_none(),
+                    "positional should be None when --path used"
+                );
                 assert_eq!(path.as_deref(), Some("/tmp/myproject"));
+            }
+            other => panic!("expected DetectReality, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_z6_detect_reality_accepts_positional_path() {
+        // Z6 (CC voice feedback §2.3): `forge-next detect-reality /tmp/myproject`
+        // (positional, no flag) used to error with `unexpected argument`.
+        // Most CLIs accept positional `<path>` for "tell me about this directory"
+        // (`git status`, `du`, `ls`). Pin both forms.
+        let cli = Cli::try_parse_from(["forge-next", "detect-reality", "/tmp/myproject"]);
+        assert!(
+            cli.is_ok(),
+            "detect-reality with positional path should parse: {:?}",
+            cli.err()
+        );
+        match cli.unwrap().command {
+            Commands::DetectReality { path_pos, path } => {
+                assert_eq!(path_pos.as_deref(), Some("/tmp/myproject"));
+                assert!(
+                    path.is_none(),
+                    "--path flag should be None when positional given"
+                );
             }
             other => panic!("expected DetectReality, got {other:?}"),
         }
@@ -2372,7 +2405,8 @@ mod tests {
             cli.err()
         );
         match cli.unwrap().command {
-            Commands::DetectReality { path } => {
+            Commands::DetectReality { path_pos, path } => {
+                assert!(path_pos.is_none());
                 assert!(path.is_none());
             }
             other => panic!("expected DetectReality, got {other:?}"),
