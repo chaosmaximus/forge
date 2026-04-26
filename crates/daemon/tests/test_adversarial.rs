@@ -182,6 +182,7 @@ fn test_sql_injection_in_guardrails() {
         &mut state,
         Request::BlastRadius {
             file: "../../etc/passwd".into(),
+            project: None,
         },
     );
     match resp {
@@ -210,6 +211,7 @@ fn test_sql_injection_in_guardrails() {
         &mut state,
         Request::BlastRadius {
             file: "' UNION SELECT * FROM memory--".into(),
+            project: None,
         },
     );
     match resp {
@@ -515,7 +517,13 @@ fn test_empty_and_null_inputs() {
     }
 
     // BlastRadius with empty file — should return empty result
-    let resp = handle_request(&mut state, Request::BlastRadius { file: "".into() });
+    let resp = handle_request(
+        &mut state,
+        Request::BlastRadius {
+            file: "".into(),
+            project: None,
+        },
+    );
     match resp {
         Response::Ok {
             data:

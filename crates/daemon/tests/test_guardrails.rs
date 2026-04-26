@@ -131,6 +131,7 @@ fn test_blast_radius_with_co_affected_files() {
         &mut state,
         Request::BlastRadius {
             file: "src/middleware.rs".into(),
+            project: None,
         },
     );
     match resp {

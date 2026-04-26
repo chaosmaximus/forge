@@ -509,6 +509,7 @@ mod tests {
 
         assert!(is_read_only(&Request::BlastRadius {
             file: "f.rs".into(),
+            project: None,
         }));
 
         assert!(is_read_only(&Request::ListPerceptions {
@@ -616,6 +617,7 @@ mod tests {
             query: "test".into(),
             kind: None,
             limit: None,
+            project: None,
         }));
 
         // ListRealities: read-only

@@ -261,6 +261,14 @@ pub enum Request {
     /// Blast radius analysis: what is the impact of changing this file?
     BlastRadius {
         file: String,
+        /// P3-4 W1.2 c2 (I-7) — restrict the cluster lookup to a single
+        /// project's code graph. None preserves the legacy "all
+        /// indexed projects" behavior; a Some value matches against
+        /// `code_file.project` (the human-readable name set by the
+        /// indexer via `project_name_from_dir`, agreeing with
+        /// `memory.project` and `identity.project` semantics).
+        #[serde(default)]
+        project: Option<String>,
     },
     /// Register an active agent session
     RegisterSession {
@@ -636,6 +644,11 @@ pub enum Request {
         query: String,
         kind: Option<String>, // "function", "class", "file"
         limit: Option<usize>,
+        /// P3-4 W1.2 c2 (I-7) — restrict the candidate set to one
+        /// project's code graph. Same semantics as `FindSymbol.project`
+        /// and `BlastRadius.project`.
+        #[serde(default)]
+        project: Option<String>,
     },
 
     /// List all known realities (projects) in an organization.
@@ -989,6 +1002,14 @@ pub enum Request {
         name: String,
         /// Optional file path filter
         file: Option<String>,
+        /// P3-4 W1.2 c2 (I-7) — restrict the symbol search to one
+        /// project's code graph. None preserves legacy behavior
+        /// (returns matches across every indexed project) for callers
+        /// that haven't been updated; a Some value JOINs `code_file`
+        /// and filters on `code_file.project`. Strict-by-default once
+        /// the CLI surface is migrated.
+        #[serde(default)]
+        project: Option<String>,
     },
 
     /// Get all symbols in a file (Serena get_symbols_overview replacement).

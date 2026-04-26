@@ -198,6 +198,7 @@ mod tests {
                 "blast_radius",
                 Request::BlastRadius {
                     file: "src/main.rs".into(),
+                    project: None,
                 },
             ),
             (
@@ -519,6 +520,7 @@ mod tests {
                     query: "handle_request".into(),
                     kind: Some("function".into()),
                     limit: Some(10),
+                    project: None,
                 },
             ),
             (
@@ -1417,7 +1419,10 @@ mod tests {
                     exit_code: 1,
                     session_id: None,
                 },
-                Request::BlastRadius { file: "f".into() },
+                Request::BlastRadius {
+                    file: "f".into(),
+                    project: None,
+                },
                 Request::RegisterSession {
                     id: "s".into(),
                     agent: "a".into(),
@@ -1675,6 +1680,7 @@ mod tests {
                     query: "test".into(),
                     kind: None,
                     limit: None,
+                    project: None,
                 },
                 Request::ListRealities {
                     organization_id: Some("default".into()),

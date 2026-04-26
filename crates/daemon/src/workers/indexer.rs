@@ -2103,15 +2103,19 @@ mod tests {
             "should find at least 4 symbols (MyApp, run, main, MAX_RETRIES, helper), got {symbols}"
         );
 
-        // Verify files stored in DB
+        // P3-4 W1.2 c1 (I-7): code_file.project now stores the project
+        // NAME (basename of the directory), not the full PATH — so it
+        // matches `memory.project` (W29) and `identity.project` (W30)
+        // semantics. Use the basename for the verification query.
+        let project_name = dir.file_name().unwrap().to_str().unwrap();
         let db_files: usize = conn
             .query_row(
                 "SELECT COUNT(*) FROM code_file WHERE project = ?1",
-                rusqlite::params![dir.to_str().unwrap()],
+                rusqlite::params![project_name],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(db_files, 2, "should store 2 files in DB");
+        assert_eq!(db_files, 2, "should store 2 files in DB tagged with project name '{project_name}'");
 
         // Verify symbols stored
         let db_symbols: usize = conn

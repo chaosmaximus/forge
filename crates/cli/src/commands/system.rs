@@ -502,8 +502,13 @@ pub async fn post_edit_check(file: String) {
 }
 
 /// Blast radius analysis on a file.
-pub async fn blast_radius(file: String) {
-    match client::send(&Request::BlastRadius { file: file.clone() }).await {
+pub async fn blast_radius(file: String, project: Option<String>) {
+    match client::send(&Request::BlastRadius {
+        file: file.clone(),
+        project,
+    })
+    .await
+    {
         Ok(Response::Ok {
             data:
                 ResponseData::BlastRadius {
@@ -2162,11 +2167,17 @@ pub async fn list_realities(organization: Option<String>) {
 }
 
 /// Code search: find symbols by name pattern.
-pub async fn code_search(query: String, kind: Option<String>, limit: usize) {
+pub async fn code_search(
+    query: String,
+    kind: Option<String>,
+    limit: usize,
+    project: Option<String>,
+) {
     let req = Request::CodeSearch {
         query: query.clone(),
         kind,
         limit: Some(limit),
+        project,
     };
     match client::send(&req).await {
         Ok(Response::Ok {

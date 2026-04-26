@@ -416,6 +416,7 @@ fn test_guardrails_full_lifecycle() {
         &mut state,
         Request::BlastRadius {
             file: "src/auth.rs".into(),
+            project: None,
         },
     );
     match resp {
@@ -963,6 +964,7 @@ fn test_edge_cases() {
         &mut state,
         Request::BlastRadius {
             file: "nonexistent/path/to/file.rs".into(),
+            project: None,
         },
     );
     match resp {

@@ -2535,7 +2535,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::BlastRadius { file } => {
+        Request::BlastRadius {
+            file,
+            project: project_filter,
+        } => {
             // Phase 2A-4d.3.1 #3: when context_injection.blast_radius = false,
             // return an empty result. The CLI surface still works for explicit
             // queries; we only suppress passive injection.
@@ -2603,19 +2606,45 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         .to_string(),
                 );
             } else if decisions.is_empty() && br.callers == 0 && br.importers.is_empty() {
-                // Code graph exists but no edges for this specific file
-                let file_exists: bool = state
-                    .conn
-                    .query_row(
-                        "SELECT COUNT(*) > 0 FROM code_file WHERE path LIKE ?1",
-                        rusqlite::params![format!("%{}", file)],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(false);
+                // Code graph exists but no edges for this specific file.
+                // P3-4 W1.2 c2 (I-7): if --project was set, scope the
+                // existence-check to that project so the warning text
+                // can distinguish "file unknown" from "file indexed
+                // under a different project".
+                let (file_exists, scope_msg): (bool, &str) = match project_filter.as_deref() {
+                    Some(proj) => {
+                        let exists: bool = state
+                            .conn
+                            .query_row(
+                                "SELECT COUNT(*) > 0 FROM code_file WHERE path LIKE ?1 AND project = ?2",
+                                rusqlite::params![format!("%{}", file), proj],
+                                |row| row.get(0),
+                            )
+                            .unwrap_or(false);
+                        (exists, "project")
+                    }
+                    None => {
+                        let exists: bool = state
+                            .conn
+                            .query_row(
+                                "SELECT COUNT(*) > 0 FROM code_file WHERE path LIKE ?1",
+                                rusqlite::params![format!("%{}", file)],
+                                |row| row.get(0),
+                            )
+                            .unwrap_or(false);
+                        (exists, "")
+                    }
+                };
                 if !file_exists {
+                    let scope_hint = if let Some(proj) = project_filter.as_deref() {
+                        format!(" (scoped to project '{proj}')")
+                    } else {
+                        String::new()
+                    };
                     warnings.push(format!(
-                        "File '{file}' not found in the code graph. It may not have been indexed yet."
+                        "File '{file}' not found in the code graph{scope_hint}. It may not have been indexed yet."
                     ));
+                    let _ = scope_msg; // suppress unused-binding warning
                 }
             }
             Response::Ok {
@@ -4741,11 +4770,65 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::CodeSearch { query, kind, limit } => {
+        Request::CodeSearch {
+            query,
+            kind,
+            limit,
+            project,
+        } => {
             let effective_limit = limit.unwrap_or(20).min(100);
             let pattern = format!("%{query}%");
 
-            let hits: Vec<serde_json::Value> = if let Some(ref kind_filter) = kind {
+            // P3-4 W1.2 c2 (I-7): when --project is set, JOIN code_file
+            // and filter on code_file.project. Without the JOIN every
+            // indexed reality's symbols leak through (live-verified
+            // during W1 dogfood — DhruviShah's IPython sysroot returned
+            // 50 hits for `find-symbol main` from a forge-only session).
+            let hits: Vec<serde_json::Value> = if let Some(ref proj) = project {
+                let sql = match kind {
+                    Some(_) => {
+                        "SELECT s.id, s.name, s.kind, s.file_path, s.line_start
+                                FROM code_symbol s
+                                JOIN code_file f ON s.file_path = f.path
+                                WHERE s.name LIKE ?1 AND s.kind = ?2 AND f.project = ?3 LIMIT ?4"
+                    }
+                    None => {
+                        "SELECT s.id, s.name, s.kind, s.file_path, s.line_start
+                             FROM code_symbol s
+                             JOIN code_file f ON s.file_path = f.path
+                             WHERE s.name LIKE ?1 AND f.project = ?2 LIMIT ?3"
+                    }
+                };
+                state
+                    .conn
+                    .prepare(sql)
+                    .and_then(|mut stmt| {
+                        let map_row = |row: &rusqlite::Row<'_>| {
+                            Ok(serde_json::json!({
+                                "id": row.get::<_, String>(0)?,
+                                "name": row.get::<_, String>(1)?,
+                                "kind": row.get::<_, String>(2)?,
+                                "path": row.get::<_, String>(3)?,
+                                "line_start": row.get::<_, Option<i64>>(4)?,
+                            }))
+                        };
+                        match kind.as_deref() {
+                            Some(k) => stmt
+                                .query_map(
+                                    rusqlite::params![pattern, k, proj, effective_limit],
+                                    map_row,
+                                )?
+                                .collect(),
+                            None => stmt
+                                .query_map(
+                                    rusqlite::params![pattern, proj, effective_limit],
+                                    map_row,
+                                )?
+                                .collect(),
+                        }
+                    })
+                    .unwrap_or_default()
+            } else if let Some(ref kind_filter) = kind {
                 state.conn.prepare(
                     "SELECT id, name, kind, file_path, line_start FROM code_symbol WHERE name LIKE ?1 AND kind = ?2 LIMIT ?3"
                 ).and_then(|mut stmt| {
@@ -6500,27 +6583,61 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
         }
 
-        Request::FindSymbol { name, file } => {
+        Request::FindSymbol {
+            name,
+            file,
+            project,
+        } => {
             if name.trim().is_empty() {
                 return Response::Ok {
                     data: ResponseData::SymbolResults { symbols: vec![] },
                 };
             }
             let name_pattern = format!("%{name}%");
-            let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(
-                ref f,
-            ) = file
-            {
-                let file_pattern = format!("%{f}%");
-                (
-                    "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE ?1 AND file_path LIKE ?2 ORDER BY file_path, line_start LIMIT 50",
-                    vec![Box::new(name_pattern) as Box<dyn rusqlite::types::ToSql>, Box::new(file_pattern)],
-                )
-            } else {
-                (
+            // P3-4 W1.2 c2 (I-7): when --project is set, JOIN code_file
+            // and add `f.project = ?` to the WHERE clause. The file
+            // filter remains a substring-match (LIKE) for parity with
+            // pre-W1.2 behavior; project is exact match because the
+            // indexer writes a normalized name (basename of project
+            // dir, never a path).
+            let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match (file.as_deref(), project.as_deref()) {
+                (Some(f), Some(p)) => {
+                    let file_pattern = format!("%{f}%");
+                    (
+                        "SELECT s.name, s.kind, s.file_path, s.line_start, s.signature
+                         FROM code_symbol s
+                         JOIN code_file cf ON s.file_path = cf.path
+                         WHERE s.name LIKE ?1 AND s.file_path LIKE ?2 AND cf.project = ?3
+                         ORDER BY s.file_path, s.line_start LIMIT 50",
+                        vec![
+                            Box::new(name_pattern) as Box<dyn rusqlite::types::ToSql>,
+                            Box::new(file_pattern),
+                            Box::new(p.to_string()),
+                        ],
+                    )
+                }
+                (Some(f), None) => {
+                    let file_pattern = format!("%{f}%");
+                    (
+                        "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE ?1 AND file_path LIKE ?2 ORDER BY file_path, line_start LIMIT 50",
+                        vec![Box::new(name_pattern) as Box<dyn rusqlite::types::ToSql>, Box::new(file_pattern)],
+                    )
+                }
+                (None, Some(p)) => (
+                    "SELECT s.name, s.kind, s.file_path, s.line_start, s.signature
+                     FROM code_symbol s
+                     JOIN code_file cf ON s.file_path = cf.path
+                     WHERE s.name LIKE ?1 AND cf.project = ?2
+                     ORDER BY s.file_path, s.line_start LIMIT 50",
+                    vec![
+                        Box::new(name_pattern) as Box<dyn rusqlite::types::ToSql>,
+                        Box::new(p.to_string()),
+                    ],
+                ),
+                (None, None) => (
                     "SELECT name, kind, file_path, line_start, signature FROM code_symbol WHERE name LIKE ?1 ORDER BY file_path, line_start LIMIT 50",
                     vec![Box::new(name_pattern) as Box<dyn rusqlite::types::ToSql>],
-                )
+                ),
             };
             match state.conn.prepare(sql) {
                 Ok(mut stmt) => {
@@ -7536,6 +7653,7 @@ mod tests {
             &mut state,
             Request::BlastRadius {
                 file: "src/lib.rs".into(),
+                project: None,
             },
         );
         match resp {
@@ -7604,6 +7722,7 @@ mod tests {
             &mut state,
             Request::BlastRadius {
                 file: "crates/daemon/src/server/handler.rs".into(),
+                project: None,
             },
         );
         match resp {
@@ -10590,6 +10709,7 @@ mod tests {
                 query: "handle".into(),
                 kind: None,
                 limit: None,
+                project: None,
             },
         );
         match resp {
@@ -10608,6 +10728,7 @@ mod tests {
                 query: "Daemon".into(),
                 kind: Some("class".into()),
                 limit: Some(5),
+                project: None,
             },
         );
         match resp2 {

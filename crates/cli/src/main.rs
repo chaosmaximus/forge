@@ -168,6 +168,10 @@ enum Commands {
         /// File path via flag (legacy alias for the positional form).
         #[arg(long = "file", value_name = "FILE")]
         file_flag: Option<String>,
+        /// Restrict the blast-radius cluster lookup to a single
+        /// project's code graph (P3-4 W1.2 c2 / I-7).
+        #[arg(long)]
+        project: Option<String>,
     },
     /// List active agent sessions
     Sessions {
@@ -421,6 +425,10 @@ enum Commands {
         /// Maximum number of results
         #[arg(long, default_value = "20")]
         limit: usize,
+        /// Restrict the search to a single project's code graph
+        /// (P3-4 W1.2 c2 / I-7).
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// Force-trigger the code indexer and show current index counts
@@ -539,6 +547,15 @@ enum Commands {
         /// Optional file path filter
         #[arg(long)]
         file: Option<String>,
+        /// Restrict the search to a single project's code graph.
+        /// Matches `code_file.project` (the basename-derived name set
+        /// by the indexer; same semantics as `--project` on `recall` /
+        /// `identity list`). Without this flag, results span every
+        /// indexed project — useful for finding cross-project utilities
+        /// but a leak surface for forge-only sessions (P3-4 W1 dogfood
+        /// I-7).
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// Get all symbols in a file (Serena get_symbols_overview replacement)
@@ -1418,6 +1435,7 @@ async fn main() {
         Commands::BlastRadius {
             file_pos,
             file_flag,
+            project,
         } => {
             let file = match (file_pos, file_flag) {
                 (Some(v), None) | (None, Some(v)) => v,
@@ -1430,7 +1448,7 @@ async fn main() {
                     std::process::exit(2);
                 }
             };
-            commands::system::blast_radius(file).await;
+            commands::system::blast_radius(file, project).await;
         }
         Commands::Sessions { all } => {
             commands::system::sessions(!all).await;
@@ -1603,8 +1621,13 @@ async fn main() {
         Commands::Realities { organization } => {
             commands::system::list_realities(organization).await;
         }
-        Commands::CodeSearch { query, kind, limit } => {
-            commands::system::code_search(query, kind, limit).await;
+        Commands::CodeSearch {
+            query,
+            kind,
+            limit,
+            project,
+        } => {
+            commands::system::code_search(query, kind, limit, project).await;
         }
 
         Commands::ForceIndex { path } => {
@@ -1765,8 +1788,18 @@ async fn main() {
                 }
             }
         }
-        Commands::FindSymbol { name, file } => {
-            match client::send(&forge_core::protocol::Request::FindSymbol { name, file }).await {
+        Commands::FindSymbol {
+            name,
+            file,
+            project,
+        } => {
+            match client::send(&forge_core::protocol::Request::FindSymbol {
+                name,
+                file,
+                project,
+            })
+            .await
+            {
                 Ok(forge_core::protocol::Response::Ok {
                     data: forge_core::protocol::ResponseData::SymbolResults { symbols },
                 }) => {
@@ -2319,7 +2352,12 @@ mod tests {
         ]);
         assert!(cli.is_ok(), "code-search should parse: {:?}", cli.err());
         match cli.unwrap().command {
-            Commands::CodeSearch { query, kind, limit } => {
+            Commands::CodeSearch {
+                query,
+                kind,
+                limit,
+                project: _,
+            } => {
                 assert_eq!(query, "authenticate");
                 assert_eq!(kind.as_deref(), Some("function"));
                 assert_eq!(limit, 5);
@@ -2337,7 +2375,12 @@ mod tests {
             cli.err()
         );
         match cli.unwrap().command {
-            Commands::CodeSearch { query, kind, limit } => {
+            Commands::CodeSearch {
+                query,
+                kind,
+                limit,
+                project: _,
+            } => {
                 assert_eq!(query, "MyClass");
                 assert!(kind.is_none());
                 assert_eq!(limit, 20);
@@ -3513,6 +3556,7 @@ mod tests {
             Commands::BlastRadius {
                 file_pos,
                 file_flag,
+                project: _,
             } => {
                 assert_eq!(file_pos.as_deref(), Some("src/main.rs"));
                 assert_eq!(file_flag, None);
@@ -3533,6 +3577,7 @@ mod tests {
             Commands::BlastRadius {
                 file_pos,
                 file_flag,
+                project: _,
             } => {
                 assert_eq!(file_pos, None);
                 assert_eq!(file_flag.as_deref(), Some("src/main.rs"));

@@ -801,6 +801,7 @@ fn test_find_symbol_via_handler() {
         Request::FindSymbol {
             name: "process_data".into(),
             file: None,
+            project: None,
         },
     );
     match resp {
@@ -820,6 +821,7 @@ fn test_find_symbol_via_handler() {
         Request::FindSymbol {
             name: "process_data".into(),
             file: Some("/tmp/test.rs".into()),
+            project: None,
         },
     );
     match resp {
@@ -837,6 +839,7 @@ fn test_find_symbol_via_handler() {
         Request::FindSymbol {
             name: "process_data".into(),
             file: Some("nonexistent.rs".into()),
+            project: None,
         },
     );
     match resp {
@@ -898,6 +901,7 @@ fn test_find_symbol_empty_name() {
         Request::FindSymbol {
             name: "".into(),
             file: None,
+            project: None,
         },
     );
     match resp {
