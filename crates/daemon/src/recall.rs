@@ -4259,6 +4259,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn p3_4_z2_fw1_cluster_filter_skips_when_reality_name_drifts_from_code_file_project() {
+        // Z-fw1 review MED-7: pin the unhappy path where `code_file.project`
+        // and `reality.name` drift apart (e.g. project renamed via direct
+        // SQL, or two orgs with same name and the cluster JOIN's
+        // organization_id is hardcoded today). Cluster JOIN uses
+        // `WHERE r.name = ?project`; if no reality matches the requested
+        // project, file/symbol counts can be > 0 (since they filter on
+        // `code_file.project` directly) but cluster count SHOULD be 0 —
+        // not leaked from another reality's cluster edges.
+        let conn = setup();
+        use forge_core::types::{CodeFile, CodeSymbol};
+
+        // Seed a code_file tagged "forge" but DON'T create a reality row
+        // with that name — simulates the drift case.
+        let f = CodeFile {
+            id: "f-1".into(),
+            path: "/mnt/forge/src/handler.rs".into(),
+            language: "rust".into(),
+            project: "forge".into(),
+            hash: "abc".into(),
+            indexed_at: forge_core::time::now_iso(),
+        };
+        crate::db::ops::store_file(&conn, &f).unwrap();
+        let s = CodeSymbol {
+            id: "s-1".into(),
+            name: "handle_request".into(),
+            kind: "function".into(),
+            file_path: "/mnt/forge/src/handler.rs".into(),
+            line_start: 10,
+            line_end: Some(50),
+            signature: None,
+        };
+        crate::db::ops::store_symbol(&conn, &s).unwrap();
+
+        // Manually insert a cluster edge tied to a foreign reality_id
+        // (no matching reality row with name="forge"). This is exactly
+        // the "drift" shape — clusters exist in the edge table for some
+        // reality, but it's not the project we're asking about.
+        let foreign_reality_id = "rid-not-forge";
+        conn.execute(
+            "INSERT INTO edge (id, from_id, to_id, edge_type, reality_id, properties, created_at, valid_from)
+             VALUES ('e1', 'file:/mnt/forge/src/handler.rs', 'cluster:foreign:0',
+                     'belongs_to_cluster', ?1, '{}', ?2, ?2)",
+            rusqlite::params![foreign_reality_id, forge_core::time::now_iso()],
+        )
+        .unwrap();
+
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            Some("forge"),
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+        // File/symbol counts come from code_file.project directly so > 0.
+        assert!(
+            suffix.contains("files=\"1\""),
+            "files filter on code_file.project should still count; got:\n{suffix}"
+        );
+        // Cluster count goes via reality.name JOIN — no matching reality,
+        // so 0 clusters render. The <clusters> wrapper should NOT appear.
+        assert!(
+            !suffix.contains("<clusters"),
+            "cluster filter must skip when reality.name does not match project; got:\n{suffix}"
+        );
+        assert!(
+            !suffix.contains("foreign"),
+            "foreign cluster id must NOT leak into rendered XML; got:\n{suffix}"
+        );
+    }
+
     // ── Portability weighting tests ──
 
     fn insert_memory_with_portability(

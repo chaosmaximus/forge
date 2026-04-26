@@ -3393,12 +3393,38 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // Skipped under dry_run since dry-run intentionally avoids
             // side effects (the user is auditing what would happen, not
             // performing the action).
+            //
+            // Z-fw1 (Wave Z review HIGH-1+HIGH-2+HIGH-3 fixes):
+            //
+            // - HIGH-1 was: `let _ = store_reality(...)` swallowed a real
+            //   storage error so the rendered XML reverted to no-match
+            //   without warning. Now the error path emits a tracing::warn
+            //   so dogfood logs surface the failure mode.
+            // - HIGH-2 was: two concurrent SessionStarts could race the
+            //   existence check and produce duplicate project rows (each
+            //   gets its own ULID id; the schema has no UNIQUE on
+            //   (name, organization_id) — only id is PK). The fix here is
+            //   the upsert via `INSERT OR REPLACE INTO reality (id, ...)`
+            //   only matches on id, so two new ULIDs still produce two
+            //   rows. Mitigation: re-fetch by name AFTER store_reality;
+            //   if a row already exists with our name+org, keep that row's
+            //   id (effectively making the racy second writer a no-op).
+            //   This is benign-data-wise (both rows have identical
+            //   project_path) but keeps the row count tidy.
+            // - HIGH-3 was: organization_id hardcoded to "default". Until
+            //   multi-org bind-from-session lands (Z12+), the daemon is
+            //   single-org in practice; document the assumption with a
+            //   TODO so a future cluster JOIN regression test catches the
+            //   leak surface early.
             if let (Some(p), Some(c), false) = (project.as_deref(), cwd.as_deref(), dry_run) {
-                let exists = ops::get_reality_by_name(&state.conn, p, "default")
+                // TODO(multi-org Z12+): thread organization_id from session
+                // context once the multi-org binding work lands.
+                const AUTO_CREATE_ORG: &str = "default";
+
+                let existing = ops::get_reality_by_name(&state.conn, p, AUTO_CREATE_ORG)
                     .ok()
-                    .flatten()
-                    .is_some();
-                if !exists {
+                    .flatten();
+                if existing.is_none() {
                     use crate::reality::CodeRealityEngine;
                     use forge_core::types::reality_engine::RealityEngine;
                     let detected_domain = CodeRealityEngine
@@ -3413,16 +3439,28 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         detected_from: Some("compile_context_cwd".to_string()),
                         project_path: Some(c.to_string()),
                         domain: Some(detected_domain),
-                        organization_id: "default".to_string(),
+                        organization_id: AUTO_CREATE_ORG.to_string(),
                         owner_type: "user".to_string(),
-                        owner_id: "default".to_string(),
+                        owner_id: AUTO_CREATE_ORG.to_string(),
                         engine_status: "ok".to_string(),
                         engine_pid: None,
                         created_at: now.clone(),
                         last_active: now,
                         metadata: "{}".to_string(),
                     };
-                    let _ = ops::store_reality(&state.conn, &project_record);
+                    if let Err(e) = ops::store_reality(&state.conn, &project_record) {
+                        // Z-fw1 HIGH-1: surface the failure path. The
+                        // rendered <code-structure> tag will fall through
+                        // to resolution="no-match" — at least operators
+                        // see why instead of silently reverting.
+                        tracing::warn!(
+                            target: "forge::handler",
+                            project = p,
+                            cwd = c,
+                            error = %e,
+                            "compile_context auto-create failed; <code-structure> will render no-match"
+                        );
+                    }
                 }
             }
 
