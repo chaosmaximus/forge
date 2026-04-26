@@ -1,0 +1,131 @@
+schema_version: 1
+slug: 2026-04-26-p3-3-5-polish-wave
+target_paths:
+  - docs/benchmarks/results/2026-04-26-forge-consolidation-pre-release.md
+  - docs/benchmarks/results/2026-04-26-forge-context-pre-release.md
+  - docs/benchmarks/results/2026-04-26-forge-persist-pre-release.md
+  - docs/benchmarks/forge-consolidation-design.md
+  - docs/architecture/events-namespace.md
+  - docs/benchmarks/baselines/composites.json
+  - docs/benchmarks/baselines/README.md
+  - docs/benchmarks/results/2026-04-25-forge-isolation-stage1.md
+  - docs/benchmarks/results/2026-04-26-forge-coordination-stage2.md
+  - deploy/grafana/forge-alerts.yml
+  - docs/operations/runbooks/
+  - docs/operations/observability-slos.md
+  - docs/observability/otlp-validation.md
+  - docs/benchmarks/recall-probe-benches.md
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-26
+commit_range:
+  base: a9fa9af
+  head: 7091526
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-26-p3-3-5-polish-wave.transcript.md
+findings:
+  - id: MED-1
+    severity: MEDIUM
+    summary: >
+      Per-seed table at lines 19-25 of forge-coordination-stage2.md
+      retains debug-build wall_ms numbers (5,5,5,5,6,5) from Stage 2
+      close. The new W4 Wall-clock budget section at lines 73-92
+      cites release-build measurement (2 ms across 5 seeds).
+      Side-by-side numbers are internally inconsistent.
+    file: docs/benchmarks/results/2026-04-26-forge-coordination-stage2.md:19
+    status: resolved
+    fixed_by: 8e449a5
+    rationale: >
+      Re-measured all 6 seeds in release build (each wall_duration_ms = 2 ms).
+      Updated per-seed table to show 2 ms across all 6 seeds + footnote
+      explaining the debug→release measurement-context shift. Fixed in
+      the P3-3.5 polish-wave fix-wave commit.
+  - id: MED-2
+    severity: MEDIUM
+    summary: >
+      otlp-validation.md line 99 cites
+      `crates/daemon/src/consolidator/mod.rs` for phase
+      instrumentation. That path does not exist; consolidator lives
+      at `crates/daemon/src/workers/consolidator.rs`.
+    file: docs/observability/otlp-validation.md:99
+    status: resolved
+    fixed_by: 8e449a5
+    rationale: >
+      Updated path citation to `crates/daemon/src/workers/consolidator.rs`
+      in the polish-wave fix-wave commit.
+  - id: MED-3
+    severity: MEDIUM
+    summary: >
+      forge-coordination-stage2.md line 91 cites "spec §3 line 97" for
+      the +60s wall-clock claim. Line 97 of
+      domain-isolation-bench-design.md is the dim-weighting paragraph;
+      the +60s claim is at line 247.
+    file: docs/benchmarks/results/2026-04-26-forge-coordination-stage2.md:91
+    status: resolved
+    fixed_by: 8e449a5
+    rationale: >
+      Replaced "spec §3 line 97" with a relative-link citation to
+      line 247 of the spec in the polish-wave fix-wave commit.
+  - id: LOW-1
+    severity: LOW
+    summary: >
+      composites.json top-level key is `$schema_version` with leading
+      `$`. JSON Schema convention reserves `$` for `$schema`/`$id`
+      only. Plan-doc template uses `schema_version` without `$`.
+    file: docs/benchmarks/baselines/composites.json:2
+    status: resolved
+    fixed_by: 8e449a5
+    rationale: >
+      Renamed key to `schema_version` in composites.json + matching
+      reference in baselines/README.md in the polish-wave fix-wave
+      commit.
+  - id: LOW-2
+    severity: LOW
+    summary: >
+      observability-slos.md rows 1+2 name alert
+      ForgeHighRecallLatency (alert threshold p99 > 5s) but the SLO
+      target is p99 < 100ms. The cell is honest but readers may
+      misread.
+    file: docs/operations/observability-slos.md:14
+    status: deferred
+    rationale: >
+      Cosmetic. The 50× headroom outage detector is intentional — it
+      lets the alert quiet during steady-state breaches that don't
+      indicate outage. Consider a dedicated SLO-breach alert (5%
+      headroom) in v0.6.1+.
+  - id: LOW-3
+    severity: LOW
+    summary: >
+      forge-persist-pre-release.md cites Child::kill() at
+      forge_persist.rs:1507-1532 (function span); the actual kill
+      call is at line 1518.
+    file: docs/benchmarks/results/2026-04-26-forge-persist-pre-release.md:40
+    status: deferred
+    rationale: >
+      The cited range is the surrounding function and is accurate as
+      the function-scope citation pattern used elsewhere. Tightening
+      to the literal kill-call line is cosmetic.
+  - id: LOW-4
+    severity: LOW
+    summary: >
+      composites.json forge-persist code_threshold_path lacks a
+      line number while every other bench cites a line. Asymmetric.
+    file: docs/benchmarks/baselines/composites.json:50
+    status: deferred
+    rationale: >
+      forge-persist's pass criterion is recovery_rate == 1.0 spread
+      across summary.json computation, not a single gate line; the
+      current parenthetical phrasing is the correct documentation
+      shape. Cosmetic only.
+  - id: NIT-1
+    severity: NIT
+    summary: >
+      W2 reconciliation cleanly distinguishes recall_improvement (dim
+      name) from recall_delta (raw metric). Reciprocal note in
+      events-namespace.md 179-184 verified.
+    file: docs/benchmarks/forge-consolidation-design.md:289
+    status: resolved
+    fixed_by: 3449649
+    rationale: Informational; no fix required (W2 commit landed cleanly).
