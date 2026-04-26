@@ -1,0 +1,204 @@
+schema_version: 1
+slug: 2026-04-26-p3-3-10-quick-fixes
+target_paths:
+  - crates/cli/src/main.rs
+  - crates/cli/src/commands/system.rs
+  - crates/cli/src/commands/teams.rs
+  - crates/cli/src/client.rs
+  - crates/core/src/protocol/request.rs
+  - crates/core/src/protocol/response.rs
+  - crates/core/src/protocol/contract_tests.rs
+  - crates/daemon/src/server/handler.rs
+  - crates/daemon/src/server/tier.rs
+  - crates/daemon/src/server/writer.rs
+  - crates/daemon/src/sessions.rs
+  - crates/daemon/src/teams.rs
+reviewer:
+  agent: claude-opus-4-7
+  date: '2026-04-26'
+commit_range:
+  base: 46d525a
+  head: 85712a8
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-26-p3-3-10-quick-fixes.transcript.md
+findings:
+  # ── HIGH ──────────────────────────────────────────────────────────────
+  - id: HIGH-1
+    severity: HIGH
+    summary: "W27 SessionMessageRead has no `to_session` scoping — any caller can read any message by ID/prefix; defense-in-depth regression vs SessionMessages"
+    file: crates/daemon/src/sessions.rs:541
+    status: deferred
+    rationale: "The prior `forge-next message-read` flow indirectly went through `Request::SessionMessages { session_id }` which the daemon scopes by `to_session = ?1` (sessions.rs:491). Even though the empty session_id practically returned zero rows, the architectural contract was 'a caller can only see messages addressed to its session'. The new `read_message_by_id_or_prefix(conn, id_or_prefix)` does NOT scope by `to_session` or `from_session` at all — the SQL is `WHERE id = ?1` (exact) and `WHERE id LIKE ?1 || '%'` (prefix), unscoped. Combined with the public `messages` listing displaying 8-char ID prefixes, any caller that can reach the Unix socket can now look up the full body of messages addressed to any other session. The daemon is single-tenant on a Unix socket today (so this is not a hard auth boundary), but the W27 change strictly weakens the in-process isolation that previously existed. **Deferred to W28** because (a) single-tenant model means no auth hop is crossed, and (b) the fix is straightforward — add an optional `caller_session: Option<String>` to `Request::SessionMessageRead` and, when set, scope the SQL to `(to_session = ?2 OR from_session = ?2)`. Default open is acceptable for backward compat, but the field gives future RBAC a hook. As written, F12+F14 was 'find a message by ID' but the implementation became 'read any message anywhere' — the broader privilege wasn't called out in the commit body or plan-doc."
+  # ── MEDIUM ────────────────────────────────────────────────────────────
+  - id: MED-1
+    severity: MEDIUM
+    summary: "W26 partial-spawn rollback leaves orphaned `team_member` rows in pre-existing teams (no foreign-key cascade, no explicit DELETE)"
+    file: crates/daemon/src/teams.rs:611
+    status: open
+    rationale: "On the F6 idempotent path (team_pre_existed=true), if `spawn_agent` succeeds for the first N templates and fails on N+1, the rollback retires/ends the N already-spawned sessions but does NOT delete the `team_member` rows that those N spawns inserted (line 250 INSERT OR IGNORE INTO team_member). The team-row delete is correctly skipped (`!team_pre_existed`), but the member rows remain. Schema check: `team_member` has `PRIMARY KEY (team_id, user_id)` and NO foreign key referencing `team(id)` (db/schema.rs:610-616), and the daemon does not set `PRAGMA foreign_keys = ON`. So even if a future migration adds the FK, the cascade wouldn't fire. The next `team members` listing for the pre-existing team will join `team_member` to `session` and show the now-retired sessions because `list_team_members` does NOT filter by session.status. This is a real data leak: every partial-failure run inflates the visible-member count of the pre-existing team by the number of agents that successfully spawned before the failure. **Fix:** in the `Err(e)` rollback arm, also `DELETE FROM team_member WHERE team_id = (SELECT id FROM team WHERE name = ?1) AND session_id IN (?, ?, ...)` for each session_id in the partial set."
+  - id: MED-2
+    severity: MEDIUM
+    summary: "W25 F1 stale-version detection compares CARGO_PKG_VERSION strings only — misses the common dev workflow where commits diverge but Cargo.toml is stable"
+    file: crates/cli/src/commands/system.rs:58
+    status: open
+    rationale: "The current check is `if cli_version != version { decorate-stale }`. Both sides read compile-time `CARGO_PKG_VERSION`. In the most common dev workflow (work on master, rebuild, ship), the commit SHA changes but Cargo.toml's `version` is bumped only at release boundaries. So a daemon running yesterday's commit with the same version string as today's CLI rebuild is reported as 'matched' — this is the exact symptom F1 is supposed to catch ('rebuild changes the on-disk binary'). The Doctor response already includes a `git_sha` field (rendered as `(bd1bac6)` in the Version line), so the fix is to ALSO compare `option_env!('VERGEN_GIT_SHA')` (or the equivalent build-script export) against the daemon's reported `git_sha` and decorate stale on either mismatch. The current implementation only catches the rare case where Cargo.toml was bumped but the daemon wasn't restarted; it misses the daily case of in-progress branch work."
+  # ── LOW ───────────────────────────────────────────────────────────────
+  - id: LOW-1
+    severity: LOW
+    summary: "W27 no .trim() on CLI message-read input — trailing-space copy-paste silently fails both exact and prefix match"
+    file: crates/cli/src/commands/system.rs:984
+    status: open
+    rationale: "`pub async fn message_read(id: String)` passes `id` straight to `Request::SessionMessageRead { id: id.clone() }` without trimming whitespace. Common copy-paste hazard: terminal selection captures a trailing space, so `id = '01ABC...Z '`. Daemon's exact match (`WHERE id = ?1`) fails because of the trailing space; prefix match (`WHERE id LIKE ?1 || '%'`) fails because no real id ends with a literal space. User sees `message not found: 01ABC...Z ` (the offending space is invisible in monospaced rendering). **Fix:** `let id = id.trim().to_string();` at the top of `message_read`, or `let id_or_prefix = id_or_prefix.trim();` at the top of `read_message_by_id_or_prefix`. CLI-side trim is preferable because it's the user-facing surface and avoids requiring every future caller to trim."
+  - id: LOW-2
+    severity: LOW
+    summary: "W27 LIKE wildcard literalness — `%` and `_` in input are interpreted as SQL wildcards (no ESCAPE clause)"
+    file: crates/daemon/src/sessions.rs:575
+    status: open
+    rationale: "`WHERE id LIKE ?1 || '%'` — rusqlite parameter binding makes `?1` a literal-bound string, but the LIKE operator interprets `%` and `_` IN that bound string as wildcards. ULIDs use Crockford base32 (`0-9A-HJKMNP-TV-Z`) which excludes both `%` and `_`, so real ULID prefixes are safe. But: `forge-next message-read '%'` matches every message; in a single-message dev DB it returns the only row. `forge-next message-read '_'` matches every 1-char id (none, because ULIDs are 26 chars). Negligible attack surface today (no auth, single tenant), but a future code path that exposes message-read more broadly inherits the unfiltered wildcard. **Fix:** either (a) `WHERE id LIKE ?1 || '%' ESCAPE '\\\\'` and replace `%`/`_` with their escaped forms before binding, or (b) reject input containing characters outside the Crockford base32 alphabet at the helper boundary."
+  - id: LOW-3
+    severity: LOW
+    summary: "W27 ambiguity error wrapped as InvalidParameterName + handler prefix `session_message_read failed:` muddies the user-facing hint"
+    file: crates/daemon/src/server/handler.rs:4249
+    status: open
+    rationale: "`read_message_by_id_or_prefix` returns `Err(rusqlite::Error::InvalidParameterName(format!('ambiguous message ID prefix ... type more characters')))` for the >1-row case (sessions.rs:584-588). The handler arm wraps that as `Response::Error { message: format!('session_message_read failed: {e}') }`. The user sees `error: session_message_read failed: ambiguous message ID prefix '01ABC' — type more characters (matches at least 2 rows)`. The 'type more characters' hint IS preserved, but the leading `session_message_read failed:` is internal-implementation noise on a user-facing error message. **Fix:** introduce a dedicated error type `enum MessageReadError { NotFound, Ambiguous(String, usize), Sql(rusqlite::Error) }` in sessions.rs, match each in the handler, and emit clean messages: `Response::Error { message: 'ambiguous prefix...' }` for the Ambiguous variant. Today the `forge-next` user must mentally strip the `session_message_read failed:` prefix to read the actionable advice."
+  - id: LOW-4
+    severity: LOW
+    summary: "W26 partial-retire failures invisible — CLI's F7 `(team had no spawned agents)` annotation can't distinguish real empty from all-retires-failed"
+    file: crates/cli/src/commands/teams.rs:610
+    status: open
+    rationale: "`stop_team` (daemon-side) returns `agents_retired` counting only successful retires; errored retires are dropped. The CLI's F7 annotation fires when `agents_retired == 0` — but this case is ambiguous: it could mean (a) the team was created and never run (the intended case), OR (b) all spawned agents errored on retire. The user sees the same `(team had no spawned agents)` message in both cases, so a real retire-cascade failure is silently masked as a benign empty-team case. **Fix:** the daemon's `stop_team` should return `(agents_retired, retire_errors)` and the CLI should branch on `(retired, errors) == (0, 0)` for the genuinely-empty case; `(0, >0)` for total failure; `(>0, >0)` for partial. The current code can't surface partial because `stop_team` only returns the success count."
+  - id: LOW-5
+    severity: LOW
+    summary: "W26 F9 daemon JSON-shape (`role`/`agent_status`) has no contract test pinning it — silent CLI-display regression on future schema rename"
+    file: crates/cli/src/commands/teams.rs:357
+    status: open
+    rationale: "The F9 fix corrects a pre-existing CLI bug (was reading `template_name`/`status`, daemon was emitting `role`/`agent_status`). The fix relies on the daemon CONTINUING to emit `role` and `agent_status` as JSON keys in `list_team_members`. There is no test that pins this contract — a future refactor in `crate::teams::list_team_members` (e.g., renaming the SQL alias to `template`) would silently regress F9 back to all-`?` rendering with no test signal. The data flows through `serde_json::json!({...})` macros which are macro-expanded into `Value::Object`, so a static type-check won't catch the rename. **Fix:** add a contract-test or daemon-test that builds a team with one member, calls `list_team_members(...)`, and asserts the resulting `Vec<Value>` contains `role` and `agent_status` keys with the expected types — this codifies the JSON shape that the CLI depends on."
+  - id: LOW-6
+    severity: LOW
+    summary: "W25 F3 boot timeout 10s is compile-time-fixed — no env-var override for slow CI runners"
+    file: crates/cli/src/client.rs:185
+    status: open
+    rationale: "The poll-loop is `let max_attempts = 100;` (×100ms = 10s). ONNX 5–7s cold-start fits, but CI workloads on cold-provisioned VMs can occasionally exceed 10s (slow disk + first-time process spawn). Today the only escalation is to recompile with a different constant. **Fix:** read `FORGE_DAEMON_BOOT_TIMEOUT_MS` from env; default to 10000ms; clamp to a reasonable max (60000ms). This makes the CI gate's worst-case knob configurable without a code change."
+  - id: LOW-7
+    severity: LOW
+    summary: "W26 --project string accepts arbitrary input with no cross-check against known realities/projects"
+    file: crates/cli/src/commands/teams.rs:563
+    status: open
+    rationale: "`forge-next team run --project foo` accepts any string and writes it directly to `session.project` for each spawned agent. There is no validation that `foo` matches an existing reality/project in the daemon's known set (the `reality` table at db/schema.rs:618). A typo silently scopes work to a non-existent project; the agent's later memory writes will be tagged with that typo'd project string and never surface in `health_by_project` for the intended project. Not regressed by W26 (the underlying `register_session` was already permissive), but the new `--project` flag makes the typo path easier to hit. **Fix:** in the daemon's `run_team` handler, look up the project string in `reality` and emit `Response::Error { message: 'unknown project ... (use `forge-next health` for known projects)' }` if not found; or, less strictly, log a tracing::warn! and continue."
+  - id: LOW-8
+    severity: LOW
+    summary: "W25 F2 plugin-install detection uses `is_dir()` which follows symlinks — broken-symlink plugin install reports as standalone (no warn)"
+    file: crates/daemon/src/server/handler.rs:1768
+    status: open
+    rationale: "`plugin_install_dirs.iter().flatten().any(|p| p.is_dir())` calls `Path::is_dir()` which follows symlinks. If `~/.claude/plugins/forge/` is a broken symlink (target deleted by mistake), `is_dir()` returns `false`, and the daemon emits the F2 'running standalone' OK instead of the 'misconfigured' warn. Pre-W25 behavior would also miss this (it only checked the hooks.json existence directly, also via `exists()` which also follows symlinks). Not regressed but worth flagging: the F2 fix doesn't help the broken-symlink failure mode, which is a real way users foot-gun their plugin install. **Fix:** use `Path::symlink_metadata()` and check whether the result is a symlink that doesn't resolve, then emit a third health-check state ('plugin install symlink broken')."
+  - id: LOW-9
+    severity: LOW
+    summary: "W27 no daemon-side unit test for `read_message_by_id_or_prefix` — 4 behavioral branches covered only by live verification"
+    file: crates/daemon/src/sessions.rs:541
+    status: open
+    rationale: "The helper has 4 distinct behavioral branches: (a) exact match → return Some(row); (b) prefix-1 match → return Some(row); (c) 0 matches → return None; (d) ≥2 matches → return Err(Ambiguous). Only the contract-test serialisation roundtrip is exercised by `cargo test`; the actual SQL behavior is verified only by the live commit-message walk-through (`message-read 01KQ4GV7FNRMVMFY5SEPP50HPH`, `01KQ4GV7`, `99XX9999`). A regression that swaps the prefix order (prefix first instead of exact first) would break for the case where one row's id is a prefix of another's — caught only at integration time by a user dogfooding. **Fix:** add 4 tests in `sessions.rs::tests` covering each branch using an in-memory DB."
+  - id: LOW-10
+    severity: LOW
+    summary: "W26 list_team_members joins `team_member` to `session` without filtering by session.status — retired sessions still show in member listing"
+    file: crates/daemon/src/teams.rs:374
+    status: open
+    rationale: "`list_team_members` returns rows for every `team_member` regardless of whether the joined `session.status` is 'active', 'idle', or 'ended'. Per F7's annotation logic, a `team stop` retires the agents (sets session.status='ended', agent_status='retired') but does NOT delete the `team_member` rows. The next `team members` call shows the retired sessions as if they were still active members — combined with MED-1 (orphan rows from partial spawn rollback), the listing can become noisy with dead history. **Fix:** the SQL in `list_team_members` should JOIN `session` and add `WHERE session.status IN ('active', 'idle')` (or expose a `--include-retired` CLI flag for the audit case). Out of scope for W26's stated F9 fix but exposed by it."
+  # ── NIT ───────────────────────────────────────────────────────────────
+  - id: NIT-1
+    severity: NIT
+    summary: "W24 dispatcher-rejection messages don't follow clap's standard `the argument 'X' cannot be used with 'Y'` wording"
+    file: crates/cli/src/main.rs:1483
+    status: open
+    rationale: "The hand-rolled error `pass message ID as positional OR --id, not both` is informative but doesn't match clap's standard conflict-detection format `error: the argument '--id <ID>' cannot be used with '<ID>'`. Users who grep for 'cannot be used with' (a common clap idiom) won't find this rejection. Cosmetic; the current message is clear and exit-code 2 is correct."
+  - id: NIT-2
+    severity: NIT
+    summary: "W25 F1 stale-decoration appended to Version line can blow 80-char terminal width"
+    file: crates/cli/src/commands/system.rs:60
+    status: open
+    rationale: "Decoration is `[stale daemon, CLI is v0.6.0-rc.4 — run \\`forge-next restart\\`]` appended to `Version: 0.6.0-rc.3 (bd1bac6)` — total can exceed 80 chars. **Better:** emit a separate health-check entry `[STALE] daemon: rebuild detected — run \\`forge-next restart\\`` in the Health Checks block instead of in-line. Cosmetic."
+  - id: NIT-3
+    severity: NIT
+    summary: "W27 8-char ID truncation in `messages` listing may already be ambiguous for high-volume same-minute message bursts"
+    file: crates/cli/src/commands/system.rs:969
+    status: open
+    rationale: "The `messages` listing displays `&m.id[..8.min(m.id.len())]`. ULIDs are time-sortable; 8 chars covers ~40 bits of the timestamp prefix, so messages sent within the same minute share a long common prefix. For a project with hundreds of messages/minute, the 8-char prefix collides routinely; the W27 prefix-resolution correctly returns 'ambiguous', but the user-friction of typing 4–8 more characters each time is real. **Fix:** display 12 chars by default and add a `--full` flag to show all 26. Cosmetic and orthogonal to W27's correctness."
+  # ── RESOLVED (verified during review) ─────────────────────────────────
+  - id: RESOLVED-1
+    severity: MEDIUM
+    summary: "Variant census 124 (20 unit + 104 param) verified against test_variant_count_completeness — count math is correct"
+    file: crates/core/src/protocol/contract_tests.rs:1284
+    status: resolved
+    fixed_by: 85712a8
+    rationale: "Ran `cargo test -p forge-core --lib protocol::contract_tests::tests::test_variant_count_completeness`: 1 passed. Naive `grep -c '^    [A-Z]' crates/core/src/protocol/request.rs` returns 155 (not 124) but that grep also matches struct-field constructors, doc-comment markers, and inner enum variants — it's not a precise variant census. The test's compile-time `match` exhaustiveness on `all_variants()` is the authoritative check, and it's at 124 with the new `SessionMessageRead` correctly accounted for."
+  - id: RESOLVED-2
+    severity: MEDIUM
+    summary: "harness-sync clean — `bash scripts/check-harness-sync.sh` returns OK at 155 JSON methods + 107 CLI subcommands"
+    file: scripts/check-harness-sync.sh
+    status: resolved
+    fixed_by: 85712a8
+    rationale: "Verified output: `harness-sync: OK — 155 JSON methods + 107 CLI subcommands authoritative, no drift`. plugin.json's protocol_hash is `1dca2da71d5dd04a58b19245afd983eaef2beeb6a7222ea9b548498cd6ab605d` matching W27's commit message. The W26 hash bump (`14219740...`) was correctly succeeded by W27's bump — no double-counting of the `RunTeam.project` field in the W26→W27 transition (that field was already part of the W26 hash; W27's bump is purely from the new `SessionMessageRead` variant)."
+  - id: RESOLVED-3
+    severity: HIGH
+    summary: "W23 deferred HIGHs (spawn_blocking supervisor, SessionRespond CLI surface) NOT inadvertently landed in this fix wave"
+    file: docs/superpowers/reviews/2026-04-26-p3-3-9-pre-ga-high.yaml
+    status: resolved
+    fixed_by: 85712a8
+    rationale: "Verified by inspection: `crates/daemon/src/server/writer.rs:345` retains the same fire-and-forget `tokio::task::spawn_blocking(move || run_force_index_in_task(...))` with no JoinHandle await, no AtomicBool reject-overlap guard, no supervisor wrapping — HIGH-1 is intact for W28. `crates/cli/src/main.rs` has no `Commands::Respond` arm and no `--from <SESSION>` flag on a respond subcommand — HIGH-2 is intact for W28. Neither HIGH was silently 'fixed' or partially shipped in W24-W27."
+  - id: RESOLVED-4
+    severity: MEDIUM
+    summary: "W24 dual-form positional/flag dispatch correctly enforces mutual exclusion at runtime"
+    file: crates/cli/src/main.rs:1481
+    status: resolved
+    fixed_by: bd1bac6
+    rationale: "Live verified against the freshly-built `forge-next`: `forge-next message-read --id AAA BBB` exits 2 with `error: pass message ID as positional OR --id, not both`. Same for `forge-next blast-radius --file AAA BBB`. The dispatcher's `match (id_pos, id_flag)` block correctly rejects the (Some, Some) case and the (None, None) case, and accepts the legacy `(None, Some)` and new `(Some, None)` paths. clap-parse roundtrips for all 4 combinations are pinned by the new W24 unit tests."
+  - id: RESOLVED-5
+    severity: LOW
+    summary: "W24 `identity show` clap alias is local to IdentityAction enum — no collision with ConfigAction::Show or other Show variants"
+    file: crates/cli/src/main.rs:1238
+    status: resolved
+    fixed_by: bd1bac6
+    rationale: "Verified: clap's `#[command(alias = \"show\")]` on `IdentityAction::List` is scoped to the parent IdentityAction enum's match arms only. Other `Show` subcommands in the binary (`ConfigAction::Show` at line 920) live in different parent enums and are reached via different parent commands (`config show` vs `identity show`). Live tested: `forge-next identity show` resolves to `IdentityAction::List { agent: 'claude-code' }` and prints 41 facets without ambiguity."
+  - id: RESOLVED-6
+    severity: MEDIUM
+    summary: "W26 F6 idempotent run_team rollback gates team DELETE on team_pre_existed — manually-created team is not destroyed on partial-spawn failure"
+    file: crates/daemon/src/teams.rs:567
+    status: resolved
+    fixed_by: eb55a2d
+    rationale: "Verified the `team_pre_existed` boolean is set BEFORE the upsert (line 567-575), and the rollback path at line 615-625 gates `DELETE FROM team WHERE name = ?1` on `if !team_pre_existed`. So a `team create --name X` followed by a `team run --name X` that fails on the second template won't destroy the user's manually-created team row. Test `test_run_team_idempotent_on_existing_team` exercises the happy-path (second run reuses team); a follow-up test for the rollback-with-pre-existing-team scenario would strengthen the guarantee but is not required. NOTE: this RESOLVED finding is the intended F6 fix; MED-1 above flags a SEPARATE leak (team_member rows) that the F6 fix does NOT address."
+  - id: RESOLVED-7
+    severity: MEDIUM
+    summary: "W26 `Request::RunTeam.project` is `#[serde(default)]` — wire-level backward-compat for old clients sending no project"
+    file: crates/core/src/protocol/request.rs:691
+    status: resolved
+    fixed_by: eb55a2d
+    rationale: "Verified the field declaration: `#[serde(default)] pub project: Option<String>`. Old clients that don't include the `project` key in their JSON request will deserialize to `project: None`, which the daemon's `run_team` correctly threads through `spawn_agent(..., None, ...)` → falls back to inheriting the daemon's working-directory project. Forward-compatible at the wire level — no breaking change to the protocol shape from a JSON consumer's perspective. The protocol_hash bump (`14219740...`) reflects the new field's presence in the typed-Rust roundtrip but the on-wire JSON is additive."
+  - id: RESOLVED-8
+    severity: MEDIUM
+    summary: "W26 F9 CLI now reads `role` and `agent_status` JSON keys correctly — daemon's emitted shape matches"
+    file: crates/cli/src/commands/teams.rs:357
+    status: resolved
+    fixed_by: eb55a2d
+    rationale: "Verified `m.get(\"role\")` and `m.get(\"agent_status\")` in CLI match the daemon's `serde_json::json!({...})` macro output in `list_team_members`. The data was already correct on the daemon side (template name written into `team_member.role` by `spawn_agent` line 252; `agent_status` projected via SQL alias) — only the CLI was reading the wrong keys. Fix is correct as stated. NOTE: LOW-5 above flags the absence of a contract test pinning the JSON shape, which is a soft-gap from this finding."
+  - id: RESOLVED-9
+    severity: MEDIUM
+    summary: "W26 test_run_team_propagates_project correctly inspects `session.project`, not `team.project`"
+    file: crates/daemon/src/teams.rs:2360
+    status: resolved
+    fixed_by: eb55a2d
+    rationale: "Verified the test queries `SELECT project FROM session WHERE id = ?1`, where `?1` is the spawned session's ID. The `session` table has a `project TEXT` column (db/schema.rs session table); `register_session` writes the project param to that column. The test's assertion `project.as_deref() == Some(\"forge\")` verifies the `--project` flag → `Request::RunTeam { project: Some(...) }` → `run_team(..., project)` → `spawn_agent(..., project, ...)` → `register_session(..., project, ...)` chain end-to-end. All 38 teams::tests pass."
+  - id: RESOLVED-10
+    severity: MEDIUM
+    summary: "W27 SessionMessageRead correctly wired through tier classification and writer read-only set"
+    file: crates/daemon/src/server/writer.rs:103
+    status: resolved
+    fixed_by: 85712a8
+    rationale: "Verified: tier.rs:244 classifies `Request::SessionMessageRead { .. }` under `Feature::TeamMessaging`; writer.rs:103 includes it in the `is_read_only` matcher (the helper does only SELECTs, no writes). The contract-test variant census `unit + param = 124` matches `test_variant_count_completeness`. The handler arm in handler.rs:4212 deserialises the parts JSON the same way SessionMessages does (with the loud-error fallback at line 4221 — slightly different from SessionMessages's loud-error pattern at line 4181 which calls out the FISP consistency_rate impact, but functionally equivalent for the single-message case). The new variant is correctly integrated at all 5 wire-touch points (request, response, tier, writer, handler)."
+  - id: RESOLVED-11
+    severity: LOW
+    summary: "All 38 daemon teams::tests pass; W26 added 2 new tests + updated 4 existing call-sites to pass `None` for the new `project` arg"
+    file: crates/daemon/src/teams.rs:2337
+    status: resolved
+    fixed_by: eb55a2d
+    rationale: "Verified `cargo test -p forge-daemon --lib teams::tests` returns `38 passed; 0 failed`. The 2 new tests are `test_run_team_idempotent_on_existing_team` (F6) and `test_run_team_propagates_project` (F8). The 4 existing tests (`test_run_team_creates_agents`, the rollback test, the bad-template test, the oversized test) were updated to pass an extra `None` for the new `project` arg — a mechanical update consistent with the function-signature extension."
