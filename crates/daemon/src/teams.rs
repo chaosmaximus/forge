@@ -530,12 +530,21 @@ pub const MAX_TEAM_SIZE: usize = 20;
 /// Run a full team: create team + spawn all agents from templates.
 /// On any spawn failure, rolls back all already-spawned agents (retire + end session).
 /// Returns (team_name, agents_spawned, session_ids).
+///
+/// W26 (F6): if a team with `team_name` already exists, the existing team
+/// row is reused instead of failing the UNIQUE constraint — supports the
+/// "create once, run later" workflow.
+///
+/// W26 (F8): the `project` argument propagates to each spawned agent's
+/// `session.project` so the orchestrator can scope a team's work without
+/// a follow-up `register-session` step.
 pub fn run_team(
     conn: &Connection,
     team_name: &str,
     template_names: &[String],
     topology: Option<&str>,
     goal: Option<&str>,
+    project: Option<&str>,
 ) -> rusqlite::Result<(String, usize, Vec<String>)> {
     let _topology = topology.unwrap_or("mesh");
 
@@ -555,9 +564,20 @@ pub fn run_team(
         }
     }
 
-    // Create the team
-    let purpose = format!("Team with {} agents", template_names.len());
-    let _team_id = create_team(conn, team_name, Some("agent"), Some(&purpose), None, None)?;
+    // Upsert the team: reuse if a row already exists with this name (F6),
+    // otherwise create. The "team exists, populate later" workflow now
+    // succeeds instead of failing the UNIQUE constraint on `team.name`.
+    let team_pre_existed: bool = conn
+        .query_row(
+            "SELECT 1 FROM team WHERE name = ?1",
+            params![team_name],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if !team_pre_existed {
+        let purpose = format!("Team with {} agents", template_names.len());
+        create_team(conn, team_name, Some("agent"), Some(&purpose), None, None)?;
+    }
 
     // Store goal on the team row if provided
     if let Some(g) = goal {
@@ -571,7 +591,7 @@ pub fn run_team(
     let mut session_ids = Vec::new();
     for tpl_name in template_names {
         let session_id = ulid::Ulid::new().to_string();
-        match spawn_agent(conn, tpl_name, &session_id, None, Some(team_name)) {
+        match spawn_agent(conn, tpl_name, &session_id, project, Some(team_name)) {
             Ok(()) => {
                 // Apply budget_limit from template to the session
                 if let Ok(Some(tpl)) = get_agent_template_by_name(conn, tpl_name, "default") {
@@ -592,12 +612,17 @@ pub fn run_team(
                 session_ids.push(session_id);
             }
             Err(e) => {
-                // Rollback: retire all already-spawned agents and clean up team record
+                // Rollback: retire all already-spawned agents and end their
+                // sessions. Only delete the team row if WE created it in this
+                // call — if the team pre-existed (F6 idempotent path), leave
+                // the operator's earlier `team create` row intact.
                 for sid in &session_ids {
                     let _ = retire_agent(conn, sid);
                     let _ = crate::sessions::end_session(conn, sid);
                 }
-                let _ = conn.execute("DELETE FROM team WHERE name = ?1", params![team_name]);
+                if !team_pre_existed {
+                    let _ = conn.execute("DELETE FROM team WHERE name = ?1", params![team_name]);
+                }
                 return Err(e);
             }
         }
@@ -2312,6 +2337,75 @@ mod tests {
 
     // ── run_team / stop_team Tests ──
 
+    /// W26 F6: `run_team` is idempotent on team name — a second call against
+    /// an existing team row succeeds (reuses the team) instead of failing the
+    /// UNIQUE constraint on `team.name`.
+    #[test]
+    fn test_run_team_idempotent_on_existing_team() {
+        let conn = setup();
+        let t1 = make_template("CTO");
+        create_agent_template(&conn, &t1).unwrap();
+
+        // First run: creates the team row.
+        let (name1, count1, sids1) =
+            run_team(&conn, "shared-team", &["CTO".into()], None, None, None).unwrap();
+        assert_eq!(name1, "shared-team");
+        assert_eq!(count1, 1);
+        assert_eq!(sids1.len(), 1);
+
+        // Second run with the same name: must NOT fail UNIQUE on team.name —
+        // should reuse the existing team row and spawn another agent into it.
+        let (name2, count2, sids2) =
+            run_team(&conn, "shared-team", &["CTO".into()], None, None, None).unwrap();
+        assert_eq!(name2, "shared-team");
+        assert_eq!(count2, 1);
+        assert_ne!(sids2[0], sids1[0], "second run must spawn a new session");
+
+        // Both agents should now be in the same team.
+        let member_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM team_member tm
+                 JOIN team t ON t.id = tm.team_id
+                 WHERE t.name = 'shared-team'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(member_count, 2, "both runs should populate the same team");
+    }
+
+    /// W26 F8: `run_team`'s `project` parameter propagates to each spawned
+    /// agent's `session.project`.
+    #[test]
+    fn test_run_team_propagates_project() {
+        let conn = setup();
+        let t1 = make_template("CTO");
+        create_agent_template(&conn, &t1).unwrap();
+
+        let (_n, _c, sids) = run_team(
+            &conn,
+            "scoped-team",
+            &["CTO".into()],
+            None,
+            None,
+            Some("forge"),
+        )
+        .unwrap();
+
+        let project: Option<String> = conn
+            .query_row(
+                "SELECT project FROM session WHERE id = ?1",
+                params![sids[0]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            project.as_deref(),
+            Some("forge"),
+            "spawned agent's session.project should match run_team's --project"
+        );
+    }
+
     #[test]
     fn test_run_team_creates_agents() {
         let conn = setup();
@@ -2320,8 +2414,15 @@ mod tests {
         create_agent_template(&conn, &t1).unwrap();
         create_agent_template(&conn, &t2).unwrap();
 
-        let (name, count, session_ids) =
-            run_team(&conn, "sprint-1", &["CTO".into(), "CMO".into()], None, None).unwrap();
+        let (name, count, session_ids) = run_team(
+            &conn,
+            "sprint-1",
+            &["CTO".into(), "CMO".into()],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(name, "sprint-1");
         assert_eq!(count, 2);
@@ -2369,6 +2470,7 @@ mod tests {
             &conn,
             "stop-team-1",
             &["CTO".into(), "CMO".into()],
+            None,
             None,
             None,
         )
@@ -2435,6 +2537,7 @@ mod tests {
             &["CTO".into(), "NonExistent".into()],
             None,
             None,
+            None,
         );
 
         // run_team validates all templates before creating anything, so it should fail
@@ -2462,7 +2565,7 @@ mod tests {
 
         // Create a template list that exceeds MAX_TEAM_SIZE
         let oversized: Vec<String> = (0..=MAX_TEAM_SIZE).map(|_| "CTO".into()).collect();
-        let result = run_team(&conn, "huge-team", &oversized, None, None);
+        let result = run_team(&conn, "huge-team", &oversized, None, None, None);
 
         assert!(
             result.is_err(),

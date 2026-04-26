@@ -1127,6 +1127,10 @@ enum TeamAction {
         /// Topology: star, mesh, or chain (default: mesh)
         #[arg(long)]
         topology: Option<String>,
+        /// Project to scope each spawned agent's session.project (W26/F8).
+        /// When unset, agents inherit the daemon's working-directory project.
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Stop a running team: retire all agents, end all sessions
     Stop {
@@ -1929,8 +1933,9 @@ async fn main() {
                 templates,
                 from_file,
                 topology,
+                project,
             } => {
-                commands::teams::run_team(name, templates, from_file, topology).await;
+                commands::teams::run_team(name, templates, from_file, topology, project).await;
             }
             TeamAction::Stop { name } => {
                 commands::teams::stop_team(name).await;
@@ -2805,6 +2810,7 @@ mod tests {
                     templates,
                     from_file,
                     topology,
+                    project: _,
                 } => {
                     assert_eq!(name, "Sprint");
                     assert_eq!(
@@ -2847,6 +2853,7 @@ mod tests {
                     templates,
                     from_file,
                     topology,
+                    project: _,
                 } => {
                     assert_eq!(name, "Sprint");
                     assert!(templates.is_none());

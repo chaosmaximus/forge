@@ -351,12 +351,16 @@ pub async fn list_team_members(team_name: String) {
             println!("{count} member(s) in team '{team_name}':");
             for m in &members {
                 let session_id = m.get("session_id").and_then(|v| v.as_str()).unwrap_or("?");
-                let template = m
-                    .get("template_name")
+                // F9: daemon emits `role` (= template name written by spawn_agent
+                // into team_member.role) and `agent_status` — the prior code
+                // read the wrong keys (`template_name`/`status`) so every member
+                // rendered as `?`.
+                let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("?");
+                let status = m
+                    .get("agent_status")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let status = m.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
-                println!("  {session_id}: {template} [{status}]");
+                    .unwrap_or("idle");
+                println!("  {session_id}: {role} [{status}]");
             }
         }
         Ok(Response::Error { message }) => {
@@ -459,6 +463,7 @@ pub async fn run_team(
     templates: Option<Vec<String>>,
     from_file: Option<String>,
     topology: Option<String>,
+    project: Option<String>,
 ) {
     let (team_name, template_names, topo) = if let Some(path) = from_file {
         // Reject files larger than 1MB to prevent resource exhaustion
@@ -557,6 +562,7 @@ pub async fn run_team(
         template_names,
         topology: topo,
         goal: None,
+        project,
     };
     match client::send(&req).await {
         Ok(Response::Ok {
@@ -604,7 +610,16 @@ pub async fn stop_team(name: String) {
                     agents_retired,
                 },
         }) => {
-            println!("Team '{team_name}' stopped: {agents_retired} agent(s) retired");
+            // F7: when retired==0, surface that the stop call was a no-op for
+            // agent lifecycle (team existed but had no spawned agents) rather
+            // than implying we did meaningful work.
+            if agents_retired == 0 {
+                println!(
+                    "Team '{team_name}' stopped: 0 agent(s) retired (team had no spawned agents)"
+                );
+            } else {
+                println!("Team '{team_name}' stopped: {agents_retired} agent(s) retired");
+            }
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

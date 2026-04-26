@@ -690,6 +690,11 @@ pub enum Request {
         /// Goal ancestry: traces this team's work to a project mission
         #[serde(default)]
         goal: Option<String>,
+        /// Project scope to assign to each spawned agent's session.project.
+        /// When `None`, agents inherit the daemon's working-directory project
+        /// (or `"(none)"` if unset). W26 (F8).
+        #[serde(default)]
+        project: Option<String>,
     },
     /// Stop a running team: retire all agents, end all sessions.
     StopTeam {

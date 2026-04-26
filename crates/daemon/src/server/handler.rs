@@ -5240,6 +5240,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             template_names,
             topology,
             goal,
+            project,
         } => {
             match crate::teams::run_team(
                 &state.conn,
@@ -5247,6 +5248,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 &template_names,
                 topology.as_deref(),
                 goal.as_deref(),
+                project.as_deref(),
             ) {
                 Ok((name, agents_spawned, session_ids)) => {
                     // Emit individual agent_spawned events for each agent

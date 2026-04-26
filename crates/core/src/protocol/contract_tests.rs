@@ -561,6 +561,7 @@ mod tests {
                     template_names: vec!["tech-lead".into(), "frontend-dev".into()],
                     topology: Some("mesh".into()),
                     goal: None,
+                    project: None,
                 },
             ),
             (
@@ -1689,6 +1690,7 @@ mod tests {
                     template_names: vec!["tech-lead".into(), "frontend-dev".into()],
                     topology: Some("mesh".into()),
                     goal: None,
+                    project: None,
                 },
                 Request::StopTeam {
                     team_name: "sprint-1".into(),
