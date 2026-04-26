@@ -1,0 +1,106 @@
+schema_version: 1
+review_id: 2026-04-26-p3-3-2a-6-spec-multi-agent-coordination-v2
+date: 2026-04-26
+phase: P3-3 Stage 2 — 2A-6 multi-agent coordination bench (v2 second review)
+target_paths:
+  - docs/superpowers/specs/2026-04-26-multi-agent-coordination-bench-design.md
+target_sha: 7329eb1
+reviewer:
+  agent: claude
+  model: claude-opus-4-7
+  invocation: general-purpose
+verdict: not-lockable
+artifacts:
+  - kind: transcript
+    path: docs/superpowers/reviews/2026-04-26-p3-3-2a-6-spec-multi-agent-coordination-v2.transcript.md
+findings:
+  - id: NEW-BLOCKER-1
+    severity: blocker
+    section: §3.1 D6 trial 2 + §3.3 assertions (d)(f)
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      v2 trial 2 = planner_beta→evaluator_beta (M5/M6) PLUS planner_beta→generator_beta
+      (M7/M8) — two parallel pairs both originating at planner, NOT a linear chain.
+      respond_to_message at sessions.rs:466-470 creates M8 with from=generator,
+      to=orig.from=planner. M8.to_session=planner_beta, NOT evaluator_beta.
+      Assertion (d) "M_inner_resp from=responder2, to=responder1" and (f) "M_inner_resp
+      retrievable via list_messages(responder1)" are unsatisfiable; trial 2 always
+      scores 4/6 on a green system — locks D6 max at 16/12 = 1.33 (>0.95 trivially)
+      but burns the bench's ability to detect a chain regression.
+  - id: NEW-HIGH-1
+    severity: high
+    section: §3.1a "Pinned sentinel-row contract"
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      §3.1a paragraph still describes "D6 trial 1 uses planner_beta → generator_beta
+      → evaluator_beta → generator_beta → planner_beta" (a 5-hop chain) and
+      "D6 trial 2 uses planner_alpha → generator_beta → evaluator_alpha
+      [cross-project on purpose] OR a same-project chain". Directly contradicts
+      §3.1 D6 (both trials team-beta, 4 messages each) and §4 D11
+      ("All D6 pipeline trials run in team-beta"). Stale draft text. Implementer
+      following §3.1a touches alpha and breaks sentinel hash.
+  - id: NEW-HIGH-2
+    severity: high
+    section: §3.1 D6 alpha coverage gap
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      K=2 trials both in team-beta = 12 max assertions, zero alpha exercise.
+      A regression in a project='alpha' branch of respond_to_message/list_messages
+      is a D6 false negative. D11 forces beta-only to preserve the sentinel,
+      but planner_alpha→evaluator_alpha→generator_alpha avoids the sentinel pair
+      (planner_alpha, generator_alpha) entirely and proves alpha-side.
+  - id: NEW-MED-1
+    severity: medium
+    section: §3.2 cross-project line
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      v2 §3.2 has self-contradicting line "(16 alpha→beta + 20 beta→alpha is
+      symmetric: 18 alpha→beta + 18 beta→alpha)". 16+20 is a residual draft typo;
+      only 18+18=36 is correct under 3 senders × 3 recipients × 2 msgs.
+  - id: NEW-MED-2
+    severity: medium
+    section: §3.3 D1 denom + §3.4 check 1
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      D1: `pre_d1_total / 6` hardcoded; check 1: `≥14 columns`. Both silent-drift.
+      A 12-inbox corpus extension makes D1 miscompute. A future ALTER adding a
+      15th column keeps check 1 green where `==14` would flag the drift.
+  - id: NEW-MED-3
+    severity: medium
+    section: §3.4 infra check 6
+    status: open
+    fixed_by: ""
+    rationale: ""
+    summary: |
+      Check 6 'session_distribution_correct_and_pre_d1_count_60' bundles 2
+      assertions in one name. Either failure produces same error; cannot
+      distinguish distribution drift from count drift. Other infra checks are
+      single-purpose.
+v1_findings_closure_check:
+  B1: closed
+  B2: closed
+  B3: closed
+  B4: closed
+  H1: closed
+  H2: closed
+  H3: closed
+  M1: closed
+  M2: closed
+  M3: closed
+summary: |
+  v2 closes all 10 v1 findings cleanly. Pass-2 surfaces a fatal D6 trial-2
+  chain bug (assertions (d)+(f) describe an inbox respond_to_message cannot
+  create — silent 4/12 score floor) and a stale §3.1a paragraph contradicting
+  §3.1+§4 D11. Fix D6 trial 2 + rewrite the §3.1a paragraph; address the
+  cross-project line typo + loose check-1 + hardcoded /6 + bundled check 6
+  before lock. v2.1 will close all 6 in one commit.
