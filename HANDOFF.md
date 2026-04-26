@@ -1,6 +1,6 @@
-# Handoff — P3-3 Stage 1 (2A-5) closed — 2026-04-25
+# Handoff — P3-3 Stage 1 (2A-5) closed — 2026-04-25 → 2026-04-26
 
-**Public HEAD:** `1d5416f` (2A-5 impl-review fix-wave). Working tree clean.
+**Public HEAD:** `e9d396c` (review-YAML backfill, 18/18 valid post-cleanup; date rolled mid-session). Working tree clean.
 **Forge-app master:** unchanged.
 **Version:** v0.6.0-rc.2 (will bump to v0.6.0-rc.3 at P3-3 close).
 **Plan:** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`
@@ -16,10 +16,10 @@ spec went through 2 review rounds (`v1: not-lockable` 3+3+4+3 → `v2: lockable-
 
 ```bash
 cd /mnt/colab-disk/DurgaSaiK/forge/forge
-git log --oneline -25                              # most recent at top (HEAD 1d5416f)
+git log --oneline -25                              # most recent at top (HEAD e9d396c)
 git status --short                                 # expect clean
 bash scripts/check-harness-sync.sh                 # 154 + 107, no drift
-bash scripts/check-review-artifacts.sh             # 18 reviews valid (15 + 2 P3-3 spec + 1 P3-3 impl)
+bash scripts/check-review-artifacts.sh             # 18 reviews valid (15 + 2 P3-3 spec + 1 P3-3 impl); 0 blocking findings
 bash scripts/check-license-manifest.sh             # 3 files, coverage clean
 bash scripts/check-protocol-hash.sh                # in sync (3bac3136…)
 bash tests/scripts/test-harness-sync.sh            # 7/0
@@ -47,6 +47,8 @@ Same spec-first cadence as 2A-5 (2 spec review rounds, then T1 recon → T2 skel
 
 | #   | SHA          | Stage    | Title |
 |-----|--------------|----------|-------|
+| 22  | `e9d396c`    | S1 close-cleanup | docs(P3-3 2A-5): backfill review YAMLs — 18/18 valid + all 11 gates green |
+| 21  | `254db45`    | S1 close | docs(P3-3 2A-5 close): HANDOFF rewrite + Stage 1 backlog appended |
 | 20  | `1d5416f`    | S1 fix   | fix(P3-3 2A-5 review): close HIGH-1, HIGH-2, MED-3, MED-4 + capture review YAML |
 | 19  | `db2e0fb`    | S1 T9-T13 | feat(P3-3 2A-5 T9-T12): calibration sweep + results doc + CI matrix entry |
 | 18  | `44184fc`    | S1 T7+T8 | feat(P3-3 2A-5 T7+T8): forge-bench CLI subcommand + events-namespace registry |
@@ -68,7 +70,7 @@ Same spec-first cadence as 2A-5 (2 spec review rounds, then T1 recon → T2 skel
 |  2  | `04c502a`    | S0       | chore(deps): bump zerocopy 0.7 -> 0.8 |
 |  1  | `ea75081`    | S0       | chore(deps): bump production-minor-patch group (5 deps) |
 
-20 P3-3 commits.
+22 P3-3 commits.
 
 ## What shipped — by stage / wave
 
@@ -133,7 +135,7 @@ Per `docs/superpowers/plans/2026-04-25-complete-production-readiness.md` §"P3-3
 
 Total P3-3 estimated: 20 done + ~35 to go = 55 commits.
 
-## Tests + verification (final state at HEAD `1d5416f`)
+## Tests + verification (final state at HEAD `e9d396c`)
 
 * `cargo fmt --all --check` — clean
 * `cargo clippy --workspace --tests --features bench -- -W clippy::all -D warnings` — 0 warnings
@@ -161,4 +163,4 @@ Total P3-3 estimated: 20 done + ~35 to go = 55 commits.
 
 ## One-line summary
 
-P3-3 Stage 1 (2A-5 domain-isolation bench) closed: 14 stage-1 commits; spec via 2 review rounds (v1 not-lockable → v2.1 lockable); 6 dims + 8 infra checks; calibration 5/5 seeds=1.0000 first run; impl review `lockable-with-fixes` 2 HIGH + 5 MED + 4 LOW + 13 RESOLVED, fix-wave closed 5; end-to-end forge-isolation seed=42 PASS. 20 total P3-3 commits at HEAD `1d5416f`. Stage 2 (2A-6) opens next session.
+P3-3 Stage 1 (2A-5 domain-isolation bench) closed: 16 stage-1 commits (14 ship + 1 close + 1 cleanup); spec via 2 review rounds (v1 not-lockable → v2.1 lockable); 6 dims + 8 infra checks; calibration 5/5 seeds=1.0000 first run; impl review `lockable-with-fixes` 2 HIGH + 5 MED + 4 LOW + 13 RESOLVED, fix-wave closed 5; end-to-end forge-isolation seed=42 PASS. 22 total P3-3 commits at HEAD `e9d396c`. All 18 review YAMLs valid + all 11 CI gates green. Stage 2 (2A-6) opens next session.
