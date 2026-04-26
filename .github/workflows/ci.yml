@@ -183,7 +183,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        bench: [forge-consolidation, forge-identity, forge-isolation]
+        bench: [forge-consolidation, forge-identity, forge-isolation, forge-coordination]
     steps:
       - uses: actions/checkout@v4
 
