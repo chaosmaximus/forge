@@ -227,7 +227,8 @@ findings:
       so all rows can render → max_possible = 60 per project.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 184
-    status: open
+    status: resolved
+    fixed_by: 728cebb
     rationale: >
       Spec lock-time fix; D6 is the highest-weighted dim alongside D1
       and currently has near-zero leakage signal.
@@ -243,7 +244,8 @@ findings:
       coverage status (covered / not-covered / partial).
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 282
-    status: open
+    status: resolved
+    fixed_by: 728cebb
     rationale: >
       Documentation hygiene; the gap is real and easily forgotten.
   - id: N3
@@ -263,7 +265,8 @@ findings:
       non-empty `<decisions>` + `<lessons>` blocks before D6 runs.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 206
-    status: open
+    status: resolved
+    fixed_by: 728cebb
     rationale: >
       Brittleness against future config defaults; cheap fix.
   - id: N4
@@ -281,7 +284,8 @@ findings:
       assert equal post-call.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 109
-    status: open
+    status: resolved
+    fixed_by: 728cebb
     rationale: >
       Tightens the probe to catch mutation-class regressions cheaply.
   - id: N5
@@ -298,7 +302,7 @@ findings:
       table walking these cases for reviewer-aid.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 263
-    status: open
+    status: deferred
     rationale: >
       Documentation; no behavior change.
   - id: N6
@@ -312,8 +316,6 @@ findings:
       (idx as f64 * 0.01).clamp(0.0, 0.29)` for cleanness.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 131
-    status: open
+    status: deferred
     rationale: >
       Determinism robustness across compiler upgrades.
-</content>
-</invoke>

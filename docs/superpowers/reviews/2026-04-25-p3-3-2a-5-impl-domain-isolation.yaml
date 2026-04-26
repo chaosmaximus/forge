@@ -27,69 +27,74 @@ findings:
     severity: HIGH
     summary: "D6 over-counts foreign tokens — alphabet sentinel double-counted in addition to MAIN_PROJECTS loop, but spec §3.3 only enumerates `Q in projects if Q != P` (the 5 main projects)"
     file: crates/daemon/src/bench/forge_isolation.rs:621-633
-    status: open
+    status: resolved
+    fixed_by: 1d5416f
     rationale: "Implementation iterates MAIN_PROJECTS for foreign tokens, then adds alphabet_secret_ unconditionally. Spec §3.3 D6 formula reads `for Q in projects if Q != P` and §3.2 corpus describes alphabet as a `D5-only construct`; D6 should NOT count alphabet. Today it scores 1.0 only because the SQL filter blocks alphabet rows from rendering. If the SQL filter regressed to admit alphabet (legitimate cross-project rendering scenario, e.g. a future alias rule), D6 would over-penalize. Fix: drop the alphabet_needle line OR document the deviation in §3.3 + the fn doc-comment. Cosmetic at observed scores; structural under regression."
   - id: HIGH-2
     severity: HIGH
     summary: "Infrastructure check 8 deviates from spec — checks `!xml.is_empty()` instead of `containing '<context>'` per spec §3.4"
     file: crates/daemon/src/bench/forge_isolation.rs:808
-    status: open
+    status: resolved
+    fixed_by: 1d5416f
     rationale: "Spec §3.4 reads: `compile_context(&conn, ...) returns non-empty String containing <context>`. Implementation only asserts non-empty. The output of compile_dynamic_suffix_with_inj is wrapped in `<forge-dynamic>` not `<context>` — so the spec literal-check would FAIL, but the implementation silently dropped the substring assertion to match observable output. Fix: either update the assertion to `xml.contains(\"<forge-dynamic>\")` to match the actual root tag (and patch §3.4), or restore the substring assertion using the correct tag. As written, the check is weaker than specified."
   # ── MEDIUM ────────────────────────────────────────────────────────────
   - id: MED-1
     severity: MEDIUM
     summary: "Seed parameter is documented as deterministic-by-design but corpus_confidence_is_deterministic_and_in_range test pins same seed twice — no test asserts different seeds also produce identical corpus (the actual property)"
     file: crates/daemon/src/bench/forge_isolation.rs:1039-1051
-    status: open
+    status: deferred
     rationale: "The Stage 1 results doc claims `composite is invariant across seeds`. The skeleton tests assert determinism per-seed but not seed-invariance. Add a regression test that runs `generate_corpus(seed=7)` and `generate_corpus(seed=42)`, asserts byte-identical title/content/project lists. If a future contributor introduces rng-consumption, this test fires. Today the property is silently reliant on `_rng: &mut ChaCha20Rng` being unused. The comment at line 162-167 documents the intent; a test would lock it."
   - id: MED-2
     severity: MEDIUM
     summary: "D6 hard-codes max_possible at runtime via ctx_config defaults; if config is loaded from file and decisions/lessons_limit drift, max_possible drifts silently. Spec mandates the 15 default."
     file: crates/daemon/src/bench/forge_isolation.rs:602
-    status: open
+    status: resolved
+    fixed_by: 1d5416f
     rationale: "`let max_possible = (ctx_config.decisions_limit + ctx_config.lessons_limit) as f64;` reads runtime config. Config defaults are hardcoded in `config.rs` to 10+5=15, but the bench is documented as running deterministically with seed=42 and the spec-mandated max_possible is 15. If a developer overrides defaults locally or via env, max_possible silently changes and the spec invariant is broken. Either: (a) hardcode `let max_possible = 15.0_f64;` to make the invariant un-violable, or (b) add a debug_assert that the runtime values equal spec defaults. As-is, spec §3.3 N1 fix `max_possible = 15` is not enforceable from this code path."
   - id: MED-3
     severity: MEDIUM
     summary: "Probe 4 (SQL injection inert) cannot distinguish 'function returned Err' from 'function ran and SQL was inert' — silently passes when sanitization rejects the input"
     file: crates/daemon/src/bench/forge_isolation.rs:495-509
-    status: open
+    status: resolved
+    fixed_by: 1d5416f
     rationale: "The `let _ =` discards the Result. Today, `recall_bm25_project` with `Some(\"alpha'; DROP TABLE memory;--\")` likely returns Ok(empty Vec) because (a) the project string is bound as parameter ?2 (param-bind, not concatenated), and (b) the FTS5 query 'isolation_bench' sanitizes fine. The N4 sentinel-row-hash check correctly catches mutation, but the probe gives no signal whether the dangerous string actually reached the binding layer or got short-circuited upstream. Fix: assert `recall_bm25_project(...).is_ok()` AND the hash invariant; OR document that the probe is intentionally tolerant of upstream rejection."
   - id: MED-4
     severity: MEDIUM
     summary: "infrastructure_checks failure path scores composite=0.0 but does NOT zero individual dimension scores — JSON readers see populated dim scores with composite=0.0 (inconsistent state)"
     file: crates/daemon/src/bench/forge_isolation.rs:847-855
-    status: open
+    status: resolved
+    fixed_by: 1d5416f
     rationale: "`run_bench_in_state` runs ALL 6 dim functions even when `infra_pass = false`, then sets composite=0.0 if infra fails but leaves the dim_score values populated. Forge-identity (the precedent at forge_identity.rs:1672) zeros out dimensions via `zeroed_dimensions()` and returns early. The current behavior produces summary.json with `composite: 0.0, dimensions: [score: 1.0, score: 1.0, ...]` — surprising for a downstream reader. Fix: replicate forge-identity's zeroed-dim path on infra failure."
   - id: MED-5
     severity: MEDIUM
     summary: "expected_composite gate at CLI uses ±0.05 tolerance but composite is documented as deterministically 1.0000 — gate cannot detect 4-row regressions in D6 (15/15 - 4/15 = 0.733 ≈ -0.27 from 1.0, would catch; but a 1-row regression D6=0.933 → composite=0.9833 → still passes 0.95 abs but is 0.0167 from 1.0 < 0.05)"
     file: crates/daemon/src/bin/forge-bench.rs:885-892
-    status: open
+    status: deferred
     rationale: "If ground-truth composite is 1.0 and a D6 regression drops one project's score to 0.933 (catches a 1-row leak per spec §3.3 N1 fix), the resulting composite is 0.25*1 + 0.15*1 + 0.10*1 + 0.10*1 + 0.15*1 + 0.25*0.987 = 0.9966. Drift from expected 1.0 is 0.003 — well under the 0.05 tolerance. The dual gate (per-dim min) catches it via the score.pass=false path, but the --expected-composite flag does NOT distinguish '0.0167 drift' (regression caught by per-dim min) from '0.0167 drift due to environmental noise'. Fix: tighten the tolerance to ±0.005 (consistent with the deterministic-composite claim) OR document that the gate is upper-bound-only ('composite drifted *down* by > 0.05')."
   # ── LOW ───────────────────────────────────────────────────────────────
   - id: LOW-1
     severity: LOW
     summary: "Test `end_to_end_run_passes_on_seed_42` writes `summary.json` to `/tmp` — concurrent test runs could race on the file"
     file: crates/daemon/src/bench/forge_isolation.rs:938-944
-    status: open
+    status: deferred
     rationale: "Hard-coding `/tmp` for `output_dir` is leaky and racy under parallel `cargo test`. Most test files use `tempfile::TempDir`. Fix: pass a `tempfile::tempdir().unwrap()` path instead. Low severity because the test still passes (writes are idempotent and serialize), but flaky on Windows / non-Unix CI."
   - id: LOW-2
     severity: LOW
     summary: "MAIN_PROJECTS, PREFIX_COLLISION_PROJECT etc are `pub const` — exposes bench-internal constants to downstream crates"
     file: crates/daemon/src/bench/forge_isolation.rs:51-71
-    status: open
+    status: deferred
     rationale: "Constants are `pub const` but the only consumer is the same module's tests. Forge-identity uses `pub(crate)` or private constants for similar values. Fix: drop `pub` to `pub(crate)` to match precedent + reduce API surface. No functional impact."
   - id: LOW-3
     severity: LOW
     summary: "wall_duration_ms cast `start.elapsed().as_millis() as u64` truncates beyond u64::MAX millis — non-issue (584M years) but inconsistent with other casts in the codebase"
     file: crates/daemon/src/bench/forge_isolation.rs:863
-    status: open
+    status: deferred
     rationale: "u128 → u64 cast can theoretically saturate. Other bench files use `try_from(...).unwrap_or(u64::MAX)` for parity. Cosmetic."
   - id: LOW-4
     severity: LOW
     summary: "results doc table claims wall_duration_ms `<1000` but no actual measurements recorded — opaque to reproducers"
     file: docs/benchmarks/results/2026-04-25-forge-isolation-stage1.md:13-20
-    status: open
+    status: deferred
     rationale: "The table column reads `<1000` for every seed, suggesting a placeholder rather than measurements. Spec §9 acceptance criteria requires 'runs in < 1.5s on ubuntu-latest' — so meeting <1000 is a stronger claim than required, but as a record of actual values it's uninformative. Fix: paste real ms values (e.g. 412, 387, 401, ...) or remove the column."
   # ── RESOLVED (verified during review) ─────────────────────────────────
   - id: RESOLVED-1
@@ -97,76 +102,89 @@ findings:
     summary: "B3 fix verified — D1 uses shared 'isolation_bench' tag query, not empty"
     file: crates/daemon/src/bench/forge_isolation.rs:317
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed `recall_bm25_project(&state.conn, SHARED_TAG, Some(project), 200)` where `SHARED_TAG = \"isolation_bench\"`."
   - id: RESOLVED-2
     severity: HIGH
     summary: "N1 fix verified — D6 max_possible = 15 (decisions+lessons), NOT 120"
     file: crates/daemon/src/bench/forge_isolation.rs:602
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed `(ctx_config.decisions_limit + ctx_config.lessons_limit)` reads as 10+5=15 from `config.rs::ContextConfig::default()`. Tight denominator catches 1-row regressions per N1 fix."
   - id: RESOLVED-3
     severity: HIGH
     summary: "N3 fix verified — D6 uses pinned `ContextInjectionConfig { session_context: true, .. Default::default() }`"
     file: crates/daemon/src/bench/forge_isolation.rs:598-601
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed pinned struct literal at the only D6 callsite + at infra check 8."
   - id: RESOLVED-4
     severity: MEDIUM
     summary: "N4 fix verified — D5 probe 4 includes sentinel-row hash check"
     file: crates/daemon/src/bench/forge_isolation.rs:489,502,557-578
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed `sentinel_row_hash(state)` called pre/post the injection probe; SHA-256 computed over (title, content, project, tags) of canary `isolation_alpha_0`."
   - id: RESOLVED-5
     severity: MEDIUM
     summary: "§3.7 mandate verified — single shared DaemonState across all 6 dims"
     file: crates/daemon/src/bench/forge_isolation.rs:833-865
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed `run_bench_in_state(state, ...)` passes the same `&mut state` to all 6 dim functions; no `:memory:` reconnection inside any dim."
   - id: RESOLVED-6
     severity: MEDIUM
     summary: "T2.1 lift verified — `bench/common::deterministic_embedding` is the canonical implementation; forge_consolidation re-exports it as `generate_base_embedding`"
     file: crates/daemon/src/bench/forge_consolidation.rs:1690
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed `pub use crate::bench::common::deterministic_embedding as generate_base_embedding;` — single source of truth, all callers compile."
   - id: RESOLVED-7
     severity: MEDIUM
     summary: "T2.2 lift verified — `bench/scoring::composite_score(scores, weights)` is the canonical N-dim implementation; forge_identity wraps it"
     file: crates/daemon/src/bench/forge_identity.rs:1633-1636
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed forge-identity's local fn is a 4-line wrapper that calls the lifted `crate::bench::scoring::composite_score(&scores, &DIM_WEIGHTS)`. Test `composite_score_forge_identity_six_dim_weights` pins the weights byte-identical to forge-identity. Test `composite_score_isolation_six_dim_weights` pins the new weights."
   - id: RESOLVED-8
     severity: MEDIUM
     summary: "Composite + dual gate verified — `pass = infra_pass && dims_pass && composite >= 0.95`"
     file: crates/daemon/src/bench/forge_isolation.rs:854-855
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed three-way AND. The scoring test `composite_score_d1_below_min_with_others_perfect` verifies the math: D1=0.84 with others 1.0 yields composite=0.96 ≥ 0.95, but `dims_pass` would catch D1 < 0.95 via `mark_pass`."
   - id: RESOLVED-9
     severity: MEDIUM
     summary: "Determinism: `generate_corpus(_rng)` does NOT consume rng — confirmed by reading body"
     file: crates/daemon/src/bench/forge_isolation.rs:175-239
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed: parameter binds as `_rng`, body uses formula-derived deterministic_confidence + deterministic_embedding(seed_key). No rng.random*() call. Comment at lines 162-168 documents intent."
   - id: RESOLVED-10
     severity: MEDIUM
     summary: "events-namespace registry row matches spec — all 6 dim names present"
     file: docs/architecture/events-namespace.md:171
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed: `forge-isolation | 6 | cross_project_precision, self_recall_completeness, global_memory_visibility, unscoped_query_breadth, edge_case_resilience, compile_context_isolation`. Matches forge-bench.rs::run_forge_isolation emit names."
   - id: RESOLVED-11
     severity: MEDIUM
     summary: "CI matrix entry correct: `bench: [forge-consolidation, forge-identity, forge-isolation]` with `continue-on-error: true`, `--seed 42`, output path templated"
     file: .github/workflows/ci.yml:182-186,222-225
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Confirmed `continue-on-error: true` at job level, matrix has 3 entries, `--seed 42` literal, output path uses `${{ matrix.bench }}` substitution correctly."
   - id: RESOLVED-12
     severity: MEDIUM
     summary: "harness-sync clean — script run returns OK, no drift"
     file: scripts/check-harness-sync.sh
     status: resolved
+    fixed_by: db2e0fb
     rationale: "Verified: `bash scripts/check-harness-sync.sh` → `harness-sync: OK — 154 JSON methods + 107 CLI subcommands authoritative, no drift`."
   - id: RESOLVED-13
     severity: MEDIUM
     summary: "All 17 forge_isolation tests pass; 15 scoring tests pass; 8 common tests pass — full bench module green under `--features bench`"
     file: crates/daemon/src/bench/forge_isolation.rs:912-1180
     status: resolved
+    fixed_by: db2e0fb
     rationale: "`cargo test --features bench -p forge-daemon --lib bench::forge_isolation` → 17 passed, 0 failed."

@@ -38,7 +38,8 @@ findings:
       pin the dim and inline it.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 264
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Spec lock-time fix; no implementation impact. Add the helper
       lift to T2 and update §3.2 / §8.1 to cite the correct location
@@ -57,7 +58,8 @@ findings:
       array — spec says nothing about either.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 64
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Spec lock-time fix. Add T2.1 "lift composite-mean to scoring.rs
       with N-dim signature" or pin "replicate locally" decision in §3.3.
@@ -75,7 +77,8 @@ findings:
       foreign-token set) or change probe shape.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 76
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Spec lock-time fix; D1 is the highest-weighted dim and currently
       un-implementable as written. Pin the broad-probe query in §3.1.
@@ -97,7 +100,8 @@ findings:
       narrow.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 213
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Either add a Dim 6 driving `compile_context` and asserting full
       XML contains no foreign-project token, or land a strong §5
@@ -116,7 +120,8 @@ findings:
       spec claims to measure. Probe must be redefined.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 80
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Spec lock-time fix. Either accept "empty string == request
       global pool only" as the contract and probe that, or change
@@ -133,7 +138,8 @@ findings:
       total_probes` scoring; tighten min to 0.90 if probe count > 5.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 80
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Surface-area gap. SQL-injection probe in particular is
       cheap-to-add and load-bearing for a security-claim bench.
@@ -150,7 +156,8 @@ findings:
       the same DaemonState" to preserve leakage-detection signal.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 70
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Architecture decision missing from spec. Lock-time text edit.
   - id: M2
@@ -166,7 +173,8 @@ findings:
       org-filter path, or land a §5 disclaimer.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 99
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Cross-org leakage is a separate concern from cross-project;
       reasonable defer but should be explicit.
@@ -184,7 +192,8 @@ findings:
       add a tag-sanitization probe and possibly drop tags from FTS."
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 207
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Documentation hygiene. Real leakage class explicitly deferred
       with sidestep but lacks §5 disclaimer line.
@@ -201,7 +210,8 @@ findings:
       0.01).clamp(0.0, 0.29)` — avoids the rand_range edge entirely.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 106
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Determinism robustness. Cheap fix, removes one calibration
       risk dimension.
@@ -216,7 +226,8 @@ findings:
       idx_memory_project + corpus shape need pre-flight check".
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 141
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Cosmetic. Could be addressed in lock-time edit pass.
   - id: L2
@@ -231,7 +242,8 @@ findings:
       OR project = ''`).
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 220
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Re-verification at impl time, no spec change needed but
       worth adding a T1 line item.
@@ -246,6 +258,7 @@ findings:
       with the forge-identity precedent doc.
     file: docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md
     line: 58
-    status: open
+    status: resolved
+    fixed_by: c1389bd
     rationale: >
       Cosmetic. No action needed.
