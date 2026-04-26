@@ -1699,8 +1699,11 @@ pub async fn config_delete_scoped(scope: String, scope_id: String, key: String) 
     }
 }
 
-/// Force-trigger the code indexer and show current index counts.
-/// When `path` is provided, indexes that specific directory.
+/// Trigger the code indexer. The daemon dispatches the indexing work to a
+/// background task (W22, F23) and replies immediately with
+/// `IndexComplete { 0, 0 }` so subsequent writes (team stop, cleanup-sessions)
+/// aren't blocked behind a 30 s+ indexer pass. Non-zero counts indicate a
+/// synchronous response from a daemon predating W22 — preserved for parity.
 pub async fn force_index(path: Option<String>) {
     match client::send(&Request::ForceIndex { path: path.clone() }).await {
         Ok(Response::Ok {
@@ -1710,9 +1713,17 @@ pub async fn force_index(path: Option<String>) {
                     symbols_indexed,
                 },
         }) => {
-            println!("Index status:");
-            println!("  Files indexed:   {files_indexed}");
-            println!("  Symbols indexed: {symbols_indexed}");
+            if files_indexed == 0 && symbols_indexed == 0 {
+                println!(
+                    "Indexer dispatched in background. Watch ~/.forge/daemon.log \
+                    or query progress with `forge-next find-symbol <name>` / \
+                    `forge-next code-search <query>`."
+                );
+            } else {
+                println!("Index status:");
+                println!("  Files indexed:   {files_indexed}");
+                println!("  Symbols indexed: {symbols_indexed}");
+            }
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

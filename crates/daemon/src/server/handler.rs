@@ -11,6 +11,10 @@ use std::time::Instant;
 
 pub struct DaemonState {
     pub conn: Connection,
+    /// Path to the SQLite file backing `conn` (or `:memory:` in tests).
+    /// Captured so handlers/actor can spawn background tasks that open their
+    /// own write-capable connection (e.g. F23 async force-index in W22).
+    pub db_path: String,
     pub events: EventSender,
     pub started_at: Instant,
     pub hlc: Arc<crate::sync::Hlc>,
@@ -121,6 +125,7 @@ impl DaemonState {
 
         Ok(DaemonState {
             conn,
+            db_path: db_path.to_string(),
             events,
             started_at: Instant::now(),
             hlc: Arc::new(hlc),
@@ -159,6 +164,7 @@ impl DaemonState {
         schema::create_schema(&conn).map_err(|e| format!("create schema for writer: {e}"))?;
         Ok(Self {
             conn,
+            db_path: db_path.to_string(),
             events,
             hlc,
             started_at,
@@ -204,6 +210,7 @@ impl DaemonState {
             .ok();
         Ok(Self {
             conn,
+            db_path: db_path.to_string(),
             events,
             hlc,
             started_at,

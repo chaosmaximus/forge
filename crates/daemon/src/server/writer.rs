@@ -1,4 +1,4 @@
-use forge_core::protocol::{Request, Response};
+use forge_core::protocol::{Request, Response, ResponseData};
 use tokio::sync::{mpsc, oneshot};
 
 /// Context for audit logging of write operations.
@@ -259,7 +259,10 @@ impl WriterActor {
                     );
                 }
                 WriteCommand::Raw { request, reply } => {
-                    let response = super::handler::handle_request(&mut self.state, request);
+                    let response = match request {
+                        Request::ForceIndex { path } => self.process_force_index_async(path),
+                        other => super::handler::handle_request(&mut self.state, other),
+                    };
                     let _ = reply.send(response);
                 }
                 WriteCommand::Audited {
@@ -269,7 +272,10 @@ impl WriterActor {
                 } => {
                     let req_type = request_type_name(&request);
                     let summary = request_summary(&request);
-                    let response = super::handler::handle_request(&mut self.state, request);
+                    let response = match request {
+                        Request::ForceIndex { path } => self.process_force_index_async(path),
+                        other => super::handler::handle_request(&mut self.state, other),
+                    };
                     let status = response_status(&response);
 
                     // Insert audit log record (best-effort — don't fail the request)
@@ -300,6 +306,108 @@ impl WriterActor {
                 }
             }
         }
+    }
+
+    /// F23 (W22): handle `Request::ForceIndex` without blocking the writer
+    /// loop. Validates the optional path synchronously so the caller still
+    /// gets immediate "not a directory" / canonicalize errors, then dispatches
+    /// the heavy indexing work (file walking, regex extraction, import edges,
+    /// clustering) onto a `tokio::task::spawn_blocking` worker that opens its
+    /// own write-capable SQLite connection. Returns
+    /// `ResponseData::IndexComplete { 0, 0 }` immediately so the writer-actor
+    /// can process the next request — the CLI-side surface treats `0,0` as
+    /// "indexer started in background" (see `commands::system::force_index`).
+    fn process_force_index_async(&self, path: Option<String>) -> Response {
+        if let Some(ref dir) = path {
+            match std::fs::canonicalize(dir) {
+                Ok(canonical) => {
+                    if !canonical.is_dir() {
+                        return Response::Error {
+                            message: format!("'{dir}' is not a directory"),
+                        };
+                    }
+                }
+                Err(e) => {
+                    return Response::Error {
+                        message: format!("cannot resolve path '{dir}': {e}"),
+                    };
+                }
+            }
+        }
+
+        let db_path = self.state.db_path.clone();
+        let path_for_task = path;
+        tracing::info!(
+            target: "forge_daemon::indexer",
+            ?path_for_task,
+            "force-index dispatched to background task"
+        );
+        tokio::task::spawn_blocking(move || {
+            run_force_index_in_task(&db_path, path_for_task);
+        });
+
+        Response::Ok {
+            data: ResponseData::IndexComplete {
+                files_indexed: 0,
+                symbols_indexed: 0,
+            },
+        }
+    }
+}
+
+/// Background body for an async `force-index` dispatch. Opens a fresh
+/// write-capable connection to `db_path` so the writer-actor's connection
+/// is free to serve other writes; SQLite WAL mode handles inter-connection
+/// write serialisation per-transaction (≪ 30 s, vs. the previous
+/// whole-handler hold). The work mirrors the synchronous `Request::ForceIndex`
+/// handler in `handler.rs` so the on-disk effect is identical.
+fn run_force_index_in_task(db_path: &str, path: Option<String>) {
+    crate::db::vec::init_sqlite_vec();
+    let conn = match rusqlite::Connection::open(db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                target: "forge_daemon::indexer",
+                error = %e,
+                db_path,
+                "force-index: failed to open background connection"
+            );
+            return;
+        }
+    };
+    let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;");
+
+    if let Some(dir) = path {
+        let canonical = std::fs::canonicalize(&dir)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(dir);
+        let (files_indexed, symbols_indexed) =
+            crate::workers::indexer::index_directory_sync(&conn, &canonical);
+        tracing::info!(
+            target: "forge_daemon::indexer",
+            files_indexed,
+            symbols_indexed,
+            project = %canonical,
+            "force-index complete (background)"
+        );
+    } else {
+        let files = crate::db::ops::list_code_files(&conn);
+        let import_edges = crate::workers::indexer::extract_and_store_imports(&conn, &files);
+        let projects: std::collections::HashSet<String> =
+            files.iter().map(|f| f.project.clone()).collect();
+        for project_dir in &projects {
+            crate::workers::indexer::run_clustering(&conn, project_dir);
+        }
+        let symbols_indexed: usize = conn
+            .query_row("SELECT COUNT(*) FROM code_symbol", [], |r| r.get(0))
+            .unwrap_or(0);
+        tracing::info!(
+            target: "forge_daemon::indexer",
+            files_indexed = files.len(),
+            import_edges,
+            symbols_indexed,
+            "force-index (no-path) complete (background)"
+        );
     }
 }
 
