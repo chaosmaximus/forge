@@ -51,6 +51,62 @@ pub fn project_or_global(project: Option<&str>) -> &str {
         .unwrap_or(GLOBAL_PROJECT_SENTINEL)
 }
 
+/// Derive a stable human-readable project name for a filesystem path.
+///
+/// P3-4 W1.2 c1 (I-7) — code-graph per-project scoping. The indexer was
+/// previously storing the full project directory PATH in
+/// `code_file.project`, while `memory.project` (W29) and
+/// `identity.project` (W30) store the human-readable NAME. That
+/// mismatch made `--project forge` filters useless on the code-graph
+/// surface (live-verified during W1 dogfood).
+///
+/// Every code file lives in a directory, so a real project name is
+/// ALWAYS derivable. This function deliberately does NOT fall back to
+/// `_global_` — that sentinel is reserved for memories/identity facets
+/// that don't bind to a specific project (e.g. agent-wide expertise
+/// extracted from session-summary docs). For code files, we always have
+/// a directory.
+///
+/// Resolution order:
+/// 1. Exact reality lookup — `reality.project_path = project_dir`.
+/// 2. Walk parents — if `project_dir` lives under a registered reality
+///    (e.g. monorepo with multiple sub-projects), inherit that name.
+/// 3. Basename of `project_dir` — works for unregistered projects
+///    (e.g. fresh `cargo new` trees).
+///
+/// Only returns `_global_` when the input is empty (defensive fallback
+/// for callers that lost their path context, never the happy path).
+///
+/// Idempotent: re-deriving for the same path always returns the same
+/// name. One indexed `query_row` plus up to N parent lookups (bounded
+/// by directory depth) — safe for hot indexer paths.
+pub fn derive_project_name(conn: &Connection, project_dir: &str) -> String {
+    if project_dir.is_empty() {
+        return GLOBAL_PROJECT_SENTINEL.to_string();
+    }
+    if let Ok(Some(r)) = get_reality_by_path(conn, project_dir, "default") {
+        if !r.name.is_empty() {
+            return r.name;
+        }
+    }
+    let path = std::path::Path::new(project_dir);
+    for ancestor in path.ancestors().skip(1) {
+        let ancestor_str = ancestor.to_string_lossy();
+        if ancestor_str.is_empty() || ancestor_str == "/" {
+            break;
+        }
+        if let Ok(Some(r)) = get_reality_by_path(conn, &ancestor_str, "default") {
+            if !r.name.is_empty() {
+                return r.name;
+            }
+        }
+    }
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| GLOBAL_PROJECT_SENTINEL.to_string())
+}
+
 /// BM25 search result
 #[derive(Debug, Clone)]
 pub struct BM25Result {
@@ -1196,10 +1252,20 @@ pub fn touch(conn: &Connection, ids: &[&str]) {
 }
 
 /// Insert or replace a code file record.
+///
+/// P3-4 W1.2 c1 (I-7): the `project` field is normalised through
+/// `project_or_global` before binding so empty / NULL / whitespace inputs
+/// land as `_global_` (the sentinel value) rather than a bare empty
+/// string. The indexer write-path is updated separately to derive a
+/// human-readable project NAME via `derive_project_name(conn, dir)`,
+/// matching the `memory.project` (W29) and `identity.project` (W30)
+/// semantics so `--project forge` filters work uniformly across all
+/// three surfaces.
 pub fn store_file(conn: &Connection, file: &CodeFile) -> rusqlite::Result<()> {
+    let project = project_or_global(Some(&file.project));
     conn.execute(
         "INSERT OR REPLACE INTO code_file (id, path, language, project, hash, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![file.id, file.path, file.language, file.project, file.hash, file.indexed_at],
+        params![file.id, file.path, file.language, project, file.hash, file.indexed_at],
     )?;
     Ok(())
 }

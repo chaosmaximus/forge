@@ -368,11 +368,12 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             id TEXT PRIMARY KEY,
             path TEXT NOT NULL UNIQUE,
             language TEXT NOT NULL,
-            project TEXT NOT NULL DEFAULT '',
+            project TEXT NOT NULL DEFAULT '_global_',
             hash TEXT NOT NULL,
             indexed_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_code_file_path ON code_file(path);
+        CREATE INDEX IF NOT EXISTS idx_code_file_project ON code_file(project);
 
         CREATE TABLE IF NOT EXISTS code_symbol (
             id TEXT PRIMARY KEY,
@@ -950,6 +951,41 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 
     // Code file scoping
     let _ = conn.execute("ALTER TABLE code_file ADD COLUMN reality_id TEXT", []);
+
+    // P3-4 W1.2 c1 (I-7) — code-graph per-project scoping (sentinel + basename migration).
+    //
+    // Pre-W1.2 daemons stored the full project directory PATH in
+    // `code_file.project` (e.g. `/mnt/colab/.../forge/forge`), but
+    // `memory.project` (W29) and `identity.project` (W30) store the
+    // human-readable NAME (`forge`). That made `--project forge` filters
+    // useless on find-symbol/code-search/blast-radius — symbols from
+    // every indexed project leaked through. Repaired here in two passes:
+    //
+    // 1. Backfill the basename-equivalent for any path-tagged legacy row.
+    //    Use SQLite string functions (no `Path::file_name` available in
+    //    SQL) — `substr` after the last `/` is sufficient for the POSIX
+    //    paths we know about. Hosts with backslash separators (none in
+    //    production today) would need a more elaborate normaliser.
+    // 2. Defensive sentinel fallback for any row that's NULL / empty
+    //    after the basename pass — should be unreachable but cheap to
+    //    keep correct under malformed writes.
+    //
+    // Idempotent — re-running on already-migrated rows is a no-op
+    // because basename(forge) = forge.
+    let _ = conn.execute(
+        "UPDATE code_file
+         SET project = SUBSTR(project, LENGTH(project) - INSTR(REVERSE(project), '/') + 2)
+         WHERE project LIKE '/%' AND INSTR(REVERSE(project), '/') > 0",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE code_file SET project = '_global_' WHERE project IS NULL OR project = ''",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_code_file_project ON code_file(project)",
+        [],
+    );
 
     // v2.0: Composite indexes for scoped queries
     let _ = conn.execute(

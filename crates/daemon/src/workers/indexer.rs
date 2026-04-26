@@ -28,6 +28,29 @@ use tokio::sync::{watch, Mutex};
 /// below.
 const CODE_FILE_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "py", "go"];
 
+/// P3-4 W1.2 c1 (I-7) — derive the human-readable project NAME from a
+/// project directory PATH. Used by the indexer when building
+/// `CodeFile { project: ... }` rows so the column matches the
+/// W29/W30 semantics on `memory.project` / `identity.project` (a
+/// human-readable name like "forge", not a path like
+/// "/mnt/.../forge/forge"). Without this, `--project forge` filters
+/// against the code-graph silently mismatched and returned cross-
+/// project leakage from every indexed reality (live-verified during
+/// W1 dogfood as the I-7 finding).
+///
+/// Basename-only — fast and zero-allocation in the hot path. The full
+/// reality-table-aware variant (`db::ops::derive_project_name`) is
+/// used at handler entry points where a `Connection` is available.
+/// Both implementations agree for the common case (a project
+/// registered with `name == basename(project_path)`).
+fn project_name_from_dir(project_dir: &str) -> String {
+    std::path::Path::new(project_dir)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| crate::db::ops::GLOBAL_PROJECT_SENTINEL.to_string())
+}
+
 /// P3-3.11 W32: fast-tick cadence for fresh-mtime checks. The full
 /// reindex runs only when (a) the safety-net cron elapsed OR (b) at
 /// least one tracked code file has been modified after the previous
@@ -422,7 +445,7 @@ async fn index_with_server(
             id: format!("file:{file_path}"),
             path: file_path.clone(),
             language: config.language.clone(),
-            project: project_dir.to_string(),
+            project: project_name_from_dir(project_dir),
             hash: hash.clone(),
             indexed_at: indexed_at.to_string(),
         };
@@ -619,7 +642,7 @@ async fn run_index(
                     id: format!("file:{path}"),
                     path: path.to_string(),
                     language: language.to_string(),
-                    project: project_dir.to_string(),
+                    project: project_name_from_dir(project_dir),
                     hash: hash.clone(),
                     indexed_at: indexed_at.clone(),
                 };
@@ -660,7 +683,7 @@ async fn run_index(
                 id: format!("file:{path}"),
                 path: path.to_string(),
                 language: "python".into(),
-                project: project_dir.to_string(),
+                project: project_name_from_dir(project_dir),
                 hash: hash.clone(),
                 indexed_at: indexed_at.clone(),
             });
@@ -696,7 +719,7 @@ async fn run_index(
                 id: format!("file:{path}"),
                 path: path.to_string(),
                 language: "go".into(),
-                project: project_dir.to_string(),
+                project: project_name_from_dir(project_dir),
                 hash: hash.clone(),
                 indexed_at: indexed_at.clone(),
             });
@@ -830,7 +853,7 @@ pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usi
                 id: format!("file:{path}"),
                 path: path.clone(),
                 language: language.to_string(),
-                project: project_dir.to_string(),
+                project: project_name_from_dir(project_dir),
                 hash: hash.clone(),
                 indexed_at: indexed_at.clone(),
             });
