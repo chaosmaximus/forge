@@ -4,6 +4,22 @@ mod transport;
 
 use clap::{Parser, Subcommand};
 
+/// P3-4 W1.23 (W1.3 LOW-4): clap value-parser that rejects empty or
+/// whitespace-only `--project` values. `--project ""` previously
+/// clap-parsed to `Some("")`, which the daemon's post-c1 SQL filter
+/// `cf.project = ''` then matched zero rows for — silent fail-closed
+/// with no diagnostic. Trimming whitespace and rejecting at the CLI
+/// boundary makes the failure mode load-bearing instead of silent.
+/// Pattern parity with the W29 review MED-2 fix on `recall`.
+fn parse_non_empty_project(s: &str) -> Result<String, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        Err("--project must be non-empty (whitespace-only values are not allowed)".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "forge-next", about = "Forge — memory for AI coding agents")]
 struct Cli {
@@ -170,7 +186,7 @@ enum Commands {
         file_flag: Option<String>,
         /// Restrict the blast-radius cluster lookup to a single
         /// project's code graph (P3-4 W1.2 c2 / I-7).
-        #[arg(long)]
+        #[arg(long, value_parser = parse_non_empty_project)]
         project: Option<String>,
     },
     /// List active agent sessions
@@ -480,7 +496,7 @@ enum Commands {
         limit: usize,
         /// Restrict the search to a single project's code graph
         /// (P3-4 W1.2 c2 / I-7).
-        #[arg(long)]
+        #[arg(long, value_parser = parse_non_empty_project)]
         project: Option<String>,
     },
 
@@ -607,7 +623,7 @@ enum Commands {
         /// indexed project — useful for finding cross-project utilities
         /// but a leak surface for forge-only sessions (P3-4 W1 dogfood
         /// I-7).
-        #[arg(long)]
+        #[arg(long, value_parser = parse_non_empty_project)]
         project: Option<String>,
     },
 
@@ -3865,6 +3881,85 @@ mod tests {
             }
             other => panic!("expected BlastRadius, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn p3_4_w1_23_blast_radius_rejects_empty_project() {
+        // W1.3 LOW-4: `--project ""` previously parsed to Some("") and
+        // hit the daemon as `cf.project = ''` — silent zero-row match
+        // post-c1. The W1.23 fix attaches `parse_non_empty_project` to
+        // the three code-graph commands. clap surfaces the parser
+        // error as a non-zero exit + stderr message at the CLI
+        // boundary, so the user sees the diagnostic immediately.
+        let cli =
+            Cli::try_parse_from(["forge-next", "blast-radius", "src/main.rs", "--project", ""]);
+        assert!(
+            cli.is_err(),
+            "empty --project must be rejected by clap value-parser"
+        );
+        let err_str = cli.err().unwrap().to_string();
+        assert!(
+            err_str.contains("--project must be non-empty"),
+            "error message should explain the rejection; got: {err_str}"
+        );
+
+        // Whitespace-only must also reject.
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "blast-radius",
+            "src/main.rs",
+            "--project",
+            "   ",
+        ]);
+        assert!(cli.is_err(), "whitespace-only --project must be rejected");
+
+        // Non-empty value still parses; trim is applied.
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "blast-radius",
+            "src/main.rs",
+            "--project",
+            "  forge  ",
+        ])
+        .expect("non-empty --project parses");
+        match cli.command {
+            Commands::BlastRadius { project, .. } => {
+                assert_eq!(
+                    project.as_deref(),
+                    Some("forge"),
+                    "value-parser trims surrounding whitespace"
+                );
+            }
+            other => panic!("expected BlastRadius, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_w1_23_code_search_rejects_empty_project() {
+        let cli = Cli::try_parse_from(["forge-next", "code-search", "MyClass", "--project", ""]);
+        assert!(
+            cli.is_err(),
+            "empty --project must be rejected on code-search"
+        );
+        assert!(cli
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("--project must be non-empty"));
+    }
+
+    #[test]
+    fn p3_4_w1_23_find_symbol_rejects_empty_project() {
+        let cli = Cli::try_parse_from(["forge-next", "find-symbol", "foo", "--project", ""]);
+        assert!(
+            cli.is_err(),
+            "empty --project must be rejected on find-symbol"
+        );
+        assert!(cli
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("--project must be non-empty"));
     }
 
     #[test]
