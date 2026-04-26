@@ -109,13 +109,20 @@ where
         .with_endpoint(endpoint)
         .build()?;
 
-    let resource = opentelemetry_sdk::Resource::new(vec![KeyValue::new(
-        "service.name",
-        service_name.to_string(),
-    )]);
+    // 0.31 unified Resource construction: Resource::new() is now private;
+    // use the builder. with_attributes() takes any IntoIterator<Item = KeyValue>.
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_attributes(vec![KeyValue::new(
+            "service.name",
+            service_name.to_string(),
+        )])
+        .build();
 
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+    // 0.31 renamed TracerProvider (the SDK type) to SdkTracerProvider so the
+    // type and the public trait `opentelemetry::trace::TracerProvider` no
+    // longer collide. The trait import above remains required for `.tracer()`.
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
         .with_resource(resource)
         .build();
 

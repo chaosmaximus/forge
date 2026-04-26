@@ -551,7 +551,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::create_schema(&conn).unwrap();
 
-        let provider = opentelemetry_sdk::trace::TracerProvider::builder().build();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
         let tracer = provider.tracer("forge-test");
         let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer.clone());
         let subscriber = tracing_subscriber::registry().with(otlp_layer);
@@ -571,7 +571,9 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("phase_under_test");
-            span.set_parent(cx);
+            // 0.32 of tracing-opentelemetry made `set_parent` return Result
+            // (was () in 0.28). Test doesn't care; suppress the must-use.
+            let _ = span.set_parent(cx);
             let _enter = span.enter();
 
             let outcome = PhaseOutcome {

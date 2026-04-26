@@ -234,15 +234,18 @@ const OTLP_OVERHEAD_RATIO_CEILING: f64 = 1.20;
 #[derive(Debug, Default)]
 struct NoopSpanExporter;
 
-impl opentelemetry_sdk::export::trace::SpanExporter for NoopSpanExporter {
+// 0.31 unified the SpanExporter trait into opentelemetry_sdk::trace::
+// SpanExporter (was opentelemetry_sdk::export::trace::SpanExporter pre-0.31).
+// The trait now expects a single `export` method returning an
+// `OTelSdkResult` directly (sync) instead of a `BoxFuture<ExportResult>`.
+impl opentelemetry_sdk::trace::SpanExporter for NoopSpanExporter {
     fn export(
-        &mut self,
-        _batch: Vec<opentelemetry_sdk::export::trace::SpanData>,
-    ) -> futures_util::future::BoxFuture<'static, opentelemetry_sdk::export::trace::ExportResult>
-    {
+        &self,
+        _batch: Vec<opentelemetry_sdk::trace::SpanData>,
+    ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
         // Discard spans without doing any IO. The whole point of Variant C
         // is to measure SDK overhead, not exporter overhead.
-        Box::pin(async { Ok(()) })
+        std::future::ready(Ok(()))
     }
 }
 
@@ -275,8 +278,8 @@ async fn t10_consolidation_latency_otlp_variant_c() {
 
     // Build the OpenTelemetry plumbing OUTSIDE the timed loop so provider
     // construction cost doesn't pollute the per-iteration measurements.
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_batch_exporter(NoopSpanExporter, opentelemetry_sdk::runtime::Tokio)
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(NoopSpanExporter)
         .build();
     let tracer = provider.tracer("forge-daemon-t10-variant-c");
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
