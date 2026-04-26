@@ -253,6 +253,65 @@ pub fn find_project_dir_from_db(conn: &Connection) -> Option<String> {
         })
 }
 
+/// P3-4 W1.21 (W1.3 LOW-1): project-marker filenames that, when
+/// present at a candidate directory, vouch for it being a real
+/// project root regardless of path depth. Strategic upgrade from the
+/// W1.2 c2 depth-floor heuristic — a directory containing `Cargo.toml`
+/// is unambiguously a Rust project, even at `/srv/foo` (only 2
+/// segments). Depth-floor remains as the fallback for marker-less
+/// realities (e.g. early scaffolding, unusual layouts).
+const PROJECT_MARKERS: &[&str] = &[
+    ".git",
+    "Cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "setup.py",
+    "go.mod",
+];
+
+/// Returns `true` if `path` is a directory that contains at least one
+/// well-known project-root marker file (`Cargo.toml`, `.git`, etc.).
+/// Used by `is_admissible_project_dir` to admit shallow-but-real
+/// project paths that the depth-floor would otherwise reject.
+fn has_project_marker(path: &Path) -> bool {
+    PROJECT_MARKERS.iter().any(|m| path.join(m).exists())
+}
+
+/// Minimum slash count required for a candidate path to be admitted
+/// on depth alone (i.e. without a marker file). Defaults to 4
+/// (excludes `/`, `/mnt`, `/home`, `/usr`, `/var`, and 3-component
+/// shallow prefixes; admits realistic mounted-disk project paths
+/// like `/mnt/colab-disk/DurgaSaiK/forge`). Override with
+/// `FORGE_INDEXER_MIN_PATH_DEPTH=N` for unusual layouts.
+fn min_path_depth() -> usize {
+    std::env::var("FORGE_INDEXER_MIN_PATH_DEPTH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(4)
+}
+
+/// Admission rule for `find_project_dir`'s parent-walk fallback.
+/// A candidate path is admitted if BOTH:
+///   * it is a real directory on disk, AND
+///   * it carries a project-marker file (`.git`, `Cargo.toml`, ...)
+///     OR its slash-count meets `min_path_depth()` (default 4).
+///
+/// This combines the W1.21 marker-file strategic fix with the W1.2 c2
+/// depth-floor tactical fix. The marker check is the primary admission
+/// criterion (zero ambiguity); the depth-floor stays as fallback so
+/// scaffolded projects without markers still index in deep layouts.
+fn is_admissible_project_dir(candidate: &str) -> bool {
+    let path = Path::new(candidate);
+    if !path.is_dir() {
+        return false;
+    }
+    if has_project_marker(path) {
+        return true;
+    }
+    candidate.matches('/').count() >= min_path_depth()
+}
+
 /// Discover the project directory from env or Claude transcript paths.
 pub fn find_project_dir() -> Option<String> {
     // 1. Check FORGE_PROJECT env
@@ -287,30 +346,21 @@ pub fn find_project_dir() -> Option<String> {
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
 
     for (name, _) in &candidates {
-        // Decode: replace leading/internal dashes with slashes
+        // Decode: replace leading/internal dashes with slashes.
+        // The decode is lossy: components containing underscores (e.g.
+        // `dhruvishah_finexos_io`) survive unchanged, so the resulting
+        // path doesn't exist on disk. The walk-backwards-to-find-a-real-
+        // dir loop below would then ground at shallow filesystem roots
+        // like `/mnt` (live-verified W1 dogfood: 10,005 foreign-user
+        // files leaked into the forge code graph). `is_admissible_*`
+        // gates on marker-file presence (W1.21 strategic) or depth-floor
+        // fallback (W1.2 c2 tactical) to reject those root-like paths.
         let decoded = name.replace('-', "/");
-        // Walk backwards from the full decoded path to find a real directory
-        // e.g. "/mnt/colab/disk/..." — try progressively shorter prefixes
-        // Only check at slash boundaries.
-        //
-        // P3-4 W1.2 c2 (I-7): require ≥4 path segments. Without this
-        // floor, the fallback returns shallow filesystem roots like
-        // `/mnt` when the path can't be reconstructed (e.g. underscores
-        // in original components don't survive the dash↔slash decode
-        // round-trip — `dhruvishah_finexos_io` stays as-is, breaking
-        // the path lookup, and the loop terminates at `/mnt`). The
-        // indexer then walks every project under that root, pulling
-        // in foreign users' homes (live-verified during W1 dogfood —
-        // 10,005 jupyterlab/IPython files leaked into the forge code
-        // graph from a different user's $HOME). 4 segments is the
-        // empirical floor that excludes `/`, `/mnt`, `/home`, `/usr`,
-        // `/var`, but accepts genuine project paths like
-        // `/mnt/colab-disk/DurgaSaiK/forge` (4 segments).
         let bytes = decoded.as_bytes();
         for i in (1..bytes.len()).rev() {
             if bytes[i] == b'/' {
                 let candidate = &decoded[..i];
-                if candidate.matches('/').count() >= 4 && std::path::Path::new(candidate).is_dir() {
+                if is_admissible_project_dir(candidate) {
                     return Some(candidate.to_string());
                 }
             }
@@ -322,16 +372,24 @@ pub fn find_project_dir() -> Option<String> {
 
 #[cfg(test)]
 #[allow(dead_code)]
-fn find_project_dir_candidate_for_test(decoded: &str) -> Option<String> {
+fn find_project_dir_candidate_for_test(
+    decoded: &str,
+    has_marker: impl Fn(&str) -> bool,
+    min_depth: usize,
+) -> Option<String> {
     // Mirrors the inner loop of `find_project_dir` for unit-testing the
-    // shallow-prefix guard (P3-4 W1.2 c2 / I-7) without needing real
-    // directory entries on disk. Production callers should use
-    // `find_project_dir` directly.
+    // admission logic without needing real directory entries on disk.
+    // Callers inject a `has_marker` closure and a `min_depth` value to
+    // exercise the marker-file branch (W1.21 strategic) and depth-floor
+    // branch (W1.2 c2 tactical) independently.
+    //
+    // Production callers should use `find_project_dir` directly.
     let bytes = decoded.as_bytes();
     for i in (1..bytes.len()).rev() {
         if bytes[i] == b'/' {
             let candidate = &decoded[..i];
-            if candidate.matches('/').count() >= 4 {
+            let admitted = has_marker(candidate) || candidate.matches('/').count() >= min_depth;
+            if admitted {
                 return Some(candidate.to_string());
             }
         }
@@ -2377,17 +2435,31 @@ def process_data(input_data):
         // foreign users' homes into the code graph (live-verified —
         // 10,005 jupyterlab/IPython files from a different user).
         //
-        // The guard now requires ≥4 path-segment slashes; this test
-        // pins that contract.
-        assert_eq!(find_project_dir_candidate_for_test("/mnt"), None);
-        assert_eq!(find_project_dir_candidate_for_test("/mnt/foo"), None);
+        // The guard now requires ≥4 path-segment slashes (with W1.21
+        // marker-file admission as an alternate path); this test pins
+        // the depth-floor branch by providing a `has_marker` closure
+        // that always returns false.
+        let no_marker = |_: &str| false;
+        let depth = 4;
         assert_eq!(
-            find_project_dir_candidate_for_test("/mnt/colab/disk"),
+            find_project_dir_candidate_for_test("/mnt", no_marker, depth),
+            None
+        );
+        assert_eq!(
+            find_project_dir_candidate_for_test("/mnt/foo", no_marker, depth),
+            None
+        );
+        assert_eq!(
+            find_project_dir_candidate_for_test("/mnt/colab/disk", no_marker, depth),
             None,
             "3 slashes is below the floor — would still leak from /mnt-rooted decodes"
         );
         // 4-segment path qualifies — typical mounted-disk project layout.
-        let candidate = find_project_dir_candidate_for_test("/mnt/colab-disk/DurgaSaiK/forge/leaf");
+        let candidate = find_project_dir_candidate_for_test(
+            "/mnt/colab-disk/DurgaSaiK/forge/leaf",
+            no_marker,
+            depth,
+        );
         assert!(
             candidate.is_some(),
             "/mnt/colab-disk/DurgaSaiK/forge has 4 slash segments and should be admitted"
@@ -2396,6 +2468,102 @@ def process_data(input_data):
             candidate.as_deref(),
             Some("/mnt/colab-disk/DurgaSaiK/forge")
         );
+    }
+
+    #[test]
+    fn p3_4_w1_21_find_project_dir_admits_shallow_path_when_marker_present() {
+        // W1.3 LOW-1 strategic upgrade: a directory containing a
+        // recognized project-root marker (Cargo.toml, .git, package.json,
+        // pyproject.toml, setup.py, go.mod) is unambiguously a project
+        // root, regardless of path depth. `/srv/foo` with a Cargo.toml
+        // should be admitted even though it has only 2 slashes —
+        // pre-W1.21 the depth-floor would have rejected it.
+        //
+        // Mirror of the cc-voice §1.2 root-cause concern: lossy
+        // decoding can land on shallow paths, but the marker check is
+        // the unambiguous admission criterion (zero false positives).
+        let depth = 4;
+
+        // Marker present at /srv/foo — admitted on the marker branch.
+        let admitted =
+            find_project_dir_candidate_for_test("/srv/foo/leaf", |c| c == "/srv/foo", depth);
+        assert_eq!(
+            admitted.as_deref(),
+            Some("/srv/foo"),
+            "marker-bearing dir at depth 2 should be admitted on the marker branch"
+        );
+
+        // No marker anywhere — depth-floor rejects the same path.
+        let rejected = find_project_dir_candidate_for_test("/srv/foo/leaf", |_| false, depth);
+        assert_eq!(
+            rejected, None,
+            "marker-less /srv/foo at depth 2 falls below the floor → rejected"
+        );
+
+        // Floor relaxed via env override — same path admitted on depth.
+        let relaxed = find_project_dir_candidate_for_test("/srv/foo/leaf", |_| false, 2);
+        assert_eq!(
+            relaxed.as_deref(),
+            Some("/srv/foo"),
+            "FORGE_INDEXER_MIN_PATH_DEPTH=2 admits /srv/foo on the depth branch"
+        );
+    }
+
+    #[test]
+    fn p3_4_w1_21_has_project_marker_recognises_known_files() {
+        // Pin the exact marker-file set against a temp dir to detect
+        // accidental deletions or typos in the PROJECT_MARKERS array.
+        // Each marker individually flips `has_project_marker` to true;
+        // an empty dir returns false.
+        for marker in PROJECT_MARKERS {
+            let tmp = tempfile::tempdir().expect("create tempdir");
+            let marker_path = tmp.path().join(marker);
+            // `.git` is conventionally a directory; the others are files.
+            // `path.join(m).exists()` accepts either, so use the cheaper
+            // file form for all of them in tests.
+            std::fs::write(&marker_path, b"").expect("write marker");
+            assert!(
+                has_project_marker(tmp.path()),
+                "marker `{marker}` should be recognised"
+            );
+        }
+        let empty = tempfile::tempdir().expect("create tempdir");
+        assert!(
+            !has_project_marker(empty.path()),
+            "empty dir should have no markers"
+        );
+    }
+
+    #[test]
+    fn p3_4_w1_21_min_path_depth_honours_env_override() {
+        // FORGE_INDEXER_MIN_PATH_DEPTH parses to a positive usize and
+        // overrides the default of 4. Invalid / zero / non-numeric
+        // values fall back to the default.
+        let original = std::env::var("FORGE_INDEXER_MIN_PATH_DEPTH").ok();
+
+        std::env::set_var("FORGE_INDEXER_MIN_PATH_DEPTH", "2");
+        assert_eq!(min_path_depth(), 2);
+
+        std::env::set_var("FORGE_INDEXER_MIN_PATH_DEPTH", "7");
+        assert_eq!(min_path_depth(), 7);
+
+        // Zero is treated as unset (a depth of 0 admits literally
+        // every prefix including `/`, defeating the purpose).
+        std::env::set_var("FORGE_INDEXER_MIN_PATH_DEPTH", "0");
+        assert_eq!(min_path_depth(), 4);
+
+        // Garbage falls through to the default.
+        std::env::set_var("FORGE_INDEXER_MIN_PATH_DEPTH", "not-a-number");
+        assert_eq!(min_path_depth(), 4);
+
+        std::env::remove_var("FORGE_INDEXER_MIN_PATH_DEPTH");
+        assert_eq!(min_path_depth(), 4);
+
+        // Restore.
+        match original {
+            Some(v) => std::env::set_var("FORGE_INDEXER_MIN_PATH_DEPTH", v),
+            None => std::env::remove_var("FORGE_INDEXER_MIN_PATH_DEPTH"),
+        }
     }
 
     #[test]
