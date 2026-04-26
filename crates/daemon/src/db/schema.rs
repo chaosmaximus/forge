@@ -373,7 +373,15 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             indexed_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_code_file_path ON code_file(path);
-        CREATE INDEX IF NOT EXISTS idx_code_file_project ON code_file(project);
+        -- P3-4 W1.25 (W1.3 LOW-6): composite (project, path) index so
+        -- a project-filtered scan also covers the JOIN's
+        -- code_symbol.file_path = code_file.path lookup. Pre-W1.25 the
+        -- single-col idx_code_file_project required a second seek
+        -- through idx_code_file_path or a sequential scan when the
+        -- planner picked the symbol-side scan. Path-only queries still
+        -- use idx_code_file_path (above) since composite indexes
+        -- can't satisfy non-leftmost-prefix lookups.
+        CREATE INDEX IF NOT EXISTS idx_code_file_project_path ON code_file(project, path);
 
         CREATE TABLE IF NOT EXISTS code_symbol (
             id TEXT PRIMARY KEY,
@@ -998,8 +1006,17 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         "UPDATE code_file SET project = '_global_' WHERE project IS NULL OR project = ''",
         [],
     );
+    // P3-4 W1.25 (W1.3 LOW-6): drop the single-column legacy index in
+    // favour of the composite (project, path) index. The composite
+    // serves both `WHERE project = ?` queries (leftmost-column scan)
+    // and the JOIN'd `WHERE project = ? AND code_symbol.file_path =
+    // code_file.path` lookup with a single seek. Path-only queries
+    // still use idx_code_file_path; nothing regresses by replacing.
+    // Idempotent — DROP is no-op if the index has already been
+    // dropped on a prior daemon start.
+    let _ = conn.execute("DROP INDEX IF EXISTS idx_code_file_project", []);
     let _ = conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_code_file_project ON code_file(project)",
+        "CREATE INDEX IF NOT EXISTS idx_code_file_project_path ON code_file(project, path)",
         [],
     );
 
@@ -1822,6 +1839,55 @@ mod tests {
         // Calling create_schema twice should not error
         create_schema(&conn).unwrap();
         create_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn p3_4_w1_25_composite_project_path_index_present_and_planner_uses_it() {
+        // W1.3 LOW-6 contract: code_file must carry a composite
+        // (project, path) index so a project-filtered scan also
+        // satisfies the JOIN to code_symbol via path. We pin both:
+        //   1. the index exists in sqlite_master with the exact name
+        //      and column list, AND
+        //   2. EXPLAIN QUERY PLAN for a project-filtered query reports
+        //      that the planner uses idx_code_file_project_path
+        //      (instead of falling back to idx_code_file_path or a
+        //      table scan).
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // 1. Index exists with the right shape.
+        let sql_def: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_code_file_project_path'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("idx_code_file_project_path must exist after create_schema");
+        assert!(
+            sql_def.contains("(project, path)"),
+            "composite index must be on (project, path); got: {sql_def}"
+        );
+
+        // 2. Planner picks the composite index for a project-filtered
+        //    query. EXPLAIN QUERY PLAN's "detail" column names the
+        //    chosen index. Use a row-yielding query (we can't use
+        //    `query_row` here because EXPLAIN may produce multiple
+        //    rows for joins; just collect them and look for the
+        //    index name).
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT path FROM code_file WHERE project = 'forge'")
+            .expect("prepare EXPLAIN");
+        let plan: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("query plan rows")
+            .flatten()
+            .collect();
+        let plan_text = plan.join(" | ");
+        assert!(
+            plan_text.contains("idx_code_file_project_path"),
+            "planner must use idx_code_file_project_path for `WHERE project = ?`; got plan: {plan_text}"
+        );
     }
 
     #[test]
