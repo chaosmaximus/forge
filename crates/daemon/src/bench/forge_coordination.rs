@@ -200,7 +200,7 @@ pub fn generate_corpus(_rng: &mut ChaCha20Rng) -> Corpus {
                 continue;
             }
             for idx_in_pair in 0..MSGS_PER_PAIR {
-                let kind = if (idx_global % 10) == 0 { "request" } else { "notification" };
+                let kind = if idx_global.is_multiple_of(10) { "request" } else { "notification" };
                 let id = format!(
                     "seed_{}_{}_to_{}_{}_{}",
                     sender.role, sender.project, recipient.role, recipient.project, idx_in_pair
@@ -287,8 +287,11 @@ pub fn seed_corpus(state: &mut DaemonState, corpus: &Corpus) -> rusqlite::Result
 /// Sentinel id = `SENTINEL_ROW_ID`. Per §3.1a + §4 D11, no D2-D6 op
 /// touches this row; comparing pre/post hash detects DROP TABLE / DELETE /
 /// UPDATE-class mutations.
+/// Tuple alias for the 8 canonical sentinel-row columns.
+type SentinelRow = (String, String, String, String, String, String, String, Option<String>);
+
 fn sentinel_row_hash(state: &DaemonState) -> Option<String> {
-    let row: rusqlite::Result<(String, String, String, String, String, String, String, Option<String>)> =
+    let row: rusqlite::Result<SentinelRow> =
         state.conn.query_row(
             "SELECT id, from_session, to_session, kind, topic, parts, status, in_reply_to
              FROM session_message WHERE id = ?1",
@@ -316,58 +319,627 @@ fn sentinel_row_hash(state: &DaemonState) -> Option<String> {
     }
 }
 
-// ── Dimension stubs (T2 skeleton — T4-T6 will fill in) ──────────────────
+// ── Dimension implementations (T4-T6) ───────────────────────────────────
 
-fn dim_1_inbox_precision(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D1 — inbox_precision** (T4, weight 0.20, min 0.95).
+///
+/// For each session S: `list_messages(conn, &S.id, None, 1000, None)` —
+/// every returned row must have `to_session=S.id`. Foreign-message
+/// denominator computed at runtime per spec §3.3 + v1 H1 fix:
+/// `pre_d1_total - (pre_d1_total / num_inboxes)`.
+fn dim_1_inbox_precision(state: &mut DaemonState, corpus: &Corpus) -> DimensionScore {
+    use crate::sessions::list_messages;
+
+    let pre_d1_total: i64 = state
+        .conn
+        .query_row("SELECT COUNT(*) FROM session_message", [], |r| r.get(0))
+        .unwrap_or(0);
+    let num_inboxes = corpus.sessions.len() as i64;
+    debug_assert!(num_inboxes > 0, "corpus must have ≥1 session");
+    debug_assert_eq!(
+        pre_d1_total % num_inboxes,
+        0,
+        "spec §3.3 D1 invariant: corpus must distribute messages evenly across inboxes \
+         (pre_d1_total {pre_d1_total} not divisible by num_inboxes {num_inboxes})"
+    );
+    let max_possible_foreign = pre_d1_total - (pre_d1_total / num_inboxes);
+    debug_assert!(max_possible_foreign > 0);
+
+    let mut sum_score = 0.0;
+    for s in &corpus.sessions {
+        let inbox = list_messages(&state.conn, &s.id, None, 1000, None).unwrap_or_default();
+        let foreign_count = inbox.iter().filter(|m| m.to_session != s.id).count();
+        let score_s = 1.0 - (foreign_count as f64 / max_possible_foreign as f64);
+        sum_score += score_s;
+    }
+    let score = sum_score / corpus.sessions.len() as f64;
+
     DimensionScore {
         name: "inbox_precision",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[0],
         pass: false,
     }
 }
 
-fn dim_2_roundtrip_correctness(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D2 — roundtrip_correctness** (T4, weight 0.15, min 0.95).
+///
+/// For K=10 trials, send a fresh message via `sessions::send_message` then
+/// retrieve via `list_messages` and verify all 7 fields round-trip.
+/// Score = pass_count / (K × 7) = pass_count / 70.
+fn dim_2_roundtrip_correctness(state: &mut DaemonState, corpus: &Corpus) -> DimensionScore {
+    use crate::sessions::{list_messages, send_message};
+
+    const K: usize = 10;
+    const SUB_ASSERTIONS: usize = 7;
+    let mut pass = 0u32;
+
+    // Pick deterministic from→to pair: planner_alpha → evaluator_alpha
+    // (avoids the sentinel pair planner_alpha → generator_alpha).
+    let from = corpus
+        .session_by_role_project("planner", TEAM_ALPHA)
+        .expect("planner_alpha");
+    let to = corpus
+        .session_by_role_project("evaluator", TEAM_ALPHA)
+        .expect("evaluator_alpha");
+
+    for idx in 0..K {
+        let topic = format!("d2_trial_{idx}");
+        let parts = format!("[{{\"text\":\"d2_p_{idx}\"}}]");
+        let project = Some(TEAM_ALPHA);
+        let msg_id = match send_message(
+            &state.conn,
+            &from.id,
+            &to.id,
+            "notification",
+            &topic,
+            &parts,
+            project,
+            None,
+            None,
+        ) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+
+        // Retrieve and find by id.
+        let inbox = list_messages(&state.conn, &to.id, Some("pending"), 1000, None)
+            .unwrap_or_default();
+        let row = inbox.iter().find(|m| m.id == msg_id);
+
+        if let Some(r) = row {
+            pass += 1; // (a) row found
+            if r.from_session == from.id { pass += 1; } // (b) from
+            if r.to_session == to.id { pass += 1; } // (c) to
+            if r.topic == topic { pass += 1; } // (d) topic
+            if r.parts == parts { pass += 1; } // (e) parts
+            if r.kind == "notification" { pass += 1; } // (f) kind
+            if r.project.as_deref() == Some(TEAM_ALPHA) { pass += 1; } // (g) project
+        }
+    }
+
+    let score = f64::from(pass) / (K * SUB_ASSERTIONS) as f64;
     DimensionScore {
         name: "roundtrip_correctness",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[1],
         pass: false,
     }
 }
 
-fn dim_3_broadcast_project_scoping(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D3 — broadcast_project_scoping** (T5, weight 0.15, min 0.95).
+///
+/// For K=4 trials (one per role × project combo), broadcast and verify:
+/// (a) delta = 2 (2 same-project peers excluding sender)
+/// (b) all delta-rows have project = sender's project
+/// (c) zero delta-rows addressed to other-project sessions
+/// Score = pass_count / (K × 3) = pass / 12.
+fn dim_3_broadcast_project_scoping(state: &mut DaemonState, corpus: &Corpus) -> DimensionScore {
+    use crate::sessions::send_message;
+
+    const SUB_ASSERTIONS: usize = 3;
+    let trials: [(&str, &str); 4] = [
+        ("planner", TEAM_ALPHA),
+        ("generator", TEAM_ALPHA),
+        ("planner", TEAM_BETA),
+        ("generator", TEAM_BETA),
+    ];
+    let k = trials.len();
+    let mut pass = 0u32;
+
+    for (idx, (role, project)) in trials.iter().enumerate() {
+        let sender = match corpus.session_by_role_project(role, project) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let pre: i64 = state
+            .conn
+            .query_row("SELECT COUNT(*) FROM session_message", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        let topic = format!("d3_broadcast_{idx}");
+        let parts = format!("[{{\"text\":\"d3_b_{idx}\"}}]");
+
+        if send_message(
+            &state.conn,
+            &sender.id,
+            "*",
+            "notification",
+            &topic,
+            &parts,
+            Some(project),
+            None,
+            None,
+        )
+        .is_err()
+        {
+            continue;
+        }
+
+        let post: i64 = state
+            .conn
+            .query_row("SELECT COUNT(*) FROM session_message", [], |r| r.get(0))
+            .unwrap_or(0);
+        let delta = post - pre;
+
+        // (a) delta == 2 (sender excluded by `id != ?2`; 2 same-project peers remain).
+        if delta == 2 {
+            pass += 1;
+        }
+
+        // Find the new rows from this broadcast (latest 2 by topic match).
+        let new_rows: Vec<(String, Option<String>)> = state
+            .conn
+            .prepare(
+                "SELECT to_session, project FROM session_message
+                 WHERE from_session = ?1 AND topic = ?2",
+            )
+            .ok()
+            .and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![sender.id, topic], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                })
+                .ok()
+                .map(|rs| rs.flatten().collect())
+            })
+            .unwrap_or_default();
+
+        // (b) all new rows have project = sender's project
+        if !new_rows.is_empty()
+            && new_rows.iter().all(|(_, p)| p.as_deref() == Some(*project))
+        {
+            pass += 1;
+        }
+
+        // (c) zero new rows addressed to other-project sessions
+        let other_project = if *project == TEAM_ALPHA { TEAM_BETA } else { TEAM_ALPHA };
+        let other_session_ids: Vec<&String> = corpus
+            .sessions
+            .iter()
+            .filter(|s| s.project == other_project)
+            .map(|s| &s.id)
+            .collect();
+        let leak_count = new_rows
+            .iter()
+            .filter(|(to, _)| other_session_ids.iter().any(|oid| **oid == *to))
+            .count();
+        if leak_count == 0 {
+            pass += 1;
+        }
+    }
+
+    let score = f64::from(pass) / (k * SUB_ASSERTIONS) as f64;
     DimensionScore {
         name: "broadcast_project_scoping",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[2],
         pass: false,
     }
 }
 
-fn dim_4_authorization_enforcement(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D4 — authorization_enforcement** (T5, weight 0.20, min 0.95).
+///
+/// Two sub-classes:
+/// - Ack ownership (K=3): non-recipient calling ack_messages must affect 0 rows + leave status pending.
+/// - Respond authorization (K=3): non-recipient calling respond_to_message must return false + leave status unchanged + insert no response row.
+///
+/// Score = (ack_pass + respond_pass) / (3*2 + 3*3) = pass / 15.
+fn dim_4_authorization_enforcement(state: &mut DaemonState, corpus: &Corpus) -> DimensionScore {
+    use crate::sessions::{ack_messages, respond_to_message, send_message};
+
+    const K_ACK: usize = 3;
+    const K_RESPOND: usize = 3;
+    const ACK_ASSERTIONS: usize = 2;
+    const RESPOND_ASSERTIONS: usize = 3;
+
+    // Pick stable session triplet in team-alpha avoiding sentinel pair (planner_alpha, generator_alpha):
+    // sender = generator_alpha, recipient = evaluator_alpha, attacker = planner_alpha.
+    let a = corpus.session_by_role_project("generator", TEAM_ALPHA).expect("generator_alpha");
+    let b = corpus.session_by_role_project("evaluator", TEAM_ALPHA).expect("evaluator_alpha");
+    let c = corpus.session_by_role_project("planner", TEAM_ALPHA).expect("planner_alpha");
+
+    let mut pass = 0u32;
+
+    // ── Ack ownership probes ─────────────────────────────────────────────
+    for idx in 0..K_ACK {
+        let topic = format!("d4_ack_{idx}");
+        let parts = format!("[{{\"text\":\"d4_a_{idx}\"}}]");
+        let m_id = match send_message(
+            &state.conn, &a.id, &b.id, "notification", &topic, &parts, Some(TEAM_ALPHA), None, None,
+        ) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+
+        let count = ack_messages(&state.conn, std::slice::from_ref(&m_id), &c.id).unwrap_or(usize::MAX);
+        if count == 0 {
+            pass += 1;
+        }
+
+        let status: String = state
+            .conn
+            .query_row(
+                "SELECT status FROM session_message WHERE id = ?1",
+                rusqlite::params![m_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "missing".to_string());
+        if status == "pending" {
+            pass += 1;
+        }
+    }
+
+    // ── Respond authorization probes ─────────────────────────────────────
+    for idx in 0..K_RESPOND {
+        let topic = format!("d4_respond_{idx}");
+        let parts = format!("[{{\"text\":\"d4_r_{idx}\"}}]");
+        let m_id = match send_message(
+            &state.conn, &a.id, &b.id, "request", &topic, &parts, Some(TEAM_ALPHA), None, None,
+        ) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+
+        // c (non-recipient) tries to respond
+        let result = respond_to_message(&state.conn, &m_id, &c.id, "completed", "[]");
+        if matches!(result, Ok(false)) {
+            pass += 1;
+        }
+
+        let status: String = state
+            .conn
+            .query_row(
+                "SELECT status FROM session_message WHERE id = ?1",
+                rusqlite::params![m_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "missing".to_string());
+        if status == "pending" {
+            pass += 1;
+        }
+
+        // No response row was inserted (no row with in_reply_to=m_id)
+        let reply_count: i64 = state
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_message WHERE in_reply_to = ?1",
+                rusqlite::params![m_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(-1);
+        if reply_count == 0 {
+            pass += 1;
+        }
+    }
+
+    let max = K_ACK * ACK_ASSERTIONS + K_RESPOND * RESPOND_ASSERTIONS; // = 15
+    let score = f64::from(pass) / max as f64;
     DimensionScore {
         name: "authorization_enforcement",
-        score: 0.0,
+        score,
         min: DIM_MINIMUMS[3],
         pass: false,
     }
 }
 
-fn dim_5_edge_case_resilience(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D6 — pipeline_chain_correctness** (T6, weight 0.15, min 0.90).
+///
+/// K=3 linear-chain trials per spec §3.1 + §4 D11. Each trial: r1→r2→r3
+/// with reverse responses. Trial 3 in team-alpha skips the sentinel pair
+/// `(planner_alpha, generator_alpha)` by using planner→evaluator→generator.
+///
+/// 6 sub-assertions per trial; total 18.
+fn dim_6_pipeline_chain_correctness(state: &mut DaemonState, corpus: &Corpus) -> DimensionScore {
+    use crate::sessions::{list_messages, respond_to_message, send_message};
+
+    // (project, [r1_role, r2_role, r3_role], outer_resp_status, inner_resp_status)
+    let trials: [(&str, [&str; 3], &str, &str); 3] = [
+        // Trial 1: team-beta forward chain (planner → generator → evaluator).
+        (TEAM_BETA, ["planner", "generator", "evaluator"], "accepted", "completed"),
+        // Trial 2: team-beta reverse-role chain (planner → evaluator → generator).
+        (TEAM_BETA, ["planner", "evaluator", "generator"], "rejected", "failed"),
+        // Trial 3: team-alpha sentinel-disjoint chain (planner → evaluator → generator).
+        // Skips the (planner_alpha, generator_alpha) sentinel pair entirely.
+        (TEAM_ALPHA, ["planner", "evaluator", "generator"], "accepted", "completed"),
+    ];
+
+    const ASSERTIONS_PER_TRIAL: usize = 6;
+    let mut pass = 0u32;
+
+    for (trial_idx, (project, roles, outer_status, inner_status)) in trials.iter().enumerate() {
+        let r1 = corpus.session_by_role_project(roles[0], project).unwrap();
+        let r2 = corpus.session_by_role_project(roles[1], project).unwrap();
+        let r3 = corpus.session_by_role_project(roles[2], project).unwrap();
+
+        // Step 1: r1 → r2 (M_outer, kind=request)
+        let m_outer_id = match send_message(
+            &state.conn, &r1.id, &r2.id, "request",
+            &format!("d6_t{trial_idx}_outer"),
+            &format!("[{{\"text\":\"d6_t{trial_idx}_outer\"}}]"),
+            Some(project), None, None,
+        ) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        // Sentinel preservation: orig_id passed to respond_to_message must NEVER be sentinel.
+        debug_assert_ne!(m_outer_id, SENTINEL_ROW_ID, "d6 outer must not equal sentinel");
+
+        // Step 2: r2 → r3 (M_inner, kind=request)
+        let m_inner_id = match send_message(
+            &state.conn, &r2.id, &r3.id, "request",
+            &format!("d6_t{trial_idx}_inner"),
+            &format!("[{{\"text\":\"d6_t{trial_idx}_inner\"}}]"),
+            Some(project), None, None,
+        ) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        debug_assert_ne!(m_inner_id, SENTINEL_ROW_ID, "d6 inner must not equal sentinel");
+
+        // Step 3: r3 responds to M_inner → creates M_inner_resp
+        if respond_to_message(&state.conn, &m_inner_id, &r3.id, inner_status, "[]").is_err() {
+            continue;
+        }
+
+        // Step 4: r2 responds to M_outer → creates M_outer_resp
+        if respond_to_message(&state.conn, &m_outer_id, &r2.id, outer_status, "[]").is_err() {
+            continue;
+        }
+
+        // (a) M_outer.status post-respond
+        let outer_actual: String = state
+            .conn
+            .query_row(
+                "SELECT status FROM session_message WHERE id = ?1",
+                rusqlite::params![m_outer_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        if outer_actual == *outer_status {
+            pass += 1;
+        }
+
+        // (b) M_outer_resp shape: from=r2, to=r1, kind=response, in_reply_to=m_outer, status=outer_status
+        let outer_resp: Option<(String, String, String, Option<String>, String)> = state
+            .conn
+            .query_row(
+                "SELECT from_session, to_session, kind, in_reply_to, status FROM session_message
+                 WHERE in_reply_to = ?1",
+                rusqlite::params![m_outer_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                    ))
+                },
+            )
+            .ok();
+        if let Some((fs, ts, k, irt, st)) = &outer_resp {
+            if fs == &r2.id
+                && ts == &r1.id
+                && k == "response"
+                && irt.as_deref() == Some(m_outer_id.as_str())
+                && st == outer_status
+            {
+                pass += 1;
+            }
+        }
+
+        // (c) M_inner.status post-respond
+        let inner_actual: String = state
+            .conn
+            .query_row(
+                "SELECT status FROM session_message WHERE id = ?1",
+                rusqlite::params![m_inner_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        if inner_actual == *inner_status {
+            pass += 1;
+        }
+
+        // (d) M_inner_resp shape: from=r3, to=r2, kind=response, in_reply_to=m_inner, status=inner_status
+        let inner_resp: Option<(String, String, String, Option<String>, String)> = state
+            .conn
+            .query_row(
+                "SELECT from_session, to_session, kind, in_reply_to, status FROM session_message
+                 WHERE in_reply_to = ?1",
+                rusqlite::params![m_inner_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                    ))
+                },
+            )
+            .ok();
+        if let Some((fs, ts, k, irt, st)) = &inner_resp {
+            if fs == &r3.id
+                && ts == &r2.id
+                && k == "response"
+                && irt.as_deref() == Some(m_inner_id.as_str())
+                && st == inner_status
+            {
+                pass += 1;
+            }
+        }
+
+        // (e) M_outer_resp retrievable via list_messages(r1)
+        let r1_inbox = list_messages(&state.conn, &r1.id, None, 1000, None).unwrap_or_default();
+        if r1_inbox.iter().any(|m| m.in_reply_to.as_deref() == Some(&m_outer_id)) {
+            pass += 1;
+        }
+
+        // (f) M_inner_resp retrievable via list_messages(r2)
+        let r2_inbox = list_messages(&state.conn, &r2.id, None, 1000, None).unwrap_or_default();
+        if r2_inbox.iter().any(|m| m.in_reply_to.as_deref() == Some(&m_inner_id)) {
+            pass += 1;
+        }
+    }
+
+    let max = trials.len() * ASSERTIONS_PER_TRIAL; // = 18
+    let score = f64::from(pass) / max as f64;
     DimensionScore {
-        name: "edge_case_resilience",
-        score: 0.0,
-        min: DIM_MINIMUMS[4],
+        name: "pipeline_chain_correctness",
+        score,
+        min: DIM_MINIMUMS[5],
         pass: false,
     }
 }
 
-fn dim_6_pipeline_chain_correctness(_state: &mut DaemonState, _corpus: &Corpus) -> DimensionScore {
+/// **D5 — edge_case_resilience** (T6, weight 0.15, min 0.85).
+///
+/// 7 probes per spec §3.1a. D5 runs LAST per §3.3 dim execution order so
+/// its sentinel-row hash captures the cumulative state from D1-D4-D6.
+/// Spec §4 D11: no prior dim mutates `SENTINEL_ROW_ID`.
+///
+/// 1. payload_size_limit_enforced (65537-byte → Err containing "exceed 64KB limit")
+/// 2. payload_at_limit_succeeds (65536-byte → Ok, row inserted)
+/// 3. send_to_nonexistent_session_no_panic (no recipient validation per fact 9)
+/// 4. respond_to_nonexistent_message_returns_false
+/// 5. empty_broadcast_zero_inserts (project with no active sessions)
+/// 6. empty_ack_returns_zero (sentinel-hash unchanged)
+/// 7. sql_injection_in_topic_inert (sentinel-hash unchanged + table still queryable)
+fn dim_5_edge_case_resilience(state: &mut DaemonState, corpus: &Corpus) -> DimensionScore {
+    use crate::sessions::{ack_messages, respond_to_message, send_message};
+
+    let from = &corpus.sessions[0].id;
+    let to = &corpus.sessions[1].id;
+
+    let mut passes = 0u32;
+
+    // Probe 1: 65537-byte parts_json → Err containing "exceed 64KB limit"
+    let oversize_parts = "x".repeat(65537);
+    match send_message(
+        &state.conn, from, to, "notification", "d5_oversize", &oversize_parts,
+        Some(TEAM_ALPHA), None, None,
+    ) {
+        Err(rusqlite::Error::InvalidParameterName(msg)) if msg.contains("exceed 64KB limit") => {
+            passes += 1;
+        }
+        _ => {}
+    }
+
+    // Probe 2: exactly 65536-byte parts_json → Ok + row inserted
+    let boundary_parts = "x".repeat(65536);
+    if let Ok(msg_id) = send_message(
+        &state.conn, from, to, "notification", "d5_boundary", &boundary_parts,
+        Some(TEAM_ALPHA), None, None,
+    ) {
+        let exists: bool = state
+            .conn
+            .query_row(
+                "SELECT 1 FROM session_message WHERE id = ?1",
+                rusqlite::params![msg_id],
+                |_r| Ok(true),
+            )
+            .unwrap_or(false);
+        if exists {
+            passes += 1;
+        }
+    }
+
+    // Probe 3: send to nonexistent session → Ok + row inserted (no recipient validation)
+    if let Ok(msg_id) = send_message(
+        &state.conn, from, "zzz_nonexistent_session_xxx", "notification",
+        "d5_nonexistent", "[]", Some(TEAM_ALPHA), None, None,
+    ) {
+        let exists: bool = state
+            .conn
+            .query_row(
+                "SELECT 1 FROM session_message WHERE id = ?1",
+                rusqlite::params![msg_id],
+                |_r| Ok(true),
+            )
+            .unwrap_or(false);
+        if exists {
+            passes += 1;
+        }
+    }
+
+    // Probe 4: respond to nonexistent message_id → Ok(false)
+    if matches!(
+        respond_to_message(&state.conn, "zzz_nonexistent_msg_xxx", from, "completed", "[]"),
+        Ok(false)
+    ) {
+        passes += 1;
+    }
+
+    // Probe 5: empty broadcast (project with no active sessions) → Ok + 0 INSERTs
+    let pre: i64 = state
+        .conn
+        .query_row("SELECT COUNT(*) FROM session_message", [], |r| r.get(0))
+        .unwrap_or(0);
+    let bcast_result = send_message(
+        &state.conn, from, "*", "notification", "d5_empty_bcast", "[]",
+        Some("zzz_no_active_sessions"), None, None,
+    );
+    let post: i64 = state
+        .conn
+        .query_row("SELECT COUNT(*) FROM session_message", [], |r| r.get(0))
+        .unwrap_or(0);
+    if bcast_result.is_ok() && (post - pre) == 0 {
+        passes += 1;
+    }
+
+    // Probe 6: empty ack list → Ok(0); sentinel-hash unchanged
+    let pre_hash = sentinel_row_hash(state);
+    if matches!(ack_messages(&state.conn, &[], "any_caller"), Ok(0)) {
+        let post_hash = sentinel_row_hash(state);
+        if pre_hash == post_hash && pre_hash.is_some() {
+            passes += 1;
+        }
+    }
+
+    // Probe 7: SQL injection via topic → Ok + table still queryable + sentinel-hash unchanged
+    let pre_hash = sentinel_row_hash(state);
+    let evil_topic = "alpha'; DROP TABLE session_message;--";
+    let send_ok = send_message(
+        &state.conn, from, to, "notification", evil_topic, "[]",
+        Some(TEAM_ALPHA), None, None,
+    )
+    .is_ok();
+    let table_alive: bool = state
+        .conn
+        .query_row("SELECT 1 FROM session_message LIMIT 1", [], |_r| Ok(true))
+        .unwrap_or(false);
+    let post_hash = sentinel_row_hash(state);
+    if send_ok && table_alive && pre_hash == post_hash && pre_hash.is_some() {
+        passes += 1;
+    }
+
+    let score = f64::from(passes) / 7.0;
     DimensionScore {
-        name: "pipeline_chain_correctness",
-        score: 0.0,
-        min: DIM_MINIMUMS[5],
+        name: "edge_case_resilience",
+        score,
+        min: DIM_MINIMUMS[4],
         pass: false,
     }
 }
@@ -384,30 +956,255 @@ fn mark_pass(d: DimensionScore) -> DimensionScore {
     DimensionScore { pass, ..d }
 }
 
-// ── Infrastructure assertions (9 checks, spec §3.4 — T6 will fill in) ───
+// ── Infrastructure assertions (9 checks, spec §3.4) ─────────────────────
 
+/// 9 fail-fast checks before dimensions run.
 fn run_infrastructure_checks(
-    _state: &mut DaemonState,
-    _corpus: &Corpus,
+    state: &mut DaemonState,
+    corpus: &Corpus,
 ) -> Vec<InfrastructureCheck> {
-    // 9-element placeholder; T6 replaces with real assertions.
-    (0..9)
-        .map(|i| InfrastructureCheck {
-            name: match i {
-                0 => "session_message_column_count",
-                1 => "session_message_indexes_present",
-                2 => "session_table_columns_present",
-                3 => "seeded_rng_deterministic",
-                4 => "corpus_size_matches_spec",
-                5 => "session_distribution_correct",
-                6 => "pre_d1_total_count_60",
-                7 => "send_message_returns_ulid",
-                _ => "respond_to_message_inverts_addressing",
-            },
-            passed: false,
-            detail: "stub — T6 fills in".into(),
-        })
-        .collect()
+    use crate::sessions::{respond_to_message, send_message};
+
+    let mut out = Vec::with_capacity(9);
+
+    // 1. session_message column count == 14 (per v2.1 NM2 fix; tight equality).
+    let cols: usize = state
+        .conn
+        .prepare("SELECT * FROM session_message LIMIT 0")
+        .map(|stmt| stmt.column_count())
+        .unwrap_or(0);
+    let cols_ok = cols == SESSION_MESSAGE_COLUMN_COUNT;
+    out.push(InfrastructureCheck {
+        name: "session_message_column_count",
+        passed: cols_ok,
+        detail: format!(
+            "session_message has {cols} columns (expected {SESSION_MESSAGE_COLUMN_COUNT})"
+        ),
+    });
+
+    // 2. All 4 indexes present.
+    let mut idx_ok = true;
+    let mut idx_detail = String::new();
+    for idx_name in ["idx_msg_to", "idx_msg_from", "idx_msg_reply", "idx_msg_meeting"] {
+        let exists: bool = state
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
+                rusqlite::params![idx_name],
+                |_r| Ok(true),
+            )
+            .unwrap_or(false);
+        if !exists {
+            idx_ok = false;
+            idx_detail.push_str(&format!("{idx_name} MISSING; "));
+        }
+    }
+    out.push(InfrastructureCheck {
+        name: "session_message_indexes_present",
+        passed: idx_ok,
+        detail: if idx_ok {
+            "idx_msg_to + idx_msg_from + idx_msg_reply + idx_msg_meeting all present".into()
+        } else {
+            idx_detail
+        },
+    });
+
+    // 3. session table relevant columns present.
+    let mut sess_cols_ok = true;
+    let mut sess_detail = String::new();
+    for col in ["id", "agent", "project", "status", "started_at", "organization_id"] {
+        let probe = state
+            .conn
+            .prepare(&format!("SELECT {col} FROM session LIMIT 0"))
+            .is_ok();
+        if !probe {
+            sess_cols_ok = false;
+            sess_detail.push_str(&format!("{col} MISSING; "));
+        }
+    }
+    out.push(InfrastructureCheck {
+        name: "session_table_columns_present",
+        passed: sess_cols_ok,
+        detail: if sess_cols_ok {
+            "session has id, agent, project, status, started_at, organization_id".into()
+        } else {
+            sess_detail
+        },
+    });
+
+    // 4. seeded_rng deterministic.
+    use rand::RngExt;
+    let mut a = seeded_rng(42);
+    let mut b = seeded_rng(42);
+    let v_a: u64 = a.random();
+    let v_b: u64 = b.random();
+    let det = v_a == v_b;
+    out.push(InfrastructureCheck {
+        name: "seeded_rng_deterministic",
+        passed: det,
+        detail: if det {
+            "seeded_rng(42) produces same u64 twice".into()
+        } else {
+            format!("seeded_rng diverged: {v_a} != {v_b}")
+        },
+    });
+
+    // 5. Corpus struct shape matches spec (in-memory).
+    let size_ok =
+        corpus.sessions.len() == TOTAL_SESSIONS && corpus.messages.len() == TOTAL_SEEDED_MESSAGES;
+    out.push(InfrastructureCheck {
+        name: "corpus_size_matches_spec",
+        passed: size_ok,
+        detail: format!(
+            "corpus: {} sessions (expected {}), {} messages (expected {})",
+            corpus.sessions.len(),
+            TOTAL_SESSIONS,
+            corpus.messages.len(),
+            TOTAL_SEEDED_MESSAGES,
+        ),
+    });
+
+    // 6. Session distribution + per-recipient-inbox count (in-memory cross-check).
+    let mut dist_ok = true;
+    let mut dist_detail = String::new();
+    for project in PROJECTS {
+        for role in ROLES {
+            let n = corpus
+                .sessions
+                .iter()
+                .filter(|s| s.role == role && s.project == project)
+                .count();
+            if n != 1 {
+                dist_ok = false;
+                dist_detail.push_str(&format!("({role},{project})={n}; "));
+            }
+        }
+    }
+    for s in &corpus.sessions {
+        let inbox = corpus.messages.iter().filter(|m| m.to_session == s.id).count();
+        if inbox != MSGS_PER_INBOX {
+            dist_ok = false;
+            dist_detail.push_str(&format!("inbox({})={inbox}; ", s.id));
+        }
+    }
+    out.push(InfrastructureCheck {
+        name: "session_distribution_correct",
+        passed: dist_ok,
+        detail: if dist_ok {
+            format!("3 roles × 2 projects = 6 sessions; {MSGS_PER_INBOX} incoming each")
+        } else {
+            format!("distribution drift: {dist_detail}")
+        },
+    });
+
+    // 7. pre-D1 count == 60 (DB-level).
+    let total: i64 = state
+        .conn
+        .query_row("SELECT COUNT(*) FROM session_message", [], |r| r.get(0))
+        .unwrap_or(-1);
+    let total_ok = total == TOTAL_SEEDED_MESSAGES as i64;
+    out.push(InfrastructureCheck {
+        name: "pre_d1_total_count_60",
+        passed: total_ok,
+        detail: format!(
+            "post-seed_corpus session_message count = {total} (expected {TOTAL_SEEDED_MESSAGES})"
+        ),
+    });
+
+    // Probes 8 + 9 are wrapped in a SAVEPOINT and ROLLBACK-ed after
+    // verification so the synthetic rows do NOT pollute the canonical
+    // pre-D1 corpus shape (post-rollback session_message count == 60 still).
+    // This preserves spec §3.3 D1 invariant `pre_d1_total % num_inboxes == 0`.
+    let savepoint_ok = state.conn.execute_batch("SAVEPOINT infra_probes_8_9").is_ok();
+
+    // 8. send_message returns ULID (26 chars).
+    let probe_id = send_message(
+        &state.conn,
+        "infra_check_from",
+        "infra_check_to",
+        "notification",
+        "infra_probe_8",
+        "[]",
+        None,
+        None,
+        None,
+    );
+    let ulid_ok = matches!(&probe_id, Ok(id) if id.len() == 26);
+    out.push(InfrastructureCheck {
+        name: "send_message_returns_ulid",
+        passed: ulid_ok,
+        detail: match &probe_id {
+            Ok(id) => format!("send_message returned id len={} (expected 26)", id.len()),
+            Err(e) => format!("send_message errored: {e}"),
+        },
+    });
+
+    // 9. respond_to_message inverts addressing — synthetic ids per v1 H2 +
+    //    v2.1 NH1 (sentinel-row contract preservation).
+    let probe_orig_id = send_message(
+        &state.conn,
+        "infra_check_from",
+        "infra_check_to",
+        "request",
+        "infra_probe_9_orig",
+        "[]",
+        None,
+        None,
+        None,
+    )
+    .unwrap_or_default();
+    let resp_ok = if probe_orig_id.is_empty() {
+        false
+    } else {
+        let resp_call = respond_to_message(
+            &state.conn,
+            &probe_orig_id,
+            "infra_check_to",
+            "completed",
+            "[]",
+        );
+        let row: Option<(String, String, Option<String>)> = state
+            .conn
+            .query_row(
+                "SELECT from_session, to_session, in_reply_to FROM session_message
+                 WHERE in_reply_to = ?1",
+                rusqlite::params![probe_orig_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+        matches!(resp_call, Ok(true))
+            && matches!(row, Some((ref f, ref t, ref irt))
+                if f == "infra_check_to"
+                && t == "infra_check_from"
+                && irt.as_deref() == Some(probe_orig_id.as_str()))
+    };
+    out.push(InfrastructureCheck {
+        name: "respond_to_message_inverts_addressing",
+        passed: resp_ok,
+        detail: if resp_ok {
+            "respond_to_message inverts (from↔to) and sets in_reply_to to orig_id".into()
+        } else {
+            "respond_to_message did NOT invert addressing correctly".into()
+        },
+    });
+
+    // Roll back probes 8 + 9 so the bench corpus is exactly 60 rows when
+    // D1 runs. If the SAVEPOINT didn't open (rare), DELETE by id as fallback.
+    if savepoint_ok {
+        let _ = state
+            .conn
+            .execute_batch("ROLLBACK TO SAVEPOINT infra_probes_8_9; RELEASE SAVEPOINT infra_probes_8_9");
+    } else {
+        // Fallback: explicit DELETEs by infra-check session-id markers.
+        let _ = state.conn.execute(
+            "DELETE FROM session_message
+             WHERE from_session IN ('infra_check_from', 'infra_check_to')
+                OR to_session IN ('infra_check_from', 'infra_check_to')",
+            [],
+        );
+    }
+
+    out
 }
 
 // ── Orchestrator (single shared DaemonState per spec §3.7) ──────────────
@@ -644,20 +1441,57 @@ mod tests {
     }
 
     #[test]
-    fn skeleton_run_in_state_returns_zeroed_score() {
+    fn end_to_end_run_passes_on_seed_42() {
         let mut state = DaemonState::new(":memory:").unwrap();
         let corpus = generate_corpus(&mut seeded_rng(42));
         seed_corpus(&mut state, &corpus).unwrap();
 
         let score = run_bench_in_state(&mut state, &corpus, 42);
 
-        // T2 skeleton: infra checks are all stubs returning passed=false.
-        // Therefore composite=0.0, all dims zeroed, pass=false.
-        assert_eq!(score.composite, 0.0);
-        assert!(!score.pass);
-        for d in &score.dimensions {
-            assert_eq!(d.score, 0.0);
-            assert!(!d.pass);
+        // All 9 infra checks must pass.
+        for c in &score.infrastructure_checks {
+            assert!(c.passed, "infra check {} failed: {}", c.name, c.detail);
         }
+        // All 6 dims must meet their min.
+        for d in &score.dimensions {
+            assert!(d.pass, "dim {} score={} below min={}", d.name, d.score, d.min);
+        }
+        assert!(
+            score.composite >= 0.95,
+            "composite {} below threshold 0.95",
+            score.composite
+        );
+        assert!(score.pass, "overall bench did not pass on seed=42");
+    }
+
+    #[test]
+    fn d1_inbox_precision_perfect_on_seeded_corpus() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let corpus = generate_corpus(&mut seeded_rng(42));
+        seed_corpus(&mut state, &corpus).unwrap();
+
+        let d1 = dim_1_inbox_precision(&mut state, &corpus);
+        // Pre-mutation corpus: every message has correct to_session, no foreign rows.
+        assert!(d1.score >= 0.99, "D1 score should be ~1.0 on clean corpus, got {}", d1.score);
+    }
+
+    #[test]
+    fn d6_pipeline_chain_is_correct_on_clean_state() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let corpus = generate_corpus(&mut seeded_rng(42));
+        seed_corpus(&mut state, &corpus).unwrap();
+
+        let d6 = dim_6_pipeline_chain_correctness(&mut state, &corpus);
+        assert!(d6.score >= 0.99, "D6 should be ~1.0 on green system, got {}", d6.score);
+    }
+
+    #[test]
+    fn d5_edge_case_resilience_passes_all_7_probes() {
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let corpus = generate_corpus(&mut seeded_rng(42));
+        seed_corpus(&mut state, &corpus).unwrap();
+
+        let d5 = dim_5_edge_case_resilience(&mut state, &corpus);
+        assert!(d5.score >= 0.99, "D5 score should be ~1.0 (7/7), got {}", d5.score);
     }
 }
