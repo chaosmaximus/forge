@@ -1038,8 +1038,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         OR (project = 'dev' AND path LIKE '/dev/%') \
         OR (project = 'run' AND path LIKE '/run/%'))";
 
-    let polluted_paths_subquery =
-        format!("SELECT path FROM code_file WHERE {POLLUTION_PREDICATE}");
+    let polluted_paths_subquery = format!("SELECT path FROM code_file WHERE {POLLUTION_PREDICATE}");
 
     let _ = conn.execute(
         &format!(
@@ -1049,9 +1048,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         [],
     );
     let _ = conn.execute(
-        &format!(
-            "DELETE FROM code_symbol WHERE file_path IN ({polluted_paths_subquery})"
-        ),
+        &format!("DELETE FROM code_symbol WHERE file_path IN ({polluted_paths_subquery})"),
         [],
     );
     let _ = conn.execute(
@@ -3318,13 +3315,14 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count_pollute, 0, "polluted-endpoint edges must be cascaded out");
+        assert_eq!(
+            count_pollute, 0,
+            "polluted-endpoint edges must be cascaded out"
+        );
         let count_legit: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM edge WHERE id = 'e-legit'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM edge WHERE id = 'e-legit'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count_legit, 1, "legit-only edge must survive");
 

@@ -2409,8 +2409,8 @@ def process_data(input_data):
         // contract by exercising the underlying accessor and the
         // clustering call itself with a NAME input.
         use crate::db::ops::{get_reality_by_name, get_reality_by_path, store_reality};
-        use forge_core::types::Reality;
         use crate::db::schema::create_schema;
+        use forge_core::types::Reality;
 
         crate::db::vec::init_sqlite_vec();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
