@@ -314,10 +314,26 @@ fn is_admissible_project_dir(candidate: &str) -> bool {
 
 /// Discover the project directory from env or Claude transcript paths.
 pub fn find_project_dir() -> Option<String> {
-    // 1. Check FORGE_PROJECT env
+    // 1. Check FORGE_PROJECT env. P3-4 W1.22 (W1.3 LOW-2): apply the
+    //    same admission rule as the transcript-decode fallback. Without
+    //    this, `FORGE_PROJECT=/mnt` (or `/home`, `/usr`, ...) would
+    //    bypass the depth-floor / marker-file guard and the indexer
+    //    would walk every subtree under that root — same blast radius
+    //    as the original I-7 leak, just triggered through a different
+    //    entry point. Reject with a `tracing::warn!` so a user who
+    //    sets a too-shallow path sees why it was ignored instead of
+    //    silently falling through to the transcript-decode branch.
     if let Ok(dir) = std::env::var("FORGE_PROJECT") {
-        if dir != "." && std::path::Path::new(&dir).is_dir() {
-            return Some(dir);
+        if dir != "." {
+            if is_admissible_project_dir(&dir) {
+                return Some(dir);
+            }
+            tracing::warn!(
+                target: "forge::indexer",
+                forge_project = %dir,
+                min_path_depth = min_path_depth(),
+                "FORGE_PROJECT path rejected: no project marker (.git, Cargo.toml, ...) and below min-path-depth floor; falling through to transcript-decode discovery"
+            );
         }
     }
 
@@ -1581,6 +1597,7 @@ fn now_str() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_extensions_for_language() {
@@ -1663,20 +1680,79 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_find_project_dir_env() {
-        // This test only verifies that FORGE_PROJECT is checked.
-        // We can't easily test the Claude transcript path logic.
+        // P3-4 W1.22 (W1.3 LOW-2): FORGE_PROJECT must pass the same
+        // admission rule as the transcript-decode fallback. We point
+        // the env at a tempdir with a Cargo.toml marker so it's
+        // admitted on the marker branch (no env-override needed).
+        // Pre-W1.22 the test used `/tmp` directly — that's now
+        // rejected (no marker, depth 1) and would silently pass only
+        // because of the previous unconditional `is_dir()` accept.
         let original = std::env::var("FORGE_PROJECT").ok();
 
-        // Set to a known existing directory
-        std::env::set_var("FORGE_PROJECT", "/tmp");
-        let result = find_project_dir();
-        assert_eq!(result, Some("/tmp".to_string()));
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(tmp.path().join("Cargo.toml"), b"").expect("write marker");
+        let dir_str = tmp.path().to_str().expect("utf8 path").to_string();
 
-        // Restore
+        std::env::set_var("FORGE_PROJECT", &dir_str);
+        let result = find_project_dir();
+        assert_eq!(result, Some(dir_str));
+
+        // Restore.
         match original {
             Some(v) => std::env::set_var("FORGE_PROJECT", v),
             None => std::env::remove_var("FORGE_PROJECT"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn p3_4_w1_22_forge_project_env_rejects_shallow_marker_less_paths() {
+        // W1.3 LOW-2 regression: pre-W1.22 the FORGE_PROJECT branch
+        // bypassed the depth-floor / marker-file guard, so
+        // `FORGE_PROJECT=/mnt` (or `/home`, `/usr`, ...) would let the
+        // indexer walk every subtree under that root — same blast
+        // radius as the original I-7 leak. The W1.22 fix gates
+        // FORGE_PROJECT through `is_admissible_project_dir`. This
+        // test pins the rejection by pointing the env at a tempdir
+        // with NO marker and a depth of 1 (relative to itself, the
+        // tempdir alone has no `/` ancestor structure that meets the
+        // floor in absolute terms — but to make this hermetic we
+        // override the depth floor to a value the path can't satisfy
+        // without a marker).
+        let original_fp = std::env::var("FORGE_PROJECT").ok();
+        let original_floor = std::env::var("FORGE_INDEXER_MIN_PATH_DEPTH").ok();
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        // No marker file is written.
+        let dir_str = tmp.path().to_str().expect("utf8 path").to_string();
+
+        // Force the floor to a level the tempdir path cannot meet
+        // (real tempdir paths look like /tmp/.tmpXXXXXX which is 2
+        // segments; setting floor=99 guarantees rejection on depth).
+        std::env::set_var("FORGE_PROJECT", &dir_str);
+        std::env::set_var("FORGE_INDEXER_MIN_PATH_DEPTH", "99");
+
+        // FORGE_PROJECT was rejected → falls through to transcript
+        // decode. We can't predict that branch's outcome (depends on
+        // ~/.claude/projects on the host running the test), so just
+        // assert that the env value itself was NOT returned verbatim.
+        let result = find_project_dir();
+        assert_ne!(
+            result.as_deref(),
+            Some(dir_str.as_str()),
+            "marker-less path with floor=99 must not be admitted via FORGE_PROJECT"
+        );
+
+        // Restore.
+        match original_fp {
+            Some(v) => std::env::set_var("FORGE_PROJECT", v),
+            None => std::env::remove_var("FORGE_PROJECT"),
+        }
+        match original_floor {
+            Some(v) => std::env::set_var("FORGE_INDEXER_MIN_PATH_DEPTH", v),
+            None => std::env::remove_var("FORGE_INDEXER_MIN_PATH_DEPTH"),
         }
     }
 
@@ -2535,6 +2611,7 @@ def process_data(input_data):
     }
 
     #[test]
+    #[serial]
     fn p3_4_w1_21_min_path_depth_honours_env_override() {
         // FORGE_INDEXER_MIN_PATH_DEPTH parses to a positive usize and
         // overrides the default of 4. Invalid / zero / non-numeric
