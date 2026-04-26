@@ -1,87 +1,80 @@
-# Handoff — P3-4 W1 mid-iteration: I-1+I-7 closed; release stack deferred — 2026-04-26
+# Handoff — P3-4 W1.3 closed: review + 3-commit fix-wave landed — 2026-04-26
 
-**Public HEAD:** `ef99156` (W1.2 c3 depth guard + regression test).
+**Public HEAD:** `13ed0c8` (fmt cleanup across fix-wave).
 **Working tree:** clean.
-**Version:** `v0.6.0-rc.3` (no bump until iteration phase closes — release-stack deferred per user direction).
+**Version:** `v0.6.0-rc.3` (no bump until iteration phase closes — release-stack deferred per user direction 2026-04-26).
 **Plan A (P3-1..P3-3 closed; P3-4 reframed):** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`.
 **Plan B (closed):** `docs/superpowers/plans/2026-04-26-v0.6.0-polish-wave.md`.
 **Plan C (closed):** `docs/superpowers/plans/2026-04-26-dogfood-fixes-plan.md`.
-**Halt:** end-of-iteration HANDOFF, mid-stream of P3-4 W1 dogfood loop.
+**Halt:** end-of-fix-wave HANDOFF, mid-stream of P3-4 W1 dogfood loop. Resume at #164 (W31 contradiction dogfood).
 
 ## Reframing of P3-4 (locked 2026-04-26)
 
 User direction: **the release stack is deferred to project end.** Multi-OS verify, version bump, GitHub release, marketplace bundle, branch protection — none of that happens until every dogfood-identified issue is resolved on Linux. macOS, Docker for Linux, GitHub Actions billing, marketplace are explicitly OUT of scope until then.
 
-P3-4 is now a single iteration loop:
-
-1. **Dogfood every Forge feature thoroughly** on Linux.
-2. **Identify every issue** (track in TaskList + dogfood-matrix doc).
-3. **Resolve each one** (commit per fix, adversarial review per wave).
-4. **Re-dogfood** until clean.
-5. **Then** open the release stack (multi-OS / tag / gh release / marketplace / branch protection).
-
-Sub-tasks #163-#180 break the loop into 18 discrete surfaces. Task #101 is the release-stack umbrella, marked **DEFERRED** until #180 closes.
+P3-4 is a single iteration loop: **dogfood every Forge feature thoroughly on Linux → identify every issue → resolve each one → re-dogfood → THEN open the release stack.** Sub-tasks #163-#180 break the loop into 18 discrete surfaces. Task #101 is the release-stack umbrella, marked **DEFERRED** until #180 closes.
 
 ## State in one paragraph
 
-**P3-4 W0 + W1.1 + W1.2 closed at HEAD `ef99156` (5 commits this session).** W0 (`77b7ab2`) bumped the flaky timing test threshold (3000→10000 ms) — root-cause of 30 consecutive CI red runs since 2026-04-24 (CI billing block is unrelated and irrelevant to current scope). W1.1 (`50ab231`) pinned `fastembed = "=5.11.0"` to fix the silent ORT 2.0.0-rc.12 → ONNX Runtime API v24 mismatch panic on every fresh daemon spawn (I-1). W1.2 (`cbd043f`, `ea76e82`, `ef99156`) shipped the I-7 fix — code-graph per-project scoping mirroring the W29/W30 sentinel pattern: schema migration backfilling legacy PATH-tagged rows to NAME, indexer write-tagging via basename, protocol field on `FindSymbol`/`CodeSearch`/`BlastRadius`, CLI `--project` flag, **plus a depth-guard on `find_project_dir`'s decode-fallback** that prevents the indexer from rooting at `/mnt` when transcript path components contain underscores. Live-verified on a fresh wipe: only `forge|188` files indexed, zero foreign leakage (was `mnt|10005`). All 1528 daemon-lib tests pass; clippy clean; protocol-hash bumped (`d23de2ac97f3… → f8c1d4f04563…`).
+**P3-4 W1.3 (review + fix-wave) closed at HEAD `13ed0c8` (5 commits this wave + 1 fmt cleanup).** The W1.3 adversarial review (`6ed8d09`, verdict `lockable-with-fixes`) flagged 3 HIGH + 3 MED + 10 LOW. The fix-wave addressed every HIGH and actionable MED across 3 commits: fw1 (`2f4ccda`) closed HIGH-1 (run_clustering by-name fallback) + HIGH-2 (wired `derive_project_name` at `index_directory_sync` entry); fw2 (`a7cb1a0`) closed HIGH-3 (companion DELETE for pre-W1.2 foreign-root pollution across 13 FHS-roots) + MED-1 (regression test mirroring W29/W30) + MED-3 (RTRIM trailing slashes); fw3 (`848c164`) closed MED-2 (swept skills/agents to thread `--project` flag with rationale across 5 SKILL.md files + 1 agent file). **The MED-1 test surfaced a CRITICAL latent bug**: SQLite has no built-in `REVERSE()`, so the original c1 migration's SUBSTR/REVERSE/INSTR SQL silently no-op'd on every legacy DB — the live `forge|188` baseline only looked clean because the DB had been wiped fresh. fw2 replaces with the standard SQLite basename idiom `REPLACE(p, RTRIM(p, REPLACE(p, '/', '')), '')` and retroactively unblocks the c1 promise. New auto-memory pinned (`feedback_sqlite_no_reverse_silent_migration_failure.md`). All 1533 daemon-lib tests pass; clippy 0 warnings; harness-sync OK; protocol-hash unchanged (`f8c1d4f04563…`); review YAML updated with `fixed_by` SHAs.
 
 ## First actions after `/compact` or session resume
 
 ```bash
 cd /mnt/colab-disk/DurgaSaiK/forge/forge
-git log --oneline -10                              # HEAD ef99156
+git log --oneline -10                              # HEAD 13ed0c8 → 848c164 → a7cb1a0 → 2f4ccda → 6ed8d09 → af43257 → ef99156
 git status --short                                 # expect clean
 bash scripts/check-harness-sync.sh                 # 155 + 107
 bash scripts/check-protocol-hash.sh                # f8c1d4f04563…
 bash scripts/check-license-manifest.sh
-bash scripts/check-review-artifacts.sh
+bash scripts/check-review-artifacts.sh             # 25 valid (was 24)
 cargo fmt --all --check                            # clean
 cargo clippy -p forge-daemon -p forge-core -p forge-cli -p forge-hud -- -W clippy::all -D warnings  # 0 warnings
 
-# Daemon at this HEAD; clean DB; only forge tagged
+# Verify daemon at fresh head; live DB still clean
 pgrep -af forge-daemon
 sqlite3 ~/.forge/forge.db "SELECT project, COUNT(*) FROM code_file GROUP BY project"
 forge-next health
 forge-next doctor
 
-# Read the dogfood matrix:
+# Resume at task #164 (W31 contradiction dogfood) — #163 is closed.
 cat docs/benchmarks/results/2026-04-26-p3-4-w1-dogfood-matrix.md
-
-# Resume at task #163 (adversarial review on W1.1+W1.2) — mandatory per Plan A §6.
 ```
 
-## P3-4 W0 + W1.1 + W1.2 close summary
+## P3-4 W1.3 review + fix-wave close summary
 
-### What landed (5 commits)
+### What landed (6 commits)
 
 | SHA | Wave | Scope |
 |-----|------|-------|
-| `77b7ab2` | P3-4 W0 | `test_daemon_state_new_is_fast` threshold 3000→10000 ms — fixes 30 consecutive CI red runs from cargo's parallel-test scheduler contention. |
-| `50ab231` | P3-4 W1.1 | `fastembed = "=5.11.0"` pin — closes I-1 BLOCKER. ort 2.0.0-rc.12 (pulled by fastembed 5.12+) wants ONNX Runtime API v24 but `.tools/onnxruntime-linux-x64-1.23.0/` only ships v23; fresh daemon spawns panicked in tokio-rt-worker on every embedder init (silent — daemon survived but new memories never got embeddings). v0.6.1+ unpins when ONNX Runtime 1.24+ ships in `.tools/setup-dev-env.sh`. |
-| `cbd043f` | P3-4 W1.2 c1 | Code-graph schema + indexer write-tagging. `code_file.project` default `''`→`'_global_'`; legacy PATH-tagged rows backfilled to basename via SQL; `idx_code_file_project` index added; `db::ops::derive_project_name` + `indexer::project_name_from_dir` helpers (basename-fast for hot paths, reality-table-aware for handler entry-points); `store_file` normalizes via `project_or_global`. |
-| `ea76e82` | P3-4 W1.2 c2 | Protocol field + read-path filter + CLI flag. `Request::FindSymbol`/`CodeSearch`/`BlastRadius` gain `project: Option<String>` (`#[serde(default)]`); handler routes `JOIN code_file ... AND f.project = ?` when set; CLI gains `--project` flag on `find-symbol`, `code-search`, `blast-radius`. Protocol-hash bumped to `f8c1d4f04563…`. ~10 literal sites updated across tests + writer + handler + CLI. |
-| `ef99156` | P3-4 W1.2 c3 | Depth-guard fix on `find_project_dir`'s decode-fallback. Pre-W1.2 the loop returned `/mnt` when underscore-bearing path components broke the dash↔slash decode; indexer then walked /mnt's whole subtree and pulled 10,005 foreign-user files into the code graph. Now requires ≥4 path-segment slashes before accepting a candidate. Regression test pinned. |
+| `6ed8d09` | W1.3 review | Adversarial review YAML + transcript at `docs/superpowers/reviews/2026-04-26-p3-4-w1-2-i7-impl.{yaml,transcript.md}`. Verdict: `lockable-with-fixes`, 3 HIGH + 3 MED + 10 LOW. |
+| `2f4ccda` | W1.3 fw1 | HIGH-1 (`run_clustering` accepts NAME via new `db::ops::get_reality_by_name` with by-path-then-by-name fallback) + HIGH-2 (`db::ops::derive_project_name` wired at `index_directory_sync` entry — monorepo subdir invocation now inherits registered ancestor reality NAME). 2 regression tests pinned. |
+| `a7cb1a0` | W1.3 fw2 | HIGH-3 (companion DELETE for pre-W1.2 foreign-root pollution: 13 FHS roots × code_file/code_symbol/edge cascades, doubly-anchored on project=basename(root) AND path LIKE root-prefix) + MED-1 (regression test mirroring W29/W30) + MED-3 (RTRIM trailing slashes before basename). **Replaces the original c1 SUBSTR/REVERSE/INSTR with the standard SQLite basename idiom — original SQL was silently no-op'ing because SQLite has no `REVERSE()`.** 2 new schema tests. |
+| `848c164` | W1.3 fw3 | MED-2 — sweep harness layer to thread `--project` flag with rationale: skills/forge-feature, forge-tdd, forge-debug, forge-verify, forge-think, agents/forge-planner. |
+| `13ed0c8` | W1.3 fw chore | rustfmt cleanup across fw1 + fw2 (mechanical, no behavior change). |
 
-### Live-verification evidence (post-W1.2 c3)
+### Review findings — final state
 
-```
-$ sqlite3 ~/.forge/forge.db "SELECT project, COUNT(*) FROM code_file GROUP BY project"
-forge|188
+| ID | Sev | Status | fixed_by |
+|----|-----|--------|----------|
+| HIGH-1 | run_clustering NAME mismatch | resolved | 2f4ccda |
+| HIGH-2 | derive_project_name dead code | resolved | 2f4ccda |
+| HIGH-3 | foreign-root pollution carryover | resolved | a7cb1a0 |
+| MED-1 | no migration regression test | resolved | a7cb1a0 (caught REVERSE() bug as bonus) |
+| MED-2 | harness layer un-propagated --project | resolved | 848c164 |
+| MED-3 | trailing-slash basename SUBSTR corner | resolved | a7cb1a0 |
+| LOW-1..LOW-10 | various cosmetic / strategic followups | open | (deferred to backlog, see below) |
 
-$ forge-next find-symbol audit_dedup --project forge
-2 symbol(s) found:
-  audit_dedup [function] .../forge_consolidation.rs:2063
-  test_audit_dedup_smoke [function] .../forge_consolidation.rs:3781
+### Test counts (final state at HEAD `13ed0c8`)
 
-$ forge-next find-symbol main --project hive-finance
-No symbols found.
-
-$ forge-next blast-radius crates/daemon/src/workers/indexer.rs --project forge
-Callers: 6 (all forge paths, no foreign leakage)
-```
-
-W1.2 closes I-7 across all three surfaces (find-symbol, code-search, blast-radius) and prevents future leakage at the indexer source via the depth guard.
+* `cargo fmt --all --check` — clean
+* `cargo clippy -p forge-daemon -p forge-core -p forge-cli -p forge-hud -- -W clippy::all -D warnings` — 0 warnings
+* `cargo build --workspace --tests` — clean
+* `cargo test -p forge-daemon --lib` — **1533 passed** (was 1528 pre-fix-wave; +5 tests across fw1+fw2)
+* `cargo test -p forge-core --lib` — 109 passed
+* `cargo test -p forge-cli` — 92 passed
+* `cargo test -p forge-hud` — 3 passed
+* All 5 `bash scripts/check-*.sh` gates green
 
 ## Issue ledger (running, scoped to W1 dogfood)
 
@@ -93,19 +86,38 @@ W1.2 closes I-7 across all three surfaces (find-symbol, code-search, blast-radiu
 | I-4 | LOW | `doctor` shows stale vergen git_sha after edits | resolved by rebuild |
 | I-5 | LOW | mis-tagged hive-platform memory in earlier DB | irrelevant after wipe |
 | I-6 | LOW | `forge-next --help` lists 50+ commands flat (no grouping) | cosmetic; defer |
-| I-7 | HIGH | code-graph cross-project leakage | ✓ closed (W1.2 c1+c2+c3) |
+| I-7 | HIGH | code-graph cross-project leakage | ✓ closed end-to-end (W1.2 c1+c2+c3 + W1.3 fw1+fw2+fw3) |
+| I-8 | HIGH | c1 migration silently no-op'd (SQLite has no REVERSE()) | ✓ closed (W1.3 fw2 — `a7cb1a0`) |
 
 Future issues: append to this ledger and to `docs/benchmarks/results/2026-04-26-p3-4-w1-dogfood-matrix.md`.
 
-## TaskList structure (post-restructure)
+## Deferred backlog from W1.3 review (LOW findings)
+
+All 10 LOW findings are deferred per Plan A §6 (LOWs / non-actionable MEDs go to backlog with rationale). They're listed in the review YAML at `docs/superpowers/reviews/2026-04-26-p3-4-w1-2-i7-impl.yaml` with full rationale; carry-forward summary:
+
+* **LOW-1** Depth-floor `≥4 slashes` heuristic in `find_project_dir` is host-shape coupled — works for `/mnt/colab-disk/DurgaSaiK/forge` (4 slashes) but rejects `/srv/foo` (2 slashes). Strategic fix: marker-file detection (Cargo.toml/.git/package.json). Track for v0.6.1+ via an env var override `FORGE_INDEXER_MIN_PATH_DEPTH`.
+* **LOW-2** FORGE_PROJECT env path skips depth-floor — `FORGE_PROJECT=/mnt` bypasses the c3 guard. User-explicit opt-in lowers severity but the same shape is exposed.
+* **LOW-3** BlastRadius handler has a dead `(bool, &str)` tuple `scope_msg` populated but never read; explicit `let _ = scope_msg;` is anti-signal. Cosmetic.
+* **LOW-4** Empty-string `--project ""` accepted by CLI silently fails-closed against `cf.project = ''` post-c1. Same shape as W29 review MED-2; defer (consistent with that pattern).
+* **LOW-5** `code_search` 3 new emit sites in c2 use `"path":` JSON key while CLI reads `"file_path"` — pre-existing key drift, widened by c2 not introduced. Defer (cosmetic; the typed-roundtrip find-symbol path still works).
+* **LOW-6** New `idx_code_file_project` is single-column; composite `(project, path)` would be more JOIN-friendly. Performance-not-correctness; ANALYZE remediates.
+* **LOW-7** Cargo.toml fastembed-pin comment names `scripts/setup-dev-env.sh`, but the reverse coupling has no cross-reference. Mechanical doc fix.
+* **LOW-8** `derive_project_name` hardcodes `"default"` org scope — multi-org deployments would silently miss. Preventive only (single-org Forge today).
+* **LOW-9** Regression test `p3_4_w1_2_find_project_dir_rejects_shallow_filesystem_roots` exercises depth-floor math but does NOT reproduce the actual bug input (transcript dir name with un-decodable underscores). Strategic test extension.
+* **LOW-10** BlastRadius cluster-expansion path explicitly NOT scoped — `--project forge` blast-radius can still emit foreign callers via `cluster_files` since edges aren't project-tagged. HIGH-3 cleanup makes this surface auto-close on a polluted-then-renamed DB; v0.6.1+ if real-world surfaces it.
+
+These join the existing P3-4 deferred set (W23 carry-forwards #173, W28 LOW/NIT sweep #174, etc.).
+
+## TaskList structure (post-W1.3-fix-wave)
 
 **Active iteration loop:**
 
 | Task | Subject | Status |
 |------|---------|--------|
 | #153 | P3-4 W1: iterative Linux dogfood — identify + resolve every issue (umbrella) | in_progress |
-| #163 | W1.3 — adversarial review on W1.1 + W1.2 (mandatory per Plan A §6) | pending |
-| #164 | W1.4 §7 — W31 contradiction detection dogfood | pending |
+| #163 | W1.3 — adversarial review on W1.1 + W1.2 (mandatory per Plan A §6) | **completed** ✓ |
+| #181 | W1.3 fix-wave — address 3 HIGH + 3 MED from review | **completed** ✓ |
+| #164 | W1.4 §7 — W31 contradiction detection dogfood | **next** |
 | #165 | W1.5 §8 — W26 team primitives dogfood | pending |
 | #166 | W1.6 §13 — Manas 8-layer verification | pending |
 | #167 | W1.7 §14 — observability (observe + /metrics + /inspect) | pending |
@@ -115,7 +127,7 @@ Future issues: append to this ledger and to `docs/benchmarks/results/2026-04-26-
 | #171 | W1.11 §18 — Prometheus families + value sanity | pending |
 | #172 | W1.12 §19 — bench harness 4-bench end-to-end | pending |
 | #173 | W1.13 — re-promote W23+W28 deferred HIGHs (3 items) | pending |
-| #174 | W1.14 — backlog sweep (W28 LOWs/NITs + earlier) | pending |
+| #174 | W1.14 — backlog sweep (W28 LOWs/NITs + W1.3 LOWs + earlier) | pending |
 | #175 | W1.15 — date-sensitive bench test fix | pending |
 | #176 | W1.16 — sync surfaces dogfood | pending |
 | #177 | W1.17 — healing system end-to-end | pending |
@@ -141,33 +153,14 @@ Future issues: append to this ledger and to `docs/benchmarks/results/2026-04-26-
 8. TaskUpdate.
 9. Dogfood briefly when behavior-change.
 
-## Tests + verification (final state at HEAD `ef99156`)
-
-* `cargo fmt --all --check` — clean
-* `cargo clippy -p forge-daemon -p forge-core -p forge-cli -p forge-hud -- -W clippy::all -D warnings` — 0 warnings
-* `cargo build --workspace --tests` — clean
-* `cargo test -p forge-daemon --lib` — **1528 passed**, 0 failed, 1 ignored (incl. updated `test_index_directory_sync_python` + new `p3_4_w1_2_find_project_dir_rejects_shallow_filesystem_roots`)
-* `cargo test -p forge-core --lib` — 109 passed
-* `cargo test -p forge-cli` — 92 passed
-* `cargo test -p forge-hud` — 3 passed
-* `bash scripts/check-harness-sync.sh` — OK (155 + 107)
-* `bash scripts/check-review-artifacts.sh` — OK (24 valid, 0 blocking)
-* `bash scripts/check-license-manifest.sh` — OK
-* `bash scripts/check-protocol-hash.sh` — OK (`f8c1d4f04563…`)
-* `bash scripts/ci/check_spans.sh` — OK
-
-Pre-existing test failure (unchanged, tracked by #175):
-
-* `workers::disposition::tests::test_step_for_bench_parity_with_tick_for_agent` — date-sensitive bench-only test, hardcoded fixture date bit-rots; only fires under `--features bench`, not in CI's main test job.
-
 ## Daemon state at handoff
 
-* Live daemon running at PID `805759` (release build at HEAD `ef99156` via `with-ort.sh`)
-* `~/.forge/forge.db` — 175.9 MB; 188 forge-tagged code files; embedder ready (fastembed pin verified clean)
+* Live daemon running at PID `805762` (release build at HEAD `ef99156` via `with-ort.sh`) — **PRE-fix-wave** code; new release build at HEAD `13ed0c8` is fresh on disk after the build that ran in this session. Next session may opt to keep the running daemon (the fix-wave changes are migration-safe + idempotent — re-running create_schema is a no-op on the wiped DB) or stop+respawn for a clean test.
+* `~/.forge/forge.db` — 12 MB; 188 forge-tagged code files; embedder ready (fastembed pin verified clean)
 * Backups: `forge.db.pre-W1.2-wipe-20260426-145000.bak` (219 MB pre-wipe baseline) plus older P3-3.11-era backups
 * Daemon log at `~/.forge/daemon.log` and `/tmp/dogfood-daemon-5.log`
 
-It is fine to leave the daemon running across the compact boundary. Next session's first actions can either keep it (and just register a new session) or stop+respawn for a clean slate.
+It is fine to leave the daemon running across the compact boundary. Next session's first actions can either keep it or stop+respawn.
 
 ## Cumulative deferred backlog (re-promotion candidates per "future ready")
 
@@ -177,6 +170,7 @@ It is fine to leave the daemon running across the compact boundary. Next session
 * **W28 MED-2** — git-sha drift detection. Tracked by #174.
 * **W28 LOW-2..LOW-10 + NIT-1..NIT-3** — cosmetic backlog. Tracked by #174.
 * **W23 MED-3 + MED-4** — `(0,0)` background heuristic + PRAGMA/busy_timeout consistency. Tracked by #174.
+* **W1.3 LOW-1..LOW-10** — per W1.3 review backlog rationale above. Tracked by #174.
 * **W29 nice-to-haves** — bench D6 strict-project precision dim; auto-extractor `tracing::warn!` audit trail; optional config gate `memory.require_project = true`. Audit during #167/#171/#172.
 * **W30 nice-to-haves** — extractor `tracing::warn!` when identity-project resolution falls through. Audit during #167.
 * **W31 nice-to-haves** — drift fixture for contradiction surface. Audit during #164.
@@ -185,9 +179,9 @@ It is fine to leave the daemon running across the compact boundary. Next session
 
 ## Halt-and-ask map
 
-1. **NEXT SESSION** — start at #163 (adversarial review on W1.1 + W1.2). Per per-wave §6, this is mandatory before opening #164+. Spawn `general-purpose` agent with terse-output, ≤600-word verdict cap. Capture review YAML at `docs/superpowers/reviews/2026-04-26-p3-4-w1-2-i7-impl.yaml`.
+1. **NEXT SESSION** — start at #164 (W31 contradiction dogfood). The W1.3 review + fix-wave is closed. Continue the dogfood loop sequentially (#164 → #165 → ... → #180).
 2. **Per Plan A §"Halt-and-ask points"**: anything returning `not-lockable` from adversarial review halts; any non-clean working-tree across a wave boundary halts.
 
 ## One-line summary
 
-**P3-4 W0 + W1.1 + W1.2 closed at HEAD `ef99156` (5 commits): I-1 (ORT API mismatch BLOCKER) closed via fastembed pin; I-7 (code-graph cross-project leakage HIGH) closed end-to-end with sentinel + DAO + protocol field + CLI flag + depth guard; live-verified `forge|188` only on fresh DB.** Release stack DEFERRED to project end. Resume at #163 (adversarial review) before opening #164+ dogfood surfaces.
+**P3-4 W1.3 closed at HEAD `13ed0c8` (6 commits): adversarial review (verdict `lockable-with-fixes`) + 3-commit fix-wave (HIGH-1 + HIGH-2 → fw1; HIGH-3 + MED-1 + MED-3 → fw2; MED-2 → fw3) + fmt cleanup. Bonus: fw2's regression test caught a CRITICAL latent bug — the c1 migration's REVERSE() SQL silently no-op'd on every legacy DB because SQLite has no REVERSE function. Fixed via standard SQLite basename idiom. Resume at #164 (W31 contradiction dogfood).**
