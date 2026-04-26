@@ -4299,3 +4299,164 @@ mod tests {
         );
     }
 }
+
+/// Drift-fixture tests (P3-3.7 W14): plant a regression class and assert the
+/// dimension catches it.
+///
+/// Pattern (mirrors the W17 forge-isolation drift_fixtures module):
+///   1. Seed a clean corpus.
+///   2. Run `consolidator::run_all_phases` to produce the green-system state.
+///   3. Sanity-check the dim scores ≥ its min.
+///   4. Plant a targeted regression directly via SQL.
+///   5. Re-audit and assert the dim score < its min.
+///
+/// If the assertion fails, the dim is INSENSITIVE to its target regression
+/// class — file as a HIGH-severity finding rather than relaxing the test.
+#[cfg(test)]
+mod drift_fixtures {
+    use super::*;
+
+    /// Helper: seed corpus + run all phases, return state + dataset for further
+    /// auditing. Uses seed=42 (matches the bench's calibration seed).
+    fn setup_post_consolidation() -> (crate::server::handler::DaemonState, SeededDataset) {
+        let mut state =
+            crate::server::handler::DaemonState::new(":memory:").expect("daemonstate :memory:");
+        let (_specs, dataset) = seed_corpus(&state.conn, 42).expect("seed_corpus");
+        let _ = seed_embeddings(&state.conn, 42).expect("seed_embeddings");
+        let cons_config = crate::config::ConsolidationConfig {
+            batch_limit: 500,
+            reweave_limit: 100,
+            ..Default::default()
+        };
+        let _ = crate::workers::consolidator::run_all_phases(&state.conn, &cons_config, None, None);
+        // Suppress unused-mut warning when DaemonState happens not to need
+        // mutation in some test paths.
+        let _ = &mut state;
+        (state, dataset)
+    }
+
+    /// **D1 dedup drift**: plant a Phase 1/2/7 dedup miss by re-activating
+    /// memories that the consolidator correctly removed. The bench's
+    /// `audit_dedup` reads each scope ID's status; resurrecting a victim
+    /// with `status='active'` makes `observed_dedup` miss it, dropping
+    /// recall and F1.
+    ///
+    /// Plant magnitude: re-activate 6 victims (≈ 1/3 of the 18 expected
+    /// victims) so the post-plant F1 lands well below the 0.95 spec floor
+    /// while still being deterministic across SQL row-iteration order.
+    #[test]
+    fn d1_catches_planted_dedup_miss() {
+        let (state, dataset) = setup_post_consolidation();
+
+        // Sanity: clean state passes D1.
+        let clean = audit_dedup(&state.conn, &dataset).expect("audit_dedup clean");
+        assert!(
+            clean.f1 >= 0.95,
+            "clean state must score ≥ 0.95 (got {}); cannot test sensitivity",
+            clean.f1,
+        );
+
+        // Find 6 victims to resurrect. Pick stable IDs from the ground
+        // truth so the test is deterministic across runs.
+        let victim_ids: Vec<String> = dataset
+            .ground_truth
+            .iter()
+            .filter(|t| {
+                (t.category == Category::ExactDuplicates
+                    || t.category == Category::SemanticDuplicates
+                    || t.category == Category::EmbeddingDuplicates)
+                    && (t.expected_status == ExpectedStatus::Superseded
+                        || t.expected_status == ExpectedStatus::Deleted)
+            })
+            .take(6)
+            .map(|t| t.memory_id.clone())
+            .collect();
+        assert_eq!(
+            victim_ids.len(),
+            6,
+            "fixture invariant: expected ≥6 dedup victims in seed=42 corpus",
+        );
+
+        // Plant: forcibly re-activate each victim. For deleted victims this
+        // means INSERTing a fresh row; for superseded ones it means flipping
+        // status back to 'active'.
+        for vid in &victim_ids {
+            let exists: rusqlite::Result<String> = state.conn.query_row(
+                "SELECT status FROM memory WHERE id = ?1",
+                rusqlite::params![vid],
+                |r| r.get(0),
+            );
+            match exists {
+                Ok(_) => {
+                    state
+                        .conn
+                        .execute(
+                            "UPDATE memory SET status='active' WHERE id = ?1",
+                            rusqlite::params![vid],
+                        )
+                        .expect("plant: reactivate superseded victim");
+                }
+                Err(_) => {
+                    state
+                        .conn
+                        .execute(
+                            "INSERT INTO memory \
+                                (id, memory_type, title, content, confidence, status, \
+                                 project, tags, created_at, accessed_at, organization_id) \
+                             VALUES (?1, 'lesson', 'planted_resurrection', \
+                                     'planted dedup-miss for D1 drift fixture', \
+                                     0.9, 'active', 'forge', '[]', \
+                                     '2026-04-26T00:00:00Z', '2026-04-26T00:00:00Z', 'default')",
+                            rusqlite::params![vid],
+                        )
+                        .expect("plant: re-insert deleted victim");
+                }
+            }
+        }
+
+        let after = audit_dedup(&state.conn, &dataset).expect("audit_dedup post-plant");
+        assert!(
+            after.f1 < 0.95,
+            "D1 must catch planted dedup miss (got f1={} ≥ min=0.95; clean was {}); \
+             dimension is INSENSITIVE to its target regression class",
+            after.f1,
+            clean.f1,
+        );
+    }
+
+    /// **D1 signal-preservation drift**: plant a Category 3 control bug by
+    /// superseding a CONTROL memory (one that should remain active because
+    /// its embedding distance to its pair is far enough — 0.15). The bench's
+    /// `audit_dedup` enforces a signal-preservation gate that collapses F1
+    /// to 0.0 if any control gets superseded.
+    #[test]
+    fn d1_catches_planted_signal_preservation_failure() {
+        let (state, dataset) = setup_post_consolidation();
+
+        // Pick the first Category 3 control (a memory expected to remain
+        // active despite having an embedding-near pair).
+        let control_id: String = dataset
+            .ground_truth
+            .iter()
+            .find(|t| t.category == Category::EmbeddingDuplicates && t.duplicate_of.is_none())
+            .map(|t| t.memory_id.clone())
+            .expect("fixture invariant: expected ≥1 Category 3 control");
+
+        // Plant: forcibly supersede the control.
+        state
+            .conn
+            .execute(
+                "UPDATE memory SET status='superseded' WHERE id = ?1",
+                rusqlite::params![control_id],
+            )
+            .expect("plant: supersede control");
+
+        let after = audit_dedup(&state.conn, &dataset).expect("audit_dedup post-plant");
+        assert_eq!(
+            after.f1, 0.0,
+            "D1 signal-preservation gate must collapse F1 to 0.0 when a \
+             Category 3 control is superseded (got {}); the gate is broken",
+            after.f1,
+        );
+    }
+}
