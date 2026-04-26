@@ -1,6 +1,6 @@
 {
   "name": "forge",
-  "version": "0.6.0-rc.2",
+  "version": "0.6.0-rc.3",
   "description": "The operating system for AI agents. 8-layer memory, proactive perception, identity, guardrails. One daemon — any agent, any domain. Auto-installs on first use.",
   "author": { "name": "Forge Contributors" },
   "license": "Apache-2.0",
