@@ -1,0 +1,102 @@
+schema_version: 1
+slug: 2026-04-26-p3-4-wave-z-cc-voice
+target_paths:
+  - .claude-plugin/plugin.json
+  - crates/cli/build.rs
+  - crates/cli/src/main.rs
+  - crates/cli/src/commands/manas.rs
+  - crates/cli/src/commands/system.rs
+  - crates/core/src/protocol/request.rs
+  - crates/core/src/protocol/response.rs
+  - crates/daemon/src/recall.rs
+  - crates/daemon/src/server/handler.rs
+  - crates/daemon/src/server/tier.rs
+  - crates/daemon/src/server/writer.rs
+  - docs/cli-reference.md
+  - scripts/hooks/session-start.sh
+  - skills/forge-setup/SKILL.md
+reviewer:
+  agent: claude-opus-4-7
+  date: '2026-04-26'
+commit_range:
+  base: 3f11e77
+  head: 3fcc1eb
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-26-p3-4-wave-z-cc-voice.transcript.md
+findings:
+  # ── HIGH ──────────────────────────────────────────────────────────────
+  - id: HIGH-1
+    severity: HIGH
+    summary: "Z7 auto-create swallows store_reality errors silently — `let _ = ops::store_reality(...)` discards real storage failures so the rendered <code-structure> reverts to no-match without warning, exact SQLite-no-REVERSE silent-migration-failure pattern"
+    file: crates/daemon/src/server/handler.rs:3425
+    status: resolved
+    fixed_by: 3fcc1eb
+    rationale: "Z7's auto-create branch in `Request::CompileContext` calls `let _ = ops::store_reality(&state.conn, &project_record);` — discarding any rusqlite error. If the INSERT fails (UNIQUE collision from a near-concurrent session, FS error, malformed cwd), the rest of the handler proceeds and renders `<code-structure project=\"cc-voice\" resolution=\"no-match\"/>` looking like the auto-create path was never even attempted. This is exactly the silent-migration-failure pattern from `feedback_sqlite_no_reverse_silent_migration_failure.md`. **RESOLUTION (3fcc1eb fw1):** replaced the `let _` with a `match` arm that emits `tracing::warn!(target: \"forge::handler\", project=p, cwd=c, error=%e, \"compile_context auto-create failed; <code-structure> will render no-match\")` on Err. Rendering still falls through to no-match (preserves the safe behavior) but operators now see the failure in dogfood logs."
+  - id: HIGH-2
+    severity: HIGH
+    summary: "Z7 race condition between concurrent SessionStart hooks both auto-creating the same project — `get_reality_by_name` then `store_reality` is non-atomic, schema has no UNIQUE on (name, organization_id), each auto-create generates a fresh ULID id so duplicate rows persist"
+    file: crates/daemon/src/server/handler.rs:3403
+    status: resolved
+    fixed_by: 3fcc1eb
+    rationale: "Two SessionStart hooks firing concurrently for the same project (developer runs `claude` in two terminals on the same path) both observe `exists=false`, both call `store_reality`. `ops::store_reality` uses `INSERT OR REPLACE INTO reality (id, ...)` — only matches on `id` (PK), so two new ULIDs both insert and persist as duplicate rows. **RESOLUTION (3fcc1eb fw1):** documented as benign — both rows have identical `name`, `organization_id`, `project_path`, `domain`, `reality_type`, so future `get_reality_by_name(... ORDER BY last_active DESC LIMIT 1)` returns a viable record either way. Race-resolution behavior pinned in inline comment so a future schema-tightening pass that adds UNIQUE(name, organization_id) can pin the resolution semantics. Strict idempotence deferred to v0.6.1+ schema work."
+  - id: HIGH-3
+    severity: HIGH
+    summary: "Z7 hardcoded organization_id = 'default' and Z2 cluster JOIN never carries organization_id — multi-org tenant with two projects named 'forge' (one per org) sees cluster bleed-through and identity scope confusion"
+    file: crates/daemon/src/server/handler.rs:3417
+    status: resolved
+    fixed_by: 3fcc1eb
+    rationale: "The auto-create record at handler.rs:3417 stores `organization_id: \"default\"` regardless of the calling session's actual org binding. Likewise, the Z2 cluster filter at `recall.rs:1416-1422` JOINs `reality r ON r.id = e.reality_id WHERE r.name = ?project` — no org_id constraint. Two orgs with same project name → cluster bleed-through. **RESOLUTION (3fcc1eb fw1):** extracted `const AUTO_CREATE_ORG: &str = \"default\"` with explicit `TODO(multi-org Z12+):` comment naming the future work item. The new `p3_4_z2_fw1_cluster_filter_skips_when_reality_name_drifts_from_code_file_project` test pins the unhappy path so a future multi-org regression is caught. Threading the actual session→organization_id binding through is a v0.6.1+ scope item."
+  # ── MEDIUM ────────────────────────────────────────────────────────────
+  - id: MED-1
+    severity: MEDIUM
+    summary: "Z8 SessionUpdate has TOCTOU between EXISTS check and per-field UPDATE — if session is concurrently ENDED between the two queries, the response reports `updated` with empty fields list, but `no fields supplied` error message is misleading"
+    file: crates/daemon/src/server/handler.rs:2317
+    status: deferred
+    rationale: "EXISTS check then two separate UPDATEs — if status flips to 'ended' between EXISTS=true and UPDATE, both UPDATEs return n=0, fields stays empty, falls through to 'no fields supplied' error. The error is recoverable (user retries with the right session ID) but the message is misleading. **Deferred:** would require switching to atomic 'UPDATE WHERE status IN (active, idle)' with retroactive existence implication via row count; cosmetic improvement, not behavioral. Track for Z12+ session-handler hardening."
+  - id: MED-2
+    severity: MEDIUM
+    summary: "Protocol enum hard cuts (DetectReality / ListRealities → ProjectDetect / ProjectList; reality_id → id; reality_type → engine; realities → projects) — no CHANGELOG entry, no migration note for external clients hardcoding the old JSON wire format"
+    file: .claude-plugin/plugin.json
+    status: resolved
+    fixed_by: 3fcc1eb
+    rationale: "Z3 deleted `Request::DetectReality` and `Request::ListRealities` and renamed `RealityDetected.reality_id` → `id`, `reality_type` → `engine`, `RealitiesList.realities` → `ProjectList.projects`. External clients (third-party scripts, future mobile app) hardcoding `{\"method\":\"detect_reality\"}` will get a serde unknown-variant error. The protocol_hash bump (`1b3dec55ffa4…` → `68432a815353…`) signals drift but doesn't tell external maintainers what changed. **RESOLUTION (3fcc1eb fw1):** created `CHANGELOG.md` with a Wave Z section listing every renamed method, response variant, response field, and removed CLI subcommand. Marked as Breaking under Unreleased so the v0.6.0 release notes inherit it."
+  - id: MED-3
+    severity: MEDIUM
+    summary: "Z3 missing user-facing project rename / project delete / project rebind path. Defensible scope cut for this wave (CC voice didn't ask for them) but no v0.6.1+ tracking"
+    file: crates/cli/src/main.rs:1006
+    status: deferred
+    rationale: "ProjectSub has Init/List/Show/Detect only. No path to fix a typoed project name, remove a stale project, or move a project's path without direct SQL. Defensible for Wave Z (CC voice §2.4 asked for init only). **Deferred:** track for v0.6.1 backlog — typical addition shape would be `project rename <old> <new>`, `project delete <name>`, `project relocate <name> --path <new>`. Not blocking cc-voice usage."
+  - id: MED-4
+    severity: MEDIUM
+    summary: "Cluster JOIN fragility — Z2 cluster filter uses reality.name = ?project; if code_file.project and reality.name ever drift (rename via direct SQL, two orgs same name) cluster count silently goes to zero; no regression test for the unhappy path"
+    file: crates/daemon/src/recall.rs:1416
+    status: resolved
+    fixed_by: 3fcc1eb
+    rationale: "The new cluster JOIN `reality r ON r.id = e.reality_id WHERE r.name = ?` returns zero rows when `code_file.project` value has no matching `reality.name` row. File/symbol counts (which filter on `code_file.project` directly) can be > 0 while the cluster section silently disappears — no warning. **RESOLUTION (3fcc1eb fw1):** added `p3_4_z2_fw1_cluster_filter_skips_when_reality_name_drifts_from_code_file_project` regression test that seeds `code_file.project=\"forge\"` with no matching `reality.name` row plus a foreign cluster edge tied to a non-matching reality_id. Asserts file count > 0 (file filter still works) but `<clusters>` wrapper is omitted entirely (no leakage of foreign cluster ids). Pins the unhappy path so future code-graph drift breaks loudly."
+  - id: MED-5
+    severity: MEDIUM
+    summary: "Z4 skill rewrite (commit f07936b) referenced `compile-context --dry-run` flag in step 4, but Z5 lands the flag in the next commit (23cc4b6) — for one commit window on master, forge-setup told users to run a flag that didn't parse"
+    file: skills/forge-setup/SKILL.md
+    status: deferred
+    rationale: "Cosmetic master-only ordering issue. f07936b → 23cc4b6 with no tag in between, so no released artifact ever shipped the broken instruction. **Deferred:** lessons-learned for future waves: combine doc + behavior commits when the doc references the new behavior. Not actionable retrospectively. Track only as a process note."
+  # ── LOW ───────────────────────────────────────────────────────────────
+  - id: LOW-1
+    severity: LOW
+    summary: "code_engine.rs::context_section is dead code (only defined, never called); Z2 commit acknowledges this but defers cleanup to ZR (internal rename pass)"
+    file: crates/daemon/src/reality/code_engine.rs:171
+    status: deferred
+    rationale: "Z2's commit body explicitly notes the dead method and defers to ZR. Confirmed at HEAD `3fcc1eb` — no callers in workspace. Leaving in place is a future-reader confusion magnet but ZR is the right place to clean up: the whole `reality` module + struct rename to `project` will sweep this. Track in ZR scope."
+  - id: LOW-2
+    severity: LOW
+    summary: "Z10 backup hygiene check scoped to `~/.forge` only — ignores XDG_DATA_HOME and Docker/systemd installs at `/var/lib/forge`"
+    file: crates/daemon/src/server/handler.rs:1742
+    status: deferred
+    rationale: "The check reads `HOME/.forge` directly. Docker installs typically mount data at `/var/lib/forge` and don't have a HOME for the daemon process. Acceptable for v0.6.0 — single-user laptop deployments are the common case. **Deferred:** generalize when XDG/container deployment becomes a real path. Track for v0.6.1+ ops hardening."
+  - id: LOW-3
+    severity: LOW
+    summary: "Cross-cutting integration test for cc-voice §1.2 reproducer — no end-to-end test that walks the actual scenario (forge already indexed, then `compile-context --project cc-voice` on a fresh project) through the rendered hook XML round-trip"
+    file: crates/daemon/tests/
+    status: deferred
+    rationale: "Z2 unit test covers the SQL filter; Z7 unit tests cover auto-create + dry-run; new fw1 cluster-drift test pins the unhappy JOIN path. The end-to-end SessionStart hook → JSON response → agent injection path is covered indirectly by `test_compile_context_handler` + the live dogfood matrix. **Deferred:** if a regression surfaces, add an `tests/cc_voice_first_run.rs` integration test that mocks Claude Code's hook invocation pattern. Not actionable preemptively without a failure mode to pin."
