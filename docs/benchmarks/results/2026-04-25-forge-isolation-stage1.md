@@ -12,12 +12,15 @@
 
 | seed | composite | pass | infra checks | wall_duration_ms |
 |------|-----------|------|--------------|-------------------|
-|     7 | 1.0000 | ✓ | 8/8 | <1000 |
-|    13 | 1.0000 | ✓ | 8/8 | <1000 |
-|    42 | 1.0000 | ✓ | 8/8 | <1000 |
-|   100 | 1.0000 | ✓ | 8/8 | <1000 |
-|  1234 | 1.0000 | ✓ | 8/8 | <1000 |
-| 99999 | 1.0000 | ✓ | 8/8 | <1000 |
+|     7 | 1.0000 | ✓ | 8/8 | 12 |
+|    13 | 1.0000 | ✓ | 8/8 | 11 |
+|    42 | 1.0000 | ✓ | 8/8 | 13 |
+|   100 | 1.0000 | ✓ | 8/8 | 13 |
+|  1234 | 1.0000 | ✓ | 8/8 | 11 |
+| 99999 | 1.0000 | ✓ | 8/8 | 12 |
+
+(Wall-clock measurements re-captured at HEAD `5a49799` per P3-3.5 W4 —
+closes Stage 1 LOW-4 deferred backlog item.)
 
 **6/6 seeds (5 calibration + 1 dogfood) converged on first run** with no
 iteration needed. Plan-doc allowed up to 5 calibration cycles per locked
@@ -149,13 +152,37 @@ Per spec §5:
   probe.
 - Concurrent recall stress — single-thread sequential.
 
-## 7. CI integration
+## 7. Wall-clock budget
+
+Re-measured at HEAD `5a49799` on linux x86_64 (GCP `chaosmaximus-instance`,
+release binary, 5-seed sweep) per P3-3.5 W4:
+
+| Metric | Value | Source |
+|--------|------:|--------|
+| Spec target (internal compute) | ≤ 500 ms | spec §3.7 line 268-269 ("Runs in <500ms based on forge-identity comparison") |
+| Spec aggressive target          | ≤ 1000 ms | spec §6 line 417-418 ("forge-identity at 1.0s; forge-isolation should beat that") |
+| Actual median `wall_duration_ms` | 12 ms    | summary.json across 5 calibration seeds |
+| Process wall-clock (binary load + DaemonState init included) | 173-186 ms | shell-measured |
+| **Headroom (vs spec target)** | **41× / 83×** | 500/12 ÷ 1000/12 |
+
+**Why bench-internal time (12 ms) ≪ process wall-clock (~180 ms):**
+the internal `wall_duration_ms` captures only the bench's
+`run_in_state_with_seed()` compute time — corpus generation + 6 dim
+evaluations + 8 infra checks. Binary load, ONNX runtime init,
+DaemonState `:memory:` schema migration, and SQLite initialization run
+outside that timer.
+
+**CI implication:** the matrix step's effective overhead is ~180 ms ×
+overhead-multiplier-factor of CI runners, well within the +60 s spec
+budget (line 247).
+
+## 8. CI integration
 
 Stage 1 T12 adds `forge-isolation` to the `bench-fast` matrix in
 `.github/workflows/ci.yml` with `continue-on-error: true` per the same
 14-green-runs gate-promotion policy as forge-identity (T17, deferred).
 
-## 8. References
+## 9. References
 
 - Spec: `docs/superpowers/specs/2026-04-25-domain-isolation-bench-design.md`
 - v1 review (verdict: not-lockable): `docs/superpowers/reviews/2026-04-25-p3-3-2a-5-spec-domain-isolation.yaml`

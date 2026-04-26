@@ -66,11 +66,29 @@ All 6 dimensions hit their max scores on the green system:
 | 8 | send_message_returns_ulid | id len = 26 (synthetic from→to; SAVEPOINT-rolled-back) |
 | 9 | respond_to_message_inverts_addressing | response row from↔to inverted, in_reply_to set correctly |
 
-## Wall-clock observations
+## Wall-clock budget
 
-- 5-6 ms per seed (median 5).
-- Spec target: ≤ 1500ms on ubuntu-latest. **300x headroom.**
-- 7-bench CI matrix wall-clock impact: + ~60s (matches forge-isolation).
+Re-measured at HEAD `5a49799` on linux x86_64 (GCP `chaosmaximus-instance`,
+release binary, 5-seed sweep) per P3-3.5 W4:
+
+| Metric | Value | Source |
+|--------|------:|--------|
+| Spec target (internal compute) | ≤ 1500 ms | spec §3.7 (mirror forge-isolation budget pattern) |
+| Actual `wall_duration_ms` (per seed) | 2 ms (constant across all 5 calibration seeds) | summary.json |
+| Process wall-clock (binary load + DaemonState init included) | 149-154 ms | shell-measured |
+| **Headroom (internal vs spec)** | **750×** | 1500 / 2 |
+| **Headroom (process vs spec)** | **~10×** | 1500 / 152 |
+
+**Why bench-internal time (2 ms) ≪ process wall-clock (~152 ms):**
+the internal `wall_duration_ms` captures only `run_with_seed()` compute
+— corpus generation (formula-derived, no rng consumption) + 6 dim
+evaluations + 9 infra checks (with SAVEPOINT/ROLLBACK around probes 8+9
+to preserve D1's `pre_d1_total == 60` invariant). DaemonState schema
+init, ONNX runtime cold-load, and binary load run outside that timer.
+
+**CI implication:** the matrix step's effective overhead is ~152 ms ×
+runner overhead factor; matrix entry adds ~60 s wall-clock per matrix
+run (matches the forge-isolation precedent at spec §3 line 97).
 
 ## Reproduction
 
