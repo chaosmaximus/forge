@@ -12,7 +12,6 @@
     "./agents/forge-evaluator.md"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
   "mcpServers": {},
   "protocol_hash": "1b3dec55ffa4a75f6e20019123ddea08099ba7bf20cd111f6a7efd4eafc20d04"
 }
