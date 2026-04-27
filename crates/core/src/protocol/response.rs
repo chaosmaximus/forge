@@ -1114,7 +1114,10 @@ pub enum ResponseData {
     },
 
     /// Phase 2A-4d.2: Observability API response. `data` is tagged by `kind`
-    /// matching the requested `shape`.
+    /// matching the requested `shape`. Every variant of `InspectData` carries
+    /// a `rows: Vec<...>` field, so JSON consumers can introspect the
+    /// response uniformly (`data.kind`, `data.rows`, plus envelope metadata)
+    /// regardless of which shape was requested.
     Inspect {
         shape: crate::protocol::InspectShape,
         /// Echoed back from the request.
@@ -1133,6 +1136,13 @@ pub enum ResponseData {
         /// True when at least one group hit the per-group sample cap.
         #[serde(default)]
         truncated: bool,
+        /// W1.37 (I-11 common envelope): row count from `data.rows`.
+        /// Lets JSON consumers detect empty-result and pagination state
+        /// without descending into the shape-tagged data payload.
+        /// Wire-back-compat: `#[serde(default)]` so old daemons (no field)
+        /// → new CLIs still deserialize, defaulting to 0.
+        #[serde(default)]
+        row_count: usize,
         data: crate::protocol::InspectData,
     },
 

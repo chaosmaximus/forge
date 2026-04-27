@@ -70,6 +70,12 @@ pub struct InspectFilter {
 ///
 /// `RowCount` data is served from the atomic `GaugeSnapshot` (see Tier 2 §2.3);
 /// all other shapes aggregate `kpi_events` rows.
+///
+/// **Schema-uniformity invariant (W1.37 / I-11):** every variant carries a
+/// `rows: Vec<...>` field, so JSON consumers can read `data.rows[]`
+/// regardless of the requested shape. The row element type IS shape-specific
+/// (rows have different domain semantics — a latency percentile is not a
+/// row count), but the outer envelope is uniform. Use `len()` for cardinality.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InspectData {
@@ -79,6 +85,26 @@ pub enum InspectData {
     Throughput { rows: Vec<ThroughputRow> },
     PhaseRunSummary { rows: Vec<PhaseRunRow> },
     BenchRunSummary { rows: Vec<BenchRunRow> },
+}
+
+impl InspectData {
+    /// W1.37 (I-11 common envelope): row count uniformly across all variants.
+    /// Lets callers populate `ResponseData::Inspect.row_count` without
+    /// repeating the per-variant `rows.len()` at every construction site.
+    pub fn len(&self) -> usize {
+        match self {
+            InspectData::RowCount { rows } => rows.len(),
+            InspectData::Latency { rows } => rows.len(),
+            InspectData::ErrorRate { rows } => rows.len(),
+            InspectData::Throughput { rows } => rows.len(),
+            InspectData::PhaseRunSummary { rows } => rows.len(),
+            InspectData::BenchRunSummary { rows } => rows.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// One Manas table's row count + staleness, sampled from the gauge snapshot.
@@ -201,6 +227,62 @@ mod tests {
             assert_eq!(json, json!(expected));
             let back: InspectShape = serde_json::from_value(json).unwrap();
             assert_eq!(back, shape);
+        }
+    }
+
+    #[test]
+    fn w1_37_i11_inspect_data_uniform_envelope_every_variant_has_kind_and_rows() {
+        // W1.37 (I-11): every InspectData variant serializes as
+        // {"kind":"<snake_shape>", "rows":[...]}. Pinning this invariant
+        // means JSON consumers can read `data.rows[]` (and count via
+        // `data.rows.length`) without branching on `kind`. The row
+        // element type is shape-specific by design — each shape carries
+        // domain-specific columns — but the outer envelope is uniform.
+        let cases = [
+            (
+                InspectData::RowCount { rows: vec![] },
+                "row_count",
+            ),
+            (
+                InspectData::Latency { rows: vec![] },
+                "latency",
+            ),
+            (
+                InspectData::ErrorRate { rows: vec![] },
+                "error_rate",
+            ),
+            (
+                InspectData::Throughput { rows: vec![] },
+                "throughput",
+            ),
+            (
+                InspectData::PhaseRunSummary { rows: vec![] },
+                "phase_run_summary",
+            ),
+            (
+                InspectData::BenchRunSummary { rows: vec![] },
+                "bench_run_summary",
+            ),
+        ];
+        for (data, expected_kind) in cases {
+            assert_eq!(
+                data.len(),
+                0,
+                "InspectData::{expected_kind} reports len() = 0 on empty rows"
+            );
+            let v = serde_json::to_value(&data).unwrap();
+            let obj = v
+                .as_object()
+                .unwrap_or_else(|| panic!("InspectData::{expected_kind} must serialize as an object"));
+            assert_eq!(
+                obj.get("kind").and_then(|k| k.as_str()),
+                Some(expected_kind),
+                "InspectData::{expected_kind} must carry kind=\"{expected_kind}\""
+            );
+            assert!(
+                obj.get("rows").map(|r| r.is_array()).unwrap_or(false),
+                "InspectData::{expected_kind} must carry an array `rows` field"
+            );
         }
     }
 

@@ -241,6 +241,7 @@ pub fn run_inspect(
         }
     };
 
+    let row_count = data.len();
     Response::Ok {
         data: ResponseData::Inspect {
             shape,
@@ -251,6 +252,7 @@ pub fn run_inspect(
             effective_group_by,
             stale,
             truncated,
+            row_count,
             data,
         },
     }

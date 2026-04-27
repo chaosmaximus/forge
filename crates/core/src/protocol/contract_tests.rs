@@ -2394,6 +2394,7 @@ mod tests {
                 effective_group_by: Some(InspectGroupBy::BenchName),
                 stale: false,
                 truncated: false,
+                row_count: 1,
                 data: InspectData::BenchRunSummary {
                     rows: vec![BenchRunRow {
                         bench_name: "forge-identity".into(),

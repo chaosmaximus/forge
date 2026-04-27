@@ -150,6 +150,7 @@ fn print_table(response: &Response) {
                 effective_group_by,
                 stale,
                 truncated,
+                row_count,
                 data,
                 ..
             },
@@ -170,7 +171,10 @@ fn print_table(response: &Response) {
         InspectShape::PhaseRunSummary => "phase_run_summary",
         InspectShape::BenchRunSummary => "bench_run_summary",
     };
-    println!("shape={shape_name}  window={window} ({window_secs}s)");
+    // W1.37 (I-11): include `rows=N` in the header so a 0-row response
+    // is immediately visible; before this change a caller had to read
+    // `(no rows)` further down or count the table rows manually.
+    println!("shape={shape_name}  window={window} ({window_secs}s)  rows={row_count}");
 
     // Effective filter / group_by echo (only non-default fields).
     let mut meta: Vec<String> = Vec::new();
@@ -459,6 +463,7 @@ mod tests {
                 effective_group_by: None,
                 stale: false,
                 truncated: false,
+                row_count: 2,
                 data: InspectData::RowCount {
                     rows: vec![
                         LayerRow {
