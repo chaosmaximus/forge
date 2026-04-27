@@ -27,12 +27,8 @@ static RE_INTERFACE: LazyLock<Regex> =
 // Type alias and constant patterns are defined but reserved for future use
 // when the indexer is extended to extract these symbols.
 
-/// Import: `import "package"` or entries in `import (...)` block
-static RE_IMPORT_SINGLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"^import\s+"([^"]+)""#).unwrap());
-
-static RE_IMPORT_ENTRY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"^\s+(?:\w+\s+)?"([^"]+)""#).unwrap());
+// Note: import extraction for Go lives in `lsp::symbols::extract_imports`,
+// which dispatches by language and is the single source of truth.
 
 // ─── Symbol extraction ───────────────────────────────────────────────────────
 
@@ -108,35 +104,6 @@ pub fn extract_symbols_go(file_path: &str, content: &str) -> Vec<CodeSymbol> {
     symbols
 }
 
-/// Extract import edges from Go source code.
-pub fn extract_imports_go(file_path: &str, content: &str) -> Vec<(String, String)> {
-    let mut imports = Vec::new();
-    let mut in_import_block = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        if trimmed == "import (" {
-            in_import_block = true;
-            continue;
-        }
-        if in_import_block && trimmed == ")" {
-            in_import_block = false;
-            continue;
-        }
-
-        if in_import_block {
-            if let Some(cap) = RE_IMPORT_ENTRY.captures(line) {
-                imports.push((file_path.to_string(), cap[1].to_string()));
-            }
-        } else if let Some(cap) = RE_IMPORT_SINGLE.captures(trimmed) {
-            imports.push((file_path.to_string(), cap[1].to_string()));
-        }
-    }
-
-    imports
-}
-
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -177,25 +144,6 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "Handler");
         assert_eq!(symbols[0].kind, "interface");
-    }
-
-    #[test]
-    fn test_extract_go_imports() {
-        let content =
-            "import (\n\t\"fmt\"\n\t\"net/http\"\n\tlog \"github.com/sirupsen/logrus\"\n)";
-        let imports = extract_imports_go("main.go", content);
-        assert_eq!(imports.len(), 3);
-        assert_eq!(imports[0].1, "fmt");
-        assert_eq!(imports[1].1, "net/http");
-        assert_eq!(imports[2].1, "github.com/sirupsen/logrus");
-    }
-
-    #[test]
-    fn test_extract_go_single_import() {
-        let content = "import \"fmt\"";
-        let imports = extract_imports_go("main.go", content);
-        assert_eq!(imports.len(), 1);
-        assert_eq!(imports[0].1, "fmt");
     }
 
     #[test]

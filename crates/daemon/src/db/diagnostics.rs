@@ -80,7 +80,11 @@ pub fn clear_diagnostics(conn: &Connection, file_path: &str) -> rusqlite::Result
 }
 
 /// Expire old diagnostics (remove entries past their expires_at).
-pub fn expire_diagnostics(conn: &Connection) -> rusqlite::Result<usize> {
+///
+/// Test-only: no production callers as of P3-4 Phase 10F. The expiry path
+/// is currently exercised only by `test_expire_diagnostics`.
+#[cfg(test)]
+fn expire_diagnostics(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM diagnostic WHERE expires_at < datetime('now')",
         [],

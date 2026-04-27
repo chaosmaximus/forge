@@ -263,7 +263,10 @@ pub fn act_on_notification(
 }
 
 /// Count pending notifications, optionally for a specific target.
-pub fn count_pending(conn: &Connection, target_id: Option<&str>) -> rusqlite::Result<usize> {
+///
+/// Test-only: no production callers as of P3-4 Phase 10F.
+#[cfg(test)]
+fn count_pending(conn: &Connection, target_id: Option<&str>) -> rusqlite::Result<usize> {
     let count: i64 = match target_id {
         Some(tid) => conn.query_row(
             "SELECT COUNT(*) FROM notification WHERE status = 'pending' AND target_id = ?1",

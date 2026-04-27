@@ -270,50 +270,6 @@ pub fn record_routing_stat(
     Ok(())
 }
 
-/// Check if recent extraction quality has dropped below the threshold (0.3).
-/// If so, returns the recommended escalation tier.
-/// Free -> Cheap, Cheap -> Full, Full -> None (already at max).
-pub fn check_quality_guard(conn: &rusqlite::Connection) -> Option<ComplexityTier> {
-    // Get average quality_score of extractions in the last 24 hours that have a quality_score
-    let result: Result<(f64, i64), _> = conn.query_row(
-        "SELECT COALESCE(AVG(quality_score), 1.0), COUNT(quality_score)
-         FROM routing_stats
-         WHERE created_at > datetime('now', '-24 hours') AND quality_score IS NOT NULL",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    );
-
-    match result {
-        Ok((avg_quality, count)) => {
-            // Need at least 3 data points to trigger escalation (avoid single bad result)
-            if count < 3 {
-                return None;
-            }
-            if avg_quality < 0.3 {
-                // Determine current dominant tier and escalate
-                let current_tier: Option<String> = conn
-                    .query_row(
-                        "SELECT tier FROM routing_stats
-                     WHERE created_at > datetime('now', '-24 hours') AND quality_score IS NOT NULL
-                     GROUP BY tier ORDER BY COUNT(*) DESC LIMIT 1",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .ok();
-
-                match current_tier.as_deref() {
-                    Some("free") => Some(ComplexityTier::Cheap),
-                    Some("cheap") => Some(ComplexityTier::Full),
-                    _ => None, // Already at Full or unknown
-                }
-            } else {
-                None
-            }
-        }
-        Err(_) => None,
-    }
-}
-
 /// Query aggregated routing stats.
 pub fn query_routing_stats(conn: &rusqlite::Connection) -> Result<RoutingStatsResult, String> {
     let total: i64 = conn

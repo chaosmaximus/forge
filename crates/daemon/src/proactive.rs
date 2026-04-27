@@ -372,7 +372,11 @@ fn fetch_pending_notifications(conn: &Connection, _project: Option<&str>) -> Str
 }
 
 /// Returns true if the knowledge type should be surfaced at the given hook event.
-pub fn should_surface(
+///
+/// Test-only: no production callers as of P3-4 Phase 10F. Production code
+/// calls `context_relevance` directly and applies its own threshold logic.
+#[cfg(test)]
+fn should_surface(
     conn: &Connection,
     hook_event: &str,
     knowledge_type: &str,

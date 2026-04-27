@@ -23,13 +23,6 @@ static RE_CLASS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^class\s+(\w+)"
 static RE_METHOD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s+(?:async\s+)?def\s+(\w+)\s*\(").unwrap());
 
-/// Import: `from module import name`
-static RE_FROM_IMPORT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^from\s+([\w.]+)\s+import\s+").unwrap());
-
-/// Import: `import module`
-static RE_IMPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^import\s+([\w.]+)").unwrap());
-
 /// Global variable/constant: `FOO_BAR = ...` (all caps)
 static RE_CONSTANT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([A-Z][A-Z0-9_]{2,})\s*=").unwrap());
@@ -142,22 +135,8 @@ pub fn extract_symbols_python(file_path: &str, content: &str) -> Vec<CodeSymbol>
     symbols
 }
 
-/// Extract import edges from Python source code.
-/// Returns Vec<(from_file, imported_module)>.
-pub fn extract_imports_python(file_path: &str, content: &str) -> Vec<(String, String)> {
-    let mut imports = Vec::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(cap) = RE_FROM_IMPORT.captures(trimmed) {
-            imports.push((file_path.to_string(), cap[1].to_string()));
-        } else if let Some(cap) = RE_IMPORT.captures(trimmed) {
-            imports.push((file_path.to_string(), cap[1].to_string()));
-        }
-    }
-
-    imports
-}
+// Note: import extraction for Python lives in `lsp::symbols::extract_imports`,
+// which dispatches by language and is the single source of truth.
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -203,16 +182,6 @@ mod tests {
         assert_eq!(symbols[0].name, "MAX_RETRIES");
         assert_eq!(symbols[0].kind, "variable");
         assert_eq!(symbols[1].name, "DATABASE_URL");
-    }
-
-    #[test]
-    fn test_extract_python_imports() {
-        let content = "from os.path import join\nimport sys\nfrom typing import Optional";
-        let imports = extract_imports_python("test.py", content);
-        assert_eq!(imports.len(), 3);
-        assert_eq!(imports[0].1, "os.path");
-        assert_eq!(imports[1].1, "sys");
-        assert_eq!(imports[2].1, "typing");
     }
 
     #[test]
