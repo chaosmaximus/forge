@@ -40,7 +40,7 @@ findings:
     summary: SKIP_CLI_TOKENS expanded to mask plausible fictional surfaces (`plugin`/`plugins`/`skill`/`skills`/`memory`/`memories`/`context`/`contexts`/`session`)
     file: scripts/check-harness-sync.sh
     status: resolved
-    fixed_by: pending
+    fixed_by: 5f3b93b
   - id: LOW-1
     severity: LOW
     summary: Suffixed-form regex captures only the first positional token (`forge-next sync push` would extract `sync`); no current harness file triggers it
