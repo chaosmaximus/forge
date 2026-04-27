@@ -326,6 +326,7 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> Result<SeededDataset, S
             cwd: None,
             capabilities: None,
             current_task: None,
+        role: None,
         },
     );
     if !matches!(resp, Response::Ok { .. }) {

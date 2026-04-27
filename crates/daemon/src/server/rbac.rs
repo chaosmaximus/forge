@@ -333,6 +333,7 @@ mod tests {
                 cwd: None,
                 capabilities: None,
                 current_task: None,
+            role: None,
             }
         )
         .is_ok());
@@ -573,6 +574,7 @@ mod tests {
                 cwd: None,
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
         assert!(result.is_err());

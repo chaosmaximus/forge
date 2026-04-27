@@ -448,6 +448,7 @@ mod tests {
                 team_type: None,
                 purpose: None,
                 organization_id: None,
+            parent_team_id: None,
             },
             Request::WorkspaceInit {
                 org_name: "test".into(),

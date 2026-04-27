@@ -3880,6 +3880,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -3912,6 +3913,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         crate::sessions::register_session(
@@ -3919,6 +3921,7 @@ mod tests {
             "s2",
             "cline",
             Some("dashboard"),
+            None,
             None,
             None,
             None,
@@ -3963,9 +3966,10 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
-        crate::sessions::register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
+        crate::sessions::register_session(&conn, "s2", "cline", None, None, None, None, None).unwrap();
 
         // End one session — should hide active-sessions again
         crate::sessions::end_session(&conn, "s2").unwrap();

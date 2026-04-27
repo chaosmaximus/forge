@@ -293,6 +293,13 @@ pub enum Request {
         /// A2A: description of what this session is currently working on
         #[serde(default)]
         current_task: Option<String>,
+        /// Pre-release audit B-HIGH-1: role within the org (e.g.
+        /// "CTO", "Engineer"). Persists to `session.role` column —
+        /// the schema column existed but was never wired through
+        /// the protocol. `#[serde(default)]` keeps wire back-compat
+        /// for old callers.
+        #[serde(default)]
+        role: Option<String>,
     },
     /// Lightweight keep-alive ping for session liveness tracking.
     /// Updates last_heartbeat_at timestamp. Routed through WriterActor.
@@ -876,6 +883,12 @@ pub enum Request {
         team_type: Option<String>,
         purpose: Option<String>,
         organization_id: Option<String>,
+        /// Pre-release audit B-HIGH-2: parent team for hierarchy.
+        /// The `team.parent_team_id` schema column existed but was
+        /// never wired through the protocol. `#[serde(default)]`
+        /// keeps wire back-compat for old callers.
+        #[serde(default)]
+        parent_team_id: Option<String>,
     },
     /// List members of a team (including agent sessions)
     ListTeamMembers {

@@ -416,6 +416,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         conn.execute(
@@ -432,6 +433,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         conn.execute(
@@ -445,6 +447,7 @@ mod tests {
             "s3",
             "claude-code",
             Some("forge"),
+            None,
             None,
             None,
             None,

@@ -708,6 +708,7 @@ mod tests {
             cwd: None,
             capabilities: None,
             current_task: None,
+        role: None,
         }));
         assert!(!is_read_only(&Request::EndSession { id: "s".into() }));
         assert!(!is_read_only(&Request::HlcBackfill));

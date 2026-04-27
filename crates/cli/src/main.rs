@@ -37,8 +37,8 @@ const VERSION_LINE: &str = env!("FORGE_VERSION_LINE");
 /// `enum Commands` order.
 const COMMAND_CATEGORIES: &str = "\
 COMMAND CATEGORIES:
-  Memory & Recall:           recall, remember, forget, supersede, ingest-claude
-  System & Daemon:           daemon, health, health-by-project, doctor, restart, vacuum, service, license-status, license-set, bootstrap, version
+  Memory & Recall:           recall, remember, forget, supersede, ingest-claude, consolidate
+  System & Daemon:           daemon, health, health-by-project, doctor, restart, vacuum, service, license-status, license-set, bootstrap, init
   Data Migration:            migrate, export, import, backfill, extract, config, stats
   Guardrails & Code Graph:   check, post-edit-check, pre-bash-check, post-bash-check, blast-radius, find-symbol, symbols
   Sessions & Identity:       sessions, lsp-status, manas-health, identity, platform, tools, perceptions, compile-context, register-session, end-session, update-session, record-tool-use, cleanup-sessions, context-trace
@@ -52,7 +52,8 @@ COMMAND CATEGORIES:
   Skills:                    skills-list, skills-install, skills-uninstall, skills-info, skills-refresh
   Observability:             observe
 
-Pass `<COMMAND> --help` for full args.";
+Pass `<COMMAND> --help` for full args. For the binary version use `--version`
+(global flag; there is no `version` subcommand).";
 
 #[derive(Parser)]
 #[command(
@@ -1519,22 +1520,45 @@ async fn main() {
             since,
             include_globals,
         } => {
-            // Parse --since: relative durations (1h, 7d, 30m) -> ISO timestamp string
-            let since_ts = since.map(|s| {
-                let s = s.trim();
+            // Parse --since: relative durations (1h, 7d, 30m) -> ISO timestamp string.
+            //
+            // Pre-release audit B-HIGH-4: pre-fix used `unwrap_or(0)` on every
+            // numeric branch, silently collapsing typos like `1y` (no `y`
+            // suffix) to "now" and returning zero rows — indistinguishable
+            // from "actually empty result". Post-fix: any parse failure
+            // (typo / unknown suffix / non-numeric) hard-errors with
+            // `eprintln!` + `std::process::exit(2)` so the user sees the
+            // problem at the CLI boundary instead of silent emptiness.
+            let since_ts = since.as_ref().map(|raw| {
+                let s = raw.trim();
                 // If it already looks like an ISO date/datetime, pass through
                 if s.contains('-') && s.len() >= 10 {
                     return s.to_string();
                 }
-                // Parse relative duration -> seconds offset from now
+                fn parse_or_die(token: &str, full: &str, unit: &str) -> u64 {
+                    match token.parse::<u64>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            eprintln!(
+                                "error: invalid --since value '{full}': could not parse '{token}' \
+                                 as a non-negative number of {unit}"
+                            );
+                            eprintln!(
+                                "       expected forms: ISO timestamp (2026-04-27T00:00:00Z), \
+                                 raw seconds (3600), or duration suffix (Nh / Nd / Nm)"
+                            );
+                            std::process::exit(2);
+                        }
+                    }
+                }
                 let secs = if let Some(h) = s.strip_suffix('h') {
-                    h.parse::<u64>().unwrap_or(0) * 3600
+                    parse_or_die(h, raw, "hours") * 3600
                 } else if let Some(d) = s.strip_suffix('d') {
-                    d.parse::<u64>().unwrap_or(0) * 86400
+                    parse_or_die(d, raw, "days") * 86400
                 } else if let Some(m) = s.strip_suffix('m') {
-                    m.parse::<u64>().unwrap_or(0) * 60
+                    parse_or_die(m, raw, "minutes") * 60
                 } else {
-                    s.parse::<u64>().unwrap_or(0) // raw seconds
+                    parse_or_die(s, raw, "seconds") // raw seconds
                 };
                 // Convert to ISO timestamp via UNIX epoch arithmetic
                 let epoch = std::time::SystemTime::now()
@@ -1699,17 +1723,42 @@ async fn main() {
             older_than,
             prune,
         } => {
-            // Parse duration string like "24h", "7d", "3600" into seconds
-            let older_than_secs = older_than.map(|s| {
-                let s = s.trim();
+            // Parse duration string like "24h", "7d", "3600" into seconds.
+            //
+            // Pre-release audit B-HIGH-3: pre-fix used `unwrap_or(0)` on every
+            // numeric branch, silently collapsing typos (`7days`, `1week`,
+            // `1y`) to `older_than_secs = 0`, causing the daemon to end EVERY
+            // active session instead of just stale ones — a destructive
+            // failure mode indistinguishable from "no args". Post-fix: any
+            // parse failure hard-errors with `eprintln!` + exit(2) at the
+            // CLI boundary so the operator sees the typo before any session
+            // is touched.
+            let older_than_secs = older_than.as_ref().map(|raw| {
+                let s = raw.trim();
+                fn parse_or_die(token: &str, full: &str, unit: &str) -> u64 {
+                    match token.parse::<u64>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            eprintln!(
+                                "error: invalid --older-than value '{full}': could not parse \
+                                 '{token}' as a non-negative number of {unit}"
+                            );
+                            eprintln!(
+                                "       expected forms: raw seconds (3600), or duration suffix \
+                                 (Nh / Nd / Nm). DESTRUCTIVE — refusing to default to 0."
+                            );
+                            std::process::exit(2);
+                        }
+                    }
+                }
                 if let Some(hours) = s.strip_suffix('h') {
-                    hours.parse::<u64>().unwrap_or(0) * 3600
+                    parse_or_die(hours, raw, "hours") * 3600
                 } else if let Some(days) = s.strip_suffix('d') {
-                    days.parse::<u64>().unwrap_or(0) * 86400
+                    parse_or_die(days, raw, "days") * 86400
                 } else if let Some(mins) = s.strip_suffix('m') {
-                    mins.parse::<u64>().unwrap_or(0) * 60
+                    parse_or_die(mins, raw, "minutes") * 60
                 } else {
-                    s.parse::<u64>().unwrap_or(0)
+                    parse_or_die(s, raw, "seconds")
                 }
             });
             commands::system::cleanup_sessions(prefix, older_than_secs, prune).await;

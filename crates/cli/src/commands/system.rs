@@ -811,8 +811,9 @@ pub async fn register_session(
     cwd: Option<String>,
     role: Option<String>,
 ) {
-    // TODO: pass `role` to Request::RegisterSession once the protocol adds the field
-    let _ = &role;
+    // Pre-release audit B-HIGH-1: role threads through Request::RegisterSession
+    // and persists to session.role column. Pre-fix the flag was dropped on the
+    // floor with `let _ = &role;`.
     match client::send(&Request::RegisterSession {
         id: id.clone(),
         agent,
@@ -820,6 +821,7 @@ pub async fn register_session(
         cwd,
         capabilities: None,
         current_task: None,
+        role,
     })
     .await
     {
@@ -3060,6 +3062,7 @@ pub async fn init() {
         cwd: Some(cwd.clone()),
         capabilities: None,
         current_task: None,
+    role: None,
     })
     .await
     {

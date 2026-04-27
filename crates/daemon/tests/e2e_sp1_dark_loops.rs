@@ -69,6 +69,7 @@ fn e2e_sp1_dark_loops_all_counters_advance() {
         Some("/tmp/forge-test"),
         None,
         None,
+        None,
     )
     .expect("register_session");
 

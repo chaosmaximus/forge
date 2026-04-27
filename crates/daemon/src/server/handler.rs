@@ -2232,6 +2232,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             cwd,
             capabilities,
             current_task,
+            role,
         } => {
             let agent_clone = agent.clone();
             let caps_json = capabilities
@@ -2244,6 +2245,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 cwd.as_deref(),
                 caps_json.as_deref(),
                 current_task.as_deref(),
+                role.as_deref(),
             ) {
                 Ok(()) => {
                     // Auto-detect reality from cwd and tag the session
@@ -6033,6 +6035,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             team_type,
             purpose,
             organization_id,
+            parent_team_id,
         } => {
             match crate::teams::create_team(
                 &state.conn,
@@ -6040,7 +6043,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 team_type.as_deref(),
                 purpose.as_deref(),
                 organization_id.as_deref(),
-                None,
+                parent_team_id.as_deref(),
             ) {
                 Ok(id) => Response::Ok {
                     data: ResponseData::TeamCreated { id, name },
@@ -8716,6 +8719,7 @@ mod tests {
                 cwd: Some("/project".into()),
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
         match resp1 {
@@ -8734,6 +8738,7 @@ mod tests {
                 cwd: None,
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
         match resp2 {
@@ -8775,6 +8780,7 @@ mod tests {
                 cwd: None,
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
 
@@ -8823,6 +8829,7 @@ mod tests {
                     cwd: None,
                     capabilities: None,
                     current_task: None,
+                role: None,
                 },
             );
         }
@@ -9327,6 +9334,7 @@ mod tests {
                 cwd: None,
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
 
@@ -9351,6 +9359,7 @@ mod tests {
                 cwd: None,
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
 
@@ -9896,6 +9905,7 @@ mod tests {
                 cwd: Some("/tmp/parent-dir".into()),
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
         assert!(matches!(resp, Response::Ok { .. }));
@@ -9968,6 +9978,7 @@ mod tests {
                 cwd: None,
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
         let resp = handle_request(
@@ -11111,7 +11122,7 @@ mod tests {
     #[test]
     fn test_context_refresh_empty_delta() {
         let mut state = DaemonState::new(":memory:").unwrap();
-        crate::sessions::register_session(&state.conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         let resp = handle_request(
             &mut state,
@@ -11758,6 +11769,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         crate::sessions::register_session(
@@ -11765,6 +11777,7 @@ mod tests {
             "s2",
             "cline",
             Some("forge"),
+            None,
             None,
             None,
             None,
@@ -11822,6 +11835,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         crate::sessions::register_session(
@@ -11829,6 +11843,7 @@ mod tests {
             "s2",
             "cline",
             Some("forge"),
+            None,
             None,
             None,
             None,
@@ -11873,6 +11888,7 @@ mod tests {
             "s1",
             "claude-code",
             Some("forge"),
+            None,
             None,
             None,
             None,
@@ -12070,6 +12086,7 @@ mod tests {
                 cwd: Some(cwd_path.clone()),
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
         match resp {
@@ -12447,7 +12464,7 @@ mod tests {
             "INSERT INTO team (id, name, organization_id, created_by, status, created_at, team_type) VALUES ('t1', 'eng', 'default', 'system', 'active', ?1, 'human')",
             rusqlite::params![now],
         ).unwrap();
-        crate::sessions::register_session(&state.conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&state.conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         state
             .conn
@@ -12667,6 +12684,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         state
@@ -12680,6 +12698,7 @@ mod tests {
             &state.conn,
             "s-child",
             "claude-code",
+            None,
             None,
             None,
             None,
@@ -13083,6 +13102,7 @@ mod tests {
                 team_type: Some("agent".into()),
                 purpose: Some("Build stuff".into()),
                 organization_id: Some(org_id.clone()),
+            parent_team_id: None,
             },
         );
         let team_id = match resp {
@@ -13407,6 +13427,7 @@ mod tests {
                 cwd: None,
                 capabilities: None,
                 current_task: None,
+            role: None,
             },
         );
 
@@ -13471,6 +13492,7 @@ mod tests {
                 team_type: Some("agent".into()),
                 purpose: Some("test star topology".into()),
                 organization_id: None,
+            parent_team_id: None,
             },
         );
         match resp {
@@ -13498,6 +13520,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         crate::sessions::register_session(
@@ -13508,12 +13531,14 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         crate::sessions::register_session(
             &state.conn,
             "member-2",
             "claude-code",
+            None,
             None,
             None,
             None,
@@ -13737,6 +13762,7 @@ mod tests {
                     cwd: None,
                     capabilities: None,
                     current_task: None,
+                role: None,
                 },
             );
         }
@@ -13963,12 +13989,14 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         crate::sessions::register_session(
             &state.conn,
             "recv1",
             "claude-code",
+            None,
             None,
             None,
             None,
@@ -14041,12 +14069,14 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         crate::sessions::register_session(
             &state.conn,
             "flood_recv",
             "claude-code",
+            None,
             None,
             None,
             None,
@@ -14127,9 +14157,10 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
-        crate::sessions::register_session(&state.conn, "qdl_recv", "test", None, None, None, None)
+        crate::sessions::register_session(&state.conn, "qdl_recv", "test", None, None, None, None, None)
             .unwrap();
 
         // Insert 100 pending messages directly to avoid rate limit
@@ -14184,6 +14215,7 @@ mod tests {
             "kpi-test",
             "claude-code",
             Some("forge"),
+            None,
             None,
             None,
             None,

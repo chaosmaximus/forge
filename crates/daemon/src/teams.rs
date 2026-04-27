@@ -195,6 +195,7 @@ pub fn spawn_agent(
         None, // cwd
         None, // capabilities
         None, // current_task
+        None, // role
     )?;
 
     // Set template_id, agent_status, last_activity_at on the session
@@ -2049,6 +2050,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2681,6 +2683,7 @@ mod tests {
             "s-cross-orch",
             "orchestrator",
             Some("forge"),
+            None,
             None,
             None,
             None,

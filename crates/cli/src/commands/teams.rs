@@ -307,13 +307,16 @@ pub async fn create_team(
     purpose: Option<String>,
     parent: Option<String>,
 ) {
-    // TODO: pass `parent` as parent_team_id once Request::CreateTeam adds the field
-    let _ = &parent;
+    // Pre-release audit B-HIGH-2: --parent threads through Request::CreateTeam
+    // and persists to team.parent_team_id. Pre-fix the flag was dropped on the
+    // floor with `let _ = &parent;`. Note: this is the team NAME — the daemon
+    // resolves to id via the schema FK; v0.6.0 keeps the name-as-key shape.
     let req = Request::CreateTeam {
         name: name.clone(),
         team_type,
         purpose,
         organization_id: None,
+        parent_team_id: parent,
     };
     match client::send(&req).await {
         Ok(Response::Ok {

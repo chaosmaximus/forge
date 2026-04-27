@@ -212,6 +212,7 @@ mod tests {
                     cwd: Some("/tmp".into()),
                     capabilities: None,
                     current_task: None,
+                role: None,
                 },
             ),
             ("end_session", Request::EndSession { id: "s1".into() }),
@@ -598,6 +599,7 @@ mod tests {
                     team_type: Some("agent".into()),
                     purpose: Some("strategic decisions".into()),
                     organization_id: Some("default".into()),
+                parent_team_id: None,
                 },
             ),
             (
@@ -1447,6 +1449,7 @@ mod tests {
                     cwd: None,
                     capabilities: None,
                     current_task: None,
+                role: None,
                 },
                 Request::EndSession { id: "s".into() },
                 Request::Sessions { active_only: None },
@@ -1743,6 +1746,7 @@ mod tests {
                     team_type: Some("agent".into()),
                     purpose: Some("strategic decisions".into()),
                     organization_id: Some("default".into()),
+                parent_team_id: None,
                 },
                 Request::ListTeamMembers {
                     team_name: "leadership".into(),

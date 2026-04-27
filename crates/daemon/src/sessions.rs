@@ -67,8 +67,17 @@ pub struct SessionMessageRow {
     pub delivered_at: Option<String>,
 }
 
-/// Register a new agent session. Uses INSERT OR REPLACE so re-registering
-/// the same ID updates the existing record.
+/// Register a new agent session.
+///
+/// Pre-release audit B-HIGH-1: now accepts `role` (org-role like
+/// "CTO" / "Engineer" / "Reviewer"), persisted to the `session.role`
+/// column that has existed since v2.1 but was never wired through.
+///
+/// Pre-release audit E-7 (deferred to follow-up): the underlying
+/// upsert still uses INSERT OR REPLACE, which wipes lifecycle
+/// columns (tool_use_count, budget_spent, working_set, etc.) on
+/// re-registration of an existing id. Tracked as v0.6.1 fix.
+#[allow(clippy::too_many_arguments)]
 pub fn register_session(
     conn: &Connection,
     id: &str,
@@ -77,6 +86,7 @@ pub fn register_session(
     cwd: Option<&str>,
     capabilities: Option<&str>,
     current_task: Option<&str>,
+    role: Option<&str>,
 ) -> rusqlite::Result<()> {
     let caps = capabilities.unwrap_or("[]");
     let task = current_task.unwrap_or("");
@@ -95,9 +105,9 @@ pub fn register_session(
     // heartbeat, and the next idle/ended transitions follow the configured
     // thresholds.
     conn.execute(
-        "INSERT OR REPLACE INTO session (id, agent, project, cwd, started_at, status, capabilities, current_task, last_heartbeat_at)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'), 'active', ?5, ?6, datetime('now'))",
-        params![id, agent, derived_project, cwd, caps, task],
+        "INSERT OR REPLACE INTO session (id, agent, project, cwd, started_at, status, capabilities, current_task, role, last_heartbeat_at)
+         VALUES (?1, ?2, ?3, ?4, datetime('now'), 'active', ?5, ?6, ?7, datetime('now'))",
+        params![id, agent, derived_project, cwd, caps, task, role],
     )?;
     Ok(())
 }
@@ -898,7 +908,7 @@ mod tests {
         // No active sessions → None.
         assert_eq!(get_latest_active_session_id(&conn).unwrap(), None);
 
-        register_session(&conn, "sess-1", "cli", None, None, None, None).unwrap();
+        register_session(&conn, "sess-1", "cli", None, None, None, None, None).unwrap();
         // Ensure distinct started_at (SQLite datetime('now') has 1s resolution
         // in some builds; tick the clock explicitly so the ORDER BY is
         // deterministic on all platforms).
@@ -907,7 +917,7 @@ mod tests {
             [],
         )
         .unwrap();
-        register_session(&conn, "sess-2", "claude-code", None, None, None, None).unwrap();
+        register_session(&conn, "sess-2", "claude-code", None, None, None, None, None).unwrap();
 
         assert_eq!(
             get_latest_active_session_id(&conn).unwrap(),
@@ -934,9 +944,10 @@ mod tests {
             Some("/project"),
             None,
             None,
+            None,
         )
         .unwrap();
-        register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", None, None, None, None, None).unwrap();
 
         let active = list_sessions(&conn, true).unwrap();
         assert_eq!(active.len(), 2);
@@ -948,7 +959,7 @@ mod tests {
     #[test]
     fn test_end_session() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None, None).unwrap();
 
         assert!(end_session(&conn, "s1").unwrap());
         assert!(!end_session(&conn, "s1").unwrap()); // already ended
@@ -965,8 +976,8 @@ mod tests {
     #[test]
     fn test_register_duplicate_updates() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("proj1"), None, None, None).unwrap();
-        register_session(&conn, "s1", "claude-code", Some("proj2"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("proj1"), None, None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("proj2"), None, None, None, None).unwrap();
 
         let all = list_sessions(&conn, false).unwrap();
         assert_eq!(all.len(), 1);
@@ -978,7 +989,7 @@ mod tests {
         let conn = setup();
 
         // Create a session with a project
-        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None, None).unwrap();
 
         // Create a memory with session_id but no project
         conn.execute(
@@ -1045,6 +1056,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1082,8 +1094,8 @@ mod tests {
         let conn = setup();
 
         // Only recent sessions
-        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
-        register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", None, None, None, None, None).unwrap();
 
         let cleaned = cleanup_stale_sessions(&conn).unwrap();
         assert_eq!(cleaned, 0, "should not clean up any recent sessions");
@@ -1103,6 +1115,7 @@ mod tests {
             Some("/cwd"),
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1117,7 +1130,7 @@ mod tests {
     #[test]
     fn test_tool_use_count_tracking() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None, None).unwrap();
 
         // Initial count should be 0
         let count: i64 = conn
@@ -1168,8 +1181,8 @@ mod tests {
         let conn = setup();
 
         // Register two sessions
-        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
-        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None, None).unwrap();
 
         // Verify there are 2 active sessions
         let active = list_sessions(&conn, true).unwrap();
@@ -1214,6 +1227,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         register_session(
@@ -1224,6 +1238,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         register_session(
@@ -1231,6 +1246,7 @@ mod tests {
             "real-session-1",
             "claude-code",
             Some("forge"),
+            None,
             None,
             None,
             None,
@@ -1250,8 +1266,8 @@ mod tests {
     #[test]
     fn test_cleanup_sessions_all() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
-        register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", None, None, None, None, None).unwrap();
 
         let ended = cleanup_sessions(&conn, None).unwrap();
         assert_eq!(ended, 2, "should end all active sessions");
@@ -1263,7 +1279,7 @@ mod tests {
     #[test]
     fn test_cleanup_sessions_no_match() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None, None).unwrap();
 
         let ended = cleanup_sessions(&conn, Some("nonexistent")).unwrap();
         assert_eq!(ended, 0, "should not end any sessions");
@@ -1277,8 +1293,8 @@ mod tests {
     #[test]
     fn test_send_and_list_message() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
-        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None, None).unwrap();
 
         let msg_id = send_message(
             &conn,
@@ -1306,9 +1322,9 @@ mod tests {
     #[test]
     fn test_broadcast_message() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
-        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
-        register_session(&conn, "s3", "codex", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None, None).unwrap();
+        register_session(&conn, "s3", "codex", Some("forge"), None, None, None, None).unwrap();
 
         send_message(
             &conn,
@@ -1335,8 +1351,8 @@ mod tests {
     #[test]
     fn test_respond_to_message() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
-        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None, None).unwrap();
 
         let msg_id = send_message(
             &conn,
@@ -1370,7 +1386,7 @@ mod tests {
     #[test]
     fn test_ack_messages() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None, None).unwrap();
 
         let id1 = send_message(
             &conn,
@@ -1425,6 +1441,7 @@ mod tests {
             None,
             Some(r#"["code_edit","bash"]"#),
             Some("Building A2A"),
+            None,
         )
         .unwrap();
 
@@ -1437,7 +1454,7 @@ mod tests {
     #[test]
     fn test_list_messages_with_status_filter() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None, None).unwrap();
 
         send_message(
             &conn,
@@ -1476,7 +1493,7 @@ mod tests {
     #[test]
     fn test_list_messages_with_offset() {
         let conn = setup();
-        register_session(&conn, "s1", "claude-code", None, None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", None, None, None, None, None).unwrap();
 
         // Insert 5 messages so we can page through them
         for i in 0..5 {
@@ -1788,8 +1805,8 @@ mod tests {
         let conn = setup();
         assert_eq!(count_active_sessions(&conn).unwrap(), 0);
 
-        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
-        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None, None).unwrap();
         assert_eq!(count_active_sessions(&conn).unwrap(), 2);
 
         end_session(&conn, "s1").unwrap();
@@ -1801,8 +1818,8 @@ mod tests {
         let conn = setup();
         assert_eq!(count_all_messages(&conn).unwrap(), 0);
 
-        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None).unwrap();
-        register_session(&conn, "s2", "cline", Some("forge"), None, None, None).unwrap();
+        register_session(&conn, "s1", "claude-code", Some("forge"), None, None, None, None).unwrap();
+        register_session(&conn, "s2", "cline", Some("forge"), None, None, None, None).unwrap();
 
         send_message(
             &conn,

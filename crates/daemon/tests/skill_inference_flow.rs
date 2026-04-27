@@ -21,6 +21,7 @@ fn register(state: &mut DaemonState, id: &str, agent: &str, project: &str) {
             cwd: Some("/tmp".to_string()),
             capabilities: None,
             current_task: None,
+        role: None,
         },
     );
     assert!(

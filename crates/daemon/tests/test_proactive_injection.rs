@@ -52,6 +52,7 @@ fn fresh_state_with_session() -> (
         Some("/tmp/forge-test"),
         None,
         None,
+        None,
     )
     .expect("register_session");
 

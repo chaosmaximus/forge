@@ -219,7 +219,7 @@ mod tests {
     fn test_reap_skips_no_heartbeat_sessions() {
         let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
-        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         reap_stale_sessions(&path, 1, 0, &tx).unwrap();
         let status: String = conn
@@ -235,7 +235,7 @@ mod tests {
         let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
         let mut rx = tx.subscribe();
-        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         conn.execute(
             "UPDATE session SET last_heartbeat_at = datetime('now', '-120 seconds') WHERE id = 's1'",
@@ -257,7 +257,7 @@ mod tests {
     fn test_reap_leaves_recent_heartbeat() {
         let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
-        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         conn.execute(
             "UPDATE session SET last_heartbeat_at = datetime('now') WHERE id = 's1'",
@@ -284,7 +284,7 @@ mod tests {
         // so we manually clear it to simulate the "session created via raw
         // SQL or pre-#7 binary" path that the orphan reaper still needs
         // to handle.
-        crate::sessions::register_session(&conn, "orphan1", "hook-test", None, None, None, None)
+        crate::sessions::register_session(&conn, "orphan1", "hook-test", None, None, None, None, None)
             .unwrap();
         conn.execute(
             "UPDATE session SET started_at = datetime('now', '-90000 seconds'), last_heartbeat_at = NULL WHERE id = 'orphan1'",
@@ -292,7 +292,7 @@ mod tests {
         ).unwrap();
 
         // Register a recent session with no heartbeat (should NOT be reaped).
-        crate::sessions::register_session(&conn, "recent1", "hook-test", None, None, None, None)
+        crate::sessions::register_session(&conn, "recent1", "hook-test", None, None, None, None, None)
             .unwrap();
         conn.execute(
             "UPDATE session SET last_heartbeat_at = NULL WHERE id = 'recent1'",
@@ -327,16 +327,16 @@ mod tests {
         let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
 
-        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         conn.execute(
             "UPDATE session SET last_heartbeat_at = datetime('now', '-600 seconds') WHERE id = 's1'",
             [],
         ).unwrap();
 
-        crate::sessions::register_session(&conn, "s2", "cline", None, None, None, None).unwrap();
+        crate::sessions::register_session(&conn, "s2", "cline", None, None, None, None, None).unwrap();
 
-        crate::sessions::register_session(&conn, "s3", "codex", None, None, None, None).unwrap();
+        crate::sessions::register_session(&conn, "s3", "codex", None, None, None, None, None).unwrap();
         conn.execute(
             "UPDATE session SET last_heartbeat_at = datetime('now') WHERE id = 's3'",
             [],
@@ -373,7 +373,7 @@ mod tests {
         let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
         let mut rx = tx.subscribe();
-        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         // Heartbeat 60s ago — older than idle (30s) but newer than timeout (300s).
         conn.execute(
@@ -401,7 +401,7 @@ mod tests {
     fn test_idle_to_ended_transition() {
         let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
-        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         // Already idle, heartbeat 600s ago — beyond timeout (300s).
         conn.execute(
@@ -426,7 +426,7 @@ mod tests {
         // idle_secs = 0 means "skip the idle phase entirely".
         let (path, conn, _dir) = setup_db();
         let tx = create_event_bus();
-        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         // Heartbeat 60s ago — would be idle if phase were enabled.
         conn.execute(
@@ -451,7 +451,7 @@ mod tests {
         // Phase 2A-4d.3.1 #7: register_session sets last_heartbeat_at = now
         // so the idle/ended lifecycle has a starting point.
         let (_path, conn, _dir) = setup_db();
-        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None)
+        crate::sessions::register_session(&conn, "s1", "claude-code", None, None, None, None, None)
             .unwrap();
         let hb: Option<String> = conn
             .query_row(
