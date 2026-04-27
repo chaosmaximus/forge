@@ -352,6 +352,30 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             valence,
             intensity,
         } => {
+            // W1.39 (W29/W30 strict opt-in): when `memory.require_project
+            // = true` is set, the daemon rejects project-less memories
+            // instead of accepting them globally. Default-off preserves
+            // back-compat. Operators can flip the flag via
+            // `forge-next config set memory.require_project=true`.
+            let project_is_empty =
+                project.as_deref().map(|p| p.trim().is_empty()).unwrap_or(true);
+            if project_is_empty {
+                let cfg = crate::config::load_config();
+                if cfg.memory.require_project {
+                    return Response::Error {
+                        message: "memory.require_project=true: every Remember must carry an explicit --project (use `forge-next remember ... --project <name>`)".to_string(),
+                    };
+                }
+                // W1.39 audit trail: when running in default
+                // (warn-and-proceed) mode, log a one-line warn so
+                // operators auditing for project-less writes can find
+                // them without enabling the strict gate.
+                tracing::warn!(
+                    memory_type = ?memory_type,
+                    title = %title,
+                    "remember: stored memory has no project — set --project to scope it (or `memory.require_project=true` to enforce)"
+                );
+            }
             let type_str = format!("{memory_type:?}");
             let is_decision = matches!(memory_type, forge_core::types::MemoryType::Decision);
             let title_clone = title.clone();

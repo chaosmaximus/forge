@@ -165,6 +165,13 @@ pub struct ForgeConfig {
     pub a2a: A2aConfig,
     pub workers: WorkerConfig,
     pub context: ContextConfig,
+    /// W1.39 (W29/W30 nice-to-haves): memory-system policy gates.
+    /// `require_project = true` makes `Request::Remember` reject any
+    /// memory that lacks an explicit project — closes the typo surface
+    /// W1.32 LOW-7 documented as "less-strict warn-and-proceed". Off by
+    /// default (`false`) to preserve back-compat for existing scripts.
+    #[serde(default)]
+    pub memory: MemoryConfig,
     #[serde(default)]
     pub context_injection: ContextInjectionConfig,
     pub consolidation: ConsolidationConfig,
@@ -204,6 +211,21 @@ pub struct ForgeConfig {
     /// Defaults to "product/claude-skills" relative to the project root.
     #[serde(default)]
     pub skills_directory: String,
+}
+
+/// W1.39 (W29/W30): memory-system policy gates.
+///
+/// `require_project`: when `true`, the daemon rejects `Request::Remember`
+/// without an explicit project, instead of accepting the memory and
+/// tagging it as `_global_`. Mirrors W1.32 LOW-7 "less-strict
+/// warn-and-proceed" with a strict-reject opt-in for ops that want
+/// every memory to be project-scoped (multi-tenant deployments,
+/// cross-project leak prevention).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
+    #[serde(default = "default_false")]
+    pub require_project: bool,
 }
 
 /// HTTP transport configuration — opt-in, disabled by default.

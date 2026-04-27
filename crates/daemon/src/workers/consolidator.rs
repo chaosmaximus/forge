@@ -4172,6 +4172,150 @@ mod tests {
     }
 
     #[test]
+    fn w1_40_w31_drift_fixture_six_false_positive_classes_stay_filtered() {
+        // P3-4 W1.40: comprehensive drift fixture for the W31
+        // contradiction false-positive surface. Plants six pair classes
+        // that previously could (or could now) trip Phase 9b's content-
+        // similarity check, and asserts ALL are filtered by the W31
+        // gates (neutral skip, opposite-valence requirement, intensity
+        // floor, content-Jaccard ceiling). A future regression that
+        // weakens any one gate in isolation fails this test.
+        //
+        // Each pair gets its own fresh in-memory DB to keep the
+        // assertions independent.
+
+        // Class 1 — neutral chronological pair (already pinned by an
+        // earlier test, included here so the fixture is a single
+        // consolidated regression artifact).
+        {
+            crate::db::vec::init_sqlite_vec();
+            let conn = Connection::open_in_memory().unwrap();
+            crate::db::schema::create_schema(&conn).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Session 22 done: payments hot-fix landed",
+                "Payments hot-fix shipped clean; rollback drill scheduled Friday",
+            )).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Session 21 done: payments observability green",
+                "All dashboards green; tested staging cutover; oncall paged twice",
+            )).unwrap();
+            assert_eq!(detect_content_contradictions(&conn), 0,
+                "Class 1: neutral chronological pair must stay filtered");
+        }
+
+        // Class 2 — same-valence (both negative) on near-identical
+        // titles. They agree, not contradict.
+        {
+            crate::db::vec::init_sqlite_vec();
+            let conn = Connection::open_in_memory().unwrap();
+            crate::db::schema::create_schema(&conn).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Don't use ad-hoc shell scripts in CI for parity tests",
+                "Hand-rolled bash is brittle vs containerized harness",
+            ).with_valence("negative", 0.9)).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Don't use ad-hoc shell scripts in CI for parity tests",
+                "We learned the hard way: runners diverge subtly across hosts",
+            ).with_valence("negative", 0.85)).unwrap();
+            assert_eq!(detect_content_contradictions(&conn), 0,
+                "Class 2: same-valence pair (both negative) must stay filtered");
+        }
+
+        // Class 3 — opposite valence but BOTH below the intensity
+        // floor (≤ 0.5). The W31 gate excludes weak signals from both
+        // 9a and 9b.
+        {
+            crate::db::vec::init_sqlite_vec();
+            let conn = Connection::open_in_memory().unwrap();
+            crate::db::schema::create_schema(&conn).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Maybe try websockets for the realtime layer",
+                "Websockets give bidirectional channels with low overhead",
+            ).with_valence("positive", 0.3)).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Maybe try long-poll for the realtime layer",
+                "Long-poll is HTTP-friendly and works behind aggressive proxies",
+            ).with_valence("negative", 0.4)).unwrap();
+            assert_eq!(detect_content_contradictions(&conn), 0,
+                "Class 3: opposite-valence pair with low intensity must stay filtered");
+        }
+
+        // Class 4 — opposite valence + strong intensity, but content
+        // Jaccard is HIGH (i.e. they're saying nearly the same thing
+        // verbatim). The 9b content-overlap ceiling rejects high-
+        // similarity content because it indicates restatement, not
+        // contradiction.
+        {
+            crate::db::vec::init_sqlite_vec();
+            let conn = Connection::open_in_memory().unwrap();
+            crate::db::schema::create_schema(&conn).unwrap();
+            let body = "The team agreed on Postgres. Postgres is the canonical pick. Postgres ships JSONB and full-text search out of the box, and the operational story is mature.";
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Postgres is the canonical primary store",
+                body,
+            ).with_valence("positive", 0.9)).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Postgres is the canonical primary store",
+                body,
+            ).with_valence("negative", 0.9)).unwrap();
+            assert_eq!(detect_content_contradictions(&conn), 0,
+                "Class 4: high content-overlap pair must stay filtered (restatement, not contradiction)");
+        }
+
+        // Class 5 — opposite valence + strong intensity, but titles
+        // overlap is LOW (< 0.7 Jaccard). The 9b gate requires title
+        // overlap to be high before considering content divergence.
+        {
+            crate::db::vec::init_sqlite_vec();
+            let conn = Connection::open_in_memory().unwrap();
+            crate::db::schema::create_schema(&conn).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Adopt Kubernetes for orchestration",
+                "K8s gives multi-cluster scheduling and a strong operator ecosystem",
+            ).with_valence("positive", 0.9)).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Reject Docker Compose for production rollouts",
+                "Compose lacks rolling updates, no horizontal autoscaler, single-host story",
+            ).with_valence("negative", 0.9)).unwrap();
+            assert_eq!(detect_content_contradictions(&conn), 0,
+                "Class 5: low title-overlap pair must stay filtered (different topics)");
+        }
+
+        // Class 6 — opposite valence + strong intensity + cross-type
+        // (decision vs lesson). The 9b gate operates on type-pair
+        // restrictions; preference↔preference and decision↔decision
+        // are the canonical comparable pairs. Cross-type pairs stay
+        // filtered.
+        {
+            crate::db::vec::init_sqlite_vec();
+            let conn = Connection::open_in_memory().unwrap();
+            crate::db::schema::create_schema(&conn).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Decision,
+                "Use TypeScript for the customer-facing dashboard",
+                "TS gives type-safety and a fast iteration loop",
+            ).with_valence("positive", 0.9)).unwrap();
+            ops::remember(&conn, &Memory::new(
+                MemoryType::Lesson,
+                "Use TypeScript for the customer-facing dashboard",
+                "TS strict mode caught a major refactor regression",
+            ).with_valence("negative", 0.9)).unwrap();
+            assert_eq!(detect_content_contradictions(&conn), 0,
+                "Class 6: cross-type pair (decision vs lesson) must stay filtered");
+        }
+    }
+
+    #[test]
     fn p3_3_11_w31_skips_low_intensity_pair() {
         // Opposite valence but intensity is below the 0.5 floor —
         // Phase 9b's W31 gate (mirroring Phase 9a) excludes them.
