@@ -3425,10 +3425,52 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 // context once the multi-org binding work lands.
                 const AUTO_CREATE_ORG: &str = "default";
 
-                let existing = ops::get_reality_by_name(&state.conn, p, AUTO_CREATE_ORG)
-                    .ok()
-                    .flatten();
-                if existing.is_none() {
+                // P3-4 Wave X / X1.fw1 (HIGH — dogfood data-loss):
+                // the schema carries `CREATE UNIQUE INDEX
+                // idx_reality_path_unique ON reality(project_path)
+                // WHERE project_path IS NOT NULL`. Pre-fix the auto-
+                // create branch only checked existence by NAME (`p`),
+                // built a Reality struct with a fresh ULID id and the
+                // supplied path, and ran `INSERT OR REPLACE`. When a
+                // row already existed at that path under a DIFFERENT
+                // name (the common case: an agent calls
+                // `compile-context --project <session-supplied-name>
+                // --cwd <existing-project-path>` with a stale or alias
+                // name), the PK check passed (new id) but the unique-
+                // index check on project_path fired — SQLite's REPLACE
+                // semantics REMOVED the conflicting row before
+                // inserting ours. Result: the existing project's id,
+                // name, and explicitly-set domain were silently wiped.
+                //
+                // Fix: gate the auto-create on BOTH name absence AND
+                // path absence. If a row exists at this path (under
+                // any name in this org), the path is already bound;
+                // skip auto-create + emit a tracing::warn so operators
+                // see the alias mismatch. The renderer then renders
+                // resolution="no-match" against the supplied (alien)
+                // name, which is the correct behavior — the existing
+                // project's row is preserved untouched.
+                let existing_by_name =
+                    ops::get_reality_by_name(&state.conn, p, AUTO_CREATE_ORG)
+                        .ok()
+                        .flatten();
+                let existing_by_path =
+                    ops::get_reality_by_path(&state.conn, c, AUTO_CREATE_ORG)
+                        .ok()
+                        .flatten();
+                if let Some(ref bound) = existing_by_path {
+                    if existing_by_name.is_none() {
+                        tracing::warn!(
+                            target: "forge::handler",
+                            requested_project = p,
+                            cwd = c,
+                            bound_project = %bound.name,
+                            bound_id = %bound.id,
+                            "compile_context auto-create skipped: cwd already bound to a different project; <code-structure> will render resolution=\"no-match\" for the requested name. Use `forge-next project rename` (v0.6.1+) or `update-session` to align."
+                        );
+                    }
+                }
+                if existing_by_name.is_none() && existing_by_path.is_none() {
                     use crate::reality::CodeRealityEngine;
                     use forge_core::types::reality_engine::RealityEngine;
                     let detected_domain = CodeRealityEngine
@@ -9791,6 +9833,143 @@ mod tests {
             "code-less cwd must auto-create with domain=\"unknown\""
         );
         assert_eq!(row2.2.as_deref(), Some("compile_context_cwd"));
+    }
+
+    #[test]
+    fn p3_4_x1_fw1_compile_context_cwd_does_not_wipe_existing_row_at_same_path() {
+        // P3-4 Wave X / X1.fw1 (HIGH — dogfood data-loss). The schema
+        // carries `CREATE UNIQUE INDEX idx_reality_path_unique ON
+        // reality(project_path) WHERE project_path IS NOT NULL`. Pre-fw1
+        // the auto-create branch built a Reality with a fresh ULID and
+        // ran `INSERT OR REPLACE`; when a different-named row already
+        // existed at the same path, SQLite REPLACE semantics removed
+        // it before inserting the new row — silent data loss of the
+        // user's `forge-next project init forge --domain rust` setup.
+        //
+        // This test reproduces the dogfood incident: pre-existing
+        // `forge` row at /path/to/code, then call
+        // compile-context --project test-fresh --cwd /path/to/code.
+        // Without the fw1 fix, the post-condition would observe
+        // `forge` deleted and replaced by `test-fresh`. With the fix,
+        // the auto-create branch is skipped, the existing `forge`
+        // row survives untouched, and a tracing::warn is emitted.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("forge.db").to_string_lossy().to_string();
+
+        // Prepare a tempdir that looks like a Rust project.
+        let code_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            code_dir.path().join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let code_cwd = code_dir.path().to_string_lossy().to_string();
+
+        // Seed: the user explicitly registered `forge` at this path
+        // with domain="rust".
+        {
+            let writer = DaemonState::new(&db_path).unwrap();
+            let now = forge_core::time::now_iso();
+            crate::db::ops::store_reality(
+                &writer.conn,
+                &forge_core::types::Reality {
+                    id: "01PRE-EXISTING-FORGE-ROW".to_string(),
+                    name: "forge".to_string(),
+                    reality_type: "code".to_string(),
+                    detected_from: Some("user_init".to_string()),
+                    project_path: Some(code_cwd.clone()),
+                    domain: Some("rust".to_string()),
+                    organization_id: "default".to_string(),
+                    owner_type: "user".to_string(),
+                    owner_id: "default".to_string(),
+                    engine_status: "ok".to_string(),
+                    engine_pid: None,
+                    created_at: now.clone(),
+                    last_active: now,
+                    metadata: "{}".to_string(),
+                },
+            )
+            .unwrap();
+            // Sanity: row exists.
+            let pre =
+                crate::db::ops::get_reality_by_name(&writer.conn, "forge", "default")
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(pre.id, "01PRE-EXISTING-FORGE-ROW");
+            // Drop the writer so the read-only opener doesn't race.
+            drop(writer);
+        }
+
+        // Now an agent calls compile-context with a DIFFERENT project
+        // name pointing at the same path. Pre-fw1 this would silently
+        // delete the `forge` row.
+        let events = crate::events::create_event_bus();
+        let hlc = std::sync::Arc::new(crate::sync::Hlc::new("x1-fw1-test"));
+        let (write_tx, _write_rx) = tokio::sync::mpsc::channel(8);
+        let mut reader = DaemonState::new_reader(
+            &db_path,
+            events,
+            hlc,
+            std::time::Instant::now(),
+            Some(write_tx),
+            None,
+        )
+        .unwrap();
+        let resp = handle_request(
+            &mut reader,
+            Request::CompileContext {
+                agent: Some("claude-code".into()),
+                project: Some("test-fresh-collision".into()),
+                static_only: None,
+                excluded_layers: None,
+                session_id: None,
+                focus: None,
+                cwd: Some(code_cwd.clone()),
+                dry_run: None,
+            },
+        );
+        assert!(
+            matches!(resp, Response::Ok { .. }),
+            "expected Ok, got {resp:?}"
+        );
+
+        // Post-condition: the `forge` row is INTACT (id, name, domain
+        // all preserved); the auto-create did NOT fire for the colliding
+        // alias name.
+        let probe = rusqlite::Connection::open(&db_path).unwrap();
+        let row: (String, String, Option<String>) = probe
+            .query_row(
+                "SELECT id, name, domain FROM reality
+                 WHERE project_path = ?1 AND organization_id = 'default'",
+                rusqlite::params![code_cwd],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row.0, "01PRE-EXISTING-FORGE-ROW",
+            "the pre-existing row's id must survive — got {:?}",
+            row
+        );
+        assert_eq!(row.1, "forge", "the pre-existing row's name must survive");
+        assert_eq!(
+            row.2.as_deref(),
+            Some("rust"),
+            "the pre-existing row's explicit domain must survive"
+        );
+        // And the colliding-alias name must NOT have been written.
+        use rusqlite::OptionalExtension;
+        let no_alias: Option<String> = probe
+            .query_row(
+                "SELECT id FROM reality WHERE name = 'test-fresh-collision' AND organization_id = 'default'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(
+            no_alias.is_none(),
+            "X1.fw1 must NOT auto-create when the cwd is already bound to a different project; got id={no_alias:?}"
+        );
     }
 
     #[test]
