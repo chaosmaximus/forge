@@ -80,11 +80,17 @@ pub fn project_or_global(project: Option<&str>) -> &str {
 /// Idempotent: re-deriving for the same path always returns the same
 /// name. One indexed `query_row` plus up to N parent lookups (bounded
 /// by directory depth) — safe for hot indexer paths.
-pub fn derive_project_name(conn: &Connection, project_dir: &str) -> String {
+/// P3-4 W1.26 (W1.3 LOW-8): `org_id` is threaded through both
+/// `get_reality_by_path` lookups so multi-org deployments don't
+/// silently fall back to basename. Today every caller passes
+/// `"default"` (single-org Forge), but the parameter shape is
+/// preventive — when a future multi-tenant rollout lands, all
+/// already-instrumented call sites become trivially correct.
+pub fn derive_project_name(conn: &Connection, project_dir: &str, org_id: &str) -> String {
     if project_dir.is_empty() {
         return GLOBAL_PROJECT_SENTINEL.to_string();
     }
-    if let Ok(Some(r)) = get_reality_by_path(conn, project_dir, "default") {
+    if let Ok(Some(r)) = get_reality_by_path(conn, project_dir, org_id) {
         if !r.name.is_empty() {
             return r.name;
         }
@@ -95,7 +101,7 @@ pub fn derive_project_name(conn: &Connection, project_dir: &str) -> String {
         if ancestor_str.is_empty() || ancestor_str == "/" {
             break;
         }
-        if let Ok(Some(r)) = get_reality_by_path(conn, &ancestor_str, "default") {
+        if let Ok(Some(r)) = get_reality_by_path(conn, &ancestor_str, org_id) {
             if !r.name.is_empty() {
                 return r.name;
             }
@@ -3547,6 +3553,63 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_schema(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn p3_4_w1_26_derive_project_name_honours_org_id() {
+        // W1.3 LOW-8 contract: `derive_project_name` accepts an
+        // explicit `org_id` and only matches realities under THAT
+        // org. A reality registered under "tenant-a" must NOT be
+        // returned when the caller passes "tenant-b". Today every
+        // caller passes "default" (single-org Forge) but the
+        // parameter shape is preventive — this test pins the
+        // contract before multi-tenant lands.
+        let conn = open_db();
+
+        let r = Reality {
+            id: "r-tenant-a".to_string(),
+            name: "tenant-a-project".to_string(),
+            reality_type: "code".to_string(),
+            detected_from: Some("manual".to_string()),
+            project_path: Some("/repo/tenant-a/foo".to_string()),
+            domain: Some("rust".to_string()),
+            organization_id: "tenant-a".to_string(),
+            owner_type: "user".to_string(),
+            owner_id: "local".to_string(),
+            engine_status: "idle".to_string(),
+            engine_pid: None,
+            created_at: "2026-04-26T00:00:00Z".to_string(),
+            last_active: "2026-04-26T00:00:00Z".to_string(),
+            metadata: "{}".to_string(),
+        };
+        store_reality(&conn, &r).unwrap();
+
+        // Lookup under the matching org returns the registered name.
+        let same = derive_project_name(&conn, "/repo/tenant-a/foo", "tenant-a");
+        assert_eq!(
+            same, "tenant-a-project",
+            "matching org_id must return the registered reality name"
+        );
+
+        // Lookup under a different org falls back to basename.
+        let different = derive_project_name(&conn, "/repo/tenant-a/foo", "tenant-b");
+        assert_eq!(
+            different, "foo",
+            "non-matching org_id must NOT cross-org leak; falls through to basename"
+        );
+
+        // Default-org lookup also misses (the reality is on tenant-a).
+        let default_org = derive_project_name(&conn, "/repo/tenant-a/foo", "default");
+        assert_eq!(
+            default_org, "foo",
+            "default org_id must NOT see tenant-a's reality"
+        );
+
+        // Empty path → sentinel, regardless of org.
+        assert_eq!(
+            derive_project_name(&conn, "", "tenant-a"),
+            GLOBAL_PROJECT_SENTINEL
+        );
     }
 
     #[test]

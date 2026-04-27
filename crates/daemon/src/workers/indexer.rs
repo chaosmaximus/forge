@@ -945,7 +945,11 @@ async fn run_index(
 /// inner loop and one-shot DB query is cheap only at function entry.
 pub fn index_directory_sync(conn: &Connection, project_dir: &str) -> (usize, usize) {
     let indexed_at = now_str();
-    let project_name = ops::derive_project_name(conn, project_dir);
+    // P3-4 W1.26 (W1.3 LOW-8): `derive_project_name` accepts an
+    // explicit `org_id`. Today every code-graph entry-point operates
+    // under the single-org sentinel `"default"`; the parameter is
+    // preventive for multi-tenant rollout.
+    let project_name = ops::derive_project_name(conn, project_dir, "default");
     let mut all_files: Vec<CodeFile> = Vec::new();
     let mut all_symbols: Vec<CodeSymbol> = Vec::new();
 
