@@ -11,9 +11,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License" />
-  <img src="https://img.shields.io/badge/tests-1%2C245%2B%20passing-brightgreen" alt="Tests" />
-  <img src="https://img.shields.io/badge/endpoints-98-blue" alt="Endpoints" />
-  <img src="https://img.shields.io/badge/workers-8-orange" alt="Workers" />
+  <img src="https://img.shields.io/badge/tests-2%2C000%2B%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/endpoints-100%2B-blue" alt="Endpoints" />
+  <img src="https://img.shields.io/badge/workers-10-orange" alt="Workers" />
   <img src="https://img.shields.io/badge/memory%20layers-8-purple" alt="Memory Layers" />
   <img src="https://img.shields.io/badge/rust-1.88-orange" alt="Rust" />
 </p>
@@ -38,6 +38,9 @@ Forge is an always-on daemon that gives AI agents persistent memory, intelligent
 
 ```bash
 # 1. Install from source
+#    Installs three binaries from two crates:
+#      forge-daemon, forge-bench   (built by the forge-daemon package)
+#      forge-next                  (built by the forge-cli package)
 cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
 
 # 2. Start the daemon (runs on port 8420)
@@ -76,9 +79,9 @@ The daemon runs in the background. It extracts memories from every agent session
 ┌──────────────────────────────────────────┐
 │ forge-daemon  (Rust · port 8420)         │
 │                                          │
-│  • 98 protocol endpoints                 │
+│  • 100+ protocol endpoints               │
 │  • 8-layer Manas memory engine           │
-│  • 8 background workers                  │
+│  • 10 background workers                 │
 │  • Guardrails engine (blast radius)      │
 │  • Identity · Disposition · Skills       │
 │  • SQLite FTS5 + sqlite-vec              │
@@ -134,7 +137,7 @@ The daemon runs in the background. It extracts memories from every agent session
 
 ### Infrastructure
 - **Persistent daemon** — launchd/systemd, starts at boot
-- **8 background workers** — continuous ambient processing
+- **10 background workers** — continuous ambient processing
 - **Self-healing graph** — sleep-cycle consolidation overnight
 - **Predictive prefetch** — zero cold-start context injection
 - **Memory sync** — encrypted peer-to-peer with cross-tier sync policies
@@ -233,7 +236,7 @@ cd forge
 # Build workspace (release mode)
 cargo build --release --workspace
 
-# Run the full test suite (990+ daemon tests)
+# Run the full test suite (2,000+ tests, workspace-wide)
 cargo test --workspace
 
 # Check for warnings (required: 0)
@@ -256,7 +259,7 @@ cargo install --path crates/cli
 | Doc | Contents |
 |-----|----------|
 | [Getting Started](docs/getting-started.md) | Install, bootstrap, first queries |
-| [API Reference](docs/api-reference.md) | All 98 HTTP endpoints |
+| [API Reference](docs/api-reference.md) | All 100+ HTTP endpoints |
 | [CLI Reference](docs/cli-reference.md) | `forge-next` commands |
 | [Security](docs/security.md) | Threat model, secret handling, audit log |
 | [Operations](docs/operations.md) | Daemon ops, diagnostics, healing |
@@ -290,18 +293,14 @@ See [docs/cloud-deployment.md](docs/cloud-deployment.md) for production deployme
 ## Under the Hood
 
 ```
-98 protocol endpoints · 8 background workers · 8 memory layers
-1,245+ Rust tests · 0 warnings (clippy) · Apache-2.0 licensed
+100+ protocol endpoints · 10 background workers · 8 memory layers
+2,000+ Rust tests · 0 warnings (clippy) · Apache-2.0 licensed
 Enterprise: Docker · Helm · JWT/OIDC · RBAC · Audit · Prometheus · Multi-tenant
 ```
 
-| Component | Tests | Framework |
-|-----------|-------|-----------|
-| forge-daemon (unit) | 990 | Rust |
-| forge-daemon (integration) | 123 | Rust |
-| forge-core | 56 | Rust |
-| forge-cli | 76 | Rust |
-| **Total (Rust)** | **1,245** | |
+Run `cargo test --workspace` for the current per-crate test breakdown — counts
+shift every wave and the README intentionally omits per-crate numbers to avoid
+drift.
 
 ---
 

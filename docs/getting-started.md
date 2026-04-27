@@ -15,7 +15,13 @@ Forge is cognitive infrastructure for AI agents. It provides persistent, multi-l
 cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
 ```
 
-This builds `forge-daemon` and `forge-next` and installs them to `~/.cargo/bin`.
+The two arguments are crate names. Cargo installs every `[[bin]]` target
+defined under each crate, so this command places **three** binaries in
+`~/.cargo/bin`:
+
+- `forge-daemon` — the always-on memory daemon (from the `forge-daemon` crate)
+- `forge-bench` — benchmark harness shipped alongside the daemon (from the same crate)
+- `forge-next` — the CLI client (from the `forge-cli` crate)
 
 ### Option B: Build from source
 
@@ -64,7 +70,7 @@ Expected output:
 Forge daemon is healthy
   socket: /home/you/.forge/forge.sock
   uptime: 12s
-  version: 0.4.0
+  version: 0.6.0-rc.3
 ```
 
 Check the 8-layer memory system:
