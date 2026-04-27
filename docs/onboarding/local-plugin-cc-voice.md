@@ -44,6 +44,23 @@ macOS and glibc ≥ 2.38 Linux hosts use pyke's default ORT binary and
 the `.tools/` directory remains unused; the RUNPATH entries point at
 non-existent dirs and the loader skips them harmlessly.
 
+### `cargo install --path` caveat (X1.fw2 review LOW-2)
+
+The three baked RUNPATH entries are `$ORIGIN`-relative — they assume
+the binary stays inside the workspace tree. If you instead run
+`cargo install --path crates/daemon` on a glibc < 2.38 host, the
+binary lands at `~/.cargo/bin/forge-daemon` and `$ORIGIN/../lib`
+points at `~/.cargo/lib/` which has no `libonnxruntime.so.1`. In
+that case you DO still need `LD_LIBRARY_PATH`:
+
+```bash
+echo 'export LD_LIBRARY_PATH="$HOME/path/to/forge/.tools/onnxruntime-linux-x64-1.23.0/lib:$LD_LIBRARY_PATH"' >> ~/.bashrc
+```
+
+The `target/release` symlink layout in this doc's Step 1 keeps the
+binary inside `<workspace>/target/release/`, so the RUNPATH entry
+`$ORIGIN/../../.tools/...` resolves correctly without any export.
+
 ### Verify
 
 ```bash

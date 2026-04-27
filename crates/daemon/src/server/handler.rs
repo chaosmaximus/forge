@@ -3470,6 +3470,25 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         );
                     }
                 }
+                // X1.fw2 (review LOW-5): symmetric warn for the other
+                // half of the alias-detection surface — the requested
+                // project name is already bound, but to a DIFFERENT
+                // path. Pre-fw2 this case skipped silently with no
+                // operator breadcrumb.
+                if let Some(ref bound) = existing_by_name {
+                    if existing_by_path.is_none()
+                        && bound.project_path.as_deref() != Some(c)
+                    {
+                        tracing::warn!(
+                            target: "forge::handler",
+                            requested_project = p,
+                            requested_cwd = c,
+                            bound_path = bound.project_path.as_deref().unwrap_or(""),
+                            bound_id = %bound.id,
+                            "compile_context auto-create skipped: project already bound to a different cwd; <code-structure> will render resolution=\"no-match\" for the requested cwd. Verify the SessionStart hook payload's cwd field."
+                        );
+                    }
+                }
                 if existing_by_name.is_none() && existing_by_path.is_none() {
                     use crate::reality::CodeRealityEngine;
                     use forge_core::types::reality_engine::RealityEngine;
@@ -3514,10 +3533,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     // guarantees the renderer's read-only conn sees the
                     // committed row on its next query (auto-commit txn
                     // re-reads the WAL header). Mirrors the `kpi_reaper`
-                    // and `force-index` precedent of opening ad-hoc
-                    // writer connections from `db_path` for sub-second
-                    // writes (single INSERT here — no need for the
-                    // writer-actor queue).
+                    // precedent of opening ad-hoc writer connections
+                    // from `db_path` for sub-second writes (single
+                    // INSERT here — no need for the writer-actor queue).
                     //
                     // The `:memory:` branch preserves the existing Z7
                     // test fixtures: those tests bypass the routing
@@ -3525,39 +3543,68 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     // write-capable `state.conn`, and `:memory:` cannot
                     // be re-opened from a path (each call creates a new
                     // empty in-memory DB).
+                    //
+                    // X1.fw2 (review MED-1): use the idempotent
+                    // `auto_create_reality_if_absent` helper instead of
+                    // `store_reality`. The helper uses `INSERT OR IGNORE`
+                    // so a concurrent peer that already inserted the
+                    // same `project_path` (unique-indexed) is silently
+                    // respected — the second writer becomes a no-op
+                    // instead of triggering REPLACE semantics that
+                    // would wipe the peer's row. Closes the residual
+                    // race that fw1's name+path existence check left
+                    // open.
                     let store_result = if state.db_path == ":memory:" {
-                        ops::store_reality(&state.conn, &project_record)
+                        ops::auto_create_reality_if_absent(&state.conn, &project_record)
                     } else {
                         match rusqlite::Connection::open(&state.db_path) {
                             Ok(wconn) => {
                                 let _ = wconn.execute_batch(
                                     "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;",
                                 );
-                                ops::store_reality(&wconn, &project_record)
+                                ops::auto_create_reality_if_absent(&wconn, &project_record)
                             }
                             Err(e) => Err(e),
                         }
                     };
-                    if let Err(e) = store_result {
-                        // Z-fw1 HIGH-1: surface the failure path. The
-                        // rendered <code-structure> tag will fall through
-                        // to resolution="no-match" — at least operators
-                        // see why instead of silently reverting.
-                        tracing::warn!(
-                            target: "forge::handler",
-                            project = p,
-                            cwd = c,
-                            error = %e,
-                            "compile_context auto-create failed; <code-structure> will render no-match"
-                        );
-                    } else {
-                        tracing::info!(
-                            target: "forge::handler",
-                            project = p,
-                            cwd = c,
-                            domain = project_record.domain.as_deref().unwrap_or("unknown"),
-                            "compile_context auto-created project row"
-                        );
+                    match store_result {
+                        Err(e) => {
+                            // Z-fw1 HIGH-1: surface the failure path.
+                            // The rendered <code-structure> tag will
+                            // fall through to resolution="no-match" —
+                            // at least operators see why instead of
+                            // silently reverting.
+                            tracing::warn!(
+                                target: "forge::handler",
+                                project = p,
+                                cwd = c,
+                                error = %e,
+                                "compile_context auto-create failed; <code-structure> will render no-match"
+                            );
+                        }
+                        Ok(0) => {
+                            // X1.fw2 (review MED-1): INSERT OR IGNORE
+                            // returned "no rows inserted" — a concurrent
+                            // peer beat us to it. The on-disk state is
+                            // correct (peer's row is there); we just
+                            // skip the "newly created" log line so the
+                            // operator audit trail is honest.
+                            tracing::debug!(
+                                target: "forge::handler",
+                                project = p,
+                                cwd = c,
+                                "compile_context auto-create no-op: concurrent peer already inserted"
+                            );
+                        }
+                        Ok(_) => {
+                            tracing::info!(
+                                target: "forge::handler",
+                                project = p,
+                                cwd = c,
+                                domain = project_record.domain.as_deref().unwrap_or("unknown"),
+                                "compile_context auto-created project row"
+                            );
+                        }
                     }
                 }
             }
@@ -9866,14 +9913,18 @@ mod tests {
         let code_cwd = code_dir.path().to_string_lossy().to_string();
 
         // Seed: the user explicitly registered `forge` at this path
-        // with domain="rust".
+        // with domain="rust". X1.fw2 (review LOW-4): use a real ULID
+        // here so a future invariant-tightening migration that
+        // enforces Crockford base32 doesn't silently break this
+        // regression test.
+        let pre_existing_id = ulid::Ulid::new().to_string();
         {
             let writer = DaemonState::new(&db_path).unwrap();
             let now = forge_core::time::now_iso();
             crate::db::ops::store_reality(
                 &writer.conn,
                 &forge_core::types::Reality {
-                    id: "01PRE-EXISTING-FORGE-ROW".to_string(),
+                    id: pre_existing_id.clone(),
                     name: "forge".to_string(),
                     reality_type: "code".to_string(),
                     detected_from: Some("user_init".to_string()),
@@ -9895,7 +9946,7 @@ mod tests {
                 crate::db::ops::get_reality_by_name(&writer.conn, "forge", "default")
                     .unwrap()
                     .unwrap();
-            assert_eq!(pre.id, "01PRE-EXISTING-FORGE-ROW");
+            assert_eq!(pre.id, pre_existing_id);
             // Drop the writer so the read-only opener doesn't race.
             drop(writer);
         }
@@ -9946,7 +9997,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            row.0, "01PRE-EXISTING-FORGE-ROW",
+            row.0, pre_existing_id,
             "the pre-existing row's id must survive — got {:?}",
             row
         );

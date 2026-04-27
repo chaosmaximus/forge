@@ -2951,6 +2951,38 @@ pub fn store_reality(conn: &Connection, reality: &Reality) -> rusqlite::Result<(
     Ok(())
 }
 
+/// Idempotent variant of `store_reality` for the auto-create write site
+/// at `compile_context --cwd`. Uses `INSERT OR IGNORE` so a concurrent
+/// peer that already inserted the same `project_path` (the unique-
+/// indexed column on `reality`) is silently respected — the racy
+/// second writer becomes a no-op instead of triggering SQLite's
+/// REPLACE semantics, which would otherwise wipe the peer's row.
+///
+/// Returns the number of rows actually inserted (0 if the unique
+/// index conflict fired and the INSERT was ignored). Callers that
+/// only care about "did it land" can ignore the return value; callers
+/// emitting `tracing::info!("auto-created ...")` should gate the log
+/// on `inserted > 0` so a no-op race is not mis-reported as a fresh
+/// create.
+///
+/// P3-4 Wave X / X1.fw2 (review MED-1).
+pub fn auto_create_reality_if_absent(
+    conn: &Connection,
+    reality: &Reality,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "INSERT OR IGNORE INTO reality (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            reality.id, reality.name, reality.reality_type,
+            reality.detected_from, reality.project_path, reality.domain,
+            reality.organization_id, reality.owner_type, reality.owner_id,
+            reality.engine_status, reality.engine_pid,
+            reality.created_at, reality.last_active, reality.metadata,
+        ],
+    )
+}
+
 /// Get a reality by ID, scoped to the given organization.
 pub fn get_reality(conn: &Connection, id: &str, org_id: &str) -> rusqlite::Result<Option<Reality>> {
     conn.query_row(
