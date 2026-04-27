@@ -37,7 +37,7 @@ pub struct TeamMember {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Reality {
+pub struct Project {
     pub id: String,
     pub name: String,
     pub reality_type: String,

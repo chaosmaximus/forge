@@ -744,7 +744,7 @@ pub enum ResponseData {
     /// `projects` was renamed from `realities`; the underlying struct
     /// keeps its name (ZR will rename the type).
     ProjectList {
-        projects: Vec<crate::types::entity::Reality>,
+        projects: Vec<crate::types::entity::Project>,
     },
 
     /// Code index counts after a force-index trigger.

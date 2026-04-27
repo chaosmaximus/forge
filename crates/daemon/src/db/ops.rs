@@ -81,7 +81,7 @@ pub fn project_or_global(project: Option<&str>) -> &str {
 /// name. One indexed `query_row` plus up to N parent lookups (bounded
 /// by directory depth) — safe for hot indexer paths.
 /// P3-4 W1.26 (W1.3 LOW-8): `org_id` is threaded through both
-/// `get_reality_by_path` lookups so multi-org deployments don't
+/// `get_project_by_path` lookups so multi-org deployments don't
 /// silently fall back to basename. Today every caller passes
 /// `"default"` (single-org Forge), but the parameter shape is
 /// preventive — when a future multi-tenant rollout lands, all
@@ -90,7 +90,7 @@ pub fn derive_project_name(conn: &Connection, project_dir: &str, org_id: &str) -
     if project_dir.is_empty() {
         return GLOBAL_PROJECT_SENTINEL.to_string();
     }
-    if let Ok(Some(r)) = get_reality_by_path(conn, project_dir, org_id) {
+    if let Ok(Some(r)) = get_project_by_path(conn, project_dir, org_id) {
         if !r.name.is_empty() {
             return r.name;
         }
@@ -101,7 +101,7 @@ pub fn derive_project_name(conn: &Connection, project_dir: &str, org_id: &str) -
         if ancestor_str.is_empty() || ancestor_str == "/" {
             break;
         }
-        if let Ok(Some(r)) = get_reality_by_path(conn, &ancestor_str, org_id) {
+        if let Ok(Some(r)) = get_project_by_path(conn, &ancestor_str, org_id) {
             if !r.name.is_empty() {
                 return r.name;
             }
@@ -2743,7 +2743,7 @@ pub fn get_graph_data(
 
 // ── v2.0 Entity CRUD operations ──
 
-use forge_core::types::{ForgeUser, Organization, Reality, Team, TeamMember};
+use forge_core::types::{ForgeUser, Organization, Project, Team, TeamMember};
 
 /// Create the default organization if it does not exist.
 pub fn create_default_org(conn: &Connection) -> rusqlite::Result<()> {
@@ -2936,7 +2936,7 @@ pub fn list_team_members(
 }
 
 /// Store a reality record (upsert by ID).
-pub fn store_reality(conn: &Connection, reality: &Reality) -> rusqlite::Result<()> {
+pub fn store_project(conn: &Connection, reality: &Project) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO reality (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
@@ -2951,7 +2951,7 @@ pub fn store_reality(conn: &Connection, reality: &Reality) -> rusqlite::Result<(
     Ok(())
 }
 
-/// Idempotent variant of `store_reality` for the auto-create write site
+/// Idempotent variant of `store_project` for the auto-create write site
 /// at `compile_context --cwd`. Uses `INSERT OR IGNORE` so a concurrent
 /// peer that already inserted the same `project_path` (the unique-
 /// indexed column on `reality`) is silently respected — the racy
@@ -2968,7 +2968,7 @@ pub fn store_reality(conn: &Connection, reality: &Reality) -> rusqlite::Result<(
 /// P3-4 Wave X / X1.fw2 (review MED-1).
 pub fn auto_create_reality_if_absent(
     conn: &Connection,
-    reality: &Reality,
+    reality: &Project,
 ) -> rusqlite::Result<usize> {
     conn.execute(
         "INSERT OR IGNORE INTO reality (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
@@ -2984,12 +2984,12 @@ pub fn auto_create_reality_if_absent(
 }
 
 /// Get a reality by ID, scoped to the given organization.
-pub fn get_reality(conn: &Connection, id: &str, org_id: &str) -> rusqlite::Result<Option<Reality>> {
+pub fn get_project(conn: &Connection, id: &str, org_id: &str) -> rusqlite::Result<Option<Project>> {
     conn.query_row(
         "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
          FROM reality WHERE id = ?1 AND organization_id = ?2",
         params![id, org_id],
-        |row| Ok(Reality {
+        |row| Ok(Project {
             id: row.get(0)?,
             name: row.get(1)?,
             reality_type: row.get(2)?,
@@ -3009,16 +3009,16 @@ pub fn get_reality(conn: &Connection, id: &str, org_id: &str) -> rusqlite::Resul
 }
 
 /// Get a reality by its project path, scoped to the given organization.
-pub fn get_reality_by_path(
+pub fn get_project_by_path(
     conn: &Connection,
     path: &str,
     org_id: &str,
-) -> rusqlite::Result<Option<Reality>> {
+) -> rusqlite::Result<Option<Project>> {
     conn.query_row(
         "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
          FROM reality WHERE project_path = ?1 AND organization_id = ?2 LIMIT 1",
         params![path, org_id],
-        |row| Ok(Reality {
+        |row| Ok(Project {
             id: row.get(0)?,
             name: row.get(1)?,
             reality_type: row.get(2)?,
@@ -3039,21 +3039,21 @@ pub fn get_reality_by_path(
 
 /// Get a reality by its name, scoped to the given organization.
 ///
-/// Companion to `get_reality_by_path`. Used by callers that have a
+/// Companion to `get_project_by_path`. Used by callers that have a
 /// project NAME (e.g. `code_file.project` after the W1.2 c1 column
 /// flip from PATH to NAME) and need to resolve the underlying reality
 /// row for clustering / config lookup. Returns the most recently active
 /// reality if multiple share a name (idempotent ordering).
-pub fn get_reality_by_name(
+pub fn get_project_by_name(
     conn: &Connection,
     name: &str,
     org_id: &str,
-) -> rusqlite::Result<Option<Reality>> {
+) -> rusqlite::Result<Option<Project>> {
     conn.query_row(
         "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
          FROM reality WHERE name = ?1 AND organization_id = ?2 ORDER BY last_active DESC LIMIT 1",
         params![name, org_id],
-        |row| Ok(Reality {
+        |row| Ok(Project {
             id: row.get(0)?,
             name: row.get(1)?,
             reality_type: row.get(2)?,
@@ -3073,13 +3073,13 @@ pub fn get_reality_by_name(
 }
 
 /// List realities in an organization.
-pub fn list_realities(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<Reality>> {
+pub fn list_projects(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<Project>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
          FROM reality WHERE organization_id = ?1 ORDER BY last_active DESC"
     )?;
     let rows = stmt.query_map(params![org_id], |row| {
-        Ok(Reality {
+        Ok(Project {
             id: row.get(0)?,
             name: row.get(1)?,
             reality_type: row.get(2)?,
@@ -3100,7 +3100,7 @@ pub fn list_realities(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<R
 }
 
 /// Update the last_active timestamp for a reality, scoped to the given organization.
-pub fn update_reality_last_active(
+pub fn update_project_last_active(
     conn: &Connection,
     id: &str,
     org_id: &str,
@@ -3598,7 +3598,7 @@ mod tests {
         // contract before multi-tenant lands.
         let conn = open_db();
 
-        let r = Reality {
+        let r = Project {
             id: "r-tenant-a".to_string(),
             name: "tenant-a-project".to_string(),
             reality_type: "code".to_string(),
@@ -3614,7 +3614,7 @@ mod tests {
             last_active: "2026-04-26T00:00:00Z".to_string(),
             metadata: "{}".to_string(),
         };
-        store_reality(&conn, &r).unwrap();
+        store_project(&conn, &r).unwrap();
 
         // Lookup under the matching org returns the registered name.
         let same = derive_project_name(&conn, "/repo/tenant-a/foo", "tenant-a");
@@ -5117,7 +5117,7 @@ mod tests {
         let conn = open_db();
         ensure_defaults(&conn).unwrap();
 
-        let reality = Reality {
+        let reality = Project {
             id: "r1".to_string(),
             name: "forge".to_string(),
             reality_type: "code".to_string(),
@@ -5135,10 +5135,10 @@ mod tests {
         };
 
         // Store
-        store_reality(&conn, &reality).unwrap();
+        store_project(&conn, &reality).unwrap();
 
         // Get by ID (with correct org)
-        let got = get_reality(&conn, "r1", "default").unwrap().unwrap();
+        let got = get_project(&conn, "r1", "default").unwrap().unwrap();
         assert_eq!(got.name, "forge");
         assert_eq!(got.reality_type, "code");
         assert_eq!(got.detected_from.as_deref(), Some("git"));
@@ -5147,19 +5147,19 @@ mod tests {
         assert!(got.engine_pid.is_none());
 
         // Get by path (with correct org)
-        let by_path = get_reality_by_path(&conn, "/home/user/forge", "default")
+        let by_path = get_project_by_path(&conn, "/home/user/forge", "default")
             .unwrap()
             .unwrap();
         assert_eq!(by_path.id, "r1");
 
         // List
-        let realities = list_realities(&conn, "default").unwrap();
+        let realities = list_projects(&conn, "default").unwrap();
         assert_eq!(realities.len(), 1);
 
         // Get non-existent
-        let none = get_reality(&conn, "nonexistent", "default").unwrap();
+        let none = get_project(&conn, "nonexistent", "default").unwrap();
         assert!(none.is_none());
-        let none_path = get_reality_by_path(&conn, "/nonexistent", "default").unwrap();
+        let none_path = get_project_by_path(&conn, "/nonexistent", "default").unwrap();
         assert!(none_path.is_none());
     }
 
@@ -5168,7 +5168,7 @@ mod tests {
         let conn = open_db();
         ensure_defaults(&conn).unwrap();
 
-        let reality = Reality {
+        let reality = Project {
             id: "r_sec".to_string(),
             name: "secret-project".to_string(),
             reality_type: "code".to_string(),
@@ -5184,26 +5184,26 @@ mod tests {
             last_active: "2026-04-05T00:00:00Z".to_string(),
             metadata: "{}".to_string(),
         };
-        store_reality(&conn, &reality).unwrap();
+        store_project(&conn, &reality).unwrap();
 
-        // get_reality with wrong org_id should return None
-        let none = get_reality(&conn, "r_sec", "wrong_org").unwrap();
+        // get_project with wrong org_id should return None
+        let none = get_project(&conn, "r_sec", "wrong_org").unwrap();
         assert!(
             none.is_none(),
-            "get_reality with wrong org_id must return None"
+            "get_project with wrong org_id must return None"
         );
 
-        // get_reality_by_path with wrong org_id should return None
-        let none = get_reality_by_path(&conn, "/home/user/secret", "wrong_org").unwrap();
+        // get_project_by_path with wrong org_id should return None
+        let none = get_project_by_path(&conn, "/home/user/secret", "wrong_org").unwrap();
         assert!(
             none.is_none(),
-            "get_reality_by_path with wrong org_id must return None"
+            "get_project_by_path with wrong org_id must return None"
         );
 
-        // update_reality_last_active with wrong org should NOT update
-        let before = get_reality(&conn, "r_sec", "default").unwrap().unwrap();
-        update_reality_last_active(&conn, "r_sec", "wrong_org").unwrap();
-        let after = get_reality(&conn, "r_sec", "default").unwrap().unwrap();
+        // update_project_last_active with wrong org should NOT update
+        let before = get_project(&conn, "r_sec", "default").unwrap().unwrap();
+        update_project_last_active(&conn, "r_sec", "wrong_org").unwrap();
+        let after = get_project(&conn, "r_sec", "default").unwrap().unwrap();
         assert_eq!(
             before.last_active, after.last_active,
             "wrong org should not update last_active"
@@ -5215,7 +5215,7 @@ mod tests {
         let conn = open_db();
         ensure_defaults(&conn).unwrap();
 
-        let reality = Reality {
+        let reality = Project {
             id: "r2".to_string(),
             name: "test-project".to_string(),
             reality_type: "code".to_string(),
@@ -5231,13 +5231,13 @@ mod tests {
             last_active: "2026-01-01T00:00:00Z".to_string(),
             metadata: "{}".to_string(),
         };
-        store_reality(&conn, &reality).unwrap();
+        store_project(&conn, &reality).unwrap();
 
         // Update last_active (with correct org)
-        update_reality_last_active(&conn, "r2", "default").unwrap();
+        update_project_last_active(&conn, "r2", "default").unwrap();
 
         // Verify it changed
-        let updated = get_reality(&conn, "r2", "default").unwrap().unwrap();
+        let updated = get_project(&conn, "r2", "default").unwrap().unwrap();
         assert_ne!(
             updated.last_active, "2026-01-01T00:00:00Z",
             "last_active should have been updated"
@@ -5249,7 +5249,7 @@ mod tests {
         let conn = open_db();
         ensure_defaults(&conn).unwrap();
 
-        let reality = Reality {
+        let reality = Project {
             id: "r3".to_string(),
             name: "original".to_string(),
             reality_type: "code".to_string(),
@@ -5265,16 +5265,16 @@ mod tests {
             last_active: "2026-04-05T00:00:00Z".to_string(),
             metadata: "{}".to_string(),
         };
-        store_reality(&conn, &reality).unwrap();
+        store_project(&conn, &reality).unwrap();
 
         // Upsert with updated name
-        let updated = Reality {
+        let updated = Project {
             name: "updated".to_string(),
             ..reality
         };
-        store_reality(&conn, &updated).unwrap();
+        store_project(&conn, &updated).unwrap();
 
-        let got = get_reality(&conn, "r3", "default").unwrap().unwrap();
+        let got = get_project(&conn, "r3", "default").unwrap().unwrap();
         assert_eq!(got.name, "updated");
     }
 
@@ -5290,15 +5290,15 @@ mod tests {
             [],
         ).unwrap();
 
-        // get_reality should handle NULL metadata via COALESCE
-        let got = get_reality(&conn, "r_null", "default").unwrap().unwrap();
+        // get_project should handle NULL metadata via COALESCE
+        let got = get_project(&conn, "r_null", "default").unwrap().unwrap();
         assert_eq!(
             got.metadata, "{}",
             "NULL metadata should default to empty JSON object"
         );
 
-        // list_realities should also handle it
-        let realities = list_realities(&conn, "default").unwrap();
+        // list_projects should also handle it
+        let realities = list_projects(&conn, "default").unwrap();
         let null_one = realities.iter().find(|r| r.id == "r_null").unwrap();
         assert_eq!(
             null_one.metadata, "{}",
@@ -5327,7 +5327,7 @@ mod tests {
         let conn = open_db();
         ensure_defaults(&conn).unwrap();
 
-        let reality1 = Reality {
+        let reality1 = Project {
             id: "r_dup1".to_string(),
             name: "first".to_string(),
             reality_type: "code".to_string(),
@@ -5343,10 +5343,10 @@ mod tests {
             last_active: "2026-04-05T00:00:00Z".to_string(),
             metadata: "{}".to_string(),
         };
-        store_reality(&conn, &reality1).unwrap();
+        store_project(&conn, &reality1).unwrap();
 
         // Attempting to insert a different reality with the same project_path should fail
-        // (because store_reality uses INSERT OR REPLACE which keys on id, not project_path)
+        // (because store_project uses INSERT OR REPLACE which keys on id, not project_path)
         // The unique index should prevent a raw INSERT with duplicate project_path
         let result = conn.execute(
             "INSERT INTO reality (id, name, reality_type, organization_id, owner_type, owner_id, engine_status, created_at, last_active, metadata, project_path)
@@ -5359,21 +5359,21 @@ mod tests {
         );
 
         // NULL project_path should be allowed for multiple realities
-        let null1 = Reality {
+        let null1 = Project {
             id: "r_null1".to_string(),
             project_path: None,
             ..reality1.clone()
         };
-        let null2 = Reality {
+        let null2 = Project {
             id: "r_null2".to_string(),
             name: "second-null".to_string(),
             project_path: None,
             ..reality1
         };
-        store_reality(&conn, &null1).unwrap();
-        store_reality(&conn, &null2).unwrap();
+        store_project(&conn, &null1).unwrap();
+        store_project(&conn, &null2).unwrap();
         // Both should exist
-        let realities = list_realities(&conn, "default").unwrap();
+        let realities = list_projects(&conn, "default").unwrap();
         let null_count = realities
             .iter()
             .filter(|r| r.project_path.is_none())
@@ -5638,7 +5638,7 @@ mod tests {
             "admin",
         )
         .unwrap();
-        // Reality tries to override
+        // Project tries to override
         set_scoped_config(
             &conn,
             "reality",
@@ -5685,7 +5685,7 @@ mod tests {
             "admin",
         )
         .unwrap();
-        // Reality sets 15000 (exceeds ceiling)
+        // Project sets 15000 (exceeds ceiling)
         set_scoped_config(
             &conn,
             "reality",
@@ -5747,7 +5747,7 @@ mod tests {
             "user",
         )
         .unwrap();
-        // Reality = 8000, under ceiling
+        // Project = 8000, under ceiling
         set_scoped_config(
             &conn,
             "reality",
@@ -5797,7 +5797,7 @@ mod tests {
             "admin",
         )
         .unwrap();
-        // Reality overrides with non-numeric
+        // Project overrides with non-numeric
         set_scoped_config(
             &conn,
             "reality",

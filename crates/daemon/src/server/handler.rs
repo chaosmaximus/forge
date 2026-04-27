@@ -2248,14 +2248,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 Ok(()) => {
                     // Auto-detect reality from cwd and tag the session
                     if let Some(ref cwd_path) = cwd {
-                        use crate::reality::CodeRealityEngine;
-                        use forge_core::types::reality_engine::RealityEngine;
+                        use crate::project::CodeProjectEngine;
+                        use forge_core::types::project_engine::ProjectEngine;
 
-                        let engine = CodeRealityEngine;
+                        let engine = CodeProjectEngine;
                         let path = std::path::Path::new(cwd_path);
                         if let Some(detection) = engine.detect(path) {
                             // Check if reality already exists for this path
-                            let reality_id = match ops::get_reality_by_path(
+                            let reality_id = match ops::get_project_by_path(
                                 &state.conn,
                                 cwd_path,
                                 "default",
@@ -2271,7 +2271,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                         .unwrap_or_else(|| detection.domain.clone());
                                     let metadata_str = serde_json::to_string(&detection.metadata)
                                         .unwrap_or_else(|_| "{}".to_string());
-                                    let reality = forge_core::types::Reality {
+                                    let reality = forge_core::types::Project {
                                         id: rid.clone(),
                                         name,
                                         reality_type: detection.reality_type,
@@ -2287,7 +2287,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                                         last_active: now,
                                         metadata: metadata_str,
                                     };
-                                    match ops::store_reality(&state.conn, &reality) {
+                                    match ops::store_project(&state.conn, &reality) {
                                         Ok(()) => Some(rid),
                                         Err(e) => {
                                             eprintln!("[handler] auto-detect: failed to store reality for {cwd_path}: {e}");
@@ -3473,7 +3473,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             //
             // Z-fw1 (Wave Z review HIGH-1+HIGH-2+HIGH-3 fixes):
             //
-            // - HIGH-1 was: `let _ = store_reality(...)` swallowed a real
+            // - HIGH-1 was: `let _ = store_project(...)` swallowed a real
             //   storage error so the rendered XML reverted to no-match
             //   without warning. Now the error path emits a tracing::warn
             //   so dogfood logs surface the failure mode.
@@ -3483,7 +3483,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             //   (name, organization_id) — only id is PK). The fix here is
             //   the upsert via `INSERT OR REPLACE INTO reality (id, ...)`
             //   only matches on id, so two new ULIDs still produce two
-            //   rows. Mitigation: re-fetch by name AFTER store_reality;
+            //   rows. Mitigation: re-fetch by name AFTER store_project;
             //   if a row already exists with our name+org, keep that row's
             //   id (effectively making the racy second writer a no-op).
             //   This is benign-data-wise (both rows have identical
@@ -3503,7 +3503,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 // idx_reality_path_unique ON reality(project_path)
                 // WHERE project_path IS NOT NULL`. Pre-fix the auto-
                 // create branch only checked existence by NAME (`p`),
-                // built a Reality struct with a fresh ULID id and the
+                // built a Project struct with a fresh ULID id and the
                 // supplied path, and ran `INSERT OR REPLACE`. When a
                 // row already existed at that path under a DIFFERENT
                 // name (the common case: an agent calls
@@ -3523,10 +3523,10 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 // resolution="no-match" against the supplied (alien)
                 // name, which is the correct behavior — the existing
                 // project's row is preserved untouched.
-                let existing_by_name = ops::get_reality_by_name(&state.conn, p, AUTO_CREATE_ORG)
+                let existing_by_name = ops::get_project_by_name(&state.conn, p, AUTO_CREATE_ORG)
                     .ok()
                     .flatten();
-                let existing_by_path = ops::get_reality_by_path(&state.conn, c, AUTO_CREATE_ORG)
+                let existing_by_path = ops::get_project_by_path(&state.conn, c, AUTO_CREATE_ORG)
                     .ok()
                     .flatten();
                 if let Some(ref bound) = existing_by_path {
@@ -3559,14 +3559,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     }
                 }
                 if existing_by_name.is_none() && existing_by_path.is_none() {
-                    use crate::reality::CodeRealityEngine;
-                    use forge_core::types::reality_engine::RealityEngine;
-                    let detected_domain = CodeRealityEngine
+                    use crate::project::CodeProjectEngine;
+                    use forge_core::types::project_engine::ProjectEngine;
+                    let detected_domain = CodeProjectEngine
                         .detect(std::path::Path::new(c))
                         .map(|d| d.domain)
                         .unwrap_or_else(|| "unknown".into());
                     let now = forge_core::time::now_iso();
-                    let project_record = forge_core::types::Reality {
+                    let project_record = forge_core::types::Project {
                         id: ulid::Ulid::new().to_string(),
                         name: p.to_string(),
                         reality_type: "code".to_string(),
@@ -3583,7 +3583,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         metadata: "{}".to_string(),
                     };
                     // P3-4 Wave X (X1) per cc-voice Round 3 §B: pre-X1 this
-                    // line called `ops::store_reality(&state.conn, ...)`
+                    // line called `ops::store_project(&state.conn, ...)`
                     // directly. Production silently failed because
                     // `Request::CompileContext` is in `is_read_only()`
                     // (see crates/daemon/src/server/writer.rs), so
@@ -3615,7 +3615,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     //
                     // X1.fw2 (review MED-1): use the idempotent
                     // `auto_create_reality_if_absent` helper instead of
-                    // `store_reality`. The helper uses `INSERT OR IGNORE`
+                    // `store_project`. The helper uses `INSERT OR IGNORE`
                     // so a concurrent peer that already inserted the
                     // same `project_path` (unique-indexed) is silently
                     // respected — the second writer becomes a no-op
@@ -5026,11 +5026,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // (one .md file, no language markers) bind cleanly. The
             // auto-create code path inside CompileContext already does
             // this; ProjectDetect was the asymmetric outlier.
-            use crate::reality::CodeRealityEngine;
-            use forge_core::types::reality_engine::{DetectionResult, RealityEngine};
+            use crate::project::CodeProjectEngine;
+            use forge_core::types::project_engine::{DetectionResult, ProjectEngine};
             use std::path::Path;
 
-            let engine = CodeRealityEngine;
+            let engine = CodeProjectEngine;
             let project_path = Path::new(&path);
 
             let detection = engine
@@ -5044,7 +5044,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 });
 
             // Check if a project already exists for this path.
-            match ops::get_reality_by_path(&state.conn, &path, "default") {
+            match ops::get_project_by_path(&state.conn, &path, "default") {
                 Ok(Some(existing)) => Response::Ok {
                     data: ResponseData::ProjectDetected {
                         id: existing.id,
@@ -5070,7 +5070,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     let metadata_str = serde_json::to_string(&detection.metadata)
                         .unwrap_or_else(|_| "{}".to_string());
 
-                    let project = forge_core::types::Reality {
+                    let project = forge_core::types::Project {
                         id: project_id.clone(),
                         name: name.clone(),
                         reality_type: detection.reality_type.clone(),
@@ -5087,7 +5087,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         metadata: metadata_str,
                     };
 
-                    match ops::store_reality(&state.conn, &project) {
+                    match ops::store_project(&state.conn, &project) {
                         Ok(()) => {
                             crate::events::emit(
                                 &state.events,
@@ -5353,7 +5353,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
         Request::ProjectList { organization_id } => {
             let org_id = organization_id.as_deref().unwrap_or("default");
-            match ops::list_realities(&state.conn, org_id) {
+            match ops::list_projects(&state.conn, org_id) {
                 Ok(projects) => Response::Ok {
                     data: ResponseData::ProjectList { projects },
                 },
@@ -5402,13 +5402,13 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             };
 
             // Auto-detect domain from path contents when not supplied —
-            // reuse the CodeRealityEngine.detect() machinery already
+            // reuse the CodeProjectEngine.detect() machinery already
             // wired for ProjectDetect. Falls back to "unknown" when the
             // path has no recognizable signature (e.g. an empty dir).
             let detected_domain = domain.unwrap_or_else(|| {
-                use crate::reality::CodeRealityEngine;
-                use forge_core::types::reality_engine::RealityEngine;
-                CodeRealityEngine
+                use crate::project::CodeProjectEngine;
+                use forge_core::types::project_engine::ProjectEngine;
+                CodeProjectEngine
                     .detect(std::path::Path::new(&project_path))
                     .map(|d| d.domain)
                     .unwrap_or_else(|| "unknown".into())
@@ -5429,7 +5429,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // tried to change something so the divergence isn't
             // silent. Use `project update` (when it lands, MED-3) for
             // explicit mutation.
-            let existing = ops::get_reality_by_name(&state.conn, &name, org_id)
+            let existing = ops::get_project_by_name(&state.conn, &name, org_id)
                 .ok()
                 .flatten();
 
@@ -5467,7 +5467,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
 
             let id = ulid::Ulid::new().to_string();
             let now = forge_core::time::now_iso();
-            let project = forge_core::types::Reality {
+            let project = forge_core::types::Project {
                 id: id.clone(),
                 name: name.clone(),
                 reality_type: "code".to_string(),
@@ -5484,7 +5484,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 metadata: "{}".to_string(),
             };
 
-            match ops::store_reality(&state.conn, &project) {
+            match ops::store_project(&state.conn, &project) {
                 Ok(()) => Response::Ok {
                     data: ResponseData::ProjectInitialized {
                         id,
@@ -5505,7 +5505,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             organization_id,
         } => {
             let org_id = organization_id.as_deref().unwrap_or("default");
-            let project = match ops::get_reality_by_name(&state.conn, &name, org_id) {
+            let project = match ops::get_project_by_name(&state.conn, &name, org_id) {
                 Ok(Some(r)) => r,
                 Ok(None) => {
                     return Response::Error {
@@ -6121,7 +6121,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // config (W29/W30 backlog). The warn is the cheapest signal
             // to operators that something is off.
             if let Some(p) = project.as_deref().filter(|s| !s.is_empty()) {
-                match crate::db::ops::get_reality_by_name(&state.conn, p, "default") {
+                match crate::db::ops::get_project_by_name(&state.conn, p, "default") {
                     Ok(Some(_)) => {}
                     Ok(None) => tracing::warn!(
                         project = %p,
@@ -10008,7 +10008,7 @@ mod tests {
         let cwd = dir.path().to_string_lossy().to_string();
 
         // Pre-condition: project "cc-voice" does not exist
-        let pre = crate::db::ops::get_reality_by_name(&state.conn, "cc-voice", "default").unwrap();
+        let pre = crate::db::ops::get_project_by_name(&state.conn, "cc-voice", "default").unwrap();
         assert!(
             pre.is_none(),
             "cc-voice should not exist before compile-context"
@@ -10035,7 +10035,7 @@ mod tests {
         }
 
         // Post-condition: project "cc-voice" was auto-created
-        let post = crate::db::ops::get_reality_by_name(&state.conn, "cc-voice", "default")
+        let post = crate::db::ops::get_project_by_name(&state.conn, "cc-voice", "default")
             .unwrap()
             .expect("cc-voice project should be auto-created");
         assert_eq!(post.name, "cc-voice");
@@ -10188,7 +10188,7 @@ mod tests {
         // P3-4 Wave X / X1.fw1 (HIGH — dogfood data-loss). The schema
         // carries `CREATE UNIQUE INDEX idx_reality_path_unique ON
         // reality(project_path) WHERE project_path IS NOT NULL`. Pre-fw1
-        // the auto-create branch built a Reality with a fresh ULID and
+        // the auto-create branch built a Project with a fresh ULID and
         // ran `INSERT OR REPLACE`; when a different-named row already
         // existed at the same path, SQLite REPLACE semantics removed
         // it before inserting the new row — silent data loss of the
@@ -10222,9 +10222,9 @@ mod tests {
         {
             let writer = DaemonState::new(&db_path).unwrap();
             let now = forge_core::time::now_iso();
-            crate::db::ops::store_reality(
+            crate::db::ops::store_project(
                 &writer.conn,
-                &forge_core::types::Reality {
+                &forge_core::types::Project {
                     id: pre_existing_id.clone(),
                     name: "forge".to_string(),
                     reality_type: "code".to_string(),
@@ -10243,7 +10243,7 @@ mod tests {
             )
             .unwrap();
             // Sanity: row exists.
-            let pre = crate::db::ops::get_reality_by_name(&writer.conn, "forge", "default")
+            let pre = crate::db::ops::get_project_by_name(&writer.conn, "forge", "default")
                 .unwrap()
                 .unwrap();
             assert_eq!(pre.id, pre_existing_id);
@@ -10390,7 +10390,7 @@ mod tests {
 
         // Verify against the DB directly — the reality row's domain
         // must still be "unknown".
-        let post = crate::db::ops::get_reality_by_name(&state.conn, "cc-voice", "default")
+        let post = crate::db::ops::get_project_by_name(&state.conn, "cc-voice", "default")
             .unwrap()
             .expect("cc-voice exists");
         assert_eq!(
@@ -10483,7 +10483,7 @@ mod tests {
         );
 
         let post =
-            crate::db::ops::get_reality_by_name(&state.conn, "dry-cc-voice", "default").unwrap();
+            crate::db::ops::get_project_by_name(&state.conn, "dry-cc-voice", "default").unwrap();
         assert!(
             post.is_none(),
             "dry-run must NOT create the project record; got: {post:?}"
@@ -11905,7 +11905,7 @@ mod tests {
         );
     }
 
-    // ── RealityEngine Detection Tests ──
+    // ── ProjectEngine Detection Tests ──
 
     #[test]
     fn test_detect_reality_rust_project() {
@@ -11963,7 +11963,7 @@ mod tests {
         };
 
         // Verify it's in the DB
-        let reality = crate::db::ops::get_reality_by_path(&state.conn, &path, "default")
+        let reality = crate::db::ops::get_project_by_path(&state.conn, &path, "default")
             .unwrap()
             .expect("reality should exist in DB");
         assert_eq!(reality.id, reality_id);
@@ -12094,7 +12094,7 @@ mod tests {
         );
 
         // Verify the reality record was also created
-        let reality = crate::db::ops::get_reality_by_path(&state.conn, &cwd_path, "default")
+        let reality = crate::db::ops::get_project_by_path(&state.conn, &cwd_path, "default")
             .unwrap()
             .expect("reality should exist");
         assert_eq!(reality.reality_type, "code");

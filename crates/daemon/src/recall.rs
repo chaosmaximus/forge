@@ -4166,11 +4166,11 @@ mod tests {
         // Post-Z2: every count/domain/cluster query honors the project
         // filter; a `resolution=` attribute names the path.
         let conn = setup();
-        use forge_core::types::{CodeFile, CodeSymbol, Reality};
+        use forge_core::types::{CodeFile, CodeSymbol, Project};
 
         // Seed forge project — the "noise" we DON'T want to leak into
-        // cc-voice's context. Reality row matches the cluster JOIN path.
-        let r = Reality {
+        // cc-voice's context. Project row matches the cluster JOIN path.
+        let r = Project {
             id: "rid-forge".into(),
             name: "forge".into(),
             reality_type: "code".into(),
@@ -4186,7 +4186,7 @@ mod tests {
             last_active: forge_core::time::now_iso(),
             metadata: "{}".into(),
         };
-        crate::db::ops::store_reality(&conn, &r).unwrap();
+        crate::db::ops::store_project(&conn, &r).unwrap();
 
         let forge_file = CodeFile {
             id: "f-forge-1".into(),
@@ -4345,11 +4345,11 @@ mod tests {
         // --dry-run), the auto-create succeeded, but the renderer
         // still said no-match because it only checked code_file count.
         let conn = setup();
-        use forge_core::types::Reality;
+        use forge_core::types::Project;
 
         // Create a reality row with no associated code_file rows —
         // simulates the post-auto-create state for an empty project.
-        let r = Reality {
+        let r = Project {
             id: "rid-cc-voice-y2".into(),
             name: "cc-voice".into(),
             reality_type: "code".into(),
@@ -4365,7 +4365,7 @@ mod tests {
             last_active: forge_core::time::now_iso(),
             metadata: "{}".into(),
         };
-        crate::db::ops::store_reality(&conn, &r).unwrap();
+        crate::db::ops::store_project(&conn, &r).unwrap();
 
         let ctx_config = crate::config::ContextConfig::default();
 

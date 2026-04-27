@@ -11,7 +11,7 @@ use crate::lsp::regex_python::extract_symbols_python;
 use crate::lsp::regex_symbols::extract_symbols_regex;
 use crate::lsp::symbols::{convert_symbols, extract_imports};
 use crate::lsp::LspManager;
-use crate::reality::cluster::run_label_propagation;
+use crate::project::cluster::run_label_propagation;
 use forge_core::types::{CodeFile, CodeSymbol};
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
@@ -1574,11 +1574,11 @@ pub fn auto_detect_conventions(conn: &Connection, project_dir: &str) {
 /// and writer.rs) iterate over `code_file.project` which after W1.2 c1
 /// stores NAMEs, so the by-name fallback is the path that fires there.
 pub fn run_clustering(conn: &Connection, project_dir_or_name: &str) {
-    let reality = ops::get_reality_by_path(conn, project_dir_or_name, "default")
+    let reality = ops::get_project_by_path(conn, project_dir_or_name, "default")
         .ok()
         .flatten()
         .or_else(|| {
-            ops::get_reality_by_name(conn, project_dir_or_name, "default")
+            ops::get_project_by_name(conn, project_dir_or_name, "default")
                 .ok()
                 .flatten()
         });
@@ -2738,15 +2738,15 @@ def process_data(input_data):
         // by-name fallback inside `run_clustering`. This test pins the
         // contract by exercising the underlying accessor and the
         // clustering call itself with a NAME input.
-        use crate::db::ops::{get_reality_by_name, get_reality_by_path, store_reality};
+        use crate::db::ops::{get_project_by_name, get_project_by_path, store_project};
         use crate::db::schema::create_schema;
-        use forge_core::types::Reality;
+        use forge_core::types::Project;
 
         crate::db::vec::init_sqlite_vec();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         create_schema(&conn).unwrap();
 
-        let r = Reality {
+        let r = Project {
             id: "r-w13-fw1".to_string(),
             name: "forge".to_string(),
             reality_type: "code".to_string(),
@@ -2762,17 +2762,17 @@ def process_data(input_data):
             last_active: "2026-04-26T00:00:00Z".to_string(),
             metadata: "{}".to_string(),
         };
-        store_reality(&conn, &r).unwrap();
+        store_project(&conn, &r).unwrap();
 
-        // Pre-fix shape: `get_reality_by_path` with a NAME (e.g. "forge") misses.
-        let by_path = get_reality_by_path(&conn, "forge", "default").unwrap();
+        // Pre-fix shape: `get_project_by_path` with a NAME (e.g. "forge") misses.
+        let by_path = get_project_by_path(&conn, "forge", "default").unwrap();
         assert!(
             by_path.is_none(),
             "by-path lookup of a bare NAME must miss — this was the pre-fix silent disable"
         );
 
-        // Fix-wave shape: `get_reality_by_name` recovers the reality.
-        let by_name = get_reality_by_name(&conn, "forge", "default").unwrap();
+        // Fix-wave shape: `get_project_by_name` recovers the reality.
+        let by_name = get_project_by_name(&conn, "forge", "default").unwrap();
         assert!(by_name.is_some(), "by-name fallback must find reality");
         assert_eq!(by_name.unwrap().id, "r-w13-fw1");
 
@@ -2793,9 +2793,9 @@ def process_data(input_data):
         // basename ("sub-crate"). Pre-fix, `derive_project_name` was dead
         // code; the fix-wave wires it at `index_directory_sync` entry.
         // This test pins the contract.
-        use crate::db::ops::store_reality;
+        use crate::db::ops::store_project;
         use crate::db::schema::create_schema;
-        use forge_core::types::Reality;
+        use forge_core::types::Project;
 
         crate::db::vec::init_sqlite_vec();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -2810,7 +2810,7 @@ def process_data(input_data):
         // Register the PARENT as a reality whose NAME is distinct from its
         // basename — the discriminating fixture for the rich-vs-fast split.
         let parent_path_str = parent.to_str().unwrap().to_string();
-        let r = Reality {
+        let r = Project {
             id: "r-w13-fw2".to_string(),
             name: "forge-monorepo".to_string(),
             reality_type: "code".to_string(),
@@ -2826,7 +2826,7 @@ def process_data(input_data):
             last_active: "2026-04-26T00:00:00Z".to_string(),
             metadata: "{}".to_string(),
         };
-        store_reality(&conn, &r).unwrap();
+        store_project(&conn, &r).unwrap();
 
         // Force-index the SUBDIR. The rich variant must walk to the parent
         // reality and tag every file with "forge-monorepo".

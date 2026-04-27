@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Result of auto-detecting what kind of reality a project path represents.
+/// Result of auto-detecting what kind of project a given path represents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DetectionResult {
     pub confidence: f64,
@@ -11,7 +11,7 @@ pub struct DetectionResult {
     pub metadata: serde_json::Value,
 }
 
-/// Capabilities that a Reality Engine advertises.
+/// Capabilities that a Project Engine advertises.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EngineCapabilities {
     pub graph_node_types: Vec<String>,
@@ -30,7 +30,7 @@ pub struct IndexResult {
     pub duration_ms: u64,
 }
 
-/// A search hit from the Reality Engine.
+/// A search hit from the Project Engine.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SearchHit {
     pub id: String,
@@ -41,7 +41,7 @@ pub struct SearchHit {
     pub context: String,
 }
 
-/// Reality Engine's contribution to blast radius analysis.
+/// Project Engine's contribution to blast radius analysis.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct BlastRadiusContribution {
     pub callers: usize,
@@ -55,16 +55,16 @@ pub struct BlastRadiusContribution {
 /// Lives in forge-core (not forge-daemon) so future Tier 2 (subprocess+gRPC)
 /// and Tier 3 (WASM) engines can implement it without daemon dependencies.
 ///
-/// The first implementation is CodeRealityEngine (code analysis via LSP + regex).
-/// Future engines: SensorRealityEngine, MedicalRealityEngine, DataRealityEngine.
-pub trait RealityEngine: Send + Sync {
+/// The first implementation is CodeProjectEngine (code analysis via LSP + regex).
+/// Future engines: SensorProjectEngine, MedicalProjectEngine, DataProjectEngine.
+pub trait ProjectEngine: Send + Sync {
     /// Engine name (e.g., "code", "sensor", "medical")
     fn name(&self) -> &str;
 
     /// Engine version (semver)
     fn version(&self) -> &str;
 
-    /// Reality type matching the reality table's reality_type column
+    /// Engine kind matching the project table's reality_type column
     fn reality_type(&self) -> &str;
 
     /// Detect if this engine can handle the given project path.
@@ -79,11 +79,11 @@ pub trait RealityEngine: Send + Sync {
 mod tests {
     use super::*;
 
-    /// Verify that the RealityEngine trait is object-safe
-    /// (can be used as Box<dyn RealityEngine>).
+    /// Verify that the ProjectEngine trait is object-safe
+    /// (can be used as Box<dyn ProjectEngine>).
     struct MockEngine;
 
-    impl RealityEngine for MockEngine {
+    impl ProjectEngine for MockEngine {
         fn name(&self) -> &str {
             "mock"
         }
@@ -108,8 +108,8 @@ mod tests {
     }
 
     #[test]
-    fn test_reality_engine_is_object_safe() {
-        let _: Box<dyn RealityEngine> = Box::new(MockEngine);
+    fn test_project_engine_is_object_safe() {
+        let _: Box<dyn ProjectEngine> = Box::new(MockEngine);
     }
 
     #[test]

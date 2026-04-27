@@ -824,7 +824,7 @@ impl RecallConfig {
     }
 }
 
-/// Reality Engine configuration — controls code intelligence features.
+/// Project Engine configuration — controls code intelligence features.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RealityConfig {
@@ -1705,7 +1705,7 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
             config.recall.activation_on_context =
                 value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
-        // Reality Engine
+        // Project Engine
         ["reality", "auto_detect"] => {
             config.reality.auto_detect =
                 value.parse().map_err(|e| format!("invalid value: {e}"))?;

@@ -13,9 +13,9 @@ pub use pragma::{apply_runtime_pragmas, BUSY_TIMEOUT_MS};
 pub use ops::classify_portability;
 pub use ops::{
     add_team_member, create_default_org, create_default_user, create_team, ensure_defaults,
-    get_organization, get_reality, get_reality_by_path, get_team, get_user, list_organizations,
-    list_realities, list_team_members, list_teams, list_users, store_reality,
-    update_reality_last_active,
+    get_organization, get_project, get_project_by_path, get_team, get_user, list_organizations,
+    list_projects, list_team_members, list_teams, list_users, store_project,
+    update_project_last_active,
 };
 pub use ops::{
     count_files, count_symbols, detect_contradictions, embedding_merge, forget, health,
