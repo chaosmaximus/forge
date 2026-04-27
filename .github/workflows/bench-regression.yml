@@ -112,7 +112,7 @@ jobs:
 
       - name: Upload regression report (for inspection even when no issue is filed)
         if: steps.prior.outputs.prior_id != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-regression-report-${{ github.event.workflow_run.head_sha }}
           path: regression-report.md
