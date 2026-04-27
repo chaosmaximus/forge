@@ -1676,19 +1676,19 @@ pub fn compile_dynamic_suffix_with_inj(
             .unwrap_or_default();
 
         if !agents.is_empty() {
-            let mut agents_xml =
-                String::from("<agents hint=\"available agent templates — use for team dispatch\">");
-            for (name, desc, agent_type) in &agents {
-                agents_xml.push_str(&format!(
-                    "\n  <agent name=\"{}\" type=\"{}\">{}</agent>",
-                    xml_escape(name),
-                    xml_escape(agent_type),
-                    xml_escape(desc),
-                ));
-            }
-            agents_xml.push_str("\n</agents>\n");
-            // Agents are budget-exempt — critical for team dispatch discoverability
-            xml.push_str(&agents_xml);
+            // P3-4 Wave Y (Y7) per cc-voice Round 2 §H: lazy-load the
+            // agent template list. Pre-Y7 the static prefix carried
+            // ~17 templates verbatim (~700 chars per session), wasted
+            // token budget for the 90% single-Claude-Code case that
+            // never dispatches a team. Now we emit a self-closing
+            // summary tag with `count`; agents that actually need to
+            // dispatch can call `list_team_templates` (or grep the
+            // `agents/` directory in the plugin tree) to expand.
+            // Same shape as existing skills lazy-loading.
+            xml.push_str(&format!(
+                "<agents count=\"{}\" hint=\"available agent templates — call list_team_templates to expand\"/>\n",
+                agents.len(),
+            ));
         }
     }
 
@@ -4284,6 +4284,51 @@ mod tests {
         assert!(
             !suffix.contains("<code-structure project="),
             "unscoped resolution must omit project= attribute; got:\n{suffix}"
+        );
+    }
+
+    #[test]
+    fn p3_4_y7_agents_block_lazy_loaded_emits_count_only() {
+        // P3-4 Wave Y (Y7) per cc-voice Round 2 §H: pre-Y7 the agents
+        // block carried ~17 templates verbatim (~700 chars per
+        // session) — wasted token budget for the 90% single-CC case
+        // that never dispatches a team. Y7 lazy-loads: emit a
+        // self-closing `<agents count="N" hint=".../>` tag instead.
+        // Agents that need to dispatch can call `list_team_templates`
+        // to expand.
+        //
+        // `setup()` calls `create_schema` which seeds the default
+        // agent templates via `teams::seed_agent_templates`, so we
+        // don't need to write fixture rows here.
+        let conn = setup();
+
+        let ctx_config = crate::config::ContextConfig::default();
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            None,
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+
+        // Self-closing summary tag with count attribute.
+        assert!(
+            suffix.contains("<agents count=\""),
+            "must emit self-closing <agents count=N/>; got:\n{suffix}"
+        );
+        // Must NOT emit a verbose <agent name="X" type="Y">desc</agent> line.
+        assert!(
+            !suffix.contains("<agent name=\""),
+            "Y7: must NOT emit verbose per-agent lines; got:\n{suffix}"
+        );
+        // Must reference the expand mechanism so agents know how to
+        // get the full list when they need to dispatch.
+        assert!(
+            suffix.contains("list_team_templates"),
+            "must reference the expand call; got:\n{suffix}"
         );
     }
 
