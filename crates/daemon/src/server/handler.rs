@@ -3450,14 +3450,12 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 // resolution="no-match" against the supplied (alien)
                 // name, which is the correct behavior — the existing
                 // project's row is preserved untouched.
-                let existing_by_name =
-                    ops::get_reality_by_name(&state.conn, p, AUTO_CREATE_ORG)
-                        .ok()
-                        .flatten();
-                let existing_by_path =
-                    ops::get_reality_by_path(&state.conn, c, AUTO_CREATE_ORG)
-                        .ok()
-                        .flatten();
+                let existing_by_name = ops::get_reality_by_name(&state.conn, p, AUTO_CREATE_ORG)
+                    .ok()
+                    .flatten();
+                let existing_by_path = ops::get_reality_by_path(&state.conn, c, AUTO_CREATE_ORG)
+                    .ok()
+                    .flatten();
                 if let Some(ref bound) = existing_by_path {
                     if existing_by_name.is_none() {
                         tracing::warn!(
@@ -3476,9 +3474,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 // path. Pre-fw2 this case skipped silently with no
                 // operator breadcrumb.
                 if let Some(ref bound) = existing_by_name {
-                    if existing_by_path.is_none()
-                        && bound.project_path.as_deref() != Some(c)
-                    {
+                    if existing_by_path.is_none() && bound.project_path.as_deref() != Some(c) {
                         tracing::warn!(
                             target: "forge::handler",
                             requested_project = p,
@@ -9942,10 +9938,9 @@ mod tests {
             )
             .unwrap();
             // Sanity: row exists.
-            let pre =
-                crate::db::ops::get_reality_by_name(&writer.conn, "forge", "default")
-                    .unwrap()
-                    .unwrap();
+            let pre = crate::db::ops::get_reality_by_name(&writer.conn, "forge", "default")
+                .unwrap()
+                .unwrap();
             assert_eq!(pre.id, pre_existing_id);
             // Drop the writer so the read-only opener doesn't race.
             drop(writer);

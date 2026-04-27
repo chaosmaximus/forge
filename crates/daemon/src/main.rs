@@ -415,8 +415,14 @@ async fn main() {
                 std::process::exit(1);
             }
         };
+    // P3-4 W1.29: shared supervisor for in-flight blocking tasks
+    // (force-index today; future analytical batch writes hook in via the
+    // same surface). Cloned into the writer actor; the original Arc
+    // stays in scope for the shutdown path's drain step below.
+    let bg_supervisor = forge_daemon::server::supervisor::new_arc();
     let writer = WriterActor {
         state: writer_state,
+        bg: Arc::clone(&bg_supervisor),
     };
     tokio::spawn(async move { writer.run(write_rx).await });
 
@@ -719,6 +725,36 @@ async fn main() {
     .await
     {
         tracing::error!("server failed: {e}");
+    }
+
+    // P3-4 W1.29 (W23 review HIGH-1 strategic): drain in-flight
+    // background blocking tasks (force-index pass, future analytical
+    // batch writes) BEFORE socket teardown. Pre-fix the supervisor
+    // tasks were `tokio::spawn`-fire-and-forget — SIGTERM mid-pass
+    // exited the process while spawn_blocking was still holding a
+    // writer connection, leaving the indexer's per-pass invariants
+    // (file rows + import edges + cluster rebuild ordered as a unit)
+    // potentially mid-flight. SQLite WAL preserved DB integrity at
+    // COMMIT granularity even pre-fix; the strategic close gives the
+    // indexer up to 30s to finish its last batch.
+    //
+    // The deadline exists because rusqlite doesn't honor tokio
+    // cancellation — an extreme pathological pass could hang shutdown
+    // indefinitely without it. On timeout the daemon proceeds; the
+    // stranded blocking work is terminated by process exit.
+    let drain_deadline = std::time::Duration::from_secs(30);
+    let outcome = bg_supervisor.drain(drain_deadline).await;
+    if outcome.timed_out {
+        tracing::warn!(
+            drained = outcome.drained,
+            deadline_secs = drain_deadline.as_secs(),
+            "background-task drain hit deadline; some tasks did not complete cleanly"
+        );
+    } else if outcome.drained > 0 {
+        tracing::info!(
+            drained = outcome.drained,
+            "background-task drain completed cleanly"
+        );
     }
 
     // M6: Graceful cleanup after server stops (both success and error paths)

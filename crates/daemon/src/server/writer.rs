@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use forge_core::protocol::{Request, Response, ResponseData};
 use tokio::sync::{mpsc, oneshot};
+
+use super::supervisor::BackgroundTaskSupervisor;
 
 /// Context for audit logging of write operations.
 ///
@@ -203,6 +207,13 @@ fn response_status(response: &Response) -> &'static str {
 /// db_path; SQLite WAL mode serializes writes internally.
 pub struct WriterActor {
     pub state: super::handler::DaemonState,
+    /// Per-daemon supervisor for fire-and-forget blocking tasks
+    /// (currently force-index). Shared with `main.rs`'s shutdown path
+    /// so SIGTERM can drain in-flight passes before socket teardown.
+    /// Constructed once in `main.rs` and cloned into the actor; see
+    /// `crates/daemon/src/server/supervisor.rs` for the contract.
+    /// P3-4 W1.29 (W23 review HIGH-1 strategic).
+    pub bg: Arc<BackgroundTaskSupervisor>,
 }
 
 impl WriterActor {
@@ -319,6 +330,18 @@ impl WriterActor {
     /// `ResponseData::IndexComplete { 0, 0 }` immediately so the writer-actor
     /// can process the next request — the CLI-side surface treats `0,0` as
     /// "indexer started in background" (see `commands::system::force_index`).
+    ///
+    /// **P3-4 W1.29 (W23 review HIGH-1 strategic)**: the dispatched task is
+    /// now (a) gated by `BackgroundTaskSupervisor::try_claim_indexer` so a
+    /// second concurrent `force-index` returns a structured error instead of
+    /// spawning a duplicate writer, and (b) registered in the supervisor's
+    /// JoinSet so `main.rs`'s shutdown path can drain it (with a deadline)
+    /// before socket teardown. Pre-fix the supervisor was fire-and-forget,
+    /// which (i) didn't reject overlap and (ii) let SIGTERM strand the
+    /// indexer mid-pass. SQLite WAL preserved DB integrity at COMMIT
+    /// granularity even before this fix; what was at risk was
+    /// per-pass invariant coherence (file rows + import edges + cluster
+    /// rebuild ordered as a unit) on the next start.
     fn process_force_index_async(&self, path: Option<String>) -> Response {
         // Resolve `path` to its canonical form once, on the writer-actor thread,
         // and hand the canonical string into the spawn closure. Avoids a
@@ -344,6 +367,21 @@ impl WriterActor {
             None => None,
         };
 
+        // P3-4 W1.29: atomic claim. If the previous pass hasn't completed,
+        // refuse rather than spawning a duplicate writer that would race on
+        // the same db_path's WAL. The CLI surface translates this Error
+        // back to the user as "force-index already running, retry shortly".
+        if !self.bg.try_claim_indexer() {
+            tracing::warn!(
+                target: "forge_daemon::indexer",
+                path = canonical_path.as_deref().unwrap_or("<all-projects>"),
+                "force-index rejected: a previous pass is still in flight"
+            );
+            return Response::Error {
+                message: "force-index already in progress — wait for the previous pass to complete or retry shortly".to_string(),
+            };
+        }
+
         let db_path = self.state.db_path.clone();
         tracing::info!(
             target: "forge_daemon::indexer",
@@ -355,30 +393,58 @@ impl WriterActor {
         // the indexer worker. The supervisor logs cancellations
         // (SIGTERM mid-run) and panics (rusqlite/io failure) so the
         // operator has a breadcrumb instead of a silent partial index.
+        //
+        // P3-4 W1.29 (W23 HIGH-1 strategic close): the supervisor
+        // task is now registered in `bg.in_flight` (a tracked JoinSet)
+        // so `main.rs`'s shutdown path can drain it before exit.
+        // The closure also calls `release_indexer()` in ALL completion
+        // paths (Ok / Err / panic) so a transient failure doesn't
+        // leave the slot stuck — without that, every subsequent
+        // `force-index` would be rejected until daemon restart.
         let logged_path = canonical_path
             .as_deref()
             .unwrap_or("<all-projects>")
             .to_string();
-        let join = tokio::task::spawn_blocking(move || {
-            run_force_index_in_task(&db_path, canonical_path);
-        });
+        let bg = Arc::clone(&self.bg);
+        // Outer tokio::spawn: this fn is sync (called from
+        // `WriterActor::run`'s match arm), but `bg.spawn_supervised`
+        // is async (it acquires the Mutex around the JoinSet).
+        // Detach the lock-acquire+register into a tiny async task so
+        // the writer-actor returns immediately to its next message.
         tokio::spawn(async move {
-            if let Err(e) = join.await {
-                if e.is_panic() {
-                    tracing::error!(
-                        target: "forge_daemon::indexer",
-                        path = %logged_path,
-                        "force-index background task PANICKED — partial state may be on disk"
-                    );
-                } else {
-                    tracing::warn!(
-                        target: "forge_daemon::indexer",
-                        path = %logged_path,
-                        error = %e,
-                        "force-index background task cancelled (likely SIGTERM mid-run)"
-                    );
+            let bg_for_release = Arc::clone(&bg);
+            let logged_path_inner = logged_path.clone();
+            bg.spawn_supervised(async move {
+                let join = tokio::task::spawn_blocking(move || {
+                    run_force_index_in_task(&db_path, canonical_path);
+                });
+                match join.await {
+                    Ok(_) => {
+                        // The blocking body itself logs success
+                        // (run_force_index_in_task → tracing::info on
+                        // completion); nothing extra to log here.
+                    }
+                    Err(e) if e.is_panic() => {
+                        tracing::error!(
+                            target: "forge_daemon::indexer",
+                            path = %logged_path_inner,
+                            "force-index background task PANICKED — partial state may be on disk"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "forge_daemon::indexer",
+                            path = %logged_path_inner,
+                            error = %e,
+                            "force-index background task cancelled (likely SIGTERM mid-run)"
+                        );
+                    }
                 }
-            }
+                // Release the slot in ALL paths so the next
+                // force-index can proceed.
+                bg_for_release.release_indexer();
+            })
+            .await;
         });
 
         Response::Ok {
@@ -711,7 +777,10 @@ mod tests {
     #[tokio::test]
     async fn test_writer_actor_processes_health() {
         let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
-        let actor = WriterActor { state };
+        let actor = WriterActor {
+            state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
+        };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
@@ -735,7 +804,10 @@ mod tests {
     #[tokio::test]
     async fn test_writer_actor_handles_write_request() {
         let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
-        let actor = WriterActor { state };
+        let actor = WriterActor {
+            state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
+        };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
@@ -789,6 +861,7 @@ mod tests {
         let writer_state = crate::server::handler::DaemonState::new(":memory:").unwrap();
         let actor = WriterActor {
             state: writer_state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
         };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
@@ -875,6 +948,7 @@ mod tests {
                 .unwrap();
         let actor = WriterActor {
             state: writer_state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
         };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
@@ -1011,7 +1085,10 @@ mod tests {
     #[tokio::test]
     async fn test_audited_command_creates_audit_record() {
         let state = crate::server::handler::DaemonState::new(":memory:").unwrap();
-        let actor = WriterActor { state };
+        let actor = WriterActor {
+            state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
+        };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
 
@@ -1079,6 +1156,7 @@ mod tests {
         .unwrap();
         let actor = WriterActor {
             state: writer_state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
         };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
@@ -1189,6 +1267,7 @@ mod tests {
         .unwrap();
         let actor = WriterActor {
             state: writer_state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
         };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
@@ -1265,6 +1344,7 @@ mod tests {
         .unwrap();
         let actor = WriterActor {
             state: writer_state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
         };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
@@ -1338,6 +1418,7 @@ mod tests {
         .unwrap();
         let actor = WriterActor {
             state: writer_state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
         };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });
@@ -1415,6 +1496,7 @@ mod tests {
         .unwrap();
         let actor = WriterActor {
             state: writer_state,
+            bg: std::sync::Arc::new(BackgroundTaskSupervisor::new()),
         };
         let (tx, rx) = mpsc::channel(10);
         let handle = tokio::spawn(async move { actor.run(rx).await });

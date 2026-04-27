@@ -10,6 +10,7 @@ pub mod rate_limit;
 pub mod rbac;
 pub mod socket;
 pub mod static_files;
+pub mod supervisor;
 pub mod tier;
 pub mod tls;
 pub mod writer;
@@ -21,4 +22,5 @@ pub use http::run_http_server_with_listener;
 #[cfg(unix)]
 pub use socket::is_daemon_alive;
 pub use socket::run_server;
+pub use supervisor::{BackgroundTaskSupervisor, DrainOutcome};
 pub use writer::{AuditContext, WriteCommand, WriterActor};

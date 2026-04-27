@@ -1246,6 +1246,7 @@ Pfkte+2kAeYPMK9Sa+apqqE=
                 .unwrap();
         let actor = crate::server::writer::WriterActor {
             state: writer_state,
+            bg: std::sync::Arc::new(crate::server::supervisor::BackgroundTaskSupervisor::new()),
         };
         let handle = tokio::spawn(async move { actor.run(write_rx).await });
 
@@ -1580,6 +1581,7 @@ Pfkte+2kAeYPMK9Sa+apqqE=
                 .unwrap();
         let actor = crate::server::writer::WriterActor {
             state: writer_state,
+            bg: std::sync::Arc::new(crate::server::supervisor::BackgroundTaskSupervisor::new()),
         };
         let (tx, rx) = mpsc::channel(16);
         let handle = tokio::spawn(async move { actor.run(rx).await });
