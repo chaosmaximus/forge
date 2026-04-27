@@ -2,4 +2,5 @@
 
 Bad CLI ref (suffixed): `forge-next nonexistent-cmd`
 Bad CLI ref (bare-form, D-07): `forge invented-subcmd`
+Bad CLI ref (skip-list mask regression, Phase 8): `forge plugin install foo`
 Bad method: `{"method":"phantom_method","params":{}}`

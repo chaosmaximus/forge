@@ -107,6 +107,12 @@ assert_contains "drift entries detected" "$output"
 # trips before the real-repo gate masks the issue.
 assert_contains "invented-subcmd" "$output"
 assert_contains "nonexistent-cmd" "$output"
+# Phase 8 review HIGH: SKIP_CLI_TOKENS used to include `plugin`,
+# silently masking `forge plugin install`-style fictional drift. The
+# Phase 9 fix-wave pruned the skip list. This assertion pins that
+# decision — if the skip list grows back to include `plugin`, this
+# trips before the real-repo gate masks the drift.
+assert_contains "plugin" "$output"
 
 # ============================================================================
 # Test 4: drift fixture legacy FORCE_FAIL=1

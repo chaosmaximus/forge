@@ -243,15 +243,26 @@ done >> "$refs_file"
 
 # ─── 4. Diff refs against authoritative sets ───────────────────────────────
 # Common English / prose words that the bare-`forge` regex (3b) may pick
-# up from skill bodies even when there's no real CLI invocation. Add to
-# this list rather than tightening the regex — false-positives are fine
-# as long as we filter them out here.
-SKIP_CLI_TOKENS=(
-    "binary" "cli"
-    "agent" "agents" "daemon" "daemons" "plugin" "plugins"
-    "skill" "skills" "team" "teams"
-    "memory" "memories" "context" "contexts" "session" "sessions"
-)
+# up from skill bodies even when there's no real CLI invocation. KEEP
+# THIS LIST TIGHT — every entry is a future-drift mask. The 2026-04-28
+# Phase 8 review (Phase 9 follow-up) caught that overly broad skips
+# silently allow plausible fictional drift like `forge plugin install`,
+# `forge memory recall`, `forge skill run`, `forge session start`. Only
+# include words that are (a) genuine prose nouns AND (b) implausible
+# drift targets.
+SKIP_CLI_TOKENS=("binary" "cli")
+# Known limitations of the bare-`forge` regex:
+# - After-period blind spot: `pkg.forge plan` is intentionally
+#   exempted (the `.` in the negative class avoids matching dotted
+#   paths), but a sentence-final period followed by `forge` is also
+#   skipped. Acceptable: the bare-form check is a defense-in-depth
+#   layer; the suffixed-form regex still fires.
+# - Multi-token positional capture: `\bforge-(next|cli)\s+[a-z][a-z-]+`
+#   plus `awk '{print $NF}'` extracts only the first positional token,
+#   so `forge-next sync push --remote x` would yield `sync` (not a
+#   real subcommand — only `sync-pull`/`sync-push` etc.). No current
+#   skill/agent triggers this; revisit if a real command needs
+#   multi-token capture.
 
 unknowns=0
 while IFS= read -r line; do

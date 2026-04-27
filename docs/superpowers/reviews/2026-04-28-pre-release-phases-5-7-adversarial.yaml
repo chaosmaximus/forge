@@ -1,0 +1,135 @@
+schema_version: 1
+slug: 2026-04-28-pre-release-phases-5-7-adversarial
+target_paths:
+  - scripts/check-harness-sync.sh
+  - tests/scripts/test-harness-sync.sh
+  - tests/fixtures/harness-sync/drift/skills/drift.md
+  - skills/forge-security/SKILL.md
+  - skills/forge-research/SKILL.md
+  - skills/forge-ship/SKILL.md
+  - skills/forge-think/SKILL.md
+  - skills/forge-review/SKILL.md
+  - skills/forge-setup/SKILL.md
+  - skills/forge-new/SKILL.md
+  - skills/forge-feature/SKILL.md
+  - skills/forge-handoff/SKILL.md
+  - skills/forge-build-workflow.md
+  - agents/forge-evaluator.md
+  - agents/forge-planner.md
+  - agents/forge-generator.md
+  - docs/getting-started.md
+  - docs/api-reference.md
+  - docs/security.md
+  - docs/agent-development.md
+  - crates/daemon/src/teams.rs
+  - crates/daemon/src/lib.rs
+  - crates/daemon/tests/test_wave3.rs
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-28
+commit_range:
+  base: 1682f26
+  head: 45ffc9a
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-28-pre-release-phases-5-7-adversarial.md
+findings:
+  - id: HIGH-1
+    severity: HIGH
+    summary: SKIP_CLI_TOKENS expanded to mask plausible fictional surfaces (`plugin`/`plugins`/`skill`/`skills`/`memory`/`memories`/`context`/`contexts`/`session`)
+    file: scripts/check-harness-sync.sh
+    status: resolved
+    fixed_by: pending
+  - id: LOW-1
+    severity: LOW
+    summary: Suffixed-form regex captures only the first positional token (`forge-next sync push` would extract `sync`); no current harness file triggers it
+    file: scripts/check-harness-sync.sh
+    status: deferred
+    rationale: |
+      No current skill/agent/hook line uses multi-token positional
+      arguments after `forge-next`/`forge-cli`. Documented as known
+      limitation in the script's comment block; revisit when a real
+      command needs multi-token capture (currently sync uses
+      `sync-pull`/`sync-push` as separate subcommands, observe uses
+      `--shape <name>`, etc.). Fix would tighten the awk extraction
+      to walk all positional tokens, but adds complexity without
+      current benefit.
+  - id: LOW-2
+    severity: LOW
+    summary: After-period blind spot (`...forge plan ahead` is exempted by the `.` in the negative-class anchor); the `pkg.forge` exemption is the design intent
+    file: scripts/check-harness-sync.sh
+    status: deferred
+    rationale: |
+      The `.` in the negative-class anchor is load-bearing — it
+      prevents `pkg.forge`, `crate.forge`, dotted-path matches. The
+      cost is that a sentence-final `.` followed by `forge` is also
+      exempted. Bare-form is a defense-in-depth layer; the
+      suffixed-form regex (`\bforge-(next|cli)\s+...`) still catches
+      drift even when prose punctuation defeats the bare check.
+      Documented as known limitation in the script's comment block.
+spec_compliance:
+  - audit_id: C-HIGH-1
+    claim: migrate.rs (150 LOC) deleted
+    verified: true
+    evidence: "git show 92b15c9 -- crates/daemon/src/migrate.rs"
+  - audit_id: C-HIGH-2
+    claim: teams::create_meeting_with_voting (40 LOC) deleted
+    verified: true
+    evidence: "grep -n create_meeting_with_voting crates/daemon/src/teams.rs returns no match"
+  - audit_id: D-01
+    claim: forge-security skill rewritten without fictional `forge scan`
+    verified: true
+    evidence: "grep -c 'forge scan' skills/forge-security/SKILL.md returns 0"
+  - audit_id: D-02
+    claim: forge-research skill rewritten without fictional `forge research`
+    verified: true
+    evidence: "grep -c 'forge research' skills/forge-research/SKILL.md returns 0"
+  - audit_id: D-03
+    claim: forge-ship rewritten without `forge verify .` / `forge test run`
+    verified: true
+    evidence: "grep -E 'forge (verify|test run)' skills/forge-ship/SKILL.md returns 0"
+  - audit_id: D-04
+    claim: forge-think + forge-evaluator no longer reference `forge query "MATCH..."`
+    verified: true
+    evidence: "grep -E 'forge query' skills/forge-think/SKILL.md agents/forge-evaluator.md returns 0"
+  - audit_id: D-05
+    claim: forge-review uses `git diff <merge-base>..HEAD` instead of `forge review`
+    verified: true
+    evidence: "skills/forge-review/SKILL.md:76 contains the new form"
+  - audit_id: D-06
+    claim: data/ + evaluation-criteria/ + templates/ fictional reads replaced with inline content + optional override
+    verified: true
+    evidence: "skills/forge-new/SKILL.md, agents/forge-planner.md, agents/forge-evaluator.md updated"
+  - audit_id: D-07
+    claim: harness-sync gate catches bare `forge X` form
+    verified: true
+    evidence: "tests/scripts/test-harness-sync.sh asserts 'invented-subcmd' is in drift output"
+  - audit_id: D-08
+    claim: forge-setup no longer references fictional `.mcp.json`
+    verified: true
+    evidence: "grep -c '.mcp.json' skills/forge-setup/SKILL.md returns 0"
+  - audit_id: D-09
+    claim: forge-setup uses correct slash-command syntax `/forge:forge-new`
+    verified: true
+    evidence: "skills/forge-setup/SKILL.md:149 contains corrected form"
+  - audit_id: D-10
+    claim: TaskCreate references replaced with TodoWrite
+    verified: true
+    evidence: "grep -rn 'TaskCreate' skills/ agents/ returns 0"
+  - audit_id: DOCS-A-001
+    claim: getting-started.md drops fictional `forge scan` section
+    verified: true
+    evidence: "grep -c 'forge scan' docs/getting-started.md returns 0"
+  - audit_id: DOCS-A-002
+    claim: getting-started.md memory types now match MemoryType enum
+    verified: true
+    evidence: "docs/getting-started.md:86 lists 5 canonical types matching crates/core/src/types/memory.rs:7-16"
+  - audit_id: DOCS-A-003
+    claim: api-reference.md uses `forge.sock` (matches default_socket_path)
+    verified: true
+    evidence: "docs/api-reference.md:19 + crates/core/src/paths.rs:30"
+  - audit_id: DOCS-A-004
+    claim: security.md gRPC section reflects actual shipped state
+    verified: true
+    evidence: "docs/security.md:212-217 + crates/daemon/src/server/mod.rs::grpc + crates/daemon/src/main.rs:672-682"
