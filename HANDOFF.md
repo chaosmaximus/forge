@@ -2,7 +2,7 @@
 
 **Tracking ledger:** `docs/superpowers/audits/2026-04-27-tracking-ledger.md` — every one of the 147 findings with status (✅ fixed / 🟡 deferred / ❌ false positive / ⏳ pending). Read this first to know exactly what's done and what's queued.
 
-**Public HEAD:** `0b9e689` (in sync with origin/master). Working tree clean.
+**Public HEAD:** `0b9e689` (substantive close) + `32be905` (this SHA-pin doc commit) on origin/master. Working tree clean.
 **Version:** `v0.6.0-rc.3` (release stack still DEFERRED — halt for sign-off).
 **Plan A:** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`.
 **Halt:** **YES** — Phase 10 partially closed (18 of 54 MEDs fixed); Phases 10D-10G + 11 + 12 queued.
