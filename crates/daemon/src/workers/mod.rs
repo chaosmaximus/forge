@@ -41,8 +41,12 @@ pub fn open_read_conn(db_path: &str) -> Option<rusqlite::Connection> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
         Ok(conn) => {
-            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-                .ok();
+            // P3-4 W1.30 review MED-1: previously inlined `busy_timeout=5000`
+            // diverged from the canonical 10s value across 5 worker
+            // callers (diagnostics, embedder, disposition, extractor x2).
+            // Best-effort because the read-only flag means the WAL part of
+            // the helper is a no-op; only busy_timeout actually engages.
+            let _ = crate::db::apply_runtime_pragmas(&conn);
             Some(conn)
         }
         Err(e) => {

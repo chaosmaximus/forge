@@ -30,14 +30,17 @@
 // of running a literal PRAGMA string. The helper:
 //
 //   1. Sets `journal_mode=WAL`. WAL is a persistent file-level setting
-//      (the WAL header survives connection close), so this is a
-//      no-op on already-WAL DBs but inexpensive (~µs). Ensuring it
+//      (the WAL header survives connection close), so this is a no-op
+//      on already-WAL DBs (constant-time path inside SQLite — the
+//      engine reads the header byte and short-circuits). Ensuring it
 //      every open guards against the rare case where a fresh DB file
 //      was created without WAL — e.g., a test that copies a stock
 //      `forge.db` into a tempdir, or a backup restore. Returning
 //      "wal" verifies the mode actually engaged; we treat any other
 //      result as `tracing::warn!`-worthy because lock contention on
-//      non-WAL DBs is much sharper.
+//      non-WAL DBs is much sharper. `:memory:` DBs return "memory"
+//      and are explicitly suppressed (WAL is not supported on
+//      in-memory DBs in the same way).
 //   2. Sets `busy_timeout=10000` (10 seconds). The 10-second value
 //      matches the heaviest-write site (force-index) so all sites
 //      retry SQLITE_BUSY identically. This is the upper bound; sites
@@ -89,7 +92,15 @@ pub fn apply_runtime_pragmas(conn: &Connection) -> rusqlite::Result<()> {
     let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| {
         row.get::<_, String>(0)
     })?;
-    if !mode.eq_ignore_ascii_case("wal") {
+    // `:memory:` DBs always return "memory" — WAL is not supported on
+    // in-memory DBs and the warning would just spam test output. Tests
+    // exercising the helper use a tempfile so this branch never fires
+    // there; the suppression is for any production code path that
+    // routes through a `:memory:` connection (currently none — see
+    // `DaemonState::new`'s `:memory:` branch which still calls the
+    // helper but is fine because it's a unit-test-only path).
+    // P3-4 W1.30 review LOW-4.
+    if !mode.eq_ignore_ascii_case("wal") && !mode.eq_ignore_ascii_case("memory") {
         tracing::warn!(
             target: "forge::db",
             mode = %mode,

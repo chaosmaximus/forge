@@ -367,6 +367,23 @@ impl WriterActor {
             None => None,
         };
 
+        // P3-4 W1.30 review MED-2: reject force-index requests that
+        // arrive AFTER `main.rs` has signaled shutdown (e.g. from a
+        // worker still sending writes via the mpsc during the drain
+        // window). Pre-fix such a late request would slip past the
+        // supervisor and get stranded by process exit, masking the
+        // drain's "completed cleanly" log line.
+        if self.bg.is_shutting_down() {
+            tracing::warn!(
+                target: "forge_daemon::indexer",
+                path = canonical_path.as_deref().unwrap_or("<all-projects>"),
+                "force-index rejected: daemon is shutting down"
+            );
+            return Response::Error {
+                message: "force-index rejected — daemon is shutting down".to_string(),
+            };
+        }
+
         // P3-4 W1.29: atomic claim. If the previous pass hasn't completed,
         // refuse rather than spawning a duplicate writer that would race on
         // the same db_path's WAL. The CLI surface translates this Error

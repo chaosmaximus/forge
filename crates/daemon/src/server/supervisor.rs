@@ -62,6 +62,13 @@ pub struct BackgroundTaskSupervisor {
     /// `true` while a force-index pass is in flight. Future per-resource
     /// flags can be added as siblings (e.g., `analytics_running`).
     indexer_running: AtomicBool,
+    /// `true` once `signal_shutdown()` has been called. The writer-actor's
+    /// `process_force_index_async` rejects new requests when this is set,
+    /// so a force-index arriving during the drain window doesn't slip
+    /// past the supervisor and get stranded by process exit. Set by
+    /// `main.rs`'s shutdown sequence BEFORE invoking `drain()`.
+    /// P3-4 W1.30 review MED-2.
+    shutting_down: AtomicBool,
     /// JoinSet of in-flight supervisor tasks. `tokio::sync::Mutex`
     /// because (a) `JoinSet::spawn` and `JoinSet::join_next` need
     /// `&mut self`, (b) the writer-actor and shutdown paths both
@@ -73,7 +80,13 @@ pub struct BackgroundTaskSupervisor {
 /// path to decide whether to log a clean drain or a timed-out one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DrainOutcome {
-    /// Number of supervisor tasks that completed within the deadline.
+    /// Approximate count of supervisor tasks that completed during the
+    /// drain window. On the clean path this equals the in-flight count
+    /// at drain entry; on the timeout path it's the best-effort delta
+    /// `entry_count - currently_running` (race-friendly: if a peer
+    /// `spawn_supervised` happened to land during drain, this can
+    /// under-count). Used for tracing only — operational decisions
+    /// key off `timed_out`. P3-4 W1.30 review LOW-3.
     pub drained: usize,
     /// Whether the deadline expired before all tasks completed. When
     /// `true`, some tasks were still running when the timer fired —
@@ -81,6 +94,29 @@ pub struct DrainOutcome {
     /// stranded blocking work will be terminated by process exit
     /// (SQLite WAL preserves DB integrity at COMMIT granularity).
     pub timed_out: bool,
+}
+
+/// Default deadline for the shutdown drain. Overridable via the
+/// `FORGE_DRAIN_TIMEOUT_SECS` environment variable; clamped to
+/// [1, 300] to avoid a misconfigured 0-second drain (which would
+/// always immediately time out and strand every in-flight pass) or
+/// a pathological 1-hour drain (which would mask a wedged indexer).
+/// P3-4 W1.30 review LOW-2.
+pub const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 30;
+
+/// Resolve the drain deadline from `FORGE_DRAIN_TIMEOUT_SECS` env
+/// (clamped to `[1, 300]`) or fall back to `DEFAULT_DRAIN_TIMEOUT_SECS`.
+/// Operators with pathologically large repos can bump it via env
+/// without a recompile; operators wanting snappier shutdown can lower
+/// it. Pre-fix the value was hardcoded at 30s with no override.
+/// P3-4 W1.30 review LOW-2.
+pub fn resolve_drain_timeout() -> std::time::Duration {
+    let secs = std::env::var("FORGE_DRAIN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|s| s.clamp(1, 300))
+        .unwrap_or(DEFAULT_DRAIN_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
 }
 
 impl Default for BackgroundTaskSupervisor {
@@ -93,8 +129,26 @@ impl BackgroundTaskSupervisor {
     pub fn new() -> Self {
         Self {
             indexer_running: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
             in_flight: Mutex::new(JoinSet::new()),
         }
+    }
+
+    /// Mark the daemon as shutting down. Called from `main.rs`'s
+    /// shutdown sequence BEFORE `drain()` so any force-index request
+    /// that slips past `run_server`'s return (e.g. arriving via the
+    /// writer-actor mpsc from a background worker) is rejected at
+    /// `process_force_index_async`'s gate instead of spawning a new
+    /// blocking task that the drain can't catch.
+    /// P3-4 W1.30 review MED-2.
+    pub fn signal_shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
+    }
+
+    /// Returns `true` if `signal_shutdown` has been called. The
+    /// writer-actor checks this before claiming the indexer slot.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
     }
 
     /// Atomically try to claim the indexer slot. Returns `true` if
@@ -235,34 +289,103 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_indexer_on_panic_unsticks_the_slot() {
-        // Simulates the production pattern where the supervisor
-        // closure releases the slot in all completion paths (Ok / Err
-        // / panic). Pre-fix, a panic in spawn_blocking would leave
-        // indexer_running=true forever; this test pins the contract
-        // that callers MUST release-on-panic.
+    async fn release_indexer_on_real_blocking_panic_unsticks_the_slot() {
+        // P3-4 W1.30 review MED-3: this test pins the production-shape
+        // contract that the supervisor closure releases the indexer
+        // slot when `tokio::task::spawn_blocking(work)` panics —
+        // mirroring exactly the structure of `process_force_index_async`
+        // at writer.rs:417-447. Pre-fix the test caught the panic
+        // INSIDE the future via `std::panic::catch_unwind`, then
+        // unconditionally called release. That fakeout would still
+        // pass even if a future refactor dropped the release from the
+        // `Err(e) if e.is_panic()` arm — which is the very contract the
+        // test claims to pin. Now the panic is real and propagates
+        // through tokio's `JoinError::is_panic()` path.
         let bg = Arc::new(BackgroundTaskSupervisor::new());
         assert!(bg.try_claim_indexer());
 
-        let bg_clone = Arc::clone(&bg);
+        let bg_release = Arc::clone(&bg);
         bg.spawn_supervised(async move {
-            // Wrap the panic in catch_unwind so the test runner doesn't
-            // fail; the production path uses `tokio::task::spawn_blocking`
-            // which catches the panic and surfaces it via `JoinError::is_panic`.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Real spawn_blocking panic. tokio catches it and surfaces
+            // it via JoinError::is_panic — the production supervisor
+            // closure then runs `match join.await { ... Err(e) if
+            // e.is_panic() => tracing::error!(...) ... }` and the
+            // unconditional release after the match.
+            let join = tokio::task::spawn_blocking(|| {
                 panic!("simulated indexer panic");
-            }));
-            // Production supervisor closure ALWAYS calls release, even
-            // after a panic (the `match join.await { ... }` arm runs
-            // unconditionally before the closure returns).
-            bg_clone.release_indexer();
+            });
+            let result = join.await;
+            assert!(
+                result.is_err() && result.as_ref().unwrap_err().is_panic(),
+                "production contract: spawn_blocking panic must surface via JoinError::is_panic"
+            );
+            // The release fires AFTER the match in production —
+            // mirror that ordering here.
+            bg_release.release_indexer();
         })
         .await;
 
-        bg.drain(Duration::from_secs(1)).await;
+        bg.drain(Duration::from_secs(2)).await;
         assert!(
             bg.try_claim_indexer(),
-            "after panic + release, next claim must succeed"
+            "after real panic + release, next claim must succeed"
         );
+    }
+
+    #[tokio::test]
+    async fn signal_shutdown_blocks_future_claims() {
+        // P3-4 W1.30 review MED-2: signal_shutdown sets a separate
+        // AtomicBool that production callers (process_force_index_async)
+        // check BEFORE try_claim_indexer. After signal_shutdown is
+        // called, is_shutting_down returns true and the writer-actor
+        // rejects the request without entering the supervisor at all.
+        let bg = BackgroundTaskSupervisor::new();
+        assert!(!bg.is_shutting_down());
+        bg.signal_shutdown();
+        assert!(bg.is_shutting_down());
+        // Note: signal_shutdown does NOT itself reject try_claim_indexer
+        // — the writer-actor checks both gates separately. After
+        // shutdown the in-flight indexer (if any) still completes
+        // its release, and try_claim would succeed; but production
+        // never gets there because the writer-actor's gate-check
+        // returns before invoking the supervisor.
+        assert!(
+            bg.try_claim_indexer(),
+            "supervisor's two gates are independent — that's the writer-actor's job to compose"
+        );
+    }
+
+    #[test]
+    fn resolve_drain_timeout_default_and_env_override() {
+        // P3-4 W1.30 review LOW-2: the env override is clamped to
+        // [1, 300] so a misconfigured 0 doesn't strand every pass and
+        // a 1-hour drain doesn't mask a wedged indexer.
+        std::env::remove_var("FORGE_DRAIN_TIMEOUT_SECS");
+        assert_eq!(
+            resolve_drain_timeout().as_secs(),
+            DEFAULT_DRAIN_TIMEOUT_SECS
+        );
+
+        std::env::set_var("FORGE_DRAIN_TIMEOUT_SECS", "60");
+        assert_eq!(resolve_drain_timeout().as_secs(), 60);
+
+        std::env::set_var("FORGE_DRAIN_TIMEOUT_SECS", "0");
+        assert_eq!(resolve_drain_timeout().as_secs(), 1, "0 must clamp to 1");
+
+        std::env::set_var("FORGE_DRAIN_TIMEOUT_SECS", "9999");
+        assert_eq!(
+            resolve_drain_timeout().as_secs(),
+            300,
+            "max must clamp to 300"
+        );
+
+        std::env::set_var("FORGE_DRAIN_TIMEOUT_SECS", "garbage");
+        assert_eq!(
+            resolve_drain_timeout().as_secs(),
+            DEFAULT_DRAIN_TIMEOUT_SECS,
+            "unparseable must fall through to default"
+        );
+
+        std::env::remove_var("FORGE_DRAIN_TIMEOUT_SECS");
     }
 }

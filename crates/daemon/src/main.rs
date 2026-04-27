@@ -736,13 +736,20 @@ async fn main() {
     // (file rows + import edges + cluster rebuild ordered as a unit)
     // potentially mid-flight. SQLite WAL preserved DB integrity at
     // COMMIT granularity even pre-fix; the strategic close gives the
-    // indexer up to 30s to finish its last batch.
+    // indexer up to 30s (env-overridable; clamped [1, 300]) to finish
+    // its last batch.
+    //
+    // P3-4 W1.30 review MED-2: signal_shutdown FIRST so any
+    // force-index request still in flight on the writer-actor mpsc
+    // is rejected at the gate instead of spawning a fresh task that
+    // the drain can't catch.
     //
     // The deadline exists because rusqlite doesn't honor tokio
     // cancellation — an extreme pathological pass could hang shutdown
     // indefinitely without it. On timeout the daemon proceeds; the
     // stranded blocking work is terminated by process exit.
-    let drain_deadline = std::time::Duration::from_secs(30);
+    bg_supervisor.signal_shutdown();
+    let drain_deadline = forge_daemon::server::supervisor::resolve_drain_timeout();
     let outcome = bg_supervisor.drain(drain_deadline).await;
     if outcome.timed_out {
         tracing::warn!(
