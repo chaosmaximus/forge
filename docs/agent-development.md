@@ -120,7 +120,7 @@ forge-next remember \
   --content "Database connections should use pgbouncer with pool_mode=transaction for serverless workloads."
 ```
 
-Memory types: `decision`, `lesson`, `pattern`, `fact`, `entity`, `skill`.
+Memory types: `decision`, `lesson`, `pattern`, `preference`, `protocol` (the five `MemoryType` variants in `crates/core/src/types/memory.rs`).
 
 ### Recall
 

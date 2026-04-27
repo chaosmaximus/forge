@@ -83,7 +83,9 @@ This checks all workers (extraction, embedding, consolidation, indexer), verifie
 
 ## Store Your First Memory
 
-Forge organizes memories by type: `decision`, `lesson`, `pattern`, `fact`, `entity`, `skill`.
+Forge organizes memories by type. The five canonical types are
+`decision`, `lesson`, `pattern`, `preference`, and `protocol` (matching
+the `MemoryType` enum in `crates/core/src/types/memory.rs`).
 
 Store a decision:
 
@@ -217,19 +219,21 @@ forge-next identity remove <facet-id>
 
 ## Security Scanning
 
-Scan a directory for exposed secrets:
+Forge does not ship a `forge scan` subcommand. For workspace secret
+sweeps, use the `forge-security` skill (a structured grep-based
+playbook) or your preferred scanner (gitleaks, detect-secrets). Forge
+records the rotation of any confirmed exposures via
+`forge-next remember --type lesson` so future sessions stay aware.
 
 ```bash
-forge scan .
+# minimal pattern grep (full pattern table in skills/forge-security/SKILL.md)
+git grep -EnI 'AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk_live_[A-Za-z0-9]{24,}|BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY' \
+  -- ':!target' ':!node_modules' ':!.venv'
 ```
 
-Run continuous monitoring:
-
-```bash
-forge scan . --watch --interval 30
-```
-
-Forge never stores actual secret values -- only SHA256 fingerprints for tracking.
+For ongoing protection, install a pre-commit hook (gitleaks or
+`detect-secrets`) — the workspace sweep is reactive; the hook is
+preventive.
 
 ## Common Commands Reference
 
@@ -245,7 +249,6 @@ Forge never stores actual secret values -- only SHA256 fingerprints for tracking
 | `forge-next identity list` | List identity facets |
 | `forge-next export --format json` | Export all memories |
 | `forge-next import --file F` | Import memories from file |
-| `forge scan .` | Scan for exposed secrets |
 
 ## Multi-Tenant Setup
 

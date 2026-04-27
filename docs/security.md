@@ -209,11 +209,12 @@ Forge supports three transport layers. Choose based on your deployment topology.
 - CORS: Configurable origins; warns on wildcard `*` with auth disabled
 - Use case: Remote developers connecting via `forge-next --endpoint`, web dashboards
 
-### gRPC (Planned)
+### gRPC
 
-- Designed for in-cluster service-to-service communication
-- mTLS via cert-manager
-- Use case: Sidecar patterns, service mesh integration
+- Bind: `[grpc]` section in config (`enabled`, `bind`, `port`); listener spawns alongside the Unix socket and HTTP server when enabled
+- Protocol: tonic-generated service from `crates/daemon/src/server/grpc.rs`
+- mTLS: provide via reverse proxy / service mesh (cert-manager + Istio/Linkerd) or cluster ingress
+- Use case: in-cluster service-to-service communication, sidecar patterns, service-mesh integration
 
 ### CORS Configuration
 

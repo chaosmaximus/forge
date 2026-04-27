@@ -16,10 +16,10 @@ Forge exposes a single HTTP endpoint (`POST /api`) that accepts JSON-encoded req
 
 ### Unix Domain Socket
 
-The same JSON protocol works over the Unix domain socket at `~/.forge/daemon.sock`. Socket requests bypass JWT authentication and RBAC (filesystem permissions are the trust boundary).
+The same JSON protocol works over the Unix domain socket at `~/.forge/forge.sock` (override with the `FORGE_SOCKET` env var). Socket requests bypass JWT authentication and RBAC (filesystem permissions are the trust boundary).
 
 ```bash
-echo '{"method":"health"}' | socat - UNIX-CONNECT:~/.forge/daemon.sock
+echo '{"method":"health"}' | socat - UNIX-CONNECT:~/.forge/forge.sock
 ```
 
 ### Health Probes
