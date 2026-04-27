@@ -136,6 +136,11 @@ pub fn is_read_only(req: &Request) -> bool {
             | Request::GetHudConfig { .. }
             | Request::ExportHudConfig { .. }
             | Request::ListFlipped { .. } // Phase 2A-4a: read-only listing of flipped preferences
+            | Request::Inspect { .. }     // Pre-release audit F-CRIT-2: Inspect is pure SELECT
+                                          // (verified: zero INSERT/UPDATE/DELETE in inspect.rs).
+                                          // Routing through writer-actor was the bug — `metrics:
+                                          // None` on writer state made every row_count query
+                                          // permanently `stale=true, rows=[]`.
                                           // NOTE: ReaffirmPreference is a WRITE — updates reaffirmed_at column
                                           // NOTE: SetHudConfig is a write — modifies config_scope table
                                           // NOTE: HealingRun is a write — triggers healing cycle

@@ -2935,17 +2935,46 @@ pub fn list_team_members(
     rows.collect()
 }
 
-/// Store a reality record (upsert by ID).
-pub fn store_project(conn: &Connection, reality: &Project) -> rusqlite::Result<()> {
+/// Store a project record (upsert by ID).
+///
+/// Pre-release audit E-4: pre-fix used `INSERT OR REPLACE`, which
+/// per `feedback_insert_or_replace_data_loss_on_unique_index.md`
+/// silently DELETES any row that conflicts on ANY unique index, not
+/// just the primary key. With `idx_project_path_unique` (UNIQUE on
+/// `project_path`), a caller writing `id=A path=/p` against an
+/// existing `id=B path=/p` row would silently delete row B and
+/// leave any sessions/memories tagged with B's project name dangling.
+///
+/// Post-fix: ON CONFLICT(id) DO UPDATE is the upsert-by-id contract;
+/// a path-collision against a different id triggers SQLITE_CONSTRAINT
+/// at the partial-unique index, surfacing the conflict instead of
+/// silently dropping the older row. Auto-create paths that need to
+/// be racy-no-op-on-path-conflict use `auto_create_project_if_absent`
+/// (INSERT OR IGNORE) — the X1.fw2 split is preserved.
+pub fn store_project(conn: &Connection, project: &Project) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO project (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        "INSERT INTO project (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             reality_type = excluded.reality_type,
+             detected_from = excluded.detected_from,
+             project_path = excluded.project_path,
+             domain = excluded.domain,
+             organization_id = excluded.organization_id,
+             owner_type = excluded.owner_type,
+             owner_id = excluded.owner_id,
+             engine_status = excluded.engine_status,
+             engine_pid = excluded.engine_pid,
+             created_at = excluded.created_at,
+             last_active = excluded.last_active,
+             metadata = excluded.metadata",
         params![
-            reality.id, reality.name, reality.reality_type,
-            reality.detected_from, reality.project_path, reality.domain,
-            reality.organization_id, reality.owner_type, reality.owner_id,
-            reality.engine_status, reality.engine_pid,
-            reality.created_at, reality.last_active, reality.metadata,
+            project.id, project.name, project.reality_type,
+            project.detected_from, project.project_path, project.domain,
+            project.organization_id, project.owner_type, project.owner_id,
+            project.engine_status, project.engine_pid,
+            project.created_at, project.last_active, project.metadata,
         ],
     )?;
     Ok(())
@@ -5345,9 +5374,11 @@ mod tests {
         };
         store_project(&conn, &reality1).unwrap();
 
-        // Attempting to insert a different reality with the same project_path should fail
-        // (because store_project uses INSERT OR REPLACE which keys on id, not project_path)
-        // The unique index should prevent a raw INSERT with duplicate project_path
+        // Attempting to insert a different project with the same project_path should fail
+        // (idx_project_path_unique partial index). Pre-release audit E-4: store_project
+        // post-fix uses ON CONFLICT(id) DO UPDATE — the upsert-by-id contract — so a
+        // path-collision against a different id surfaces SQLITE_CONSTRAINT instead of
+        // silently DELETING the older row (the pre-fix INSERT OR REPLACE bug).
         let result = conn.execute(
             "INSERT INTO project (id, name, reality_type, organization_id, owner_type, owner_id, engine_status, created_at, last_active, metadata, project_path)
              VALUES ('r_dup2', 'second', 'code', 'default', 'user', 'local', 'idle', datetime('now'), datetime('now'), '{}', '/unique/path')",
@@ -5357,6 +5388,31 @@ mod tests {
             result.is_err(),
             "duplicate project_path should violate unique index"
         );
+
+        // E-4 regression: store_project itself must surface the path collision
+        // when the colliding row has a DIFFERENT id (was the silent-data-loss bug).
+        let collider = Project {
+            id: "r_collider".to_string(),
+            name: "collider".to_string(),
+            project_path: Some("/unique/path".to_string()),
+            ..reality1.clone()
+        };
+        let result = store_project(&conn, &collider);
+        assert!(
+            result.is_err(),
+            "store_project must error on path collision against a different id, \
+             not silently REPLACE the older row"
+        );
+
+        // The original row must still exist (was the data-loss path pre-fix).
+        let still_there: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM project WHERE id = ?1",
+                ["r_dup1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_there, 1, "pre-existing row must survive path-collision attempt");
 
         // NULL project_path should be allowed for multiple realities
         let null1 = Project {

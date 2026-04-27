@@ -83,6 +83,23 @@ pub const BUSY_TIMEOUT_MS: u32 = 10_000;
 /// connections + schema-create flows) or best-effort (read-only
 /// per-request handles that already gracefully degrade).
 pub fn apply_runtime_pragmas(conn: &Connection) -> rusqlite::Result<()> {
+    // PRAGMA foreign_keys is per-connection in SQLite (NOT a file-level
+    // setting like journal_mode). Default is OFF since 3.6.19; every
+    // Forge connection MUST run this or every FK CASCADE in the schema
+    // becomes a silent no-op.
+    //
+    // Pre-fix audit (E-1, 2026-04-27): only the canonical CASCADE in
+    // the schema was `raw_chunks(document_id) REFERENCES raw_documents
+    // ON DELETE CASCADE` — `delete_document` (raw.rs:278) deletes the
+    // parent + the vec0 mirror but relies on the CASCADE for raw_chunks.
+    // With foreign_keys OFF in production every call to delete_document
+    // permanently orphaned every raw_chunks row. Bench-side test setups
+    // explicitly turned it on; production didn't.
+    //
+    // Set BEFORE journal_mode + busy_timeout so the helper is a single
+    // batch-open-handshake.
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+
     // PRAGMA journal_mode returns the new mode as a string row; we
     // verify it's "wal" because the helper's contract is "ensure WAL
     // is engaged after this call." A non-"wal" result usually means
@@ -136,6 +153,23 @@ mod tests {
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
             .unwrap();
         assert_eq!(timeout, BUSY_TIMEOUT_MS as i64);
+    }
+
+    #[test]
+    fn apply_runtime_pragmas_engages_foreign_keys() {
+        // Pre-release audit E-1: every Forge connection must have
+        // PRAGMA foreign_keys=ON or the canonical CASCADE in the
+        // schema (raw_chunks → raw_documents) becomes a silent no-op
+        // and every delete_document orphans the chunk rows.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let conn = Connection::open(&path).unwrap();
+        apply_runtime_pragmas(&conn).unwrap();
+
+        let fk_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fk_on, 1, "PRAGMA foreign_keys must be ON");
     }
 
     #[test]

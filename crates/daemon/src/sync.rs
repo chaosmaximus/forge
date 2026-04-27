@@ -240,8 +240,17 @@ fn build_export_query(project: Option<&str>, since: Option<&str>) -> (String, Ve
     let mut param_idx = 1;
 
     if let Some(p) = project {
+        // Pre-release audit E-2: STRICT scope per W29's
+        // `feedback_sentinel_replacement_for_soft_scope_leak.md`.
+        // Pre-fix used `(project = ? OR project IS NULL OR project = '')`
+        // which silently re-admitted any drift row (NULL/empty) into a
+        // project-scoped export and propagated cross-project data to
+        // every peer — exact W29 anti-pattern.
+        // Post-fix: only the supplied project + the canonical `_global_`
+        // sentinel are admitted, mirroring `recall_bm25_project_org_flipped`.
         clauses.push_str(&format!(
-            " AND (project = ?{param_idx} OR project IS NULL OR project = '')"
+            " AND (project = ?{param_idx} OR project = '{}')",
+            crate::db::ops::GLOBAL_PROJECT_SENTINEL
         ));
         param_values.push(p.to_string());
         param_idx += 1;

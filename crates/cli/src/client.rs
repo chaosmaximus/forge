@@ -128,7 +128,22 @@ pub async fn connect() -> Result<UnixStream, String> {
     // Start the daemon as a fully detached background process.
     // Uses setsid on Linux to create a new process group (like Docker does).
     let daemon_path = find_daemon_binary();
-    let log_path = format!("{}/daemon.log", forge_core::forge_dir());
+    let forge_dir = forge_core::forge_dir();
+
+    // Pre-release audit F-CRIT-1: a fresh `$HOME` with no `~/.forge/`
+    // makes `OpenOptions::create(true).open(...)` fail with ENOENT
+    // because OpenOptions does NOT auto-create the parent directory.
+    // The user sees an opaque `failed to open daemon log ... No such
+    // file or directory` and the daemon never spawns. Pre-create the
+    // directory so first-run on a clean machine works.
+    if let Err(e) = std::fs::create_dir_all(&forge_dir) {
+        return Err(format!(
+            "failed to create forge state directory {forge_dir}: {e} \
+             (try `mkdir -p {forge_dir}` manually)"
+        ));
+    }
+
+    let log_path = format!("{forge_dir}/daemon.log");
 
     // Build env vars to forward (see FORWARDED_ENV_KEYS for rationale)
     let mut envs: Vec<(String, String)> = Vec::new();
