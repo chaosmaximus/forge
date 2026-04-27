@@ -99,7 +99,7 @@ regex = "1"
 # never get embeddings. v0.6.1+ should re-evaluate when ONNX Runtime
 # 1.24+ ships in `.tools/` (requires updating scripts/setup-dev-env.sh
 # + .cargo/config.toml + scripts/with-ort.sh).
-fastembed = "=5.11.0"
+fastembed = "=5.13.3"
 
 # Deterministic reproducible PRNG for benchmark workload generation.
 # ChaCha20 gives us platform-independent byte-identical sequences from
