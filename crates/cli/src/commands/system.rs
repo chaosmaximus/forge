@@ -663,29 +663,94 @@ pub async fn post_bash_check(command: String, exit_code: i32) {
 }
 
 /// List active (or all) agent sessions.
-pub async fn sessions(active_only: bool) {
+///
+/// P3-4 Wave Y (Y6) per cc-voice Round 2 §G: optional `cwd_filter`
+/// restricts the result to sessions whose `SessionInfo.cwd` matches
+/// (canonicalized comparison). `current` is shorthand for
+/// `cwd_filter = Some(std::env::current_dir())`. When `current` is
+/// set and `cwd_filter` is also explicit, the explicit flag wins.
+/// `current` additionally picks the single most-recently-started
+/// session (so users can pipe `forge-next sessions --current` into
+/// `xargs forge-next update-session --id` for the obvious workflow).
+pub async fn sessions(active_only: bool, cwd_filter: Option<String>, current: bool) {
+    // Resolve effective filter: explicit > --current PWD > unset.
+    let resolved_cwd: Option<String> = cwd_filter
+        .or_else(|| {
+            if current {
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)))
+                    .and_then(|p| p.to_str().map(|s| s.to_string()))
+            } else {
+                None
+            }
+        })
+        .map(|raw| {
+            // Best-effort canonicalize so /tmp/foo/. and /tmp/foo match.
+            std::fs::canonicalize(&raw)
+                .ok()
+                .and_then(|p| p.to_str().map(|s| s.to_string()))
+                .unwrap_or(raw)
+        });
+
     match client::send(&Request::Sessions {
         active_only: Some(active_only),
     })
     .await
     {
         Ok(Response::Ok {
-            data: ResponseData::Sessions { sessions, count },
+            data: ResponseData::Sessions { sessions, .. },
         }) => {
-            if sessions.is_empty() {
-                println!("No {} sessions.", if active_only { "active" } else { "" });
+            // Apply cwd filter (Y6).
+            let canon_match = |sess_cwd: Option<&str>, target: &str| -> bool {
+                match sess_cwd {
+                    Some(c) => {
+                        let canon = std::fs::canonicalize(c)
+                            .ok()
+                            .and_then(|p| p.to_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| c.to_string());
+                        canon == *target
+                    }
+                    None => false,
+                }
+            };
+            let mut filtered: Vec<_> = match resolved_cwd.as_deref() {
+                Some(target) => sessions
+                    .into_iter()
+                    .filter(|s| canon_match(s.cwd.as_deref(), target))
+                    .collect(),
+                None => sessions,
+            };
+            // For --current, pick the most-recently-started match.
+            if current && !filtered.is_empty() {
+                filtered.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+                filtered.truncate(1);
+            }
+
+            if filtered.is_empty() {
+                let scope = match (current, resolved_cwd.as_deref()) {
+                    (true, Some(p)) => format!(" matching cwd={p}"),
+                    (false, Some(p)) => format!(" matching cwd={p}"),
+                    _ => String::new(),
+                };
+                println!(
+                    "No {}sessions{}.",
+                    if active_only { "active " } else { "" },
+                    scope
+                );
             } else {
-                println!("{count} session(s):");
-                for s in &sessions {
+                println!("{} session(s):", filtered.len());
+                for s in &filtered {
                     let project = s.project.as_deref().unwrap_or("(none)");
+                    let cwd_disp = s.cwd.as_deref().unwrap_or("(none)");
                     let status_str = if s.status == "active" {
                         "ACTIVE"
                     } else {
                         "ended"
                     };
                     println!(
-                        "  [{}] {} — {} (project: {}, since: {})",
-                        status_str, s.id, s.agent, project, s.started_at
+                        "  [{}] {} — {} (project: {}, cwd: {}, since: {})",
+                        status_str, s.id, s.agent, project, cwd_disp, s.started_at
                     );
                 }
             }

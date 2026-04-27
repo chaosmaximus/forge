@@ -205,6 +205,20 @@ enum Commands {
         /// Show all sessions (including ended)
         #[arg(long)]
         all: bool,
+        /// P3-4 Wave Y (Y6) per cc-voice §G: filter to sessions
+        /// bound to a specific cwd. Useful when multiple Claude Code
+        /// instances run from different project dirs and the user
+        /// wants to see only "their" session for `update-session`.
+        #[arg(long, value_name = "PATH")]
+        cwd: Option<String>,
+        /// Y6: shorthand for `--cwd "$(pwd)"`. Picks the most-recently
+        /// started session whose cwd matches the daemon's current
+        /// working directory. When combined with `--cwd`, the explicit
+        /// flag wins. Combining with `--all` is allowed but doesn't
+        /// usually make sense — most-recent-of-active-sessions is the
+        /// expected interpretation.
+        #[arg(long)]
+        current: bool,
     },
     /// Show available language servers for the current project
     #[command(name = "lsp-status")]
@@ -1567,8 +1581,8 @@ async fn main() {
             };
             commands::system::blast_radius(file, project).await;
         }
-        Commands::Sessions { all } => {
-            commands::system::sessions(!all).await;
+        Commands::Sessions { all, cwd, current } => {
+            commands::system::sessions(!all, cwd, current).await;
         }
         Commands::LspStatus => {
             commands::system::lsp_status().await;
@@ -3891,6 +3905,60 @@ mod tests {
                 assert_eq!(file_flag.as_deref(), Some("src/main.rs"));
             }
             other => panic!("expected BlastRadius, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_y6_sessions_accepts_cwd_flag() {
+        // P3-4 Wave Y (Y6) per cc-voice Round 2 §G: `--cwd <path>`
+        // parses. Filtering happens client-side in
+        // `commands/system.rs`; this test only pins the clap surface.
+        let cli = Cli::try_parse_from(["forge-next", "sessions", "--cwd", "/tmp/foo"])
+            .ok()
+            .expect("--cwd should parse");
+        if let Commands::Sessions { all, cwd, current } = cli.command {
+            assert!(!all);
+            assert_eq!(cwd.as_deref(), Some("/tmp/foo"));
+            assert!(!current);
+        } else {
+            panic!("expected Sessions");
+        }
+    }
+
+    #[test]
+    fn p3_4_y6_sessions_accepts_current_flag() {
+        // Y6 part 2: `--current` shorthand parses.
+        let cli = Cli::try_parse_from(["forge-next", "sessions", "--current"])
+            .ok()
+            .expect("--current should parse");
+        if let Commands::Sessions { all, cwd, current } = cli.command {
+            assert!(!all);
+            assert_eq!(cwd, None);
+            assert!(current);
+        } else {
+            panic!("expected Sessions");
+        }
+    }
+
+    #[test]
+    fn p3_4_y6_sessions_accepts_combined_cwd_and_current_flags() {
+        // Y6 part 3: when both flags are supplied, the runtime
+        // resolves --cwd as the explicit override (current/system.rs
+        // does the precedence). At the parse level both are accepted.
+        let cli = Cli::try_parse_from([
+            "forge-next",
+            "sessions",
+            "--current",
+            "--cwd",
+            "/some/explicit/path",
+        ])
+        .ok()
+        .expect("--cwd + --current should both parse");
+        if let Commands::Sessions { cwd, current, .. } = cli.command {
+            assert_eq!(cwd.as_deref(), Some("/some/explicit/path"));
+            assert!(current);
+        } else {
+            panic!("expected Sessions");
         }
     }
 
