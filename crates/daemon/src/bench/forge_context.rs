@@ -381,6 +381,8 @@ pub fn seed_state(state: &mut DaemonState, seed: u64) -> Result<SeededDataset, S
                 tags: Some(spec.tags.clone()),
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         match resp {

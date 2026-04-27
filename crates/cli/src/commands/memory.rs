@@ -98,6 +98,7 @@ pub async fn recall(
 }
 
 /// Store a memory.
+#[allow(clippy::too_many_arguments)]
 pub async fn remember(
     memory_type: String,
     title: String,
@@ -106,6 +107,8 @@ pub async fn remember(
     tags: Option<Vec<String>>,
     project: Option<String>,
     metadata: Option<serde_json::Value>,
+    valence: Option<String>,
+    intensity: Option<f64>,
 ) {
     let mt = match parse_memory_type(&memory_type) {
         Ok(mt) => mt,
@@ -123,6 +126,8 @@ pub async fn remember(
         tags,
         project,
         metadata,
+        valence,
+        intensity,
     };
 
     match client::send(&request).await {

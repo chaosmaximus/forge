@@ -83,6 +83,8 @@ mod tests {
                     tags: Some(vec!["t".into()]),
                     project: Some("forge".into()),
                     metadata: None,
+                    valence: None,
+                    intensity: None,
                 },
             ),
             (
@@ -1386,6 +1388,8 @@ mod tests {
                     tags: None,
                     project: None,
                     metadata: None,
+                    valence: None,
+                    intensity: None,
                 },
                 Request::Recall {
                     query: "q".into(),

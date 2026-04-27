@@ -42,6 +42,8 @@ fn test_guardrail_check_with_linked_decision() {
             tags: Some(vec!["auth".into()]),
             project: Some("forge".into()),
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     );
     let decision_id = match resp {
@@ -101,6 +103,8 @@ fn test_blast_radius_with_co_affected_files() {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     );
     let decision_id = match resp {
@@ -166,6 +170,8 @@ fn test_guardrail_after_forget() {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     );
     let id = match resp {

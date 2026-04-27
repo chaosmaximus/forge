@@ -69,6 +69,17 @@ pub enum Request {
         /// Arbitrary structured metadata (e.g., test results: {"passed": 17, "failed": 3, "failures": ["test1", "test2"]})
         #[serde(default)]
         metadata: Option<serde_json::Value>,
+        /// W1.35 (I-9): explicit valence override for the new memory.
+        /// "positive" | "negative" | "neutral". Defaults to "neutral" when
+        /// absent. Pairs with `intensity`; an absent value here keeps
+        /// pre-W1.35 behavior. `#[serde(default)]` makes the field
+        /// wire-back-compat for old daemons that don't recognize it.
+        #[serde(default)]
+        valence: Option<String>,
+        /// W1.35 (I-9): valence intensity in [0.0, 1.0]. Ignored unless
+        /// `valence` is also set. Daemon clamps out-of-range values.
+        #[serde(default)]
+        intensity: Option<f64>,
     },
     Recall {
         query: String,

@@ -157,6 +157,8 @@ fn test_doctor_via_handler() {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     );
     assert!(matches!(resp, Response::Ok { .. }));

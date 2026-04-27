@@ -39,6 +39,8 @@ fn do_remember(
             tags,
             project,
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     );
     match resp {

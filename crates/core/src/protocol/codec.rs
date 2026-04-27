@@ -57,6 +57,8 @@ mod tests {
             tags: Some(vec!["protocol".to_string()]),
             project: Some("forge".to_string()),
             metadata: None,
+            valence: None,
+            intensity: None,
         };
 
         let json = serde_json::to_string(&req).expect("serialize");

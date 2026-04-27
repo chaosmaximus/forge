@@ -294,6 +294,8 @@ pub fn op_to_request(op: &Operation) -> Request {
             tags: Some(tags.clone()),
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         },
         Operation::IngestRaw { content, .. } => Request::RawIngest {
             text: content.clone(),
@@ -2104,6 +2106,8 @@ mod tests {
                 confidence,
                 project,
                 metadata,
+                valence: _,
+                intensity: _,
             } => {
                 assert_eq!(memory_type, MemoryType::Decision);
                 assert_eq!(title, "t");

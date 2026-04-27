@@ -34,6 +34,8 @@ fn recency_decay_flow_end_to_end() {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     ) {
         Response::Ok {

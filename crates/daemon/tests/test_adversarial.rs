@@ -30,6 +30,8 @@ fn remember(
         tags,
         project: None,
         metadata: None,
+        valence: None,
+        intensity: None,
     };
     let resp = handle_request(state, req);
     match resp {
@@ -449,6 +451,8 @@ fn test_empty_and_null_inputs() {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     );
     match &resp {
@@ -471,6 +475,8 @@ fn test_empty_and_null_inputs() {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     );
     match &resp {

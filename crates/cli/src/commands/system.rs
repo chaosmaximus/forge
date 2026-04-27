@@ -261,6 +261,8 @@ pub async fn migrate(state_dir: String) {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         };
 
         match client::send(&req).await {

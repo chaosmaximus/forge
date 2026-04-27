@@ -349,6 +349,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             tags,
             project,
             metadata,
+            valence,
+            intensity,
         } => {
             let type_str = format!("{memory_type:?}");
             let is_decision = matches!(memory_type, forge_core::types::MemoryType::Decision);
@@ -362,6 +364,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             }
             if let Some(ref p) = project {
                 memory = memory.with_project(p.clone());
+            }
+            // W1.35 (I-9): explicit valence + intensity from
+            // `forge-next remember --valence positive --intensity 0.8`.
+            // Defaults to "neutral" / 0.5 inside `Memory::new`. Intensity
+            // is clamped inside `with_valence`. The daemon accepts any
+            // string for `valence` today (typed enum is a v0.6.1 polish);
+            // unknown values fall through silently.
+            if let Some(v) = valence.filter(|v| !v.is_empty()) {
+                let i = intensity.unwrap_or(0.5);
+                memory = memory.with_valence(&v, i);
+            } else if let Some(i) = intensity {
+                memory = memory.with_valence("neutral", i);
             }
             // Assign active session ID so CLI-stored memories are linked to a session
             memory.session_id =
@@ -7648,6 +7662,104 @@ mod tests {
     use forge_core::types::MemoryType;
 
     #[test]
+    fn w1_35_w28_i9_remember_threads_valence_and_intensity_to_memory() {
+        // P3-4 W1.35 (I-9): `--valence` and `--intensity` end-to-end —
+        // a Remember request with explicit valence + intensity must
+        // persist them onto the stored memory row, replacing the
+        // `Memory::new` defaults of "neutral" / 0.5.
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+        let remember_req = Request::Remember {
+            memory_type: MemoryType::Preference,
+            title: "Prefer rust-analyzer over rls".to_string(),
+            content: "rust-analyzer is the supported LSP".to_string(),
+            confidence: Some(0.9),
+            tags: None,
+            project: Some("forge".to_string()),
+            metadata: None,
+            valence: Some("positive".to_string()),
+            intensity: Some(0.85),
+        };
+        let response = handle_request(&mut state, remember_req);
+        let id = match response {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            other => panic!("expected Stored, got {other:?}"),
+        };
+
+        let (valence, intensity): (String, f64) = state
+            .conn
+            .query_row(
+                "SELECT valence, intensity FROM memory WHERE id = ?1",
+                rusqlite::params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(valence, "positive");
+        assert!(
+            (intensity - 0.85).abs() < 1e-6,
+            "intensity must round-trip exactly, got {intensity}"
+        );
+
+        // Intensity-only (no valence) keeps the default "neutral" valence.
+        let req2 = Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Intensity only".to_string(),
+            content: "no valence flag".to_string(),
+            confidence: None,
+            tags: None,
+            project: None,
+            metadata: None,
+            valence: None,
+            intensity: Some(0.7),
+        };
+        let r2 = handle_request(&mut state, req2);
+        let id2 = match r2 {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            other => panic!("expected Stored, got {other:?}"),
+        };
+        let (v2, i2): (String, f64) = state
+            .conn
+            .query_row(
+                "SELECT valence, intensity FROM memory WHERE id = ?1",
+                rusqlite::params![id2],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(v2, "neutral");
+        assert!((i2 - 0.7).abs() < 1e-6);
+
+        // Empty `valence: Some("")` is treated as None — falls back to
+        // default "neutral" / 0.5 from Memory::new.
+        let req3 = Request::Remember {
+            memory_type: MemoryType::Decision,
+            title: "Empty valence string".to_string(),
+            content: "should not override".to_string(),
+            confidence: None,
+            tags: None,
+            project: None,
+            metadata: None,
+            valence: Some(String::new()),
+            intensity: None,
+        };
+        let r3 = handle_request(&mut state, req3);
+        let id3 = match r3 {
+            Response::Ok { data: ResponseData::Stored { id } } => id,
+            other => panic!("expected Stored, got {other:?}"),
+        };
+        let (v3, i3): (String, f64) = state
+            .conn
+            .query_row(
+                "SELECT valence, intensity FROM memory WHERE id = ?1",
+                rusqlite::params![id3],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(v3, "neutral", "empty valence string falls back to default");
+        // Memory::new sets intensity = 0.0 by default; --valence "" + no
+        // --intensity must NOT call with_valence at all.
+        assert!((i3 - 0.0).abs() < 1e-6, "intensity defaults to 0.0 (Memory::new)");
+    }
+
+    #[test]
     fn test_remember_and_recall() {
         let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
 
@@ -7660,6 +7772,8 @@ mod tests {
             tags: Some(vec!["auth".to_string()]),
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         };
         let response = handle_request(&mut state, remember_req);
 
@@ -7735,6 +7849,8 @@ mod tests {
                 tags: None,
                 project: Some("forge".into()),
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         handle_request(
@@ -7747,6 +7863,8 @@ mod tests {
                 tags: None,
                 project: Some("backend".into()),
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         handle_request(
@@ -7759,6 +7877,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -7892,6 +8012,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -8083,6 +8205,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let id = match resp {
@@ -8134,6 +8258,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let id = match resp {
@@ -8267,6 +8393,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let _id = match resp {
@@ -8358,6 +8486,8 @@ mod tests {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         });
         let id = match resp {
             Response::Ok {
@@ -8419,6 +8549,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let id = match resp {
@@ -8458,6 +8590,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let id = match resp {
@@ -9081,6 +9215,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -9156,6 +9292,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let old_id = match resp1 {
@@ -9175,6 +9313,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let new_id = match resp2 {
@@ -9282,6 +9422,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let id = match resp {
@@ -9366,6 +9508,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -9432,6 +9576,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -10951,6 +11097,8 @@ mod tests {
                 confidence: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let resp = handle_request(
@@ -10991,6 +11139,8 @@ mod tests {
                 confidence: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let resp = handle_request(
@@ -11032,6 +11182,8 @@ mod tests {
                 confidence: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         let resp = handle_request(
@@ -11140,6 +11292,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         handle_request(
@@ -11152,6 +11306,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -11250,6 +11406,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -11346,6 +11504,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -11388,6 +11548,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         handle_request(
@@ -11400,6 +11562,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -11531,6 +11695,8 @@ mod tests {
                 tags: None,
                 project: Some("forge".into()),
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         assert!(matches!(
@@ -11593,6 +11759,8 @@ mod tests {
                 tags: None,
                 project: Some("forge".into()),
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -11634,6 +11802,8 @@ mod tests {
                 tags: None,
                 project: Some("forge".into()),
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -11922,6 +12092,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -12527,6 +12699,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -12543,6 +12717,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -12577,6 +12753,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -12597,6 +12775,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -12679,6 +12859,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -12898,6 +13080,8 @@ mod tests {
                 tags: Some(vec!["database".into()]),
                 project: Some("forge".into()),
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -12943,6 +13127,8 @@ mod tests {
                 tags: Some(vec!["api".into(), "protocol".into()]),
                 project: Some("forge".into()),
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 
@@ -12999,6 +13185,8 @@ mod tests {
                 tags: None,
                 project: Some("test".into()),
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
 

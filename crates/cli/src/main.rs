@@ -27,11 +27,39 @@ fn parse_non_empty_project(s: &str) -> Result<String, String> {
 /// falls back to bare package version outside a git tree.
 const VERSION_LINE: &str = env!("FORGE_VERSION_LINE");
 
+/// W1.34 (I-6): the long-form `--help` ends with this category roadmap so
+/// users can find the command they need without scanning ~110 entries.
+/// clap 4.x doesn't natively group subcommands in a parent's command list
+/// (the heading attribute groups *args* within a subcommand), so we render
+/// the categorization as an after-help block. Each line names the command
+/// keyword the user types (e.g. `recall`, `team`) — short, scannable, and
+/// always emitted from the same place so it can never drift from the
+/// `enum Commands` order.
+const COMMAND_CATEGORIES: &str = "\
+COMMAND CATEGORIES:
+  Memory & Recall:           recall, remember, forget, supersede, ingest-claude
+  System & Daemon:           daemon, health, health-by-project, doctor, restart, vacuum, service, license-status, license-set, bootstrap, version
+  Data Migration:            migrate, export, import, backfill, extract, config, stats
+  Guardrails & Code Graph:   check, post-edit-check, pre-bash-check, post-bash-check, blast-radius, find-symbol, symbols
+  Sessions & Identity:       sessions, lsp-status, manas-health, identity, platform, tools, perceptions, compile-context, register-session, end-session, update-session, record-tool-use, cleanup-sessions, context-trace
+  Messaging (A2A FISP):      send, messages, respond, message-read, ack, grant-permission, revoke-permission, list-permissions, entities
+  Projects & Indexing:       project, code-search, force-index, contradictions, resolve-contradiction, verify, diagnostics
+  Sync & Maintenance:        sync-export, sync-import, sync-pull, sync-push, sync-conflicts, sync-resolve, hlc-backfill, backfill-project, cleanup-memory, backfill-affects
+  Agents & Teams:            agent-template, agent, agents, agent-status, team, meeting
+  Notifications & Events:    notifications, ack-notification, dismiss-notification, act-notification, subscribe, session-heartbeat, context-refresh, completion-check, task-completion-check, context-stats
+  Organizations & Workspace: org-create, org-list, org-from-template, org-init, team-tree, team-send, workspace-status, set-task
+  Healing:                   healing-status, healing-run, healing-log
+  Skills:                    skills-list, skills-install, skills-uninstall, skills-info, skills-refresh
+  Observability:             observe
+
+Pass `<COMMAND> --help` for full args.";
+
 #[derive(Parser)]
 #[command(
     name = "forge-next",
     about = "Forge — memory for AI coding agents",
-    version = VERSION_LINE
+    version = VERSION_LINE,
+    after_long_help = COMMAND_CATEGORIES,
 )]
 struct Cli {
     /// Remote daemon endpoint (e.g., https://forge.company.com).
@@ -102,6 +130,16 @@ enum Commands {
         /// Structured metadata as JSON string (e.g., '{"passed":17,"failed":3}')
         #[arg(long)]
         metadata: Option<String>,
+        /// W1.35 (I-9): valence — "positive", "negative", or "neutral"
+        /// (any string accepted; daemon does not currently enforce).
+        /// Default: "neutral" (set by `Memory::new`).
+        #[arg(long)]
+        valence: Option<String>,
+        /// W1.35 (I-9): valence intensity in [0.0, 1.0]. Daemon clamps
+        /// out-of-range values. Default: 0.5 when `--valence` is set
+        /// without `--intensity`.
+        #[arg(long)]
+        intensity: Option<f64>,
     },
     /// Soft-delete a memory
     Forget {
@@ -1506,10 +1544,13 @@ async fn main() {
             tags,
             project,
             metadata,
+            valence,
+            intensity,
         } => {
             let meta_value = metadata.and_then(|s| serde_json::from_str(&s).ok());
             commands::memory::remember(
                 r#type, title, content, confidence, tags, project, meta_value,
+                valence, intensity,
             )
             .await;
         }

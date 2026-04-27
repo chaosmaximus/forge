@@ -51,6 +51,8 @@ fn do_remember(
             tags: None,
             project,
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     );
     match resp {

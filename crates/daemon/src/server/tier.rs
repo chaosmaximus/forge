@@ -413,6 +413,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
             Request::Health,
             Request::CompileContext {

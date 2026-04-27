@@ -25,6 +25,8 @@ fn remember(
         tags,
         project,
         metadata: None,
+        valence: None,
+        intensity: None,
     };
     let resp = handle_request(state, req);
     match resp {

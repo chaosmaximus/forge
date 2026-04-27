@@ -1597,6 +1597,8 @@ Pfkte+2kAeYPMK9Sa+apqqE=
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
             reply: reply_tx,
         })

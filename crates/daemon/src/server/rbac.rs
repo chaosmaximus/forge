@@ -191,6 +191,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             }
         )
         .is_ok());
@@ -251,6 +253,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
         );
         assert!(result.is_err());
@@ -314,6 +318,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             }
         )
         .is_ok());

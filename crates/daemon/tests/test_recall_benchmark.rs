@@ -41,6 +41,8 @@ fn do_remember(
             tags: None,
             project: Some("forge".into()),
             metadata: None,
+            valence: None,
+            intensity: None,
         },
     );
     match resp {

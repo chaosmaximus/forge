@@ -665,6 +665,8 @@ mod tests {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         }));
         assert!(!is_read_only(&Request::Forget { id: "x".into() }));
         assert!(!is_read_only(&Request::ForceConsolidate));
@@ -846,6 +848,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
             reply: reply_tx,
         })
@@ -911,6 +915,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
             reply: reply_tx,
         })
@@ -990,6 +996,8 @@ mod tests {
                     tags: None,
                     project: None,
                     metadata: None,
+                    valence: None,
+                    intensity: None,
                 },
             );
             match resp {
@@ -1009,6 +1017,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
             reply: reply_tx,
         })
@@ -1052,6 +1062,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             }),
             "remember"
         );
@@ -1079,6 +1091,8 @@ mod tests {
             tags: None,
             project: None,
             metadata: None,
+            valence: None,
+            intensity: None,
         });
         assert!(summary.len() <= 200);
         assert!(summary.ends_with("..."));
@@ -1134,6 +1148,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
             reply: reply_tx,
             audit,
@@ -1196,6 +1212,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
             reply: reply_tx,
             audit: AuditContext {
@@ -1384,6 +1402,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
             reply: reply_tx,
         })
@@ -1459,6 +1479,8 @@ mod tests {
                     tags: None,
                     project: None,
                     metadata: None,
+                    valence: None,
+                    intensity: None,
                 },
                 reply: reply_tx,
                 audit: AuditContext {
@@ -1535,6 +1557,8 @@ mod tests {
                 tags: None,
                 project: None,
                 metadata: None,
+                valence: None,
+                intensity: None,
             },
             reply: reply_tx,
             audit: AuditContext {
