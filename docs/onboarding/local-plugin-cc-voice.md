@@ -100,13 +100,28 @@ forge-next compile-context --project my-project --dry-run
 ```
 
 The output is the literal `<forge-context>` XML. Look for the
-`<code-structure>` tag — for a fresh project you should see one of:
+`<code-structure>` tag — possible outcomes:
 
 ```xml
+<!-- Genuinely unknown project (no row in the reality table). -->
 <code-structure project="my-project" resolution="no-match"/>
-<code-structure project="my-project" domain="rust" files="0" symbols="0" resolution="auto-created"/>
+
+<!-- Project record exists (e.g. from `project init` or auto-create
+     on a prior contact) but no files indexed yet. domain reflects
+     whatever was detected (rust / python / typescript / unknown). -->
+<code-structure project="my-project" domain="unknown" files="0" symbols="0" resolution="auto-created"/>
+
+<!-- Project record exists AND files are indexed. -->
 <code-structure project="my-project" domain="rust" files="42" symbols="120" resolution="exact">...</code-structure>
 ```
+
+**`--dry-run` caveat (P3-4 Wave Y / Y2):** dry-run intentionally
+skips the auto-create side effect, so a *truly* fresh project
+(never seen by Forge) always renders `resolution="no-match"` under
+`--dry-run`. Drop `--dry-run` for a one-shot run if you want
+auto-create to fire and then verify with another `--dry-run` to see
+`auto-created`. Or run `forge-next project init my-project --path
+"$(pwd)"` explicitly first — both paths produce the same end-state.
 
 If you see `resolution="exact"` with a file count from a *different*
 project — that's the cc-voice §1.2 leak. File an issue (it shouldn't
