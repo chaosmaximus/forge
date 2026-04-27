@@ -2938,7 +2938,7 @@ pub fn list_team_members(
 /// Store a reality record (upsert by ID).
 pub fn store_project(conn: &Connection, reality: &Project) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO reality (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
+        "INSERT OR REPLACE INTO project (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             reality.id, reality.name, reality.reality_type,
@@ -2971,7 +2971,7 @@ pub fn auto_create_reality_if_absent(
     reality: &Project,
 ) -> rusqlite::Result<usize> {
     conn.execute(
-        "INSERT OR IGNORE INTO reality (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
+        "INSERT OR IGNORE INTO project (id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, metadata)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             reality.id, reality.name, reality.reality_type,
@@ -2987,7 +2987,7 @@ pub fn auto_create_reality_if_absent(
 pub fn get_project(conn: &Connection, id: &str, org_id: &str) -> rusqlite::Result<Option<Project>> {
     conn.query_row(
         "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
-         FROM reality WHERE id = ?1 AND organization_id = ?2",
+         FROM project WHERE id = ?1 AND organization_id = ?2",
         params![id, org_id],
         |row| Ok(Project {
             id: row.get(0)?,
@@ -3016,7 +3016,7 @@ pub fn get_project_by_path(
 ) -> rusqlite::Result<Option<Project>> {
     conn.query_row(
         "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
-         FROM reality WHERE project_path = ?1 AND organization_id = ?2 LIMIT 1",
+         FROM project WHERE project_path = ?1 AND organization_id = ?2 LIMIT 1",
         params![path, org_id],
         |row| Ok(Project {
             id: row.get(0)?,
@@ -3051,7 +3051,7 @@ pub fn get_project_by_name(
 ) -> rusqlite::Result<Option<Project>> {
     conn.query_row(
         "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
-         FROM reality WHERE name = ?1 AND organization_id = ?2 ORDER BY last_active DESC LIMIT 1",
+         FROM project WHERE name = ?1 AND organization_id = ?2 ORDER BY last_active DESC LIMIT 1",
         params![name, org_id],
         |row| Ok(Project {
             id: row.get(0)?,
@@ -3076,7 +3076,7 @@ pub fn get_project_by_name(
 pub fn list_projects(conn: &Connection, org_id: &str) -> rusqlite::Result<Vec<Project>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, reality_type, detected_from, project_path, domain, organization_id, owner_type, owner_id, engine_status, engine_pid, created_at, last_active, COALESCE(metadata, '{}')
-         FROM reality WHERE organization_id = ?1 ORDER BY last_active DESC"
+         FROM project WHERE organization_id = ?1 ORDER BY last_active DESC"
     )?;
     let rows = stmt.query_map(params![org_id], |row| {
         Ok(Project {
@@ -3106,7 +3106,7 @@ pub fn update_project_last_active(
     org_id: &str,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE reality SET last_active = datetime('now') WHERE id = ?1 AND organization_id = ?2",
+        "UPDATE project SET last_active = datetime('now') WHERE id = ?1 AND organization_id = ?2",
         params![id, org_id],
     )?;
     Ok(())
@@ -5285,7 +5285,7 @@ mod tests {
 
         // Insert a reality directly with NULL metadata to simulate legacy data
         conn.execute(
-            "INSERT INTO reality (id, name, reality_type, organization_id, owner_type, owner_id, engine_status, created_at, last_active, metadata)
+            "INSERT INTO project (id, name, reality_type, organization_id, owner_type, owner_id, engine_status, created_at, last_active, metadata)
              VALUES ('r_null', 'null-meta', 'code', 'default', 'user', 'local', 'idle', datetime('now'), datetime('now'), NULL)",
             [],
         ).unwrap();
@@ -5349,7 +5349,7 @@ mod tests {
         // (because store_project uses INSERT OR REPLACE which keys on id, not project_path)
         // The unique index should prevent a raw INSERT with duplicate project_path
         let result = conn.execute(
-            "INSERT INTO reality (id, name, reality_type, organization_id, owner_type, owner_id, engine_status, created_at, last_active, metadata, project_path)
+            "INSERT INTO project (id, name, reality_type, organization_id, owner_type, owner_id, engine_status, created_at, last_active, metadata, project_path)
              VALUES ('r_dup2', 'second', 'code', 'default', 'user', 'local', 'idle', datetime('now'), datetime('now'), '{}', '/unique/path')",
             [],
         );

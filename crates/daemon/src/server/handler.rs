@@ -3481,7 +3481,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             //   existence check and produce duplicate project rows (each
             //   gets its own ULID id; the schema has no UNIQUE on
             //   (name, organization_id) — only id is PK). The fix here is
-            //   the upsert via `INSERT OR REPLACE INTO reality (id, ...)`
+            //   the upsert via `INSERT OR REPLACE INTO project (id, ...)`
             //   only matches on id, so two new ULIDs still produce two
             //   rows. Mitigation: re-fetch by name AFTER store_project;
             //   if a row already exists with our name+org, keep that row's
@@ -10101,7 +10101,7 @@ mod tests {
         .unwrap();
         let count_before: i64 = reader
             .conn
-            .query_row("SELECT COUNT(*) FROM reality", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM project", [], |r| r.get(0))
             .unwrap();
         let resp = handle_request(
             &mut reader,
@@ -10125,7 +10125,7 @@ mod tests {
         // seen it via the WAL, but a fresh open is the cleanest assertion).
         let probe = rusqlite::Connection::open(&db_path).unwrap();
         let count_after: i64 = probe
-            .query_row("SELECT COUNT(*) FROM reality", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM project", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
             count_after,
@@ -10134,7 +10134,7 @@ mod tests {
         );
         let row: (String, Option<String>, Option<String>) = probe
             .query_row(
-                "SELECT name, domain, detected_from FROM reality
+                "SELECT name, domain, detected_from FROM project
                  WHERE name = 'x1-fresh-rust' AND organization_id = 'default'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -10168,7 +10168,7 @@ mod tests {
         let probe2 = rusqlite::Connection::open(&db_path).unwrap();
         let row2: (String, Option<String>, Option<String>) = probe2
             .query_row(
-                "SELECT name, domain, detected_from FROM reality
+                "SELECT name, domain, detected_from FROM project
                  WHERE name = 'x1-fresh-empty' AND organization_id = 'default'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -10290,7 +10290,7 @@ mod tests {
         let probe = rusqlite::Connection::open(&db_path).unwrap();
         let row: (String, String, Option<String>) = probe
             .query_row(
-                "SELECT id, name, domain FROM reality
+                "SELECT id, name, domain FROM project
                  WHERE project_path = ?1 AND organization_id = 'default'",
                 rusqlite::params![code_cwd],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -10311,7 +10311,7 @@ mod tests {
         use rusqlite::OptionalExtension;
         let no_alias: Option<String> = probe
             .query_row(
-                "SELECT id FROM reality WHERE name = 'test-fresh-collision' AND organization_id = 'default'",
+                "SELECT id FROM project WHERE name = 'test-fresh-collision' AND organization_id = 'default'",
                 [],
                 |r| r.get(0),
             )

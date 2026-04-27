@@ -1437,7 +1437,7 @@ pub fn compile_dynamic_suffix_with_inj(
                 let project_record: Option<(String,)> = conn
                     .query_row(
                         "SELECT COALESCE(domain, 'unknown')
-                         FROM reality WHERE name = ?1 AND organization_id = 'default' LIMIT 1",
+                         FROM project WHERE name = ?1 AND organization_id = 'default' LIMIT 1",
                         params![p],
                         |r| Ok((r.get::<_, String>(0)?,)),
                     )
@@ -1478,14 +1478,14 @@ pub fn compile_dynamic_suffix_with_inj(
             };
 
             // Top 5 cluster IDs in scope. Cluster edges set `reality_id`
-            // (cluster.rs:135), so JOIN reality.name = ?project to filter.
+            // (cluster.rs:135), so JOIN project.name = ?project to filter.
             // Unscoped path keeps original (returns all clusters).
             let cluster_ids: Vec<String> = match project {
                 Some(p) => conn
                     .prepare(
                         "SELECT DISTINCT e.to_id
                          FROM edge e
-                         JOIN reality r ON r.id = e.reality_id
+                         JOIN project r ON r.id = e.reality_id
                          WHERE e.edge_type = 'belongs_to_cluster' AND r.name = ?1
                          LIMIT 5",
                     )
@@ -1522,7 +1522,7 @@ pub fn compile_dynamic_suffix_with_inj(
                     .query_row(
                         "SELECT COUNT(DISTINCT e.to_id)
                          FROM edge e
-                         JOIN reality r ON r.id = e.reality_id
+                         JOIN project r ON r.id = e.reality_id
                          WHERE e.edge_type = 'belongs_to_cluster' AND r.name = ?1",
                         params![p],
                         |r| r.get(0),

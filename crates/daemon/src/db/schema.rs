@@ -173,6 +173,40 @@ fn seed_default_templates(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
+    // P3-4 ZR-C3: rename legacy `reality` table → `project`. Idempotent;
+    // runs once per legacy DB. Per
+    // `feedback_sqlite_no_reverse_silent_migration_failure.md` we surface
+    // errors with `?` instead of `let _ = conn.execute(...)` so a
+    // botched ALTER cannot silently no-op.
+    {
+        let reality_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reality'",
+            [],
+            |r| r.get(0),
+        )?;
+        let project_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project'",
+            [],
+            |r| r.get(0),
+        )?;
+        if reality_exists == 1 && project_exists == 0 {
+            // ALTER TABLE … RENAME TO carries the row data and keeps
+            // existing indexes; SQLite re-binds the indexes to the new
+            // table name automatically. We DROP the legacy index names
+            // below so subsequent CREATE INDEX statements add the new
+            // canonical names cleanly.
+            conn.execute("ALTER TABLE reality RENAME TO project", [])?;
+        }
+    }
+
+    // Drop legacy idx_reality_* names so the new idx_project_* CREATE
+    // statements below can install the canonical names without a dupe.
+    // DROP INDEX IF EXISTS is a no-op when the index isn't present.
+    conn.execute("DROP INDEX IF EXISTS idx_reality_org", [])?;
+    conn.execute("DROP INDEX IF EXISTS idx_reality_path", [])?;
+    conn.execute("DROP INDEX IF EXISTS idx_reality_owner", [])?;
+    conn.execute("DROP INDEX IF EXISTS idx_reality_path_unique", [])?;
+
     // Create memory_vec virtual table (sqlite-vec must be loaded before this call)
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
@@ -634,7 +668,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             PRIMARY KEY (team_id, user_id)
         );
 
-        CREATE TABLE IF NOT EXISTS reality (
+        CREATE TABLE IF NOT EXISTS project (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             reality_type TEXT NOT NULL DEFAULT 'code',
@@ -650,9 +684,9 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             last_active TEXT NOT NULL,
             metadata TEXT DEFAULT '{}'
         );
-        CREATE INDEX IF NOT EXISTS idx_reality_org ON reality(organization_id);
-        CREATE INDEX IF NOT EXISTS idx_reality_path ON reality(project_path);
-        CREATE INDEX IF NOT EXISTS idx_reality_owner ON reality(owner_type, owner_id);
+        CREATE INDEX IF NOT EXISTS idx_project_org ON project(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_project_path ON project(project_path);
+        CREATE INDEX IF NOT EXISTS idx_project_owner ON project(owner_type, owner_id);
 
         -- Scoped configuration
         CREATE TABLE IF NOT EXISTS config_scope (
@@ -1137,9 +1171,9 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         [],
     );
 
-    // v2.0 fix: Unique constraint on reality(project_path) to prevent duplicate path rows.
+    // v2.0 fix: Unique constraint on project(project_path) to prevent duplicate path rows.
     // Filtered: only applies to non-NULL project_path values.
-    let _ = conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reality_path_unique ON reality(project_path) WHERE project_path IS NOT NULL", []);
+    let _ = conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_project_path_unique ON project(project_path) WHERE project_path IS NOT NULL", []);
 
     // ── v2.1: Agent Teams ──
 
@@ -1970,7 +2004,7 @@ mod tests {
             "forge_user",
             "team",
             "team_member",
-            "reality",
+            "project",
             "config_scope",
             "permission_rule",
             "audit_log",
@@ -3399,5 +3433,176 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM code_file", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total_files, 2, "second pass deletes nothing further");
+    }
+
+    /// P3-4 ZR-C3 migration regression: legacy DB shaped with the
+    /// `reality` table (no `project`) survives the schema migration —
+    /// the row is preserved under the new table name and the
+    /// canonical idx_project_* indexes exist.
+    ///
+    /// Per `feedback_sqlite_no_reverse_silent_migration_failure.md`,
+    /// the migration must NOT silently no-op: this test seeds a real
+    /// pre-migration row, runs `create_schema`, and asserts the row
+    /// (a) is gone from `reality` and (b) lives in `project` with the
+    /// same id. Idempotence is verified by re-running create_schema.
+    #[test]
+    fn zr_c3_legacy_reality_row_survives_rename_to_project() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Seed the legacy schema directly (NOT via create_schema —
+        // that would put us in the new shape). Only the columns the
+        // current `project` schema also has, so the rename can land.
+        conn.execute_batch(
+            "CREATE TABLE reality (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                reality_type TEXT NOT NULL DEFAULT 'code',
+                detected_from TEXT,
+                project_path TEXT,
+                domain TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'default',
+                owner_type TEXT NOT NULL DEFAULT 'user',
+                owner_id TEXT NOT NULL DEFAULT 'local',
+                engine_status TEXT NOT NULL DEFAULT 'idle',
+                engine_pid INTEGER,
+                created_at TEXT NOT NULL,
+                last_active TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            );
+            CREATE INDEX idx_reality_org ON reality(organization_id);",
+        )
+        .unwrap();
+
+        let row_id = "zr-c3-legacy-row";
+        conn.execute(
+            "INSERT INTO reality (id, name, reality_type, project_path,
+                organization_id, owner_type, owner_id, engine_status,
+                created_at, last_active)
+             VALUES (?1, ?2, 'code', ?3, 'default', 'user', 'local',
+                'idle', '2026-04-27T00:00:00Z', '2026-04-27T00:00:00Z')",
+            rusqlite::params![row_id, "legacy-name", "/mnt/legacy/path"],
+        )
+        .unwrap();
+
+        // Run the migration.
+        create_schema(&conn).unwrap();
+
+        // Legacy table is gone; canonical table exists.
+        let reality_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reality'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            reality_count, 0,
+            "legacy `reality` table must NOT exist post-migration"
+        );
+
+        let project_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            project_count, 1,
+            "canonical `project` table must exist post-migration"
+        );
+
+        // Row data preserved under the new name.
+        let (got_id, got_name, got_path): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT id, name, project_path FROM project WHERE id = ?1",
+                [row_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(got_id, row_id, "row id preserved through rename");
+        assert_eq!(got_name, "legacy-name", "row name preserved");
+        assert_eq!(
+            got_path.as_deref(),
+            Some("/mnt/legacy/path"),
+            "project_path column preserved"
+        );
+
+        // Canonical indexes exist; legacy index names dropped.
+        for legacy in &[
+            "idx_reality_org",
+            "idx_reality_path",
+            "idx_reality_owner",
+            "idx_reality_path_unique",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    [legacy],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "legacy index `{legacy}` must be dropped");
+        }
+        for canonical in &[
+            "idx_project_org",
+            "idx_project_path",
+            "idx_project_owner",
+            "idx_project_path_unique",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    [canonical],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "canonical index `{canonical}` must exist");
+        }
+
+        // Idempotence: re-running create_schema is a no-op.
+        create_schema(&conn).unwrap();
+        let after_id: String = conn
+            .query_row(
+                "SELECT id FROM project WHERE id = ?1",
+                [row_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_id, row_id, "row survives idempotent re-run");
+    }
+
+    /// P3-4 ZR-C3 fresh-DB regression: create_schema on a brand-new
+    /// connection lands the `project` table directly (no legacy
+    /// `reality` table is left behind), and the canonical indexes
+    /// are present. Mirrors the legacy-row test for the
+    /// no-pre-existing-data path.
+    #[test]
+    fn zr_c3_fresh_db_creates_project_table_no_legacy_residue() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        let project_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_exists, 1, "fresh DB must have `project` table");
+
+        let reality_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reality'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            reality_exists, 0,
+            "fresh DB must NOT have legacy `reality` table"
+        );
     }
 }
