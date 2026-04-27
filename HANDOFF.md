@@ -2,7 +2,7 @@
 
 **Tracking ledger:** `docs/superpowers/audits/2026-04-27-tracking-ledger.md` — every one of the 147 findings with status (✅ fixed / 🟡 deferred / ❌ false positive / ⏳ pending). Read this first to know exactly what's done and what's queued.
 
-**Public HEAD:** `<bumped on next commit>`. Working tree clean after the ledger commit.
+**Public HEAD:** `0b9e689` (in sync with origin/master). Working tree clean.
 **Version:** `v0.6.0-rc.3` (release stack still DEFERRED — halt for sign-off).
 **Plan A:** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`.
 **Halt:** **YES** — Phase 10 partially closed (18 of 54 MEDs fixed); Phases 10D-10G + 11 + 12 queued.
@@ -24,7 +24,7 @@
 
 ## State in one paragraph
 
-**HEAD bumps with the ledger commit. Pre-release audit Phases 0-10 (partial) closed (8 phase commits + 2 doc commits + 1 review YAML).** **54 fixed + 1 false positive + 1 deferred = 56 of 147 findings closed**; **91 pending** (36 MED + 40 LOW + 15 NIT). All 5 CRITICAL + all 30 HIGH closed. Doctor green. Clippy 0 warnings. Daemon schema unit tests 35/35 pass. Harness-sync (158 JSON + 108 CLI) + protocol-hash (`0ad998ba944d…`) + license-manifest (3 files) + review-artifacts (29 reviews) all OK. 12/12 fixture tests pass. The full status table is in `docs/superpowers/audits/2026-04-27-tracking-ledger.md`.
+**HEAD `0b9e689`. Pre-release audit Phases 0-10 (partial) closed (8 phase commits + 2 doc commits + 1 review YAML).** **54 fixed + 1 false positive + 1 deferred = 56 of 147 findings closed**; **91 pending** (36 MED + 40 LOW + 15 NIT). All 5 CRITICAL + all 30 HIGH closed. Doctor green. Clippy 0 warnings. Daemon schema unit tests 35/35 pass. Harness-sync (158 JSON + 108 CLI) + protocol-hash (`0ad998ba944d…`) + license-manifest (3 files) + review-artifacts (29 reviews) all OK. 12/12 fixture tests pass. The full status table is in `docs/superpowers/audits/2026-04-27-tracking-ledger.md`.
 
 ## First actions after `/compact` or session resume
 
@@ -109,4 +109,4 @@ Daemon respawn from current HEAD not yet performed — production binary still o
 
 ## One-line summary
 
-**HEAD (bumps on ledger commit). Pre-release audit: 6 parallel agents found 147 findings; **54 fixed + 1 false positive + 1 deferred = 56 closed, 91 pending** — full status in `docs/superpowers/audits/2026-04-27-tracking-ledger.md`. All CRITICAL + all HIGH closed. 35/35 schema tests, all 4 sanity gates green, 12/12 fixture tests, protocol_hash 0ad998ba944d…. Halt for sign-off → resume with Phases 10D-G → 11 → 12 → #101.**
+**HEAD `0b9e689` (synced to origin). Pre-release audit: 6 parallel agents found 147 findings; **54 fixed + 1 false positive + 1 deferred = 56 closed, 91 pending** — full status in `docs/superpowers/audits/2026-04-27-tracking-ledger.md`. All CRITICAL + all HIGH closed. 35/35 schema tests, all 4 sanity gates green, 12/12 fixture tests, protocol_hash 0ad998ba944d…. Halt for sign-off → resume with Phases 10D-G → 11 → 12 → #101.**
