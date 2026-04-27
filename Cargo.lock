@@ -1101,7 +1101,7 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "prometheus",
- "prost 0.13.5",
+ "prost 0.14.3",
  "rand 0.10.1",
  "rand_chacha 0.10.0",
  "rcgen",

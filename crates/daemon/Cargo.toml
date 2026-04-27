@@ -55,7 +55,7 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 
 # gRPC transport (opt-in)
 tonic = "0.12"
-prost = "0.13"
+prost = "0.14"
 tokio-stream = "0.1"
 
 # Prometheus metrics
