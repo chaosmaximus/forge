@@ -73,10 +73,19 @@ pub struct SessionMessageRow {
 /// "CTO" / "Engineer" / "Reviewer"), persisted to the `session.role`
 /// column that has existed since v2.1 but was never wired through.
 ///
-/// Pre-release audit E-7 (deferred to follow-up): the underlying
-/// upsert still uses INSERT OR REPLACE, which wipes lifecycle
-/// columns (tool_use_count, budget_spent, working_set, etc.) on
-/// re-registration of an existing id. Tracked as v0.6.1 fix.
+/// Pre-release audit E-7: pre-fix used `INSERT OR REPLACE`, which on
+/// PK conflict DELETEs the existing row and INSERTs a fresh one —
+/// every column NOT in the INSERT list silently resets to its
+/// DEFAULT (mostly NULL or 0). The agent_status state machine,
+/// tool_use_count, budget_spent, working_set, parent_session_id,
+/// team_id, user_id, organization_id, reality_id, current_task were
+/// all wiped on every re-registration. Hooks that re-register on
+/// every Claude transcript replay (bootstrap.rs) intermittently
+/// zeroed an active session's lifecycle state. Post-fix uses
+/// `ON CONFLICT(id) DO UPDATE` — only the columns the registrar
+/// owns are overwritten; lifecycle columns (tool_use_count,
+/// budget_spent, agent_status, working_set, parent_session_id,
+/// team_id, user_id, organization_id, reality_id) are preserved.
 #[allow(clippy::too_many_arguments)]
 pub fn register_session(
     conn: &Connection,
@@ -105,8 +114,17 @@ pub fn register_session(
     // heartbeat, and the next idle/ended transitions follow the configured
     // thresholds.
     conn.execute(
-        "INSERT OR REPLACE INTO session (id, agent, project, cwd, started_at, status, capabilities, current_task, role, last_heartbeat_at)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'), 'active', ?5, ?6, ?7, datetime('now'))",
+        "INSERT INTO session (id, agent, project, cwd, started_at, status, capabilities, current_task, role, last_heartbeat_at)
+         VALUES (?1, ?2, ?3, ?4, datetime('now'), 'active', ?5, ?6, ?7, datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET
+             agent = excluded.agent,
+             project = excluded.project,
+             cwd = excluded.cwd,
+             status = 'active',
+             capabilities = excluded.capabilities,
+             current_task = excluded.current_task,
+             role = COALESCE(excluded.role, session.role),
+             last_heartbeat_at = datetime('now')",
         params![id, agent, derived_project, cwd, caps, task, role],
     )?;
     Ok(())

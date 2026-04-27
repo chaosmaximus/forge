@@ -337,7 +337,23 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             metadata_json TEXT NOT NULL DEFAULT '{}'
         );
         CREATE INDEX IF NOT EXISTS idx_kpi_events_timestamp ON kpi_events(timestamp);
+        -- Pre-release audit E-9: composite (event_type, timestamp) index
+        -- for the kpi_reaper retention pass (`DELETE … WHERE event_type = ?
+        -- AND timestamp < ? LIMIT ?`). The pre-fix single-column
+        -- `idx_kpi_events_type` forced the planner to pick one of the two
+        -- conditions, then filter the rest in-row — at high event_type
+        -- cardinality (e.g. `phase_completed` dominates the table) this
+        -- devolves to a near-full-scan inside each batch and amplifies WAL
+        -- contention with the W22 indexer. The composite serves the leftmost-
+        -- prefix `WHERE event_type = ?` case identically to the legacy
+        -- single-column index, AND serves the (event_type, timestamp) filter
+        -- with a single seek — so the legacy index is now redundant. We
+        -- keep the legacy index (CREATE IF NOT EXISTS is idempotent on
+        -- existing DBs) so a downgrade is non-destructive; the composite is
+        -- additive.
         CREATE INDEX IF NOT EXISTS idx_kpi_events_type ON kpi_events(event_type);
+        CREATE INDEX IF NOT EXISTS idx_kpi_events_type_timestamp
+            ON kpi_events(event_type, timestamp);
         -- Phase 2A-4d.2 T3: expression index on metadata_json.$.phase_name so
         -- /inspect's GROUP BY phase queries don't require a full JSON scan.
         -- SQLite >= 3.9.0 supports expression indexes; JSON1 is compiled in.
@@ -1487,8 +1503,16 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         [],
     );
 
-    // Append-only enforcement: block UPDATE and DELETE on audit_log
-    let _ = conn.execute_batch(
+    // Append-only enforcement: block UPDATE and DELETE on audit_log.
+    //
+    // Pre-release audit E-6: pre-fix used `let _ = conn.execute_batch(...)`,
+    // which per `feedback_sqlite_no_reverse_silent_migration_failure.md`
+    // swallows the error if the CREATE TRIGGER ever fails (trigger-name
+    // collision after a future rename, SQLite-version regression on the
+    // BEFORE UPDATE/DELETE syntax, etc.). The daemon would start with
+    // an audit_log table that is silently mutable — tampering protection
+    // would vanish without operator detection. Surface the error with `?`.
+    conn.execute_batch(
         "CREATE TRIGGER IF NOT EXISTS audit_log_no_update
          BEFORE UPDATE ON audit_log
          BEGIN
@@ -1499,7 +1523,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
          BEGIN
              SELECT RAISE(ABORT, 'audit_log is append-only: DELETE not allowed');
          END;",
-    );
+    )?;
 
     // ── v2.6: Memory Supersede + Structured Metadata ──
     let _ = conn.execute("ALTER TABLE memory ADD COLUMN superseded_by TEXT", []);

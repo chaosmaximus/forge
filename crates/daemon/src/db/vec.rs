@@ -19,12 +19,33 @@ pub fn init_sqlite_vec() {
     });
 }
 
+/// Canonical embedding dimension for `memory_vec` (matches the schema's
+/// `vec0(... float[768] ...)` declaration). The two sibling vec0 tables
+/// have DIFFERENT dims by design: `code_vec` is also 768, `raw_chunks_vec`
+/// is 384 (MiniLM-L6-v2). Pre-release audit E-5: pre-fix the writer
+/// accepted any byte slice without validation, so a misconfigured
+/// embedder (fastembed swap to all-MiniLM-L6-v2 = 384) would silently
+/// corrupt memory_vec — sqlite-vec accepts wrong-size byte slices and
+/// returns garbage at MATCH time.
+pub const MEMORY_EMBED_DIM: usize = 768;
+
 /// Store a vector embedding for a memory ID.
 /// Idempotent: deletes any existing embedding for this ID first
 /// (vec0 virtual tables don't support INSERT OR REPLACE).
 /// Wrapped in a transaction so DELETE+INSERT is atomic — if INSERT fails,
 /// the DELETE is rolled back and the old embedding is preserved.
+///
+/// Pre-release audit E-5: rejects any embedding whose length is not
+/// exactly `MEMORY_EMBED_DIM`. Mirrors the validation in
+/// `store_code_embedding` (768) and `store_chunk_embedding` (384) —
+/// the asymmetry was an oversight, not a design choice.
 pub fn store_embedding(conn: &Connection, id: &str, embedding: &[f32]) -> rusqlite::Result<()> {
+    if embedding.len() != MEMORY_EMBED_DIM {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "store_embedding: expected {MEMORY_EMBED_DIM}-dim embedding, got {} (id={id})",
+            embedding.len()
+        )));
+    }
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM memory_vec WHERE id = ?1", params![id])?;
     tx.execute(
