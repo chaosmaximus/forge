@@ -1,0 +1,360 @@
+schema_version: 1
+slug: 2026-04-27-zr-close-pre-release-D-harness
+target_paths:
+  - .claude-plugin/plugin.json
+  - .claude-plugin/marketplace.json
+  - .claude-plugin/LICENSES.yaml
+  - hooks/hooks.json
+  - scripts/hooks/
+  - skills/
+  - agents/
+  - scripts/check-harness-sync.sh
+reviewer: Agent D (plugin-harness adversarial audit)
+date: 2026-04-27
+verdict: needs-attention
+summary: >-
+  plugin.json and marketplace.json are clean: version 0.6.0-rc.3 matches Cargo
+  workspace, protocol_hash matches request.rs, hooks.json registers all 11
+  scripts that exist in scripts/hooks/, and check-harness-sync.sh exits 0
+  ("158 JSON methods + 108 CLI subcommands authoritative, no drift"). However
+  the gate has a load-bearing hole: it only matches `forge-(next|cli)` invocations,
+  so the bare `forge ...` form is invisible — and several skills/agents use the
+  bare form to invoke commands that DO NOT EXIST (`forge query`, `forge scan`,
+  `forge research`, `forge verify .`, `forge test run`, `forge review`). Three
+  agents/skills also reference `${CLAUDE_PLUGIN_ROOT}/data/*.csv`,
+  `${CLAUDE_PLUGIN_ROOT}/templates/PRD.md`, `${CLAUDE_PLUGIN_ROOT}/templates/STATE.md`,
+  and `${CLAUDE_PLUGIN_ROOT}/evaluation-criteria/*.md` — none of which exist in
+  the public repo (only `templates/CLAUDE.md.forge-template` is shipped). Skill
+  vocabulary is mostly clean of stale `reality` references after ZR. Several skills
+  use `TaskCreate` (not a real CC tool) and `forge-setup` references a non-existent
+  `.mcp.json` file plus an incorrect slash-command form (`/forge:new` instead of
+  `/forge:forge-new`).
+findings:
+  - id: D-01
+    severity: HIGH
+    title: forge-security advertises CLI commands that do not exist (`forge scan`, `--watch`)
+    file: skills/forge-security/SKILL.md
+    lines: "20-32"
+    detail: >-
+      Skill says "Run `forge scan .`" and `forge scan . --watch --interval 30`,
+      but the Commands enum in crates/cli/src/main.rs has NO `Scan` variant and
+      no `--watch` flag anywhere. Users following this skill will hit "unknown
+      subcommand". The 12-rule pattern table is also fictional — there is no
+      shipping secret-scan feature in the public daemon. Either gate the skill
+      behind a feature flag, point it at a real subcommand, or remove it.
+    impact: User runs through forge-security and every command fails.
+  - id: D-02
+    severity: HIGH
+    title: forge-research advertises non-existent `forge research` subcommand
+    file: skills/forge-research/SKILL.md
+    lines: "19, 38-40"
+    detail: >-
+      Skill front-matter promises an "autonomous research loop" via
+      `forge research "<topic>" --max-iterations N --workdir .`. No `Research`
+      variant exists in main.rs's Commands enum and no method named `research`
+      is in Request. The skill description triggers on "research this", "investigate
+      how X works" — every agent invocation will exit with parse error.
+    impact: Skill is non-functional; `/forge:forge-research` never runs.
+  - id: D-03
+    severity: HIGH
+    title: forge-ship references non-existent `forge verify .` and `forge test run` commands
+    file: skills/forge-ship/SKILL.md
+    lines: "12-13"
+    detail: >-
+      Final verification step says `forge verify . --format text` and
+      `forge test run . --format text`. The CLI has a `Verify` subcommand but
+      it takes `--file <path>` (used by TaskCompleted hook) — not a positional
+      `.` and `--format`. There is no `Test` subcommand at all. Result: user
+      "ships" without ever running real verification because both commands
+      error out and the skill keeps going (no exit-code check).
+    impact: Ship gate is silently bypassed.
+  - id: D-04
+    severity: HIGH
+    title: forge-think and forge-evaluator reference non-existent `forge query` Cypher endpoint
+    files:
+      - skills/forge-think/SKILL.md:38
+      - agents/forge-evaluator.md:38,46
+    detail: >-
+      Both reference `forge query "MATCH (f:File) RETURN ..."` as if forge has
+      a graph-query endpoint. Commands enum has no `Query` variant. The
+      evaluator's "verify wiring" step (`forge query "MATCH ..."`) is the
+      Iron Law gate — it will silently fail and the evaluator proceeds without
+      verifying connectivity.
+    impact: Evaluator's wiring check is a no-op.
+  - id: D-05
+    severity: HIGH
+    title: forge-review references non-existent `forge review .` context-generation command
+    file: skills/forge-review/SKILL.md
+    lines: "76"
+    detail: >-
+      Council Review Mode step 1 says `forge review . --base <merge-base>` to
+      "Generate context". No such subcommand. The agents-and-Codex dispatch
+      that follows depends on the output of this command, so the council mode
+      is broken end-to-end.
+    impact: Council mode produces no review context.
+  - id: D-06
+    severity: HIGH
+    title: Agents reference data/ and evaluation-criteria/ directories that do not exist in the public repo
+    files:
+      - agents/forge-planner.md:35,40
+      - agents/forge-evaluator.md:51,61
+      - skills/forge-new/SKILL.md:45,47,53,81
+      - skills/forge-think/SKILL.md:77
+    detail: >-
+      forge-planner reads `${CLAUDE_PLUGIN_ROOT}/data/project-types.csv` and
+      `domain-complexity.csv`; forge-evaluator reads
+      `${CLAUDE_PLUGIN_ROOT}/evaluation-criteria/code-quality.md` etc.;
+      forge-new reads `${CLAUDE_PLUGIN_ROOT}/templates/PRD.md` and
+      `templates/STATE.md`. Public repo has only `templates/CLAUDE.md.forge-template`
+      — `data/` and `evaluation-criteria/` do not exist. Either ship the
+      assets, gate the skills behind detection ("if the file exists..."), or
+      remove the references. As shipped, the greenfield workflow Phase 1
+      classification cannot start (Read fails on the CSV).
+    impact: Greenfield workflow halts in Phase 1; evaluator falls back to no rubric.
+  - id: D-07
+    severity: HIGH
+    title: harness-sync gate misses bare `forge X` invocations, only catches `forge-next`/`forge-cli`
+    file: scripts/check-harness-sync.sh
+    lines: "219"
+    detail: >-
+      The CLI-extraction grep is `\bforge-(next|cli)\s+([a-z][a-z-]+)`.
+      Findings D-01..D-05 above are all bare `forge <subcmd>` (without the
+      -next/-cli suffix) and slip through the gate. The script reports
+      "OK — no drift" while five harness files reference five non-existent
+      subcommands. Fix: add `\bforge\s+([a-z][a-z-]+)` as a third pattern,
+      OR explicitly normalize `forge` → `forge-next` before lookup. Pin a
+      drift fixture asserting the failure case (per the codebase's
+      ci-drift-fixture-pattern memory).
+    impact: Gate gives false confidence; production drift exists today.
+  - id: D-08
+    severity: HIGH
+    title: forge-setup advertises Stitch MCP via `.mcp.json` but no such file exists, and `mcpServers` is empty
+    file: skills/forge-setup/SKILL.md
+    lines: "138-145"
+    detail: >-
+      Step 8 says "Stitch MCP is configured in the plugin's `.mcp.json`. If
+      you don't use visual design, delete that file" with `rm "${CLAUDE_PLUGIN_ROOT}/.mcp.json"`.
+      No `.mcp.json` exists anywhere in the repo, and plugin.json's
+      `mcpServers` is `{}`. Users following the skill will run `rm` against
+      a non-existent path; worse, downstream forge-new Phase 5 checks
+      `stitch_enabled` and assumes Stitch may be present.
+    impact: Misleading user setup; visual-design workflow path is dead.
+  - id: D-09
+    severity: HIGH
+    title: forge-setup uses incorrect slash-command syntax `/forge:new` (should be `/forge:forge-new`)
+    file: skills/forge-setup/SKILL.md
+    lines: "149-150"
+    detail: >-
+      "Run `/forge:new` for a new project or `/forge:feature` for existing code."
+      Claude Code plugin slash commands use `/<plugin-name>:<skill-name>`. The
+      plugin name is `forge` and skills are named `forge-new`, `forge-feature`,
+      etc. — so the correct form is `/forge:forge-new` (which matches the
+      forge:forge-new namespacing the skill registry uses). `/forge:new` will
+      not resolve.
+    impact: User runs unrecognized command at the end of setup.
+  - id: D-10
+    severity: HIGH
+    title: Three skills invoke fictional `TaskCreate` tool (CC tool is `TodoWrite`)
+    files:
+      - skills/forge-new/SKILL.md:21
+      - skills/forge-feature/SKILL.md:132
+      - skills/forge-build-workflow.md:21
+    detail: >-
+      "Create tasks via TaskCreate for tracking" / "MUST create a TaskCreate
+      item for each phase". Claude Code's official task-list tool is `TodoWrite`,
+      and there is no `TaskCreate` tool. Agents instructed to "create a
+      TaskCreate item" will either skip the step or hallucinate a tool call.
+      Replace with `TodoWrite` throughout, or describe the action as
+      "create a todo via the TodoWrite tool".
+    impact: Phase tracking is wishful — never actually created.
+  - id: D-11
+    severity: MEDIUM
+    title: skills/forge-build-workflow.md ships in skills/ without front-matter, will be skipped by skill loader
+    file: skills/forge-build-workflow.md
+    detail: >-
+      Plugin.json declares `"skills": "./skills/"` — directory pointer. Every
+      other skill is either `skills/forge-X/SKILL.md` or `skills/forge-X.md`
+      with `---\nname: ...` front-matter. forge-build-workflow.md starts with
+      a SPDX comment then `# Forge Build Workflow (Shared Reference)` — no
+      front-matter. Claude Code's skill scanner will either ignore it
+      (best case) or warn on malformed manifest. Move it to `templates/` or
+      `docs/` and have forge-new/forge-feature reference the new path.
+    impact: File is dead weight in skills/, may noise plugin load logs.
+  - id: D-12
+    severity: MEDIUM
+    title: harness-sync gate does not scan agents/*.md content, only checks JSON method literals
+    file: scripts/check-harness-sync.sh
+    lines: "193-211"
+    detail: >-
+      HARNESS_PATHS includes "agents", but the JSON-method extraction
+      (3a) only matches `"method"\s*:\s*"foo"` literals — agent prompts use
+      backtick CLI invocations and bash code-fences, not JSON. Combined with
+      D-07 (CLI scan misses bare `forge`), agents/forge-evaluator.md:38,46
+      reference `forge recall` and `forge query` and the gate misses both.
+      Fix: scan markdown code-fences for any `forge ...` invocation, not just
+      forge-next/forge-cli.
+    impact: Agent drift is invisible to the gate.
+  - id: D-13
+    severity: MEDIUM
+    title: forge-generator references `forge recall` (bare form), should be forge-next
+    file: agents/forge-generator.md
+    lines: "66"
+    detail: >-
+      "Run `forge recall \"relevant keywords\"` via Bash for additional
+      memory context". Same bare-form issue as D-04 — `forge` is not on PATH
+      (the binary is `forge-next` per setup). User following this gets
+      "command not found". Replace with `forge-next recall`.
+    impact: Generator's memory-recall step fails.
+  - id: D-14
+    severity: MEDIUM
+    title: forge-think uses bare `forge build` and `forge plan` placeholders that look like commands
+    file: skills/forge-think/SKILL.md
+    lines: "146-147"
+    detail: >-
+      "Does not write code (that's forge build) / Does not plan implementation
+      (that's forge plan)". `forge build` and `forge plan` are not commands
+      — they're meant as references to forge-feature's Build/Plan phases.
+      The phrasing is ambiguous enough that an agent may try `forge build`
+      verbatim. Reword as "(that's forge-feature Phase 4)" or similar.
+    impact: Cosmetic ambiguity; could trigger one wasted shell call.
+  - id: D-15
+    severity: MEDIUM
+    title: marketplace.json owner.email is empty string, plugin.json author has no email field
+    files:
+      - .claude-plugin/marketplace.json:7-9
+      - .claude-plugin/plugin.json:5
+    detail: >-
+      `"owner": {"name": "Forge Contributors", "email": ""}` and
+      `"author": {"name": "Forge Contributors"}` (no email key). For a
+      pre-1.0-rc public marketplace listing this is acceptable but worth
+      flagging — many marketplace UIs render the empty email as a broken
+      mailto: link. Either drop the field or set it to a real list address.
+    impact: Cosmetic in marketplace UI.
+  - id: D-16
+    severity: MEDIUM
+    title: LICENSES.yaml does not declare licenses for skills/ or agents/ markdown
+    file: .claude-plugin/LICENSES.yaml
+    lines: "20-30"
+    detail: >-
+      coverage_paths only lists `.claude-plugin` and `hooks`, and files only
+      enumerates the three JSON files. The 17 skill markdowns and 3 agent
+      markdowns ship with no SPDX declaration in the manifest. Some skill
+      files have inline `<!-- SPDX-License-Identifier: Apache-2.0 -->`
+      headers (forge-build-workflow.md), most do not. If the project's
+      license-manifest validator enforces full coverage, this passes only
+      because the validator is path-narrow. Expand coverage_paths to include
+      `skills` and `agents`, or document the carve-out.
+    impact: License surface is incomplete for a public-repo Apache-2.0 release.
+  - id: D-17
+    severity: MEDIUM
+    title: forge-verify hardcodes `cargo test --workspace` and `cargo clippy -p forge-daemon -p forge-core -p forge-cli`
+    file: skills/forge-verify/SKILL.md
+    lines: "19, 27"
+    detail: >-
+      The skill is forge-wide ("evidence before assertions") but hardcodes
+      Rust/cargo commands. Used in any non-Rust project the steps fail. Worse,
+      `forge-core` is not a real crate name in this workspace — the crate is
+      `core` under `crates/core/Cargo.toml`. The clippy line will error with
+      "no such package". Replace with project-conventions detection (the
+      pattern forge-tdd already uses).
+    impact: Skill demos a clippy command that errors in this very repo.
+  - id: D-18
+    severity: MEDIUM
+    title: FORGE_HOOK_VERBOSE opt-in is documented only in session-start.sh comments, not surfaced in any skill or doc
+    files:
+      - scripts/hooks/session-start.sh:55-65
+    detail: >-
+      Per the Wave Z9 memory, FORGE_HOOK_VERBOSE=1 is the user's escape hatch
+      to debug silent hook failures. No skill, no doc, no README mentions it
+      — only an internal comment in session-start.sh. When a hook silently
+      eats errors and a user can't figure out why context isn't injecting,
+      they have no surface to discover the flag. Add to forge-setup
+      "Troubleshooting" section and reference it from forge-verify.
+    impact: Debuggability gap for the most-failure-prone hook surface.
+  - id: D-19
+    severity: LOW
+    title: hooks.json uses `${CLAUDE_PLUGIN_ROOT}/scripts/hooks/...` but plugin.json doesn't expose hooks dir explicitly
+    file: hooks/hooks.json
+    detail: >-
+      All 9 hook entries reference `${CLAUDE_PLUGIN_ROOT}/scripts/hooks/<name>.sh`
+      and the scripts exist. But hooks.json itself sits at `hooks/hooks.json`
+      and Claude Code's autoloader convention is that hooks/ is auto-discovered.
+      Currently working because CC infers, but plugin.json could declare
+      `"hooks": "./hooks/"` for explicitness (other plugins in the marketplace
+      do this). Also: the SessionEnd hook has `"async": true` — verify CC
+      respects that for all loader versions.
+    impact: Implicit reliance on CC autoloader convention.
+  - id: D-20
+    severity: LOW
+    title: All 9 hook scripts hardcode binary name `forge-next` with no fallback to `forge-cli`
+    files:
+      - scripts/hooks/session-start.sh:73
+      - scripts/hooks/post-edit.sh:12
+      - scripts/hooks/subagent-start.sh:13
+    detail: >-
+      The crate name is `forge-cli` but the binary is `forge-next` (per
+      forge-setup SKILL.md:21-31). All hooks use FORGE_NEXT env var fallback
+      → `~/.local/bin/forge-next` → `/usr/local/bin/forge-next`. If a user
+      `cargo install forge-cli` and the bin lands as `forge-cli`, hooks
+      silently no-op. Add a `forge-cli` candidate to the search list.
+    impact: One install path silently disables hooks.
+  - id: D-21
+    severity: LOW
+    title: forge top-level skill description is 100+ words — Claude Code skill descriptions should be short triggers
+    file: skills/forge/SKILL.md
+    lines: "3"
+    detail: >-
+      The `description:` field is a 100+ word "ALWAYS use this skill INSTEAD
+      OF brainstorming, writing-plans..." paragraph. Per Claude Code skill
+      authoring guidance, descriptions are matched as short trigger phrases
+      against user intent. Long prose gets trimmed in the system prompt,
+      and the most important triggers (build, fix, refactor) are buried.
+      Keep the body but tighten the description to 1-2 sentences.
+    impact: Skill triggering may underfire on legitimate requests.
+  - id: D-22
+    severity: LOW
+    title: forge-research promises "git checkpoint before each iteration" but no implementation backs it
+    file: skills/forge-research/SKILL.md
+    lines: "34"
+    detail: >-
+      Constraints: "Git checkpoint before each iteration for safe rollback".
+      Combined with D-02 (no `forge research` exists), this is doubly
+      misleading: the research subcommand doesn't exist, and even if a
+      Research subcommand were added, no commit-checkpoint logic is in the
+      codebase. Either remove the constraint or implement it before
+      shipping the skill.
+    impact: User expects rollback safety they won't get.
+  - id: D-23
+    severity: LOW
+    title: agents/forge-evaluator.md hardcodes Codex model `gpt-5.2`
+    file: agents/forge-evaluator.md
+    lines: "152-156"
+    detail: >-
+      "Always use `--model gpt-5.2` — o4-mini is broken with ChatGPT auth."
+      Hardcoded model names age out fast (the user's CLAUDE.md memory
+      mentions migrating between Claude versions; same applies to Codex).
+      Move to a config knob or document as "as of YYYY-MM, use gpt-5.2".
+    impact: Stale guidance once Codex moves to gpt-5.3 or later.
+  - id: D-24
+    severity: NIT
+    title: Plugin.json description sentence-fragment "One daemon — any agent, any domain. Auto-installs on first use."
+    file: .claude-plugin/plugin.json
+    lines: "4"
+    detail: >-
+      "Auto-installs on first use" duplicates marketing language present in
+      docs/ and is not part of marketplace.json's description. Consider
+      aligning the two strings exactly — the diff is tiny but a marketplace
+      crawler may render mismatched cards.
+    impact: Cosmetic.
+  - id: D-25
+    severity: NIT
+    title: scripts/check-harness-sync.sh threshold defaults are stale (MIN_REQUEST=50, real count=158)
+    file: scripts/check-harness-sync.sh
+    lines: "88-89"
+    detail: >-
+      MIN_REQUEST_VARIANTS default is 50; gate currently extracts 158. The
+      threshold is meant as a "parser regression" sentinel — if it ever
+      drops to 50 the script aborts. Bump to ~120 (actual minus headroom)
+      so a parser regression that returns 60 actually trips the sentinel
+      instead of squeaking past.
+    impact: Sentinel does not catch silent parser regressions until they cut variants by ~70%.

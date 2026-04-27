@@ -1,0 +1,169 @@
+schema_version: 1
+slug: 2026-04-27-zr-close-pre-release-C-dead-code
+target_paths:
+  - crates/daemon/src/migrate.rs
+  - crates/daemon/src/teams.rs
+  - crates/daemon/src/recall.rs
+  - crates/daemon/src/proactive.rs
+  - crates/daemon/src/notifications.rs
+  - crates/daemon/src/workers/consolidator.rs
+  - crates/daemon/src/db/ops.rs
+  - crates/daemon/src/db/diagnostics.rs
+  - crates/daemon/src/extraction/router.rs
+  - crates/daemon/src/lsp/regex_python.rs
+  - crates/daemon/src/lsp/regex_go.rs
+  - crates/daemon/src/lsp/symbols.rs
+  - crates/daemon/src/lsp/client.rs
+  - crates/daemon/src/server/handler.rs
+  - crates/daemon/src/project/code_engine.rs
+  - crates/core/src/types/project_engine.rs
+  - crates/cli/src/transport.rs
+  - crates/hud/src/render/colors.rs
+reviewer:
+  agent: claude-opus-4-7
+  date: '2026-04-27'
+verdict: lockable-with-cleanup
+artifacts: []
+findings:
+  # ── HIGH ──────────────────────────────────────────────────────────────
+  - id: HIGH-1
+    severity: HIGH
+    summary: "`crates/daemon/src/migrate.rs` (150 LOC) is dead production code — `import_v1_cache` has no Request handler arm; CLI `commands/system::migrate` reimplements the v1→v2 cache parsing client-side"
+    file: crates/daemon/src/migrate.rs
+    status: open
+    rationale: "Whole module is referenced only by its own `#[cfg(test)]` block plus `crates/daemon/tests/test_wave3.rs:90`. There is no `Request::Migrate` variant; the CLI subcommand `Commands::Migrate` calls `commands::system::migrate` which reads the JSON locally and sends `Request::Remember` for each entry (crates/cli/src/commands/system.rs:210-280). The daemon-side `import_v1_cache` is dual-implemented and never reached in prod. Either delete the module + the `pub mod migrate;` line in `lib.rs:17` + `tests/test_wave3.rs::test_v1_migration` (the test exercises the dead helper, not a real prod path), OR introduce a `Request::Migrate { state_dir }` variant and route the CLI to it. Recommend delete — the CLI path is the canonical surface and matches the migration UX (`forge-next migrate ~/.forge/v1`)."
+  - id: HIGH-2
+    severity: HIGH
+    summary: "`teams::create_meeting_with_voting` (40 LOC) is dead — zero callers anywhere in the workspace"
+    file: crates/daemon/src/teams.rs:1217-1256
+    status: open
+    rationale: "`grep -rn create_meeting_with_voting crates/` returns exactly one hit: the definition itself. `Request::CreateMeeting` routes to `teams::create_meeting` (handler.rs:6203 region). `record_vote` + `get_vote_results` + `check_and_resolve_vote` ARE wired into the `Meeting*` Request handlers, so voting works at the protocol level — but the `_with_voting` constructor variant is orphaned. The fn duplicates ~80% of `create_meeting` (line 989) but writes a `voting_options`/`threshold` schema column instead of `context`/`goal`. Likely a half-finished W2 voting wave that landed `record_vote` end-to-end but never wired the constructor. Action: delete the fn; if voting-on-create is desired in v0.7+, extend `Request::CreateMeeting` with optional `voting_options: Option<Vec<String>>` instead of carrying a parallel constructor."
+  # ── MEDIUM ────────────────────────────────────────────────────────────
+  - id: MED-1
+    severity: MEDIUM
+    summary: "`extraction::router::check_quality_guard` is unreferenced — pub fn with zero callers"
+    file: crates/daemon/src/extraction/router.rs:276-317
+    status: open
+    rationale: "`grep -rn check_quality_guard crates/` returns only the definition (line 276). The fn queries `routing_quality_guard` SQL and returns an `Option<ComplexityTier>` for the caller to use as a fallback tier. Sibling fns (`score_complexity`, `record_routing_stat`, `query_routing_stats`) are all called by handler.rs / extractor pipeline. This was likely the read-side companion of the routing guard but the integration site (extractor.rs / handler.rs Extract* arms) never picked it up. ~40 LOC. Either wire it into the `ExtractWithProvider` arm as the fallback selector, or delete it."
+  - id: MED-2
+    severity: MEDIUM
+    summary: "Wrapper-triplet pattern leaves three pub fns reachable only from tests: `recall::hybrid_recall`, `recall::hybrid_recall_scoped`, `recall::compile_context`, `db::ops::recall_bm25`, `recall::compile_dynamic_suffix`, `recall::compile_static_prefix` (back-compat wrappers over `*_with_inj` / `*_with_globals` / `*_org` variants)"
+    file: crates/daemon/src/recall.rs:142,204,2228,907,565
+    status: open
+    rationale: "Production callers (handler.rs) all use the `_with_inj` / `_with_globals` / `_org` flavours. The plain-named wrappers exist for backward compat in test-suite call sites. Each wrapper is 5-15 lines but they're `pub`, which means they're part of the API surface contract. Recommend either: (a) downgrade to `pub(crate)` and update tests via `pub(crate)` re-export, or (b) inline-rewrite tests to call the canonical fn (`hybrid_recall_scoped_org`, `compile_static_prefix_with_inj`, etc.) and delete the shims. The `feedback_with_inj_wrapper_pattern.md` MEMORY entry justifies KEEPING the `_with_inj` variant + thin wrapper for zero-test-churn during migration; the cleanup is when migration completes. ZR is the right window — the wrappers are no longer doing work, the protocol surface is locked."
+  - id: MED-3
+    severity: MEDIUM
+    summary: "Wrapper-triplet pattern in `consolidator.rs`: `synthesize_contradictions`, `detect_and_surface_gaps`, `reweave_memories`, `score_memory_quality`, `extract_protocols`, `infer_skills_from_behavior`, `tag_antipatterns`, `heal_session_staleness`, `apply_quality_pressure`, `detect_content_contradictions` are all back-compat shims over `*_with_errors` siblings — only test callers"
+    file: crates/daemon/src/workers/consolidator.rs:1175,1424,1600,1668,1850,1942,2074,2265,2584,2673
+    status: open
+    rationale: "`run_all_phases` (line 89) calls the `_with_errors` variants directly; tests call the plain ones. Net: 10 pub fns × ~5 LOC each ≈ 50 LOC of pure delegation surface. Same fix as MED-2: downgrade to `pub(crate)`, or inline-replace the test calls with `let (n, _) = X_with_errors(...)`. `synthesize_contradictions` is the loudest case — even tests don't call it; only the `_with_errors` form is exercised. Worth a separate single-commit cleanup wave."
+  - id: MED-4
+    severity: MEDIUM
+    summary: "`ProjectEngine` trait (forge-core) has exactly one production impl (`CodeProjectEngine`) and one test-only impl (`MockEngine`) — premature abstraction"
+    file: crates/core/src/types/project_engine.rs:60-76
+    status: open
+    rationale: "`grep -rn 'impl ProjectEngine for'` returns code_engine.rs (the real impl) + project_engine.rs (test MockEngine). Production call sites (handler.rs:2251, 2256, 3562, 5029, 5033, 5409, 5411) all use the concrete `CodeProjectEngine::detect()`/`capabilities()` directly — never via `Box<dyn ProjectEngine>`. The trait is only used dynamically in test_project_engine_is_object_safe (line 111). The doc comment claims future engines (Sensor / Medical / Data) but those haven't materialized in 6+ months. Action: leave the trait as a forward-looking abstraction (it's small + cheap), but flag as a watchpoint — if no second impl ships by v0.8, collapse to a struct."
+  - id: MED-5
+    severity: MEDIUM
+    summary: "`db::diagnostics::expire_diagnostics` (8 LOC) — pub fn called only from same-file unit tests, never from production"
+    file: crates/daemon/src/db/diagnostics.rs:83-90
+    status: open
+    rationale: "Tests at line 260 exercise it; nothing else does. The kpi_reaper / consolidator phases use `clear_diagnostics(file_path)` for per-file cleanup; there's no scheduled expiry job that calls `expire_diagnostics`. Either wire it into a phase (the comment claims it expires diagnostics older than 24h), make it `pub(crate)`, or delete."
+  - id: MED-6
+    severity: MEDIUM
+    summary: "`notifications::count_pending` and `notifications::should_surface` (proactive.rs:375) — pub fns called only from same-file tests"
+    file: crates/daemon/src/notifications.rs:266; crates/daemon/src/proactive.rs:375
+    status: open
+    rationale: "`grep -rn count_pending` returns one prod-side test caller in notifications.rs:602 — no handler/recall caller. `should_surface` only appears in proactive.rs unit tests (lines 456, 462, 525). Both are 5-15 LOC. Downgrade to `pub(crate)` or delete; if the operator wants pending-count visibility, the existing handler arms (Status/Doctor) don't surface it, suggesting it was speculative."
+  - id: MED-7
+    severity: MEDIUM
+    summary: "`lsp::regex_python::extract_imports_python` and `lsp::regex_go::extract_imports_go` duplicate logic already inside `lsp::symbols::extract_imports`"
+    file: crates/daemon/src/lsp/regex_python.rs:147; crates/daemon/src/lsp/regex_go.rs:112
+    status: open
+    rationale: "`extract_imports(content, language, file_path)` in symbols.rs:79 has built-in PYTHON_PATTERNS / GO_PATTERNS branches matching identical regexes (`^\\s*import\\s+(\\S+)` / `import\\s+\"([\\w./]+)\"`). The per-language fns are pub and only called from their own `#[cfg(test)]` blocks. Production indexer (workers/indexer.rs) uses `extract_imports` (the unified fn) for imports and `extract_symbols_python`/`extract_symbols_go` (the per-language fns) for symbols — but not the per-language import fns. Net: ~30 LOC of dead duplicate. Delete both `extract_imports_python` and `extract_imports_go` + their tests."
+  # ── LOW ───────────────────────────────────────────────────────────────
+  - id: LOW-1
+    severity: LOW
+    summary: "`hud::render::colors::security_color` (9 LOC) and `hud::render::colors::ratio_color` (9 LOC) — zero callers in workspace"
+    file: crates/hud/src/render/colors.rs:13-30
+    status: open
+    rationale: "`grep -rn security_color crates/` returns only the definition. Same for `ratio_color`. The HUD render path uses `RED`/`YELLOW`/`GREEN`/`CYAN`/etc. constants directly without going through the helper. Probably the result of an earlier refactor that inlined the conditional. Delete both fns; the consts stay (they're imported by the render modules)."
+  - id: LOW-2
+    severity: LOW
+    summary: "`lsp::client::file_uri` (3 LOC) is a thin wrapper around `path_to_file_uri` — premature aliasing"
+    file: crates/daemon/src/lsp/client.rs:589-591
+    status: open
+    rationale: "`pub fn file_uri(path: &str) -> String { path_to_file_uri(path) }`. Only consumer (workers/indexer.rs:548, 622) imports it under the `file_uri` name; the test inside client.rs uses `path_to_file_uri` directly. Either rename the canonical fn to `file_uri` and drop the wrapper, or drop the wrapper and rewrite the indexer import. Either way, eliminating one pub-symbol export from the API surface."
+  - id: LOW-3
+    severity: LOW
+    summary: "`cli::transport::Transport::is_http` is `#[allow(dead_code)]` — only test callers, dead in prod"
+    file: crates/cli/src/transport.rs:60-63
+    status: open
+    rationale: "Already annotated — three same-file test callers (`test_is_http`), no production use. The `#[allow(dead_code)]` is honest but lingering. Delete the fn + the test; if HTTP-vs-Unix discrimination is needed later, `matches!(transport, Transport::Http { .. })` inlines fine."
+  - id: LOW-4
+    severity: LOW
+    summary: "Stale TODOs in handler.rs claiming `org_id` threading is incomplete — but `recall_bm25_org` and other `_org` variants are wired"
+    file: crates/daemon/src/server/handler.rs:655,912,1195,3497,3758
+    status: open
+    rationale: "Five `// TODO: pass _org_id` / `// TODO(multi-org Z12+): thread organization_id` comments survive in the Recall / Forget / ListFlipped arms. The supporting fns DO exist (`recall_bm25_org`, `forget_org`, `hybrid_recall_scoped_org`, `list_flipped_with_targets`), and the multi-org schema landed at v2.0. Either the threading was completed and the TODOs are stale, or it wasn't and these arms silently leak across orgs (would be a separate audit-E DB / multi-tenant finding). At a minimum, sweep the comments — if the TODO is satisfied, delete it; if not, file an issue. Three of the five TODOs reference 2A-4a T11 / Z12 phases that already shipped."
+  - id: LOW-5
+    severity: LOW
+    summary: "`config::RealityConfig` Rust struct + TOML key `[reality]` is the wire-format remnant of the ZR rename — `Project { reality_type }` is documented as deferred but `RealityConfig` was missed"
+    file: crates/daemon/src/config.rs:181,830-850
+    status: open
+    rationale: "ZR-rename migration P3-4 deferred `reality_type` (column name + Project.reality_type field) for protocol-hash reasons (LOW-2 in `reviews/2026-04-27-p3-4-zr-rename.yaml`). But `RealityConfig` (the daemon TOML config struct that controls `auto_detect`/`code_embeddings`/`community_detection`/`max_index_files`) is ALSO `reality`-named, both in the Rust struct name AND the `[reality]` TOML section. Renaming this also breaks user-facing config TOML, so it's a real wire surface — but the deferrals doc only lists the protocol-hash one. Append a second deferral entry covering `RealityConfig` + the `[reality]` TOML section + the `[\"reality\", \"auto_detect\"]` config-set patterns at config.rs:1709-1723."
+  - id: LOW-6
+    severity: LOW
+    summary: "`bench::longmemeval` module-level TODO comments for Consolidate + Hybrid modes are stale"
+    file: crates/daemon/src/bench/longmemeval.rs:13-14
+    status: open
+    rationale: "Doc comments at lines 13-14 say `Consolidate: TODO` and `Hybrid: TODO`. Greppable references to `LmeMode::Hybrid`/`LmeMode::Consolidate` in the same file at lines 153-154 + 286-289 indicate they ARE implemented; the module preamble TODO is stale. Cosmetic — replace `TODO` with the closing-wave reference."
+  - id: LOW-7
+    severity: LOW
+    summary: "`workers/consolidator.rs:2528` carries `TODO(2A-4+): migrate to ops::supersede_memory_impl()` — confirm the spec it references is closed"
+    file: crates/daemon/src/workers/consolidator.rs:2528
+    status: open
+    rationale: "References `docs/superpowers/specs/2026-04-17-forge-valence-flipping-design.md §14 R1`. If that spec is shipped, retire the TODO; if not, keep it but add a phase tag matching the deferrals doc convention. (Did not verify the spec contents in this audit — flagged for sweep.)"
+  - id: LOW-8
+    severity: LOW
+    summary: "`crates/daemon/src/lsp/client.rs` has 4× `#[allow(dead_code)]` on JSON-RPC envelope fields (`server_caps`, `jsonrpc`, `id`)"
+    file: crates/daemon/src/lsp/client.rs:77,103,112,114
+    status: open
+    rationale: "Each one tags a serde-decoded field that's part of the protocol but unused after parse. Honest annotations, but the `server_caps: Option<InitializeResult>` (line 78) is more questionable — it's stored on the LspClient struct after `initialize` but never read. Could be removed entirely (zero-cost) since the diagnostics pipeline doesn't query it. The wire-tag fields (`jsonrpc`, `id` on `JsonRpcResponse`) are correctly kept for serde shape — leave those, drop only `server_caps`."
+  # ── NIT ───────────────────────────────────────────────────────────────
+  - id: NIT-1
+    severity: NIT
+    summary: "`workers/indexer.rs:390` has `#[cfg(test)] #[allow(dead_code)] fn find_project_dir_candidate_for_test` — the cfg(test) makes the allow redundant"
+    file: crates/daemon/src/workers/indexer.rs:389-414
+    status: open
+    rationale: "`#[cfg(test)]` already gates the fn out of non-test builds. The `#[allow(dead_code)]` is belt-and-suspenders but visually noisy. Drop the `allow`. Consumed at lines 2606-2665 — fn is alive within tests."
+  - id: NIT-2
+    severity: NIT
+    summary: "`server/auth.rs:436` — `TEST_RSA_PUBLIC_KEY` const annotated `#[allow(dead_code)] // Kept as reference`"
+    file: crates/daemon/src/server/auth.rs:436-445
+    status: open
+    rationale: "Honest reference comment, but the const has been unused since JWKS-only test path took over. Drop it; if a future test path wants the PEM form, `git show` recovers it. Cosmetic (8 LOC of test-fixture certificate)."
+  - id: NIT-3
+    severity: NIT
+    summary: "`server/http.rs:331` — `SubscribeParams.token: Option<String>` annotated `#[allow(dead_code)]`"
+    file: crates/daemon/src/server/http.rs:330-332
+    status: open
+    rationale: "The field exists so EventSource (which can't set Authorization headers) can pass JWT via `?token=...`. The handler currently doesn't read the field; auth is enforced upstream by middleware. Either wire the field into the auth-fallback path inside subscribe_handler, or delete the field + drop the allow. Clarification only — not a security finding (cookies/headers are checked first)."
+  - id: NIT-4
+    severity: NIT
+    summary: "`server/pty.rs:20` — `PtySession.master: Box<dyn MasterPty + Send>` is `#[allow(dead_code)]`"
+    file: crates/daemon/src/server/pty.rs:19-22
+    status: open
+    rationale: "The master FD is held to keep the PTY alive (drop = close), but the field itself is never read after construction. The annotation correctly captures that. Borderline NIT — `_master` rename (underscore prefix) achieves the same intent without the allow attribute. Cosmetic."
+  - id: NIT-5
+    severity: NIT
+    summary: "Test helper `find_project_dir_candidate_for_test` is OK but its 3-arg signature mirrors prod logic — premature parametrization risk if the prod fn signature drifts"
+    file: crates/daemon/src/workers/indexer.rs:391-414
+    status: open
+    rationale: "The helper takes `(decoded, has_marker_closure, min_depth)` to mirror the inner loop of `find_project_dir`. If the prod fn adds a 4th input, this helper silently goes stale. Add a unit-test assertion on the prod fn's outputs at the same shapes covered by the helper, OR extract the inner loop into a true pub(crate) fn that both call. Cosmetic for now."
+  - id: NIT-6
+    severity: NIT
+    summary: "`extract_call_edges_regex` lives in workers/indexer.rs but is `pub fn` — could be `pub(crate)`"
+    file: crates/daemon/src/workers/indexer.rs:1194
+    status: open
+    rationale: "Only caller is line 900 in the same file plus tests. No external (test-suite or other-crate) callers. Downgrade visibility for cleaner module API. Same pattern applies to most worker pub fns; this one stood out via the audit grep."

@@ -1,0 +1,356 @@
+schema_version: 1
+slug: 2026-04-27-zr-close-pre-release-B-cli
+target_paths:
+  - crates/cli/src/main.rs
+  - crates/cli/src/commands/memory.rs
+  - crates/cli/src/commands/manas.rs
+  - crates/cli/src/commands/observe.rs
+  - crates/cli/src/commands/sync.rs
+  - crates/cli/src/commands/system.rs
+  - crates/cli/src/commands/teams.rs
+  - crates/cli/src/commands/daemon.rs
+  - crates/cli/src/transport.rs
+  - crates/cli/src/client.rs
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-27
+  scope: CLI surface only (handlers, flags, dispatch, error paths)
+commit_range:
+  base: master
+  head: 1cf9a7d
+verdict: needs-fixes
+artifacts: []
+summary: |
+  Audited 148 clap variants in `forge-next` against `Request`/`ResponseData` shapes
+  and per-command handlers. No `unimplemented!()` / `todo!()` stubs. All 158
+  Request variants have a daemon arm (variants list ↔ handler match arms diff is
+  empty). Ran a static dispatch trace from clap variant → handler → Request →
+  daemon arm → response render for every subcommand. Found 23 issues: two
+  acknowledged TODOs that drop user-supplied flags on the floor (HIGH), one
+  promised-but-missing keyword in `--help`, several silent destructive defaults
+  (HIGH), three families of UTF-8 byte-slice panics (MEDIUM), and a class of
+  "raw `{:?}` debug print as user output" handlers (MEDIUM). 32 daemon Request
+  variants have no CLI surface — most are bench/test-only by docstring, three
+  (`UpdateAgentTemplate`, `ListTeamTemplates`, `Version`) are user-shaped gaps.
+findings:
+  - id: HIGH-1
+    severity: HIGH
+    summary: |
+      `forge-next register-session --role <ROLE>` parses but is silently
+      discarded — the handler explicitly drops `role` (`let _ = &role;`)
+      with a TODO comment. The flag is advertised in `--help` and in
+      command-category docs (Sessions & Identity) so callers reasonably
+      expect role to land in the session record; it never reaches the
+      daemon. Either wire `role` through `Request::RegisterSession`
+      (currently has no `role` field — protocol_hash bump) or remove
+      the flag from the CLI before 1.0.
+    file: crates/cli/src/commands/system.rs
+    line: 814
+    status: open
+  - id: HIGH-2
+    severity: HIGH
+    summary: |
+      `forge-next team create --parent <NAME>` parses but is silently
+      discarded — handler has `let _ = &parent;` with a TODO. The flag's
+      help text says "Parent team name (for hierarchy)" so users believe
+      it builds the team-tree consumed by `team-tree`. `Request::CreateTeam`
+      has no `parent_team_id` field. Either add the field or drop the flag.
+    file: crates/cli/src/commands/teams.rs
+    line: 310
+    status: open
+  - id: HIGH-3
+    severity: HIGH
+    summary: |
+      `forge-next cleanup-sessions --older-than "garbage"` (any
+      unparseable string, e.g. `7days`, `1week`, `1y`, typo) silently
+      collapses to `older_than_secs = Some(0)` because the parser at
+      main.rs:1703 uses `unwrap_or(0)` on every fallback path. The
+      daemon then ends every active session whose age is ≥ 0 — i.e.
+      all of them — with no diagnostic. Same nuclear-option failure
+      mode as the legacy "no args" path. Replace `unwrap_or(0)` with a
+      hard error + exit(2) at the CLI boundary.
+    file: crates/cli/src/main.rs
+    line: 1703
+    status: open
+  - id: HIGH-4
+    severity: HIGH
+    summary: |
+      `forge-next recall --since "garbage"` silently collapses to a
+      since-timestamp of "now" (zero-second offset) because the parser
+      at main.rs:1523 uses `unwrap_or(0)` on every numeric branch.
+      Caller asks for memories newer than `1y` (typo, no `1y` suffix
+      handled), gets back zero memories instead of "all memories";
+      indistinguishable from "actually empty result". Replace silent
+      fallback with explicit error or fall through to None (= no since
+      filter).
+    file: crates/cli/src/main.rs
+    line: 1530
+    status: open
+  - id: HIGH-5
+    severity: HIGH
+    summary: |
+      `COMMAND_CATEGORIES` (the `--help` category roadmap) advertises
+      `version` as a System & Daemon subcommand. There is no `Version`
+      enum variant in `Commands`. Users who type `forge-next version`
+      get a clap "unrecognized subcommand" error and have to discover
+      `--version` is a global flag. The daemon also has a `Request::Version`
+      shape (lightweight, no DB) but the CLI never invokes it — so even
+      `forge-next version` mapped to `Request::Version` would be a useful
+      "daemon-version-vs-cli-version" probe. Either add a `version`
+      subcommand wired to `Request::Version`, or strip `version` from
+      the category list.
+    file: crates/cli/src/main.rs
+    line: 41
+    status: open
+  - id: MED-1
+    severity: MEDIUM
+    summary: |
+      Five Skills* handlers and two Meeting handlers print raw Rust
+      `Debug` output (`println!("{data:?}")`) as user output. For
+      `skills-list`, `skills-install`, `skills-uninstall`, `skills-info`,
+      `skills-refresh`, `meeting vote`, `meeting result` the user sees
+      `SkillsList { skills: [Skill { id: ..., name: ..., ... }] }` —
+      Rust struct dump, not a pretty rendering. Compare with sibling
+      teams.rs handlers which destructure ResponseData and render
+      field-by-field. Either pretty-render or pretty-print the JSON.
+    file: crates/cli/src/main.rs
+    lines:
+      - 2299
+      - 2309
+      - 2471
+      - 2481
+      - 2491
+      - 2501
+      - 2511
+    status: open
+  - id: MED-2
+    severity: MEDIUM
+    summary: |
+      `forge-next messages` (without --full) byte-slices `&parts_text[..80]`
+      to truncate previews. This panics on multibyte UTF-8 if the 80-byte
+      boundary lands inside a code point (e.g. a memory body containing
+      "café…" or any emoji). Same hazard at sync.rs:378 (`truncate` helper)
+      and teams.rs:103 / 715. Replace with `.chars().take(80)` or
+      `String::truncate_chars` helper.
+    file: crates/cli/src/commands/system.rs
+    lines:
+      - 1125
+    related:
+      - crates/cli/src/commands/sync.rs:378
+      - crates/cli/src/commands/teams.rs:103
+      - crates/cli/src/commands/teams.rs:715
+    status: open
+  - id: MED-3
+    severity: MEDIUM
+    summary: |
+      `COMMAND_CATEGORIES` (--help roadmap) drops two real top-level
+      subcommands: `init` and `consolidate`. Both are advertised
+      throughout the daemon docs and skills as on-ramp commands
+      (forge-init wraps Health → RegisterSession → Bootstrap; consolidate
+      runs all dedup/decay phases). New users scanning the category list
+      will not find them. W1.34 punted unit-test verification of this
+      list; this is the drift it warned about.
+    file: crates/cli/src/main.rs
+    line: 38
+    status: open
+  - id: MED-4
+    severity: MEDIUM
+    summary: |
+      `forge-next export --format ndjson` is documented (clap doc-comment
+      "Output format: json (default) or ndjson") and forwarded to the
+      daemon, but the CLI's local renderer always wraps the response in a
+      single JSON object regardless of format and the daemon's Export
+      handler does not branch on format. The flag is effectively a no-op.
+      Either implement ndjson on the daemon or document json-only and
+      remove the flag.
+    file: crates/cli/src/commands/system.rs
+    line: 285
+    status: open
+  - id: MED-5
+    severity: MEDIUM
+    summary: |
+      No CLI surface for `Request::UpdateAgentTemplate`. The daemon
+      accepts an UpdateAgentTemplate request that lets you patch
+      system_context / identity_facets / config_overrides on a created
+      template. The CLI exposes `agent-template create / list / get /
+      delete` only — there's no way to mutate without delete-and-recreate
+      (which renames the template id and invalidates running agents that
+      reference the old template_name). Add `agent-template update`.
+    file: crates/cli/src/commands/teams.rs
+    line: 0
+    status: open
+  - id: MED-6
+    severity: MEDIUM
+    summary: |
+      No CLI surface for `Request::ListTeamTemplates`. The daemon seeds
+      pre-built team templates on boot (used by `team run --templates ...`)
+      but there's no way to discover them — users have to read the seed
+      source code or guess names. Add `team-template list` (or rename
+      `agent-template` parent to `template` with `agent` and `team`
+      sub-actions). This is the same complaint that drove `Request::ListAgentTemplates`
+      to get a CLI surface in W23.
+    file: crates/cli/src/commands/teams.rs
+    line: 0
+    status: open
+  - id: MED-7
+    severity: MEDIUM
+    summary: |
+      `record-tool-use` silently re-encodes malformed `--tool-args` JSON
+      as `Value::String(raw)` and prints nothing on success. A typo in
+      sed-escaped hook output now ships malformed args to the daemon
+      with no warning, polluting the `session_tool_call` table. At
+      minimum, emit a stderr warning when the JSON parse fails — same
+      pattern as `resolve_from_session` for missing FORGE_SESSION_ID.
+    file: crates/cli/src/commands/system.rs
+    line: 851
+    status: open
+  - id: MED-8
+    severity: MEDIUM
+    summary: |
+      `act-notification --id X` (no --approve and no --reject) silently
+      coerces to `approved = false` — the same wire shape as `--reject`.
+      Users who forget the verb get a silent reject when they probably
+      wanted an error. Either require one of {--approve, --reject} via
+      clap `ArgGroup(required=true)` or error explicitly in the dispatcher.
+    file: crates/cli/src/main.rs
+    line: 2337
+    status: open
+  - id: LOW-1
+    severity: LOW
+    summary: |
+      `Observe` doc-comment lists shapes as "row_count, latency,
+      error_rate, throughput, phase_run_summary" — missing
+      `bench_run_summary` (the 6th shape, added later for Tier 3 §3.3).
+      clap auto-generates the actual `--shape` value-list from the
+      enum so the help is correct, but the inline description is stale
+      and bench_run_summary's 180-day window allowance is not surfaced
+      in `--help`.
+    file: crates/cli/src/main.rs
+    line: 1075
+    status: open
+  - id: LOW-2
+    severity: LOW
+    summary: |
+      `forge-next init` derives the project name from `Path::file_name()`
+      of the cwd — basename only. It does not use the W1.21
+      marker-file detection or call `Request::ProjectDetect` first, so
+      a session opened in a deeply nested workspace dir registers under
+      the leaf-folder name even if a `.forge/`, Cargo.toml, package.json,
+      or similar marker upstream exists. After the W1.2 dual-helper work
+      (basename-fast vs reality-aware), `init` should use the
+      reality-aware path or chain `project detect` → register-session.
+    file: crates/cli/src/commands/system.rs
+    line: 3017
+    status: open
+  - id: LOW-3
+    severity: LOW
+    summary: |
+      `forge-next remember --confidence 5.0` and `identity set --strength
+      -2.0` are accepted at the CLI boundary even though doc-comments
+      pin both to [0.0, 1.0]. Daemon clamps, but no diagnostic to the
+      user. Add a clap value-parser that rejects out-of-range f64 input.
+    file: crates/cli/src/main.rs
+    lines:
+      - 148
+      - 1490
+    status: open
+  - id: LOW-4
+    severity: LOW
+    summary: |
+      `forge-next send --kind X` and `--respond --status X` accept any
+      string. The protocol allows only `notification|request` (kind) and
+      `accepted|rejected|completed|failed` (status); typos make the
+      round-trip to the daemon and surface as opaque errors there.
+      Convert to clap ValueEnum (same pattern as ValenceArg in W1.35).
+    file: crates/cli/src/main.rs
+    lines:
+      - 439
+      - 484
+    status: open
+  - id: LOW-5
+    severity: LOW
+    summary: |
+      `team run --topology X` accepts any string. Doc says "star, mesh,
+      or chain (default: mesh)". Daemon presumably defaults on unknown
+      values; add a clap ValueEnum to fail fast on typos.
+    file: crates/cli/src/main.rs
+    line: 1351
+    status: open
+  - id: LOW-6
+    severity: LOW
+    summary: |
+      `forge-next context-refresh --since X` passes `since` raw to the
+      daemon (no relative-duration parsing) while `forge-next recall
+      --since X` runs relative durations through a hand-rolled parser
+      (see HIGH-4). The two `--since` flags accept different input
+      languages — confusing for hook authors who copy-paste between
+      them.
+    file: crates/cli/src/main.rs
+    line: 891
+    status: open
+  - id: LOW-7
+    severity: LOW
+    summary: |
+      `forge-next agent-template create --identity-facets '{...}'` and
+      `--config-overrides '{...}'` and `--knowledge-domains '{...}'` are
+      `Option<String>` — caller must hand-format JSON. The handler does
+      no validation and forwards the raw string. A malformed JSON blob
+      gets a daemon-side error after a round-trip rather than a CLI
+      parse error. Validate with `serde_json::from_str` before dispatch.
+    file: crates/cli/src/commands/teams.rs
+    line: 7
+    status: open
+  - id: LOW-8
+    severity: LOW
+    summary: |
+      `forge-next subscribe` has no graceful-shutdown story documented.
+      The clap doc-comment says it "streams NDJSON to stdout" but does
+      not mention `^C`, EOF behavior, or what happens when the daemon
+      restarts mid-stream. Operationally fine (Ctrl-C exits the
+      tokio runtime), but a sentence in `--help` would help.
+    file: crates/cli/src/main.rs
+    line: 863
+    status: open
+  - id: LOW-9
+    severity: LOW
+    summary: |
+      32 `Request::*` variants have no CLI surface. Most are intentionally
+      bench/test-only by docstring (`ProbePhase`, `ComputeRecencyFactor`,
+      `StepDispositionOnce`) or internal-storage (`StorePlatform`,
+      `StoreTool`, `StorePerception`, `StoreEvaluation`,
+      `RecordMeetingResponse`, `RecordAgentCost`, `ConsumePerceptions`,
+      `IngestDeclared`, `FlipPreference`, `ReaffirmPreference`). Three
+      look like genuine gaps for users: `UpdateAgentTemplate` (MED-5),
+      `ListTeamTemplates` (MED-6), `Version` (HIGH-5). The remaining
+      `BatchRecall`, `CrossEngineQuery`, `FileMemoryMap`, `GetGraphData`,
+      `GetHudConfig`, `SetHudConfig`, `ExportHudConfig`, `RawIngest`,
+      `RawSearch`, `RawDocumentsList`, `RoutingStats`, `BudgetStatus`,
+      `ListDisposition`, `ListFlipped`, `ListToolCalls`,
+      `ExtractWithProvider` are reachable today only via raw HTTP — pre-1.0
+      decision: keep daemon-only or add CLI surface? Calling out for
+      explicit triage rather than letting them drift.
+    file: crates/cli/src/main.rs
+    line: 0
+    status: deferred
+  - id: NIT-1
+    severity: NIT
+    summary: |
+      `forge-next import` reads the entire NDJSON/JSON file into
+      memory before sending to the daemon. The Request::Import shape
+      is `data: String`. For users with multi-GB exports this OOMs the
+      CLI process before the request leaves. Pre-1.0 acceptable;
+      streaming-import is post-1.0 work. Filed for record.
+    file: crates/cli/src/commands/system.rs
+    line: 325
+    status: deferred
+  - id: NIT-2
+    severity: NIT
+    summary: |
+      `restart` waits 6 seconds with `tokio::time::sleep` before health-
+      checking the new daemon. Hard-coded magic number; the daemon's
+      drain timeout is 5s, so this is "drain + 1s probe slack". Fine,
+      but a brief comment explaining the constant would help future
+      readers.
+    file: crates/cli/src/main.rs
+    line: 1955
+    status: deferred

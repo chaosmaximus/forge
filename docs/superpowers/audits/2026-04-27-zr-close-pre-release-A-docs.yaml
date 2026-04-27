@@ -1,0 +1,367 @@
+schema_version: 1
+slug: 2026-04-27-zr-close-pre-release-A-docs
+target_paths:
+  - README.md
+  - CONTRIBUTING.md
+  - CHANGELOG.md
+  - docs/getting-started.md
+  - docs/cli-reference.md
+  - docs/api-reference.md
+  - docs/operations.md
+  - docs/security.md
+  - docs/cloud-deployment.md
+  - docs/agent-development.md
+  - docs/architecture/README.md
+  - docs/observability/otlp-validation.md
+  - docs/onboarding/local-plugin-cc-voice.md
+  - .claude-plugin/plugin.json
+  - .claude-plugin/marketplace.json
+reviewer:
+  agent: claude-opus-4-7
+  date: '2026-04-27'
+verdict: lockable-with-fixes
+findings:
+  # ── HIGH ──────────────────────────────────────────────────────────────
+  - id: DOCS-A-001
+    severity: HIGH
+    summary: "Docs reference a `forge` binary for secret scanning — no such binary exists"
+    file: docs/getting-started.md:223
+    status: open
+    rationale: |
+      The Security Scanning section instructs users to run `forge scan .` and
+      `forge scan . --watch --interval 30`, and the Common Commands Reference
+      table at line 248 again lists `forge scan .`. The release tree builds
+      only four binaries: `forge-bench`, `forge-daemon`, `forge-hud`,
+      `forge-next`. There is no top-level `forge` binary, and `forge-next`
+      has no `scan` subcommand (verified against `forge-next --help`). Users
+      following the Quick Start will hit `command not found: forge`. README's
+      claim "Secret scanning — SHA256 fingerprints, never stores values"
+      remains plausible (post_edit_check integrates the scanner), but the
+      standalone CLI surface advertised in getting-started simply does not
+      exist. Either implement `forge-next scan ...` or rewrite the section
+      to point at `post-edit-check` / `pre-bash-check` (which do invoke the
+      scanner) and remove the fake binary references.
+  - id: DOCS-A-002
+    severity: HIGH
+    summary: "Memory types in README + getting-started.md (`fact`, `entity`, `skill`) do not exist in the MemoryType enum"
+    file: docs/getting-started.md:86
+    status: open
+    rationale: |
+      getting-started.md:86 says: "Forge organizes memories by type:
+      `decision`, `lesson`, `pattern`, `fact`, `entity`, `skill`." The
+      actual enum at `crates/core/src/types/memory.rs:7-16` is
+      `Decision | Lesson | Pattern | Preference | Protocol`. Submitting
+      `--type fact` or `--type entity` is rejected by the daemon's typed
+      deserialiser. README at `## Manas: 8-Layer Memory` does not name the
+      memory types, but the inline CLI examples in README's CLI Reference
+      section show `--type decision` (correct). The cli-reference.md list
+      ("decision, lesson, pattern, preference") matches the enum but omits
+      `protocol`. api-reference.md correctly lists
+      `decision, lesson, pattern, preference, protocol`. Net: getting-started
+      is the worst offender — a brand-new user doing the first `remember`
+      example will silently follow into `--type fact` which the help text
+      doesn't even list. Update getting-started.md to the actual five-type
+      enum and add `protocol` to cli-reference.md:37 and :63.
+  - id: DOCS-A-003
+    severity: HIGH
+    summary: "API reference advertises wrong Unix socket filename (`daemon.sock`); actual is `forge.sock`"
+    file: docs/api-reference.md:19
+    status: open
+    rationale: |
+      api-reference.md:19 says: "The same JSON protocol works over the Unix
+      domain socket at `~/.forge/daemon.sock`." The example at line 22
+      reinforces it: `socat - UNIX-CONNECT:~/.forge/daemon.sock`. The actual
+      socket path is `~/.forge/forge.sock` — see `crates/core/src/paths.rs:30`
+      (`format!("{}/forge.sock", forge_dir())`) and confirmed by
+      `getting-started.md:65` ("socket: /home/you/.forge/forge.sock") and the
+      operations.md `FORGE_SOCKET` default at line 601. Anyone running the
+      socat one-liner verbatim hits ENOENT. The wrong path also appears
+      nowhere else in code or other docs — this is a pure api-reference
+      typo. Fix to `forge.sock` in both places.
+  - id: DOCS-A-004
+    severity: HIGH
+    summary: "security.md says gRPC is `(Planned)` but it is shipped"
+    file: docs/security.md:212
+    status: open
+    rationale: |
+      security.md §"Transport Security" §"gRPC (Planned)" reads: "Designed
+      for in-cluster service-to-service communication / mTLS via cert-manager
+      / Use case: Sidecar patterns, service mesh integration." The gRPC
+      transport is implemented and shipped — see
+      `crates/daemon/src/server/grpc.rs` (Tonic JSON-over-gRPC server) and
+      `crates/daemon/src/server/mod.rs:19` (`pub use grpc::run_grpc_server`).
+      Operations.md:556-561 documents the env vars (`FORGE_GRPC_ENABLED`,
+      `FORGE_GRPC_BIND`, `FORGE_GRPC_PORT`); cloud-deployment.md:355-361 also
+      treats it as shipped. agent-development.md:81 advertises the gRPC
+      endpoint URL form. Drop the "(Planned)" qualifier in security.md:212
+      and align with the rest of the surface. Caveat the mTLS-via-cert-manager
+      claim if it is not actually wired; otherwise, just promote.
+  # ── MEDIUM ────────────────────────────────────────────────────────────
+  - id: DOCS-A-005
+    severity: MEDIUM
+    summary: "Quick-Start `forge-next health` example shows version 0.4.0 — current is 0.6.0-rc.3"
+    file: docs/getting-started.md:67
+    status: open
+    rationale: |
+      The "Verify Installation" example output shows `version: 0.4.0`. All
+      four crates are at `0.6.0-rc.3` (Cargo.toml verified across
+      cli/core/daemon/hud) and the running binary reports
+      `forge-next 0.6.0-rc.3 (4904f42)`. plugin.json and marketplace.json
+      both report `0.6.0-rc.3`. Updating the literal string in the example
+      output to `0.6.0-rc.3` (or generic `0.6.x`) is trivial and prevents the
+      "is the daemon stuck on an old build?" pattern of new-user confusion.
+  - id: DOCS-A-006
+    severity: MEDIUM
+    summary: "Endpoint count `98` is stale — actual Request enum carries 158 variants"
+    file: README.md:15
+    status: open
+    rationale: |
+      README ships an `endpoints-98` shield, repeats "98 protocol endpoints"
+      in the architecture box (line 79) and the under-the-hood block
+      (line 293), and api-reference.md's title bullets ("All 98 HTTP
+      endpoints") echoes it. The actual Request enum at
+      `crates/core/src/protocol/request.rs` carries 158 variants
+      (`grep -E '^    [A-Z][a-zA-Z]*[ ,{]' | wc -l = 158`). Either re-count
+      and bump (158 today, with a buffer for in-flight features) or rephrase
+      as "100+ protocol endpoints" so this stops drifting on every wave that
+      adds a method.
+  - id: DOCS-A-007
+    severity: MEDIUM
+    summary: "Worker count `8` is stale — `spawn_workers` actually spawns 10 (+ skill_inference)"
+    file: README.md:16
+    status: open
+    rationale: |
+      README's `workers-8` shield, "8 background workers" in the
+      architecture box (line 82), and the under-the-hood block ("8 background
+      workers" line 293) all claim eight. operations.md:31 lists the same
+      eight. `crates/daemon/src/workers/mod.rs` actually spawns: watcher,
+      extractor, embedder, consolidator, indexer, perception, disposition,
+      diagnostics, reaper, kpi_reaper — that is ten — with skill_inference
+      sitting in the workers/ directory as well. The discrepancy hides the
+      reaper / kpi_reaper from operators trying to reason about which
+      `forge_worker_healthy{worker=...}` labels they should expect.
+      Bump to "10 background workers" everywhere (README + operations.md +
+      plugin.json description + marketplace.json description), or add the
+      two missing labels to the operations.md table at line 31.
+  - id: DOCS-A-008
+    severity: MEDIUM
+    summary: "Test counts in README + CONTRIBUTING are wildly stale"
+    file: README.md:14
+    status: open
+    rationale: |
+      README claims "1,245+ Rust tests" (badge + Under-the-Hood block, lines
+      14, 294, 304) with the breakdown "forge-daemon (unit) 990 / forge-daemon
+      (integration) 123 / forge-core 56 / forge-cli 76 = 1,245". CONTRIBUTING
+      and CLAUDE.md cite "990+ daemon tests" / "1,700+ passing". A repo-wide
+      `#[test]` / `#[tokio::test]` count gives daemon ≈1817, core ≈111,
+      cli ≈105 (≈2033). The README claim is off by ~800; CLAUDE.md is closer
+      but still under-counts. Either bump to "2,000+ tests" with a single
+      total (and drop the per-crate breakdown — it goes stale every wave) or
+      replace the breakdown numbers with current values. CONTRIBUTING.md:25
+      ("Run tests (990+ daemon tests)") needs the same scrub.
+  - id: DOCS-A-009
+    severity: MEDIUM
+    summary: "cli-reference.md still surfaces `reality.*` config keys + `--reality` scope after ZR vocabulary lock"
+    file: docs/cli-reference.md:507
+    status: open
+    rationale: |
+      The user-facing vocabulary lock recorded in
+      `feedback_project_everywhere_vocabulary.md` is "only `project` in CLI /
+      XML / errors / docs (no `reality` / `realities` aliases pre-1.0)". Yet
+      cli-reference.md lines 507-509 document `reality.auto_detect`,
+      `reality.code_embeddings`, `reality.max_index_files` config keys; line
+      519 names "reality" in the scope-cascade prose; line 527 lists
+      `reality` as a `--scope` value; and line 547 advertises `--reality R`
+      on `config get-effective`. api-reference.md:1755 / :1798 carry the same
+      "reality" surface in scoped-config docs. The CLI binary still ACCEPTS
+      `--reality` (verified: `forge-next config get-effective --help` shows
+      it), so this is not a runtime bug — but the vocabulary contract says
+      docs should hide the legacy alias even while the underlying SQL table
+      and Rust struct stay named "reality" (CHANGELOG §Deprecated, line
+      83-85, explicitly defers the rename). Either (a) introduce the
+      `--project` aliases on the CLI side and document those instead, or
+      (b) note "(deprecated alias for project; will be removed in v1.0)"
+      next to each `reality` mention in cli-reference.md and api-reference.md.
+      As-is, a new user reading cli-reference top-to-bottom is taught the
+      old vocabulary alongside the new.
+  - id: DOCS-A-010
+    severity: MEDIUM
+    summary: "api-reference.md `task_completion_check` request undocumented (and CLI doc uses `--subject`, daemon expects `task_subject`)"
+    file: docs/api-reference.md
+    status: open
+    rationale: |
+      `Request::TaskCompletionCheck { session_id, task_subject, task_description }`
+      ships and the CLI subcommand exists (cli-reference.md:1519-1536, with
+      `--session-id`, `--subject`, `--description`). api-reference.md has no
+      `task_completion_check` entry at all (`grep -n task_completion_check`
+      returns nothing). Either add the missing endpoint section in
+      api-reference, or note in cli-reference that the CLI flag `--subject`
+      maps to the wire field `task_subject` (the rename is hidden from CLI
+      users but matters to anyone hitting `/api` directly). Same drift class
+      flagged in `feedback_json_macro_silent_drift.md` — daemon and CLI key
+      names diverge with no compile-time link.
+  - id: DOCS-A-011
+    severity: MEDIUM
+    summary: "Quick-Start cargo install string is wrong / installs nothing"
+    file: README.md:41
+    status: open
+    rationale: |
+      `cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli`
+      is shown in README:41 and getting-started.md:15 as the recommended
+      install path. Cargo's behaviour with `--git URL <pkg> <pkg>` searches
+      for crate manifests with those package NAMES — `forge-daemon` matches
+      the daemon (Cargo.toml package = `forge-daemon`), and `forge-cli`
+      matches the CLI crate (`forge-cli`). Cargo will then install the bin
+      defined under each package's `[[bin]]`. The daemon installs
+      `forge-daemon` + `forge-bench` (both bin targets in
+      crates/daemon/Cargo.toml); the CLI crate installs `forge-next` (the
+      `[[bin]] name = "forge-next"`). So users actually get THREE binaries
+      including the unused `forge-bench`, but they DO get `forge-next` and
+      `forge-daemon`. The line below in getting-started ("This builds
+      `forge-daemon` and `forge-next`") is misleading because the cargo
+      command names neither bin — it names crates. Also: there is no
+      published crate at `chaosmaximus/forge` — this works only because of
+      the path-derived workspace install. Document the bin extraction
+      explicitly: "installs `forge-daemon`, `forge-bench` (from forge-daemon
+      crate) and `forge-next` (from forge-cli crate)" so users know what
+      they got.
+  - id: DOCS-A-012
+    severity: MEDIUM
+    summary: "Marketplace.json claims `proactive perception` and `identity` features without surfacing their current state"
+    file: .claude-plugin/marketplace.json:6
+    status: open
+    rationale: |
+      marketplace.json:6 description: "8-layer memory, proactive perception,
+      identity, guardrails." plugin.json:5 echoes the same. Both bullets are
+      shipped (perception worker exists, identity facet engine exists),
+      BUT the marketplace entry advertises "Auto-installs on first use"
+      (plugin.json:5) — the plugin is NOT yet on the official marketplace
+      per `docs/getting-started.md:301-304` ("Full marketplace publication
+      lands in 2P-1b — until then use Option A [symlink-install]"). A user
+      reading the marketplace.json description and then trying
+      `/plugin marketplace install forge` will fail. Drop "Auto-installs on
+      first use" from plugin.json description until the marketplace
+      publication actually completes (per the deferred-release-stack note
+      in `feedback_release_stack_deferred.md`), or add a note in the
+      description that this is the local-clone-only release.
+  - id: DOCS-A-013
+    severity: MEDIUM
+    summary: "agent-development.md lists `fact`, `entity`, `skill` as memory types — same enum drift as DOCS-A-002"
+    file: docs/agent-development.md:123
+    status: open
+    rationale: |
+      agent-development.md:123: "Memory types: `decision`, `lesson`,
+      `pattern`, `fact`, `entity`, `skill`." Same wrong list as
+      getting-started. The actual five-type enum is
+      `decision/lesson/pattern/preference/protocol`. Update to the real list
+      so agent authors don't write `--type fact` calls that fail at the
+      daemon's typed deserialiser.
+  - id: DOCS-A-014
+    severity: MEDIUM
+    summary: "Phase-2A-4d.2 references in CLI/API docs leak internal phase tags into user-facing surface"
+    file: docs/cli-reference.md:769
+    status: open
+    rationale: |
+      cli-reference.md:769 names the `observe` command "Phase 2A-4d.2:
+      Observability API"; api-reference.md:2589-2591 calls `inspect`
+      "Phase 2A-4d.2 observability API" with a pointer to an internal spec
+      doc. Phase tags like "P3-3.11 W29" or "P3-4 Wave Z (Z7)" also leak
+      from the Help output into the rendered CLI reference (e.g. cli-reference
+      shows the strict-scope flag's description "Phase P3-3.11 W29:
+      strict-scope is the new default..." once the help is regenerated).
+      Internal phase labels are noise to external users and create a
+      maintenance trap (every phase rename forces a docs sweep). Strip
+      "Phase 2A-4d.2:" prefixes and link only to the user-facing operator
+      docs (`docs/observability/`).
+  # ── LOW / NIT ─────────────────────────────────────────────────────────
+  - id: DOCS-A-015
+    severity: LOW
+    summary: "Operations.md worker list omits `reaper` + `kpi_reaper`"
+    file: docs/operations.md:31
+    status: open
+    rationale: |
+      Operations.md table at line 31 names eight workers with the comment
+      "Workers: `watcher`, `extractor`, `embedder`, `consolidator`,
+      `indexer`, `perception`, `disposition`, `diagnostics`." The
+      `forge_worker_healthy` Prometheus gauge will also expose
+      `worker="reaper"` and `worker="kpi_reaper"` labels — operators
+      writing alert rules off the docs will skip them. Sub-finding of
+      DOCS-A-007.
+  - id: DOCS-A-016
+    severity: LOW
+    summary: "operations.md still talks about \"Migration note for 0.5.x\" — reads as fresh advice but is now historical"
+    file: docs/operations.md:385
+    status: open
+    rationale: |
+      operations.md:385 has a callout: "Migration note for 0.5.x: the
+      `heartbeat_timeout_secs` default jumped from 60 seconds to 14400
+      seconds…" At v0.6.0-rc.3, anyone upgrading from 0.5.x already saw
+      this when they took 0.6.0-rc.0/1/2 — and any new user installing
+      v0.6.0+ never has the old default. Convert to a CHANGELOG entry or
+      mark it "Historical (0.5 → 0.6 upgrade)" so it does not read as
+      live advice. The `Earlier default` column in the table at line 380-383
+      already conveys the same information for fresh readers.
+  - id: DOCS-A-017
+    severity: LOW
+    summary: "README architecture diagram + getting-started use mixed `localhost:8420` vs `~/.forge/forge.sock` claims without clarifying default"
+    file: README.md:63
+    status: open
+    rationale: |
+      README:63 says "serves context via HTTP at `localhost:8420/api` when
+      agents need it"; but the real default is the Unix socket
+      (cli-reference.md:11: "Omit for local Unix socket"; operations.md
+      treats HTTP as opt-in via `FORGE_HTTP_ENABLED=false` default at line
+      550). The HTTP transport is OFF by default. Users following README
+      verbatim with `curl http://localhost:8420/api` will hit connection
+      refused unless they also set `FORGE_HTTP_ENABLED=true`. Either flip
+      the default to `true` (operations decision, not a docs decision) or
+      add a one-liner: "HTTP is opt-in via `FORGE_HTTP_ENABLED=true`;
+      default transport is the Unix socket at `~/.forge/forge.sock`."
+  - id: DOCS-A-018
+    severity: LOW
+    summary: "CLI reference describes `recall --layer identity`, but `identity` is not a Manas layer"
+    file: docs/cli-reference.md:40
+    status: open
+    rationale: |
+      cli-reference.md:40 says "Filter by Manas layer: `experience`,
+      `declared`, `domain_dna`, `skill`, `perception`, `identity`." The
+      8 layers (per README and getting-started.md:132) are: platform, tool,
+      skill, domain_dna, experience, perception, declared, latent. "identity"
+      is not a memory layer — it is a separate engine (Ahankara) sitting
+      alongside the 8-layer Manas. Either remove `identity` from the
+      layer-filter list, or document explicitly that the layer filter
+      accepts the synthetic `identity` virtual layer that aggregates
+      identity facets. api-reference.md:170 echoes the same wrong list
+      ("`experience`, `declared`, `domain_dna`, `perception`, `identity`")
+      with `skill` missing entirely. Pick one canonical list.
+  - id: DOCS-A-019
+    severity: LOW
+    summary: "Cargo install command in README installs `forge-bench` silently as a third binary"
+    file: README.md:41
+    status: open
+    rationale: |
+      `cargo install --git URL forge-daemon forge-cli` resolves the
+      `forge-daemon` package, which has TWO `[[bin]]` entries:
+      `forge-daemon` and `forge-bench` (crates/daemon/Cargo.toml). Both
+      install. Users see an unexplained `forge-bench` in `~/.cargo/bin/`
+      and will reasonably wonder if it is part of the public surface. Two
+      options: (a) gate `forge-bench` behind a `[features]` block so the
+      default install ships only the daemon bin, or (b) add a one-liner in
+      README right under the install command listing the three resulting
+      binaries. Companion to DOCS-A-011.
+  - id: DOCS-A-020
+    severity: NIT
+    summary: "agent-development.md gRPC URL form uses `grpc://` scheme — verify CLI accepts that scheme"
+    file: docs/agent-development.md:81
+    status: open
+    rationale: |
+      Line 81 advertises `--endpoint grpc://forge.forge.svc.cluster.local:8421`.
+      The `--endpoint` flag passes through to `forge-next`'s endpoint
+      resolver. If the resolver only supports `https://` / `http://`
+      (because the CLI talks JSON-over-HTTP and gRPC is a separate
+      transport), this is a misleading promise. The cli-reference.md:11
+      example only shows `https://`. Either add a `grpc://` example to
+      cli-reference (and verify the resolver code accepts it), or
+      simplify agent-development to the supported transport. NIT because
+      this is one example line; flag for verify in the next CLI-help
+      regen.

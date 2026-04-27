@@ -1,0 +1,670 @@
+audit:
+  id: 2026-04-27-zr-close-pre-release-E-db
+  agent: E (database layer)
+  date: 2026-04-27
+  scope: |
+    crates/daemon/src/db/{schema.rs, ops.rs, manas.rs, effectiveness.rs,
+    metrics.rs, diagnostics.rs, pragma.rs, raw.rs, vec.rs}, sync.rs,
+    migrate.rs, every ALTER TABLE / CREATE TABLE / CREATE INDEX. Out of
+    scope: docs, CLI, dead code, harness, observability metrics.
+  posture: distrustful — silent migration no-ops, sentinel leaks, FK gaps.
+  workspace_root: /mnt/colab-disk/DurgaSaiK/forge/forge
+  baseline_loc:
+    schema_rs: 3833
+    ops_rs: 7592
+    manas_rs: 3900
+    sync_rs: 1555
+    migrate_rs: 150
+
+findings:
+  - id: E-1
+    severity: CRITICAL
+    title: "PRAGMA foreign_keys is OFF in the canonical helper, breaking every FK cascade"
+    file: crates/daemon/src/db/pragma.rs
+    lines: "85-113"
+    evidence: |
+      `apply_runtime_pragmas()` sets ONLY `journal_mode=WAL` and
+      `busy_timeout`. SQLite default for `PRAGMA foreign_keys` is OFF
+      per-connection. The schema declares `raw_chunks(document_id …
+      REFERENCES raw_documents(id) ON DELETE CASCADE)` (schema.rs:298)
+      and the comment at db/raw.rs:575-578 explicitly states "the
+      daemon only works correctly if the daemon runs `PRAGMA
+      foreign_keys=ON`." `delete_document` (raw.rs:278-293) deletes
+      `raw_chunks_vec` rows and the parent `raw_documents` row but does
+      NOT delete `raw_chunks` rows — it relies on the cascade. With
+      foreign_keys=OFF in production, every call orphans every
+      raw_chunks row indefinitely.
+      Bench paths (locomo, longmemeval) and the raw.rs test
+      `setup()` (raw.rs:332) explicitly enable `PRAGMA
+      foreign_keys=ON`, hiding the bug behind tests that don't
+      represent production.
+    impact: |
+      raw_chunks row leak, FTS5 contentless index drift, indeterminate
+      sync_export of stale chunks. The CASCADE is the only FK in the
+      schema so the surface is bounded — but it IS the surface, and
+      the comment / test setup proves the code was written assuming
+      foreign_keys=ON.
+    fix: Add `conn.execute_batch("PRAGMA foreign_keys=ON;")?;` to
+      `apply_runtime_pragmas` BEFORE the existing PRAGMAs. Add a unit
+      test that asserts `PRAGMA foreign_keys` returns 1 after the
+      helper runs. Drop the per-bench-file `PRAGMA foreign_keys=ON`
+      lines once central is in place.
+
+  - id: E-2
+    severity: CRITICAL
+    title: "sync_export soft-scope re-introduces W29 cross-project leak on the export path"
+    file: crates/daemon/src/sync.rs
+    lines: "242-248"
+    evidence: |
+      `build_export_query` emits:
+        ` AND (project = ?{n} OR project IS NULL OR project = '')`
+      This is the exact W29 anti-pattern documented in
+      feedback_sentinel_replacement_for_soft_scope_leak.md and
+      feedback_project_everywhere_vocabulary. After W29 the
+      `_global_` sentinel is the canonical "global" representation;
+      the migration backfilled NULL/empty rows. Any drift row
+      (e.g. one inserted by a non-Rust writer, a botched migration
+      where the SQLite-no-REVERSE trap actually fired (see schema.rs
+      `let _ = conn.execute("UPDATE memory SET project = ...")`
+      backfill that fires only when `needs_backfill` flips), or a
+      mid-state migration), is re-admitted into a `--project P`
+      export. Worse, the export does NOT admit `_global_` rows
+      explicitly — only NULL/empty drift rows. So a project-scoped
+      export silently bleeds DRIFT (not legitimate globals) into the
+      target peer.
+    impact: |
+      Cross-project leak on `forge sync export --project X`,
+      asymmetrical with recall (which is W29-strict), and silently
+      contradicts the W29 fix. Severity is CRITICAL because the
+      export is a sync path — drift propagates to every peer.
+    fix: Replace the soft-scope clause with the recall-side template:
+      `AND (project = ?n OR project = '_global_')` and add an
+      `--include-globals` flag if the caller wants it (mirroring
+      `recall_bm25_project_org_flipped`). Update the unit tests
+      `test_sync_export_project_filter` to verify only the supplied
+      project + sentinel are exported, not arbitrary drift.
+
+  - id: E-3
+    severity: CRITICAL
+    title: "ZR `reality → project` migration has no regression-fixture test"
+    file: crates/daemon/src/db/schema.rs
+    lines: "186-248, 1882-3833 (test mod)"
+    evidence: |
+      The four-quadrant state matrix (reality_exists × project_exists)
+      is implemented and uses `?` propagation correctly. But the test
+      module never seeds a pre-rename `CREATE TABLE reality (...)`
+      with sample rows, runs `create_schema`, and asserts the rows
+      survived under `project`. Per
+      feedback_sqlite_no_reverse_silent_migration_failure.md the
+      W1.2 c1 backfill landed in production for ~1 wave WITHOUT
+      firing because the test only ran on fresh DBs. The ZR-C3
+      migration is a higher-blast-radius rename — RENAME TO is
+      atomic, but the surrounding `DROP INDEX IF EXISTS idx_reality_*`
+      sequence is brittle to typos.
+    impact: |
+      Silent data loss if a future schema change adds a fifth state
+      to the matrix and existing logic mis-classifies a legacy DB.
+      The four-quadrant code is correct today but unverified by
+      regression test.
+    fix: Add `test_zr_c3_renames_legacy_reality_table` and
+      `test_zr_c3_mid_state_dual_table_errors` — the first seeds a
+      `reality` table with 2 rows, runs create_schema, asserts no
+      `reality` table exists and `SELECT * FROM project` returns
+      both rows. The second seeds both tables, asserts the SqliteError.
+
+  - id: E-4
+    severity: CRITICAL
+    title: "store_project uses INSERT OR REPLACE on a partial-unique-indexed table"
+    file: crates/daemon/src/db/ops.rs
+    lines: "2939-2952"
+    evidence: |
+      `idx_project_path_unique` is a UNIQUE INDEX on
+      `project(project_path) WHERE project_path IS NOT NULL`
+      (schema.rs:1220). `store_project` uses INSERT OR REPLACE.
+      Per feedback_insert_or_replace_data_loss_on_unique_index.md,
+      REPLACE removes ANY row that conflicts on ANY unique index,
+      not just the PK. If a caller writes a Project with id=A and
+      project_path=/p, and a different existing row has id=B and
+      project_path=/p, the INSERT OR REPLACE silently DELETES row
+      B and inserts row A. The W23/X1 carry-forward fix added
+      `auto_create_reality_if_absent` which uses INSERT OR IGNORE,
+      but `store_project` was NOT split into a separate
+      "upsert-by-id" helper that excludes path conflicts — the
+      data-loss path is still callable.
+    impact: |
+      Operator running `forge project register` against a
+      pre-existing project_path silently deletes the older
+      project row (sessions / memories / skill_registry rows
+      tagged with the old project NAME stay, but their owner row
+      vanishes — leaves dangling project-name string references
+      with no project entity).
+    fix: Split `store_project` like the X1.fw1+fw2 split for memory
+      (see feedback memo): keep the existing fn as upsert-by-id
+      semantics by adding `WHERE project_path IS NULL OR project_path
+      = excluded.project_path` via ON CONFLICT(id) DO UPDATE, and
+      surface a hard error on path collision against a different id.
+      Add a regression test that proves a path-conflict against a
+      different id errors instead of silent-deleting.
+
+  - id: E-5
+    severity: HIGH
+    title: "memory_vec.store_embedding does not validate dim, code path does"
+    file: crates/daemon/src/db/vec.rs
+    lines: "27-35 vs 99-117"
+    evidence: |
+      `store_code_embedding` (line 99) returns
+      `InvalidParameterName` on len != 768. `store_embedding`
+      (line 27, the memory_vec writer) does NOT validate. memory_vec
+      is declared `float[768]` (schema.rs:254). raw_chunks_vec
+      validates 384 (raw.rs:115). A misconfigured memory embedder
+      (e.g. fastembed swap to all-MiniLM-L6-v2 = 384) would silently
+      corrupt memory_vec — sqlite-vec accepts wrong-size byte slices
+      and returns garbage at MATCH time.
+    impact: |
+      Silent semantic-recall corruption. The asymmetry across the
+      three vec0 tables proves it's an oversight, not a design
+      choice.
+    fix: Mirror the `store_code_embedding` length check in
+      `store_embedding`. Add `let const MEMORY_EMBED_DIM: usize = 768;`
+      in vec.rs and reuse in both. Add a unit test.
+
+  - id: E-6
+    severity: HIGH
+    title: "audit-log append-only triggers created via let _ = (silent failure)"
+    file: crates/daemon/src/db/schema.rs
+    lines: "1490-1502"
+    evidence: |
+      ```
+      let _ = conn.execute_batch(
+          "CREATE TRIGGER IF NOT EXISTS audit_log_no_update ...");
+      ```
+      Per feedback_sqlite_no_reverse_silent_migration_failure.md,
+      `let _ = conn.execute_batch(...)` swallows errors at prepare
+      time. The trigger DDL itself is well-formed, but if the
+      `CREATE TRIGGER` ever returns SQLITE_ERROR (e.g. trigger-name
+      collision after a future rename, or a SQLite version regression
+      on the BEFORE UPDATE/DELETE trigger syntax), the daemon starts
+      with an audit_log table that is silently mutable. Tampering
+      protection vanishes invisibly.
+    impact: |
+      Tampering / coverup possible without operator detection.
+      Audit-log compliance posture (the documented "append-only
+      enforcement") is unverifiable at runtime.
+    fix: Use `?` propagation. Or split into two `conn.execute_batch`
+      calls each `?`'d. Add a regression test that runs
+      `UPDATE audit_log SET action = 'x' WHERE id = 'y'` and asserts
+      it fails with the RAISE(ABORT, ...) message.
+
+  - id: E-7
+    severity: HIGH
+    title: "register_session uses INSERT OR REPLACE — wipes lifecycle columns on re-register"
+    file: crates/daemon/src/sessions.rs
+    lines: "70-103"
+    evidence: |
+      Session table has `agent_status`, `template_id`,
+      `last_activity_at`, `tool_use_count`, `budget_spent`,
+      `working_set`, `parent_session_id`, `role`, `team_id`,
+      `user_id`, `organization_id`, `reality_id`, `current_task`,
+      etc. `register_session`'s INSERT OR REPLACE only lists 9 of
+      these. SQLite's INSERT OR REPLACE on PK conflict DELETES the
+      old row entirely (NOT a column-level merge), then INSERTs the
+      new row — so on re-registration of an existing session id,
+      every column NOT in the INSERT list silently resets to its
+      DEFAULT (mostly NULL or 0). The agent_status state machine,
+      tool_use_count, budget_spent — all wiped.
+    impact: |
+      Hooks that re-register on every Claude transcript replay (see
+      bootstrap.rs) intermittently zero out an active session's
+      lifecycle state. `forge sessions` shows stale or zero counters.
+    fix: Replace with `INSERT INTO session (...) ON CONFLICT(id) DO
+      UPDATE SET agent=excluded.agent, project=excluded.project,
+      cwd=excluded.cwd, last_heartbeat_at=excluded.last_heartbeat_at`
+      — preserve every column not explicitly written. Add a
+      regression test that registers, advances tool_use_count, then
+      re-registers and asserts the counter survived.
+
+  - id: E-8
+    severity: HIGH
+    title: "code_search uses `name LIKE '%pattern%'` — no index can serve it"
+    file: crates/daemon/src/server/handler.rs
+    lines: "5252-5347"
+    evidence: |
+      Three SQL paths for CodeSearch all use `WHERE s.name LIKE ?1`
+      where ?1 is `%query%`. `idx_code_symbol_name` is a B-tree on
+      name; it can serve `LIKE 'query%'` (left-anchored) only. With
+      the leading `%`, the planner falls back to full table scan on
+      `code_symbol`. At fleet-typical scale (hundreds of thousands
+      of symbols across multi-project workspaces), this query is
+      O(N) per request. Currently the only mitigation is the
+      project-side JOIN that bounds scan to one reality.
+    impact: |
+      `forge find-symbol foo` hot-path latency scales linearly with
+      total symbol count. Lab-scale (thousands of rows) hides this;
+      production (~100k symbols) will hit second-class latencies.
+    fix: Either (a) add an FTS5 virtual table over code_symbol(name,
+      kind, file_path) with the same trigger pattern as memory_fts —
+      gives sub-linear LIKE-equivalent search; or (b) document the
+      LIKE pattern as left-anchored only in the CLI and reject
+      leading-`%` queries at the daemon. (a) is preferred and matches
+      the existing memory_fts/skill_registry_fts/raw_chunks_fts
+      precedent.
+
+  - id: E-9
+    severity: HIGH
+    title: "kpi_reaper Pass A missing composite (event_type, timestamp) index"
+    file: crates/daemon/src/workers/kpi_reaper.rs
+    lines: "98-126"
+    evidence: |
+      ```sql
+      DELETE FROM kpi_events WHERE rowid IN (
+          SELECT rowid FROM kpi_events
+          WHERE event_type = ?1 AND timestamp < ?2 LIMIT ?3
+      )
+      ```
+      Schema (schema.rs:339-340) has only single-column
+      `idx_kpi_events_timestamp` and `idx_kpi_events_type` separately.
+      The planner picks one, then must filter rows by the other
+      condition. For high-cardinality types (e.g. `phase_completed`),
+      this devolves to a near-full-table scan inside each batch.
+      `idx_kpi_events_run_id_timestamp` was added in W7 but is
+      orthogonal — it indexes `(run_id, timestamp)` not
+      `(event_type, timestamp)`.
+    impact: |
+      Reaper pass holds a write lock for longer than necessary on
+      busy daemons; the W22 indexer + reaper share the WAL and
+      reaper-induced contention amplifies.
+    fix: Add `CREATE INDEX IF NOT EXISTS idx_kpi_events_type_timestamp
+      ON kpi_events(event_type, timestamp)`. Verify Pass A planner
+      with `EXPLAIN QUERY PLAN`. Drop the legacy `idx_kpi_events_type`
+      since the composite covers the leftmost-prefix case.
+
+  - id: E-10
+    severity: MEDIUM
+    title: "Read-only requests bypass writer-actor's audit_log insert"
+    file: crates/daemon/src/server/{http.rs, writer.rs}
+    lines: "http.rs:180-203, writer.rs:307-338"
+    evidence: |
+      `is_read_only(req)` returns true for Recall, ListIdentity,
+      CodeSearch, Sessions, Verify, Export, etc. (writer.rs:70-149).
+      The HTTP handler routes these to `DaemonState::new_reader` and
+      executes the request directly — bypassing the writer-actor.
+      The writer-actor is the ONLY site that inserts an audit_log
+      record (writer.rs:307). So every read request is unaudited.
+      Combined with E-6's silent-trigger gap, the audit-log compliance
+      posture is "every state-change is logged best-effort, no reads
+      logged at all" — but that contract is implicit, not documented.
+    impact: |
+      Compliance / forensics gap. An attacker with read-only access
+      can exfiltrate all memories via `recall` without any audit
+      trail. For an enterprise pitch, the absence of read-audit will
+      be flagged.
+    fix: Either (a) emit a low-cost audit_log row for every
+      read-request via a fire-and-forget `tokio::spawn` inserting
+      via the writer-actor channel — pattern already used for
+      best-effort writes; or (b) explicitly document in
+      docs/security.md that read access is NOT audited and rely on
+      OS-level access logs. (a) closes the gap if compliance is the
+      goal.
+
+  - id: E-11
+    severity: MEDIUM
+    title: "Backup `Wave Z (Z10)` is a health-check, not a backup pruner"
+    file: crates/daemon/src/server/handler.rs
+    lines: "1795-1838"
+    evidence: |
+      The Z10 implementation reads `~/.forge/*.bak`, sums size, and
+      emits a `HealthCheck { status: 'warn' }` when count >= 5 OR
+      total >= 1 GB. There is NO automated retention / pruning. There
+      is NO `prune_backups` worker, no `tokio::spawn` retention loop,
+      no test fixture. Doctor surfaces the warning but takes no
+      action. Operators must manually `gzip` or move files.
+    impact: |
+      The audit prompt asked "is there a working backup pruner?" —
+      no. The codebase advertises "backup hygiene" (Z10 docstring)
+      but the implementation is observability-only. Disk fills
+      silently between operator inspections.
+    fix: Either (a) add a `workers/backup_pruner.rs` that runs at
+      daemon start + every 24h, deletes *.bak files older than N days
+      (default 30), keeps last K (default 3); or (b) explicitly
+      rename the check from "backup_hygiene" to "backup_size_warn"
+      and document the manual-cleanup contract. Both need a test
+      fixture using tempdir + synthetic `.bak` files.
+
+  - id: E-12
+    severity: MEDIUM
+    title: "WHERE agent = ?1 AND project = ?2 AND status = 'ended' has no covering index"
+    file: crates/daemon/src/sessions.rs
+    lines: "274-281"
+    evidence: |
+      Working-set inheritance query joins agent + project + status,
+      ordered by started_at desc. Schema indexes are
+      `idx_session_agent`, `idx_session_status`, `idx_session_org`
+      — no composite covering the 3-column WHERE. The query runs on
+      every session register in compile_context flow.
+    impact: |
+      session-table scans grow O(N) with session history. Multi-week
+      operator sessions have thousands of ended rows.
+    fix: Add `CREATE INDEX IF NOT EXISTS idx_session_agent_project_status
+      ON session(agent, project, status, started_at DESC)`. Verify
+      with EXPLAIN QUERY PLAN.
+
+  - id: E-13
+    severity: MEDIUM
+    title: "Edge dedup migration runs `let _ = conn.execute_batch(...)` for FK-removal table swap"
+    file: crates/daemon/src/db/schema.rs
+    lines: "1652-1682"
+    evidence: |
+      The "remove FK constraints from edge table" migration first
+      probes pragma_foreign_key_list, then runs an
+      `INSERT OR IGNORE INTO edge_migrated SELECT * FROM edge;
+       DROP TABLE edge; ALTER TABLE edge_migrated RENAME TO edge`
+      inside `let _ = conn.execute_batch(...)`. If the ALTER fails
+      midway (e.g. partial rename, or the IGNORE silently drops
+      duplicate rows due to the new UNIQUE index — but UNIQUE was
+      not yet defined at this point so dups DO survive), the daemon
+      keeps running with `edge_migrated` orphaned. The error swallow
+      is the SQLite-no-REVERSE pattern again. `INSERT OR IGNORE
+      SELECT *` also silently DROPS rows whose `from_id` / `to_id`
+      no longer reference memory (the very rows the FK migration was
+      meant to preserve) on legacy DBs.
+    impact: |
+      Edge-data loss on a slow legacy upgrade. Silent.
+    fix: Replace `let _ = conn.execute_batch(...)` with `?`
+      propagation. Wrap in an explicit transaction so partial states
+      cannot persist. Add a regression test that seeds an FK-bearing
+      `edge` table with `file:` prefixed `from_id` rows, runs migration,
+      asserts every row survived under the new unnamed-FK table.
+
+  - id: E-14
+    severity: MEDIUM
+    title: "sync_import opens an unchecked_transaction but writes via `conn.execute`, not `tx.execute`"
+    file: crates/daemon/src/sync.rs
+    lines: "418-552"
+    evidence: |
+      `let tx = conn.unchecked_transaction()?;` then every subsequent
+      write uses `conn.execute(...)`, not `tx.execute(...)`. SQLite
+      semantics make this OK because `unchecked_transaction` just
+      issues `BEGIN` on the Connection — subsequent writes through
+      the same Connection ARE inside the transaction, and `tx.commit()`
+      / Drop-rollback work as intended. But the pattern is
+      indistinguishable from a bug at code-review time and leaks
+      across the audit boundary as suspicious. The Drop guard relies
+      on `?` early-return to roll back; if anyone introduces a
+      `Result<_, String>` wrapper (e.g. anyhow::Result conversion),
+      the Drop does NOT trigger and partial writes commit on commit().
+    impact: |
+      Code-review fragility. No live data-loss yet, but trivially
+      becomes one.
+    fix: Use `tx.execute(...)` for every write inside the txn, or
+      switch to `let mut tx = conn.transaction()?` (rusqlite checked
+      variant) with explicit `tx.commit()`. Either way the type
+      system enforces the contract.
+
+  - id: E-15
+    severity: MEDIUM
+    title: "memory.organization_id backfill via `let _ = conn.execute(\"UPDATE memory ...\")`"
+    file: crates/daemon/src/db/schema.rs
+    lines: "986-992"
+    evidence: |
+      ```
+      let _ = conn.execute(
+          "UPDATE memory SET organization_id = COALESCE(...) WHERE
+           organization_id = 'default' AND session_id != ''", []);
+      ```
+      Same SQLite-no-REVERSE trap pattern. The COALESCE references
+      `session.organization_id` — if the schema migration order ever
+      regresses such that `session.organization_id` doesn't exist
+      yet at this UPDATE, the migration silently no-ops and EVERY
+      memory row stays at `organization_id='default'`. Multi-org
+      isolation collapses without surfacing an error.
+    impact: |
+      Multi-org boundary leak in a migration ordering regression.
+    fix: Use `?` propagation. Sentinel-test: seed a memory row with
+      `organization_id='default'` and `session_id` referencing a
+      session with `organization_id='org-x'`, run create_schema,
+      assert the memory's organization_id became 'org-x'.
+
+  - id: E-16
+    severity: MEDIUM
+    title: "code_file pollution DELETE migrations use `let _ = conn.execute(...)` in cascade"
+    file: crates/daemon/src/db/schema.rs
+    lines: "1134-1148"
+    evidence: |
+      Three sequential `let _ = conn.execute(&format!(...))` calls
+      DELETE from `edge`, `code_symbol`, then `code_file`, all
+      keyed by the same path-prefix predicate. If pass 2
+      (code_symbol) silently fails (e.g. polluted_paths_subquery
+      malformed by a future POLLUTION_PREDICATE refactor), pass 3
+      still runs and deletes code_file rows, leaving orphan symbols.
+      Per the SQLite-no-REVERSE memo, error swallow = silent split-
+      brain.
+    impact: |
+      Orphan code_symbol rows after partial migration; CodeSearch
+      returns hits to non-existent files. Bounded blast radius
+      (pollution-only paths) but operationally invisible.
+    fix: `?` propagation, explicit transaction wrap. Add a fixture
+      test that seeds a polluted code_file + symbol + edge cluster,
+      runs migration, asserts all three are gone in the same DB.
+
+  - id: E-17
+    severity: MEDIUM
+    title: "list_symbols silently coerces NULL line_start to 0"
+    file: crates/daemon/src/db/ops.rs
+    lines: "1479-1495 vs crates/core/src/types/code.rs:14-22"
+    evidence: |
+      Schema: `code_symbol.line_start INTEGER` (nullable).
+      Rust struct: `CodeSymbol.line_start: usize` (NON-Option).
+      `list_symbols` reads as `Option<usize>::unwrap_or(0)` (line
+      1489). Every symbol with NULL line_start (legacy / synthetic /
+      file-level symbol) appears to live on line 0 instead of being
+      flagged unknown.
+    impact: |
+      Cosmetic for UI, but `find-symbol foo` returns ambiguous
+      "line: 0" for genuine unknowns vs synthetic line-1 symbols.
+      Trips a downstream "go-to-definition" if the IDE assumes the
+      number is real.
+    fix: Either change the struct to `line_start: Option<usize>` and
+      propagate to all readers, or backfill non-null at insert-time
+      via a CHECK constraint. Struct-side change is less migration
+      work.
+
+  - id: E-18
+    severity: MEDIUM
+    title: "`notification.reality_id` column persists post-ZR (vocabulary leak)"
+    file: crates/daemon/src/db/schema.rs
+    lines: "1402"
+    evidence: |
+      Per feedback_project_everywhere_vocabulary.md the user-facing
+      vocabulary lock is `project` only; internal `reality` Rust +
+      SQL stays during ZR rollover. But `notification` table column
+      `reality_id` is exposed to clients via the JSON
+      `ResponseData::Notification { reality_id, ... }` path
+      (notifications.rs:37 carries the Option<String> verbatim into
+      the wire shape). Operators see `reality_id` in HTTP responses
+      from `/api ListNotifications`.
+    impact: |
+      User-visible vocabulary regression from the ZR contract.
+      Tracking is the same "deferred" bucket as session.reality_id
+      / memory.reality_id but for an operator-visible field, not an
+      internal one.
+    fix: Either (a) add `#[serde(rename = "project_id")]` to
+      `NotificationBuilder.reality_id` so the wire shape is
+      `project_id` while the SQL column stays; or (b) add the W1.x
+      column-rename to a future migration. (a) is zero-risk and
+      satisfies the user-facing lock.
+
+  - id: E-19
+    severity: MEDIUM
+    title: "SkillsRegistry FTS bootstrap uses `unwrap_or(false)` on existence probe"
+    file: crates/daemon/src/db/schema.rs
+    lines: "1566-1593"
+    evidence: |
+      ```
+      let fts_exists = conn.query_row(...).unwrap_or(false);
+      if !fts_exists { conn.execute_batch("CREATE VIRTUAL TABLE
+          skill_registry_fts ...")?; ... }
+      ```
+      If the existence probe fails (e.g. `sqlite_master` busy-locked
+      under heavy concurrency at startup), the code assumes "doesn't
+      exist" and tries to create. The CREATE will fail because the
+      table actually does exist, propagating an error that masks the
+      real cause (the lock).
+    impact: |
+      Misleading startup error on hot WAL contention.
+    fix: Probe with `?` and let real errors surface. Or replace the
+      whole pattern with `CREATE TABLE IF NOT EXISTS skill_registry_fts
+      ...` IF the FTS5 syntax actually accepts IF NOT EXISTS for
+      content= (it does in SQLite 3.39+, and Forge's MSRV is well
+      above that).
+
+  - id: E-20
+    severity: LOW
+    title: "Manas 8-layer claim verified (8 distinct tables) but layer boundaries are not enforced"
+    file: crates/daemon/src/db/schema.rs
+    lines: "505-625"
+    evidence: |
+      The 8 layers are: platform, tool, skill, domain_dna, perception,
+      declared, identity, disposition. Every table exists. Layer
+      ownership is enforced ONLY by file convention (db::manas.rs
+      contains the writers) — there are no CHECK constraints or
+      naming-prefix rules in SQL preventing layer-N code from
+      writing to layer-M's table.
+    impact: |
+      Marketing claim ("8 memory layers") is honest. But future
+      contributor adding a write site that mixes layers will not be
+      stopped by the schema. This is design intent (Manas is a logical
+      layering, not a SQL one) but worth documenting.
+    fix: No code change. Add a single sentence to docs/architecture
+      stating "Manas layers are conventional; layer ownership is
+      enforced by the db::manas module boundary, not SQL-level
+      constraints." Closes the audit-question loop.
+
+  - id: E-21
+    severity: LOW
+    title: "kpi_events_retention reaper: per-event-type tested, but no end-to-end retention test"
+    file: crates/daemon/src/workers/kpi_reaper.rs
+    lines: "267-464"
+    evidence: |
+      Tests exist: `test_bench_run_completed_survives_31_days`,
+      `test_bench_run_completed_reaped_at_181_days`,
+      `test_global_default_30d_applies_to_other_types`. The unit
+      tests exercise `reap_once` directly with a synthetic
+      retention_by_type map, but there is no integration test that
+      starts the daemon, populates kpi_events via the writer, lets
+      the spawned reaper task run on a tight interval, and asserts
+      the table shrank. The supervised retention loop
+      (`run_kpi_reaper`) is exercised only via its inner blocking
+      helper — the spawn / interval / shutdown pathway is untested.
+    impact: |
+      Production retention IS likely working (unit-level proof of
+      delete correctness), but the spawn lifecycle could break
+      silently — e.g. a config refresh that resets retention_by_type
+      to empty would be untested.
+    fix: Add `tests/integration_kpi_retention.rs` that drives the
+      tokio loop with a 50ms tick, populates 3 event_types, asserts
+      after one tick that the per-type cutoffs fired correctly.
+
+  - id: E-22
+    severity: LOW
+    title: "Read-only HTTP path inlines PRAGMA literal instead of routing through helper"
+    file: crates/daemon/src/server/handler.rs
+    lines: "214-222"
+    evidence: |
+      `DaemonState::new_reader` opens `OPEN_READ_ONLY` and inlines
+      `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;` rather
+      than calling `apply_runtime_pragmas(&conn)`. The comment at
+      line 214 explains the rationale (read-only handles can't
+      ENGAGE WAL via `journal_mode=WAL`), but the busy_timeout
+      coordination is a separate concern and the pragma module's
+      whole point (see pragma.rs:11-30) is "one helper, one
+      canonical value, one source of truth."
+    impact: |
+      Drift risk. If `BUSY_TIMEOUT_MS` ever changes, this site is
+      missed. Same memo trap that Z-1 was meant to close.
+    fix: Add a `apply_runtime_pragmas_readonly(&conn)` helper that
+      sets only busy_timeout (skipping journal_mode), and route this
+      site through it. Single source of truth restored.
+
+  - id: E-23
+    severity: LOW
+    title: "Project struct's `metadata` is `String` not `serde_json::Value`"
+    file: crates/core/src/types/entity.rs
+    lines: "40-55"
+    evidence: |
+      `Project { ... metadata: String }` — schema is
+      `metadata TEXT DEFAULT '{}'` so the type is faithful. But
+      every read site has to `serde_json::from_str(&p.metadata)`
+      to actually use it, and writes have to `serde_json::to_string(&v)`
+      first. Two sites (handler.rs project_show, sync export) do
+      this manually with no shared helper.
+    impact: |
+      Code-style only. No data-loss path. Mentioned because the
+      audit asked about struct/SQL drift.
+    fix: No fix needed. Optionally add `pub fn metadata_value(&self)
+      -> Result<serde_json::Value, _>` to the Project impl.
+
+  - id: E-24
+    severity: LOW
+    title: "raw_chunks_vec dim is 384 (MiniLM); memory_vec / code_vec are 768 — verify writer asymmetry is documented"
+    file: crates/daemon/src/db/schema.rs
+    lines: "252-275, raw.rs:13-15"
+    evidence: |
+      The dim split is intentional and the comment at schema.rs:266
+      explicitly warns "do NOT merge with the 768-dim memory_vec /
+      code_vec tables." raw.rs:13 documents the all-MiniLM-L6-v2
+      pairing. No drift here. But the asymmetry that
+      `store_code_embedding` validates 768 and `store_chunk_embedding`
+      validates 384 while `store_embedding` validates NOTHING (E-5)
+      is the only real concern.
+    impact: |
+      None — this is the audit confirming the dim split is correct
+      by design.
+    fix: No fix; logged for completeness.
+
+  - id: E-25
+    severity: NIT
+    title: "Inline migration comments duplicate W1.3 LOW-* tags but no canonical migration log"
+    file: crates/daemon/src/db/schema.rs
+    lines: "throughout"
+    evidence: |
+      Every ALTER TABLE / CREATE INDEX migration carries an inline
+      comment like `// P3-4 W1.25 (W1.3 LOW-6): composite (project,
+      path) index ...`. Helpful for code-archaeology, but there is
+      no docs/architecture/migrations.md that lists the same
+      sequence top-to-bottom for new contributors. The migrations
+      module is implicit (every wave appends `let _ = conn.execute
+      ALTER ...`).
+    impact: |
+      Onboarding friction. New contributor cannot tell at a glance
+      what schema version their DB carries.
+    fix: Optional. Add `crates/daemon/src/db/MIGRATIONS.md` (or
+      docs/architecture/db-migrations.md) with one row per migration
+      keyed by wave + change type + line number. No code change.
+
+summary:
+  total_findings: 25
+  by_severity:
+    CRITICAL: 4
+    HIGH: 5
+    MEDIUM: 10
+    LOW: 5
+    NIT: 1
+  carry_forwards:
+    - feedback_sqlite_no_reverse_silent_migration_failure.md
+      → still alive at E-6, E-13, E-15, E-16 (let _ = conn.execute on
+      non-idempotent UPDATE/DELETE/CREATE TRIGGER)
+    - feedback_insert_or_replace_data_loss_on_unique_index.md
+      → alive at E-4 (store_project) and E-7 (register_session)
+    - feedback_sentinel_replacement_for_soft_scope_leak.md
+      → alive at E-2 (sync_export)
+    - feedback_project_everywhere_vocabulary.md
+      → leak at E-18 (notification.reality_id wire shape)
+  zr_close_blockers:
+    - E-1 (foreign_keys=OFF)
+    - E-2 (sync export soft-scope leak)
+    - E-3 (no ZR migration regression test)
+    - E-4 (store_project REPLACE data-loss)
+  next_audit_recommended:
+    - Compare findings against Agent F observability findings (the
+      kpi_reaper retention story spans both audits).
+    - Re-run after Z-1 PRAGMA fix to verify E-1 closure.

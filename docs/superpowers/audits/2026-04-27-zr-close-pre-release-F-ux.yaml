@@ -1,0 +1,658 @@
+schema_version: 1
+slug: 2026-04-27-zr-close-pre-release-F-ux
+target_paths:
+  - crates/cli/src/client.rs
+  - crates/cli/src/commands/observe.rs
+  - crates/cli/src/commands/system.rs
+  - crates/daemon/src/server/handler.rs
+  - crates/daemon/src/server/http.rs
+  - crates/daemon/src/server/inspect.rs
+  - crates/daemon/src/server/metrics.rs
+  - crates/daemon/src/server/socket.rs
+  - crates/daemon/src/server/writer.rs
+  - crates/daemon/src/workers/instrumentation.rs
+  - crates/daemon/src/config.rs
+  - crates/core/src/paths.rs
+  - deploy/docker-compose.yml
+  - deploy/grafana/forge-alerts.yml
+  - deploy/grafana/forge-dashboard.json
+  - deploy/grafana/forge-operator-dashboard.json
+  - docs/observability/otlp-validation.md
+  - docs/operations/runbooks/all-workers-down.md
+  - docs/operations/runbooks/extraction-slow.md
+  - docs/operations/runbooks/high-recall-latency.md
+  - docs/operations/runbooks/layer-stale.md
+  - docs/operations/runbooks/memory-stale.md
+  - docs/operations/runbooks/no-active-sessions.md
+  - docs/operations/runbooks/phase-persistence-error.md
+  - docs/operations/runbooks/phase-stuck.md
+  - docs/operations/runbooks/worker-down.md
+  - scripts/install.sh
+reviewer:
+  agent: claude-opus-4-7
+  date: '2026-04-27'
+commit_range:
+  base: 1cf9a7d
+  head: 1cf9a7d
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/audits/2026-04-27-zr-close-pre-release-F-ux.yaml
+findings:
+  # ── CRITICAL ──────────────────────────────────────────────────────────
+  - id: CRITICAL-1
+    severity: CRITICAL
+    summary: "First-run UX is BROKEN — fresh `$HOME` with no `~/.forge/` directory makes every CLI invocation fail with `failed to open daemon log` and exit 0"
+    file: crates/cli/src/client.rs:143
+    status: open
+    rationale: |
+      Reproduced 2026-04-27 against `target/release/forge-next doctor`
+      with `HOME=$(mktemp -d)` (no `.forge/` precreated). Output:
+        `error: failed to open daemon log /tmp/forge-audit-XX/.forge/daemon.log:
+         No such file or directory (os error 2)` — and the process exits
+      with status 0. The daemon is never spawned; the user's `doctor`,
+      `health`, `recall`, `compile-context` ALL fail identically. The
+      auto-spawn helper at `connect()` opens `{forge_dir()}/daemon.log`
+      with `OpenOptions::create(true)` but does NOT pre-create the
+      parent directory. `forge_core::paths::forge_dir()` returns
+      `$HOME/.forge` and there is no `mkdir -p` anywhere in the cold
+      path (verified: `grep -rE 'create_dir|mkdir' crates/cli/src/
+      crates/core/src/`). The `scripts/install.sh` does NOT pre-create
+      `~/.forge/` either. The error message also implies the user did
+      something wrong — there is no hint to run `mkdir -p ~/.forge`.
+      **Fix:** add `std::fs::create_dir_all(forge_core::forge_dir())`
+      before `OpenOptions::open` in `connect()`, AND `std::process::exit(1)`
+      so a wrapper script can detect failure. Pin with a tempdir-HOME
+      regression test.
+  - id: CRITICAL-2
+    severity: CRITICAL
+    summary: "`forge-next observe --shape row-count` is permanently broken — Inspect requests route through writer actor, which has `metrics: None`"
+    file: crates/daemon/src/server/handler.rs:179
+    status: open
+    rationale: |
+      Reproduced 2026-04-27: `observe --shape row-count` returns
+      `{ stale: true, row_count: 0, rows: [] }` even on a freshly-spawned
+      daemon. Root cause: `Request::Inspect` is NOT in
+      `is_read_only(&request)` (`crates/daemon/src/server/writer.rs:70-145`),
+      so socket-routed Inspect requests fall through to
+      `WriteCommand::Audited → handle_request(&mut self.state, ...)`.
+      `self.state` is the `WriterActor`'s `DaemonState`, constructed via
+      `DaemonState::new_writer` which hard-codes `metrics: None`
+      (handler.rs:179). The lazy-refresh branch at handler.rs:7669-7674
+      `if let Some(metrics_arc) = state.metrics.as_ref() { ... }` is
+      thus a permanent miss; `state.metrics.as_ref().map(...)` at line
+      7676 returns `None`; `row_count_from_snapshot(None, ...)` at
+      inspect.rs:269 returns `(empty rows, stale=true)`. The whole
+      `row_count` Inspect surface is dead in production. Tests pass
+      because `DaemonState::new(":memory:")` paths bypass the writer
+      actor entirely. **Fix (one-line):** add
+      `Request::Inspect { .. }` to `is_read_only()`. Inspect runs only
+      SELECT (verified: inspect.rs has zero `INSERT|UPDATE|DELETE`).
+      Pair with a regression test that goes through `run_server`'s
+      socket dispatch and asserts `stale: false` after a cold lazy
+      refresh. Crosslink:
+      `feedback_readonly_routing_trap_for_side_effecting_handlers.md`
+      (W1.30 has a write-side variant; this is the read-side mirror —
+      a read endpoint mis-routed through the writer loses access to
+      shared state that only readers carry).
+  # ── HIGH ──────────────────────────────────────────────────────────────
+  - id: HIGH-1
+    severity: HIGH
+    summary: "Operator dashboard + alerts use label keys (`phase_name`, `error_kind`, `outcome`, `layer`) that don't match emitted labels (`phase`, `kind`, `action`, `table`)"
+    file: deploy/grafana/forge-operator-dashboard.json:29
+    status: open
+    rationale: |
+      4-way label-name drift across alerts and dashboards. Emit sites
+      (verified `crates/daemon/src/workers/instrumentation.rs:117,127,
+      137,146` and `crates/daemon/src/server/metrics.rs:219,227,235,
+      243,261`):
+        - `forge_phase_duration_seconds`{`phase`}
+        - `forge_phase_output_rows_total`{`phase`,`action`}
+        - `forge_phase_persistence_errors_total`{`phase`,`kind`}
+        - `forge_table_rows`{`table`}
+        - `forge_layer_freshness_seconds`{`table`}
+      Consumers (`deploy/grafana/forge-operator-dashboard.json`,
+      `deploy/grafana/forge-alerts.yml`):
+        - PromQL `sum by (phase_name, outcome, le) (...)` — wrong on
+          BOTH labels for `forge_phase_duration_seconds` (no `outcome`
+          label exists at all; the operator dashboard panel "Phase
+          duration p95 (by phase_name + outcome)" returns no series).
+        - `sum by (phase_name, error_kind) (...)` — both labels wrong
+          for `forge_phase_persistence_errors_total`.
+        - `sum by (phase_name) (rate(forge_phase_output_rows_total[5m]))`
+          — wrong label.
+        - `forge_layer_freshness_seconds` legend `{{layer}}` — emit
+          label is `table`, not `layer` (the metric DOC-STRING calls it
+          a "layer" but the *Vec is registered with `&["table"]`).
+        - Alerts `ForgePhasePersistenceErrorRateHigh`, `ForgePhaseStuck`,
+          `ForgeLayerFreshnessStaleHour` — annotations templated with
+          `{{ $labels.phase_name }}` / `{{ $labels.layer }}` will all
+          render empty. The panel/alert returns no data; operator sees
+          a healthy-looking but blank graph.
+      **Fix:** rename emit-side labels to match the consumer
+      vocabulary (`phase → phase_name`, `kind → error_kind`,
+      `action → outcome`, `table → layer`). Emit-side rename has
+      smaller blast-radius (one rust file each) and aligns with the
+      doc-string "layer" terminology. Add a contract test that imports
+      both dashboard+alert YAMLs and asserts every `by (X, ...)` key
+      is in the metrics.rs allow-list.
+  - id: HIGH-2
+    severity: HIGH
+    summary: "All 9 alert runbooks reference non-existent CLI subcommands — `forge-next observe worker-status / phase-summary`, `forge-next logs`, `forge-next service restart`"
+    file: docs/operations/runbooks/worker-down.md:28
+    status: open
+    rationale: |
+      Every runbook in `docs/operations/runbooks/` (9 files, one per
+      alert) tells the on-call engineer to run commands that do not
+      exist. Verified 2026-04-27 against `target/release/forge-next`:
+        - `forge-next observe worker-status` — observe shapes are
+          `row-count|latency|error-rate|throughput|phase-run-summary|
+          bench-run-summary` only; no `worker-status` or `phase-summary`
+          variants exist.
+        - `forge-next observe phase-summary --window 30m` — same.
+        - `forge-next logs --tail 200` — there is no `logs` subcommand;
+          `forge-next logs --help` returns
+          `error: unrecognized subcommand 'logs' tip: a similar
+          subcommand exists: 'org-list'`.
+        - `forge-next service restart` — only `install|start|stop|
+          status|uninstall` exist under `service`; the top-level
+          `forge-next restart` is what the docs likely meant.
+      Affected files: `worker-down.md`, `all-workers-down.md`,
+      `phase-stuck.md`, `phase-persistence-error.md`, `extraction-slow.md`,
+      `high-recall-latency.md`, `memory-stale.md`, `layer-stale.md`,
+      `no-active-sessions.md`. The runbook URLs in `forge-alerts.yml`
+      are also relative paths (`docs/operations/runbooks/worker-down.md`),
+      not URLs — they will appear as broken links in
+      AlertManager/PagerDuty. **Fix:** rewrite each runbook to use
+      real subcommands (`forge-next health`, `forge-next observe
+      --shape phase-run-summary`, `tail -n 200 ~/.forge/daemon.log`,
+      `forge-next restart`); convert relative paths to
+      `https://github.com/chaosmaximus/forge/blob/master/docs/...`
+      URLs OR document that the relative paths require a Forge-aware
+      AlertManager template.
+  - id: HIGH-3
+    severity: HIGH
+    summary: "`/metrics` and `/inspect` over HTTP are unreachable on default install — `http.enabled = false` is the default"
+    file: crates/daemon/src/config.rs:246
+    status: open
+    rationale: |
+      `HttpConfig::default { enabled: false }` (config.rs:246) means a
+      first-time `forge-next` user has NO HTTP server, so:
+        - `curl http://127.0.0.1:8420/metrics` returns connection-refused.
+        - Grafana cannot scrape; the `deploy/grafana/forge-dashboard.json`
+          panels are all blank for new users.
+        - The operator dashboard's "PromQL targets the names emitted by
+          `crates/daemon/src/server/metrics.rs`" claim is technically
+          true, but the metrics aren't exposed in the default
+          configuration.
+        - `MetricsConfig::default { enabled: true }` (config.rs:383)
+          is misleading — the registry is constructed but the route is
+          gated on `config.metrics.enabled && state.metrics.is_some()`
+          AND the entire `/metrics` health-routes Router is mounted
+          inside `if config.http.enabled`, so flipping
+          `metrics.enabled` alone has zero effect.
+      The README/CLAUDE.md claim "Daemon HTTP API on 8420 — POST /api"
+      is false on default config. **Fix options:** (a) flip
+      `HttpConfig::default { enabled: true }` (security note: bind is
+      already `127.0.0.1` so loopback-only); (b) ship a `quickstart`
+      profile in `config/default.toml` that enables HTTP; (c) at
+      minimum, surface a `[WARN] http: not enabled — /metrics + /inspect
+      unreachable` health-check in `forge-next doctor` so the user
+      knows.
+  - id: HIGH-4
+    severity: HIGH
+    summary: "Headline product claim '8-layer Manas memory' clashes with observability surface — `/inspect row_count` and `forge_table_rows` expose 11 layers"
+    file: crates/daemon/src/server/metrics.rs:559
+    status: open
+    rationale: |
+      README.md repeats "8-layer memory" 5 times and ships an
+      `img.shields.io/badge/memory%20layers-8-purple` badge. The
+      `manas-health` CLI returns the canonical 8-layer view (Platform/
+      Tool/Skill/DomainDNA/Experience/Perception/Declared/Latent). But
+      the observability surface is wider: `metrics.rs:559` enumerates
+      11 tables (`memory, skill, edge, identity, disposition, platform,
+      tool, perception, declared, domain_dna, entity`); the
+      `TableGauges::to_layer_rows` test asserts "exactly 11 Manas
+      tables" (metrics.rs:978); the operator dashboard description
+      says "per Manas layer (skill, perception, declared, etc.)". So
+      the user runs `forge-next observe --shape row-count` and sees
+      11 rows, but the README told them there are 8. `edge`, `identity`,
+      `disposition`, `entity` are not Manas layers — `edge` is the
+      knowledge graph, `identity/disposition` are separate Ahankara
+      surfaces, `entity` is its own engine. **Fix (low effort):**
+      pick a single canonical layer enumeration. Either (a) drop
+      `edge/identity/disposition/entity` from the row-count surface
+      and rename the field/struct from `LayerRow.layer` to a clearer
+      name for the 11-table superset, OR (b) reword README/CLAUDE.md
+      to "8-layer Manas memory + entity/edge/identity/disposition
+      adjuncts (11 observable tables total)". Today the marketing and
+      the dashboard fight each other.
+  - id: HIGH-5
+    severity: HIGH
+    summary: "`docker compose --profile monitor up -d` will hard-fail — `prometheus.yml` is referenced but never shipped"
+    file: deploy/docker-compose.yml:46
+    status: open
+    rationale: |
+      Line 46 mounts `./prometheus.yml:/etc/prometheus/prometheus.yml:ro`,
+      but `deploy/prometheus.yml` does not exist. Verified 2026-04-27:
+      `ls /mnt/colab-disk/DurgaSaiK/forge/forge/deploy/prometheus.yml`
+      → `No such file or directory`. A user following the comment
+      "Start with Prometheus + Grafana — `docker compose --profile
+      monitor up -d`" will see the prometheus container exit with
+      `error: cannot find /etc/prometheus/prometheus.yml`. Compounding:
+      even if they create it, by default `forge` container exposes
+      `:8420` but the auto-spawn path in CLI bypasses HTTP entirely
+      (HIGH-3) — and the docker-compose service correctly sets
+      `FORGE_HTTP_ENABLED=true` to override, so for the docker path
+      this is just a missing config file. **Fix:** ship
+      `deploy/prometheus.yml` with a `forge` job pointed at
+      `forge:8420/metrics` (and the alerts-rule include).
+  # ── MEDIUM ────────────────────────────────────────────────────────────
+  - id: MED-1
+    severity: MEDIUM
+    summary: "Daemon RPATH bakes a version-pinned `.tools/onnxruntime-linux-x64-1.23.0/lib` path that won't survive install relocation"
+    file: ".cargo/config.toml or crates/daemon/build.rs (RPATH baked at link time)"
+    status: open
+    rationale: |
+      `readelf -d target/release/forge-daemon`:
+        `RUNPATH: [$ORIGIN/../lib:$ORIGIN/../../.tools/
+         onnxruntime-linux-x64-1.23.0/lib:$ORIGIN/../../../.tools/
+         onnxruntime-linux-x64-1.23.0/lib]`
+      Two issues: (a) the version `1.23.0` is hard-coded into the binary;
+      a `setup-dev-env.sh` upgrade or new release will require a
+      rebuild even on the same host. (b) the relative paths assume the
+      binary lives in `target/release/`. After `install.sh` copies it
+      to `/usr/local/bin/forge-daemon`, `$ORIGIN/../../.tools/...`
+      points at `/.tools/...` (root) — won't exist. The W1.20/X2 RPATH
+      "bake-in" the audit prompt asks about IS in place, but only for
+      in-tree dev. Confirmed by `release-local/`'s structure being a
+      sibling of `target/`. **Fix:** add `$ORIGIN/../lib` (already
+      present) as the production path, and update `install.sh` to
+      copy `libonnxruntime.so.1` into `/usr/local/lib/forge/`. OR
+      switch to `dlopen` of system libonnxruntime when present, fall
+      back to bundled. Today, an installed daemon SILENTLY needs
+      `LD_LIBRARY_PATH=/path/to/.tools/onnxruntime-linux-x64-1.23.0/lib`
+      forwarded — partially mitigated by `FORWARDED_ENV_KEYS`
+      (client.rs:21-31), but the user's shell still has to set it.
+  - id: MED-2
+    severity: MEDIUM
+    summary: "macOS install hard-fails with a non-trivial cargo workaround — `scripts/install.sh:34` dies, suggests `cargo install --git`"
+    file: scripts/install.sh:34
+    status: open
+    rationale: |
+      Per Plan A decision #2 macOS is best-effort, but the install
+      script's failure message is hostile to a first-time evaluator:
+      `die "macOS installer ships in 2P-1b. For now: cargo install
+      --git https://github.com/chaosmaximus/forge forge-daemon
+      forge-cli"`. Problems: (1) the binary is `forge-next`, not
+      `forge-cli` — `cargo install` will succeed but produce a binary
+      with the wrong name; the installed `forge-cli` doesn't match
+      anything else in the docs/CLI banner. (2) The user has to set
+      up Rust + ONNX Runtime + libssl manually with no setup-dev-env
+      .sh equivalent. (3) The HUD `forge-hud` and `forge-bench`
+      binaries are not mentioned at all. Compare to a working flow:
+      `brew install onnxruntime && cargo install ...`. **Fix:** add
+      a Homebrew tap (or a one-liner `curl | bash` for darwin/aarch64)
+      OR rewrite the error message to reference the
+      `Formula/forge.rb` Homebrew formula already shipped in the repo.
+  - id: MED-3
+    severity: MEDIUM
+    summary: "Operator dashboard hardcodes `\"datasource\": \"Prometheus\"` (and `\"SQLite\"`) instead of using the `${DS_PROMETHEUS}` template variable"
+    file: deploy/grafana/forge-operator-dashboard.json:25
+    status: open
+    rationale: |
+      `forge-dashboard.json` parameterises with
+      `"datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }`
+      so import asks the user to bind a datasource. The operator
+      dashboard hard-codes the strings `"Prometheus"` (panels at
+      lines 25, 41, 56, 73, 86) and `"SQLite"` (line 100). Outcome:
+      importing into a Grafana instance whose default datasource is
+      named anything other than literally `"Prometheus"` shows
+      "datasource not found" on every panel; the SQLite panel (bench
+      composite) requires a datasource literally named `"SQLite"`,
+      which is not a default datasource type at all (requires the
+      `frser-sqlite-datasource` plugin and a manual install). **Fix:**
+      switch to the same `${DS_PROMETHEUS}`/`${DS_SQLITE}` parameter
+      pattern, document the datasource plugin requirement in
+      `docs/observability/grafana-operator-dashboard.md`.
+  - id: MED-4
+    severity: MEDIUM
+    summary: "`docs/observability/otlp-validation.md` references `forge-next service restart` which doesn't exist"
+    file: docs/observability/otlp-validation.md:34
+    status: open
+    rationale: |
+      Step 3 in the local-Jaeger flow says "Restart daemon to pick up
+      env: `forge-next service restart`". `forge-next service`
+      subcommand surface is `install|start|stop|status|uninstall` —
+      no `restart`. The correct command is the top-level
+      `forge-next restart` (which IS implemented and works).
+      Also affects every runbook (HIGH-2). The validation doc was
+      locked at v0.6.0-rc.3; the regression made it through.
+      **Fix:** s/`service restart`/`restart`/ in
+      `otlp-validation.md` and runbook prose; OR add `restart` as a
+      `service` subcommand alias for parity with `install/start/stop`.
+  - id: MED-5
+    severity: MEDIUM
+    summary: "Inspect handler's lazy-refresh fix from 2A-4d.2.1 #1 is dead code on production socket path because of CRITICAL-2"
+    file: crates/daemon/src/server/handler.rs:7669
+    status: open
+    rationale: |
+      The doc-comment at handler.rs:191-197 advertises that
+      `new_reader(metrics: Some(...))` "lazy-refreshes the gauge
+      snapshot" so /inspect row_count works without a Prometheus
+      scraper. `socket.rs:188-198` correctly forwards `metrics` into
+      the per-connection reader. But because `Request::Inspect` is
+      not in `is_read_only()` (CRITICAL-2), the request never lands
+      on the reader — it goes through the writer actor, whose state
+      has `metrics: None`. So the well-intentioned lazy-refresh
+      branch at handler.rs:7669-7674 is unreachable in production.
+      Tests pass because they construct `DaemonState::new(":memory:")`
+      and call `handle_request` directly, bypassing the routing.
+      **Fix:** subsumed by CRITICAL-2 — adding Inspect to
+      `is_read_only()` activates this path. Add a non-`:memory:`
+      integration test that connects via socket, sends Inspect, and
+      asserts `stale: false`.
+  - id: MED-6
+    severity: MEDIUM
+    summary: "`forge-next plugin install/uninstall` does not exist — audit prompt asks about it; only `daemon`, `service`, `bootstrap` cover the install surface"
+    file: crates/cli/src/main.rs
+    status: open
+    rationale: |
+      Verified 2026-04-27: `forge-next plugin --help` →
+      `error: unrecognized subcommand 'plugin'`. The
+      `.claude-plugin/plugin.json` and the `setup` skill exist, and
+      the marketplace lists Forge as a Claude Code plugin, but there's
+      no CLI surface to install/uninstall the plugin from
+      `forge-next`. The user has to use Claude Code's `/plugin
+      install` slash-command, or symlink the plugin manually. The
+      `doctor` command's `hook` health-check probes
+      `~/.claude/plugins/forge/hooks/hooks.json` and emits
+      "plugin hooks.json not found — install from
+      chaosmaximus/forge marketplace or symlink hooks/hooks.json into
+      ~/.claude/plugins/forge/" — which IS the install hint the
+      audit prompt asks about, but it's only visible after running
+      `forge-next doctor`, not as a `forge-next plugin install`
+      subcommand. **Fix (lowest effort):** add a `plugin status`
+      read-only subcommand that wraps the existing doctor probe;
+      defer real install/uninstall to post-1.0 (the symlink workflow
+      is documented).
+  - id: MED-7
+    severity: MEDIUM
+    summary: "`compile-context` self-reports '9 layers' in its trailer but the README and `manas-health` headline are '8'"
+    file: crates/cli/src/commands/system.rs (compile-context render)
+    status: open
+    rationale: |
+      Reproduced: `forge-next compile-context` ends with
+      `(9 layers, 794 chars)`. The 9 here counts XML elements (
+      `<platform>`, `<identity>`, `<disposition>`, `<tools>`,
+      `<decisions>`, `<lessons>`, `<skills>`, `<entities>`,
+      `<code-structure>`), not Manas memory layers. But a user who
+      saw "8-layer Manas memory engine" in the README will read
+      `(9 layers, ...)` as a contradiction. **Fix (one-line):**
+      change the trailer to `(9 sections, 794 chars)` or
+      `(9 context blocks, 794 chars)` — anything that doesn't
+      collide with the "layer" vocabulary. Pin with a regression
+      test.
+  - id: MED-8
+    severity: MEDIUM
+    summary: "`forge-next doctor` warns about no embeddings on a fresh DB but doesn't tell the user how to fix it (the warning is followed by silence)"
+    file: crates/daemon/src/server/handler.rs:1769
+    status: open
+    rationale: |
+      First-run doctor output (verified) includes
+      `[WARN] embeddings: no embeddings — vector recall will not work`.
+      Compare to the `memories` warning right above it which says
+      "no memories stored — run `forge-next remember` or ingest
+      transcripts" — that warning is actionable. The embeddings
+      warning is not — the user has no idea what to run. (The actual
+      answer is "run `forge-next bootstrap`" or "store some memories
+      and the embedder worker will index them on the next interval".)
+      **Fix:** append " — run `forge-next bootstrap` to backfill from
+      transcripts, or wait for the embedder to index after `remember`"
+      to the warning text.
+  - id: MED-9
+    severity: MEDIUM
+    summary: "OTLP path silently disables when `FORGE_OTLP_ENABLED=true` but `FORGE_OTLP_ENDPOINT=` is empty — confirmed in doc, still open"
+    file: crates/daemon/src/main.rs:158
+    status: open
+    rationale: |
+      `docs/observability/otlp-validation.md:83-88` flags this
+      explicitly: "The daemon silently disables the OTLP layer if the
+      endpoint is empty (`crates/daemon/src/main.rs:158` —
+      `if otlp_enabled && !otlp_endpoint.is_empty()`). A future
+      cleanup should warn-on-empty; tracked as backlog item." The
+      backlog item is still untracked. A first-time OTLP user who
+      forgets to set the endpoint sees zero spans + zero error
+      messages + zero log warnings. **Fix:** add
+      `tracing::warn!("FORGE_OTLP_ENABLED=true but FORGE_OTLP_ENDPOINT
+      is empty — OTLP exporter NOT installed")` at the
+      `if otlp_enabled && otlp_endpoint.is_empty()` branch.
+  - id: MED-10
+    severity: MEDIUM
+    summary: "`forge-next observe --shape row-count` shows a misleading `(no rows)` instead of the 11 zero-rows when stale — user can't tell if there are zero memories or if the snapshot is broken"
+    file: crates/cli/src/commands/observe.rs:372
+    status: open
+    rationale: |
+      The TTY render at observe.rs:372 prints `(no rows)` when
+      `rows.is_empty()`. After CRITICAL-2 lands and rows actually
+      populate, the user will see 11 rows of `count=0` for a fresh
+      DB — clearly empty. Today, the user sees `stale (no rows)`
+      and can't distinguish "DB is empty" from "snapshot is broken".
+      **Fix:** when stale=true AND rows.is_empty(), emit "(snapshot
+      not yet refreshed — wait 60s after first /metrics scrape OR
+      issue another `observe row-count` request to lazy-refresh)".
+      Subsumed if CRITICAL-2 is fixed and rows populate; preserved
+      as a defensive UX nudge for when the user's snapshot is
+      genuinely empty.
+  - id: MED-11
+    severity: MEDIUM
+    summary: "`forge_worker_healthy` is set to `1` for ALL 8 workers on every gauge refresh — never goes to 0, so `ForgeWorkerDown` alert is structurally undetectable"
+    file: crates/daemon/src/server/metrics.rs:544
+    status: open
+    rationale: |
+      `refresh_gauges_impl` line 544-555 unconditionally sets
+      `worker_healthy{worker=X} = 1` for the 8 hard-coded workers if
+      the SELECT succeeds. If the SELECT fails, `gauge_refresh_failures`
+      increments and the function returns BEFORE updating any worker
+      health value — so `worker_healthy` stays at its last-known
+      value (Prometheus's standard gauge stickiness). The only way
+      `worker_healthy{X}=0` would land is if some other code path
+      writes 0 — but a workspace grep finds zero such writes outside
+      tests. So `ForgeWorkerDown` (`forge_worker_healthy == 0` for
+      5m) is structurally untriggerable; a worker can panic, deadlock,
+      or hang and the gauge stays at 1. The daemon-as-a-whole going
+      down is observable (Prometheus scrape failure, `up{} == 0`),
+      but per-worker liveness is fictional. **Fix:** wire each
+      worker to write its own heartbeat to the gauge (e.g.,
+      consolidator runs every 30s → set 1 in the loop; observer task
+      sets 0 if heartbeat is older than 2× interval). Or: drop the
+      `forge_worker_healthy` family entirely and replace with
+      `forge_worker_last_heartbeat_secs` (a freshness gauge,
+      same shape as `layer_freshness`).
+  - id: MED-12
+    severity: MEDIUM
+    summary: "Default config does not auto-create `~/.forge/config.toml` — first-time users have no template to edit"
+    file: config/default.toml
+    status: open
+    rationale: |
+      `config/default.toml` is checked in but is NOT copied to
+      `~/.forge/config.toml` on first daemon start. A user who wants
+      to flip `http.enabled = true` (HIGH-3 fix) has to either (a)
+      know about `FORGE_HTTP_ENABLED=true` env var, OR (b) find the
+      template file in the install tree (which install.sh doesn't
+      lay down anywhere outside the binary). Compare to
+      `kubectl config view --raw > ~/.kube/config` style first-run.
+      **Fix:** in the daemon startup, if `~/.forge/config.toml`
+      doesn't exist AND `~/.forge/` does, write a commented-out
+      copy of `config/default.toml` (with `# enabled = false` etc)
+      so the user has something to grep. Coordinates with
+      CRITICAL-1 (which is the prerequisite — `~/.forge/` must
+      exist).
+  # ── LOW ───────────────────────────────────────────────────────────────
+  - id: LOW-1
+    severity: LOW
+    summary: "ForgeMetrics doc-comment claims 7 metric families but the impl registers 13"
+    file: crates/daemon/src/server/metrics.rs:3
+    status: open
+    rationale: |
+      `metrics.rs:1-11` doc-comment: "Exposes 7 metric families in
+      standard Prometheus text format" then enumerates the original
+      7. Lines 207-263 register 6 more (phase_duration,
+      phase_output_rows, table_rows, phase_persistence_errors,
+      gauge_refresh_failures, layer_freshness) and the test at
+      line 791 asserts "exactly 13 metric families". The doc-comment
+      is stale — readers tracing where a metric is emitted have to
+      keep counting. **Fix:** replace the 7-line list with a one-line
+      "13 metric families — see ForgeMetrics struct" or a TOC by
+      family-group (Tier 1 Core / Tier 2 Instrumentation / Tier 2
+      Observability).
+  - id: LOW-2
+    severity: LOW
+    summary: "Daemon log format is mixed JSON + bracket-prefix lines — operator-facing tools that grep JSON will miss the `[daemon]`/`[declared]`/`[domain-dna]` lines"
+    file: crates/daemon/src/main.rs
+    status: open
+    rationale: |
+      Sample daemon.log from a fresh boot interleaves:
+        `[tools] discovered 39 tools on PATH`
+        `{"timestamp":"...","level":"INFO",...}`
+        `[daemon] startup consolidation: dedup=0, ...`
+        `[declared] ingested CLAUDE.md (5351 bytes)`
+        `[domain-dna] detected rust project (from Cargo.toml)`
+      A consumer using `jq -r '.message'` will silently drop every
+      bracket line. **Fix:** route all bracket-prefix prints through
+      `tracing::info!(target: "forge::startup", "discovered N
+      tools")`. Loki/log-routers benefit too.
+  - id: LOW-3
+    severity: LOW
+    summary: "`forge-next service install` is the documented start-of-day flow but no top-level `forge-next quickstart` exists"
+    file: crates/cli/src/main.rs
+    status: open
+    rationale: |
+      A first-time user looking at `forge-next --help` sees 70+
+      subcommands grouped under `Memory`, `Sessions & Identity`,
+      `Healing`, etc. The single-best-thing-to-run for a first
+      session — start the daemon, install hooks, run a doctor — has
+      no top-level `quickstart` or `welcome` subcommand. The
+      `/forge-setup` skill (described in CLAUDE.md and the audit
+      prompt) IS the canonical guided flow but it's a Claude-Code
+      slash command, not a CLI primitive. **Fix:** add a
+      `forge-next quickstart` that runs `service install →
+      doctor → bootstrap → "you're ready"`. Alternative: prefix the
+      `--help` banner with "First time? Run `forge-next service
+      install` then `forge-next doctor`."
+  - id: LOW-4
+    severity: LOW
+    summary: "Default backup-hygiene threshold (1 GB OR 5 files) was tuned to one CC-voice user's footgun and may be too aggressive on a real production daemon"
+    file: crates/daemon/src/server/handler.rs:1817
+    status: open
+    rationale: |
+      W1.32 / Z10 introduced a `backup_hygiene` health-check that
+      WARN's when `~/.forge/*.bak` exceeds 1 GB OR 5 files. Comment
+      says "the CC voice user observed ~1 GB across 5 files in 2
+      days". 5 files is light — a daemon that auto-creates a backup
+      on every schema migration could easily exceed 5 in a release
+      cadence. The current threshold turns a one-off CC-voice
+      observation into a permanent healthcheck. **Fix:** raise to
+      10 files OR 5 GB; OR take the file-count threshold out
+      entirely and keep only the bytes ceiling. Cosmetic — doesn't
+      block anything.
+  - id: LOW-5
+    severity: LOW
+    summary: "`/healthz` and `/readyz` exist but no doc mentions them — Kubernetes operators have to grep the source"
+    file: crates/daemon/src/server/http.rs:556
+    status: open
+    rationale: |
+      `build_router` registers `/healthz`, `/readyz`, `/startupz`
+      (lines 556-558) but `docs/observability/`,
+      `docs/operations/observability-slos.md`, and the helm chart
+      values.yaml don't mention them. The helm chart's
+      `statefulset.yaml` references probes (verified by listing it
+      earlier) — but a user reading the docs has no idea they exist.
+      **Fix:** add a one-liner table to
+      `docs/operations/observability-slos.md`: "K8s probes: GET
+      /healthz (liveness), GET /readyz (rolling-update gate), GET
+      /startupz (slow-cold-start gate)." Helm values.yaml could also
+      gain a comment.
+  - id: LOW-6
+    severity: LOW
+    summary: "`HUD render` shows `Forge v0.6.0-rc.3` baked in — won't reflect a daemon mid-restart with a newer version"
+    file: crates/hud/src/render/mod.rs (or session.rs)
+    status: open
+    rationale: |
+      The HUD trailer hard-codes `Forge v0.6.0-rc.3` (verified from
+      live test). Compare to `doctor` which queries the live daemon
+      for `version` + `git_sha` and warns
+      `[WARN] stale_daemon: rebuild detected (CLI is X, daemon is Y)`.
+      The HUD has no such comparison. A user running an old
+      `forge-hud` binary against a new `forge-daemon` sees the wrong
+      version + no rebuild hint. **Fix:** ship the daemon-version
+      query in the HUD's state-read path (already does for skill
+      counts etc.) and emit it instead of the compile-time string.
+  - id: LOW-7
+    severity: LOW
+    summary: "`/inspect bench-run-summary` accepts a 180-day window but no other CLI surface or runbook documents this"
+    file: crates/daemon/src/server/inspect.rs:31
+    status: open
+    rationale: |
+      Tier 3 §3.3 D8 carves out a 180-day window for
+      `BenchRunSummary` (vs 7d for everyone else). The CLI help
+      string at `observe.rs` says "Window over which to aggregate
+      (humantime grammar, ≤ 7 days)" — wrong for bench-run-summary.
+      A user trying `forge-next observe --shape bench-run-summary
+      --window 30d` succeeds, but a user trying 180d gets the
+      generic "exceeds 7-day ceiling" error from the help text and
+      gives up. **Fix:** update the `--window` help text to
+      "≤ 7 days (≤ 180 days for bench-run-summary)". Source-of-truth
+      already in `inspect.rs::window_cap_secs_for_shape`.
+  - id: LOW-8
+    severity: LOW
+    summary: "Operator dashboard description claims it surfaces 5 metric families, actually targets 4 (bench-composite uses kpi_events directly, not a Prometheus family)"
+    file: deploy/grafana/forge-operator-dashboard.json:15
+    status: open
+    rationale: |
+      Description: "Surfaces 5 metric families: phase duration,
+      phase persistence error rate, table rows, layer freshness,
+      bench composite trend." But "bench composite trend" is the
+      SQLite panel reading `kpi_events` directly — not a
+      `forge_*` Prometheus family. Mixing the two in a "5 metric
+      families" count is misleading; the dashboard description even
+      says so further down ("Source: kpi_events table where
+      event_type='bench_run_completed'"). **Fix:** rewrite the
+      dashboard description to "4 Prometheus metric families + 1
+      SQLite panel".
+  # ── NIT ───────────────────────────────────────────────────────────────
+  - id: NIT-1
+    severity: NIT
+    summary: "`forge-next observe` clap help wraps the description across multiple lines with inconsistent indentation"
+    file: crates/cli/src/commands/observe.rs (clap derive on Cli enum)
+    status: open
+    rationale: |
+      Cosmetic — `--help` output for `observe` wraps the per-shape
+      enum descriptions with a 16-space indent, while the group
+      heading uses 10-space indent. clap renders fine but a quick
+      `cargo run -- observe --help | wc -L` shows lines exceeding
+      120 cols. Not blocking.
+  - id: NIT-2
+    severity: NIT
+    summary: "`docker-compose.yml` healthcheck uses `curl -sf` but the Dockerfile may not install `curl`"
+    file: deploy/docker-compose.yml:28
+    status: open
+    rationale: |
+      `healthcheck.test = ["CMD", "curl", "-sf",
+      "http://localhost:8420/healthz"]` requires `curl` in the image.
+      Quick sanity: `Dockerfile` line ~5-15 should `RUN apt-get
+      install curl` (skipped a manual check; flag for verification).
+      If the base image is `debian:bookworm-slim`, `curl` is not
+      pre-installed. **Fix:** either ensure curl is in the image,
+      or switch to `wget --spider --quiet` (busybox wget is in
+      most slim images), or use a Rust-side `--healthcheck` flag.
+  - id: NIT-3
+    severity: NIT
+    summary: "Manas-health output literal column widths are uneven — `Layer 2 (Tool):          50 tools` vs `Layer 5 (Experience):     0 memories`"
+    file: crates/cli/src/commands/system.rs (manas_health render)
+    status: open
+    rationale: |
+      Whitespace alignment is off-by-one between rows; cosmetic.
+      The longest label is "Layer 4 (Domain DNA):" — pad everything
+      to that. Doesn't break anything; just looks unprofessional in
+      a screenshot.
