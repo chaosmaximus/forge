@@ -1,87 +1,74 @@
-# Handoff — P3-4 Wave X (CC voice Round 3) closed — 2026-04-27
+# Handoff — P3-4 Wave X (cc-voice Round 3) + Wave A+B (#190-#191) closed — 2026-04-27
 
-**Public HEAD:** `630e1c9` (Wave X / X1.fw2).
-**Working tree:** clean (response doc lives outside repo at `/mnt/colab-disk/DurgaSaiK/forge/feedback/2026-04-27-forge-team-round-3-response.md`).
-**Version:** `v0.6.0-rc.3 (630e1c9)` (release stack still DEFERRED — Plan A §6 backlog drain in progress).
-**Daemon respawned:** binary at `target/release/forge-daemon`, doctor green except expected `backup_hygiene` WARN.
+**Public HEAD:** `13a9618` (Wave A+B / fix-wave).
+**Working tree:** clean.
+**Version:** `v0.6.0-rc.3 (13a9618)` (release stack still DEFERRED — Plan A §6 backlog drain in progress).
 **Plan A:** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`.
-**Halt:** none. Next item: #190 (W1.29 SIGTERM-graceful JoinSet, Tier 1 strategic) — paused at start of Wave X.
+**Halt:** none. Next item: **#193 (W1.32 — W28 LOW/NIT cosmetic batch — Wave C/C1 start)**.
 
-## This session's deltas
+## This session's deltas (9 commits)
 
-### Wave X closed (CC voice Round 3 unblock — 5 commits + response doc)
-
-User-direction this session: external user (cc-voice) filed
-`feedback/2026-04-27-round-3-post-wave-y.md` after Round 2 verification.
-TL;DR: 7/8 of Wave Y verified live; 1 partial (§B Y2 auto-create
-write path) + 1 caveat (§C `forge-daemon --version` on glibc<2.38) +
-1 design question (§E sticky vs upgrade for `domain="unknown"`).
-
-User authorized full-autonomous Wave X; mirror of Wave Y / Wave Z
-pattern. Each commit plus dogfood plus adversarial review per
-Plan A §6.
+### Wave X — cc-voice Round 3 unblock (5 commits + response doc + 2 fix-waves)
 
 | Task | Commit | What |
 |------|--------|------|
-| X1 #229 | `97b6caf` | Fix auto-create write path under read-only routing. `Request::CompileContext` is in `is_read_only()` so `state.conn` was a per-request read-only SQLite handle; INSERT errored silently. Switched the Z7 auto-create site to open a fresh writer connection from `state.db_path` (mirrors `kpi_reaper` precedent). New routing-aware regression test. Also fixed 4 stale tests left behind by Wave Y / Wave Z (`test_detect_reality_empty_dir_*`, `test_compile_dynamic_suffix_includes_agents`, 2× `protocol::contract_tests`). (MED-HIGH — closes Round 3 §B.) |
-| X2 #230 | `880ad1f` | Bake DT_RUNPATH into Linux binaries via three `$ORIGIN`-relative entries in `.cargo/config.toml`'s `rustflags`. Closes deferred task #220. `forge-daemon --version` now works without `LD_LIBRARY_PATH` on glibc<2.38. (LOW — closes Round 3 §C.) |
-| X3 #231 | `c052a9b` | Architecture doc `docs/architecture/project-domain-lifecycle.md` locking the "domain is a HINT, not a lock" design — first successful detection upgrades `domain="unknown"` → real domain in place. v0.6.0 ships bind-time logic; v0.6.1 ships indexer upgrade per the contract (tracked as #233). (DOC — closes Round 3 §E.) |
-| X4 #232 | response doc | `feedback/2026-04-27-forge-team-round-3-response.md` — disposition matrix, X1 root-cause writeup (read-only routing trap), X2 RPATH delivery plan, X3 design answer with rationale, post-wave fw1+fw2 delta in §G. |
-| **fw1** #236 | `cd6eb80` | **HIGH (dogfood-found)**: pre-existing data loss. Schema carries `UNIQUE INDEX idx_reality_path_unique ON reality(project_path) WHERE project_path IS NOT NULL`; auto-create's `INSERT OR REPLACE` REPLACED conflicting rows on path collision, silently wiping the user's `project init` setup. Live dogfood after X1 surfaced this. Fix: gate auto-create on path absence too; emit `tracing::warn!` on alias mismatch. New regression test seeds a pre-existing row + asserts it survives a colliding alias call. |
-| **fw2** #237 | `630e1c9` | Adversarial-review fixes (verdict: `lockable-with-fixes` — 0 BLOCKER / 0 HIGH / 1 MED / 5 LOW). MED-1: concurrent-fresh-create race — switched auto-create to `ops::auto_create_reality_if_absent` (`INSERT OR IGNORE`) so the second writer is a no-op instead of triggering REPLACE. LOWs: `cargo install` caveat in onboarding doc (LOW-2), comment fix (LOW-3), real ULID in fw1 test seed (LOW-4), symmetric warn for name-bound-different-path (LOW-5). LOW-1 (route through `writer_tx`) deferred — backlog #238. |
+| X1 | `97b6caf` | Fix auto-create write path under read-only routing — open ad-hoc writer connection from `state.db_path` when `Request::CompileContext` is in `is_read_only()`. New routing-aware regression test + 4 stale Wave Y/Z tests fixed. (MED-HIGH — closes Round 3 §B.) |
+| X2 | `880ad1f` | DT_RUNPATH bake-in for Linux binaries via `.cargo/config.toml` rustflags. Closes deferred `#220`. (LOW — closes Round 3 §C.) |
+| X3 | `c052a9b` | Architecture doc `docs/architecture/project-domain-lifecycle.md` — "domain is hint, not lock" design. v0.6.1 follow-up tracked as `#233`. (DOC — closes Round 3 §E.) |
+| X4 | response doc | `feedback/2026-04-27-forge-team-round-3-response.md` — disposition matrix + post-write fw1+fw2 §G. |
+| **fw1** | `cd6eb80` | **HIGH (dogfood-found)** — pre-existing data loss: `INSERT OR REPLACE` on `idx_reality_path_unique` collision wiped the user's `project init` setup. Fix: gate auto-create on path absence too; tracing::warn on alias mismatch. |
+| **fw2** | `630e1c9` | Adversarial review (verdict `lockable-with-fixes` — 0 BLOCKER / 0 HIGH / 1 MED / 5 LOW). MED-1 concurrent-fresh-create race → switched auto-create to new `auto_create_reality_if_absent` (`INSERT OR IGNORE`). LOWs 2/3/4/5 included. LOW-1 (writer_tx routing) deferred to backlog `#238`. |
+| HANDOFF | `1d5109b` | Wave X close HANDOFF rewrite. |
 
-### Open questions §F — answered in response doc
+### Wave A+B — drain start (#190-#191, 3 commits + adversarial review)
 
-1. cc-voice Round 4 question (sticky vs upgrade for `domain="unknown"`):
-   answered hint+upgrade; doc `docs/architecture/project-domain-lifecycle.md`
-   pins the v0.6.1 implementer's contract (SQL guard, tracing, test cases).
-2. The §B regression that escaped Wave Y / Y2: postmortem in response
-   doc §C — Y2's tests built `DaemonState::new(":memory:")` directly,
-   bypassing the read-only routing layer. Future review checklists
-   should require routing-aware test setup for any handler arm whose
-   `Request` is in `is_read_only()`.
+| Task | Commit | What |
+|------|--------|------|
+| **W1.29** (#190) | `bd0b3ca` | **SIGTERM-graceful JoinSet drain** for force-index (W23 HIGH-1 strategic close). New `crates/daemon/src/server/supervisor.rs` with `BackgroundTaskSupervisor` (CAS-based AtomicBool reject-overlap + `Mutex<JoinSet>` for in-flight tasks + `drain(deadline)`). `WriterActor` gains `bg: Arc<...>`. `process_force_index_async` claim-or-reject; `main.rs` shutdown drains before socket teardown. **5 unit tests.** |
+| **W1.30** (#191) | `55edb92` | **Typed `dispatched: bool` flag** on `ResponseData::IndexComplete` (W23 MED-3) + canonical `crate::db::pragma::apply_runtime_pragmas` helper (W23 MED-4). 9 production sites swept; CLI keys off the typed flag instead of `(0,0)` heuristic. **2 unit tests + serde-default wire compat.** |
+| **fw1** | `13a9618` | Adversarial review fixes (verdict `lockable-with-fixes` — 0 BLOCKER / 0 HIGH / 3 MED / 6 LOW). MED-1 missed PRAGMA sweep at `workers/mod.rs::open_read_conn` (5 worker callers); MED-2 `signal_shutdown` gate so late-arriving force-index requests are rejected before drain; MED-3 real-panic test replacing the prior fake `catch_unwind`; LOW-2 env-overridable drain timeout (`FORGE_DRAIN_TIMEOUT_SECS`, clamped [1,300]); LOW-3 doc clarification; LOW-4 `:memory:` warn suppression; LOW-6 perf-claim cleanup. **+3 new unit tests.** LOW-1 (CAS ordering cosmetic) and LOW-5 (read-only inline-vs-helper split) deferred. |
+
+### Issue ledger updates
+
+* **I-20** MED-HIGH (cc-voice Round 3 §B): auto-create write fails under read-only routing → ✓ closed by X1.
+* **I-21** HIGH (Wave X dogfood): auto-create wipes existing row on path collision → ✓ closed by fw1.
+* **I-22** MED (Wave X review): concurrent-fresh-create race → ✓ closed by fw2.
+* **I-23** LOW (cc-voice Round 3 §C): `forge-daemon --version` dynamic-linker fail on glibc<2.38 → ✓ closed by X2.
+* **I-24** HIGH (W23 carry-forward): SIGTERM mid-pass split-brain on force-index → ✓ closed by W1.29.
+* **I-25** MED (W23 carry-forward): force-index dispatch ambiguity / PRAGMA drift → ✓ closed by W1.30.
 
 ## State in one paragraph
 
-**HEAD `630e1c9`. Wave X (#229–#232 + #236 + #237) closed (5 commits + response doc + 2 fix-waves + adversarial review).** cc-voice's Round 3 3 items (1 MED-HIGH, 1 LOW, 1 doc) all resolved; plus a HIGH-severity pre-existing data-loss path closed via fw1; plus 6 review findings closed via fw2. Doctor green at HEAD `630e1c9`. clippy 0 warnings; full test suite green (1557 daemon, 109 core, all CLI); harness-sync + protocol-hash + license-manifest + review-artifacts all OK. **15 drain items still pending (#190-#191, #193-#203, #215, #216-#219, #233, #238).** Resume at #190 (Tier 1 strategic SIGTERM-graceful JoinSet) when next session opens.
+**HEAD `13a9618`. Wave X (#229-#232 + #236-#237) and Wave A+B (#190 + #191 + #239-#240) closed (9 commits + 2 adversarial reviews + response doc).** cc-voice Round 3 3/3 + 1 dogfood HIGH (data loss) + 6 review findings + W23 carry-forward HIGH-1 + 2 W23 MEDs all resolved. Doctor green. clippy 0 warnings; full daemon test suite at 1566/1566 (+10 new); harness-sync + protocol-hash + license-manifest + review-artifacts all OK. **11 drain items still pending (#193-#203, #215, #216-#219, #233, #238).** Resume at **#193 (W1.32 — W28 LOW/NIT cosmetic batch)** — first of Wave C/C1.
 
 ## First actions after `/compact` or session resume
 
 ```bash
 cd /mnt/colab-disk/DurgaSaiK/forge/forge
-git log --oneline -10                              # HEAD 630e1c9
+git log --oneline -10                              # HEAD 13a9618
 git status --short                                 # expect clean
 forge-next doctor                                  # version + git_sha sanity
-bash scripts/check-harness-sync.sh                 # sanity gates
+bash scripts/check-harness-sync.sh                 # all 4 sanity gates
 bash scripts/check-protocol-hash.sh
 bash scripts/check-license-manifest.sh
 bash scripts/check-review-artifacts.sh
 
-# Resume at #190 (W1.29 — SIGTERM-graceful JoinSet, Tier 1 strategic).
-# Touches main.rs (shutdown path) + writer.rs (force-index dispatch) +
-# possibly events.rs (HUD writer). Add chaos test: mid-run SIGTERM,
-# assert no partial DB state.
+# Resume at #193 (W1.32 — W28 LOW/NIT cosmetic batch).
+# Wave C plan (split for review-friendliness):
+#   C1: #193 (W28 LOW/NIT cosmetics) + #198 (observe shape envelope)
+#   C2: #195 (--help grouping) + #196 (CLI remember --valence/--intensity)
+#   C3: #194 (force-index cold + WAL warns) + #197 (Phase 9b INFO log)
+#         + #199 (forge-bench telemetry quiet)
+# One adversarial review covers C1+C2+C3.
 ```
 
 ## Cumulative pending work
 
-### Tier 1 — strategic (1 item)
+### Tier 3 — observability / UX cosmetic batch (Wave C — 7 items)
 
 | Task | Subject |
 |------|---------|
-| #190 | W1.29 — W23 HIGH-1 strategic: SIGTERM-graceful `JoinSet` coord drained by shutdown handler. Touches main.rs + writer.rs + events.rs + chaos test. |
-
-### Tier 4 — carried-forward MEDs (1 item)
-
-| Task | Subject |
-|------|---------|
-| #191 | W1.30 — W23 MED-3+MED-4: disposition `(0,0)` heuristic + PRAGMA/busy_timeout consistency across all `Connection::open` sites. |
-
-### Tier 3 — observability / UX cosmetic batch (7 items)
-
-| Task | Subject |
-|------|---------|
-| #193 | W1.32 — W28 LOW/NIT cosmetic batch (W28-LOW-2..LOW-10 + W28-NIT-1..NIT-3). |
+| **#193** | W1.32 — W28 LOW/NIT cosmetic batch (W28-LOW-2..LOW-10 + W28-NIT-1..NIT-3). |
 | #194 | W1.33 — I-2+I-3 force-index cold latency + WAL "database is locked" warns. |
 | #195 | W1.34 — I-6 `forge-next --help` grouping via `clap::next_help_heading`. |
 | #196 | W1.35 — I-9 CLI `remember` exposes `--valence`/`--intensity` flags. |
@@ -89,7 +76,7 @@ bash scripts/check-review-artifacts.sh
 | #198 | W1.37 — I-11 `forge-next observe` shape schema uniformity (common envelope). |
 | #199 | W1.38 — I-12 `forge-bench` standalone telemetry warn quiet (downgrade or `--telemetry` flag). |
 
-### Tier 5 — nice-to-haves (release-tail / v0.6.1+ candidates) (3 items)
+### Tier 5 — nice-to-haves (Wave D — 3 items)
 
 | Task | Subject |
 |------|---------|
@@ -97,7 +84,7 @@ bash scripts/check-review-artifacts.sh
 | #201 | W1.40 — W31 drift fixture for contradiction false-positive surface. |
 | #202 | W1.41 — W32 `notify::Watcher` event-driven freshness gate. |
 
-### Tier 6 — pre-iteration backlog re-evaluation (1 item)
+### Tier 6 — pre-iteration backlog re-evaluation (Wave D umbrella — 1 item)
 
 | Task | Subject |
 |------|---------|
@@ -106,125 +93,76 @@ bash scripts/check-review-artifacts.sh
 ### Wave Z + Y + X deferred (review residue) (5 items)
 
 * **#216** — Wave Z MED-1: SessionUpdate TOCTOU error-message hygiene.
-* **#217** — Wave Z MED-3: `forge-next project rename / delete / relocate` (cc-voice §C question 3 — walking-up TOML discovery lands here; also covers fw1 alias-mismatch escape valve).
+* **#217** — Wave Z MED-3: `forge-next project rename / delete / relocate` (cc-voice Round 3 §C-3 walking-up TOML lands here; covers fw1 alias-mismatch escape valve too).
 * **#218** — Wave Z LOW-2: doctor backup hygiene XDG_DATA_HOME / Docker paths.
 * **#219** — Wave Z LOW-3: cc-voice §1.2 end-to-end integration test.
 * **#238** — Wave X LOW-1 (deferred): route compile-context auto-create through `writer_tx` (architectural; v0.6.1+).
 
-### v0.6.1 follow-ups (from Wave X)
+### v0.6.1 follow-ups
 
 * **#233** — domain="unknown" → real-domain upgrade in indexer per `docs/architecture/project-domain-lifecycle.md`. Small UPDATE in `workers/perception.rs` or `workers/indexer.rs` with SQL guard `WHERE domain = 'unknown'`. Test contract pinned in the doc.
 
-### Deferred internal cleanup (queued — not in #182-#203 numbering)
+### Deferred internal cleanup
 
 * **#215 — ZR — internal rename pass.** `Reality` Rust struct → `Project`,
   `mod reality` → `mod project`, SQL `reality` table → `project` (with
   migration + regression test per the SQLite-no-REVERSE memory). Delete
   dead `code_engine.rs::context_section`. **Open after #203 closes.**
 
-## TaskList structure (post-Wave X)
+### Final wave
+
+* **#101 — P3-4 release v0.6.0 stack.** DEFERRED — opens after `#215` closes.
+
+## TaskList structure (post-Wave-A+B)
 
 | Range | Subject | Status |
 |---|---|---|
-| #153 | iteration umbrella (1st pass closed) | completed |
-| #163 .. #181 | first-pass tasks | all completed |
-| #182 .. #189 | W1.3 LOW drain Tier 1+2 (prior session) | all completed |
-| #190, #191, #193-#203 | second-pass drain (14 pending) | ← next-session queue |
-| #192 | (W28 MED-2 — closed early by Wave Z Z11) | completed |
-| #204 .. #214 | Wave Z (CC voice Round 1 unblock) | all completed |
-| #215 | **ZR — internal rename + dead-code cleanup** | **pending — opens after #203 closes** |
-| #216 .. #219 | Wave Z deferred (review residue) | all pending — v0.6.1+ |
-| #220 | Wave Z dogfood (RPATH bake) | **completed (lifted into Wave X / X2)** |
-| #221 .. #228 | Wave Y (CC voice Round 2 unblock — prior session) | all completed |
-| #229 .. #232 | **Wave X (CC voice Round 3 unblock — this session)** | **all completed** |
-| #233 | v0.6.1 follow-up — domain="unknown" upgrade in indexer | pending — v0.6.1 |
-| #234 .. #237 | **Wave X review + fix-waves (this session)** | **all completed** |
-| #238 | Wave X review LOW-1 backlog (writer_tx routing) | pending — v0.6.1+ |
-| #101 | P3-4 release v0.6.0 stack | DEFERRED — opens after #215 closes |
+| #190 | W1.29 SIGTERM-graceful JoinSet | **completed (this session)** |
+| #191 | W1.30 typed dispatched + PRAGMA helper | **completed (this session)** |
+| #229 .. #232 | Wave X (cc-voice Round 3) | all completed (this session) |
+| #234 .. #237 | Wave X review + fix-waves | all completed (this session) |
+| #239 .. #240 | Wave A+B review + fix-wave | all completed (this session) |
+| **#193** | **W28 LOW/NIT cosmetic batch** | **← next session resume** |
+| #194 .. #199 | Tier 3 cosmetic continuation | pending |
+| #200 .. #203 | Tier 5 + umbrella | pending |
+| #215 | ZR internal rename | pending — opens after #203 |
+| #216-#219, #238 | deferred review residue | pending — v0.6.1+ |
+| #233 | v0.6.1 indexer domain upgrade | pending — v0.6.1 |
+| #101 | release v0.6.0 stack | DEFERRED — opens after #215 |
 
-**Per-task standard procedure (unchanged from Plan A §6):** verify
-clean tree → TDD-first if behavior change → fmt+clippy+tests green →
-commit → adversarial review (per behavior-change wave) → fix-wave for
-HIGH+MED → LOWs to backlog → TaskUpdate → dogfood briefly when
-feasible.
+## Halt-and-ask map for the post-Wave-A+B window
 
-**Wave-pattern lesson surfaced this session:** for any handler arm
-whose `Request` is in `is_read_only()`, future tests MUST build a
-`DaemonState::new_reader(...)` (not `DaemonState::new(":memory:")`)
-to exercise the routing-aware path. The X1 bug (Y2 silently failed
-in production) only surfaced because the routing layer was bypassed
-in unit tests. The new test `p3_4_x1_compile_context_cwd_auto_creates_under_readonly_routing`
-is the template.
-
-## Issue ledger (cumulative)
-
-| ID | Sev | Title | Status |
-|----|----:|-------|--------|
-| I-1 | BLOCKER | fastembed → ort → ONNX RT API v24 mismatch | ✓ closed (`50ab231`) |
-| I-2 | LOW | force-index cold 5s | open → tracked by #194 |
-| I-3 | LOW | "database is locked" warns | open → tracked by #194 |
-| I-4 | LOW | doctor stale vergen git_sha | ✓ closed by Wave Z Z11 (`420c6e2`) |
-| I-5 | LOW | mis-tagged hive-platform memory | closed (irrelevant after wipe) |
-| I-6 | LOW | forge-next --help flat | open → tracked by #195 |
-| I-7 | HIGH | code-graph cross-project leakage | ✓ closed (W1.2 c1+c2+c3 + W1.3 fw1+fw2+fw3) |
-| I-8 | HIGH | c1 migration silently no-op'd (SQLite no REVERSE) | ✓ closed (`a7cb1a0`) |
-| I-9 | LOW | CLI remember lacks --valence/--intensity | open → tracked by #196 |
-| I-10 | LOW | Phase 9b no INFO log | open → tracked by #197 |
-| I-11 | LOW | observe shape schema varies | open → tracked by #198 |
-| I-12 | LOW | forge-bench standalone telemetry warn | open → tracked by #199 |
-| I-13 | LOW | forge-bash-check substring match in argv | ✓ closed (`5d218ed` quote-strip) |
-| I-14 | HIGH | compile-context cross-project leak (CC voice §1.2) | ✓ closed by Wave Z Z2 (`929220d`) + Z7 (`23cc4b6`) |
-| I-15 | LOW | plugin.json hooks duplicate (CC voice §1.1) | ✓ closed by Wave Z Z1 (`3af9303`) |
-| I-16 | HIGH | hook discards CC stdin JSON (CC voice Round 2 §C) | ✓ closed by Wave Y Y1 (`a03365b`) |
-| I-17 | MED | auto-create rejects code-less dirs / no auto-created render (CC voice Round 2 §B) | ✓ closed by Wave Y Y2 (`b4078eb`) |
-| I-18 | LOW | --version doesn't work (CC voice Round 2 §D) | ✓ closed by Wave Y Y4 (`3f7e7ff`) |
-| I-19 | LOW-MED | project init silently overwrites (CC voice Round 2 §E) | ✓ closed by Wave Y Y5 (`d76b4c1`) |
-| **I-20** | **MED-HIGH** | **auto-create write fails under read-only routing (CC voice Round 3 §B)** | **✓ closed by Wave X X1 (`97b6caf`)** |
-| **I-21** | **HIGH** | **auto-create wipes existing row on path collision (Wave X dogfood)** | **✓ closed by Wave X fw1 (`cd6eb80`)** |
-| **I-22** | **MED** | **concurrent-fresh-create race (Wave X review)** | **✓ closed by Wave X fw2 (`630e1c9`)** |
-| **I-23** | **LOW** | **forge-daemon --version dynamic-linker fail on glibc<2.38 (CC voice Round 3 §C)** | **✓ closed by Wave X X2 (`880ad1f`)** |
+1. **NO halt.** Per user direction, drain `#193 → #203` continuously. Per Plan A §6 still applies — adversarial review per behavior-change wave; fix-wave for HIGH+MED.
+2. **Halt only on:** non-clean working tree across a wave boundary; review verdict `not-lockable`; surprise architectural blocker that needs user input; cc-voice filing follow-up Round 4 feedback that supersedes the queued work.
+3. **AFTER #203 closes:** halt for sign-off → open ZR (`#215`, internal reality→project rename) → halt for sign-off → open `#101` release stack.
 
 ## Auto-memory state (cross-session)
 
-Saved across recent sessions (relevant to drain):
-* `feedback_project_everywhere_vocabulary.md` — locked vocabulary direction (Wave Z)
-* `feedback_xml_attribute_resolution_pattern.md` — `resolution=` attribute pattern (Wave Z; extended to `auto-created` by Y2)
-* `feedback_decode_fallback_depth_floor.md` — informs #182 (now strategic-fixed)
-* `feedback_dual_helper_basename_vs_reality.md` — informs #187
+Saved across recent sessions:
+* `feedback_project_everywhere_vocabulary.md` — Wave Z user-facing vocabulary lock
+* `feedback_xml_attribute_resolution_pattern.md` — `resolution=` attribute pattern (extended to `auto-created` by Y2)
+* `feedback_decode_fallback_depth_floor.md` — informs W1.21 (now strategic-fixed)
+* `feedback_dual_helper_basename_vs_reality.md` — informs W1.26
 * `feedback_release_stack_deferred.md` — informs `#101` deferral
-* `feedback_json_macro_silent_drift.md` — informs #185
+* `feedback_json_macro_silent_drift.md` — informs W1.24
 * `feedback_sqlite_no_reverse_silent_migration_failure.md` — informs ZR
-* `feedback_lazy_count_with_expand_call.md` — Y7 / Z static-prefix lazy load pattern
+* `feedback_lazy_count_with_expand_call.md` — Y7 / Z static-prefix lazy load
 * `feedback_clap_conflicts_with_stack_overflow.md` — Y6 clap 4.x bug
+* `feedback_readonly_routing_trap_for_side_effecting_handlers.md` — X1 root cause + test fixture rule
+* `feedback_insert_or_replace_data_loss_on_unique_index.md` — X1.fw1 + fw2 split
 
-**Memory candidates from Wave X (to add when current session closes):**
+**Memory candidates from this session (W1.29 + W1.30 + their fix-wave):**
 
-* **Read-only routing trap for handler arms with side effects.** Pattern:
-  if `Request::Foo` is in `is_read_only()` (`crates/daemon/src/server/writer.rs:75`)
-  AND the `Foo` handler does any `INSERT`/`UPDATE`/`DELETE`, the SQL silently
-  fails because `state.conn` is opened with `SQLITE_OPEN_READ_ONLY`. Fix patterns:
-  open ad-hoc writer from `state.db_path` (cheap one-shot) OR send a
-  `WriteCommand::Raw` through `state.writer_tx` (proper serialization). Tests must
-  build `DaemonState::new_reader(...)` not `DaemonState::new(":memory:")` to
-  exercise the routing path.
-* **`INSERT OR REPLACE` on tables with non-PK unique indexes is data-loss.** When
-  an INSERT collides with a unique index that's NOT the PK, SQLite REPLACE
-  removes the conflicting row (different PK value) before inserting the new one.
-  For idempotent-create paths use `INSERT OR IGNORE` instead. The X1.fw2 split
-  between `store_reality` (REPLACE — for explicit upserts by id) and
-  `auto_create_reality_if_absent` (IGNORE — for race-safe creates) is the
-  right pattern.
+* **`BackgroundTaskSupervisor` pattern for fire-and-forget blocking writes.** When adding a future heavy-write feature (analytical batch, multi-table backfill, bench-corpus rebuild), use the supervisor: per-resource `AtomicBool` reject-overlap + `signal_shutdown` gate + `spawn_supervised` into the JoinSet. Drain on shutdown via `bg_supervisor.drain(timeout)`. The release MUST fire in ALL completion paths (Ok/Err/panic) — production supervisor closure structure mirrors `process_force_index_async` at `crates/daemon/src/server/writer.rs`.
+* **Adding a field to a tagged `ResponseData` enum is wire-back-compatible via `#[serde(default)]`.** Old daemon → new CLI: serde defaults the missing field (false for bool, 0 for usize, etc.). New daemon → old CLI: serde silently ignores unknown fields. So adding `dispatched: bool` to `IndexComplete` doesn't bump protocol_hash (Request hash, not Response). The CLI heuristic that the field replaces (e.g. `(0,0)` → "dispatched") should be dropped at the same time on the new-CLI side.
+* **PRAGMA helper as drift gate.** Sweeping `PRAGMA journal_mode=WAL; PRAGMA busy_timeout={varies}` literals into `crate::db::apply_runtime_pragmas(&conn)` enforces a single source of truth for `BUSY_TIMEOUT_MS` (10s canonical). Read-only handles can't engage WAL — keep them inline using the same const.
 
-## Halt-and-ask map for the post-Wave-X window
-
-1. **NO halt.** Per user direction, drain `#190 → #203` continuously. Per Plan A §6 still applies — adversarial review per behavior-change wave; fix-wave for HIGH+MED.
-2. **Halt only on:** non-clean working tree across a wave boundary; review verdict `not-lockable`; surprise architectural blocker that needs user input (e.g. SIGTERM-graceful coord touches an external contract); cc-voice filing follow-up Round 4 feedback that supersedes the queued work.
-3. **AFTER #203 closes:** halt for sign-off → open ZR (#215, internal reality→project rename) → halt for sign-off → open `#101` release stack.
+The `feedback_writer_actor_spawn_blocking.md` memory's W23 HIGH-1 carry-forward is now resolved by W1.29; should be updated next session (low priority).
 
 ## Daemon-binary state (end of session)
 
-Released binary at `target/release/forge-daemon` rebuilt at HEAD `630e1c9`. Daemon respawned mid-session for live dogfood (PID confirmed at `c052a9b`); user can re-respawn with the standard drill in `feedback/2026-04-27-forge-team-round-3-response.md` §G.
+Daemon was respawned mid-session at `c052a9b` for live dogfood (Wave X §B reproduction); next session should rebuild release at HEAD `13a9618` and respawn for Wave C dogfood when feasible.
 
 ## One-line summary
 
-**HEAD `630e1c9`. This session: Wave X (cc-voice Round 3 unblock — #229-#232 + #236 + #237, 5 commits + response doc + 2 fix-waves + adversarial review). cc-voice Round 3 3/3 items + 1 dogfood-found HIGH (data loss) + 6 review findings all resolved. 15 drain items still queued (#190-#191, #193-#203, #215, #216-#219, #233, #238). Resume at #190 (Tier 1 SIGTERM-graceful JoinSet) when next session opens. Daemon live at git_sha `630e1c9`.**
+**HEAD `13a9618`. This session: Wave X (cc-voice Round 3 unblock, 5 commits + response doc + 2 fix-waves) + Wave A+B (#190 SIGTERM-graceful supervisor + #191 typed dispatched + PRAGMA helper, 2 strategic commits + 1 fix-wave + 2 adversarial reviews). 9 commits total. 11 issue-ledger items resolved (I-20..I-25 + W23 HIGH-1 carry-forward). 11 drain items still queued (#193-#203 + #215 + deferred). Resume at #193 (Wave C/C1) when next session opens.**
