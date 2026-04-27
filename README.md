@@ -37,10 +37,9 @@ Forge is an always-on daemon that gives AI agents persistent memory, intelligent
 ## Quick Start
 
 ```bash
-# 1. Install from source
-#    Installs three binaries from two crates:
-#      forge-daemon, forge-bench   (built by the forge-daemon package)
-#      forge-next                  (built by the forge-cli package)
+# 1. Install from source. The two crate args produce three binaries:
+#    forge-daemon + forge-bench (from crate `forge-daemon`),
+#    forge-next (from crate `forge-cli`).
 cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
 
 # 2. Start the daemon (runs on port 8420)

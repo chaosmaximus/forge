@@ -9,15 +9,25 @@
 - ❌ **false positive** — agent claim was wrong; no fix needed
 - ⏳ **pending** — not yet addressed; queued for next session
 
-**Tally:**
+**Tally (2026-04-28 update — Phases 5-10 closed):**
 
 | | CRITICAL | HIGH | MED | LOW | NIT | Total |
 |---|---|---|---|---|---|---|
-| ✅ fixed       | 5 | 14 | 1 | 0 | 0 | **20** |
+| ✅ fixed       | 5 | 30 | 19 | 0 | 0 | **54** |
 | ❌ false-pos   | 1 | 0 | 0 | 0 | 0 | **1** |
 | 🟡 deferred    | 0 | 1 | 0 | 0 | 0 | **1** |
-| ⏳ pending     | 0 | 16 | 54 | 40 | 15 | **125** |
+| ⏳ pending     | 0 | 0 | 36 | 40 | 15 | **91** |
 | **Total**      | **6** | **31** | **55** | **40** | **15** | **147** |
+
+**Closed by phase (this 2026-04-28 session):**
+- **Phase 5** (`92b15c9`): 2 HIGH C-HIGH-1, C-HIGH-2 (dead code: -217 LOC)
+- **Phase 6** (`37bd99a`): 10 HIGH D-01..D-10 (skills/agents fictional commands + harness-sync regex)
+- **Phase 7** (`45ffc9a`): 4 HIGH DOCS-A-001..A-004 (memory types + socket name + gRPC + scan)
+- **Phase 8** review: `2026-04-28-pre-release-phases-5-7-adversarial.{md,yaml}` — verdict `lockable-with-fixes` (1 HIGH + 2 LOW)
+- **Phase 9** (`5f3b93b` + `493baad`): review HIGH-1 SKIP_CLI_TOKENS prune + LOW-1/2 documented
+- **Phase 10A** (`bc795a8`): 5 of 10 DB MEDs E-12, E-13, E-15, E-16, E-19 (`?` propagation + composite index)
+- **Phase 10B** (`6a33c6b`): 8 of 8 D MEDs D-11..D-18 (front-matter + agent-content scan + license coverage)
+- **Phase 10C** (`4f339fd` + ed): 5 of 10 docs MEDs DOCS-A-005..A-008, A-011 (version + endpoint/worker counts + cargo install clarity)
 
 ---
 
@@ -212,21 +222,24 @@
 
 ## Resolution roadmap
 
-**Phases 1-4 done** (this session):
+**Phases 1-9 done** (2026-04-27 + 2026-04-28 sessions):
 - 5 CRITICAL ✅ (E-1, E-2, E-4, F-CRITICAL-1, F-CRITICAL-2)
-- 14 HIGH ✅ (5 CLI + 4 DB + 5 obs/UX)
+- 30 HIGH ✅ (14 from Phases 1-4 + 16 from Phases 5-7)
 - 1 false positive (E-3)
+- 1 deferred (E-8 → v0.6.1)
+- Phase 8 adversarial review verdict: `lockable-with-fixes`
+- Phase 9 review fix-wave landed (SKIP_CLI_TOKENS prune)
 
-**Phases 5-7 queued** (next session):
-- **Phase 5** — Dead code (2 HIGH): C-HIGH-1, C-HIGH-2
-- **Phase 6** — Harness drift (10 HIGH): D-01..D-10
-- **Phase 7** — Docs (4 HIGH): DOCS-A-001..A-004
+**Phase 10 partially done** (this 2026-04-28 session):
+- **10A** (`bc795a8`): 5 of 10 DB MEDs — **deferred** E-10 (read-audit log), E-11 (backup pruner), E-14 (sync_import tx), E-17 (NULL line_start coercion), E-18 (notification reality_id wire shape)
+- **10B** (`6a33c6b`): 8 of 8 D MEDs ✅ all closed
+- **10C** (`4f339fd`): 5 of 10 A docs MEDs — **deferred** A-009 (cli-reference reality keys), A-010 (task_completion_check undocumented), A-012 (marketplace.json claim), A-014 (internal phase tags)
 
-**Phase 8 — Adversarial review on Phases 1-4 + 5-7 combined diff** (Plan A §6 mandatory).
-
-**Phase 9 — Fix-wave** for review findings.
-
-**Phase 10 — MED batch** (54 remaining): grouped by domain — DB MEDs (10), CLI MEDs (8), obs MEDs (12), docs MEDs (10), C MEDs (7), D MEDs (8), F-MED-5 already subsumed by F-CRITICAL-2.
+**Phase 10 queued for next session (36 MEDs remain):**
+- **10D** — CLI MEDs (B-MED-1..B-MED-8, 7 remaining since B-MED-3 closed in Phase 2 partial)
+- **10E** — Observability MEDs (F-MED-1..F-MED-12, 11 remaining since F-MED-5 subsumed by F-CRIT-2)
+- **10F** — Code-quality MEDs (C-MED-1..C-MED-7, all 7)
+- **10G** — Remaining E (5) + A (4) MEDs that needed design decisions
 
 **Phase 11 — LOW + NIT triage** (40 LOW + 15 NIT = 55): each item reviewed for "fix vs document" — some are intentional design choices (E-20 Manas convention, E-24 dim split is documented).
 
