@@ -998,14 +998,19 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_memory_org ON memory(organization_id)",
         [],
     );
-    // Backfill: derive org_id from the session that created each memory
-    let _ = conn.execute(
+    // Backfill: derive org_id from the session that created each memory.
+    // Pre-release audit E-15: was previously `let _ = conn.execute(...)`
+    // which silently no-oped if the migration ordering ever regressed
+    // and `session.organization_id` didn't exist yet — collapsing
+    // multi-org isolation. `?` propagation surfaces the regression at
+    // startup. The UPDATE itself is safe-by-WHERE on legacy DBs.
+    conn.execute(
         "UPDATE memory SET organization_id = COALESCE(
             (SELECT s.organization_id FROM session s WHERE s.id = memory.session_id AND s.organization_id IS NOT NULL LIMIT 1),
             'default'
         ) WHERE organization_id = 'default' AND session_id != ''",
         [],
-    );
+    )?;
 
     // Identity scoping (per-user, not per-agent-type)
     let _ = conn.execute("ALTER TABLE identity ADD COLUMN user_id TEXT", []);
@@ -1147,21 +1152,29 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 
     let polluted_paths_subquery = format!("SELECT path FROM code_file WHERE {POLLUTION_PREDICATE}");
 
-    let _ = conn.execute(
+    // Pre-release audit E-16: previously three sequential
+    // `let _ = conn.execute(...)` calls. If pass 2 (code_symbol DELETE)
+    // silently failed (e.g. POLLUTION_PREDICATE refactor breaks the
+    // subquery), pass 3 still ran and deleted code_file rows, leaving
+    // orphan symbols. `?` propagation + the fact that the three
+    // statements are commutative (each DELETE is idempotent and
+    // bounded by POLLUTION_PREDICATE) makes a partial-failure surface
+    // operator-visible without a transaction wrapper.
+    conn.execute(
         &format!(
             "DELETE FROM edge WHERE from_id IN (SELECT id FROM code_symbol WHERE file_path IN ({polluted_paths_subquery})) \
                                 OR to_id IN (SELECT id FROM code_symbol WHERE file_path IN ({polluted_paths_subquery}))"
         ),
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    conn.execute(
         &format!("DELETE FROM code_symbol WHERE file_path IN ({polluted_paths_subquery})"),
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    conn.execute(
         &format!("DELETE FROM code_file WHERE {POLLUTION_PREDICATE}"),
         [],
-    );
+    )?;
 
     // v2.0: Composite indexes for scoped queries
     let _ = conn.execute(
@@ -1373,6 +1386,17 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     );
     let _ = conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_session_heartbeat ON session(status, last_heartbeat_at)",
+        [],
+    );
+    // Pre-release audit E-12: working-set inheritance query in
+    // sessions.rs:274-281 joins agent + project + status, ordered by
+    // started_at desc. Pre-fix the planner picked one single-column
+    // index then filtered the rest, devolving to an O(N) scan on
+    // multi-week session histories. Composite covers the 3-column
+    // WHERE plus the ORDER BY direction.
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_agent_project_status \
+            ON session(agent, project, status, started_at DESC)",
         [],
     );
 
@@ -1587,13 +1611,18 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // FTS5 virtual table for skill search
     // Use IF NOT EXISTS to be idempotent; FTS5 tables cannot use CREATE TABLE IF NOT EXISTS
     // directly with content= sync, so we check existence first.
-    let fts_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='skill_registry_fts'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
+    //
+    // Pre-release audit E-19: previously `unwrap_or(false)` masked
+    // real probe errors (e.g. WAL busy-lock at startup) as "doesn't
+    // exist", which then failed louder when the CREATE collided with
+    // an actual existing table. `?` lets the real error surface so
+    // operators can see the lock contention or schema corruption
+    // directly.
+    let fts_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='skill_registry_fts'",
+        [],
+        |row| row.get(0),
+    )?;
     if !fts_exists {
         conn.execute_batch(
             "CREATE VIRTUAL TABLE skill_registry_fts USING fts5(name, description, content=skill_registry, content_rowid=rowid);"
@@ -1682,7 +1711,15 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         .unwrap_or(false);
     if has_fk {
         eprintln!("[schema] migrating edge table: removing legacy FK constraints");
-        let _ = conn.execute_batch(
+        // Pre-release audit E-13: previously `let _ = conn.execute_batch(...)`
+        // which silently swallowed migration failures. Per
+        // feedback_sqlite_no_reverse_silent_migration_failure.md the trap is
+        // that any error in CREATE TABLE / INSERT / DROP / ALTER /
+        // CREATE INDEX leaves edge_migrated orphaned with the live `edge`
+        // table either deleted or stuck mid-rename. Use `?` propagation so
+        // operators see the failure at startup rather than discovering it
+        // weeks later via missing edges.
+        conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS edge_migrated (
                 id TEXT PRIMARY KEY,
@@ -1702,7 +1739,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_edge_to ON edge(to_id);
             CREATE INDEX IF NOT EXISTS idx_edge_type ON edge(edge_type);
         ",
-        );
+        )?;
     }
 
     // ── Migration: dedup edges THEN create UNIQUE index (ISS-D6) ──
