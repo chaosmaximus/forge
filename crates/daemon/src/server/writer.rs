@@ -293,26 +293,48 @@ impl WriterActor {
 
                     // Insert audit log record (best-effort — don't fail the request)
                     let audit_id = ulid::Ulid::new().to_string();
-                    if let Err(e) = self.state.conn.execute(
-                        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, timestamp,
-                         user_id, email, role, request_type, request_summary, source, source_ip, response_status)
-                         VALUES (?1, 'api', ?2, ?3, 'request', '', datetime('now'),
-                         ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                        rusqlite::params![
-                            audit_id,
-                            audit.user_id,
-                            req_type,
-                            audit.user_id,
-                            audit.email,
-                            audit.role,
-                            req_type,
-                            summary,
-                            audit.source,
-                            audit.source_ip,
-                            status,
-                        ],
-                    ) {
-                        tracing::warn!("failed to insert audit log: {e}");
+                    // P3-4 W1.33 (I-3): the audit-log INSERT can race the
+                    // force-index spawn_blocking writer's WAL lock during
+                    // cold-start, producing a transient
+                    // "database is locked" error. Retry once after a
+                    // brief sleep before logging — the canonical PRAGMA
+                    // helper sets `busy_timeout = 10000ms` already, but
+                    // the lock can re-arm between retries on cold WAL
+                    // contention. After the retry, downgrade persistent
+                    // failures from warn to debug so they don't pollute
+                    // operator logs (audit log is best-effort
+                    // observability, not correctness).
+                    let insert_audit = || {
+                        self.state.conn.execute(
+                            "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, timestamp,
+                             user_id, email, role, request_type, request_summary, source, source_ip, response_status)
+                             VALUES (?1, 'api', ?2, ?3, 'request', '', datetime('now'),
+                             ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                            rusqlite::params![
+                                audit_id,
+                                audit.user_id,
+                                req_type,
+                                audit.user_id,
+                                audit.email,
+                                audit.role,
+                                req_type,
+                                summary,
+                                audit.source,
+                                audit.source_ip,
+                                status,
+                            ],
+                        )
+                    };
+                    match insert_audit() {
+                        Ok(_) => {}
+                        Err(_first_err) => {
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            if let Err(e) = insert_audit() {
+                                tracing::debug!(
+                                    "failed to insert audit log after one retry: {e}"
+                                );
+                            }
+                        }
                     }
 
                     let _ = reply.send(response);

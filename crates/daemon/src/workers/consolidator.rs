@@ -435,10 +435,23 @@ pub fn run_all_phases(
         let (content_contradictions, content_errors) =
             detect_content_contradictions_with_errors(conn);
         stats.contradictions += content_contradictions;
+        // P3-4 W1.36 (I-10): emit a dedicated INFO log for both the
+        // found-N and found-0 cases so Phase 9b's contribution is
+        // visible alongside Phase 9a's. Pre-W1.36 the zero-case was
+        // hidden inside the combined `contradictions: N` summary,
+        // making it hard to tell whether 9b ran at all when the
+        // aggregate was 0.
         if content_contradictions > 0 {
             tracing::info!(
                 content_contradictions,
                 "phase_9b: content-based contradictions detected"
+            );
+        } else if content_errors == 0 {
+            tracing::info!("phase_9b: 0 content-based contradictions");
+        } else {
+            tracing::warn!(
+                content_errors,
+                "phase_9b: content-based detection errored on at least one pair"
             );
         }
         (

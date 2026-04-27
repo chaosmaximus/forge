@@ -127,10 +127,24 @@ pub fn detect_commit_metadata() -> (Option<String>, bool, Option<i64>) {
 
 /// One-shot stderr note when FORGE_DIR is unset — mirrors the Tier 2
 /// reaper precedent so CI misconfig is visible without spamming logs.
+///
+/// W1.38 (I-12): the legacy wording ("NOT emitted") read as an alarm
+/// during routine standalone bench runs where telemetry is genuinely
+/// optional. The new wording frames the situation as informational and
+/// names the env var so the user knows how to opt in. Opt-out via
+/// `FORGE_BENCH_QUIET=1` for scripted runs that don't want even the
+/// one-shot note (mirrors `FORGE_HOOK_VERBOSE`'s opt-in/out parity).
 fn note_forge_dir_unset_once() {
     static NOTED: OnceLock<()> = OnceLock::new();
     NOTED.get_or_init(|| {
-        eprintln!("forge-bench telemetry: FORGE_DIR unset — bench_run_completed event NOT emitted");
+        if std::env::var("FORGE_BENCH_QUIET").map(|v| v == "1").unwrap_or(false) {
+            return;
+        }
+        eprintln!(
+            "forge-bench: telemetry disabled (FORGE_DIR unset) — \
+             set FORGE_DIR=<path> to record bench_run_completed events, \
+             or FORGE_BENCH_QUIET=1 to silence this note"
+        );
     });
 }
 
