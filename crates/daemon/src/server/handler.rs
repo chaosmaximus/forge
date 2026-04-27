@@ -392,10 +392,22 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // W1.35 (I-9): explicit valence + intensity from
             // `forge-next remember --valence positive --intensity 0.8`.
             // Defaults to "neutral" / 0.5 inside `Memory::new`. Intensity
-            // is clamped inside `with_valence`. The daemon accepts any
-            // string for `valence` today (typed enum is a v0.6.1 polish);
-            // unknown values fall through silently.
+            // is clamped inside `with_valence`.
+            //
+            // Wave C+D fix-wave MED-1: daemon-side allowlist. The CLI's
+            // typed `ValenceArg` enum closes the parse-time gap, but
+            // HTTP/non-CLI clients can still send arbitrary strings;
+            // reject any value outside `positive | negative | neutral`
+            // here so the wire surface is also enforced. Empty string
+            // falls back to default (Memory::new sets "neutral").
             if let Some(v) = valence.filter(|v| !v.is_empty()) {
+                if !matches!(v.as_str(), "positive" | "negative" | "neutral") {
+                    return Response::Error {
+                        message: format!(
+                            "invalid valence '{v}' — expected one of: positive, negative, neutral"
+                        ),
+                    };
+                }
                 let i = intensity.unwrap_or(0.5);
                 memory = memory.with_valence(&v, i);
             } else if let Some(i) = intensity {
@@ -7781,6 +7793,57 @@ mod tests {
         // Memory::new sets intensity = 0.0 by default; --valence "" + no
         // --intensity must NOT call with_valence at all.
         assert!((i3 - 0.0).abs() < 1e-6, "intensity defaults to 0.0 (Memory::new)");
+    }
+
+    #[test]
+    fn wave_c_d_fix_med1_remember_rejects_invalid_valence_string() {
+        // Wave C+D fix-wave MED-1: HTTP/non-CLI clients can send
+        // arbitrary valence strings. The handler must reject any value
+        // outside {positive, negative, neutral} so a typo can't silently
+        // poison the contradiction-detection path.
+        let mut state = DaemonState::new(":memory:").expect("DaemonState::new");
+        for bad in ["positiv", "POSITIVE", "happy", "????", "neg"] {
+            let req = Request::Remember {
+                memory_type: MemoryType::Preference,
+                title: format!("invalid valence test: {bad}"),
+                content: "should be rejected".to_string(),
+                confidence: None,
+                tags: None,
+                project: None,
+                metadata: None,
+                valence: Some(bad.to_string()),
+                intensity: Some(0.5),
+            };
+            let resp = handle_request(&mut state, req);
+            match resp {
+                Response::Error { message } => {
+                    assert!(
+                        message.contains("invalid valence") && message.contains(bad),
+                        "expected reject for '{bad}', got '{message}'"
+                    );
+                }
+                other => panic!("expected Error reject for '{bad}', got {other:?}"),
+            }
+        }
+        // Sanity: each of the three accepted strings still works.
+        for good in ["positive", "negative", "neutral"] {
+            let req = Request::Remember {
+                memory_type: MemoryType::Preference,
+                title: format!("valid valence: {good}"),
+                content: "should be accepted".to_string(),
+                confidence: None,
+                tags: None,
+                project: None,
+                metadata: None,
+                valence: Some(good.to_string()),
+                intensity: Some(0.5),
+            };
+            let resp = handle_request(&mut state, req);
+            assert!(
+                matches!(resp, Response::Ok { .. }),
+                "valence '{good}' must be accepted; got {resp:?}"
+            );
+        }
     }
 
     #[test]

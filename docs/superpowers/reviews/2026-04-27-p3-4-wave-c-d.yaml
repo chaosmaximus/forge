@@ -1,0 +1,74 @@
+schema_version: 1
+slug: 2026-04-27-p3-4-wave-c-d
+target_paths:
+  - crates/cli/src/main.rs
+  - crates/cli/src/client.rs
+  - crates/cli/src/commands/memory.rs
+  - crates/cli/src/commands/observe.rs
+  - crates/cli/src/commands/system.rs
+  - crates/cli/src/commands/teams.rs
+  - crates/core/src/protocol/codec.rs
+  - crates/core/src/protocol/contract_tests.rs
+  - crates/core/src/protocol/inspect.rs
+  - crates/core/src/protocol/request.rs
+  - crates/core/src/protocol/response.rs
+  - crates/daemon/src/bench/forge_context.rs
+  - crates/daemon/src/bench/forge_persist.rs
+  - crates/daemon/src/bench/telemetry.rs
+  - crates/daemon/src/config.rs
+  - crates/daemon/src/server/handler.rs
+  - crates/daemon/src/server/http.rs
+  - crates/daemon/src/server/inspect.rs
+  - crates/daemon/src/server/rbac.rs
+  - crates/daemon/src/server/tier.rs
+  - crates/daemon/src/server/writer.rs
+  - crates/daemon/src/sessions.rs
+  - crates/daemon/src/teams.rs
+  - crates/daemon/src/workers/consolidator.rs
+  - docs/operations/v0.6.0-pre-iteration-deferrals.md
+  - .claude-plugin/plugin.json
+reviewer:
+  agent: claude-opus-4-7
+  date: '2026-04-27'
+commit_range:
+  base: 06e1f4c
+  head: 573ceaa
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-27-p3-4-wave-c-d.transcript.md
+findings:
+  # ── MEDIUM ────────────────────────────────────────────────────────────
+  - id: MED-1
+    severity: MEDIUM
+    summary: "W1.35 `--valence` accepts arbitrary string — neither CLI nor daemon enforces the 3-value vocabulary (positive/negative/neutral)"
+    file: crates/cli/src/main.rs:137
+    status: resolved
+    fixed_by: P3-4-W1.42-fw1
+    rationale: "Resolved by Wave C+D fix-wave. CLI now uses a typed clap `ValenceArg` enum (`Positive | Negative | Neutral`) so a typo like `--valence positiv` fails at parse time with a clap error instead of being silently stored. The dispatcher converts the typed enum to the wire-format string (`Option<String>`) so the protocol surface is unchanged (no Request shape change). Daemon-side: `Request::Remember` handler arm at `handler.rs:344` rejects any string outside `{positive, negative, neutral}` with `Response::Error { message: \"invalid valence '...' — expected one of: ...\" }`, closing the HTTP/non-CLI client surface too. New test `wave_c_d_fix_med1_remember_rejects_invalid_valence_string` pins both rejections (5 invalid + 3 valid round-trips)."
+  # ── LOW ───────────────────────────────────────────────────────────────
+  - id: LOW-1
+    severity: LOW
+    summary: "W1.32 `is_valid_ulid_chars` permissive — accepts lowercase a-z (minus iouL) but real ULIDs are uppercase Crockford"
+    file: crates/daemon/src/sessions.rs:33
+    status: open
+    rationale: "The validator at `sessions.rs:33` allows `is_ascii_alphanumeric() && !matches!(c, 'I'|'L'|'O'|'U'|'i'|'l'|'o'|'u')` — i.e., the full alphanumeric set minus the four ULID-confusable letters in both cases. Real ULIDs are rendered uppercase, so a user pasting `01abc...xyz` (lowercase) will pass the validator, hit the SQL `LIKE` clause, then return `Ok(None)` because the database stores uppercase. The doc-comment claims this is intentional (`ULIDs are case-insensitive on the wire but typically rendered uppercase`), but the SQL is a binary-collation `LIKE` not `LIKE ... COLLATE NOCASE`, so the case-insensitive promise is broken. **Fix:** either tighten to strict-uppercase Crockford `[0-9A-HJKMNP-TV-Z]` (matching what the database actually stores) OR uppercase the input at the helper boundary before binding to make the case-insensitive promise real. The validator-vs-SQL inconsistency is the actual defect; either resolution works."
+  - id: LOW-2
+    severity: LOW
+    summary: "W1.34 `COMMAND_CATEGORIES` const has no compile-time check that listed keywords match real `enum Commands` subcommands"
+    file: crates/cli/src/main.rs:38
+    status: open
+    rationale: "The category-roadmap const (`main.rs:38`) is a compile-time `&str`. Spot-checking 5 entries (`supersede`, `ingest-claude`, `hlc-backfill`, `completion-check`, `workspace-status`, `skills-refresh`) confirmed all correspond to real subcommands — but a future refactor that renames a clap subcommand without updating the const will drift silently, and `forge-next --help` will keep advertising the dead command name. The commit body acknowledges this gap (`A future drift between the constant and the actual enum Commands is caught by the developer reading the help output`), which is a weak guarantee. **Fix:** a unit test in `crates/cli/src/main.rs` that splits the const on commas, walks each token, and asserts every keyword is a real subcommand via `clap::Command::get_subcommands()` reflection. Cheap, runs every build, kills the drift-class entirely."
+  - id: LOW-3
+    severity: LOW
+    summary: "W1.32 `stop_team` `(0, > 0)` and `(> 0, > 0)` CLI branches have no test pinning the wording"
+    file: crates/cli/src/commands/teams.rs:618
+    status: open
+    rationale: "The new 4-arm `match (agents_retired, retire_errors)` block at `teams.rs:618` correctly distinguishes (genuine no-op, clean retire, total-failure, partial-failure) — but only the `(0, 0)` and `(>0, 0)` arms are exercised by existing tests. The new `(0, >0)` and `(>0, >0)` arms can only be triggered by a daemon that emits `retire_errors > 0`, which old daemons cannot. With the wire-back-compat `#[serde(default)]` field, a CLI talking to an old daemon never reaches the new branches, masking any wording regression. **Fix:** an end-to-end test that mocks a `Response::Ok { data: ResponseData::TeamStopped { agents_retired: 0, retire_errors: 2, .. } }` and asserts the printed wording, plus the partial case `(2, 1)`. The 4 branches deserve 4 explicit assertions."
+  # ── NIT ───────────────────────────────────────────────────────────────
+  - id: NIT-1
+    severity: NIT
+    summary: "W1.38 `FORGE_BENCH_QUIET` env var is asymmetric with `FORGE_HOOK_VERBOSE` (one is opt-out=quiet, other is opt-in=verbose)"
+    file: crates/daemon/src/bench/telemetry.rs:140
+    status: open
+    rationale: "The new opt-out env var `FORGE_BENCH_QUIET=1` is documented in the doc-comment as `mirrors FORGE_HOOK_VERBOSE's opt-in/out parity`, but the two are actually polar opposites: `FORGE_HOOK_VERBOSE=1` is opt-IN to noise; `FORGE_BENCH_QUIET=1` is opt-IN to silence. The semantics are correct (each defaults to a sensible posture), but the parity claim in the doc-comment is wrong — operators reading the source will be misled. Cosmetic — pick one resolution: (a) keep both names but drop the `parity` claim from the doc-comment, or (b) rename to `FORGE_BENCH_VERBOSE=0` for opt-out symmetry, or `FORGE_HOOK_QUIET=1` for opt-out parity. Current state ships fine; flagged for v0.6.1 vocabulary cleanup."

@@ -76,6 +76,31 @@ struct Cli {
     command: Commands,
 }
 
+/// Wave C+D fix-wave MED-1: typed valence enum for `forge-next remember
+/// --valence`. clap rejects any value outside `positive | negative |
+/// neutral` at parse time — closes the W1.35 deferred typed-enum task
+/// (the doc-comment at the time said "any string accepted; daemon does
+/// not currently enforce", which silently broke contradiction detection
+/// on typo input). Conversion to wire-format `String` happens in the
+/// dispatcher (`Commands::Remember` arm) so the protocol surface stays
+/// `Option<String>` (no Request shape change → no protocol_hash bump).
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum ValenceArg {
+    Positive,
+    Negative,
+    Neutral,
+}
+
+impl ValenceArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            ValenceArg::Positive => "positive",
+            ValenceArg::Negative => "negative",
+            ValenceArg::Neutral => "neutral",
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Search memories (hybrid BM25 + vector + graph)
@@ -130,11 +155,13 @@ enum Commands {
         /// Structured metadata as JSON string (e.g., '{"passed":17,"failed":3}')
         #[arg(long)]
         metadata: Option<String>,
-        /// W1.35 (I-9): valence — "positive", "negative", or "neutral"
-        /// (any string accepted; daemon does not currently enforce).
+        /// W1.35 (I-9) + Wave C+D fix-wave MED-1: valence — typed clap
+        /// enum so a typo like `--valence positiv` fails at parse time
+        /// instead of silently storing an unrecognized valence that the
+        /// Phase 9a contradiction-detection path can't match.
         /// Default: "neutral" (set by `Memory::new`).
-        #[arg(long)]
-        valence: Option<String>,
+        #[arg(long, value_enum)]
+        valence: Option<ValenceArg>,
         /// W1.35 (I-9): valence intensity in [0.0, 1.0]. Daemon clamps
         /// out-of-range values. Default: 0.5 when `--valence` is set
         /// without `--intensity`.
@@ -1548,9 +1575,13 @@ async fn main() {
             intensity,
         } => {
             let meta_value = metadata.and_then(|s| serde_json::from_str(&s).ok());
+            // Wave C+D fix-wave MED-1: convert the typed clap enum to the
+            // wire-format string here. The protocol stays
+            // `Option<String>` so no Request shape change is needed.
+            let valence_str = valence.map(|v| v.as_str().to_string());
             commands::memory::remember(
                 r#type, title, content, confidence, tags, project, meta_value,
-                valence, intensity,
+                valence_str, intensity,
             )
             .await;
         }
