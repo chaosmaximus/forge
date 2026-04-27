@@ -136,8 +136,48 @@ where
     Ok(layer)
 }
 
+/// P3-4 Wave Y (Y4) per cc-voice Round 2 §D: handle `--version` /
+/// `-V` / `--help` / `-h` BEFORE the tokio runtime spins up. Daemon
+/// doesn't use clap, so this is a manual flag check at argv[1].
+/// Without it, `forge-daemon --version` fell through to normal
+/// startup (which then errored on the unrecognized arg or
+/// — worse — silently spawned with default config).
+fn handle_pre_runtime_args() {
+    let mut args = std::env::args();
+    let _ = args.next(); // skip argv[0]
+    if let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--version" | "-V" => {
+                println!("forge-daemon {}", env!("FORGE_VERSION_LINE"));
+                std::process::exit(0);
+            }
+            "--help" | "-h" => {
+                println!(
+                    "forge-daemon {}\n\n\
+                     Forge memory daemon. Speaks HTTP/JSON on port 8420 and Unix socket.\n\n\
+                     Usage:\n  \
+                       forge-daemon                Run the daemon (background workers + HTTP API)\n  \
+                       forge-daemon --version      Print version and git SHA, exit 0\n  \
+                       forge-daemon --help         Print this help, exit 0\n\n\
+                     Environment:\n  \
+                       FORGE_DB_PATH               SQLite path (default: ~/.forge/forge.db)\n  \
+                       FORGE_DB_PORT               HTTP listen port (default: 8420)\n  \
+                       FORGE_OTLP_ENABLED=true     Enable OTLP trace export\n  \
+                       FORGE_OTLP_ENDPOINT=<url>   OTLP endpoint (e.g. http://localhost:4317)\n\n\
+                     The CLI client is `forge-next`; this binary is the long-lived daemon.",
+                    env!("FORGE_VERSION_LINE")
+                );
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    handle_pre_runtime_args();
+
     // Initialize structured JSON logging to stderr BEFORE anything else.
     // stdout is reserved for protocol output (NDJSON).
     //

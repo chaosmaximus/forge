@@ -28,6 +28,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
     println!("cargo::rustc-env=FORGE_GIT_SHA={git_sha}");
 
+    // P3-4 Wave Y (Y4): emit a pre-formatted version line so
+    // `forge-next --version` can render `0.6.0-rc.3 (38d7acc)` via a
+    // single env! lookup. Doing the conditional formatting in build.rs
+    // sidesteps the need for a const_format dep just to combine
+    // env!() with option_env!() at compile time.
+    let pkg_version = env!("CARGO_PKG_VERSION");
+    let version_line = if git_sha.is_empty() {
+        pkg_version.to_string()
+    } else {
+        format!("{pkg_version} ({git_sha})")
+    };
+    println!("cargo::rustc-env=FORGE_VERSION_LINE={version_line}");
+
     // Re-run when HEAD moves so the SHA stays fresh in incremental builds.
     println!("cargo::rerun-if-changed=.git/HEAD");
 

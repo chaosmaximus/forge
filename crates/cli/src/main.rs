@@ -20,8 +20,19 @@ fn parse_non_empty_project(s: &str) -> Result<String, String> {
     }
 }
 
+/// P3-4 Wave Y (Y4) per cc-voice Round 2 §D: clap-derived
+/// `--version` / `-V` emits `forge-next 0.6.0-rc.3 (38d7acc)`.
+/// `FORGE_VERSION_LINE` is composed in `crates/cli/build.rs` from
+/// `CARGO_PKG_VERSION` plus the git short-SHA (when available);
+/// falls back to bare package version outside a git tree.
+const VERSION_LINE: &str = env!("FORGE_VERSION_LINE");
+
 #[derive(Parser)]
-#[command(name = "forge-next", about = "Forge — memory for AI coding agents")]
+#[command(
+    name = "forge-next",
+    about = "Forge — memory for AI coding agents",
+    version = VERSION_LINE
+)]
 struct Cli {
     /// Remote daemon endpoint (e.g., https://forge.company.com).
     /// Overrides FORGE_ENDPOINT env var. Omit for local Unix socket.
@@ -3880,6 +3891,43 @@ mod tests {
                 assert_eq!(file_flag.as_deref(), Some("src/main.rs"));
             }
             other => panic!("expected BlastRadius, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p3_4_y4_version_flag_returns_success_with_pkg_version_and_sha() {
+        // P3-4 Wave Y (Y4) per cc-voice Round 2 §D: `forge-next
+        // --version` and `-V` must succeed and emit the package
+        // version. Pre-Y4 they errored with `unexpected argument
+        // '--version'`. Verifies clap's derive-version path is wired
+        // and reads from FORGE_VERSION_LINE.
+        // clap returns the version as an error variant — that's the
+        // standard "early-exit-with-message" mechanism, not a parse
+        // failure. The discriminant is `DisplayVersion`. We can't use
+        // `expect_err` because Cli doesn't derive Debug — match on
+        // the result instead.
+        match Cli::try_parse_from(["forge-next", "--version"]) {
+            Ok(_) => {
+                panic!("clap should route --version through ErrorKind::DisplayVersion, not Ok")
+            }
+            Err(err) => {
+                assert_eq!(
+                    err.kind(),
+                    clap::error::ErrorKind::DisplayVersion,
+                    "got unexpected error kind for --version"
+                );
+                let out = err.to_string();
+                assert!(
+                    out.contains(env!("CARGO_PKG_VERSION")),
+                    "version output must contain the package version; got: {out}"
+                );
+            }
+        }
+
+        // Short form -V works the same way.
+        match Cli::try_parse_from(["forge-next", "-V"]) {
+            Ok(_) => panic!("clap should route -V through ErrorKind::DisplayVersion"),
+            Err(err) => assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion),
         }
     }
 
