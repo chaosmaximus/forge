@@ -1,51 +1,52 @@
-# Handoff — P3-4 Wave X (cc-voice Round 3) + Wave A+B (#190-#191) closed — 2026-04-27
+# Handoff — P3-4 Wave C + Wave D + fix-wave closed — 2026-04-27
 
-**Public HEAD:** `13a9618` (Wave A+B / fix-wave).
+**Public HEAD:** `d29bda4` (Wave C+D fix-wave / MED-1 resolved).
 **Working tree:** clean.
-**Version:** `v0.6.0-rc.3 (13a9618)` (release stack still DEFERRED — Plan A §6 backlog drain in progress).
+**Version:** `v0.6.0-rc.3 (d29bda4)` (release stack still DEFERRED — halt for sign-off in effect).
 **Plan A:** `docs/superpowers/plans/2026-04-25-complete-production-readiness.md`.
-**Halt:** none. Next item: **#193 (W1.32 — W28 LOW/NIT cosmetic batch — Wave C/C1 start)**.
+**Halt:** **YES** — Wave C+D + fix-wave closed. Per HANDOFF "Halt-and-ask" rule 3, halt for user sign-off before opening **#215 ZR** (internal reality→project rename) and **#101 release stack**.
 
-## This session's deltas (9 commits)
+## This session's deltas (8 commits)
 
-### Wave X — cc-voice Round 3 unblock (5 commits + response doc + 2 fix-waves)
-
-| Task | Commit | What |
-|------|--------|------|
-| X1 | `97b6caf` | Fix auto-create write path under read-only routing — open ad-hoc writer connection from `state.db_path` when `Request::CompileContext` is in `is_read_only()`. New routing-aware regression test + 4 stale Wave Y/Z tests fixed. (MED-HIGH — closes Round 3 §B.) |
-| X2 | `880ad1f` | DT_RUNPATH bake-in for Linux binaries via `.cargo/config.toml` rustflags. Closes deferred `#220`. (LOW — closes Round 3 §C.) |
-| X3 | `c052a9b` | Architecture doc `docs/architecture/project-domain-lifecycle.md` — "domain is hint, not lock" design. v0.6.1 follow-up tracked as `#233`. (DOC — closes Round 3 §E.) |
-| X4 | response doc | `feedback/2026-04-27-forge-team-round-3-response.md` — disposition matrix + post-write fw1+fw2 §G. |
-| **fw1** | `cd6eb80` | **HIGH (dogfood-found)** — pre-existing data loss: `INSERT OR REPLACE` on `idx_reality_path_unique` collision wiped the user's `project init` setup. Fix: gate auto-create on path absence too; tracing::warn on alias mismatch. |
-| **fw2** | `630e1c9` | Adversarial review (verdict `lockable-with-fixes` — 0 BLOCKER / 0 HIGH / 1 MED / 5 LOW). MED-1 concurrent-fresh-create race → switched auto-create to new `auto_create_reality_if_absent` (`INSERT OR IGNORE`). LOWs 2/3/4/5 included. LOW-1 (writer_tx routing) deferred to backlog `#238`. |
-| HANDOFF | `1d5109b` | Wave X close HANDOFF rewrite. |
-
-### Wave A+B — drain start (#190-#191, 3 commits + adversarial review)
+### Wave C — observability / UX cosmetic batch (5 commits)
 
 | Task | Commit | What |
 |------|--------|------|
-| **W1.29** (#190) | `bd0b3ca` | **SIGTERM-graceful JoinSet drain** for force-index (W23 HIGH-1 strategic close). New `crates/daemon/src/server/supervisor.rs` with `BackgroundTaskSupervisor` (CAS-based AtomicBool reject-overlap + `Mutex<JoinSet>` for in-flight tasks + `drain(deadline)`). `WriterActor` gains `bg: Arc<...>`. `process_force_index_async` claim-or-reject; `main.rs` shutdown drains before socket teardown. **5 unit tests.** |
-| **W1.30** (#191) | `55edb92` | **Typed `dispatched: bool` flag** on `ResponseData::IndexComplete` (W23 MED-3) + canonical `crate::db::pragma::apply_runtime_pragmas` helper (W23 MED-4). 9 production sites swept; CLI keys off the typed flag instead of `(0,0)` heuristic. **2 unit tests + serde-default wire compat.** |
-| **fw1** | `13a9618` | Adversarial review fixes (verdict `lockable-with-fixes` — 0 BLOCKER / 0 HIGH / 3 MED / 6 LOW). MED-1 missed PRAGMA sweep at `workers/mod.rs::open_read_conn` (5 worker callers); MED-2 `signal_shutdown` gate so late-arriving force-index requests are rejected before drain; MED-3 real-panic test replacing the prior fake `catch_unwind`; LOW-2 env-overridable drain timeout (`FORGE_DRAIN_TIMEOUT_SECS`, clamped [1,300]); LOW-3 doc clarification; LOW-4 `:memory:` warn suppression; LOW-6 perf-claim cleanup. **+3 new unit tests.** LOW-1 (CAS ordering cosmetic) and LOW-5 (read-only inline-vs-helper split) deferred. |
+| **W1.32 (#193)** | `1432457` | W28 LOW/NIT cosmetic batch — 9 LOWs + 3 NITs from `2026-04-26-p3-3-10-quick-fixes.yaml`. Daemon: `MessageReadError` typed enum (LOW-2/3) + Crockford boundary check, `list_team_members` filters retired sessions (LOW-10), `--project` warn on unknown reality (LOW-7), `symlink_metadata` plugin-install detection (LOW-8), 4 new branch tests for `read_message_by_id_or_prefix` (LOW-9), team-member JSON-keys contract test (LOW-5). Daemon ↔ CLI: `stop_team` returns `(retired, errors)` via `#[serde(default)] retire_errors` field (LOW-4) — wire-back-compat, hash-neutral. CLI: `FORGE_DAEMON_BOOT_TIMEOUT_MS` env (LOW-6), clap-style rejection wording (NIT-1), stale-daemon as Health Check entry (NIT-2), 12-char ID truncation (NIT-3). |
+| **W1.37 (#198)** | `4904f42` | `forge-next observe` shape common envelope (I-11). New `row_count: usize` field on `ResponseData::Inspect` (`#[serde(default)]`, hash-neutral); `InspectData::len()` accessor; CLI table header gains `rows=N`; new contract test pins `{"kind":..., "rows":[...]}` invariant across all 6 InspectData variants. |
+| **W1.34 + W1.35 (#195+#196)** | `266eccc` | `--help` category roadmap (I-6) + `remember --valence/--intensity` (I-9). `--help`: 14-group `COMMAND_CATEGORIES` const rendered via `after_long_help`. Remember: new `valence: Option<String>` + `intensity: Option<f64>` fields on `Request::Remember` (`#[serde(default)]`); `protocol_hash` bumped `68432a81…` → `c6eadd8e…`; CLI flags + handler + 1 new test pinning the round-trip. |
+| **W1.33 + W1.36 + W1.38 (#194+#197+#199)** | `f825e32` | Audit-log retry (I-3 lock noise) + Phase 9b dedicated INFO log (I-10) + forge-bench telemetry quiet (I-12 + `FORGE_BENCH_QUIET`). |
+
+### Wave D — nice-to-haves + deferral umbrella (1 commit)
+
+| Task | Commit | What |
+|------|--------|------|
+| **W1.39 + W1.40 + W1.41 + W1.42 (#200..#203)** | `573ceaa` | `memory.require_project` opt-in gate + audit warn on project-less memories (W29/W30). New `MemoryConfig` struct on `ForgeConfig`. W31 contradiction drift fixture — 6 false-positive classes pin all gate paths (`w1_40_w31_drift_fixture_six_false_positive_classes_stay_filtered`). W1.41 `notify::Watcher` event-driven gate **deferred to v0.6.1+** (existing fast-tick + mtime walk adequate for v0.6.0). W1.42 pre-iteration deferrals umbrella — new `docs/operations/v0.6.0-pre-iteration-deferrals.md` records 10 items each with disposition + rationale; **0 of 10 lifted into v0.6.0 scope.** |
+
+### Wave C+D fix-wave (1 commit)
+
+| Task | Commit | What |
+|------|--------|------|
+| **MED-1** | `d29bda4` | Adversarial review at `2026-04-27-p3-4-wave-c-d.yaml` (verdict `lockable-with-fixes`, 1 MED + 3 LOW + 1 NIT). MED-1 closed: typed `ValenceArg` clap enum (parse-time reject) + daemon-side `match` allowlist (HTTP/non-CLI surface) + 1 new test pinning 5 invalid rejections + 3 valid round-trips. LOWs 1/2/3 + NIT-1 deferred to v0.6.1+ with per-finding rationale in the YAML. |
 
 ### Issue ledger updates
 
-* **I-20** MED-HIGH (cc-voice Round 3 §B): auto-create write fails under read-only routing → ✓ closed by X1.
-* **I-21** HIGH (Wave X dogfood): auto-create wipes existing row on path collision → ✓ closed by fw1.
-* **I-22** MED (Wave X review): concurrent-fresh-create race → ✓ closed by fw2.
-* **I-23** LOW (cc-voice Round 3 §C): `forge-daemon --version` dynamic-linker fail on glibc<2.38 → ✓ closed by X2.
-* **I-24** HIGH (W23 carry-forward): SIGTERM mid-pass split-brain on force-index → ✓ closed by W1.29.
-* **I-25** MED (W23 carry-forward): force-index dispatch ambiguity / PRAGMA drift → ✓ closed by W1.30.
+* **W28 LOW/NIT batch** (12 items from `2026-04-26-p3-3-10-quick-fixes.yaml`) → ✓ all flipped to `status: resolved` by W1.32.
+* **I-6 / I-9 / I-10 / I-11 / I-12** (5 dogfood-matrix LOWs) → ✓ closed by Wave C.
+* **I-2 / I-3** (force-index cold latency + WAL lock warns) → ✓ I-3 closed; I-2 documented as ONNX cold-start dominated, no further action.
+* **W29/W30 nice-to-haves** (3 sub-items) → ✓ require_project gate landed; D6 strict-precision + auto-extractor warn deferred.
+* **W31 drift fixture** → ✓ 6-class fixture landed.
+* **Wave C+D MED-1** (typed valence enum) → ✓ closed by fix-wave.
 
 ## State in one paragraph
 
-**HEAD `13a9618`. Wave X (#229-#232 + #236-#237) and Wave A+B (#190 + #191 + #239-#240) closed (9 commits + 2 adversarial reviews + response doc).** cc-voice Round 3 3/3 + 1 dogfood HIGH (data loss) + 6 review findings + W23 carry-forward HIGH-1 + 2 W23 MEDs all resolved. Doctor green. clippy 0 warnings; full daemon test suite at 1566/1566 (+10 new); harness-sync + protocol-hash + license-manifest + review-artifacts all OK. **11 drain items still pending (#193-#203, #215, #216-#219, #233, #238).** Resume at **#193 (W1.32 — W28 LOW/NIT cosmetic batch)** — first of Wave C/C1.
+**HEAD `d29bda4`. Wave C (#193 + #194 + #195 + #196 + #197 + #198 + #199) and Wave D (#200 + #201 + #202 + #203) closed (8 commits + 1 adversarial review + 1 fix-wave).** All 7 v0.6.0-blocking Wave C items + 4 Wave D items + 1 fix-wave MED resolved. Doctor green. Clippy 0 warnings; full daemon test suite at 1642/1642 (+9 new tests since Wave A+B baseline 1633 → 1642). Harness-sync + protocol-hash + license-manifest + review-artifacts (27 reviews) all OK. **0 v0.6.0-blocking items remain.** Next: halt for user sign-off → **#215 ZR** (internal reality→project rename) → halt → **#101 release stack**.
 
 ## First actions after `/compact` or session resume
 
 ```bash
 cd /mnt/colab-disk/DurgaSaiK/forge/forge
-git log --oneline -10                              # HEAD 13a9618
+git log --oneline -10                              # HEAD d29bda4
 git status --short                                 # expect clean
 forge-next doctor                                  # version + git_sha sanity
 bash scripts/check-harness-sync.sh                 # all 4 sanity gates
@@ -53,116 +54,70 @@ bash scripts/check-protocol-hash.sh
 bash scripts/check-license-manifest.sh
 bash scripts/check-review-artifacts.sh
 
-# Resume at #193 (W1.32 — W28 LOW/NIT cosmetic batch).
-# Wave C plan (split for review-friendliness):
-#   C1: #193 (W28 LOW/NIT cosmetics) + #198 (observe shape envelope)
-#   C2: #195 (--help grouping) + #196 (CLI remember --valence/--intensity)
-#   C3: #194 (force-index cold + WAL warns) + #197 (Phase 9b INFO log)
-#         + #199 (forge-bench telemetry quiet)
-# One adversarial review covers C1+C2+C3.
+# Halt for user sign-off. Resume options:
+# A) Open #215 ZR — internal reality→project rename + dead-code cleanup.
+# B) Open #101 release stack — multi-OS verify + tag + GH release + marketplace.
+# C) Address Round 4 cc-voice feedback if it arrives.
+# D) Backlog drain — Wave C+D LOWs (#216..#219, #238) + v0.6.1 follow-ups (#233).
 ```
 
-## Cumulative pending work
+## Cumulative pending work (post-Wave-C+D)
 
-### Tier 3 — observability / UX cosmetic batch (Wave C — 7 items)
+### Halt path (immediate)
 
-| Task | Subject |
-|------|---------|
-| **#193** | W1.32 — W28 LOW/NIT cosmetic batch (W28-LOW-2..LOW-10 + W28-NIT-1..NIT-3). |
-| #194 | W1.33 — I-2+I-3 force-index cold latency + WAL "database is locked" warns. |
-| #195 | W1.34 — I-6 `forge-next --help` grouping via `clap::next_help_heading`. |
-| #196 | W1.35 — I-9 CLI `remember` exposes `--valence`/`--intensity` flags. |
-| #197 | W1.36 — I-10 Phase 9b dedicated INFO log. |
-| #198 | W1.37 — I-11 `forge-next observe` shape schema uniformity (common envelope). |
-| #199 | W1.38 — I-12 `forge-bench` standalone telemetry warn quiet (downgrade or `--telemetry` flag). |
+* **#215 ZR — internal rename pass.** `Reality` Rust struct → `Project`,
+  `mod reality` → `mod project`, SQL `reality` table → `project` (with
+  migration + regression test per the SQLite-no-REVERSE memory). Delete
+  dead `code_engine.rs::context_section`. Re-opens after user sign-off.
+* **#101 — P3-4 release v0.6.0 stack.** Multi-OS verify + tag + GitHub
+  release + marketplace bundle + branch protection. Re-opens after
+  `#215` closes.
 
-### Tier 5 — nice-to-haves (Wave D — 3 items)
-
-| Task | Subject |
-|------|---------|
-| #200 | W1.39 — W29/W30 nice-to-haves: bench D6 strict-project precision dim; auto-extractor `tracing::warn!` audit trail; optional `memory.require_project = true` config gate. |
-| #201 | W1.40 — W31 drift fixture for contradiction false-positive surface. |
-| #202 | W1.41 — W32 `notify::Watcher` event-driven freshness gate. |
-
-### Tier 6 — pre-iteration backlog re-evaluation (Wave D umbrella — 1 item)
-
-| Task | Subject |
-|------|---------|
-| #203 | W1.42 — walk 9 pre-iteration deferrals: 2A-4d.3 T17 (BLOCKED on GHA billing); longmemeval/locomo re-run; SIGTERM/SIGINT chaos drill modes; criterion latency benchmarks; Prometheus bench composite gauge; multi-window regression baseline; manual-override label; P3-2 W1 trace-handler behavioral test gap; per-tenant Prometheus labels; OTLP timeline panel. Decide fix-or-permanently-defer per item with rationale. |
-
-### Wave Z + Y + X deferred (review residue) (5 items)
+### Wave Z + Y + X deferred (review residue)
 
 * **#216** — Wave Z MED-1: SessionUpdate TOCTOU error-message hygiene.
-* **#217** — Wave Z MED-3: `forge-next project rename / delete / relocate` (cc-voice Round 3 §C-3 walking-up TOML lands here; covers fw1 alias-mismatch escape valve too).
+* **#217** — Wave Z MED-3: `forge-next project rename / delete / relocate` (cc-voice Round 3 §C-3).
 * **#218** — Wave Z LOW-2: doctor backup hygiene XDG_DATA_HOME / Docker paths.
 * **#219** — Wave Z LOW-3: cc-voice §1.2 end-to-end integration test.
-* **#238** — Wave X LOW-1 (deferred): route compile-context auto-create through `writer_tx` (architectural; v0.6.1+).
+* **#238** — Wave X LOW-1: route compile-context auto-create through `writer_tx`.
+
+### Wave C+D fix-wave deferred (this session's review residue)
+
+* **C+D LOW-1** — `is_valid_ulid_chars` permissive (allows lowercase a-z minus iouL); fix tightens to uppercase Crockford or uppercases input at boundary.
+* **C+D LOW-2** — `COMMAND_CATEGORIES` const has no compile-time check that listed commands exist; fix is a unit test via `clap::Command::get_subcommands()` reflection.
+* **C+D LOW-3** — `stop_team` `(0, > 0)` and `(> 0, > 0)` CLI branches lack mock-Response wording tests.
+* **C+D NIT-1** — `FORGE_BENCH_QUIET` doc-comment claims parity with `FORGE_HOOK_VERBOSE` but they're polar opposites; doc-comment fix.
 
 ### v0.6.1 follow-ups
 
-* **#233** — domain="unknown" → real-domain upgrade in indexer per `docs/architecture/project-domain-lifecycle.md`. Small UPDATE in `workers/perception.rs` or `workers/indexer.rs` with SQL guard `WHERE domain = 'unknown'`. Test contract pinned in the doc.
+* **#202** — `notify::Watcher` event-driven freshness gate (Wave D deferred).
+* **#233** — domain="unknown" → real-domain upgrade in indexer per `docs/architecture/project-domain-lifecycle.md`.
+* **#68** — 2A-4d.3 T17 CI bench-fast gate promotion (BLOCKED on GHA billing).
+* **9 pre-iteration deferrals** (per `docs/operations/v0.6.0-pre-iteration-deferrals.md`): longmemeval/locomo, SIGTERM chaos drill modes, criterion benchmarks, Prometheus bench composite gauge, multi-window regression baseline, manual-override label, P3-2 W1 trace-handler test gap, per-tenant Prometheus labels, OTLP timeline panel.
 
-### Deferred internal cleanup
+## Adversarial reviews this session
 
-* **#215 — ZR — internal rename pass.** `Reality` Rust struct → `Project`,
-  `mod reality` → `mod project`, SQL `reality` table → `project` (with
-  migration + regression test per the SQLite-no-REVERSE memory). Delete
-  dead `code_engine.rs::context_section`. **Open after #203 closes.**
+* `docs/superpowers/reviews/2026-04-27-p3-4-wave-c-d.yaml` — verdict `lockable-with-fixes`, 1 MED + 3 LOW + 1 NIT. MED-1 closed by fix-wave commit `d29bda4`. LOWs+NIT deferred to v0.6.1+ with rationale.
 
-### Final wave
+## Halt-and-ask map (post-fix-wave)
 
-* **#101 — P3-4 release v0.6.0 stack.** DEFERRED — opens after `#215` closes.
-
-## TaskList structure (post-Wave-A+B)
-
-| Range | Subject | Status |
-|---|---|---|
-| #190 | W1.29 SIGTERM-graceful JoinSet | **completed (this session)** |
-| #191 | W1.30 typed dispatched + PRAGMA helper | **completed (this session)** |
-| #229 .. #232 | Wave X (cc-voice Round 3) | all completed (this session) |
-| #234 .. #237 | Wave X review + fix-waves | all completed (this session) |
-| #239 .. #240 | Wave A+B review + fix-wave | all completed (this session) |
-| **#193** | **W28 LOW/NIT cosmetic batch** | **← next session resume** |
-| #194 .. #199 | Tier 3 cosmetic continuation | pending |
-| #200 .. #203 | Tier 5 + umbrella | pending |
-| #215 | ZR internal rename | pending — opens after #203 |
-| #216-#219, #238 | deferred review residue | pending — v0.6.1+ |
-| #233 | v0.6.1 indexer domain upgrade | pending — v0.6.1 |
-| #101 | release v0.6.0 stack | DEFERRED — opens after #215 |
-
-## Halt-and-ask map for the post-Wave-A+B window
-
-1. **NO halt.** Per user direction, drain `#193 → #203` continuously. Per Plan A §6 still applies — adversarial review per behavior-change wave; fix-wave for HIGH+MED.
-2. **Halt only on:** non-clean working tree across a wave boundary; review verdict `not-lockable`; surprise architectural blocker that needs user input; cc-voice filing follow-up Round 4 feedback that supersedes the queued work.
-3. **AFTER #203 closes:** halt for sign-off → open ZR (`#215`, internal reality→project rename) → halt for sign-off → open `#101` release stack.
+1. **HALT now.** Per HANDOFF rule 3 ("AFTER #203 closes: halt for sign-off → open ZR (#215) → halt for sign-off → open #101 release stack"), the Wave C+D drain is complete and the orchestrator must stop here.
+2. **Halt only on:** non-clean working tree across a wave boundary; review verdict `not-lockable`; surprise architectural blocker that needs user input; cc-voice Round 4 feedback.
+3. **AFTER user sign-off:** open ZR (`#215`) → halt → open `#101` release stack.
 
 ## Auto-memory state (cross-session)
 
-Saved across recent sessions:
-* `feedback_project_everywhere_vocabulary.md` — Wave Z user-facing vocabulary lock
-* `feedback_xml_attribute_resolution_pattern.md` — `resolution=` attribute pattern (extended to `auto-created` by Y2)
-* `feedback_decode_fallback_depth_floor.md` — informs W1.21 (now strategic-fixed)
-* `feedback_dual_helper_basename_vs_reality.md` — informs W1.26
-* `feedback_release_stack_deferred.md` — informs `#101` deferral
-* `feedback_json_macro_silent_drift.md` — informs W1.24
-* `feedback_sqlite_no_reverse_silent_migration_failure.md` — informs ZR
-* `feedback_lazy_count_with_expand_call.md` — Y7 / Z static-prefix lazy load
-* `feedback_clap_conflicts_with_stack_overflow.md` — Y6 clap 4.x bug
-* `feedback_readonly_routing_trap_for_side_effecting_handlers.md` — X1 root cause + test fixture rule
-* `feedback_insert_or_replace_data_loss_on_unique_index.md` — X1.fw1 + fw2 split
+Saved across recent sessions (no new memories required this session — the Wave C+D work all uses established patterns):
 
-**Memory candidates from this session (W1.29 + W1.30 + their fix-wave):**
-
-* **`BackgroundTaskSupervisor` pattern for fire-and-forget blocking writes.** When adding a future heavy-write feature (analytical batch, multi-table backfill, bench-corpus rebuild), use the supervisor: per-resource `AtomicBool` reject-overlap + `signal_shutdown` gate + `spawn_supervised` into the JoinSet. Drain on shutdown via `bg_supervisor.drain(timeout)`. The release MUST fire in ALL completion paths (Ok/Err/panic) — production supervisor closure structure mirrors `process_force_index_async` at `crates/daemon/src/server/writer.rs`.
-* **Adding a field to a tagged `ResponseData` enum is wire-back-compatible via `#[serde(default)]`.** Old daemon → new CLI: serde defaults the missing field (false for bool, 0 for usize, etc.). New daemon → old CLI: serde silently ignores unknown fields. So adding `dispatched: bool` to `IndexComplete` doesn't bump protocol_hash (Request hash, not Response). The CLI heuristic that the field replaces (e.g. `(0,0)` → "dispatched") should be dropped at the same time on the new-CLI side.
-* **PRAGMA helper as drift gate.** Sweeping `PRAGMA journal_mode=WAL; PRAGMA busy_timeout={varies}` literals into `crate::db::apply_runtime_pragmas(&conn)` enforces a single source of truth for `BUSY_TIMEOUT_MS` (10s canonical). Read-only handles can't engage WAL — keep them inline using the same const.
-
-The `feedback_writer_actor_spawn_blocking.md` memory's W23 HIGH-1 carry-forward is now resolved by W1.29; should be updated next session (low priority).
+* `feedback_serde_default_for_response_field_extension.md` — applied to `retire_errors` (W1.32 LOW-4) and `row_count` (W1.37) and `valence` / `intensity` (W1.35).
+* `feedback_clap_conflicts_with_stack_overflow.md` — informs the `ValenceArg` enum approach (use `ValueEnum` derive instead of `conflicts_with`).
+* `feedback_readonly_routing_trap_for_side_effecting_handlers.md` — informs the W1.39 require_project gate placement at the start of the handler arm (no DB write attempts pre-gate).
+* `feedback_release_stack_deferred.md` — informs the deferred-backlog walk (Wave C+D LOWs all carried per "release stack is the LAST thing").
 
 ## Daemon-binary state (end of session)
 
-Daemon was respawned mid-session at `c052a9b` for live dogfood (Wave X §B reproduction); next session should rebuild release at HEAD `13a9618` and respawn for Wave C dogfood when feasible.
+Daemon respawn from current HEAD `d29bda4` not yet performed — production binary still on prior session's HEAD. Next dogfood pass should rebuild release at `d29bda4` and respawn before opening #215.
 
 ## One-line summary
 
-**HEAD `13a9618`. This session: Wave X (cc-voice Round 3 unblock, 5 commits + response doc + 2 fix-waves) + Wave A+B (#190 SIGTERM-graceful supervisor + #191 typed dispatched + PRAGMA helper, 2 strategic commits + 1 fix-wave + 2 adversarial reviews). 9 commits total. 11 issue-ledger items resolved (I-20..I-25 + W23 HIGH-1 carry-forward). 11 drain items still queued (#193-#203 + #215 + deferred). Resume at #193 (Wave C/C1) when next session opens.**
+**HEAD `d29bda4`. This session: Wave C (5 commits, 7 issue-ledger items closed) + Wave D (1 commit, 4 items closed) + adversarial review + fix-wave (1 commit, 1 MED closed, 4 deferred). 8 commits total. 11 v0.6.0-blocking items + 1 review-MED resolved. Halt for sign-off → ZR (#215) → halt → release (#101) is the locked next path.**
