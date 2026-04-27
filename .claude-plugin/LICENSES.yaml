@@ -20,6 +20,14 @@ license: Apache-2.0
 coverage_paths:
   - .claude-plugin
   - hooks
+  # 2026-04-27 D-16: skills/ and agents/ ship under the repo's
+  # Apache-2.0 umbrella but the validator only enumerates *.json
+  # under coverage_paths. There are no JSON files under either
+  # directory today — listing them here pins the coverage gate so
+  # any future skill/agent JSON (e.g. metadata.json) MUST be added
+  # to files[] before it lands.
+  - skills
+  - agents
 
 files:
   - path: .claude-plugin/plugin.json

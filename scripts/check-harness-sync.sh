@@ -203,6 +203,12 @@ HARNESS_PATHS=(
 
 refs_file="$(mktemp)"
 # 3a. JSON method literals: "method":"foo"
+# Scans every HARNESS_PATH file (recursively) — including agents/*.md
+# and skills/*.md — so JSON method literals embedded in markdown
+# code-fences are caught alongside the JSON config files. This is the
+# D-12 fix surface: combined with 3b's bare-`forge X` agent scan, the
+# gate now sees both `{"method":"foo"}` literals and `forge bar` CLI
+# invocations inside agents/skills, not just plugin.json/marketplace.json.
 for p in "${HARNESS_PATHS[@]}"; do
     path="$REPO_ROOT/$p"
     [ -e "$path" ] || continue

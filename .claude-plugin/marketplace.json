@@ -4,8 +4,7 @@
   "version": "0.6.0-rc.3",
   "description": "Forge: Cognitive infrastructure for AI agents. 8-layer memory, proactive perception, identity, guardrails.",
   "owner": {
-    "name": "Forge Contributors",
-    "email": ""
+    "name": "Forge Contributors"
   },
   "plugins": [
     {

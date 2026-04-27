@@ -15,19 +15,39 @@ Before saying "done", "fixed", "working", or "all tests pass":
 
 ### 1. Run the tests (don't assume)
 
+Use the test command from the project's conventions (CLAUDE.md / CONSTITUTION.md). If none, auto-detect from project markers:
+
+| Marker | Test command |
+|--------|--------------|
+| `Cargo.toml` | `cargo test --workspace` |
+| `package.json` | `npm test` (or `pnpm test` / `yarn test` per lockfile) |
+| `pyproject.toml` | `pytest` (or `python -m pytest`) |
+| `go.mod` | `go test ./...` |
+
+For the Forge repo specifically (Rust workspace):
 ```bash
 cargo test --workspace 2>&1 | grep "test result" | awk '{sum += $4; fail += $6} END {print sum " passed, " fail " failed"}'
 ```
 
 **Read the output.** Don't say "all tests pass" without running them.
 
-### 2. Run clippy (zero warnings)
+### 2. Run lint (zero warnings)
 
+Use the lint command from the project's conventions. If none, auto-detect:
+
+| Marker | Lint command |
+|--------|--------------|
+| `Cargo.toml` | `cargo clippy --workspace -- -W clippy::all -D warnings` |
+| `package.json` (eslint) | `npx eslint .` |
+| `pyproject.toml` (ruff) | `ruff check .` |
+| `go.mod` | `go vet ./...` (or `golangci-lint run`) |
+
+For the Forge repo specifically:
 ```bash
-cargo clippy -p forge-daemon -p forge-core -p forge-cli -- -W clippy::all 2>&1 | grep -c "^warning:"
+cargo clippy --workspace -- -W clippy::all 2>&1 | grep -c "^warning:"
 ```
 
-Must be 0.
+Must be 0. (`--workspace` covers every crate — `forge-daemon`, `forge-core`, `forge-cli`, `forge-hud`, `forge-bench` — without naming them individually, so adding/removing crates won't drift the command.)
 
 ### 3. Check Forge health
 
@@ -79,6 +99,23 @@ For changes touching 5+ files or adding new protocol variants:
 ```bash
 forge-next remember --type decision --title "<what was completed>" --content "<summary + test count>"
 ```
+
+## Debugging silent hook failures
+
+If `forge-next doctor` reports OK but the SessionStart context isn't
+injecting (or post-edit indexing isn't firing), the hook layer may be
+swallowing daemon errors. The Forge hooks default to silent so
+Claude Code's hook JSON channel stays clean — set the opt-in to
+surface daemon stderr:
+
+```bash
+FORGE_HOOK_VERBOSE=1 claude   # any CC invocation
+```
+
+`scripts/hooks/{session-start,subagent-start,post-edit}.sh` honor the
+flag; with it set, `[forge-hook] ...` lines print to your terminal
+showing socket failures, compile-context errors, and timeout details.
+See `forge-setup` "Troubleshooting" for the full reference.
 
 ## Anti-Patterns
 

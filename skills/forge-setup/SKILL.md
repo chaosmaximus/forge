@@ -147,6 +147,35 @@ this step — `forge-new` detects absence and routes to the no-UI path.
 "Forge is set up for `<project>`. Run `/forge:forge-new` for a new
 project or `/forge:forge-feature` for existing code."
 
+## Troubleshooting
+
+### Context not injecting on session start
+
+The Forge SessionStart hook intentionally swallows daemon errors so its
+JSON output stays clean (Claude Code rejects non-JSON noise on the hook
+channel). If `<forge-context>` is missing or `code-structure` shows
+`resolution="no-match"` when you expect a real index, surface the
+underlying failure with:
+
+```bash
+FORGE_HOOK_VERBOSE=1 claude   # or whatever invocation triggers your CC session
+```
+
+The flag is read by `scripts/hooks/session-start.sh`, `subagent-start.sh`,
+and `post-edit.sh`. With it set, daemon stderr (socket missing,
+`compile-context` errors, `register-session` timeouts) prints to your
+terminal as `[forge-hook] ...` lines instead of being routed to
+`/dev/null`. Once the hook works, unset the flag — the silent default
+keeps day-to-day sessions clean.
+
+### Hooks silently no-op
+
+If you `cargo install forge-cli` and the binary lands as `forge-cli`
+(crate name) instead of being symlinked as `forge-next`, the hooks
+search `$FORGE_NEXT` → `~/.local/bin/forge-next` →
+`/usr/local/bin/forge-next` and find nothing. Re-run the symlink step
+in §1 above, or set `FORGE_NEXT=/path/to/forge-cli` in your shell rc.
+
 ## Reference: project commands cheat sheet
 
 ```bash

@@ -1,7 +1,12 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
+---
+name: forge-build-workflow
+description: "Shared build-workflow reference read by forge-new (greenfield) and forge-feature (existing codebase) during the Build phase. Not directly user-triggered — invoked by the lead skill via Read on `${CLAUDE_PLUGIN_ROOT}/skills/forge-build-workflow.md`. Defines wave execution, agent spawn context, and verification gates."
+---
+
 # Forge Build Workflow (Shared Reference)
 
-This file defines the shared build workflow used by both forge-new (greenfield) and forge-feature (existing codebase) modes. It is NOT a skill — it is a reference document read by the lead skill during the build phase.
+This file defines the shared build workflow used by both forge-new (greenfield) and forge-feature (existing codebase) modes. It is NOT a user-triggered skill — it is a reference document read by the lead skill during the build phase. Front-matter exists so the Claude Code skill loader recognizes the file as a well-formed skill manifest and does not warn on plugin load.
 
 ## Step 1: Prepare
 

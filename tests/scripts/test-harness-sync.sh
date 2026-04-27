@@ -113,6 +113,15 @@ assert_contains "nonexistent-cmd" "$output"
 # decision — if the skip list grows back to include `plugin`, this
 # trips before the real-repo gate masks the drift.
 assert_contains "plugin" "$output"
+# Pre-release audit D-12 (2026-04-27): the harness-sync gate must
+# scan agents/*.md content for bare-`forge X` invocations, not just
+# JSON method literals. The drift fixture's agents/drift.md has a
+# fictional `forge query "MATCH..."` inside a bash code-fence — if
+# the agent-content scan regresses to JSON-only (3a), `query` stops
+# appearing in drift output and this assertion fires before the
+# real-repo gate masks the silent regression.
+assert_contains "query" "$output"
+assert_contains "bogus-subcmd" "$output"
 
 # ============================================================================
 # Test 4: drift fixture legacy FORCE_FAIL=1
