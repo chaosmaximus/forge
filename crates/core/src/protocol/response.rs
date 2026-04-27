@@ -857,6 +857,20 @@ pub enum ResponseData {
     TeamStopped {
         team_name: String,
         agents_retired: usize,
+        /// W1.32 (W28 review LOW-4): per-agent retire errors that did NOT
+        /// count toward `agents_retired`. Pre-W1.32 the daemon collapsed
+        /// `(retired, errors)` into a single `retired` count, so a CLI
+        /// receiving `agents_retired = 0` couldn't distinguish "team had
+        /// no spawned agents" (the genuine no-op) from "all retires
+        /// errored" (a real failure). The CLI now branches on
+        /// `(retired, errors)` for accurate annotation.
+        ///
+        /// Wire-back-compat: `#[serde(default)]` keeps old daemons (no
+        /// field) → new CLI (default 0) and new daemons (true value) →
+        /// old CLI (silently ignored) both well-formed. The field is on
+        /// Response so `protocol_hash` is unchanged.
+        #[serde(default)]
+        retire_errors: usize,
     },
     /// List of pre-built team templates
     TeamTemplateList {

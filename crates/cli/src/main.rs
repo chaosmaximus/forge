@@ -1674,10 +1674,16 @@ async fn main() {
             id_flag,
             from,
         } => {
+            // W1.32 (W28 review NIT-1): align rejection wording with clap's
+            // standard `the argument 'X' cannot be used with 'Y'` idiom so
+            // existing shell-pipeline scripts that grep for "cannot be used
+            // with" find this rejection too.
             let id = match (id_pos, id_flag) {
                 (Some(v), None) | (None, Some(v)) => v,
                 (Some(_), Some(_)) => {
-                    eprintln!("error: pass message ID as positional OR --id, not both");
+                    eprintln!(
+                        "error: the argument '--id <ID>' cannot be used with '<ID>' (positional)"
+                    );
                     std::process::exit(2);
                 }
                 (None, None) => {

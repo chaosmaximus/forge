@@ -2,6 +2,40 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
+/// W1.32 (W28 review LOW-2 + LOW-3 + LOW-9): typed error surface for the
+/// single-message lookup helper. Replaces the prior
+/// `rusqlite::Result<Option<_>>` shape that conflated "no row", "many rows
+/// matched the prefix", and "the input contained SQL LIKE wildcards / non-
+/// ULID chars" into a single `Result<Option<_>>`. Each handler arm can now
+/// emit a clean user-facing error without the `session_message_read failed:`
+/// implementation prefix.
+#[derive(Debug, thiserror::Error)]
+pub enum MessageReadError {
+    /// The caller-supplied ID/prefix contained characters outside Crockford
+    /// base32 (`0-9A-Za-z` minus `I/L/O/U`). Real ULIDs never include `%`,
+    /// `_`, or whitespace, so this rejection at the boundary prevents
+    /// arbitrary SQL `LIKE` wildcards from leaking into the prefix path.
+    #[error("invalid characters in message ID '{0}' — expected Crockford base32 (ULID format)")]
+    InvalidChars(String),
+    /// The prefix matched two or more rows. The user must type more
+    /// characters to disambiguate.
+    #[error("ambiguous message ID prefix '{prefix}' — type more characters (matches at least {count} rows)")]
+    Ambiguous { prefix: String, count: usize },
+    /// Underlying SQLite error.
+    #[error(transparent)]
+    Sql(#[from] rusqlite::Error),
+}
+
+/// W1.32 (W28 LOW-2): accept only Crockford base32 characters (ULID's
+/// alphabet). ULIDs are case-insensitive on the wire but typically rendered
+/// uppercase, so the validator allows both. Rejects `%` / `_` / whitespace
+/// and any non-base32 char before the input ever reaches a `LIKE` clause.
+fn is_valid_ulid_chars(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() && !matches!(c, 'I' | 'L' | 'O' | 'U' | 'i' | 'l' | 'o' | 'u'))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -547,7 +581,14 @@ pub fn read_message_by_id_or_prefix(
     conn: &Connection,
     id_or_prefix: &str,
     caller_session: Option<&str>,
-) -> rusqlite::Result<Option<SessionMessageRow>> {
+) -> Result<Option<SessionMessageRow>, MessageReadError> {
+    // W1.32 (W28 LOW-2): reject any input containing characters outside
+    // ULID's Crockford base32 alphabet BEFORE binding to the LIKE clause.
+    // `%` / `_` / whitespace are not valid ULID chars; rejecting them at
+    // the boundary closes the unfiltered-wildcard surface.
+    if !is_valid_ulid_chars(id_or_prefix) {
+        return Err(MessageReadError::InvalidChars(id_or_prefix.to_string()));
+    }
     let map_row = |row: &rusqlite::Row| -> rusqlite::Result<SessionMessageRow> {
         Ok(SessionMessageRow {
             id: row.get(0)?,
@@ -581,7 +622,7 @@ pub fn read_message_by_id_or_prefix(
     match exact {
         Ok(row) => return Ok(Some(row)),
         Err(rusqlite::Error::QueryReturnedNoRows) => {} // fall through to prefix
-        Err(e) => return Err(e),
+        Err(e) => return Err(e.into()),
     }
     // Prefix match — must be unambiguous.
     let rows: Vec<SessionMessageRow> = if let Some(scope) = caller_session {
@@ -608,11 +649,10 @@ pub fn read_message_by_id_or_prefix(
     match rows.len() {
         1 => Ok(Some(rows.into_iter().next().unwrap())),
         0 => Ok(None),
-        _ => Err(rusqlite::Error::InvalidParameterName(format!(
-            "ambiguous message ID prefix '{id_or_prefix}' — type more characters \
-             (matches at least {} rows)",
-            rows.len()
-        ))),
+        n => Err(MessageReadError::Ambiguous {
+            prefix: id_or_prefix.to_string(),
+            count: n,
+        }),
     }
 }
 
@@ -1902,5 +1942,95 @@ mod tests {
             r_uninvolved.is_none(),
             "scoped: a session that is neither sender nor recipient sees nothing"
         );
+    }
+
+    // P3-4 W1.32 (W28 review LOW-2 + LOW-3 + LOW-9): the four behavioral
+    // branches of `read_message_by_id_or_prefix` are now pinned by tests
+    // (a) exact, (b) prefix-1, (c) zero-match, (d) ambiguous, plus the
+    // (e) invalid-chars guard at the boundary. These were previously
+    // verified only by live walk-through; LOW-9 tracked the gap.
+
+    #[test]
+    fn w1_32_w28_low9_read_message_branch_a_exact_match_returns_row() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        let id = send_message(&conn, "s1", "s2", "request", "t", "[]", None, None, None).unwrap();
+        let row = read_message_by_id_or_prefix(&conn, &id, None)
+            .expect("exact branch must not error")
+            .expect("exact branch must return Some(row)");
+        assert_eq!(row.id, id);
+        assert_eq!(row.from_session, "s1");
+        assert_eq!(row.to_session, "s2");
+    }
+
+    #[test]
+    fn w1_32_w28_low9_read_message_branch_b_unambiguous_prefix_returns_row() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        let id = send_message(&conn, "s1", "s2", "request", "t", "[]", None, None, None).unwrap();
+        // Take a 20-char prefix — long enough to be unambiguous against a
+        // single seeded row but short enough to exercise the LIKE branch.
+        let prefix: &str = &id[..20];
+        let row = read_message_by_id_or_prefix(&conn, prefix, None)
+            .expect("prefix branch must not error")
+            .expect("unambiguous prefix must return Some(row)");
+        assert_eq!(row.id, id, "prefix lookup returns the matching row");
+    }
+
+    #[test]
+    fn w1_32_w28_low9_read_message_branch_c_zero_matches_returns_none() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        // No rows seeded. A well-formed-but-unknown ULID returns Ok(None),
+        // not Err — the handler renders this as "message not found".
+        let r = read_message_by_id_or_prefix(&conn, "01HZZZZZZZZZZZZZZZZZZZZZZZ", None)
+            .expect("zero-match must be Ok(None), not Err");
+        assert!(r.is_none(), "zero matches yields None");
+    }
+
+    #[test]
+    fn w1_32_w28_low9_read_message_branch_d_ambiguous_prefix_returns_err() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        // Two seeded ULIDs share a leading time prefix (ULIDs are
+        // time-ordered; messages sent in rapid succession share many
+        // leading chars). A 4-char prefix is virtually guaranteed to
+        // match both.
+        let _id_1 = send_message(&conn, "s1", "s2", "request", "t1", "[]", None, None, None)
+            .unwrap();
+        let _id_2 = send_message(&conn, "s1", "s2", "request", "t2", "[]", None, None, None)
+            .unwrap();
+        let err = read_message_by_id_or_prefix(&conn, "01", None)
+            .expect_err("ambiguous prefix must yield Err::Ambiguous");
+        match err {
+            MessageReadError::Ambiguous { ref prefix, count } => {
+                assert_eq!(prefix, "01");
+                assert!(count >= 2, "ambiguous count must be ≥2, got {count}");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn w1_32_w28_low2_read_message_rejects_like_wildcards_at_boundary() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_schema(&conn).unwrap();
+        // Seed one row, then attempt lookups with wildcards. The validator
+        // rejects each at the boundary BEFORE the LIKE clause sees them —
+        // so `%` no longer matches every message in the database.
+        let _id = send_message(&conn, "s1", "s2", "request", "t", "[]", None, None, None).unwrap();
+        for bad in ["%", "_", "01%", " 01ABCDEF", "01ABCDEF ", "lowercase-l-rejected"] {
+            let err = read_message_by_id_or_prefix(&conn, bad, None)
+                .expect_err(&format!("input '{bad}' must be rejected as InvalidChars"));
+            assert!(
+                matches!(err, MessageReadError::InvalidChars(_)),
+                "expected InvalidChars for '{bad}', got {err:?}"
+            );
+        }
     }
 }

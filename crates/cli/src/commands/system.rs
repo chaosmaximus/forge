@@ -45,37 +45,41 @@ pub async fn doctor() {
             println!("  Edges:       {edge_count}");
             println!("  Workers:     {}", workers.join(", "));
 
+            // W1.32 (W28 review NIT-2): the stale-daemon hint is computed
+            // here but rendered as a Health Checks entry, not appended
+            // inline to the Version line — keeps `Version: 0.6.0-rc.3
+            // (06e1f4c)` under 80 chars and consistent with every other
+            // diagnostic message format.
+            let stale_hint = if !version.is_empty() {
+                let cli_version = env!("CARGO_PKG_VERSION");
+                let cli_git_sha = option_env!("FORGE_GIT_SHA").unwrap_or("");
+                if cli_version != version {
+                    Some(format!(
+                        "rebuild detected (CLI is v{cli_version}, daemon is v{version}) — run `forge-next restart`"
+                    ))
+                } else if !cli_git_sha.is_empty()
+                    && git_sha
+                        .as_deref()
+                        .is_some_and(|s| !s.is_empty() && s != cli_git_sha)
+                {
+                    let daemon_sha = git_sha.as_deref().unwrap_or("?");
+                    Some(format!(
+                        "rebuild detected (CLI is {cli_git_sha}, daemon is {daemon_sha}) — restart with `pkill -INT forge-daemon` then re-run"
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             // Observability fields (added in housekeeping cycle)
             if !version.is_empty() {
                 let sha_str = git_sha
                     .as_deref()
                     .map(|s| format!(" ({s})"))
                     .unwrap_or_default();
-                // F1: detect a stale daemon — running binary's compile-time
-                // version differs from the just-built CLI's compile-time
-                // version → flag with a hint to restart. Matches identical
-                // versions silently (no decoration).
-                let cli_version = env!("CARGO_PKG_VERSION");
-                // P3-4 Wave Z (Z11) per CC voice feedback §1.3 fix #2:
-                // also flag a git_sha drift when versions match but the
-                // daemon was built from an older commit than the CLI.
-                // Catches the "I rebuilt master but forgot to restart"
-                // class of stale-binary bugs where version didn't bump.
-                let cli_git_sha = option_env!("FORGE_GIT_SHA").unwrap_or("");
-                let stale = if cli_version != version {
-                    format!(" [stale daemon, CLI is v{cli_version} — run `forge-next restart`]")
-                } else if !cli_git_sha.is_empty()
-                    && git_sha
-                        .as_deref()
-                        .is_some_and(|s| !s.is_empty() && s != cli_git_sha)
-                {
-                    format!(
-                        " [stale daemon, CLI built from {cli_git_sha} — restart with `pkill -INT forge-daemon` then re-run]"
-                    )
-                } else {
-                    String::new()
-                };
-                println!("  Version:     {version}{sha_str}{stale}");
+                println!("  Version:     {version}{sha_str}");
             }
             if raw_document_count > 0 || raw_chunk_count > 0 {
                 println!("  Raw docs:    {raw_document_count}");
@@ -86,9 +90,12 @@ pub async fn doctor() {
                 println!("  Messages:    {session_message_count} total");
             }
 
-            if !checks.is_empty() {
+            if !checks.is_empty() || stale_hint.is_some() {
                 println!();
                 println!("Health Checks:");
+                if let Some(msg) = stale_hint {
+                    println!("  [WARN] stale_daemon: {msg}");
+                }
                 for check in &checks {
                     let indicator = match check.status.as_str() {
                         "ok" => "[OK]",
@@ -1117,10 +1124,20 @@ pub async fn list_messages(
                     } else {
                         &parts_text
                     };
+                    // W1.32 (W28 review NIT-3): widen the truncated ID
+                    // display from 8 → 12 chars. ULIDs are time-ordered:
+                    // 8 chars covers ~40 bits of timestamp prefix, so
+                    // messages sent within the same minute routinely
+                    // collide on the prefix, forcing the user to type
+                    // ~4 more chars in `message-read` for prefix
+                    // disambiguation. 12 chars stretches into the random
+                    // section so co-minute prefixes become unambiguous.
+                    // Use `--full` to render the entire 26-char ULID.
+                    let display_id = &m.id[..12.min(m.id.len())];
                     println!(
                         "  [{status}] {id} from {from} — {topic}: {preview}",
                         status = m.status,
-                        id = &m.id[..8.min(m.id.len())],
+                        id = display_id,
                         from = m.from_session,
                         topic = m.topic,
                         preview = preview

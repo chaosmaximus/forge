@@ -1857,7 +1857,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     .ok()
                     .map(std::path::PathBuf::from),
             ];
-            let has_plugin_install = plugin_install_dirs.iter().flatten().any(|p| p.is_dir());
+            // W1.32 (W28 review LOW-8): use `symlink_metadata` so a broken
+            // symlink at `~/.claude/plugins/forge` (target deleted) is still
+            // detected as "plugin install present" — `is_dir()` follows the
+            // link and silently reports false, which would mis-classify a
+            // misconfigured install as standalone. Treat the path as
+            // "install root present" if the path resolves to a directory
+            // OR exists as a symlink at all (broken-or-not).
+            let has_plugin_install = plugin_install_dirs.iter().flatten().any(|p| {
+                std::fs::symlink_metadata(p)
+                    .map(|m| m.is_dir() || m.file_type().is_symlink())
+                    .unwrap_or(false)
+            });
             checks.push(match hook_file {
                 Some(p) => {
                     let event_count: usize = std::fs::read_to_string(p)
@@ -4722,7 +4733,21 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 Ok(None) => Response::Error {
                     message: format!("message not found: {id}"),
                 },
-                Err(e) => Response::Error {
+                // W1.32 (W28 LOW-3): the helper now returns typed errors —
+                // each variant renders without the `session_message_read failed:`
+                // implementation prefix that previously muddied the actionable
+                // hint.
+                Err(crate::sessions::MessageReadError::InvalidChars(s)) => Response::Error {
+                    message: format!(
+                        "invalid characters in message ID '{s}' — expected Crockford base32 (ULID format)"
+                    ),
+                },
+                Err(crate::sessions::MessageReadError::Ambiguous { prefix, count }) => Response::Error {
+                    message: format!(
+                        "ambiguous message ID prefix '{prefix}' — type more characters (matches at least {count} rows)"
+                    ),
+                },
+                Err(crate::sessions::MessageReadError::Sql(e)) => Response::Error {
                     message: format!("session_message_read failed: {e}"),
                 },
             }
@@ -6036,6 +6061,31 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             goal,
             project,
         } => {
+            // W1.32 (W28 review LOW-7): warn on unknown `--project`. A typo
+            // silently scopes the team's work to a non-existent project and
+            // health-by-project never surfaces it. We log instead of
+            // rejecting because (a) the underlying register_session is
+            // permissive by design (sessions can write to projects that
+            // auto-create downstream) and (b) the strict-reject path is
+            // tracked separately as the optional `memory.require_project`
+            // config (W29/W30 backlog). The warn is the cheapest signal
+            // to operators that something is off.
+            if let Some(p) = project.as_deref().filter(|s| !s.is_empty()) {
+                match crate::db::ops::get_reality_by_name(&state.conn, p, "default") {
+                    Ok(Some(_)) => {}
+                    Ok(None) => tracing::warn!(
+                        project = %p,
+                        team = %team_name,
+                        "run_team: --project is not in the known projects table — typo? (use `forge-next health` to list known projects)"
+                    ),
+                    Err(e) => tracing::warn!(
+                        project = %p,
+                        team = %team_name,
+                        error = %e,
+                        "run_team: project-existence check failed; proceeding"
+                    ),
+                }
+            }
             match crate::teams::run_team(
                 &state.conn,
                 &team_name,
@@ -6085,19 +6135,24 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
         }
 
         Request::StopTeam { team_name } => match crate::teams::stop_team(&state.conn, &team_name) {
-            Ok(agents_retired) => {
+            // W1.32 (W28 review LOW-4): the helper now returns the
+            // `(retired, errors)` tuple so the CLI can surface
+            // "all retires failed" distinctly from "team had no agents".
+            Ok((agents_retired, retire_errors)) => {
                 crate::events::emit(
                     &state.events,
                     "team_stopped",
                     serde_json::json!({
                         "team_name": team_name,
                         "agents_retired": agents_retired,
+                        "retire_errors": retire_errors,
                     }),
                 );
                 Response::Ok {
                     data: ResponseData::TeamStopped {
                         team_name,
                         agents_retired,
+                        retire_errors,
                     },
                 }
             }

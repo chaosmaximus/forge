@@ -387,6 +387,13 @@ pub fn create_team(
 }
 
 /// List members of a team (including agent sessions).
+///
+/// W1.32 (W28 review LOW-10): the SQL filters out members whose joined
+/// session is `ended` so retired agents stop showing up as if they were
+/// still active. Human members (no session row) are kept via the
+/// `s.id IS NULL` arm. The `--include-retired` audit case is tracked as
+/// a v0.6.1+ knob — for v0.6.0 the default-and-only behavior is "active
+/// members only", which aligns with the F7/F9 fix family.
 pub fn list_team_members(conn: &Connection, team_name: &str) -> rusqlite::Result<Vec<Value>> {
     let mut members = Vec::new();
     let mut stmt = conn.prepare(
@@ -396,6 +403,7 @@ pub fn list_team_members(conn: &Connection, team_name: &str) -> rusqlite::Result
          JOIN team t ON t.id = tm.team_id
          LEFT JOIN session s ON s.id = tm.session_id
          WHERE t.name = ?1
+           AND (s.id IS NULL OR s.status IN ('active', 'idle'))
          ORDER BY tm.joined_at",
     )?;
     let rows = stmt.query_map(params![team_name], |row| {
@@ -659,8 +667,14 @@ pub fn run_team(
 }
 
 /// Stop a running team: retire all agents and end all sessions.
-/// Returns the number of agents retired.
-pub fn stop_team(conn: &Connection, team_name: &str) -> rusqlite::Result<usize> {
+///
+/// W1.32 (W28 review LOW-4): returns `(retired, errors)` so the CLI can
+/// distinguish a genuine no-op (team had no spawned agents — `(0, 0)`)
+/// from a partial-or-total retire-cascade failure (`(0, > 0)` /
+/// `(> 0, > 0)`). Pre-W1.32 the helper silently dropped per-agent retire
+/// errors and reported only the success count; F7's "team had no spawned
+/// agents" annotation could mask a real failure.
+pub fn stop_team(conn: &Connection, team_name: &str) -> rusqlite::Result<(usize, usize)> {
     // Get team ID
     let team_id: String = conn.query_row(
         "SELECT id FROM team WHERE name = ?1",
@@ -680,10 +694,26 @@ pub fn stop_team(conn: &Connection, team_name: &str) -> rusqlite::Result<usize> 
         .collect();
 
     let mut retired_count = 0;
+    let mut error_count = 0;
     for sid in &session_ids {
-        let _ = retire_agent(conn, sid);
-        let _ = crate::sessions::end_session(conn, sid);
-        retired_count += 1;
+        let retire_res = retire_agent(conn, sid);
+        let end_res = crate::sessions::end_session(conn, sid);
+        match (retire_res, end_res) {
+            (Ok(true), _) | (_, Ok(true)) => retired_count += 1,
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::warn!(
+                    session_id = %sid,
+                    team_id = %team_id,
+                    error = %e,
+                    "stop_team: retire/end failed for session — counted as error"
+                );
+                error_count += 1;
+            }
+            // Both Ok(false) — the row didn't update because it was
+            // already retired/ended. Treat as a no-op rather than an
+            // error; common when a session naturally ended just before.
+            (Ok(false), Ok(false)) => {}
+        }
     }
 
     // Mark team as stopped
@@ -692,7 +722,7 @@ pub fn stop_team(conn: &Connection, team_name: &str) -> rusqlite::Result<usize> 
         params![team_id],
     )?;
 
-    Ok(retired_count)
+    Ok((retired_count, error_count))
 }
 
 // ── Per-Agent Budget Enforcement ──
@@ -2523,9 +2553,10 @@ mod tests {
         let agents_before = list_agents(&conn, Some("stop-team-1"), 50).unwrap();
         assert_eq!(agents_before.len(), 2);
 
-        // Stop the team
-        let retired = stop_team(&conn, "stop-team-1").unwrap();
+        // Stop the team. W1.32 (W28 LOW-4): tuple return.
+        let (retired, errors) = stop_team(&conn, "stop-team-1").unwrap();
         assert_eq!(retired, 2);
+        assert_eq!(errors, 0);
 
         // Verify agents are retired (list_agents only returns active sessions)
         let agents_after = list_agents(&conn, Some("stop-team-1"), 50).unwrap();
@@ -2721,5 +2752,77 @@ mod tests {
         // Negative amount should be rejected
         let err = record_agent_cost(&conn, "s-cost-test", -5.0, "cheat");
         assert!(err.is_err());
+    }
+
+    // P3-4 W1.32 (W28 review LOW-5 + LOW-10):
+    // LOW-5 pins the JSON shape of `list_team_members` so a future SQL
+    // alias rename (e.g. `role` → `template`) can't silently regress the
+    // CLI's `team members` rendering to `?` rows. The shape is what the
+    // CLI keys off in `crates/cli/src/commands/teams.rs:354-362`.
+    // LOW-10 pins the new "active members only" filter so a retired
+    // agent stops appearing in the listing.
+
+    #[test]
+    fn w1_32_w28_low5_list_team_members_json_keys_contract() {
+        let conn = setup();
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+        let (_name, _count, _ids) =
+            run_team(&conn, "ct-team", &["CTO".into()], None, None, None).unwrap();
+
+        let members = list_team_members(&conn, "ct-team").unwrap();
+        assert_eq!(members.len(), 1, "expected one team member");
+        let m = &members[0];
+
+        // The CLI reads these keys; renames must touch this assertion
+        // first so a SQL-only refactor cannot silently break the
+        // user-facing render.
+        for key in &[
+            "user_id",
+            "role",
+            "joined_at",
+            "session_id",
+            "agent",
+            "agent_status",
+            "current_task",
+            "template_id",
+        ] {
+            assert!(
+                m.get(*key).is_some(),
+                "list_team_members JSON must contain key '{key}' (CLI contract)"
+            );
+        }
+
+        // Type spot-check on the CLI-keyed strings.
+        assert!(m.get("role").and_then(|v| v.as_str()).is_some(), "role is a string");
+        assert!(
+            m.get("agent_status").and_then(|v| v.as_str()).is_some(),
+            "agent_status is a string"
+        );
+    }
+
+    #[test]
+    fn w1_32_w28_low10_list_team_members_excludes_retired_sessions() {
+        let conn = setup();
+        let t = make_template("CTO");
+        create_agent_template(&conn, &t).unwrap();
+
+        let (_name, _count, session_ids) =
+            run_team(&conn, "retire-team", &["CTO".into()], None, None, None).unwrap();
+        assert_eq!(session_ids.len(), 1);
+
+        // Pre-retire: visible.
+        let before = list_team_members(&conn, "retire-team").unwrap();
+        assert_eq!(before.len(), 1, "active agent must be listed");
+
+        // Retire the agent (mirrors stop_team's per-agent path).
+        retire_agent(&conn, &session_ids[0]).unwrap();
+
+        // Post-retire: filtered out by the W1.32 LOW-10 SQL clause.
+        let after = list_team_members(&conn, "retire-team").unwrap();
+        assert!(
+            after.is_empty(),
+            "retired session must NOT appear in list_team_members; got {after:?}"
+        );
     }
 }

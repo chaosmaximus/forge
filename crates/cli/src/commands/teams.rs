@@ -608,17 +608,24 @@ pub async fn stop_team(name: String) {
                 ResponseData::TeamStopped {
                     team_name,
                     agents_retired,
+                    retire_errors,
                 },
         }) => {
-            // F7: when retired==0, surface that the stop call was a no-op for
-            // agent lifecycle (team existed but had no spawned agents) rather
-            // than implying we did meaningful work.
-            if agents_retired == 0 {
-                println!(
+            // W1.32 (W28 review LOW-4): branch on (retired, errors) so a
+            // total-failure (`(0, > 0)`) and a partial-failure
+            // (`(> 0, > 0)`) are no longer rendered identically to the
+            // genuine no-op (`(0, 0)` — team had no spawned agents).
+            match (agents_retired, retire_errors) {
+                (0, 0) => println!(
                     "Team '{team_name}' stopped: 0 agent(s) retired (team had no spawned agents)"
-                );
-            } else {
-                println!("Team '{team_name}' stopped: {agents_retired} agent(s) retired");
+                ),
+                (r, 0) => println!("Team '{team_name}' stopped: {r} agent(s) retired"),
+                (0, e) => println!(
+                    "Team '{team_name}' stopped: 0 retired, {e} retire error(s) — see daemon log"
+                ),
+                (r, e) => println!(
+                    "Team '{team_name}' stopped: {r} agent(s) retired, {e} retire error(s) — see daemon log"
+                ),
             }
         }
         Ok(Response::Error { message }) => {

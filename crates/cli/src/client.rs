@@ -181,11 +181,25 @@ pub async fn connect() -> Result<UnixStream, String> {
 
     eprintln!("[cli] daemon starting (log: {log_path})");
 
-    // Poll for socket availability (up to 10 seconds, every 100ms).
-    // The cold-start ONNX runtime init takes 5–7 s on first boot of the
-    // bundled binary; the prior 3 s ceiling caused spurious "socket not
-    // available" errors on the first call after `forge-next restart`. (W25/F3.)
-    let max_attempts = 100;
+    // Poll for socket availability. Default 10 s; overridable via env so
+    // pathologically slow CI runners can bump it without recompiling.
+    //
+    // W25/F3: the bundled binary's cold-start ONNX runtime init takes
+    // 5–7 s on first boot; the prior 3 s ceiling caused spurious
+    // "socket not available" errors on `forge-next restart`.
+    //
+    // W1.32 (W28 review LOW-6): `FORGE_DAEMON_BOOT_TIMEOUT_MS` overrides
+    // the 10 000 ms default (clamped to 60 000 ms max so an env typo
+    // can't wedge a CLI invocation indefinitely). Mirrors the
+    // `FORGE_DRAIN_TIMEOUT_SECS` env-knob pattern from the supervisor.
+    const DEFAULT_BOOT_TIMEOUT_MS: u64 = 10_000;
+    const MAX_BOOT_TIMEOUT_MS: u64 = 60_000;
+    let boot_timeout_ms: u64 = std::env::var("FORGE_DAEMON_BOOT_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|v| v.clamp(100, MAX_BOOT_TIMEOUT_MS))
+        .unwrap_or(DEFAULT_BOOT_TIMEOUT_MS);
+    let max_attempts = (boot_timeout_ms / 100).max(1) as u32;
     for _ in 0..max_attempts {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if let Ok(stream) = UnixStream::connect(&socket_path).await {
@@ -201,8 +215,10 @@ pub async fn connect() -> Result<UnixStream, String> {
         }
     }
 
+    let secs = boot_timeout_ms / 1000;
     Err(format!(
-        "forge-daemon started but socket not available after 10s at {socket_path}"
+        "forge-daemon started but socket not available after {secs}s at {socket_path} \
+         (override with FORGE_DAEMON_BOOT_TIMEOUT_MS, max 60000)"
     ))
 }
 
