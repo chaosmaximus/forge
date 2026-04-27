@@ -4876,6 +4876,17 @@ mod tests {
 
     #[test]
     fn test_compile_dynamic_suffix_includes_agents() {
+        // Pre-Wave Y this test asserted the dynamic suffix listed each
+        // agent template's name + description + type verbatim. Wave Y /
+        // Y7 (per cc-voice Round 2 §H, commit `0c3c32e`) replaced the
+        // inline list with a self-closing `<agents count="N" hint="..."/>`
+        // tag — agents who care call `list_team_templates` to expand.
+        // Per the lazy `count + expand-call` pattern memory:
+        // <agents count="N" hint="...call list_team_templates...">.
+        // The previous assertions were missed when Y7 landed; this test
+        // now pins the post-Y7 contract: count attribute reflects the
+        // seeded row count, hint mentions the expand call, and no inline
+        // body is emitted.
         let conn = setup();
 
         // Seed agent_template table with test data
@@ -4905,25 +4916,35 @@ mod tests {
             None,
         );
 
+        // Y7 lazy-load: self-closing tag with count + hint, no inline body.
+        // Count attribute must reflect the live agent_template row count
+        // (test fixture seeds default templates via `setup()` plus the
+        // two inserted above, so a hard-coded `2` would be brittle).
+        let template_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_template", [], |r| r.get(0))
+            .unwrap();
+        let expected_tag = format!("<agents count=\"{template_count}\"");
         assert!(
-            suffix.contains("<agents"),
-            "should contain <agents> section"
+            suffix.contains(&expected_tag),
+            "agents tag must carry count=\"{template_count}\" matching agent_template rows; got:\n{suffix}"
         );
         assert!(
-            suffix.contains("test-planner"),
-            "should list test-planner agent"
+            suffix.contains("list_team_templates"),
+            "hint must reference the expand call (list_team_templates); got:\n{suffix}"
+        );
+        // No inline body: per-agent name / description / type strings
+        // must NOT appear in the suffix when the lazy form fires.
+        assert!(
+            !suffix.contains("test-planner"),
+            "Y7 lazy-load must NOT inline agent names; got:\n{suffix}"
         );
         assert!(
-            suffix.contains("test-coder"),
-            "should list test-coder agent"
+            !suffix.contains("Plans architecture"),
+            "Y7 lazy-load must NOT inline agent descriptions; got:\n{suffix}"
         );
-        assert!(
-            suffix.contains("Plans architecture"),
-            "should include description"
-        );
-        assert!(suffix.contains("planner"), "should include agent type");
 
-        // Verify exclusion works
+        // Verify exclusion works — when "agents" is excluded the tag
+        // is suppressed entirely.
         let excluded = vec!["agents".to_string()];
         let (suffix_excluded, _) = compile_dynamic_suffix(
             &conn,

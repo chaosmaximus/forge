@@ -3452,7 +3452,51 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         last_active: now,
                         metadata: "{}".to_string(),
                     };
-                    if let Err(e) = ops::store_reality(&state.conn, &project_record) {
+                    // P3-4 Wave X (X1) per cc-voice Round 3 §B: pre-X1 this
+                    // line called `ops::store_reality(&state.conn, ...)`
+                    // directly. Production silently failed because
+                    // `Request::CompileContext` is in `is_read_only()`
+                    // (see crates/daemon/src/server/writer.rs), so
+                    // `state.conn` here is a per-request read-only SQLite
+                    // handle (`SQLITE_OPEN_READ_ONLY`). The INSERT errored
+                    // with "attempt to write a readonly database",
+                    // tracing::warn fired (Z-fw1 HIGH-1), and the renderer
+                    // correctly fell to `resolution="no-match"`. Z7's
+                    // existing tests passed because they construct
+                    // `DaemonState::new(":memory:")` which is write-
+                    // capable — the read-only routing layer was never
+                    // exercised end-to-end.
+                    //
+                    // Fix: open a fresh write-capable connection from
+                    // `state.db_path` and store via that. SQLite WAL
+                    // guarantees the renderer's read-only conn sees the
+                    // committed row on its next query (auto-commit txn
+                    // re-reads the WAL header). Mirrors the `kpi_reaper`
+                    // and `force-index` precedent of opening ad-hoc
+                    // writer connections from `db_path` for sub-second
+                    // writes (single INSERT here — no need for the
+                    // writer-actor queue).
+                    //
+                    // The `:memory:` branch preserves the existing Z7
+                    // test fixtures: those tests bypass the routing
+                    // layer and call `handle_request` directly with a
+                    // write-capable `state.conn`, and `:memory:` cannot
+                    // be re-opened from a path (each call creates a new
+                    // empty in-memory DB).
+                    let store_result = if state.db_path == ":memory:" {
+                        ops::store_reality(&state.conn, &project_record)
+                    } else {
+                        match rusqlite::Connection::open(&state.db_path) {
+                            Ok(wconn) => {
+                                let _ = wconn.execute_batch(
+                                    "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;",
+                                );
+                                ops::store_reality(&wconn, &project_record)
+                            }
+                            Err(e) => Err(e),
+                        }
+                    };
+                    if let Err(e) = store_result {
                         // Z-fw1 HIGH-1: surface the failure path. The
                         // rendered <code-structure> tag will fall through
                         // to resolution="no-match" — at least operators
@@ -3463,6 +3507,14 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                             cwd = c,
                             error = %e,
                             "compile_context auto-create failed; <code-structure> will render no-match"
+                        );
+                    } else {
+                        tracing::info!(
+                            target: "forge::handler",
+                            project = p,
+                            cwd = c,
+                            domain = project_record.domain.as_deref().unwrap_or("unknown"),
+                            "compile_context auto-created project row"
                         );
                     }
                 }
@@ -9603,6 +9655,145 @@ mod tests {
     }
 
     #[test]
+    fn p3_4_x1_compile_context_cwd_auto_creates_under_readonly_routing() {
+        // P3-4 Wave X (X1) per cc-voice Round 3 §B — Z7's auto-create at
+        // handler.rs:~3423 silently failed in production because
+        // Request::CompileContext is in is_read_only(), so the per-request
+        // DaemonState's `state.conn` was a read-only SQLite handle and the
+        // INSERT errored. The Z7 unit test (above) used
+        // DaemonState::new(":memory:") which is write-capable — the
+        // routing layer was never exercised end-to-end. This test pins
+        // the production path: a tempfile DB + DaemonState::new_reader,
+        // simulating exactly what http.rs / socket.rs build for read-only
+        // requests. Without the X1 fix, the assertion below would fail
+        // because the row never lands.
+        //
+        // cc-voice's suggested test (verbatim) lives in their Round 3 §B:
+        // assert_eq!(count_after, count_before + 1).
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("forge.db").to_string_lossy().to_string();
+
+        // Seed the schema via a write-capable state, then drop it so the
+        // next read-only opener doesn't race the schema-create writer.
+        {
+            let _writer = DaemonState::new(&db_path).unwrap();
+        }
+
+        // A code-bearing cwd (Cargo.toml present → engine detects "rust").
+        let rust_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            rust_dir.path().join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let rust_cwd = rust_dir.path().to_string_lossy().to_string();
+
+        // A code-less cwd (no markers → engine returns None → Y2 synthesis
+        // falls back to domain="unknown").
+        let empty_dir = tempfile::tempdir().unwrap();
+        let empty_cwd = empty_dir.path().to_string_lossy().to_string();
+
+        // Build a read-only DaemonState mirroring http.rs:184/socket.rs:190.
+        let events = crate::events::create_event_bus();
+        let hlc = std::sync::Arc::new(crate::sync::Hlc::new("x1-test-node"));
+        let started_at = std::time::Instant::now();
+        let (write_tx, _write_rx) = tokio::sync::mpsc::channel(8);
+
+        // Case 1 — fresh project name + Cargo.toml-bearing cwd.
+        let mut reader = DaemonState::new_reader(
+            &db_path,
+            events.clone(),
+            hlc.clone(),
+            started_at,
+            Some(write_tx.clone()),
+            None,
+        )
+        .unwrap();
+        let count_before: i64 = reader
+            .conn
+            .query_row("SELECT COUNT(*) FROM reality", [], |r| r.get(0))
+            .unwrap();
+        let resp = handle_request(
+            &mut reader,
+            Request::CompileContext {
+                agent: Some("claude-code".into()),
+                project: Some("x1-fresh-rust".into()),
+                static_only: None,
+                excluded_layers: None,
+                session_id: None,
+                focus: None,
+                cwd: Some(rust_cwd.clone()),
+                dry_run: None,
+            },
+        );
+        assert!(
+            matches!(resp, Response::Ok { .. }),
+            "expected Ok, got {resp:?}"
+        );
+        // Open a fresh reader to bypass any per-connection page cache and
+        // assert the row landed (the renderer's read-only conn would have
+        // seen it via the WAL, but a fresh open is the cleanest assertion).
+        let probe = rusqlite::Connection::open(&db_path).unwrap();
+        let count_after: i64 = probe
+            .query_row("SELECT COUNT(*) FROM reality", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count_after,
+            count_before + 1,
+            "Y2/X1 promised auto-create on code-bearing cwd but no row landed"
+        );
+        let row: (String, Option<String>, Option<String>) = probe
+            .query_row(
+                "SELECT name, domain, detected_from FROM reality
+                 WHERE name = 'x1-fresh-rust' AND organization_id = 'default'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "x1-fresh-rust");
+        assert_eq!(row.1.as_deref(), Some("rust"));
+        assert_eq!(row.2.as_deref(), Some("compile_context_cwd"));
+
+        // Case 2 — fresh project name + code-less cwd.
+        let mut reader2 =
+            DaemonState::new_reader(&db_path, events, hlc, started_at, Some(write_tx), None)
+                .unwrap();
+        let resp = handle_request(
+            &mut reader2,
+            Request::CompileContext {
+                agent: Some("claude-code".into()),
+                project: Some("x1-fresh-empty".into()),
+                static_only: None,
+                excluded_layers: None,
+                session_id: None,
+                focus: None,
+                cwd: Some(empty_cwd.clone()),
+                dry_run: None,
+            },
+        );
+        assert!(
+            matches!(resp, Response::Ok { .. }),
+            "expected Ok, got {resp:?}"
+        );
+        let probe2 = rusqlite::Connection::open(&db_path).unwrap();
+        let row2: (String, Option<String>, Option<String>) = probe2
+            .query_row(
+                "SELECT name, domain, detected_from FROM reality
+                 WHERE name = 'x1-fresh-empty' AND organization_id = 'default'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row2.0, "x1-fresh-empty");
+        assert_eq!(
+            row2.1.as_deref(),
+            Some("unknown"),
+            "code-less cwd must auto-create with domain=\"unknown\""
+        );
+        assert_eq!(row2.2.as_deref(), Some("compile_context_cwd"));
+    }
+
+    #[test]
     fn p3_4_y5_project_init_is_idempotent_does_not_overwrite_existing_domain() {
         // P3-4 Wave Y (Y5) per cc-voice Round 2 §E: pre-Y5,
         // running `project init cc-voice --path X` then
@@ -11262,11 +11453,20 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_reality_empty_dir_fails() {
+    fn test_detect_reality_empty_dir_returns_unknown() {
+        // Pre-Wave Y this test asserted Error on empty dirs — the
+        // historical contract was "no reality engine can handle <path>".
+        // Wave Y / Y2 (per cc-voice Round 2 §B) changed `Request::ProjectDetect`
+        // to fall back to a synthetic detection (`domain="unknown"`,
+        // `confidence=0.0`, `detected_from="fallback_no_engine_match"`)
+        // so code-less directories can still bind cleanly. The previous
+        // assertion shape was missed when Y2 landed; this test now pins
+        // the post-Y2 contract that empty dirs return ProjectDetected
+        // with the synthetic fallback.
         let mut state = DaemonState::new(":memory:").unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        // No marker files
+        // No marker files — Y2 fallback should fire.
 
         let resp = handle_request(
             &mut state,
@@ -11275,13 +11475,26 @@ mod tests {
             },
         );
         match resp {
-            Response::Error { message } => {
+            Response::Ok {
+                data:
+                    ResponseData::ProjectDetected {
+                        domain,
+                        detected_from,
+                        confidence,
+                        ..
+                    },
+            } => {
+                assert_eq!(domain, "unknown", "empty dir → domain=\"unknown\"");
+                assert_eq!(
+                    detected_from, "fallback_no_engine_match",
+                    "empty dir → detected_from=\"fallback_no_engine_match\""
+                );
                 assert!(
-                    message.contains("no reality engine can handle"),
-                    "error: {message}"
+                    (confidence - 0.0).abs() < f64::EPSILON,
+                    "synthetic detection emits confidence=0.0, got {confidence}"
                 );
             }
-            other => panic!("expected Error, got {other:?}"),
+            other => panic!("expected ProjectDetected with synthetic fallback, got {other:?}"),
         }
     }
 

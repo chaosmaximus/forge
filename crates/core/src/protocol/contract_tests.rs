@@ -497,7 +497,12 @@ mod tests {
                 },
             ),
             (
-                "detect_reality",
+                // Wave Z renamed the user-facing vocabulary from
+                // `reality` → `project`; the Request variant kept its
+                // wire-level method name `project_detect` (no
+                // protocol-hash drift) but the test fixture was left
+                // pointing at the old `detect_reality` string.
+                "project_detect",
                 Request::ProjectDetect {
                     path: "/tmp/my-project".into(),
                 },
@@ -526,7 +531,10 @@ mod tests {
                 },
             ),
             (
-                "list_realities",
+                // Wave Z vocabulary rename: `list_realities` →
+                // `project_list` (wire-level method name has always
+                // been `project_list`; the fixture was stale).
+                "project_list",
                 Request::ProjectList {
                     organization_id: Some("default".into()),
                 },
@@ -999,12 +1007,15 @@ mod tests {
                 r#"{"method":"code_search","params":{"query":"handle_request","kind":"function","limit":10}}"#,
             ),
             (
-                "list_realities",
-                r#"{"method":"list_realities","params":{}}"#,
+                // Wave Z vocabulary rename: stale fixtures cited
+                // `list_realities`; the actual wire-level method name
+                // has always been `project_list`.
+                "project_list",
+                r#"{"method":"project_list","params":{}}"#,
             ),
             (
-                "list_realities with org",
-                r#"{"method":"list_realities","params":{"organization_id":"default"}}"#,
+                "project_list with org",
+                r#"{"method":"project_list","params":{"organization_id":"default"}}"#,
             ),
             (
                 "get_stats",
