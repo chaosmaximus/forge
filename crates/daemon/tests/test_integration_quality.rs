@@ -228,7 +228,7 @@ fn test_indexer_blast_radius_pipeline() {
     )
     .unwrap();
 
-    let br = analyze_blast_radius(&conn, &auth_path_str);
+    let br = analyze_blast_radius(&conn, &auth_path_str, None);
 
     // find_importers should find the edges with file:path format.
     assert!(
@@ -669,7 +669,7 @@ fn test_blast_radius_with_calls_edges() {
     .unwrap();
 
     // Analyze blast radius for auth.rs.
-    let br = analyze_blast_radius(&conn, "src/auth.rs");
+    let br = analyze_blast_radius(&conn, "src/auth.rs", None);
 
     assert!(
         br.callers > 0,

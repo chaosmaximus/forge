@@ -2693,7 +2693,11 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     },
                 };
             }
-            let br = crate::guardrails::blast_radius::analyze_blast_radius(&state.conn, &file);
+            let br = crate::guardrails::blast_radius::analyze_blast_radius(
+                &state.conn,
+                &file,
+                project_filter.as_deref(),
+            );
             let decisions: Vec<forge_core::protocol::BlastRadiusDecision> = br
                 .decisions
                 .into_iter()

@@ -93,11 +93,47 @@ fn file_path_to_rust_module(file: &str) -> Option<String> {
     Some(module_path)
 }
 
+/// P3-4 W1.28 (W1.3 LOW-10): batch lookup of every `code_file.path`
+/// for a given project. Used by `analyze_blast_radius` to post-filter
+/// edge-derived file lists. One query, O(1) lookup per file —
+/// blast-radius result sets are already capped at LIMIT 50/100, so
+/// the HashSet is tiny. Returns an empty set for unknown projects
+/// (which collapses every list to `[]` — fail-closed for an unknown
+/// scope is the right default).
+fn project_file_set(conn: &Connection, project: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    let sql = "SELECT path FROM code_file WHERE project = ?1";
+    if let Ok(mut stmt) = conn.prepare(sql) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![project], |row| row.get::<_, String>(0))
+        {
+            for r in rows.flatten() {
+                set.insert(r);
+            }
+        }
+    }
+    set
+}
+
 /// Main entry point: analyse the blast radius of changing `file`.
-pub fn analyze_blast_radius(conn: &Connection, file: &str) -> BlastRadius {
+///
+/// `project_filter` (W1.28 / W1.3 LOW-10): when `Some(project)`,
+/// restrict every file-bearing result list (`importers`,
+/// `cluster_files`, `files_affected`, `calling_files`) to paths that
+/// match `code_file.project = ?`. `decisions` filters via
+/// `memory.project` since decisions live in the memory table, not
+/// code_file. `None` preserves the legacy "all indexed projects"
+/// behavior. Pre-W1.28 the cluster-expansion path could surface
+/// foreign-project edges that survived migration cleanup (W1.3 fw2
+/// HIGH-3 cleans up at startup, but stale rows that accrue between
+/// daemon restarts still leaked here).
+pub fn analyze_blast_radius(
+    conn: &Connection,
+    file: &str,
+    project_filter: Option<&str>,
+) -> BlastRadius {
     let targets = resolve_file_targets(file);
 
-    let decisions = find_decisions(conn, &targets);
+    let decisions = find_decisions(conn, &targets, project_filter);
     let importers = find_importers(conn, &targets);
     let (callers, calling_files) = find_callers(conn, file);
     let (cluster_name, cluster_files) = find_cluster(conn, &targets);
@@ -105,7 +141,7 @@ pub fn analyze_blast_radius(conn: &Connection, file: &str) -> BlastRadius {
     let decision_ids: Vec<String> = decisions.iter().map(|(id, _, _)| id.clone()).collect();
     let files_affected = find_co_affected_files(conn, &decision_ids, &targets);
 
-    BlastRadius {
+    let mut br = BlastRadius {
         decisions,
         callers,
         importers,
@@ -113,17 +149,47 @@ pub fn analyze_blast_radius(conn: &Connection, file: &str) -> BlastRadius {
         cluster_name,
         cluster_files,
         calling_files,
+    };
+
+    if let Some(project) = project_filter {
+        let allowed = project_file_set(conn, project);
+        br.importers.retain(|p| allowed.contains(p));
+        br.cluster_files.retain(|p| allowed.contains(p));
+        br.files_affected.retain(|p| allowed.contains(p));
+        br.calling_files.retain(|p| allowed.contains(p));
+        // `callers` is the count of caller files; recompute against
+        // the filtered list so the number agrees with `calling_files`.
+        br.callers = br.calling_files.len();
     }
+
+    br
 }
 
 /// Find all decisions that affect the given file target (trying all path formats).
 /// Returns (id, title, confidence) triples.
-fn find_decisions(conn: &Connection, targets: &[String]) -> Vec<(String, String, f64)> {
+///
+/// `project_filter` (W1.28 / W1.3 LOW-10): when `Some(project)`,
+/// restrict the result to decisions whose `memory.project` matches
+/// the supplied value. Decisions live in the memory table, not
+/// code_file, so the filter is applied SQL-side here rather than via
+/// the `project_file_set` post-processing pass `analyze_blast_radius`
+/// runs on file-bearing result lists.
+fn find_decisions(
+    conn: &Connection,
+    targets: &[String],
+    project_filter: Option<&str>,
+) -> Vec<(String, String, f64)> {
     if targets.is_empty() {
         return Vec::new();
     }
     let placeholders: Vec<String> = (1..=targets.len()).map(|i| format!("?{i}")).collect();
     let in_clause = placeholders.join(", ");
+    let project_clause = if project_filter.is_some() {
+        let n = targets.len() + 1;
+        format!(" AND m.project = ?{n}")
+    } else {
+        String::new()
+    };
     let sql = format!(
         "SELECT DISTINCT m.id, m.title, m.confidence
          FROM edge e
@@ -131,7 +197,7 @@ fn find_decisions(conn: &Connection, targets: &[String]) -> Vec<(String, String,
          WHERE e.to_id IN ({in_clause})
            AND e.edge_type = 'affects'
            AND m.memory_type = 'decision'
-           AND m.status = 'active'
+           AND m.status = 'active'{project_clause}
          ORDER BY m.confidence DESC
          LIMIT 50"
     );
@@ -139,11 +205,16 @@ fn find_decisions(conn: &Connection, targets: &[String]) -> Vec<(String, String,
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let params: Vec<&dyn rusqlite::types::ToSql> = targets
+    let mut params_owned: Vec<Box<dyn rusqlite::types::ToSql>> = targets
         .iter()
-        .map(|t| t as &dyn rusqlite::types::ToSql)
+        .map(|t| Box::new(t.clone()) as Box<dyn rusqlite::types::ToSql>)
         .collect();
-    let result = match stmt.query_map(params.as_slice(), |row| {
+    if let Some(p) = project_filter {
+        params_owned.push(Box::new(p.to_string()));
+    }
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+        params_owned.iter().map(|p| p.as_ref()).collect();
+    let result = match stmt.query_map(params_ref.as_slice(), |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -379,11 +450,100 @@ mod tests {
     #[test]
     fn test_blast_radius_empty() {
         let conn = setup_db();
-        let br = analyze_blast_radius(&conn, "src/auth.rs");
+        let br = analyze_blast_radius(&conn, "src/auth.rs", None);
         assert!(br.decisions.is_empty());
         assert_eq!(br.callers, 0);
         assert!(br.importers.is_empty());
         assert!(br.files_affected.is_empty());
+    }
+
+    #[test]
+    fn p3_4_w1_28_blast_radius_project_filter_excludes_foreign_caller() {
+        // W1.3 LOW-10 contract: when `project_filter = Some("forge")`,
+        // a caller file registered under a different project ("other")
+        // must NOT appear in `calling_files` even though the edge
+        // exists in the graph. Pre-W1.28 the filter wasn't honored on
+        // the cluster/edge expansion path, so cross-reality edges that
+        // survived migration cleanup leaked into the result.
+        let conn = setup_db();
+
+        // Register the target file as `forge`-project.
+        conn.execute(
+            "INSERT INTO code_file (id, path, language, project, hash, indexed_at) \
+             VALUES ('cf-target', 'src/db.rs', 'rust', 'forge', 'h1', '2026-04-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        // Register one caller in `forge` and one in a foreign project.
+        conn.execute(
+            "INSERT INTO code_file (id, path, language, project, hash, indexed_at) \
+             VALUES ('cf-friend', 'src/api.rs', 'rust', 'forge', 'h2', '2026-04-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_file (id, path, language, project, hash, indexed_at) \
+             VALUES ('cf-foreign', 'src/foreign.rs', 'rust', 'other', 'h3', '2026-04-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        // Both callers reference symbols in src/db.rs.
+        store_edge(
+            &conn,
+            "file:src/api.rs",
+            "sym:src/db.rs::query",
+            "calls",
+            "{}",
+        )
+        .unwrap();
+        store_edge(
+            &conn,
+            "file:src/foreign.rs",
+            "sym:src/db.rs::query",
+            "calls",
+            "{}",
+        )
+        .unwrap();
+
+        // Without filter — both callers visible (legacy behavior).
+        let br_unfiltered = analyze_blast_radius(&conn, "src/db.rs", None);
+        assert!(
+            br_unfiltered
+                .calling_files
+                .contains(&"src/api.rs".to_string()),
+            "unfiltered must include forge caller"
+        );
+        assert!(
+            br_unfiltered
+                .calling_files
+                .contains(&"src/foreign.rs".to_string()),
+            "unfiltered must include foreign caller"
+        );
+
+        // With project_filter=Some("forge") — foreign caller dropped.
+        let br = analyze_blast_radius(&conn, "src/db.rs", Some("forge"));
+        assert!(
+            br.calling_files.contains(&"src/api.rs".to_string()),
+            "forge-scoped result must include forge caller `src/api.rs`"
+        );
+        assert!(
+            !br.calling_files.contains(&"src/foreign.rs".to_string()),
+            "forge-scoped result must NOT include foreign caller `src/foreign.rs` — that's the cross-project leak the filter prevents"
+        );
+        assert_eq!(
+            br.callers,
+            br.calling_files.len(),
+            "callers count must agree with calling_files length post-filter"
+        );
+
+        // With an unknown project — all callers dropped (fail-closed).
+        let br_unknown = analyze_blast_radius(&conn, "src/db.rs", Some("nonexistent"));
+        assert!(
+            br_unknown.calling_files.is_empty(),
+            "unknown project must collapse to empty result, got {:?}",
+            br_unknown.calling_files
+        );
     }
 
     #[test]
@@ -402,7 +562,7 @@ mod tests {
         store_edge(&conn, &d1.id, "file:src/auth.rs", "affects", "{}").unwrap();
         store_edge(&conn, &d2.id, "file:src/auth.rs", "affects", "{}").unwrap();
 
-        let br = analyze_blast_radius(&conn, "src/auth.rs");
+        let br = analyze_blast_radius(&conn, "src/auth.rs", None);
         assert_eq!(br.decisions.len(), 2);
     }
 
@@ -417,7 +577,7 @@ mod tests {
         store_edge(&conn, &d1.id, "file:src/auth.rs", "affects", "{}").unwrap();
         store_edge(&conn, &d1.id, "file:src/middleware.rs", "affects", "{}").unwrap();
 
-        let br = analyze_blast_radius(&conn, "src/auth.rs");
+        let br = analyze_blast_radius(&conn, "src/auth.rs", None);
         assert_eq!(br.decisions.len(), 1);
         assert!(
             br.files_affected.contains(&"src/middleware.rs".to_string()),
@@ -452,7 +612,7 @@ mod tests {
         )
         .unwrap();
 
-        let br = analyze_blast_radius(&conn, "src/auth.rs");
+        let br = analyze_blast_radius(&conn, "src/auth.rs", None);
         assert_eq!(br.importers.len(), 2);
         assert!(br.importers.contains(&"src/main.rs".to_string()));
         assert!(br.importers.contains(&"src/routes.rs".to_string()));
@@ -480,7 +640,7 @@ mod tests {
         )
         .unwrap();
 
-        let br = analyze_blast_radius(&conn, "src/auth.rs");
+        let br = analyze_blast_radius(&conn, "src/auth.rs", None);
         assert_eq!(br.callers, 2, "expected 2 callers, got {}", br.callers);
         assert!(br.calling_files.contains(&"src/main.rs".to_string()));
         assert!(br.calling_files.contains(&"src/routes.rs".to_string()));
@@ -516,7 +676,7 @@ mod tests {
         )
         .unwrap();
 
-        let br = analyze_blast_radius(&conn, "src/auth.rs");
+        let br = analyze_blast_radius(&conn, "src/auth.rs", None);
         assert_eq!(br.cluster_name.as_deref(), Some("cluster:auth-cluster"));
         assert_eq!(
             br.cluster_files.len(),
@@ -534,7 +694,7 @@ mod tests {
     fn test_blast_radius_empty_backward_compat() {
         let conn = setup_db();
 
-        let br = analyze_blast_radius(&conn, "src/nonexistent.rs");
+        let br = analyze_blast_radius(&conn, "src/nonexistent.rs", None);
         assert_eq!(br.callers, 0);
         assert!(br.calling_files.is_empty());
         assert!(br.cluster_name.is_none());
@@ -583,7 +743,7 @@ mod tests {
         )
         .unwrap();
 
-        let br = analyze_blast_radius(&conn, "src/db.rs");
+        let br = analyze_blast_radius(&conn, "src/db.rs", None);
         assert_eq!(
             br.callers, 4,
             "expected 4 distinct callers, got {}",
@@ -623,7 +783,7 @@ mod tests {
         .unwrap();
 
         // find_callers uses LIKE "%server::handler%" on to_id
-        let br = analyze_blast_radius(&conn, "crates/daemon/src/server/handler.rs");
+        let br = analyze_blast_radius(&conn, "crates/daemon/src/server/handler.rs", None);
         assert!(
             br.callers >= 2,
             "expected at least 2 callers from bare-path import edges, got {}",
@@ -664,7 +824,7 @@ mod tests {
         )
         .unwrap();
 
-        let br = analyze_blast_radius(&conn, "src/server/handler.rs");
+        let br = analyze_blast_radius(&conn, "src/server/handler.rs", None);
         // The file:-prefixed edge should match via find_importers
         assert!(
             br.importers
