@@ -5192,15 +5192,57 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             });
 
             // Check for existing project with same (name, organization_id).
-            // ProjectInit is idempotent: returns is_new=false on rerun.
+            // ProjectInit is idempotent — returns is_new=false on rerun.
+            //
+            // P3-4 Wave Y (Y5) per cc-voice Round 2 §E: pre-Y5 we
+            // overwrote the existing row with whatever the new args
+            // said, even when the response status line said "already
+            // existed". Saying one thing and doing another is the
+            // "data-integrity" issue cc-voice flagged: a defensive
+            // `project init <name> --domain code` after a previous
+            // `project init <name>` (no domain) silently mutated the
+            // row from `unknown` → `code`. Now we don't touch the
+            // existing row at all on rerun — log a warn if the user
+            // tried to change something so the divergence isn't
+            // silent. Use `project update` (when it lands, MED-3) for
+            // explicit mutation.
             let existing = ops::get_reality_by_name(&state.conn, &name, org_id)
                 .ok()
                 .flatten();
-            let (id, is_new) = match existing {
-                Some(r) => (r.id, false),
-                None => (ulid::Ulid::new().to_string(), true),
-            };
 
+            if let Some(r) = existing {
+                let existing_domain = r.domain.clone().unwrap_or_default();
+                let existing_path = r.project_path.clone().unwrap_or_default();
+                if existing_domain != detected_domain {
+                    tracing::warn!(
+                        target: "forge::handler",
+                        project = %name,
+                        existing_domain = %existing_domain,
+                        requested_domain = %detected_domain,
+                        "project_init: refused to overwrite existing project; use `project update --domain X` (MED-3, not yet implemented) for explicit mutation"
+                    );
+                }
+                if existing_path != project_path {
+                    tracing::warn!(
+                        target: "forge::handler",
+                        project = %name,
+                        existing_path = %existing_path,
+                        requested_path = %project_path,
+                        "project_init: refused to overwrite existing project path; use `project update --path X` for relocate"
+                    );
+                }
+                return Response::Ok {
+                    data: ResponseData::ProjectInitialized {
+                        id: r.id,
+                        name,
+                        path: existing_path,
+                        domain: existing_domain,
+                        is_new: false,
+                    },
+                };
+            }
+
+            let id = ulid::Ulid::new().to_string();
             let now = forge_core::time::now_iso();
             let project = forge_core::types::Reality {
                 id: id.clone(),
@@ -5226,7 +5268,7 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                         name,
                         path: project_path,
                         domain: detected_domain,
-                        is_new,
+                        is_new: true,
                     },
                 },
                 Err(e) => Response::Error {
@@ -9558,6 +9600,83 @@ mod tests {
         assert_eq!(post.project_path.as_deref(), Some(cwd.as_str()));
         assert_eq!(post.domain.as_deref(), Some("rust"));
         assert_eq!(post.detected_from.as_deref(), Some("compile_context_cwd"));
+    }
+
+    #[test]
+    fn p3_4_y5_project_init_is_idempotent_does_not_overwrite_existing_domain() {
+        // P3-4 Wave Y (Y5) per cc-voice Round 2 §E: pre-Y5,
+        // running `project init cc-voice --path X` then
+        // `project init cc-voice --path X --domain code` mutated
+        // the row's domain from `unknown` → `code` while saying
+        // "already existed". Status line lied about what happened.
+        // Y5 makes ProjectInit truly idempotent: existing rows are
+        // returned as-is regardless of what the rerun args say.
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        // First call — explicit domain="unknown".
+        let resp = handle_request(
+            &mut state,
+            Request::ProjectInit {
+                name: "cc-voice".to_string(),
+                path: Some(path.clone()),
+                domain: Some("unknown".to_string()),
+                organization_id: None,
+            },
+        );
+        match resp {
+            Response::Ok {
+                data: ResponseData::ProjectInitialized { is_new, domain, .. },
+            } => {
+                assert!(is_new, "first init must report is_new=true");
+                assert_eq!(domain, "unknown");
+            }
+            other => panic!("expected ProjectInitialized, got {other:?}"),
+        }
+
+        // Second call — same name, ATTEMPTING to change domain to "code".
+        // Y5 must reject the mutation silently (existing row stays
+        // domain=unknown) but still return is_new=false.
+        let resp = handle_request(
+            &mut state,
+            Request::ProjectInit {
+                name: "cc-voice".to_string(),
+                path: Some(path.clone()),
+                domain: Some("code".to_string()),
+                organization_id: None,
+            },
+        );
+        match resp {
+            Response::Ok {
+                data:
+                    ResponseData::ProjectInitialized {
+                        is_new,
+                        domain,
+                        name,
+                        ..
+                    },
+            } => {
+                assert!(!is_new, "second init must report is_new=false");
+                assert_eq!(
+                    domain, "unknown",
+                    "Y5 contract: existing row's domain must NOT be overwritten by rerun args; got domain={domain}"
+                );
+                assert_eq!(name, "cc-voice");
+            }
+            other => panic!("expected ProjectInitialized, got {other:?}"),
+        }
+
+        // Verify against the DB directly — the reality row's domain
+        // must still be "unknown".
+        let post = crate::db::ops::get_reality_by_name(&state.conn, "cc-voice", "default")
+            .unwrap()
+            .expect("cc-voice exists");
+        assert_eq!(
+            post.domain.as_deref(),
+            Some("unknown"),
+            "DB-side: domain must NOT have been overwritten"
+        );
     }
 
     #[test]
