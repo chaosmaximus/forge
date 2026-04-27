@@ -18,7 +18,7 @@ This file defines the shared build workflow used by both forge-new (greenfield) 
 
 For each wave:
 
-1. **Create tasks** via TaskCreate — one per parallel task in this wave
+1. **Create tasks** via the `TodoWrite` tool — one per parallel task in this wave
 
 2. **Build spawn context** for each agent. Include ALL of these in the spawn prompt:
    ```xml

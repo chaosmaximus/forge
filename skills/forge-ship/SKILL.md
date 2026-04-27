@@ -9,8 +9,14 @@ Final gate before code reaches production. Verification → Changelog → PR →
 
 ## Step 1: Final Verification
 
-1. Run `forge verify . --format text` — must show all checks passing
-2. Run `forge test run . --format text` — full test suite must pass
+Run the project's verification + test commands from the
+`<project-conventions>` block in your context (typical examples):
+- Rust: `cargo fmt --all -- --check && cargo clippy --workspace -- -W clippy::all -D warnings && cargo test --workspace`
+- Node: `npm run lint && npm test`
+- Python: `ruff check . && pytest`
+
+All checks must pass. Then:
+
 3. Check for uncommitted changes: `git status --short`
 4. Check for NEEDS_CLARIFICATION markers: `grep -r "NEEDS_CLARIFICATION" .`
 

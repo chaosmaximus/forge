@@ -129,7 +129,7 @@ For complex plans, use the forge-planner agent to produce the wave breakdown. Fo
 Execute the approved plan wave by wave.
 
 **Per wave:**
-1. Create tasks via TaskCreate for tracking
+1. Create tasks via the `TodoWrite` tool for tracking
 2. Implement the changes (following existing code patterns)
 3. Write tests — aim for the acceptance criteria in the plan
 4. Run the project's test suite (check `<project-conventions>` in context for the command)

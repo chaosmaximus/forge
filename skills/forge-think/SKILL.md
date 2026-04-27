@@ -34,8 +34,8 @@ Before specifying, understand what exists:
 # Check memory for relevant decisions
 forge-next recall "relevant keywords"
 
-# Check code structure
-forge query "MATCH (f:File) RETURN f.name LIMIT 20"
+# Check code structure (scoped to current project)
+forge-next code-search "<keywords>" --project <project-name>
 
 # Recent changes
 git log --oneline -10
@@ -143,7 +143,7 @@ For each acceptance criterion:
 
 ## What Forge Think Does NOT Do
 
-- Does not write code (that's forge build)
-- Does not plan implementation (that's forge plan)
+- Does not write code (that happens in `forge-feature` / `forge-new` build phase)
+- Does not plan implementation (that happens in `forge-feature` Plan phase)
 - Does not design UI (suggest the user use a design tool)
 - Does not make architectural decisions without user approval

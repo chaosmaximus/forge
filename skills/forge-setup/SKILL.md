@@ -1,6 +1,6 @@
 ---
 name: forge-setup
-description: "Use on first run in a new project directory, or when Forge prerequisites need checking. Example triggers: 'set up forge', 'check forge prereqs', 'forge doctor', 'is forge ready', 'initialize forge', 'set up cc-voice'."
+description: "Use on first run in a new project directory, or when Forge prerequisites need checking. Example triggers: 'set up Forge', 'check Forge prereqs', 'run Forge doctor', 'is Forge ready', 'initialize Forge', 'set up cc-voice'."
 ---
 
 # Forge Setup
@@ -137,17 +137,15 @@ Create `STATE.md` with initial state.
 
 ## 8. Stitch MCP (optional)
 
-Stitch MCP is configured in the plugin's `.mcp.json`. If you don't use
-visual design, delete that file to avoid loading it:
-
-```bash
-rm "${CLAUDE_PLUGIN_ROOT}/.mcp.json"
-```
+Stitch MCP is **not bundled** with Forge. If you want visual-design
+generation in `forge-new` Phase 5, install Stitch separately following
+its docs and register it in your Claude Code MCP config. Otherwise skip
+this step — `forge-new` detects absence and routes to the no-UI path.
 
 ## Done
 
-"Forge is set up for `<project>`. Run `/forge:new` for a new project or
-`/forge:feature` for existing code."
+"Forge is set up for `<project>`. Run `/forge:forge-new` for a new
+project or `/forge:forge-feature` for existing code."
 
 ## Reference: project commands cheat sheet
 

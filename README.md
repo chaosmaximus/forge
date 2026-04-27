@@ -280,7 +280,7 @@ cd deploy && docker-compose up -d
 
 ### Kubernetes (Helm)
 ```bash
-helm install forge deploy/helm/
+helm install forge ./deploy/helm/
 ```
 
 See [docs/cloud-deployment.md](docs/cloud-deployment.md) for production deployment including TLS, JWT/OIDC, RBAC, Prometheus/Grafana observability, and Litestream replication.

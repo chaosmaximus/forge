@@ -210,18 +210,48 @@ for p in "${HARNESS_PATHS[@]}"; do
       | sed -E 's/.*:\s*"([a-z_]+)".*/METHOD \1/' || true
 done > "$refs_file"
 
-# 3b. CLI subcommand usage: `forge-next <subcmd>` or `forge-cli <subcmd>`
-#     We restrict to tokens that look like real subcommands (lowercase,
-#     1+ hyphens or letters) and skip obvious noise ("binary", "CLI", etc).
+# 3b. CLI subcommand usage. Three accepted forms:
+#       (i)   `forge-next <subcmd>`
+#       (ii)  `forge-cli  <subcmd>`
+#       (iii) `forge <subcmd>`        ← bare form, must be preceded by
+#                                       start-of-line or whitespace so
+#                                       `/forge ...`, `:forge ...`,
+#                                       `org/forge forge-daemon` (cargo
+#                                       install paths) don't match.
+#     The bare-`forge` form is the failure mode found by the 2026-04-27
+#     D-07 audit — agents kept inventing `forge scan`, `forge query`,
+#     `forge research`, etc., that the gate never noticed because it
+#     only matched the suffixed forms.
+#     `\b(forge-(next|cli)|forge)\s+...` is split into two greps because
+#     POSIX ERE has no lookbehind; the second grep uses an explicit
+#     leading whitespace/^ guard.
 for p in "${HARNESS_PATHS[@]}"; do
     path="$REPO_ROOT/$p"
     [ -e "$path" ] || continue
-    grep -rohE '\bforge-(next|cli)\s+([a-z][a-z-]+)' "$path" 2>/dev/null \
+    # (i) + (ii): suffixed forms — \b is sufficient because `-` is non-word.
+    grep -rohE '\bforge-(next|cli)\s+[a-z][a-z-]+' "$path" 2>/dev/null \
+      | awk '{ print "CLI " $NF }' || true
+    # (iii): bare form — must be at line-start OR preceded by a char
+    # that isn't a path/identifier separator. This allows backtick-
+    # quoted markdown (`` `forge scan` ``), parenthesized prose
+    # ((forge ...)), and bold markers (**forge ...**), while skipping
+    # `org/forge`, `:forge`, `forge-X` continuations, and dotted
+    # paths like `pkg.forge`.
+    grep -rohE '(^|[^a-zA-Z0-9/:._-])forge[[:space:]]+[a-z][a-z-]+' "$path" 2>/dev/null \
       | awk '{ print "CLI " $NF }' || true
 done >> "$refs_file"
 
 # ─── 4. Diff refs against authoritative sets ───────────────────────────────
-SKIP_CLI_TOKENS=("binary" "cli")   # common English words that look like subcommands
+# Common English / prose words that the bare-`forge` regex (3b) may pick
+# up from skill bodies even when there's no real CLI invocation. Add to
+# this list rather than tightening the regex — false-positives are fine
+# as long as we filter them out here.
+SKIP_CLI_TOKENS=(
+    "binary" "cli"
+    "agent" "agents" "daemon" "daemons" "plugin" "plugins"
+    "skill" "skills" "team" "teams"
+    "memory" "memories" "context" "contexts" "session" "sessions"
+)
 
 unknowns=0
 while IFS= read -r line; do

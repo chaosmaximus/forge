@@ -32,15 +32,43 @@ Check STATE.md for `mode: greenfield` or `mode: existing`. Adapt accordingly.
 
 > **Note:** In greenfield mode, the forge-new skill handles classification and discovery directly. The planner is spawned only if the lead explicitly delegates planning. This section provides guidance for when that happens.
 
-1. Read `${CLAUDE_PLUGIN_ROOT}/data/project-types.csv` and `${CLAUDE_PLUGIN_ROOT}/data/domain-complexity.csv`
-2. Classify the project: match the user's description against `detection_signals` in project-types.csv
-3. Auto-inject domain requirements: if the domain matches domain-complexity.csv, surface ALL `key_concerns` to the user. Do NOT wait for them to ask about compliance — they may not know they need it.
-4. Use `key_questions` from the matched project type to drive discovery. Ask ONE question at a time, multiple choice preferred.
-5. For each question, lead with your recommended answer and explain why.
-6. After discovery, draft the PRD using the template at `${CLAUDE_PLUGIN_ROOT}/templates/PRD.md`
-7. Include ONLY sections from `required_sections` for the matched project type. Skip `skip_sections`.
-8. Frame all functional requirements as capability contracts: "FR#: [Actor] can [capability]"
-9. Use `[NEEDS CLARIFICATION]` markers for anything ambiguous — never fabricate.
+1. Classify the project against this built-in matrix (the public build
+   does not bundle a CSV — if `${CLAUDE_PLUGIN_ROOT}/data/project-types.csv`
+   exists, prefer it):
+
+   | Type | Detection signals | Key concerns |
+   |------|------------------|--------------|
+   | web-app | `package.json` + framework markers (`next`, `vite`, `astro`) | UX, accessibility, auth |
+   | api-service | HTTP framework deps (axum/fastapi/express) | auth, rate-limit, observability |
+   | library | lib target only / package without entrypoint | API stability, semver, docs |
+   | cli-tool | `bin` target, `clap`/`argparse` deps | help text, exit codes, piping |
+   | mobile-app | iOS/Android markers | platform UX, app-store rules |
+   | ml-pipeline | `sklearn`/`torch`/`jupyter` | reproducibility, data versioning |
+
+2. Auto-inject domain concerns if applicable (built-in fallback;
+   `${CLAUDE_PLUGIN_ROOT}/data/domain-complexity.csv` overrides if present):
+
+   | Domain | Key concerns |
+   |--------|-------------|
+   | fintech / payments | PCI-DSS, audit log, idempotent ledger |
+   | healthtech | HIPAA, PHI encryption, access logs |
+   | auth / identity | OAuth/OIDC, JWT signing, key rotation |
+   | e-commerce | order idempotency, inventory race conditions |
+   | (other) | generic SDLC concerns |
+
+   Surface ALL relevant concerns to the user — they may not know they
+   need them.
+3. Drive discovery with 4-6 targeted questions for the matched type.
+   Ask ONE at a time, multiple choice preferred, lead with your
+   recommended answer and explain why.
+4. After discovery, draft the PRD with these sections (minimum viable;
+   `${CLAUDE_PLUGIN_ROOT}/templates/PRD.md` overrides if shipped):
+   problem, users, success metrics, functional requirements, NFRs
+   (performance/security/scalability if relevant), out-of-scope.
+5. Frame all functional requirements as capability contracts:
+   `FR#: [Actor] can [capability]`.
+6. Use `[NEEDS CLARIFICATION]` markers for anything ambiguous — never
+   fabricate.
 
 ## Existing Codebase Mode
 

@@ -63,7 +63,7 @@ Before using any external crate (e.g., uuid, serde_json), verify it exists in th
 1. Read the `<forge-agent-context>` from your spawn prompt. Understand WHAT you're building.
 2. If working in an existing codebase:
    a. Check `<decisions>` and `<prior-wave-summary>` for relevant context
-   b. Run `forge recall "relevant keywords"` via Bash for additional memory context
+   b. Run `forge-next recall "relevant keywords"` via Bash for additional memory context
    c. Use Serena (`mcp__plugin_serena_serena__find_symbol`) to locate exact code to modify (if unavailable, use Grep)
    d. Use Serena (`mcp__plugin_serena_serena__find_referencing_symbols`) to find all callers (if unavailable, use Grep)
    e. Read only the specific function/class bodies you need

@@ -1,59 +1,92 @@
 ---
 name: forge-security
-description: "Always-on security monitoring — secret scanning, rotation alerts, vulnerability detection. Use when user says 'scan for secrets', 'security audit', 'check for exposed credentials', 'run security scan', or before committing/shipping code that may contain sensitive data."
+description: "Manual secret-scanning playbook for the workspace — run grep-based detectors against the working tree and store findings as Forge memory. Use when user says 'scan for secrets', 'security audit', 'check for exposed credentials', or before committing/shipping code that may contain sensitive data."
 ---
 
-# Security Monitor
+# Forge Security — Workspace Secret Sweep
 
-Continuous security monitoring for the workspace. Detects exposed secrets, tracks rotation, alerts on new findings.
+A manual checklist for spotting exposed credentials in the working tree
+before they hit a commit. The Forge daemon does **not** ship a `forge
+scan` subcommand; this skill is a structured grep-based workflow that
+reuses Forge memory for tracking findings across sessions.
 
 ## When to Use
 
-- Automatically at session start (via hooks)
 - User asks about security posture
 - User asks to "scan", "check secrets", "security audit"
-- Before any commit or PR
+- Before any commit or PR that touches files outside docs/
+- After importing a third-party library or copy-pasting code
 
-## Commands
+## Step 1: Run the pattern grep
 
-### Quick scan
+Run each pattern below against the working tree. Add `--include` filters
+for the languages your project uses. Skip `target/`, `node_modules/`,
+`dist/`, `.venv/`, `.git/`.
+
+| Pattern | Risk |
+|---------|------|
+| `AKIA[0-9A-Z]{16}` (AWS Access Key) | critical |
+| `aws_secret_access_key` (AWS Secret) | critical |
+| `ghp_[A-Za-z0-9]{36}` (GitHub PAT) | critical |
+| `gho_[A-Za-z0-9]{36}` (GitHub OAuth) | critical |
+| `ghs_[A-Za-z0-9]{36}` (GitHub App token) | high |
+| `sk_live_[A-Za-z0-9]{24,}` (Stripe Secret) | critical |
+| `pk_live_[A-Za-z0-9]{24,}` (Stripe Publishable) | medium |
+| `BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY` | critical |
+| `AIza[0-9A-Za-z_-]{35}` (GCP API Key) | high |
+| `xox[baprs]-` (Slack Token) | high |
+| `eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` (JWT) | high |
+| High-entropy strings near keywords like `secret=`, `token=`, `apikey=` | medium |
+
+Example sweep (Rust workspace):
 ```bash
-forge scan .
+git grep -EnI 'AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk_live_[A-Za-z0-9]{24,}|BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY' \
+  -- ':!target' ':!node_modules' ':!dist' ':!.venv'
 ```
-NDJSON findings. Zero LLM calls. Pure regex + entropy.
 
-### Watch mode (always-on)
+## Step 2: Verify each hit
+
+For each match:
+- Is the value real or a placeholder/test fixture?
+- Is the file in `.gitignore` already? (run `git check-ignore <path>`)
+- Has it ever been committed? (`git log -p <path> | head -200`)
+
+If a real secret has been committed: **rotate it immediately** — git
+history rewrites are not a substitute for rotation.
+
+## Step 3: Store findings as Forge memory
+
+For confirmed real exposures, store a lesson so future sessions warn
+the user:
+
 ```bash
-forge scan . --watch --interval 30
+forge-next remember --type lesson --title "Secret rotated: <provider>" \
+  --content "<file>:<line> contained a <provider> credential committed at <SHA>. Rotated <date>. Add gitleaks/pre-commit hook before next commit."
 ```
-Continuously monitors. Reports new findings as they appear.
 
-### Full audit (with graph)
-Run `forge scan .` via CLI, which:
-1. Scans all files (Rust, fast)
-2. Stores findings as Secret nodes in the graph
-3. Links to File nodes via LOCATED_IN edges
+For false-positives that keep tripping the grep, store a preference so
+recall surfaces the carve-out:
 
-## Security Rules (12 patterns)
+```bash
+forge-next remember --type preference --title "Test fixture: <pattern>" \
+  --content "<file>:<line> contains a synthetic <pattern> for unit tests. Safe to ignore in future scans."
+```
 
-| Rule | Provider | Risk |
-|------|----------|------|
-| AWS Access Key (AKIA...) | aws | critical |
-| AWS Secret Key | aws | critical |
-| GitHub PAT (ghp_) | github | critical |
-| GitHub OAuth (gho_) | github | critical |
-| GitHub App (ghs_) | github | high |
-| Stripe Secret (sk_live_) | stripe | critical |
-| Stripe Publishable (pk_live_) | stripe | medium |
-| Private Key (BEGIN PRIVATE KEY) | generic | critical |
-| GCP API Key (AIza...) | gcp | high |
-| Slack Token (xox...) | slack | high |
-| JWT | generic | high |
-| High-entropy near keyword | generic | medium |
+## Step 4: Recommend a pre-commit hook
+
+A one-time grep is reactive. For ongoing protection, recommend the user
+install one of:
+- [gitleaks](https://github.com/gitleaks/gitleaks) (`brew install gitleaks`, configurable)
+- [pre-commit](https://pre-commit.com/) with `detect-secrets` hook
+
+Forge will flag known exposures, but does not block a commit on its
+own — the pre-commit hook does.
 
 ## Principles
 
-- NEVER store actual secret values — fingerprint only
-- Skip symlinks to prevent workspace escape
-- Respect .gitignore
-- Max file size: 1MB
+- NEVER copy a real secret value into a memory record — fingerprint
+  only (provider + last 4 chars).
+- Skip symlinks to prevent workspace escape.
+- Respect `.gitignore`.
+- Treat any committed-and-pushed secret as compromised regardless of
+  history rewrite — rotate.

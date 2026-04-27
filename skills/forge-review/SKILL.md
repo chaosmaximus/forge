@@ -73,7 +73,7 @@ NO MERGE TO PROD PATHS WITHOUT CODEX SIGN-OFF.
 
 For critical changes, use multi-reviewer council:
 
-1. **Generate context:** `forge review . --base <merge-base>`
+1. **Generate context:** `git diff <merge-base>..HEAD` (or `gh pr diff <num>` for an open PR)
 2. **Dispatch reviewers in parallel:**
    - Forge Evaluator agent (spec compliance + code quality)
    - Codex adversarial: `codex exec --model gpt-5.2 "<review prompt>"`

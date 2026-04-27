@@ -33,7 +33,7 @@ esac
 # Find forge-next
 FORGE_NEXT="${FORGE_NEXT:-forge-next}"
 command -v "$FORGE_NEXT" &>/dev/null || FORGE_NEXT="$HOME/.local/bin/forge-next"
-[ -x "$FORGE_NEXT" ] || exit 0  # if forge not available, allow the edit
+[ -x "$FORGE_NEXT" ] || exit 0  # if no `forge-next` binary on PATH, allow the edit
 
 # Run guardrails check (non-blocking — just warn, don't block code edits)
 CHECK_OUTPUT=$("$FORGE_NEXT" check --file "$FILE_PATH" --action edit 2>/dev/null || echo "")

@@ -18,7 +18,7 @@ Building something new. Focus: understand WHAT to build before building it.
 
 ## Checklist
 
-You MUST create a TaskCreate item for each phase and complete them in order:
+You MUST create a `TodoWrite` item for each phase and complete them in order:
 
 1. **Classify project** — match against project-types.csv and domain-complexity.csv
 2. **Discover requirements** — structured questioning, one at a time
@@ -42,15 +42,48 @@ Before starting Phase 1, check if STATE.md already exists with `mode: greenfield
 
 ## Phase 1: Classify
 
-0. Create STATE.md from the template at `${CLAUDE_PLUGIN_ROOT}/templates/STATE.md` (if it doesn't exist). Set mode to 'greenfield' and phase to 'classify'. This tracks session state for handoff/resume.
+0. If `STATE.md` does not already exist, create it with this minimum
+   shape (override with `${CLAUDE_PLUGIN_ROOT}/templates/STATE.md` if
+   that path exists in your install):
+   ```markdown
+   # Forge State
+   - mode: greenfield
+   - current phase: classify
+   - phases completed: []
+   - PRD path: (none yet)
+   - decisions: (none yet)
+   ```
+   This tracks session state for handoff/resume.
 
-1. Read `${CLAUDE_PLUGIN_ROOT}/data/project-types.csv`
-2. Match the user's description against `detection_signals`. If ambiguous, ask:
+1. Classify against this built-in matrix (override with
+   `${CLAUDE_PLUGIN_ROOT}/data/project-types.csv` if it exists in your
+   install):
+
+   | Type | Detection signals | Common asks |
+   |------|------------------|-------------|
+   | web-app | `package.json` + framework markers | UX flows, auth, accessibility |
+   | api-service | HTTP framework deps | endpoints, auth, rate-limit |
+   | library | lib target only | public API, semver, docs |
+   | cli-tool | `bin` target, `clap`/`argparse` | subcommands, flags, exit codes |
+   | mobile-app | iOS/Android markers | screen flows, platform UX |
+   | ml-pipeline | `sklearn`/`torch`/`jupyter` | data sources, reproducibility |
+
+2. Match the user's description. If ambiguous, ask:
    "This sounds like a [type]. Is that right, or is it more of a:
    (a) [alternative 1]
    (b) [alternative 2]
    (c) Something else"
-3. Read `${CLAUDE_PLUGIN_ROOT}/data/domain-complexity.csv`
+3. Cross-check the domain against this built-in domain matrix
+   (override with `${CLAUDE_PLUGIN_ROOT}/data/domain-complexity.csv`
+   if present):
+
+   | Domain | Key concerns |
+   |--------|-------------|
+   | fintech / payments | PCI-DSS, audit log, immutable ledger |
+   | healthtech | HIPAA, PHI encryption, access logs |
+   | auth / identity | OAuth/OIDC, JWT signing, key rotation |
+   | e-commerce | order idempotency, inventory race conditions |
+   | (other) | generic SDLC concerns |
 4. If the domain matches an entry, IMMEDIATELY surface `key_concerns`:
    "Since this is a [domain] project, we need to address: [key_concerns].
    I'll make sure the PRD covers these."
@@ -78,20 +111,44 @@ If the user says "just build it" or "skip the questions", present ONLY the 4 min
 
 ## Phase 3: Draft PRD
 
-1. Read `${CLAUDE_PLUGIN_ROOT}/templates/PRD.md`
-2. Include ONLY `required_sections` for the matched project type
-3. Skip `skip_sections` — do not include them even as empty headers
-   Note: some skip_section IDs (like `user_journeys_visual`) are skip-only signals that share a header with another section. If a skip ID has no dedicated header in the template, it means the visual/extended variant is suppressed while the base section remains.
-4. Frame functional requirements as capability contracts: "FR#: [Actor] can [capability]"
-5. For NFRs: only include categories that MATTER for this product. Ask:
+1. Use this minimum-viable PRD structure (override with
+   `${CLAUDE_PLUGIN_ROOT}/templates/PRD.md` if shipped in your install):
+
+   ```markdown
+   # PRD: <project name>
+
+   ## Problem
+   <one paragraph: what user problem does this solve?>
+
+   ## Users
+   <primary persona, secondary persona, API consumers if any>
+
+   ## Success Metrics
+   <how will we know it works? quantitative + qualitative>
+
+   ## Functional Requirements
+   - FR1: [Actor] can [capability]
+   - FR2: ...
+
+   ## Non-Functional Requirements
+   <only categories that matter for this project — see Phase 3 step 5>
+
+   ## Out of Scope
+   <list what is NOT being built; helps prevent scope creep>
+   ```
+2. Include ONLY sections relevant to the matched project type. Skip
+   sections that don't apply — don't include them as empty headers.
+3. Frame functional requirements as capability contracts: "FR#: [Actor] can [capability]"
+4. For NFRs: only include categories that MATTER for this product. Ask:
    "Which of these are critical for your project?
    (a) Performance — response time, throughput targets
    (b) Security — auth, data protection, compliance
    (c) Scalability — expected load, growth projections
    (d) Accessibility — WCAG level, i18n requirements
    (e) None of these are critical right now"
-6. Include domain-specific sections from domain-complexity.csv `special_sections`
-7. Present the FULL PRD to the user at once. Ask: "Here is the complete PRD. Does everything look right, or would you like to discuss any specific section?" Only go section-by-section if the user requests it.
+5. Include domain-specific sections from the Phase 1 domain matrix
+   (e.g., a "Compliance" section for fintech / healthtech projects).
+6. Present the FULL PRD to the user at once. Ask: "Here is the complete PRD. Does everything look right, or would you like to discuss any specific section?" Only go section-by-section if the user requests it.
 
 ---
 

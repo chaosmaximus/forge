@@ -100,6 +100,13 @@ status=$?
 set -e
 assert_exit 1 "$status" "$output"
 assert_contains "drift entries detected" "$output"
+# Pre-release audit D-07: gate must catch the bare-`forge X` form, not
+# only the `forge-next X` / `forge-cli X` suffixed forms. The drift
+# fixture's skill includes `forge invented-subcmd` (no suffix, in
+# backticks). If the regex regresses to suffix-only, this assertion
+# trips before the real-repo gate masks the issue.
+assert_contains "invented-subcmd" "$output"
+assert_contains "nonexistent-cmd" "$output"
 
 # ============================================================================
 # Test 4: drift fixture legacy FORCE_FAIL=1

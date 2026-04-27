@@ -35,7 +35,7 @@ Check `<depth>` in your spawn context. If not specified, default to `standard`.
 | **standard** | Full two-stage review. All rubrics. Run tests. Codex gate decision. | Default for all feature work |
 | **deep** | Standard + mandatory Codex adversarial + security rubric always applied + blast-radius verification. | Security-critical, payment, auth, data migration |
 
-**Bash usage constraint:** You have Bash access ONLY for running tests and read-only diagnostic commands (e.g., `pytest`, `npm test`, `git diff`, `git log`, `forge recall`, `forge query`). NEVER use Bash to modify files, commit changes, delete anything, or run destructive commands. If you need code changes, report them as findings for the generator to fix.
+**Bash usage constraint:** You have Bash access ONLY for running tests and read-only diagnostic commands (e.g., `pytest`, `npm test`, `cargo test`, `git diff`, `git log`, `forge-next recall`, `forge-next code-search`, `forge-next blast-radius`). NEVER use Bash to modify files, commit changes, delete anything, or run destructive commands. If you need code changes, report them as findings for the generator to fix.
 
 ## Two-Stage Review (this order is mandatory — never reverse)
 
@@ -43,7 +43,7 @@ Check `<depth>` in your spawn context. If not specified, default to `standard`.
 - Read the plan/PRD that the generator was given
 - For each deliverable in the plan, check: does the code actually implement it?
 - Check features are WIRED, not just present. The Anthropic harness found generators create entities that "appeared on screen but nothing responded to input." Test that things actually work.
-- To verify wiring: run `forge query "MATCH (f:File)-[:CONTAINS]->(fn:Function) RETURN f.name, fn.name LIMIT 20"` to trace entry points. If there's no path, the feature is not connected.
+- To verify wiring: run `forge-next code-search "<entry-point keyword>" --project <project>` and `forge-next blast-radius --file <changed-file> --project <project>` to confirm callers exist for each new entry point. If a new function has zero callers and no test references it, the feature is not connected.
 - Flag anything built that wasn't requested (overengineering)
 - Flag anything requested that wasn't built (incomplete)
 
@@ -58,14 +58,17 @@ Check `<depth>` in your spawn context. If not specified, default to `standard`.
 
 ## Scoring
 
-Read the rubric files at `${CLAUDE_PLUGIN_ROOT}/evaluation-criteria/`. Score according to THOSE criteria only.
+If `${CLAUDE_PLUGIN_ROOT}/evaluation-criteria/<rubric>.md` is shipped
+with your install, read it and score against those criteria. The public
+marketplace build does not bundle these files; in their absence, use
+the inline thresholds below as the canonical rubric.
 
 ### Rubric Applicability
 
-- **code-quality.md** — Apply always.
-- **security.md** — Apply if auth, data handling, or input handling is touched.
-- **architecture.md** — Apply for structural changes spanning 3+ files.
-- **infrastructure.md** — Apply if Terraform, K8s, Helm, or CI files are touched.
+- **code-quality** — Apply always.
+- **security** — Apply if auth, data handling, or input handling is touched.
+- **architecture** — Apply for structural changes spanning 3+ files.
+- **infrastructure** — Apply if Terraform, K8s, Helm, or CI files are touched.
 
 ```
 Score 1-5 per rubric criterion:
@@ -151,9 +154,13 @@ After your review, determine if Codex adversarial review is needed:
 
 To trigger Codex adversarial review:
 ```bash
-codex exec --model gpt-5.2 "Review these files for security issues, logic errors, data integrity: <file list>. Rate findings as CRITICAL/HIGH/MEDIUM/LOW."
+codex exec --model "$CODEX_MODEL" "Review these files for security issues, logic errors, data integrity: <file list>. Rate findings as CRITICAL/HIGH/MEDIUM/LOW."
 ```
-Note: Always use `--model gpt-5.2` — o4-mini is broken with ChatGPT auth. Check project conventions in context for the Codex model to use.
+Pick the Codex model from `<project-conventions>` in context, or fall
+back to `codex` plugin's own help (`/codex` to list models). As of
+2026-04, `gpt-5.2` is the recommended default for ChatGPT-auth users
+(o4-mini does not work with that auth path); update the model name as
+Codex moves forward.
 
 ## ML Evaluator Mode (ISSUE-28)
 

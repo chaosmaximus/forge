@@ -1,11 +1,13 @@
 ---
 name: forge-research
-description: "Autonomous research loop — explore a topic with bounded iterations, git-backed experiments. Use when user says 'research this', 'investigate how X works', 'explore the codebase', 'understand this module', 'do a deep dive on', or needs bounded autonomous exploration of a technical topic."
+description: "Bounded research workflow — explore a topic in 5-10 short cycles, store key findings as Forge memory. Use when user says 'research this', 'investigate how X works', 'explore the codebase', 'understand this module', or needs a structured deep-dive on a technical topic."
 ---
 
-# AutoResearch
+# Forge Research — Bounded Exploration
 
-Bounded autonomous exploration. Investigates a topic through iterative cycles of hypothesis, exploration, measurement, and keep/discard.
+A manual, structured exploration workflow. Use existing tools (recall,
+grep, code-search, web-fetch) inside a bounded loop so the investigation
+stays focused and produces durable artifacts.
 
 ## When to Use
 
@@ -15,15 +17,50 @@ Bounded autonomous exploration. Investigates a topic through iterative cycles of
 
 ## Process
 
-1. **Frame** the research question clearly
-2. **Run** `forge research "<topic>" --max-iterations N --workdir .`
-3. **For each iteration:**
-   a. Form a hypothesis about where to look
-   b. Explore (read code, search, fetch docs)
-   c. Record finding
-   d. Decide: productive path (keep) or dead end (discard)
-4. **Synthesize** findings into a conclusion
-5. **Store** key findings as Lesson nodes: Run `forge-next remember --type lesson --title '...' --content '...'`
+### 1. Frame the question
+
+Restate the research question in one sentence. If it's vague, ask one
+clarifying question before proceeding. Set an iteration budget:
+default **5**, max **10**.
+
+### 2. Iterate (each loop ≤ 2 min, max budget set in step 1)
+
+For each iteration:
+
+a. **Hypothesize** where to look next (one sentence — what would prove
+   or disprove your current model?).
+b. **Explore** using whichever of these is cheapest:
+   - `forge-next recall "<keywords>"` — prior decisions and lessons
+   - `forge-next code-search "<keywords>" --project <project-name>` —
+     symbols and files matching the query
+   - `forge-next blast-radius --file <path> --project <project-name>` —
+     callers and dependents of a known file
+   - `Grep` / `Read` for targeted source inspection
+   - `WebFetch` for external docs (only when local sources are
+     exhausted)
+c. **Record** the finding: 1-2 sentences. Include file:line if the
+   evidence is in code.
+d. **Decide** keep (productive path) or discard (dead end). Do not
+   keep going if your last 3 iterations produced no new evidence —
+   stop and report the partial result.
+
+### 3. Synthesize
+
+Summarize the findings as a short conclusion + open questions. Use
+this as the user-facing report.
+
+### 4. Store the durable findings
+
+For each "this changed my mental model" finding, store it as a
+lesson:
+
+```bash
+forge-next remember --type lesson --title "<short title>" \
+  --content "<finding + supporting evidence>"
+```
+
+For decisions the user makes during the research, use `--type decision`
+instead.
 
 ## Constraints
 
@@ -31,15 +68,12 @@ Bounded autonomous exploration. Investigates a topic through iterative cycles of
 - Each iteration should take <2 minutes
 - If stuck after 3 iterations with no progress, stop and report
 - Never modify production code during research — read-only exploration
-- Git checkpoint before each iteration for safe rollback
-
-## CLI
-
-```bash
-forge research "How does the auth module work?" --max-iterations 5
-forge research "Compare JWT vs session tokens" --max-iterations 8
-```
 
 ## Output
 
-Structured JSON with iteration details + human-readable summary.
+A short user-facing report:
+- The original question
+- Iteration count + outcome (answered / partial / stuck)
+- Top 3 findings with file:line / URL evidence
+- Memories stored (titles)
+- Open questions (if any)
