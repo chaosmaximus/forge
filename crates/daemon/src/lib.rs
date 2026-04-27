@@ -14,7 +14,6 @@ pub mod extractor_queue;
 pub mod guardrails;
 pub mod hud_config;
 pub mod lsp;
-pub mod migrate;
 pub mod notifications;
 pub mod org;
 pub mod pidlock;

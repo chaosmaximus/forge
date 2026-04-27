@@ -1213,49 +1213,6 @@ pub fn decide_meeting(
 
 // ── FISP Consensus / Voting ──
 
-/// Create a meeting with structured voting options and a threshold rule.
-/// Returns (meeting_id, participant_count).
-pub fn create_meeting_with_voting(
-    conn: &Connection,
-    team_id: &str,
-    topic: &str,
-    participants: &[String],
-    voting_options: &[String],
-    threshold: &str,
-) -> rusqlite::Result<(String, usize)> {
-    let meeting_id = ulid::Ulid::new().to_string();
-    let now = forge_core::time::now_iso();
-    let options_json = serde_json::to_string(voting_options).unwrap_or_else(|_| "[]".to_string());
-
-    conn.execute(
-        "INSERT INTO meeting (id, team_id, topic, status, orchestrator_session_id, created_at, voting_options, threshold)
-         VALUES (?1, ?2, ?3, 'collecting', '', ?4, ?5, ?6)",
-        params![meeting_id, team_id, topic, now, options_json, threshold],
-    )?;
-
-    for session_id in participants {
-        let template_name: String = conn
-            .query_row(
-                "SELECT COALESCE(at.name, s.id)
-             FROM session s
-             LEFT JOIN agent_template at ON at.id = s.template_id
-             WHERE s.id = ?1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .unwrap_or_else(|_| session_id.clone());
-
-        let participant_id = ulid::Ulid::new().to_string();
-        conn.execute(
-            "INSERT INTO meeting_participant (id, meeting_id, session_id, template_name, status)
-             VALUES (?1, ?2, ?3, ?4, 'pending')",
-            params![participant_id, meeting_id, session_id, template_name],
-        )?;
-    }
-
-    Ok((meeting_id, participants.len()))
-}
-
 /// Record a vote in a meeting (last write wins for re-votes).
 /// Validates that the choice is in the meeting's voting_options.
 /// Returns the choice that was recorded.

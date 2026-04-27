@@ -1,10 +1,7 @@
 use forge_core::protocol::*;
 use forge_core::types::{CodeFile, CodeSymbol, MemoryType};
 use forge_daemon::db::ops;
-use forge_daemon::migrate::import_v1_cache;
 use forge_daemon::server::handler::{handle_request, DaemonState};
-use std::io::Write;
-use tempfile::NamedTempFile;
 
 #[test]
 fn test_confidence_decay_persists_and_does_not_refade() {
@@ -75,26 +72,6 @@ fn test_confidence_decay_persists_and_does_not_refade() {
     let (checked2, faded2) = ops::decay_memories(&state.conn, 1000, 14.0).unwrap();
     assert_eq!(checked2, 1, "only d2 is still active after first run");
     assert_eq!(faded2, 0, "d2 should not fade on second run");
-}
-
-#[test]
-fn test_migrate_and_recall() {
-    let state = DaemonState::new(":memory:").unwrap();
-    let cache = r#"{"entries":[
-        {"type":"decision","title":"Use PostgreSQL","content":"ACID compliance","confidence":0.95,"status":"active"},
-        {"type":"lesson","title":"Avoid MongoDB","content":"Schema issues","confidence":0.8,"status":"active"}
-    ]}"#;
-    let mut tmp = NamedTempFile::new().unwrap();
-    write!(tmp, "{cache}").unwrap();
-
-    let (imported, _) = import_v1_cache(&state.conn, tmp.path().to_str().unwrap()).unwrap();
-    assert_eq!(imported, 2);
-
-    let results = ops::recall_bm25(&state.conn, "PostgreSQL", 10).unwrap();
-    assert!(
-        !results.is_empty(),
-        "should recall PostgreSQL after migration"
-    );
 }
 
 #[test]
