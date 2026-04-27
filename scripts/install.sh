@@ -31,7 +31,7 @@ arch="$(uname -m 2>/dev/null || echo unknown)"
 case "$os" in
     Linux) ;;
     Darwin)
-        die "macOS installer ships in 2P-1b. For now: cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli"
+        die "macOS installer ships in 2P-1b. For now: cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-next"
         ;;
     *)
         die "unsupported OS: $os (Linux x86_64 only in 2P-1a)"

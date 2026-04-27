@@ -320,6 +320,31 @@ impl ForgeMetrics {
             snapshot: std::sync::Arc::new(parking_lot::RwLock::new(GaugeSnapshot::default())),
         }
     }
+
+    /// P3-4 Phase 10E (F-MED-11): mark a background worker as unhealthy
+    /// (`forge_worker_healthy{worker="<name>"} = 0`). Wired into worker
+    /// shutdown / panic-catch paths so the `ForgeWorkerDown` Prometheus
+    /// alert (which fires on `forge_worker_healthy == 0` for 5m) can
+    /// actually trigger. Pre-10E the gauge was unconditionally re-set to
+    /// 1 by `refresh_gauges`, so no alert ever fired; the refresh loop
+    /// now preserves a 0 written via this helper.
+    ///
+    /// Minimum viable wiring as of Phase 10E: only the embedder calls
+    /// this on shutdown. Full propagation across all 8 workers
+    /// (watcher / extractor / consolidator / indexer / perception /
+    /// disposition / diagnostics) is tracked as Phase 10E follow-up.
+    pub fn set_worker_unhealthy(&self, name: &str) {
+        self.worker_healthy.with_label_values(&[name]).set(0);
+    }
+
+    /// Inverse of [`set_worker_unhealthy`]. Useful for tests and for the
+    /// (future) supervisor restart path. The Prometheus refresh loop
+    /// already sets this to 1 for every known worker on every scrape
+    /// when it isn't currently 0, so most worker code paths don't need
+    /// to call this directly.
+    pub fn set_worker_healthy(&self, name: &str) {
+        self.worker_healthy.with_label_values(&[name]).set(1);
+    }
 }
 
 /// Refresh gauge values from the database before a Prometheus scrape.
@@ -540,7 +565,12 @@ fn refresh_gauges_impl(metrics: &ForgeMetrics, conn: &rusqlite::Connection) {
     metrics.embeddings_total.set(count_mem_vec);
     metrics.active_sessions.set(count_active_sessions);
 
-    // Worker health — set all known workers to 1 (we're alive if we can query)
+    // Worker health — set known workers to 1 (we're alive if we can query),
+    // BUT preserve any worker that has been explicitly marked unhealthy via
+    // `set_worker_unhealthy(...)`. Pre-Phase-10E (F-MED-11) this loop
+    // unconditionally clobbered the gauge to 1 every refresh, so the
+    // `ForgeWorkerDown` alert (`forge_worker_healthy == 0` for 5m) could
+    // never fire — any 0 a worker wrote was overwritten on the next scrape.
     for worker in &[
         "watcher",
         "extractor",
@@ -551,7 +581,10 @@ fn refresh_gauges_impl(metrics: &ForgeMetrics, conn: &rusqlite::Connection) {
         "disposition",
         "diagnostics",
     ] {
-        metrics.worker_healthy.with_label_values(&[worker]).set(1);
+        let g = metrics.worker_healthy.with_label_values(&[worker]);
+        if g.get() != 0 {
+            g.set(1);
+        }
     }
 
     // Iterate in the same order as `tables` so label → count pairing is
@@ -938,6 +971,23 @@ mod tests {
         m.worker_healthy.with_label_values(&["embedder"]).set(0);
         assert_eq!(m.worker_healthy.with_label_values(&["extractor"]).get(), 1);
         assert_eq!(m.worker_healthy.with_label_values(&["embedder"]).get(), 0);
+    }
+
+    /// P3-4 Phase 10E (F-MED-11): pin the `set_worker_unhealthy` /
+    /// `set_worker_healthy` helpers and the freeze-on-zero behavior.
+    /// Pre-10E, no helper existed and `refresh_gauges` clobbered any
+    /// 0 back to 1 every scrape — the regression this test guards is
+    /// "ForgeWorkerDown alert never fires because gauge is always 1".
+    #[test]
+    fn test_set_worker_unhealthy_sets_zero() {
+        let m = ForgeMetrics::new();
+        // Initial state — unset label reads as 0 (Prometheus default).
+        m.set_worker_healthy("embedder");
+        assert_eq!(m.worker_healthy.with_label_values(&["embedder"]).get(), 1);
+        m.set_worker_unhealthy("embedder");
+        assert_eq!(m.worker_healthy.with_label_values(&["embedder"]).get(), 0);
+        m.set_worker_healthy("embedder");
+        assert_eq!(m.worker_healthy.with_label_values(&["embedder"]).get(), 1);
     }
 
     #[test]

@@ -215,6 +215,20 @@ async fn main() {
             }
         }
     } else {
+        // P3-4 Phase 10E (F-MED-9): when the operator opted into OTLP
+        // (`FORGE_OTLP_ENABLED=true`) but forgot to set the endpoint,
+        // pre-10E the OTLP layer was silently dropped — no log, no hint.
+        // Now we surface the misconfiguration on stderr so it shows up
+        // alongside the OTLP-enabled / OTLP-init-failed branches above.
+        // Tracing subscriber isn't installed yet, so we use eprintln!
+        // (matching the surrounding branches' style).
+        if otlp_enabled && otlp_endpoint.is_empty() {
+            eprintln!(
+                "[daemon] WARN: OTLP enabled but FORGE_OTLP_ENDPOINT empty; \
+                 skipping export setup. Set FORGE_OTLP_ENDPOINT=http://localhost:4317 \
+                 (or your OTLP/HTTP receiver URL) to enable trace export."
+            );
+        }
         None
     };
 
@@ -240,6 +254,36 @@ async fn main() {
         use std::os::unix::fs::PermissionsExt;
         if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
             tracing::warn!("failed to set permissions on {dir}: {e}");
+        }
+    }
+
+    // P3-4 Phase 10E (F-MED-12): seed `config.toml` from the bundled
+    // `config/default.toml` on first run so operators have a stable
+    // starting template to edit instead of guessing the schema. NEVER
+    // overwrite an existing file — the absence check is the gate.
+    // Path resolution flows through `forge_dir()`, so `FORGE_DIR=...`
+    // (and the `HOME` fallback) are honored automatically.
+    {
+        let config_path = format!("{dir}/config.toml");
+        if !std::path::Path::new(&config_path).exists() {
+            const DEFAULT_CONFIG: &str = include_str!("../../../config/default.toml");
+            match std::fs::write(&config_path, DEFAULT_CONFIG) {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "forge::daemon",
+                        path = %config_path,
+                        "seeded default config.toml (first run)"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "forge::daemon",
+                        path = %config_path,
+                        error = %e,
+                        "failed to seed default config.toml — continuing without it"
+                    );
+                }
+            }
         }
     }
 

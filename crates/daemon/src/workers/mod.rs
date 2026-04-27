@@ -173,6 +173,9 @@ pub fn spawn_workers(
     });
 
     let embedder_interval = worker_intervals.embedding_interval_secs;
+    // P3-4 Phase 10E (F-MED-11): hand the embedder a metrics handle so it
+    // can flip `forge_worker_healthy{worker="embedder"}` to 0 on shutdown.
+    let embedder_metrics = metrics.clone();
     let embedder_handle = tokio::spawn(async move {
         embedder::run_embedder(
             embedder_state,
@@ -180,6 +183,7 @@ pub fn spawn_workers(
             embedder_shutdown,
             embedder_db_path,
             embedder_interval,
+            embedder_metrics,
         )
         .await;
     });

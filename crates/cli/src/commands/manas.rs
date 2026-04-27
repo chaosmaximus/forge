@@ -351,7 +351,17 @@ pub async fn compile_context(
             } else {
                 println!("{context}");
             }
-            eprintln!("({layers_used} layers, {chars} chars)");
+            // P3-4 Phase 10E (F-MED-7): the daemon's `layers_used` is the
+            // count of XML *sections* emitted in the compiled context
+            // (<platform>, <tools>, <identity>, ..., <working-set>) — up to
+            // 9 by `recall::count_layers_used`. README's headline "8-layer
+            // Manas memory" refers to the architectural memory layers
+            // (Platform, Tool, Skill, Domain DNA, Experience, Perception,
+            // Declared, Latent), which is a distinct concept. Pre-10E the
+            // CLI rendered "{n} layers" which conflicted with the
+            // README headline; relabel to "XML sections" so the two
+            // numbers don't contradict each other.
+            eprintln!("({layers_used} XML sections, {chars} chars)");
         }
         Ok(Response::Error { message }) => {
             eprintln!("error: {message}");

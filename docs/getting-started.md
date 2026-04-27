@@ -298,6 +298,15 @@ hooks, skills, and subagents so Claude Code sessions automatically register
 with the running daemon, stream memory writes, and surface matching skills in
 context.
 
+> **Note (F-MED-6, P3-4 Phase 10E):** the Forge CLI deliberately does **not**
+> own a `forge-next plugin install` / `forge-next plugin uninstall`
+> subcommand. Plugin lifecycle is a Claude Code marketplace concern, not a
+> daemon concern — install/uninstall flows through Claude Code's
+> `/plugin marketplace` UI (Option B below) or the symlink-install path
+> (Option A). If you've seen `forge-next plugin install` referenced in older
+> notes or scripts, that command never existed; use one of the two options
+> below instead.
+
 ### Option A: Symlink-install from a local clone (fastest for development)
 
 ```bash

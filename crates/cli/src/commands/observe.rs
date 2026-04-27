@@ -235,7 +235,32 @@ fn print_table(response: &Response) {
                     ]
                 })
                 .collect();
-            write_table(&header, &body);
+            // P3-4 Phase 10E (F-MED-10): pre-10E the empty-rows case fell
+            // through to write_table's generic "(no rows)" line, which is
+            // misleading on row-count: an empty snapshot means the daemon's
+            // GaugeSnapshot hasn't been refreshed yet (or the worker stalled),
+            // NOT that the underlying tables are empty. Surface the actual
+            // diagnostic path so operators don't confuse "no rows" with
+            // "DB empty".
+            if body.is_empty() {
+                let header_line: Vec<&str> = header.to_vec();
+                let widths: Vec<usize> = header_line.iter().map(|h| h.len()).collect();
+                let cells: Vec<String> = header_line
+                    .iter()
+                    .zip(widths.iter())
+                    .map(|(h, w)| format!("{:<width$}", h, width = w))
+                    .collect();
+                println!("{}", cells.join("  "));
+                let sep: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
+                println!("{}", sep.join("  "));
+                println!(
+                    "(no rows in snapshot — snapshot may be stale; \
+                     check `forge-next observe gauge-snapshot` for freshness, \
+                     or re-run after the gauge-refresh worker tick)"
+                );
+            } else {
+                write_table(&header, &body);
+            }
         }
         InspectData::Latency { rows } => {
             let header = [

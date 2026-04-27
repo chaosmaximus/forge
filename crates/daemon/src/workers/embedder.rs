@@ -21,6 +21,11 @@ pub async fn run_embedder(
     mut shutdown_rx: watch::Receiver<bool>,
     db_path: String,
     interval_secs: u64,
+    // P3-4 Phase 10E (F-MED-11): on shutdown the embedder marks itself
+    // unhealthy so `forge_worker_healthy{worker="embedder"}` flips to 0
+    // and the `ForgeWorkerDown` Prometheus alert can fire. Optional
+    // because tests construct embedder loops without a metrics registry.
+    metrics: Option<Arc<crate::server::metrics::ForgeMetrics>>,
 ) {
     let interval = Duration::from_secs(interval_secs);
     tracing::info!(target: "forge::embedder", ?interval, "embedder started");
@@ -31,6 +36,9 @@ pub async fn run_embedder(
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     tracing::info!(target: "forge::embedder", "shutdown received");
+                    if let Some(m) = metrics.as_ref() {
+                        m.set_worker_unhealthy("embedder");
+                    }
                     return;
                 }
             }

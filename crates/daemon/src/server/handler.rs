@@ -1770,7 +1770,18 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                 forge_core::protocol::HealthCheck {
                     name: "embeddings".into(),
                     status: "warn".into(),
-                    message: "no embeddings — vector recall will not work".into(),
+                    // P3-4 Phase 10E (F-MED-8): pre-10E this said only
+                    // "no embeddings — vector recall will not work" with
+                    // no fix hint. Embeddings auto-generate via the
+                    // embedder worker on every memory insert; if the
+                    // count stays 0 after new memories arrive, the
+                    // embedder is stalled (Ollama down, model missing).
+                    message: "no embeddings — vector recall will not work \
+                              (run `forge-next observe row-count --table memory_vec` to confirm; \
+                              embeddings auto-generate via the embedder worker on insert — \
+                              if count stays 0, check `forge-next observe phase-summary` \
+                              and the embedder worker logs)"
+                        .into(),
                 }
             });
 

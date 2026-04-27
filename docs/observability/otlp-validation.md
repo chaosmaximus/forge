@@ -30,8 +30,15 @@ export FORGE_OTLP_ENABLED=true
 export FORGE_OTLP_ENDPOINT=http://localhost:4318
 export FORGE_OTLP_SERVICE_NAME=forge-daemon-dev
 
-# 3. Restart daemon to pick up env
-forge-next service restart
+# 3. Restart daemon to pick up env (forge-next has no `service restart`
+#    subcommand — kill the daemon by signal and let your launcher restart it,
+#    or restart explicitly via your service manager)
+pkill -INT forge-daemon
+# then either re-launch directly:
+#   cargo run --release -p forge-daemon &
+# or, if running under systemd / launchd:
+#   systemctl --user restart forge        # Linux user unit
+#   launchctl kickstart -k gui/$UID/io.forge.daemon   # macOS launchd
 
 # 4. Generate traffic — recall + a consolidator pass
 forge-next recall "test query" --limit 5
@@ -82,10 +89,13 @@ In Jaeger UI:
 
 ### 1. `FORGE_OTLP_ENABLED=true` but no traces appear
 
-Check that `FORGE_OTLP_ENDPOINT` is **set and non-empty**. The daemon
-silently disables the OTLP layer if the endpoint is empty
-(`crates/daemon/src/main.rs:158` — `if otlp_enabled && !otlp_endpoint.is_empty()`).
-A future cleanup should warn-on-empty; tracked as backlog item.
+Check that `FORGE_OTLP_ENDPOINT` is **set and non-empty**. As of P3-4
+Phase 10E (F-MED-9) the daemon emits a `tracing::warn!` line when
+`FORGE_OTLP_ENABLED=true` but the endpoint is empty:
+`OTLP enabled but FORGE_OTLP_ENDPOINT empty; skipping export setup …`.
+Pre-10E, the OTLP layer was silently disabled with no log line — if you
+are on an older daemon, upgrade or grep for that warning when
+diagnosing.
 
 ### 2. Jaeger receives spans but service name is wrong
 

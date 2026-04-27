@@ -1,4 +1,22 @@
 {
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus datasource scraping the daemon /metrics endpoint",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    },
+    {
+      "name": "DS_SQLITE",
+      "label": "SQLite",
+      "description": "SQLite datasource pointing at the daemon's forge.db (kpi_events table)",
+      "type": "datasource",
+      "pluginId": "frser-sqlite-datasource",
+      "pluginName": "SQLite"
+    }
+  ],
   "annotations": {
     "list": [
       {
@@ -12,7 +30,7 @@
       }
     ]
   },
-  "description": "Forge daemon operator dashboard — P3-3 Stage 4 (2C-1). Surfaces 5 metric families: phase duration, phase persistence error rate, table rows, layer freshness, bench composite trend. PromQL expressions target the names emitted by `crates/daemon/src/server/metrics.rs`. Bench trend panel queries the daemon's SQLite kpi_events table via `forge-bench`'s telemetry path (or the /inspect bench_run_summary shape from Tier 3); for Grafana use, point an SQLite/Postgres datasource at the kpi_events table or extend the daemon with a Prometheus exporter for bench composites.",
+  "description": "Forge daemon operator dashboard — P3-3 Stage 4 (2C-1). Surfaces 5 metric families: phase duration, phase persistence error rate, table rows, layer freshness, bench composite trend. PromQL expressions target the names emitted by `crates/daemon/src/server/metrics.rs`. Bench trend panel queries the daemon's SQLite kpi_events table via `forge-bench`'s telemetry path (or the /inspect bench_run_summary shape from Tier 3); for Grafana use, point an SQLite/Postgres datasource at the kpi_events table or extend the daemon with a Prometheus exporter for bench composites. Datasources are templated via `${DS_PROMETHEUS}` / `${DS_SQLITE}` (F-MED-3, Phase 10E) so the dashboard imports cleanly on operator stacks where the datasource is named differently from `Prometheus` / `SQLite`.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -22,7 +40,7 @@
       "id": 1,
       "title": "Phase duration p95 (by phase)",
       "type": "timeseries",
-      "datasource": "Prometheus",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
       "targets": [
         {
@@ -37,7 +55,7 @@
       "id": 2,
       "title": "Phase persistence error rate (per second)",
       "type": "timeseries",
-      "datasource": "Prometheus",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
       "targets": [
         {
@@ -52,7 +70,7 @@
       "id": 3,
       "title": "Phase output rows total (cumulative)",
       "type": "timeseries",
-      "datasource": "Prometheus",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
       "targets": [
         {
@@ -67,7 +85,7 @@
       "id": 4,
       "title": "Table rows (gauge, by table)",
       "type": "timeseries",
-      "datasource": "Prometheus",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
       "targets": [
         {
@@ -82,7 +100,7 @@
       "id": 5,
       "title": "Layer freshness (seconds since last write, by layer)",
       "type": "timeseries",
-      "datasource": "Prometheus",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
       "targets": [
         {
@@ -97,7 +115,7 @@
       "id": 6,
       "title": "Bench composite trend — last 7 days",
       "type": "timeseries",
-      "datasource": "SQLite",
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "${DS_SQLITE}" },
       "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
       "targets": [
         {
