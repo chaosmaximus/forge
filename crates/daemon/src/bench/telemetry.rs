@@ -168,10 +168,8 @@ pub fn emit_bench_run_completed(payload: &BenchRunPayload) -> Result<(), String>
 
     let conn =
         Connection::open(&db_path).map_err(|e| format!("open {}: {e}", db_path.display()))?;
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .map_err(|e| format!("set WAL: {e}"))?;
-    conn.busy_timeout(std::time::Duration::from_millis(5000))
-        .map_err(|e| format!("busy_timeout: {e}"))?;
+    // P3-4 W1.30 (W23 review MED-4): canonical PRAGMA helper.
+    crate::db::apply_runtime_pragmas(&conn).map_err(|e| format!("apply runtime pragmas: {e}"))?;
 
     // Idempotent — no-op if the daemon already initialized the schema.
     crate::db::schema::create_schema(&conn).map_err(|e| format!("create_schema: {e}"))?;

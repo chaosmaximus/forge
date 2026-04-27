@@ -1877,9 +1877,15 @@ pub async fn config_delete_scoped(scope: String, scope_id: String, key: String) 
 
 /// Trigger the code indexer. The daemon dispatches the indexing work to a
 /// background task (W22, F23) and replies immediately with
-/// `IndexComplete { 0, 0 }` so subsequent writes (team stop, cleanup-sessions)
-/// aren't blocked behind a 30 s+ indexer pass. Non-zero counts indicate a
-/// synchronous response from a daemon predating W22 — preserved for parity.
+/// `IndexComplete { 0, 0, dispatched: true }` so subsequent writes
+/// (team stop, cleanup-sessions) aren't blocked behind a 30 s+ indexer
+/// pass. P3-4 W1.30 (W23 review MED-3): the `dispatched` flag is the
+/// typed signal — pre-W1.30 the CLI inferred dispatch from
+/// `files == 0 && symbols == 0`, which mis-fires on legitimately-empty
+/// projects (an empty dir genuinely indexes 0 files; pre-fix the user
+/// saw "dispatched in background" forever). The flag defaults to false
+/// on legacy daemons that don't set it, preserving the old heuristic
+/// for those builds.
 pub async fn force_index(path: Option<String>) {
     match client::send(&Request::ForceIndex { path: path.clone() }).await {
         Ok(Response::Ok {
@@ -1887,9 +1893,21 @@ pub async fn force_index(path: Option<String>) {
                 ResponseData::IndexComplete {
                     files_indexed,
                     symbols_indexed,
+                    dispatched,
                 },
         }) => {
-            if files_indexed == 0 && symbols_indexed == 0 {
+            // Post-W1.30: trust the typed flag. Pre-W1.30 the CLI
+            // inferred dispatch from `files == 0 && symbols == 0`,
+            // which mis-fires on empty projects. The new daemon
+            // sets `dispatched: true` for the background-queued path
+            // and `false` for the synchronous handler. Legacy daemons
+            // (pre-1.30) don't emit the field; serde defaults leave
+            // it `false`, so a legacy async dispatch will print
+            // "Index status: 0/0" — accurate counts but missing the
+            // background-banner UX. Acceptable degradation for a
+            // mixed CLI/daemon-version environment; the production
+            // contract is install-paired binaries.
+            if dispatched {
                 println!(
                     "Indexer dispatched in background. Watch ~/.forge/daemon.log \
                     or query progress with `forge-next find-symbol <name>` / \

@@ -3,9 +3,12 @@ pub mod effectiveness;
 pub mod manas;
 pub mod metrics;
 pub mod ops;
+pub mod pragma;
 pub mod raw;
 pub mod schema;
 pub mod vec;
+
+pub use pragma::{apply_runtime_pragmas, BUSY_TIMEOUT_MS};
 
 pub use ops::classify_portability;
 pub use ops::{

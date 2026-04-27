@@ -310,6 +310,11 @@ fn build_hud_state(db_path: &str, event: &ForgeEvent) -> serde_json::Value {
             });
         }
     };
+    // P3-4 W1.30 (W23 review MED-4): canonical PRAGMA helper.
+    // Best-effort — HUD state stays usable on a read-only DB even if
+    // the WAL-write fails (the helper is `Result`-typed so we drop the
+    // error explicitly instead of silently `?`-bailing the whole build).
+    let _ = crate::db::apply_runtime_pragmas(&conn);
 
     // Memory stats
     let decisions: u64 = conn

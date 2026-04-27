@@ -2764,7 +2764,8 @@ pub async fn run_consolidator(
             return;
         }
     };
-    if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;") {
+    // P3-4 W1.30 (W23 review MED-4): canonical PRAGMA helper.
+    if let Err(e) = crate::db::apply_runtime_pragmas(&conn) {
         tracing::warn!(
             target: "forge::consolidator",
             error = %e,

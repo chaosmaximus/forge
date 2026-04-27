@@ -451,6 +451,12 @@ impl WriterActor {
             data: ResponseData::IndexComplete {
                 files_indexed: 0,
                 symbols_indexed: 0,
+                // P3-4 W1.30 (W23 review MED-3): typed signal that
+                // these counts are background-dispatch placeholders,
+                // not a real (0, 0) result from a legitimately-empty
+                // project. The CLI keys off this instead of the
+                // brittle `files == 0 && symbols == 0` heuristic.
+                dispatched: true,
             },
         }
     }
@@ -476,7 +482,8 @@ fn run_force_index_in_task(db_path: &str, path: Option<String>) {
             return;
         }
     };
-    let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;");
+    // P3-4 W1.30 (W23 review MED-4): canonical PRAGMA helper.
+    let _ = crate::db::apply_runtime_pragmas(&conn);
 
     if let Some(canonical) = path {
         // `canonical` was resolved on the writer-actor thread before spawn —

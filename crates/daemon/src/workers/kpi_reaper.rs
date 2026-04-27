@@ -243,7 +243,8 @@ async fn run_reap_blocking(
         // concurrent writers internally, so this is safe alongside the
         // WriterActor + worker state connection.
         let conn = Connection::open(&db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+        // P3-4 W1.30 (W23 review MED-4): canonical PRAGMA helper.
+        crate::db::apply_runtime_pragmas(&conn)?;
         reap_once(&conn, retention_days, &retention_by_type)
     })
     .await;

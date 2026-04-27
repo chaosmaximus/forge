@@ -47,8 +47,12 @@ impl DaemonState {
         } else {
             Connection::open(db_path)?
         };
-        // Enable WAL mode + busy timeout for concurrent multi-connection writes
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+        // P3-4 W1.30 (W23 review MED-4): canonical PRAGMA helper. The
+        // `:memory:` case is harmless — apply_runtime_pragmas is idempotent
+        // and the WAL PRAGMA is a no-op for in-memory DBs (SQLite ignores
+        // it gracefully). Centralizing here unifies the busy_timeout drift
+        // (5000 vs 10000) the W23 review surfaced.
+        crate::db::apply_runtime_pragmas(&conn)?;
         schema::create_schema(&conn)?;
 
         // v2.0: Ensure default organization and local user exist
@@ -158,8 +162,9 @@ impl DaemonState {
         } else {
             Connection::open(db_path).map_err(|e| format!("open writer db: {e}"))?
         };
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-            .map_err(|e| format!("set WAL mode: {e}"))?;
+        // P3-4 W1.30 (W23 review MED-4): canonical PRAGMA helper.
+        crate::db::apply_runtime_pragmas(&conn)
+            .map_err(|e| format!("apply runtime pragmas: {e}"))?;
         // Ensure schema exists on this connection (idempotent)
         schema::create_schema(&conn).map_err(|e| format!("create schema for writer: {e}"))?;
         Ok(Self {
@@ -206,8 +211,15 @@ impl DaemonState {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|e| format!("open read-only db: {e}"))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-            .ok();
+        // P3-4 W1.30 (W23 review MED-4): inline rather than the helper
+        // because `PRAGMA journal_mode=WAL` requires write access; on a
+        // read-only handle the SQLite engine returns the existing mode
+        // without engaging WAL afresh. busy_timeout IS per-connection
+        // and matches the canonical 10s value (`crate::db::BUSY_TIMEOUT_MS`).
+        let _ = conn.execute_batch(&format!(
+            "PRAGMA journal_mode=WAL; PRAGMA busy_timeout={};",
+            crate::db::BUSY_TIMEOUT_MS
+        ));
         Ok(Self {
             conn,
             db_path: db_path.to_string(),
@@ -3555,9 +3567,8 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     } else {
                         match rusqlite::Connection::open(&state.db_path) {
                             Ok(wconn) => {
-                                let _ = wconn.execute_batch(
-                                    "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;",
-                                );
+                                // P3-4 W1.30 (W23 review MED-4): canonical helper.
+                                let _ = crate::db::apply_runtime_pragmas(&wconn);
                                 ops::auto_create_reality_if_absent(&wconn, &project_record)
                             }
                             Err(e) => Err(e),
@@ -5495,6 +5506,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     data: ResponseData::IndexComplete {
                         files_indexed,
                         symbols_indexed,
+                        // Synchronous force-index handler — counts are real,
+                        // not background-dispatch placeholders.
+                        dispatched: false,
                     },
                 }
             } else {
@@ -5523,6 +5537,9 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
                     data: ResponseData::IndexComplete {
                         files_indexed,
                         symbols_indexed,
+                        // Synchronous force-index handler — counts are real,
+                        // not background-dispatch placeholders.
+                        dispatched: false,
                     },
                 }
             }

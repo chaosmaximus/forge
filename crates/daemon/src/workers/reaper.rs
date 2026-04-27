@@ -76,8 +76,8 @@ fn reap_stale_sessions(
     events: &EventSender,
 ) -> Result<(), String> {
     let conn = Connection::open(db_path).map_err(|e| format!("db open: {e}"))?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-        .map_err(|e| format!("pragma: {e}"))?;
+    // P3-4 W1.30 (W23 review MED-4): canonical PRAGMA helper.
+    crate::db::apply_runtime_pragmas(&conn).map_err(|e| format!("pragma: {e}"))?;
 
     // Phase 0: Transition active → idle when heartbeat is older than
     // `heartbeat_idle_secs` but still within the ended window.

@@ -748,9 +748,27 @@ pub enum ResponseData {
     },
 
     /// Code index counts after a force-index trigger.
+    ///
+    /// `dispatched: true` means the indexer was queued for background
+    /// execution and `(files_indexed, symbols_indexed)` are zero
+    /// placeholder counts; the CLI prints "dispatched in background".
+    /// `dispatched: false` (or absent on legacy responses) means the
+    /// counts are real — the indexer ran synchronously and either
+    /// indexed N files or legitimately observed an empty project.
+    ///
+    /// W23 review MED-3 (P3-4 W1.30): pre-fix the CLI inferred
+    /// dispatch from `files==0 && symbols==0`, which mis-fires on
+    /// legitimately-empty projects. The typed flag is the
+    /// disambiguation.
     IndexComplete {
         files_indexed: usize,
         symbols_indexed: usize,
+        /// Default ensures legacy daemons that don't set the field
+        /// deserialize as `false`, preserving the pre-existing CLI
+        /// heuristic for older builds. New clients can rely on the
+        /// typed signal once the daemon-side ships.
+        #[serde(default)]
+        dispatched: bool,
     },
 
     // ── Contradictions ──
