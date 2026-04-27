@@ -16,25 +16,33 @@ ln -sf "$(pwd)/target/release/forge-next"   ~/.local/bin/forge-next
 ln -sf "$(pwd)/target/release/forge-daemon" ~/.local/bin/forge-daemon
 ```
 
-### Linux glibc < 2.38 caveat (Ubuntu 22.04 LTS, Debian 12)
+### Linux glibc < 2.38 (Ubuntu 22.04 LTS, Debian 12)
 
-The release binary links against `libonnxruntime.so.1` from `.tools/`
-but does NOT bake an RPATH (planned fix; tracked as task #220). On
-glibc < 2.38 you need to either:
+**Resolved by P3-4 Wave X (X2)**: the Linux release binary now bakes
+DT_RUNPATH entries for the `.tools/` ONNX Runtime sidecar. As long as
+you ran `bash scripts/setup-dev-env.sh` (which downloads the
+manylinux_2_17 ORT to `.tools/`) and the binary lives at
+`<workspace>/target/release/forge-daemon` (or symlinked from there),
+the dynamic linker resolves `libonnxruntime.so.1` automatically — no
+`LD_LIBRARY_PATH` shell-rc edit, no wrapper script needed.
 
-**Option 1 — set `LD_LIBRARY_PATH` in your shell rc:**
+Verify with:
 ```bash
-echo 'export LD_LIBRARY_PATH="/mnt/colab-disk/DurgaSaiK/forge/forge/.tools/onnxruntime-linux-x64-1.23.0/lib:$LD_LIBRARY_PATH"' >> ~/.bashrc
-source ~/.bashrc
+readelf -d ~/.local/bin/forge-daemon | grep RUNPATH
+# expect: $ORIGIN/../lib:$ORIGIN/../../.tools/...:$ORIGIN/../../../.tools/...
 ```
 
-**Option 2 — wrap calls via `scripts/with-ort.sh`:**
-```bash
-alias forge-next="bash /mnt/colab-disk/DurgaSaiK/forge/forge/scripts/with-ort.sh forge-next"
-```
+**Legacy escape hatch**: `scripts/with-ort.sh` still exists and still
+prepends `LD_LIBRARY_PATH`. It's redundant with X2's RUNPATH for the
+forge binaries, but it remains useful if you build a downstream
+binary in this workspace that *doesn't* inherit the workspace's
+`.cargo/config.toml` rustflags. Setting `LD_LIBRARY_PATH` manually
+also still works — DT_RUNPATH (default for modern `ld --enable-new-dtags`)
+is ranked BELOW `LD_LIBRARY_PATH`, so user overrides win.
 
-macOS and glibc ≥ 2.38 hosts use pyke's default ORT binary and
-don't need either workaround — the `.tools/` directory is unused.
+macOS and glibc ≥ 2.38 Linux hosts use pyke's default ORT binary and
+the `.tools/` directory remains unused; the RUNPATH entries point at
+non-existent dirs and the loader skips them harmlessly.
 
 ### Verify
 

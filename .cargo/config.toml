@@ -17,3 +17,35 @@ ORT_PREFER_DYNAMIC_LINK = { value = "1", force = false }
 
 [target.'cfg(target_os = "linux")']
 runner = "scripts/with-ort.sh"
+# P3-4 Wave X (X2) per cc-voice Round 3 §C — bake DT_RUNPATH into Linux
+# binaries so the ELF dynamic linker finds `libonnxruntime.so.1` without
+# the user setting `LD_LIBRARY_PATH`. Pre-X2 the user ran
+# `forge-daemon --version` and the loader failed BEFORE main() with
+# "error while loading shared libraries". Y4's pre-runtime arg shim
+# couldn't help — the binary itself failed to load.
+#
+# Three `-Wl,-rpath` entries cover the layouts the binary lives in:
+#   1. `$ORIGIN/../lib`        — distro install (`/usr/local/bin/forge-daemon`
+#                                 ↔ `/usr/local/lib/`).
+#   2. `$ORIGIN/../../.tools/onnxruntime-linux-x64-1.23.0/lib`
+#                              — release dev-install (`<workspace>/target/release/forge-daemon`
+#                                 ↔ `<workspace>/.tools/...`).
+#   3. `$ORIGIN/../../../.tools/onnxruntime-linux-x64-1.23.0/lib`
+#                              — cargo test binaries (`<workspace>/target/debug/deps/forge_daemon-<hash>`
+#                                 ↔ `<workspace>/.tools/...`); makes the
+#                                 `with-ort.sh` runner dependency optional.
+#
+# DT_RUNPATH (default for modern ld with `--enable-new-dtags`) is ranked
+# BELOW LD_LIBRARY_PATH, so dev users who want to override the bundled
+# ONNX still can. `$ORIGIN` is literal — TOML does not expand it; the
+# linker writes it into the ELF DT_RUNPATH and the loader resolves it
+# at exec time per-binary.
+#
+# macOS uses `@loader_path` (different syntax) and the `cfg(target_os
+# = "linux")` guard keeps this Linux-only. Tracked-and-closed: #220
+# in the deferred backlog.
+rustflags = [
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/../lib",
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../.tools/onnxruntime-linux-x64-1.23.0/lib",
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../.tools/onnxruntime-linux-x64-1.23.0/lib",
+]
