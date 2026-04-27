@@ -20,14 +20,14 @@
   "panels": [
     {
       "id": 1,
-      "title": "Phase duration p95 (by phase_name + outcome)",
+      "title": "Phase duration p95 (by phase)",
       "type": "timeseries",
       "datasource": "Prometheus",
       "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (phase_name, outcome, le) (rate(forge_phase_duration_seconds_bucket[5m])))",
-          "legendFormat": "{{phase_name}} {{outcome}}",
+          "expr": "histogram_quantile(0.95, sum by (phase, le) (rate(forge_phase_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{phase}}",
           "refId": "A"
         }
       ],
@@ -41,12 +41,12 @@
       "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "sum by (phase_name, error_kind) (rate(forge_phase_persistence_errors_total[5m]))",
-          "legendFormat": "{{phase_name}} :: {{error_kind}}",
+          "expr": "sum by (phase, kind) (rate(forge_phase_persistence_errors_total[5m]))",
+          "legendFormat": "{{phase}} :: {{kind}}",
           "refId": "A"
         }
       ],
-      "description": "Rate of `forge_phase_persistence_errors_total` increments per phase per error_kind. Sustained non-zero rate indicates a broken phase. Acceptable ceiling per ops SLO: < 0.01/s steady-state."
+      "description": "Rate of `forge_phase_persistence_errors_total` increments per phase per kind. Sustained non-zero rate indicates a broken phase. Acceptable ceiling per ops SLO: < 0.01/s steady-state."
     },
     {
       "id": 3,
@@ -56,8 +56,8 @@
       "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "sum by (phase_name) (rate(forge_phase_output_rows_total[5m]))",
-          "legendFormat": "{{phase_name}}",
+          "expr": "sum by (phase) (rate(forge_phase_output_rows_total[5m]))",
+          "legendFormat": "{{phase}}",
           "refId": "A"
         }
       ],
@@ -87,7 +87,7 @@
       "targets": [
         {
           "expr": "forge_layer_freshness_seconds",
-          "legendFormat": "{{layer}}",
+          "legendFormat": "{{table}}",
           "refId": "A"
         }
       ],

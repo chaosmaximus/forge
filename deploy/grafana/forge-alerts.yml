@@ -69,13 +69,13 @@ groups:
       # ---------------------------------------------------------------
 
       - alert: ForgePhasePersistenceErrorRateHigh
-        expr: sum by (phase_name) (rate(forge_phase_persistence_errors_total[5m])) > 0.01
+        expr: sum by (phase) (rate(forge_phase_persistence_errors_total[5m])) > 0.01
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Phase {{ $labels.phase_name }} persistence error rate elevated"
-          description: "The {{ $labels.phase_name }} consolidation phase is producing persistence errors at > 0.01/s for 5 minutes. May indicate DB lock contention, schema drift, or write-amp under load. Current rate: {{ $value }}/s."
+          summary: "Phase {{ $labels.phase }} persistence error rate elevated"
+          description: "The {{ $labels.phase }} consolidation phase is producing persistence errors at > 0.01/s for 5 minutes. May indicate DB lock contention, schema drift, or write-amp under load. Current rate: {{ $value }}/s."
           runbook_url: "docs/operations/runbooks/phase-persistence-error.md"
 
       - alert: ForgeLayerFreshnessStaleHour
@@ -84,16 +84,16 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Layer {{ $labels.layer }} not updated in over 1 hour"
-          description: "The {{ $labels.layer }} layer's freshness gauge has exceeded 3600s (1 hour) for 10 minutes. May indicate the layer's worker has stalled or its source is empty. Current age: {{ $value | humanizeDuration }}."
+          summary: "Table {{ $labels.table }} not updated in over 1 hour"
+          description: "The {{ $labels.table }} layer's freshness gauge has exceeded 3600s (1 hour) for 10 minutes. May indicate the layer's worker has stalled or its source is empty. Current age: {{ $value | humanizeDuration }}."
           runbook_url: "docs/operations/runbooks/layer-stale.md"
 
       - alert: ForgePhaseStuck
-        expr: histogram_quantile(0.95, sum by (phase_name, le) (rate(forge_phase_duration_seconds_bucket[5m]))) > 5
+        expr: histogram_quantile(0.95, sum by (phase, le) (rate(forge_phase_duration_seconds_bucket[5m]))) > 5
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Phase {{ $labels.phase_name }} p95 duration > 5s"
-          description: "The {{ $labels.phase_name }} consolidation phase's 95th-percentile duration exceeds 5 seconds for 5 minutes. May indicate a runaway query, lock contention, or workload regression. Current p95: {{ $value | humanizeDuration }}."
+          summary: "Phase {{ $labels.phase }} p95 duration > 5s"
+          description: "The {{ $labels.phase }} consolidation phase's 95th-percentile duration exceeds 5 seconds for 5 minutes. May indicate a runaway query, lock contention, or workload regression. Current p95: {{ $value | humanizeDuration }}."
           runbook_url: "docs/operations/runbooks/phase-stuck.md"

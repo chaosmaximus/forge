@@ -23,7 +23,7 @@ the 95th percentile exceed 60 seconds for ≥ 5 minutes.
 
 ```bash
 # Per-phase duration breakdown
-forge-next observe phase-summary --phase extraction --window 30m
+forge-next observe --shape phase-run-summary --phase extraction --window 30m
 
 # Queue depth
 forge-next observe layer-freshness

@@ -22,16 +22,16 @@ exceeds 5s for ≥ 5 min on the named phase. **Severity: warning.**
 
 ```bash
 # Per-phase duration histogram
-forge-next observe phase-summary --phase {{ $labels.phase_name }} --window 30m
+forge-next observe --shape phase-run-summary --phase {{ $labels.phase_name }} --window 30m
 
 # Was this fast before? Compare last 24h.
-forge-next observe phase-summary --phase {{ $labels.phase_name }} --window 24h
+forge-next observe --shape phase-run-summary --phase {{ $labels.phase_name }} --window 24h
 
 # Recent commits
 git -C ~/.forge log --oneline -20 | grep -i {{ $labels.phase_name }}
 
 # Concurrent workers
-forge-next observe worker-status
+curl -s http://127.0.0.1:8420/metrics | grep forge_worker_healthy
 
 # Memory count growth (workload shift indicator)
 forge-next observe layer-activity --layer memory --window 24h

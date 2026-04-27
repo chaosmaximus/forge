@@ -26,10 +26,10 @@ forge-next observe recall-latency --window 30m
 
 # WAL size + recent checkpoint timing
 ls -lh ~/.forge/forge.db-wal ~/.forge/forge.db-shm
-forge-next observe phase-summary --phase wal_checkpoint --window 24h
+forge-next observe --shape phase-run-summary --phase wal_checkpoint --window 24h
 
 # Concurrent worker activity
-forge-next observe worker-status
+curl -s http://127.0.0.1:8420/metrics | grep forge_worker_healthy
 ```
 
 ## Remediation

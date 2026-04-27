@@ -28,7 +28,7 @@ forge-next observe layer-freshness
 forge-next observe layer-activity --layer {{ $labels.layer }} --window 2h
 
 # Worker status for the responsible worker
-forge-next observe worker-status
+curl -s http://127.0.0.1:8420/metrics | grep forge_worker_healthy
 ```
 
 ## Remediation

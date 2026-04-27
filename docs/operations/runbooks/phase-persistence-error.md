@@ -21,7 +21,7 @@
 
 ```bash
 # Which phase? Which error?
-forge-next observe phase-summary --phase {{ $labels.phase_name }} --window 30m
+forge-next observe --shape phase-run-summary --phase {{ $labels.phase_name }} --window 30m
 
 # Recent errors in raw form
 forge-next observe phase-errors --phase {{ $labels.phase_name }} --limit 20
@@ -40,7 +40,7 @@ lsof ~/.forge/forge.db 2>/dev/null
   another forge process, `pkill -SIGTERM forge-daemon` and restart.
 * If WAL not checkpointing: run admin checkpoint. If a long-running
   transaction is preventing it, kill the transaction holder.
-* If schema drift: `forge-next service restart` reloads the prepared
+* If schema drift: `forge-next restart` reloads the prepared
   statements against the current schema.
 * If disk-full: free space (truncate events older than 7 days,
   `forge-next admin truncate-events --older-than 7d`), then restart.

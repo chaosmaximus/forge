@@ -19,14 +19,14 @@
 
 ```bash
 # Confirm extractor is alive
-forge-next observe worker-status | grep extractor
+curl -s http://127.0.0.1:8420/metrics | grep forge_worker_healthy | grep extractor
 
 # Recent extractions vs recent memories
 forge-next observe recent-extractions --limit 5
 forge-next observe recent-memories --limit 5
 
 # Persistence error rate
-forge-next observe phase-summary --phase extraction --window 60m
+forge-next observe --shape phase-run-summary --phase extraction --window 60m
 ```
 
 ## Remediation
@@ -34,7 +34,7 @@ forge-next observe phase-summary --phase extraction --window 60m
 * If off-hours and no transcripts inbound: silence the alert via
   schedule (e.g. only alert during 09:00-18:00).
 * If extractor running but producing 0 memories: inspect dedup ratio
-  via `forge-next observe phase-summary`. If dedup is 100%, all input
+  via `forge-next observe --shape phase-run-summary`. If dedup is 100%, all input
   is duplicates — likely a transcription loop.
 * If write errors: cross-reference `phase-persistence-error.md` runbook.
 * If quota hit: raise quota or rotate retention.

@@ -97,7 +97,7 @@ The daemon runs in the background. It extracts memories from every agent session
 <td width="50%" valign="top">
 
 ### Memory
-- **8-layer knowledge graph** with SQLite FTS5 + vector search
+- **8-layer Manas memory** (platform · tool · skill · domain_dna · experience · perception · declared · latent) + entity/edge knowledge graph, with SQLite FTS5 + vector search
 - **Auto-extraction** from agent transcripts (zero manual tagging)
 - **Multi-provider** — Ollama (local), Claude, OpenAI, Gemini
 - **Bootstrap** — 100+ memories from existing transcripts in 60s

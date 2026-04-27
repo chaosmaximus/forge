@@ -25,13 +25,13 @@ held for ≥ 5 minutes for the named worker. **Severity: critical.**
 forge-next health
 
 # 2. Worker-specific status
-forge-next observe worker-status
+curl -s http://127.0.0.1:8420/metrics | grep forge_worker_healthy
 
 # 3. Recent worker errors
-forge-next observe phase-summary --window 30m
+forge-next observe --shape phase-run-summary --since 30m
 
 # 4. Daemon log tail (last 200 lines)
-forge-next logs --tail 200
+tail -n 200 ~/.forge/daemon.log
 
 # 5. Process check
 ps -p $(pgrep forge-daemon) -o pid,etime,stat,cmd
@@ -41,10 +41,10 @@ ps -p $(pgrep forge-daemon) -o pid,etime,stat,cmd
 
 * If panic seen in logs and worker is `consolidator` or `extractor`:
   daemon will auto-respawn within 30s. If it doesn't, restart the
-  daemon: `forge-next service restart`.
+  daemon: `forge-next restart`.
 * If SQLite deadlock: identify the long-running query via the journal
   (`PRAGMA wal_checkpoint(TRUNCATE);`) and kill the holder. Avoid
-  manual SQLite manipulation — prefer `forge-next service restart`.
+  manual SQLite manipulation — prefer `forge-next restart`.
 * If healthcheck stale on otherwise-running daemon: send `SIGTERM` to
   trigger graceful shutdown + restart (P3-2 W7 added SIGTERM handler).
 

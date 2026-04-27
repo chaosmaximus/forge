@@ -33,12 +33,12 @@ df -h ~/.forge
 dmesg | tail -50
 
 # Daemon log
-forge-next logs --tail 200
+tail -n 200 ~/.forge/daemon.log
 ```
 
 ## Remediation
 
-* If daemon process is missing: restart `forge-next service restart`.
+* If daemon process is missing: restart `forge-next restart`.
 * If `systemctl status forge-daemon` shows `failed`: check journal
   (`journalctl -u forge-daemon -n 200`); restart with `systemctl
   restart forge-daemon`.

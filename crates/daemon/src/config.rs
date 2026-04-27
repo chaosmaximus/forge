@@ -242,8 +242,17 @@ pub struct HttpConfig {
 
 impl Default for HttpConfig {
     fn default() -> Self {
+        // Pre-release audit F-HIGH-3: enabled by default. Pre-fix the
+        // HTTP server (which serves /metrics + /inspect + the JSON-RPC
+        // /api endpoint) was off by default, making `curl
+        // localhost:8420/metrics` return connection-refused on a fresh
+        // install — Grafana scraping silently failed; the README claim
+        // "Daemon HTTP API on 8420 — POST /api" was false on default
+        // config. Bind is loopback-only (`127.0.0.1`) so this is safe;
+        // remote access still requires explicit `bind = "0.0.0.0"` +
+        // optional TLS.
         Self {
-            enabled: false,
+            enabled: true,
             bind: "127.0.0.1".to_string(),
             port: 8420,
         }
@@ -2614,8 +2623,11 @@ backend = "gemini"
 
     #[test]
     fn test_http_config_defaults() {
+        // Pre-release audit F-HIGH-3: HTTP server is on-by-default with
+        // loopback-only bind so first-run users get /metrics + /inspect
+        // + the JSON-RPC /api endpoint without an extra config edit.
         let cfg = HttpConfig::default();
-        assert!(!cfg.enabled, "http.enabled default should be false");
+        assert!(cfg.enabled, "http.enabled default should be true (loopback bind keeps it safe)");
         assert_eq!(
             cfg.bind, "127.0.0.1",
             "http.bind default should be 127.0.0.1"
@@ -2676,7 +2688,8 @@ backend = "gemini"
     fn test_forge_config_has_enterprise_sections() {
         let cfg = ForgeConfig::default();
         // Verify enterprise sections exist and have defaults
-        assert!(!cfg.http.enabled);
+        // F-HIGH-3: http.enabled flipped to true (loopback bind).
+        assert!(cfg.http.enabled);
         assert_eq!(cfg.http.port, 8420);
         assert!(!cfg.auth.enabled);
         assert_eq!(
@@ -2737,7 +2750,8 @@ backend = "gemini"
 backend = "ollama"
 "#;
         let cfg: ForgeConfig = toml::from_str(toml_str).unwrap();
-        assert!(!cfg.http.enabled);
+        // F-HIGH-3: http.enabled defaults to true (loopback bind).
+        assert!(cfg.http.enabled);
         assert_eq!(cfg.http.port, 8420);
         assert!(!cfg.auth.enabled);
         assert_eq!(
@@ -2914,7 +2928,8 @@ offline_jwks_path = "/etc/forge/jwks.json"
         cfg.apply_env_overrides();
 
         // Should remain defaults
-        assert!(!cfg.http.enabled);
+        // F-HIGH-3: http.enabled defaults to true (loopback bind).
+        assert!(cfg.http.enabled);
         assert_eq!(cfg.http.port, 8420);
         assert!(!cfg.auth.enabled);
     }

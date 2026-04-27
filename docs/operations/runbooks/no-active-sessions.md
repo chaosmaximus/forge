@@ -23,7 +23,7 @@ for ≥ 30 min. **Severity: info.**
 forge-next list-sessions --include-dormant
 
 # Recent heartbeat events
-forge-next observe phase-summary --phase update_heartbeat --window 30m
+forge-next observe --shape phase-run-summary --phase update_heartbeat --window 30m
 
 # Daemon health
 forge-next health

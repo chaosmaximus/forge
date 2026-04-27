@@ -1,0 +1,37 @@
+# Prometheus scrape config for Forge.
+#
+# Pre-release audit F-HIGH-5: this file was referenced by
+# `deploy/docker-compose.yml --profile monitor` but never shipped, so
+# `docker compose --profile monitor up -d` failed at container startup.
+#
+# Defaults are aligned with the v0.6.0 daemon HTTP server: loopback
+# bind on `127.0.0.1:8420`, with `/metrics` exposed by the Forge
+# daemon itself (not a sidecar exporter). The scrape target uses
+# the Docker-compose service name `forge` since this config is mounted
+# into the prometheus container alongside the forge container.
+#
+# Ops note: 15-second scrape interval is the Prometheus default and
+# matches the resolution of `forge_table_rows` and
+# `forge_layer_freshness_seconds`. Lower values (1s/5s) waste storage
+# without surfacing useful signal because the Forge gauges refresh on
+# a similar cadence.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+# Optional: rule_files for the alerts shipped at deploy/grafana/forge-alerts.yml.
+# Uncomment + mount the file into prometheus to load:
+#
+# rule_files:
+#   - /etc/prometheus/forge-alerts.yml
+
+scrape_configs:
+  - job_name: forge
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - forge:8420
+        labels:
+          service: forge
+          deployment: docker-compose
