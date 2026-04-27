@@ -1,5 +1,4 @@
 use forge_core::types::project_engine::{DetectionResult, EngineCapabilities, ProjectEngine};
-use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Marker file with associated domain and confidence.
@@ -159,57 +158,6 @@ impl ProjectEngine for CodeProjectEngine {
             ],
             supports_embeddings: true,
             supports_search: true,
-        }
-    }
-}
-
-impl CodeProjectEngine {
-    /// Search code symbols by name pattern with optional kind filter.
-    ///
-    /// Returns matching symbols as JSON values with id, name, kind, path, line_start.
-    pub fn search(
-        conn: &Connection,
-        query: &str,
-        kind: Option<&str>,
-        limit: usize,
-    ) -> Vec<serde_json::Value> {
-        let pattern = format!("%{query}%");
-        let effective_limit = limit.min(100);
-
-        if let Some(kind_filter) = kind {
-            conn.prepare(
-                "SELECT id, name, kind, file_path, line_start FROM code_symbol WHERE name LIKE ?1 AND kind = ?2 LIMIT ?3",
-            )
-            .and_then(|mut stmt| {
-                stmt.query_map(params![pattern, kind_filter, effective_limit], |row| {
-                    Ok(serde_json::json!({
-                        "id": row.get::<_, String>(0)?,
-                        "name": row.get::<_, String>(1)?,
-                        "kind": row.get::<_, String>(2)?,
-                        "path": row.get::<_, String>(3)?,
-                        "line_start": row.get::<_, Option<i64>>(4)?,
-                    }))
-                })?
-                .collect()
-            })
-            .unwrap_or_default()
-        } else {
-            conn.prepare(
-                "SELECT id, name, kind, file_path, line_start FROM code_symbol WHERE name LIKE ?1 LIMIT ?2",
-            )
-            .and_then(|mut stmt| {
-                stmt.query_map(params![pattern, effective_limit], |row| {
-                    Ok(serde_json::json!({
-                        "id": row.get::<_, String>(0)?,
-                        "name": row.get::<_, String>(1)?,
-                        "kind": row.get::<_, String>(2)?,
-                        "path": row.get::<_, String>(3)?,
-                        "line_start": row.get::<_, Option<i64>>(4)?,
-                    }))
-                })?
-                .collect()
-            })
-            .unwrap_or_default()
         }
     }
 }

@@ -1,0 +1,73 @@
+schema_version: 1
+slug: 2026-04-27-p3-4-zr-rename
+target_paths:
+  - crates/daemon/src/db/schema.rs
+  - crates/daemon/src/db/ops.rs
+  - crates/daemon/src/db/mod.rs
+  - crates/daemon/src/recall.rs
+  - crates/daemon/src/server/handler.rs
+  - crates/daemon/src/workers/indexer.rs
+  - crates/daemon/src/config.rs
+  - crates/daemon/src/lib.rs
+  - crates/daemon/src/project/mod.rs
+  - crates/daemon/src/project/cluster.rs
+  - crates/daemon/src/project/code_engine.rs
+  - crates/core/src/types/mod.rs
+  - crates/core/src/types/entity.rs
+  - crates/core/src/types/project_engine.rs
+  - crates/core/src/protocol/response.rs
+reviewer:
+  agent: claude-opus-4-7
+  date: '2026-04-27'
+commit_range:
+  base: 2d656d7
+  head: b15575d
+verdict: lockable-with-fixes
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-27-p3-4-zr-rename.transcript.md
+findings:
+  # ── HIGH ──────────────────────────────────────────────────────────────
+  - id: HIGH-1
+    severity: HIGH
+    summary: "Mid-state DB (both `reality` AND `project` tables exist) silently leaves legacy `reality` table orphaned with stale rows"
+    file: crates/daemon/src/db/schema.rs:181-200
+    status: resolved
+    fixed_by: P3-4-ZR-fw1
+    rationale: "Resolved by ZR-fw1. The migration block now matches on the four-quadrant state (reality_exists × project_exists): clean-legacy → ALTER, mid-state with empty `reality` → DROP TABLE reality (legacy residue), mid-state with non-empty `reality` → return Err with operator-actionable error message (mentions row count + recovery steps + deferrals doc), other quadrants → no-op. Two new regression tests pin the fix: `zr_c3_fw1_mid_state_with_empty_legacy_drops_reality` (residue case) and `zr_c3_fw1_mid_state_with_nonempty_legacy_errors_out` (data-conflict case asserts both that `create_schema` errors AND that no data is lost on the error path)."
+  # ── MEDIUM ────────────────────────────────────────────────────────────
+  - id: MED-1
+    severity: MEDIUM
+    summary: "C1 deletion of `context_section` was incomplete — `CodeProjectEngine::search` is also dead code"
+    file: crates/daemon/src/project/code_engine.rs:170-214
+    status: resolved
+    fixed_by: P3-4-ZR-fw1
+    rationale: "Resolved by ZR-fw1. The `impl CodeProjectEngine { pub fn search(...) }` block (49 lines including doc + body) is deleted. The unused `params` and `Connection` imports that the function used are also dropped from the use-statement at line 2. `engine.detect()`, `engine.capabilities()`, and the trait dispatch sites (handler.rs:2256, 3567, 5039, 5414) all stay intact. No tests referenced `search()` (verified)."
+  - id: MED-2
+    severity: MEDIUM
+    summary: "Migration regression test asserts 4 legacy indexes are dropped, but fixture only seeds 1 — three assertions are trivially satisfied"
+    file: crates/daemon/src/db/schema.rs:3473
+    status: resolved
+    fixed_by: P3-4-ZR-fw1
+    rationale: "Resolved by ZR-fw1. The fixture in `zr_c3_legacy_reality_row_survives_rename_to_project` now seeds ALL FOUR canonical legacy index names: `idx_reality_org`, `idx_reality_path`, `idx_reality_owner`, and the partial-unique `idx_reality_path_unique ON reality(project_path) WHERE project_path IS NOT NULL`. The post-migration loop at lines 3533-3547 (now 3543-3557 after the seed expansion) thereby actually exercises the DROP cleanup — a regression that drops one of the four `DROP INDEX IF EXISTS` lines would now fail the test instead of passing trivially."
+  # ── LOW ───────────────────────────────────────────────────────────────
+  - id: LOW-1
+    severity: LOW
+    summary: "`let _ = conn.execute(... idx_project_path_unique ...)` retains the silent-no-op anti-pattern feedback_sqlite_no_reverse... explicitly warned against"
+    file: crates/daemon/src/db/schema.rs:1176
+    status: resolved
+    fixed_by: P3-4-ZR-fw1
+    rationale: "Resolved by ZR-fw1. The `idx_project_path_unique` CREATE INDEX is now `conn.execute(...)?`, surfacing any SQLite-version regression in partial-index syntax instead of silently no-op'ing. The surrounding v2.0 indexes (`idx_entity_user`, `idx_team_member_user`, the older mass batch) still use `let _ = conn.execute(...)` — those predate ZR scope and the ZR-fw1 fix is intentionally narrow (only the index that the ZR table-rename touches). A workspace-wide audit of the legacy `let _ =` instances is tracked as a follow-up in `docs/operations/v0.6.0-pre-iteration-deferrals.md`."
+  - id: LOW-2
+    severity: LOW
+    summary: "`reality_type` column name and `Project.reality_type` Rust field name kept after rename — audit memory for `reality_type` now ambiguous"
+    file: crates/core/src/types/project_engine.rs:10
+    status: open
+    rationale: "C2's commit message documents `reality_type` as intentionally not renamed (it's a wire-format column name preserved across the protocol surface). Verified via protocol_hash: c6eadd8e89e3 unchanged. But this leaves a code-comprehension wart: `Project { reality_type: String }` reads strangely (a `Project` has a `reality_type`?). The `DetectionResult` struct (line 10) has the same shape. Future grep for 'reality' in the daemon will keep returning these fields and lead readers to think the rename is incomplete. **Fix (deferred, NOT a blocker):** schedule a Z-deferral note documenting that `reality_type` is the intentional remaining wire-protocol token and what would have to change to bump the protocol_hash to retire it. The P3-4 deferrals doc (`docs/operations/v0.6.0-pre-iteration-deferrals.md`) is the right home; appending a `ZR-leftover` entry there keeps the audit trail consistent with the W1.41/W1.42 deferral pattern."
+  # ── NIT ───────────────────────────────────────────────────────────────
+  - id: NIT-1
+    severity: NIT
+    summary: "Migration block lives inside `create_schema` rather than a dedicated `migrate_v2_to_v3` helper"
+    file: crates/daemon/src/db/schema.rs:175-208
+    status: open
+    rationale: "The schema-rename migration is inlined as a 28-line block at the top of `create_schema` (lines 175-208) rather than extracted into a helper like `fn rename_reality_to_project(conn) -> Result<()>`. The benefit of inlining is fewer files; the cost is that future migrations (FK column renames in a follow-up wave per the C3 commit message — `reality_id` columns on session/memory/entity/edge/code_file are deferred) will pile up at the top of `create_schema` until it becomes a dumping ground. The existing pattern in this codebase already has `seed_default_templates` extracted (line 173), so there is precedent. **Fix (cosmetic):** extract to `fn rename_reality_to_project(conn) -> rusqlite::Result<()>` and call it from `create_schema`. Keeps the index-drop block adjacent. Ship-blocking: no."

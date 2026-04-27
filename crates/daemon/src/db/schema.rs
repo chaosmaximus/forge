@@ -178,6 +178,11 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // `feedback_sqlite_no_reverse_silent_migration_failure.md` we surface
     // errors with `?` instead of `let _ = conn.execute(...)` so a
     // botched ALTER cannot silently no-op.
+    //
+    // ZR-C3 fw1 (HIGH-1): handle the four-quadrant state matrix
+    // explicitly so a mid-state DB (both `reality` AND `project`
+    // present from a partial rename / aborted upgrade / downgrade-
+    // then-upgrade) is never silently treated as already-migrated.
     {
         let reality_exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reality'",
@@ -189,13 +194,48 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             [],
             |r| r.get(0),
         )?;
-        if reality_exists == 1 && project_exists == 0 {
-            // ALTER TABLE … RENAME TO carries the row data and keeps
-            // existing indexes; SQLite re-binds the indexes to the new
-            // table name automatically. We DROP the legacy index names
-            // below so subsequent CREATE INDEX statements add the new
-            // canonical names cleanly.
-            conn.execute("ALTER TABLE reality RENAME TO project", [])?;
+        match (reality_exists == 1, project_exists == 1) {
+            (true, false) => {
+                // Clean legacy DB. ALTER TABLE … RENAME TO carries the
+                // row data and re-binds existing indexes to the new
+                // table name automatically. We DROP the legacy index
+                // names below so subsequent CREATE INDEX statements
+                // install the canonical names cleanly.
+                conn.execute("ALTER TABLE reality RENAME TO project", [])?;
+            }
+            (true, true) => {
+                // Mid-state: both tables exist. We refuse to clobber
+                // `project` with `reality`'s data and refuse to silently
+                // drop `reality`'s rows. If `reality` is empty (legacy
+                // residue from a successful prior rename followed by
+                // an inconsistent CREATE TABLE IF NOT EXISTS reality
+                // earlier in this fn — pre-fw1 schema), drop it; if
+                // it's non-empty, surface a hard error so the operator
+                // resolves the ambiguity manually.
+                let reality_rows: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM reality",
+                    [],
+                    |r| r.get(0),
+                )?;
+                if reality_rows == 0 {
+                    conn.execute("DROP TABLE reality", [])?;
+                } else {
+                    return Err(rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                        Some(format!(
+                            "P3-4 ZR-C3 mid-state DB: both `reality` ({reality_rows} \
+                             rows) and `project` tables exist. The migration cannot \
+                             safely merge them. Manually resolve: if `reality` is the \
+                             intended source of truth, DROP TABLE project before \
+                             restarting; otherwise DROP TABLE reality. See \
+                             docs/operations/v0.6.0-pre-iteration-deferrals.md."
+                        )),
+                    ));
+                }
+            }
+            // (false, true) — fresh-DB / post-migration steady state.
+            // (false, false) — fresh-DB pre-CREATE TABLE; no migration needed.
+            _ => {}
         }
     }
 
@@ -1173,7 +1213,11 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 
     // v2.0 fix: Unique constraint on project(project_path) to prevent duplicate path rows.
     // Filtered: only applies to non-NULL project_path values.
-    let _ = conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_project_path_unique ON project(project_path) WHERE project_path IS NOT NULL", []);
+    // ZR-C3 fw1 (LOW-1): surface errors with `?` instead of `let _ =`
+    // per `feedback_sqlite_no_reverse_silent_migration_failure.md` so
+    // a future SQLite-version regression in partial-index syntax
+    // can't silently no-op the unique constraint.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_project_path_unique ON project(project_path) WHERE project_path IS NOT NULL", [])?;
 
     // ── v2.1: Agent Teams ──
 
@@ -3451,8 +3495,13 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
 
         // Seed the legacy schema directly (NOT via create_schema —
-        // that would put us in the new shape). Only the columns the
-        // current `project` schema also has, so the rename can land.
+        // that would put us in the new shape). Mirrors the legacy
+        // `reality` table + ALL FOUR canonical indexes from prior
+        // schema versions so the post-migration DROP-cleanup
+        // assertions actually exercise migration code (ZR-C3 fw1
+        // MED-2 — without this, three of four assertions are
+        // trivially satisfied because the fixture never created
+        // the indexes in the first place).
         conn.execute_batch(
             "CREATE TABLE reality (
                 id TEXT PRIMARY KEY,
@@ -3470,7 +3519,10 @@ mod tests {
                 last_active TEXT NOT NULL,
                 metadata TEXT DEFAULT '{}'
             );
-            CREATE INDEX idx_reality_org ON reality(organization_id);",
+            CREATE INDEX idx_reality_org ON reality(organization_id);
+            CREATE INDEX idx_reality_path ON reality(project_path);
+            CREATE INDEX idx_reality_owner ON reality(owner_type, owner_id);
+            CREATE UNIQUE INDEX idx_reality_path_unique ON reality(project_path) WHERE project_path IS NOT NULL;",
         )
         .unwrap();
 
@@ -3604,5 +3656,178 @@ mod tests {
             reality_exists, 0,
             "fresh DB must NOT have legacy `reality` table"
         );
+    }
+
+    /// P3-4 ZR-C3 fw1 (HIGH-1): mid-state DB where BOTH `reality`
+    /// (empty, legacy residue) AND `project` (canonical) tables
+    /// exist. The migration must drop the empty legacy table —
+    /// silent skip would leave the orphan in place forever.
+    #[test]
+    fn zr_c3_fw1_mid_state_with_empty_legacy_drops_reality() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Seed both tables. `reality` is empty (legacy residue);
+        // `project` is the canonical table with a row.
+        conn.execute_batch(
+            "CREATE TABLE reality (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                reality_type TEXT NOT NULL DEFAULT 'code',
+                detected_from TEXT,
+                project_path TEXT,
+                domain TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'default',
+                owner_type TEXT NOT NULL DEFAULT 'user',
+                owner_id TEXT NOT NULL DEFAULT 'local',
+                engine_status TEXT NOT NULL DEFAULT 'idle',
+                engine_pid INTEGER,
+                created_at TEXT NOT NULL,
+                last_active TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            );
+            CREATE TABLE project (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                reality_type TEXT NOT NULL DEFAULT 'code',
+                detected_from TEXT,
+                project_path TEXT,
+                domain TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'default',
+                owner_type TEXT NOT NULL DEFAULT 'user',
+                owner_id TEXT NOT NULL DEFAULT 'local',
+                engine_status TEXT NOT NULL DEFAULT 'idle',
+                engine_pid INTEGER,
+                created_at TEXT NOT NULL,
+                last_active TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project (id, name, reality_type, organization_id,
+                owner_type, owner_id, engine_status, created_at, last_active)
+             VALUES ('canonical-row', 'canonical', 'code', 'default',
+                'user', 'local', 'idle', '2026-04-27T00:00:00Z',
+                '2026-04-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        // Migration must succeed.
+        create_schema(&conn).unwrap();
+
+        // `reality` is gone; canonical row in `project` survives.
+        let reality_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reality'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            reality_exists, 0,
+            "empty legacy `reality` table must be dropped"
+        );
+
+        let canonical: String = conn
+            .query_row(
+                "SELECT name FROM project WHERE id = 'canonical-row'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(canonical, "canonical", "canonical row preserved");
+    }
+
+    /// P3-4 ZR-C3 fw1 (HIGH-1): mid-state DB where BOTH tables exist
+    /// AND `reality` is non-empty. The migration must error out
+    /// rather than silently picking one — the operator has to
+    /// resolve the data conflict manually.
+    #[test]
+    fn zr_c3_fw1_mid_state_with_nonempty_legacy_errors_out() {
+        crate::db::vec::init_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Seed both tables; both have rows (worst-case mid-state).
+        conn.execute_batch(
+            "CREATE TABLE reality (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                reality_type TEXT NOT NULL DEFAULT 'code',
+                detected_from TEXT,
+                project_path TEXT,
+                domain TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'default',
+                owner_type TEXT NOT NULL DEFAULT 'user',
+                owner_id TEXT NOT NULL DEFAULT 'local',
+                engine_status TEXT NOT NULL DEFAULT 'idle',
+                engine_pid INTEGER,
+                created_at TEXT NOT NULL,
+                last_active TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            );
+            CREATE TABLE project (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                reality_type TEXT NOT NULL DEFAULT 'code',
+                detected_from TEXT,
+                project_path TEXT,
+                domain TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'default',
+                owner_type TEXT NOT NULL DEFAULT 'user',
+                owner_id TEXT NOT NULL DEFAULT 'local',
+                engine_status TEXT NOT NULL DEFAULT 'idle',
+                engine_pid INTEGER,
+                created_at TEXT NOT NULL,
+                last_active TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reality (id, name, reality_type, organization_id,
+                owner_type, owner_id, engine_status, created_at, last_active)
+             VALUES ('legacy-row', 'legacy', 'code', 'default',
+                'user', 'local', 'idle', '2026-04-27T00:00:00Z',
+                '2026-04-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project (id, name, reality_type, organization_id,
+                owner_type, owner_id, engine_status, created_at, last_active)
+             VALUES ('canonical-row', 'canonical', 'code', 'default',
+                'user', 'local', 'idle', '2026-04-27T00:00:00Z',
+                '2026-04-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        // Migration must error out — silent merging would risk data loss.
+        let result = create_schema(&conn);
+        assert!(
+            result.is_err(),
+            "non-empty mid-state must produce an error, not silent skip"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("mid-state DB"),
+            "error must mention mid-state context; got: {err}"
+        );
+        assert!(
+            err.contains("`reality` (1 rows)"),
+            "error must report row count of legacy table; got: {err}"
+        );
+
+        // Both tables and rows are still intact (untouched).
+        let reality_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reality", [], |r| r.get(0))
+            .unwrap();
+        let project_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM project", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(reality_rows, 1, "legacy data preserved on error");
+        assert_eq!(project_rows, 1, "canonical data preserved on error");
     }
 }
