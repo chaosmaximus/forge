@@ -1417,14 +1417,42 @@ pub fn compile_dynamic_suffix_with_inj(
         };
 
         if file_count == 0 {
-            // Project filter set but no rows match → emit no-match tag so
-            // the agent knows its scope landed on an empty index. Unscoped
-            // empty (no project filter, no rows) collapses to <code-structure/>.
+            // Project filter set but no code_file rows match. P3-4 Wave Y
+            // (Y2) per cc-voice Round 2 §B: distinguish two cases:
+            //
+            //   * `auto-created` — the project record exists in the
+            //     reality table (created either by Z7 auto-create on
+            //     first compile-context contact, by `project init`, or by
+            //     `project detect`) but no files have been indexed yet.
+            //     Agents see "the project exists but is empty" and don't
+            //     mistakenly assume cross-project leakage.
+            //   * `no-match` — no project record at all. Genuinely
+            //     unknown scope. Pre-Y2 both cases collapsed to
+            //     `no-match` even after auto-create succeeded, masking
+            //     Z7's user-visible promise.
+            //
+            // Unscoped empty (no project filter, no rows) still collapses
+            // to <code-structure/>.
             if let Some(p) = project {
-                xml.push_str(&format!(
-                    "<code-structure project=\"{}\" resolution=\"no-match\"/>\n",
-                    xml_escape(p)
-                ));
+                let project_record: Option<(String,)> = conn
+                    .query_row(
+                        "SELECT COALESCE(domain, 'unknown')
+                         FROM reality WHERE name = ?1 AND organization_id = 'default' LIMIT 1",
+                        params![p],
+                        |r| Ok((r.get::<_, String>(0)?,)),
+                    )
+                    .ok();
+                match project_record {
+                    Some((domain,)) => xml.push_str(&format!(
+                        "<code-structure project=\"{}\" domain=\"{}\" files=\"0\" symbols=\"0\" resolution=\"auto-created\"/>\n",
+                        xml_escape(p),
+                        xml_escape(&domain),
+                    )),
+                    None => xml.push_str(&format!(
+                        "<code-structure project=\"{}\" resolution=\"no-match\"/>\n",
+                        xml_escape(p)
+                    )),
+                }
             } else {
                 xml.push_str("<code-structure/>\n");
             }
@@ -4256,6 +4284,90 @@ mod tests {
         assert!(
             !suffix.contains("<code-structure project="),
             "unscoped resolution must omit project= attribute; got:\n{suffix}"
+        );
+    }
+
+    #[test]
+    fn p3_4_y2_compile_context_renders_auto_created_when_reality_row_exists_but_code_file_empty() {
+        // P3-4 Wave Y (Y2) per cc-voice Round 2 §B: when the project
+        // record exists in the reality table (created either by Z7
+        // auto-create on first contact, by `project init`, or by
+        // `project detect`) but no files have been indexed yet, the
+        // rendered <code-structure> tag MUST say `resolution="auto-created"`
+        // not `resolution="no-match"`. Pre-Y2 both cases collapsed to
+        // no-match, masking Z7's user-visible promise: cc-voice ran
+        // `compile-context --project cc-voice --cwd <path>` (without
+        // --dry-run), the auto-create succeeded, but the renderer
+        // still said no-match because it only checked code_file count.
+        let conn = setup();
+        use forge_core::types::Reality;
+
+        // Create a reality row with no associated code_file rows —
+        // simulates the post-auto-create state for an empty project.
+        let r = Reality {
+            id: "rid-cc-voice-y2".into(),
+            name: "cc-voice".into(),
+            reality_type: "code".into(),
+            detected_from: Some("compile_context_cwd".into()),
+            project_path: Some("/tmp/cc-voice".into()),
+            domain: Some("unknown".into()),
+            organization_id: "default".into(),
+            owner_type: "user".into(),
+            owner_id: "default".into(),
+            engine_status: "ok".into(),
+            engine_pid: None,
+            created_at: forge_core::time::now_iso(),
+            last_active: forge_core::time::now_iso(),
+            metadata: "{}".into(),
+        };
+        crate::db::ops::store_reality(&conn, &r).unwrap();
+
+        let ctx_config = crate::config::ContextConfig::default();
+
+        // cc-voice has a reality row but no code_file rows → auto-created.
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            Some("cc-voice"),
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            suffix.contains("<code-structure project=\"cc-voice\""),
+            "must render code-structure for cc-voice; got:\n{suffix}"
+        );
+        assert!(
+            suffix.contains("resolution=\"auto-created\""),
+            "reality row exists but code_file empty must report auto-created (not no-match); got:\n{suffix}"
+        );
+        assert!(
+            suffix.contains("domain=\"unknown\""),
+            "auto-created tag must surface the domain stored in reality; got:\n{suffix}"
+        );
+        assert!(
+            suffix.contains("files=\"0\""),
+            "auto-created tag must report files=0; got:\n{suffix}"
+        );
+
+        // Sanity: a project with NO reality row still renders no-match.
+        let (suffix, _) = compile_dynamic_suffix(
+            &conn,
+            "claude-code",
+            Some("nonexistent-project"),
+            &ctx_config,
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            suffix.contains(
+                "<code-structure project=\"nonexistent-project\" resolution=\"no-match\"/>"
+            ),
+            "truly unknown project must still render no-match; got:\n{suffix}"
         );
     }
 

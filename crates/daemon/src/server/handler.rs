@@ -4793,94 +4793,108 @@ pub fn handle_request(state: &mut DaemonState, request: Request) -> Response {
             // P3-4 Wave Z (Z3): renamed from DetectReality. Same behavior:
             // run domain detection, upsert a project record, return the
             // detection metadata. CC voice feedback §1.2/§2.4.
+            //
+            // P3-4 Wave Y (Y2) per cc-voice Round 2 §B: when the engine
+            // can't classify the path (no Cargo.toml / package.json /
+            // etc.), fall back to a synthetic detection with
+            // `domain="unknown"` and `confidence=0.0` instead of erroring
+            // out. This matches what `project init` already accepts
+            // (`Domain: unknown`) and lets cc-voice-shaped projects
+            // (one .md file, no language markers) bind cleanly. The
+            // auto-create code path inside CompileContext already does
+            // this; ProjectDetect was the asymmetric outlier.
             use crate::reality::CodeRealityEngine;
-            use forge_core::types::reality_engine::RealityEngine;
+            use forge_core::types::reality_engine::{DetectionResult, RealityEngine};
             use std::path::Path;
 
             let engine = CodeRealityEngine;
             let project_path = Path::new(&path);
 
-            match engine.detect(project_path) {
-                Some(detection) => {
-                    // Check if a project already exists for this path
-                    match ops::get_reality_by_path(&state.conn, &path, "default") {
-                        Ok(Some(existing)) => Response::Ok {
-                            data: ResponseData::ProjectDetected {
-                                id: existing.id,
-                                name: existing.name,
-                                engine: existing.reality_type.clone(),
-                                domain: existing.domain.unwrap_or_default(),
-                                detected_from: existing.detected_from.unwrap_or_default(),
-                                confidence: detection.confidence,
-                                is_new: false,
-                                metadata: serde_json::from_str(&existing.metadata)
-                                    .unwrap_or_else(|_| serde_json::json!({})),
-                            },
-                        },
-                        Ok(None) => {
-                            // Create a new project record
-                            let project_id = ulid::Ulid::new().to_string();
-                            let now = chrono_now();
-                            let name = project_path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_else(|| detection.domain.clone());
-                            let metadata_str = serde_json::to_string(&detection.metadata)
-                                .unwrap_or_else(|_| "{}".to_string());
+            let detection = engine
+                .detect(project_path)
+                .unwrap_or_else(|| DetectionResult {
+                    confidence: 0.0,
+                    detected_from: "fallback_no_engine_match".to_string(),
+                    domain: "unknown".to_string(),
+                    reality_type: "code".to_string(),
+                    metadata: serde_json::json!({"language": "unknown"}),
+                });
 
-                            let project = forge_core::types::Reality {
-                                id: project_id.clone(),
-                                name: name.clone(),
-                                reality_type: detection.reality_type.clone(),
-                                detected_from: Some(detection.detected_from.clone()),
-                                project_path: Some(path),
-                                domain: Some(detection.domain.clone()),
-                                organization_id: "default".to_string(),
-                                owner_type: "user".to_string(),
-                                owner_id: "local".to_string(),
-                                engine_status: "detected".to_string(),
-                                engine_pid: None,
-                                created_at: now.clone(),
-                                last_active: now,
-                                metadata: metadata_str,
-                            };
+            // Check if a project already exists for this path.
+            match ops::get_reality_by_path(&state.conn, &path, "default") {
+                Ok(Some(existing)) => Response::Ok {
+                    data: ResponseData::ProjectDetected {
+                        id: existing.id,
+                        name: existing.name,
+                        engine: existing.reality_type.clone(),
+                        domain: existing.domain.unwrap_or_default(),
+                        detected_from: existing.detected_from.unwrap_or_default(),
+                        confidence: detection.confidence,
+                        is_new: false,
+                        metadata: serde_json::from_str(&existing.metadata)
+                            .unwrap_or_else(|_| serde_json::json!({})),
+                    },
+                },
+                Ok(None) => {
+                    // Create a new project record (synthetic-detection
+                    // fallback gives us domain=unknown for code-less dirs).
+                    let project_id = ulid::Ulid::new().to_string();
+                    let now = chrono_now();
+                    let name = project_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| detection.domain.clone());
+                    let metadata_str = serde_json::to_string(&detection.metadata)
+                        .unwrap_or_else(|_| "{}".to_string());
 
-                            match ops::store_reality(&state.conn, &project) {
-                                Ok(()) => {
-                                    crate::events::emit(
-                                        &state.events,
-                                        "project_detected",
-                                        serde_json::json!({
-                                            "project_id": project_id,
-                                            "domain": detection.domain,
-                                            "engine": detection.reality_type,
-                                        }),
-                                    );
-                                    Response::Ok {
-                                        data: ResponseData::ProjectDetected {
-                                            id: project_id,
-                                            name,
-                                            engine: detection.reality_type.clone(),
-                                            domain: detection.domain,
-                                            detected_from: detection.detected_from,
-                                            confidence: detection.confidence,
-                                            is_new: true,
-                                            metadata: detection.metadata,
-                                        },
-                                    }
-                                }
-                                Err(e) => Response::Error {
-                                    message: format!("failed to store project: {e}"),
+                    let project = forge_core::types::Reality {
+                        id: project_id.clone(),
+                        name: name.clone(),
+                        reality_type: detection.reality_type.clone(),
+                        detected_from: Some(detection.detected_from.clone()),
+                        project_path: Some(path),
+                        domain: Some(detection.domain.clone()),
+                        organization_id: "default".to_string(),
+                        owner_type: "user".to_string(),
+                        owner_id: "local".to_string(),
+                        engine_status: "detected".to_string(),
+                        engine_pid: None,
+                        created_at: now.clone(),
+                        last_active: now,
+                        metadata: metadata_str,
+                    };
+
+                    match ops::store_reality(&state.conn, &project) {
+                        Ok(()) => {
+                            crate::events::emit(
+                                &state.events,
+                                "project_detected",
+                                serde_json::json!({
+                                    "project_id": project_id,
+                                    "domain": detection.domain,
+                                    "engine": detection.reality_type,
+                                }),
+                            );
+                            Response::Ok {
+                                data: ResponseData::ProjectDetected {
+                                    id: project_id,
+                                    name,
+                                    engine: detection.reality_type.clone(),
+                                    domain: detection.domain,
+                                    detected_from: detection.detected_from,
+                                    confidence: detection.confidence,
+                                    is_new: true,
+                                    metadata: detection.metadata,
                                 },
                             }
                         }
                         Err(e) => Response::Error {
-                            message: format!("failed to check existing project: {e}"),
+                            message: format!("failed to store project: {e}"),
                         },
                     }
                 }
-                None => Response::Error {
-                    message: format!("no reality engine can handle path: {path}"),
+                Err(e) => Response::Error {
+                    message: format!("failed to check existing project: {e}"),
                 },
             }
         }
@@ -9544,6 +9558,63 @@ mod tests {
         assert_eq!(post.project_path.as_deref(), Some(cwd.as_str()));
         assert_eq!(post.domain.as_deref(), Some("rust"));
         assert_eq!(post.detected_from.as_deref(), Some("compile_context_cwd"));
+    }
+
+    #[test]
+    fn p3_4_y2_project_detect_falls_back_to_unknown_domain_for_codeless_dirs() {
+        // P3-4 Wave Y (Y2) per cc-voice Round 2 §B: pre-Y2,
+        // `project detect` errored out with "no reality engine can
+        // handle path: ..." for any directory without a recognized
+        // language marker (Cargo.toml / package.json / pyproject.toml /
+        // ...). cc-voice's actual project (one .md file) hit this every
+        // time. Y2 makes ProjectDetect synthesise a fallback detection
+        // with `domain="unknown"` and `confidence=0.0` so the user can
+        // still bind the path. Matches what `project init` already
+        // accepts.
+        let mut state = DaemonState::new(":memory:").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // Write a .md file so the dir exists with content but no code
+        // markers. Mirror of cc-voice's actual layout.
+        std::fs::write(dir.path().join("README.md"), "# cc-voice\n").unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let resp = handle_request(&mut state, Request::ProjectDetect { path: path.clone() });
+        match resp {
+            Response::Ok {
+                data:
+                    ResponseData::ProjectDetected {
+                        domain,
+                        confidence,
+                        is_new,
+                        engine,
+                        ..
+                    },
+            } => {
+                assert_eq!(
+                    domain, "unknown",
+                    "code-less dir must fall back to domain=unknown"
+                );
+                assert_eq!(
+                    confidence, 0.0,
+                    "fallback detection must report confidence=0.0 so callers can distinguish it from a real engine match"
+                );
+                assert!(is_new, "first detect on this path should create a row");
+                assert_eq!(engine, "code");
+            }
+            other => panic!(
+                "expected ProjectDetected with domain=unknown, got {other:?}; \
+                 pre-Y2 this would have errored with 'no reality engine can handle path'"
+            ),
+        }
+
+        // Re-running on the same path returns the existing row.
+        let resp = handle_request(&mut state, Request::ProjectDetect { path });
+        match resp {
+            Response::Ok {
+                data: ResponseData::ProjectDetected { is_new, .. },
+            } => assert!(!is_new, "second detect should NOT create a duplicate row"),
+            other => panic!("expected ProjectDetected, got {other:?}"),
+        }
     }
 
     #[test]
