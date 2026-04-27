@@ -1,4 +1,6 @@
-# Handoff — Pre-release audit Phases 1-4 closed; Phases 5-7 queued — 2026-04-27
+# Handoff — Pre-release audit Phases 1-4 closed; 128 findings tracked — 2026-04-27
+
+**Tracking ledger:** `docs/superpowers/audits/2026-04-27-tracking-ledger.md` — every one of the 147 findings with status (✅ fixed / 🟡 deferred / ❌ false positive / ⏳ pending). Read this first to know exactly what's done and what's queued.
 
 **Public HEAD:** `5432641` (Phase 4 close).
 **Working tree:** clean.
@@ -63,7 +65,7 @@
 
 ## State in one paragraph
 
-**HEAD `5432641`. Pre-release audit Phases 0-4 closed (5 commits + 1 audit-suite commit).** 5 CRITICAL + 14 HIGH addressed. Doctor green. Clippy 0 warnings; full daemon test suite at 1647/1647. Harness-sync + protocol-hash (`0ad998ba944d…`) + license-manifest + review-artifacts (28 reviews) all OK. **17 HIGH findings remain (Phases 5/6/7 = dead code C-HIGH-1/2, harness drift D-HIGH × 10, docs DOCS-A-HIGH × 4) + 110 MED/LOW/NIT.** Phases 5-7 queued for next session — they're per-file edits in skills/agents/docs that need careful manual review (the audit is opinionated about exact wording).
+**HEAD `ce1acce`. Pre-release audit Phases 0-4 closed (5 phase commits + 1 audit-suite + 1 HANDOFF + this tracking ledger commit).** **20 fixed + 1 false positive + 1 deferred = 22 of 147 findings closed**; **125 pending** (16 HIGH + 54 MED + 40 LOW + 15 NIT). Doctor green. Clippy 0 warnings; full daemon test suite at 1647/1647. Harness-sync + protocol-hash (`0ad998ba944d…`) + license-manifest + review-artifacts (28 reviews) all OK. The full status table is in `docs/superpowers/audits/2026-04-27-tracking-ledger.md`.
 
 ## First actions after `/compact` or session resume
 
@@ -84,38 +86,24 @@ bash scripts/check-review-artifacts.sh
 # D) Backlog drain — MED/LOW/NIT (110 items)
 ```
 
-## Remaining HIGH findings (Phases 5/6/7)
+## Remaining work
 
-### Phase 5 — Dead code (2 HIGH)
+The **tracking ledger** (`docs/superpowers/audits/2026-04-27-tracking-ledger.md`) is the source of truth for what's done and what's pending. Phases 5-12 below summarize the resolution roadmap; the ledger has the full per-finding detail.
 
-* **C-HIGH-1** — `crates/daemon/src/migrate.rs` (150 LOC) is dead production code; `import_v1_cache` is only test-callable, CLI re-implements client-side. Tests in `crates/daemon/tests/test_wave3.rs` reference it. **Action:** delete `migrate.rs` + the `pub mod migrate;` line in lib.rs + the relevant test from test_wave3.rs.
-* **C-HIGH-2** — `teams::create_meeting_with_voting` (40 LOC, teams.rs:1218) has zero callers anywhere. Half-finished W2 voting wave. **Action:** delete.
+* **Phase 5** — Dead code (2 HIGH): C-HIGH-1 (delete `migrate.rs` 150 LOC + matching test_wave3 entries), C-HIGH-2 (delete `create_meeting_with_voting` 40 LOC).
+* **Phase 6** — Harness drift (10 HIGH): D-01..D-10. 6 skills + 3 agents reference fictional CLI commands (`forge scan/research/verify/query/review/test run`); harness-sync regex hole; `.mcp.json` advertised but missing; wrong slash syntax `/forge:new`; fictional `TaskCreate` tool.
+* **Phase 7** — Docs (4 HIGH): DOCS-A-001 (fake `forge` binary), DOCS-A-002 (wrong memory-type list), DOCS-A-003 (wrong socket filename), DOCS-A-004 (gRPC "Planned" but shipped).
+* **Phase 8** — Adversarial review on Phases 1-7 combined diff (Plan A §6 mandatory).
+* **Phase 9** — Fix-wave for review findings.
+* **Phase 10** — MED batch (54 remaining): grouped by domain — DB MEDs (10 — incl. let_=conn.execute audit pattern E-13/E-15/E-16; backup pruner E-11; multi-org boundary E-15), CLI MEDs (7), obs MEDs (12 — incl. ForgeWorkerDown alert untriggerable F-MED-11; OTLP silent disable F-MED-9), docs MEDs (10), C MEDs (7), D MEDs (8).
+* **Phase 11** — LOW + NIT triage (40 + 15 = 55): each "fix vs document" review.
+* **Phase 12** — HANDOFF rewrite + halt for #101 release stack.
 
-### Phase 6 — Harness drift (10 HIGH from Audit D)
+Direct links:
 
-* **D-01..D-05** — 5 skills reference fictional CLI commands (`forge scan`, `forge research`, `forge verify .`, `forge test run`, `forge query`, `forge review .`).
-* **D-06** — Agents reference `data/`, `evaluation-criteria/` dirs that don't exist in repo.
-* **D-07** — `check-harness-sync.sh` regex misses bare `forge X` invocations.
-* **D-08** — forge-setup advertises Stitch MCP via `.mcp.json` (file doesn't exist).
-* **D-09** — forge-setup uses wrong slash syntax `/forge:new` (should be `/forge:forge-new`).
-* **D-10** — Three skills invoke fictional `TaskCreate` tool (real CC tool is `TodoWrite`).
-
-### Phase 7 — Docs HIGH (4)
-
-* **DOCS-A-001** — Docs reference `forge` binary for secret scanning; binary doesn't exist.
-* **DOCS-A-002** — Memory-type list (`fact`, `entity`, `skill`) doesn't match `MemoryType` enum.
-* **DOCS-A-003** — Wrong Unix socket filename (`daemon.sock` vs `forge.sock`).
-* **DOCS-A-004** — security.md says gRPC is "(Planned)" — it shipped.
-
-### Phase 8 — Adversarial review on combined Phase 1-4 diff
-
-Mandatory per Plan A §6 before #101.
-
-### Phase 9 — Fix-wave for review findings
-
-Standard pattern.
-
-### Phase 10 — HANDOFF rewrite + halt for #101
+* `docs/superpowers/audits/2026-04-27-tracking-ledger.md` — every finding's status
+* `docs/superpowers/audits/2026-04-27-pre-release-audit-synthesis.md` — original synthesis
+* `docs/superpowers/audits/2026-04-27-zr-close-pre-release-{A,B,C,D,E,F}-*.yaml` — full per-audit detail with rationale
 
 ## Cumulative pending work
 
@@ -167,4 +155,4 @@ Daemon respawn from current HEAD `5432641` not yet performed — production bina
 
 ## One-line summary
 
-**HEAD `5432641`. Pre-release audit: 6 parallel agents, 147 findings; Phases 1-4 fixed 5 CRITICAL + 14 HIGH (5 commits + audit-suite). 1647/1647 daemon tests, all 4 sanity gates green, protocol_hash 0ad998ba944d…. 17 HIGH remain (Phases 5/6/7) + 110 MED/LOW/NIT. Halt for sign-off → resume with Phases 5-7 → adversarial review → #101.**
+**HEAD `ce1acce` (about to bump on the ledger commit). Pre-release audit: 6 parallel agents, 147 findings; **20 fixed + 1 false positive + 1 deferred = 22 closed, 125 pending** — full status in `docs/superpowers/audits/2026-04-27-tracking-ledger.md`. 1647/1647 daemon tests, all 4 sanity gates green, protocol_hash 0ad998ba944d…. Halt for sign-off → resume with Phases 5-12 → adversarial review → #101.**
