@@ -1712,6 +1712,87 @@ mod tests {
 
     #[test]
     #[serial]
+    fn p3_4_w1_27_find_project_dir_rejects_actual_decode_fallback_bug_input() {
+        // W1.3 LOW-9 regression: the existing
+        // `p3_4_w1_2_find_project_dir_rejects_shallow_filesystem_roots`
+        // test exercises the depth-floor math on abstract paths but
+        // does NOT reproduce the actual bug input. The live W1 dogfood
+        // failure was a Claude transcript dirname with un-decodable
+        // underscores, e.g. `-mnt-colab-disk-DurgaSaiK-forge-dhruvishah_finexos_io-foo`.
+        // Dash↔slash decode produces
+        // `/mnt/colab/disk/DurgaSaiK/forge/dhruvishah_finexos_io/foo`
+        // (lossy: `dhruvishah_finexos_io` survives because underscores
+        // are not encoded). The walk-backwards loop then shrinks the
+        // candidate to `/mnt`, which exists on the host and was
+        // returned pre-W1.2 — leaking 10,005 foreign-user files.
+        //
+        // This test mocks the bug input end-to-end: a fake
+        // `~/.claude/projects` directory hung off a tempdir HOME, with
+        // the exact under-decodable transcript dirname. The depth
+        // floor is forced to 99 (so no candidate satisfies depth alone)
+        // and FORGE_PROJECT is cleared. The function must return None
+        // (or any path that does NOT name a shallow filesystem root).
+        // Closes the test-mocks-the-symptom-not-the-cause gap.
+        let original_home = std::env::var("HOME").ok();
+        let original_floor = std::env::var("FORGE_INDEXER_MIN_PATH_DEPTH").ok();
+        let original_fp = std::env::var("FORGE_PROJECT").ok();
+
+        let tmp_home = tempfile::tempdir().expect("create tempdir HOME");
+        let projects_root = tmp_home.path().join(".claude").join("projects");
+        std::fs::create_dir_all(&projects_root).expect("create projects root");
+
+        // The exact bug-input transcript dirname.
+        let bug_dirname = "-mnt-colab-disk-DurgaSaiK-forge-dhruvishah_finexos_io-foo";
+        let transcript = projects_root.join(bug_dirname);
+        std::fs::create_dir(&transcript).expect("create transcript dir");
+
+        // Force depth-floor unreachable so no candidate is admitted
+        // on depth alone — only the marker-file branch can admit.
+        std::env::set_var("HOME", tmp_home.path());
+        std::env::set_var("FORGE_INDEXER_MIN_PATH_DEPTH", "99");
+        std::env::remove_var("FORGE_PROJECT");
+
+        let result = find_project_dir();
+
+        // The bug returned `/mnt` (or any shallow root). The fix
+        // must NOT return any of those — either None, or a deep
+        // path that happens to carry a marker.
+        let shallow_roots = [
+            "/mnt", "/home", "/usr", "/var", "/tmp", "/etc", "/opt", "/srv", "/proc", "/sys",
+            "/boot", "/dev", "/run",
+        ];
+        if let Some(ref path) = result {
+            for shallow in &shallow_roots {
+                assert_ne!(
+                    path.as_str(),
+                    *shallow,
+                    "find_project_dir leaked shallow root `{shallow}` for bug input `{bug_dirname}`"
+                );
+                assert!(
+                    !path.starts_with(&format!("{shallow}/"))
+                        || path.matches('/').count() >= 99,
+                    "find_project_dir returned a shallow-root descendant `{path}` for bug input — only allowed if depth >= 99 (which the floor rules out)"
+                );
+            }
+        }
+
+        // Restore.
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match original_floor {
+            Some(v) => std::env::set_var("FORGE_INDEXER_MIN_PATH_DEPTH", v),
+            None => std::env::remove_var("FORGE_INDEXER_MIN_PATH_DEPTH"),
+        }
+        match original_fp {
+            Some(v) => std::env::set_var("FORGE_PROJECT", v),
+            None => std::env::remove_var("FORGE_PROJECT"),
+        }
+    }
+
+    #[test]
+    #[serial]
     fn p3_4_w1_22_forge_project_env_rejects_shallow_marker_less_paths() {
         // W1.3 LOW-2 regression: pre-W1.22 the FORGE_PROJECT branch
         // bypassed the depth-floor / marker-file guard, so
