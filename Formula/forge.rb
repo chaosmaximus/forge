@@ -1,7 +1,7 @@
 class Forge < Formula
   desc "Cognitive infrastructure for AI agents — persistent memory, intelligent guardrails, self-healing knowledge graph"
   homepage "https://github.com/chaosmaximus/forge"
-  version "0.6.0-rc.3"
+  version "0.6.0"
   license "Apache-2.0"
 
   on_macos do

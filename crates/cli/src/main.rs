@@ -21,7 +21,7 @@ fn parse_non_empty_project(s: &str) -> Result<String, String> {
 }
 
 /// P3-4 Wave Y (Y4) per cc-voice Round 2 §D: clap-derived
-/// `--version` / `-V` emits `forge-next 0.6.0-rc.3 (38d7acc)`.
+/// `--version` / `-V` emits `forge-next 0.6.0 (38d7acc)`.
 /// `FORGE_VERSION_LINE` is composed in `crates/cli/build.rs` from
 /// `CARGO_PKG_VERSION` plus the git short-SHA (when available);
 /// falls back to bare package version outside a git tree.

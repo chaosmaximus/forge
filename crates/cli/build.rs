@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo::rustc-env=FORGE_GIT_SHA={git_sha}");
 
     // P3-4 Wave Y (Y4): emit a pre-formatted version line so
-    // `forge-next --version` can render `0.6.0-rc.3 (38d7acc)` via a
+    // `forge-next --version` can render `0.6.0 (38d7acc)` via a
     // single env! lookup. Doing the conditional formatting in build.rs
     // sidesteps the need for a const_format dep just to combine
     // env!() with option_env!() at compile time.

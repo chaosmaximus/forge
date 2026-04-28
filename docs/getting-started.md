@@ -70,7 +70,7 @@ Expected output:
 Forge daemon is healthy
   socket: /home/you/.forge/forge.sock
   uptime: 12s
-  version: 0.6.0-rc.3
+  version: 0.6.0
 ```
 
 Check the 8-layer memory system:

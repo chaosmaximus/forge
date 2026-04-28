@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // P3-4 Wave Y (Y4) per cc-voice Round 2 §D: pre-compose the
     // version line so `forge-daemon --version` can render
-    // `0.6.0-rc.3 (38d7acc)` via a single env! lookup. Mirrors
+    // `0.6.0 (38d7acc)` via a single env! lookup. Mirrors
     // crates/cli/build.rs.
     let pkg_version = env!("CARGO_PKG_VERSION");
     let version_line = if git_sha.is_empty() {

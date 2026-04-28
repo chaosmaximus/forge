@@ -47,7 +47,7 @@ pub async fn doctor() {
 
             // W1.32 (W28 review NIT-2): the stale-daemon hint is computed
             // here but rendered as a Health Checks entry, not appended
-            // inline to the Version line — keeps `Version: 0.6.0-rc.3
+            // inline to the Version line — keeps `Version: 0.6.0
             // (06e1f4c)` under 80 chars and consistent with every other
             // diagnostic message format.
             let stale_hint = if !version.is_empty() {
