@@ -91,11 +91,13 @@ fn dcg_from_rels(rels: &[f64]) -> f64 {
 /// produces a value in `[min(scores), max(scores)]`. Caller MUST pre-validate
 /// score values are in `[0, 1]` if a bounded composite is required.
 ///
-/// Debug-asserts `scores.len() == weights.len()` and `|sum(weights) − 1.0| < 1e-9`.
-/// Both checks are zero-cost in release builds; production callers (none
-/// today — bench-only) get release behavior.
+/// Asserts `scores.len() == weights.len()` and `|sum(weights) − 1.0| < 1e-9`
+/// in both debug and release builds. The cost is two branch checks per call;
+/// callers invoke this once per bench-dim so the overhead is negligible
+/// against the math/IO already in flight, and the contract is load-bearing
+/// (a bad weight vector silently shifts the composite).
 pub fn composite_score(scores: &[f64], weights: &[f64]) -> f64 {
-    debug_assert_eq!(
+    assert_eq!(
         scores.len(),
         weights.len(),
         "composite_score: scores ({}) vs weights ({}) length mismatch",
@@ -103,7 +105,7 @@ pub fn composite_score(scores: &[f64], weights: &[f64]) -> f64 {
         weights.len(),
     );
     let weight_sum: f64 = weights.iter().sum();
-    debug_assert!(
+    assert!(
         (weight_sum - 1.0).abs() < 1e-9,
         "composite_score: weights must sum to 1.0 (got {weight_sum})",
     );
