@@ -72,13 +72,13 @@ This signals the daemon to finalize the session, persist any pending state, and 
 
 ## Transport Options
 
-Agents connect to the Forge daemon over one of three transports:
+Agents connect to the Forge daemon over one of these transports:
 
 | Transport | Use Case | Connection |
 |-----------|----------|------------|
 | Unix socket | Local agents on the same machine | `~/.forge/forge.sock` (default, auto-detected) |
-| HTTP | Remote agents, cross-machine | `--endpoint https://forge.company.com` |
-| gRPC | In-cluster agents, high throughput | `--endpoint grpc://forge.forge.svc:8421` |
+| HTTP / HTTPS | Remote agents, cross-machine | `--endpoint https://forge.company.com` |
+| gRPC | In-cluster agents (server-side only as of v0.6.0; see note below) | `tonic` server bound at `localhost:8421` by default |
 
 ### Local (Unix socket)
 
@@ -101,11 +101,18 @@ forge-next --endpoint "$FORGE_ENDPOINT" --token "$FORGE_TOKEN" health
 
 ### In-cluster (gRPC)
 
-For agents running as pods in the same Kubernetes cluster:
+> **Audit DOCS-A-020 (Phase 11 close):** the `forge-daemon` gRPC server
+> ships in v0.6.0 (see `crates/daemon/src/server/grpc.rs`), but the
+> `forge-next` CLI's client side is HTTP-only as of v0.6.0
+> (`crates/cli/src/transport.rs::Transport::Http`). gRPC clients
+> connect by generating their own client from the proto file at
+> `proto/forge.proto`; the `--endpoint grpc://…` form on
+> `forge-next` is not supported and emits a parse error today.
 
-```bash
-forge-next --endpoint grpc://forge.forge.svc.cluster.local:8421 health
-```
+For agents running as pods in the same Kubernetes cluster, use the
+HTTP endpoint until a gRPC client lands in v0.6.1+ — the gRPC server
+is already exposed inside the daemon container; it just needs a
+client-side binding in `forge-next`.
 
 ## Memory Operations
 

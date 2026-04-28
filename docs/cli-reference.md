@@ -37,7 +37,7 @@ forge-next recall <QUERY> [--type TYPE] [--project PROJECT] [--limit N] [--layer
 | `--type TYPE` | *(all)* | Filter by memory type: `decision`, `lesson`, `pattern`, `preference` |
 | `--project PROJECT` | *(all + global)* | Filter by project name. Global memories are always included. |
 | `--limit N` | `10` | Maximum number of results to return |
-| `--layer LAYER` | *(all)* | Filter by Manas layer: `experience`, `declared`, `domain_dna`, `skill`, `perception`, `identity` |
+| `--layer LAYER` | *(all)* | Filter by Manas layer: `platform`, `tool`, `skill`, `domain_dna`, `experience`, `perception`, `declared`, `latent` (audit DOCS-A-018: `identity` is a separate engine, not a Manas layer; passing it produces no rows) |
 
 ```bash
 # Basic search

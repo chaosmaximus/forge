@@ -28,7 +28,7 @@ Forge exposes 7 metric families at `GET /metrics` in standard Prometheus text fo
 | `forge_memories_total` | Gauge | -- | Total number of memories in the database | Grows over time. Alert if unchanged for > 1h during active use. |
 | `forge_recall_latency_seconds` | Histogram | -- | Recall query latency. Buckets: 1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s. | p50 < 10ms, p99 < 100ms |
 | `forge_extraction_duration_seconds` | Histogram | -- | Auto-extraction duration. Buckets: 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 60s. | p50 < 5s, p99 < 30s |
-| `forge_worker_healthy` | Gauge | `worker` | Whether a background worker is healthy (1=yes, 0=no). Workers: `watcher`, `extractor`, `embedder`, `consolidator`, `indexer`, `perception`, `disposition`, `diagnostics`. | All = 1. Alert if any = 0 for > 5 minutes. |
+| `forge_worker_healthy` | Gauge | `worker` | Whether a background worker is healthy (1=yes, 0=no). Workers: `watcher`, `extractor`, `embedder`, `consolidator`, `indexer`, `perception`, `disposition`, `diagnostics`, `reaper`, `kpi_reaper`. | All = 1. Alert if any = 0 for > 5 minutes. |
 | `forge_active_sessions` | Gauge | -- | Number of active agent sessions | Varies by usage. 0 during off-hours is normal. |
 | `forge_edges_total` | Gauge | -- | Total number of knowledge graph edges | Grows with memories. Typically 2-5x memory count. |
 | `forge_embeddings_total` | Gauge | -- | Total number of stored embeddings (768-dim vectors) | Should match or approach memory count. |
@@ -382,11 +382,14 @@ hot-reloaded by editing the file (no daemon restart required):
 | `heartbeat_idle_secs`      | `600` (10 m) | _(new in 0.5)_  | After this gap, `active → idle` and `session_idled` event fires.    |
 | `heartbeat_timeout_secs`   | `14400` (4 h)| `60` (1 m)      | After this gap from any live state, the session is reaped to `ended`. |
 
-> **Migration note for 0.5.x:** the `heartbeat_timeout_secs` default
-> jumped from **60 seconds** to **14400 seconds** (4 hours) because
-> the old value was ending healthy sessions during 5-minute user
-> breaks. Operators who relied on the old aggressive reap should set
-> `heartbeat_timeout_secs = 60` explicitly in their config.
+> **Historical note (0.5.x → 0.6.0 migration):** the
+> `heartbeat_timeout_secs` default jumped from **60 seconds** to
+> **14400 seconds** (4 hours) during the 0.5.x → 0.6.0 transition
+> because the old value was ending healthy sessions during 5-minute
+> user breaks. Operators who upgraded a 0.5.x deployment in-place and
+> still rely on the aggressive 60-second reap need to set
+> `heartbeat_timeout_secs = 60` explicitly in their config; fresh
+> 0.6.0 installs already get the new default.
 
 Setting `heartbeat_idle_secs = 0` disables the `active → idle` phase
 (sessions stay `active` until they hit the ended threshold). Setting

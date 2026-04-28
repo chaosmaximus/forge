@@ -62,7 +62,7 @@ forge-next recall "auth"
 #    ╰──────────────────────────────────────────────────╯
 ```
 
-The daemon runs in the background. It extracts memories from every agent session, builds a knowledge graph, and serves context via HTTP at `localhost:8420/api` when agents need it.
+The daemon runs in the background. It extracts memories from every agent session, builds a knowledge graph, and serves context to agents on demand. The default transport is the Unix socket at `~/.forge/forge.sock`; HTTP at `localhost:8420/api` is opt-in via `[http] enabled = true` in `~/.forge/config.toml` (audit DOCS-A-017 / Phase 11 clarification — pre-fix the doc implied HTTP was always-on).
 
 ---
 
