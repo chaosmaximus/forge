@@ -205,3 +205,119 @@ rm -rf "$FORGE_DIR"
 * Per locked decision #2 (Linux primary, macOS best-effort), W8 is
   complete on the autonomous side. Handoff cells convert to PASS upon
   user execution; track in HANDOFF when each runs.
+
+---
+
+## v0.6.0 release-stack re-verification — 2026-04-28
+
+**Phase:** P3-4 #101 step 5 (release-stack Linux multi-method verify).
+**HEAD:** `dccfbb3` (CHANGELOG narrative landed). Bumped from
+`0.6.0-rc.3` → `0.6.0` at `58660fa`.
+**Operator:** autonomous run. Fresh `cargo clean` → `cargo build
+--release --workspace` → `cargo build --release -p forge-daemon
+--features bench --bin forge-bench` → daemon SIGTERM-respawn at
+new build → live dogfood.
+
+| Cell                                    | OS    | Install method                          | Cycle   | Status   | Evidence |
+|-----------------------------------------|-------|-----------------------------------------|---------|----------|----------|
+| 1.A.1 source build — health             | Linux | `cargo build --release --workspace`     | health  | **PASS** | `forge-next health` returns counts: 0 decisions / 1 lesson / 0 patterns / 0 preferences / 2,955 edges. |
+| 1.A.2 source build — doctor             | Linux | source                                  | doctor  | **PASS** | Daemon UP 45s; `Version: 0.6.0 (dccfbb3)`; 8 workers running (watcher, extractor, embedder, consolidator, indexer, perception, disposition, diagnostics); 4 active sessions; backup-hygiene WARN as expected (5 `*.bak`, 934 MB — F-LOW-4 v0.6.1 deferral). |
+| 1.A.3 source build — manas-health       | Linux | source                                  | manas   | **PASS** | All 8 Manas layers report (Platform 5, Tool 52, Skill 1, Domain DNA 8, Experience 1, Perception 0, Declared 4, Latent 1) plus Ahankara (0 facets) + Disposition (4 traits). |
+| 1.A.4 source build — observe envelope   | Linux | source                                  | observe | **PASS** | `forge-next observe --shape row-count` returns valid JSON envelope — `kind=inspect`, `shape=row_count`, `window=1h`, `effective_filter` populated, `effective_group_by`, `stale=false`, `truncated=false`, `row_count=11`. Confirms shape uniformity per W1.37. |
+| 1.A.5 source build — `--version`        | Linux | source                                  | version | **PASS** | `forge-next 0.6.0 (dccfbb3)` and `forge-daemon 0.6.0 (dccfbb3)` and `forge-bench 0.6.0` — vergen short-SHA pinning consistent across binaries. |
+| 1.A.6 SIGTERM graceful respawn          | Linux | source                                  | restart | **PASS** | `kill -TERM <pid>` on prior daemon → auto-spawn hook brought up new daemon at fresh `dccfbb3` build via `~/.local/bin/forge-daemon` symlink → ` ~/.forge/forge.pid` updated; socket re-bound; uptime counter restarts; no DB corruption. Confirms P3-2 W7 SIGTERM handler + F4 auto-spawn LD_LIBRARY_PATH propagation. |
+| 1.A.7 forge-bench `--version`           | Linux | `cargo build --release --features bench` | version | **PASS** | Built separately via `cargo build --release -p forge-daemon --features bench --bin forge-bench` (12.1 MB binary). README documents this is the canonical install path for the bench harness — feature-gated to keep default `cargo install --git` lean. |
+| 1.B sideload — symlink → target/release | Linux | `~/.local/bin → target/release` symlink | full    | **PASS** | `~/.local/bin/forge-{daemon,next}` symlinks resolve to fresh build; auto-spawn hook picks up symlink path; PID 3319616 running fresh `dccfbb3`. Sideload-via-symlink path is the canonical local-dev shape per `docs/operations/sideload-migration.md`. |
+
+### Smoke transcript (live, 2026-04-28)
+
+```
+$ forge-next --version
+forge-next 0.6.0 (dccfbb3)
+
+$ forge-daemon --version
+forge-daemon 0.6.0 (dccfbb3)
+
+$ forge-bench --version
+forge-bench 0.6.0
+
+$ forge-next doctor
+Forge Doctor
+  Daemon:      UP (uptime: 45s)
+  DB size:     62.4 MB
+  Memories:    1
+  Embeddings:  1
+  Files:       …
+  Symbols:     29
+  Edges:       2955
+  Workers:     watcher, extractor, embedder, consolidator, indexer,
+               perception, disposition, diagnostics
+  Version:     0.6.0 (dccfbb3)
+  Sessions:    4 active
+  Messages:    0 total
+
+Health Checks:
+  [OK]   daemon: running (uptime: 45s)
+  [OK]   memories: 1 memories stored
+  [OK]   embeddings: 1 embeddings indexed
+  [OK]   db_size: 62.4 MB
+  [WARN] backup_hygiene: 5 *.bak file(s), 934 MB in ~/.forge — …
+  [OK]   extraction_backend: auto (API keys available)
+  [OK]   hook: running outside a Claude Code plugin install …
+
+$ forge-next manas-health
+Manas 8-Layer Memory Health
+───────────────────────────
+Layer 1 (Platform):       5 entries
+Layer 2 (Tool):          52 tools
+Layer 3 (Skill):          1 skills
+Layer 4 (Domain DNA):     8 patterns
+Layer 5 (Experience):     1 memories
+Layer 6 (Perception):     0 unconsumed
+Layer 7 (Declared):       4 documents
+Layer 8 (Latent):         1 embeddings
+───────────────────────────
+Ahankara (Identity):    0 facets
+Disposition:            4 traits (caution, thoroughness)
+
+$ forge-next observe --shape row-count | head -5
+{
+  "status": "ok",
+  "data": {
+    "kind": "inspect",
+    "shape": "row_count",
+    …
+  }
+}
+```
+
+### Sanity gates re-run after version bump
+
+All 4 gates green at `dccfbb3`:
+
+* `bash scripts/check-harness-sync.sh` — 158 JSON methods + 109 CLI
+  subcommands, no drift.
+* `bash scripts/check-protocol-hash.sh` — `0ad998ba944d…` (Request
+  hash unchanged across the rc.3→0.6.0 bump as expected).
+* `bash scripts/check-license-manifest.sh` — 3 file(s), coverage clean.
+* `bash scripts/check-review-artifacts.sh` — 30 review(s) valid, no
+  open blocking findings.
+
+### Linux release-cycle acceptance for v0.6.0
+
+* Source-build path (1.A.1-7) PASS end-to-end.
+* Symlink-sideload path (1.B) PASS.
+* SIGTERM-respawn path (1.A.6) PASS — proves daemon graceful shutdown
+  + auto-spawn hook + RPATH bake-in all coexist.
+* Release-mode test surface — 1,577 / 1,577 daemon lib tests pass
+  (debug + release identical after `composite_score`
+  `assert!`-promotion at `ab207f6`).
+* Clippy: 0 warnings (workspace-wide).
+* Bench-binary feature gate — verified `cargo build --release` (no
+  flags) leaves `forge-bench` out, and `--features bench` produces
+  it cleanly. Matches README §"Build From Source".
+
+User-action handoff cells unchanged — 1.C / 1.D / 1.E remain blocked
+on `gh release create v0.6.0` (per
+`feedback_release_stack_deferred.md`). 2.A / 2.B / 2.C remain
+user-handoff per locked decision #2.
