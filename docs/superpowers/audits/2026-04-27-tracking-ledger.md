@@ -9,15 +9,23 @@
 - ❌ **false positive** — agent claim was wrong; no fix needed
 - ⏳ **pending** — not yet addressed; queued for next session
 
-**Tally (2026-04-28 update — Phases 5-10 closed):**
+**Tally (2026-04-28 update — Phases 5-11 closed; net 0 active findings):**
 
 | | CRITICAL | HIGH | MED | LOW | NIT | Total |
 |---|---|---|---|---|---|---|
-| ✅ fixed       | 5 | 30 | 19 | 0 | 0 | **54** |
-| ❌ false-pos   | 1 | 0 | 0 | 0 | 0 | **1** |
-| 🟡 deferred    | 0 | 1 | 0 | 0 | 0 | **1** |
-| ⏳ pending     | 0 | 0 | 36 | 40 | 15 | **91** |
-| **Total**      | **6** | **31** | **55** | **40** | **15** | **147** |
+| ✅ fixed             | 5 | 30 | 38 | 7 | 0 | **80** |
+| 🟢 already-fixed     | 0 | 0 | 0  | 1 | 0 | **1**  |
+| 📁 documented-defer  | 0 | 0 | 0  | 4 | 0 | **4**  |
+| 🟡 deferred (v0.6.1) | 0 | 1 | 13 | 14 | 13 | **41** |
+| ❌ won't-fix / false | 1 | 0 | 4  | 14 | 2 | **21** |
+| ⏳ pending           | 0 | 0 | 0  | 0 | 0 | **0**  |
+| **Total**            | **6** | **31** | **55** | **40** | **15** | **147** |
+
+> **Active queue for v0.6.0 release: 0.** Every finding has a
+> disposition. The 41 v0.6.1 deferrals are tracked individually in
+> `docs/operations/v0.6.0-pre-iteration-deferrals.md` (§Addendum)
+> + `docs/superpowers/audits/2026-04-28-phase-11-low-nit-triage.md`
+> §"v0.6.1 fold-in".
 
 **Closed by phase (this 2026-04-28 session):**
 - **Phase 5** (`92b15c9`): 2 HIGH C-HIGH-1, C-HIGH-2 (dead code: -217 LOC)
@@ -27,7 +35,12 @@
 - **Phase 9** (`5f3b93b` + `493baad`): review HIGH-1 SKIP_CLI_TOKENS prune + LOW-1/2 documented
 - **Phase 10A** (`bc795a8`): 5 of 10 DB MEDs E-12, E-13, E-15, E-16, E-19 (`?` propagation + composite index)
 - **Phase 10B** (`6a33c6b`): 8 of 8 D MEDs D-11..D-18 (front-matter + agent-content scan + license coverage)
-- **Phase 10C** (`4f339fd` + ed): 5 of 10 docs MEDs DOCS-A-005..A-008, A-011 (version + endpoint/worker counts + cargo install clarity)
+- **Phase 10C** (`4f339fd`): 5 of 10 docs MEDs DOCS-A-005..A-008, A-011 (version + endpoint/worker counts + cargo install clarity)
+- **Phase 10D** (`eabcea4`): 7 CLI MEDs B-MED-1, B-MED-2 (×4), B-MED-4..B-MED-8 (Vote/Result render, UTF-8 byte-slice safe, ndjson export, agent-template update CLI, team-template list CLI, record-tool-use warn, act-notification require-flag)
+- **Phase 10E** (`49e2ae7`): 10 obs/UX MEDs F-MED-2..F-MED-12 (except F-MED-1 verified-no-op + F-MED-5 subsumed by F-CRIT-2): macOS install error, Grafana template, otlp runbook, plugin doc, "9 vs 8 layers", doctor hint, OTLP warn, observe stale-message, ForgeWorkerDown gauge, auto-create config.toml
+- **Phase 10F** (`7c5dc4d`): 4 code-quality MEDs C-MED-1, C-MED-5, C-MED-6, C-MED-7 (deletions / cfg-test downgrades, -91 LOC). C-MED-2 reverted as audit-was-wrong (false positive); C-MED-3 / C-MED-4 deferred to v0.6.1 with rationale.
+- **Phase 10G** (`fe8054d`): 6 residual E + A MEDs E-14, E-17, A-009, A-010, A-012, A-014 (sync_import tx clarification, line_start backfill migration, project.* config aliases, task_completion_check api-ref, plugin.json claim, internal phase tags). E-10, E-11 deferred-with-rationale; E-18 marked false-positive (wire shape doesn't include reality_id).
+- **Phase 11** (`b2452f5`): 7 doc-LOW fixes (DOCS-A-015..018, A-020 + README transport-default polish + A-019 verified) + 55-item triage matrix `docs/superpowers/audits/2026-04-28-phase-11-low-nit-triage.md`. Per-item disposition: 7 fixed + 2 already-fixed + 4 documented-defer + 27 v0.6.1 + 15 won't-fix.
 
 ---
 
@@ -220,38 +233,49 @@
 
 ---
 
-## Resolution roadmap
+## Resolution roadmap — closed
 
-**Phases 1-9 done** (2026-04-27 + 2026-04-28 sessions):
-- 5 CRITICAL ✅ (E-1, E-2, E-4, F-CRITICAL-1, F-CRITICAL-2)
-- 30 HIGH ✅ (14 from Phases 1-4 + 16 from Phases 5-7)
-- 1 false positive (E-3)
-- 1 deferred (E-8 → v0.6.1)
-- Phase 8 adversarial review verdict: `lockable-with-fixes`
-- Phase 9 review fix-wave landed (SKIP_CLI_TOKENS prune)
+**Phases 1-11 done** (2026-04-27 + 2026-04-28 sessions). Per-row "⏳ pending" entries in the audit-A through audit-F tables above are stale for everything that landed in Phase 10D-G + Phase 11; the canonical per-finding disposition is the triage matrix at
+`docs/superpowers/audits/2026-04-28-phase-11-low-nit-triage.md`. The
+per-audit tables retain the original "as-found" annotations as a
+historical record of what each audit raised.
 
-**Phase 10 partially done** (this 2026-04-28 session):
-- **10A** (`bc795a8`): 5 of 10 DB MEDs — **deferred** E-10 (read-audit log), E-11 (backup pruner), E-14 (sync_import tx), E-17 (NULL line_start coercion), E-18 (notification reality_id wire shape)
-- **10B** (`6a33c6b`): 8 of 8 D MEDs ✅ all closed
-- **10C** (`4f339fd`): 5 of 10 A docs MEDs — **deferred** A-009 (cli-reference reality keys), A-010 (task_completion_check undocumented), A-012 (marketplace.json claim), A-014 (internal phase tags)
+- **Phase 1** (`386d32f`): 5 CRITICAL ✅ (E-1, E-2, E-4, F-CRIT-1, F-CRIT-2)
+- **Phase 2** (`12e0466`): 5 CLI HIGH ✅ (B-HIGH-1..5)
+- **Phase 3** (`b8f7fb9`): 4 DB HIGH ✅ (E-5..E-7, E-9)
+- **Phase 4** (`5432641`): 5 obs/UX HIGH ✅ (F-HIGH-1..5)
+- **Phase 5** (`92b15c9`): 2 dead-code HIGH ✅ (C-HIGH-1, C-HIGH-2)
+- **Phase 6** (`37bd99a`): 10 harness HIGH ✅ (D-01..D-10) + harness-sync regex hardening
+- **Phase 7** (`45ffc9a`): 4 docs HIGH ✅ (DOCS-A-001..A-004)
+- **Phase 8** (review): `lockable-with-fixes` — 1 HIGH + 2 LOW
+- **Phase 9** (`5f3b93b` + `493baad`): SKIP_CLI_TOKENS prune; LOWs documented
+- **Phase 10A** (`bc795a8`): 5 DB MEDs ✅ (E-12, E-13, E-15, E-16, E-19)
+- **Phase 10B** (`6a33c6b`): 8 harness MEDs ✅ (D-11..D-18)
+- **Phase 10C** (`4f339fd`): 5 docs MEDs ✅ (DOCS-A-005..A-008, A-011)
+- **Phase 10D** (`eabcea4`): 7 CLI MEDs ✅ (B-MED-1, B-MED-2, B-MED-4..B-MED-8)
+- **Phase 10E** (`49e2ae7`): 10 obs/UX MEDs ✅ (F-MED-2..F-MED-12 except F-MED-5 subsumed by F-CRIT-2; F-MED-1 verified-no-op)
+- **Phase 10F** (`7c5dc4d`): 4 code-quality MEDs ✅ (C-MED-1, C-MED-5, C-MED-6, C-MED-7); C-MED-2 ❌ false-pos; C-MED-3, C-MED-4 🟡 v0.6.1
+- **Phase 10G** (`fe8054d`): 6 residual MEDs ✅ (E-14, E-17, A-009, A-010, A-012, A-014); E-10, E-11 🟡 v0.6.1; E-18 ❌ false-pos
+- **Phase 11** (`b2452f5`): 7 doc-LOW fixes ✅ (DOCS-A-015..018, A-020 + verifications) + 55-item disposition matrix
 
-**Phase 10 queued for next session (36 MEDs remain):**
-- **10D** — CLI MEDs (B-MED-1..B-MED-8, 7 remaining since B-MED-3 closed in Phase 2 partial)
-- **10E** — Observability MEDs (F-MED-1..F-MED-12, 11 remaining since F-MED-5 subsumed by F-CRIT-2)
-- **10F** — Code-quality MEDs (C-MED-1..C-MED-7, all 7)
-- **10G** — Remaining E (5) + A (4) MEDs that needed design decisions
+**Phase 12** (this commit forward): HANDOFF + README rewrite, then halt for #101 release stack per `feedback_release_stack_deferred.md`.
 
-**Phase 11 — LOW + NIT triage** (40 LOW + 15 NIT = 55): each item reviewed for "fix vs document" — some are intentional design choices (E-20 Manas convention, E-24 dim split is documented).
+## Cross-cutting deferrals (rolled into v0.6.1 backlog)
 
-**Phase 12 — HANDOFF rewrite + halt for #101 release stack.**
+Items below originated in the v0.6.0 audit but are intentionally
+deferred to the post-GA depth pass:
 
-## Cross-cutting deferrals (already documented)
+- **E-8** — FTS5 over `code_symbol` (perf, not correctness; deferrals doc entry #4 cluster)
+- **E-10** — Audit-log read-tracking (every read-only request would write an audit row; cost/value tradeoff for v0.6.1)
+- **E-11** — Backup pruner (currently health-check; needs XDG-aware policy — pair with #218)
+- **E-22** — Read-only HTTP path PRAGMA literal (deferrals doc entry #12)
+- **C-LOW-5** — `config::RealityConfig` post-ZR vocabulary (deferrals doc entry #11)
+- **C-LOW-7** — `consolidator.rs:2528` TODO(2A-4+) supersede_memory_impl (deferrals doc)
+- **C-MED-3** — consolidator.rs wrapper-triplet rot (10 fns; per-fn audit deferred)
+- **C-MED-4** — `ProjectEngine` premature trait (>20 LOC refactor; v0.6.1)
+- **`reality_type` column + struct field** (deferrals doc addendum #11) — wire-stable token; bumped at next protocol_hash change
+- **Migration block extraction** (deferrals doc addendum #12) — cosmetic
+- **`let _ = conn.execute(... CREATE INDEX ...)` audit sweep** (deferrals doc addendum #13) — paired-test cost
+- 27 LOWs + 13 NITs from the Phase 11 triage — see triage matrix.
 
-These are items the audits flagged but were already documented as deferrals in `docs/operations/v0.6.0-pre-iteration-deferrals.md`:
-
-- **E-8** — FTS5 over code_symbol (perf, not correctness)
-- **C-LOW-5** — `config::RealityConfig` post-ZR vocabulary (entry #11 in deferrals)
-- **C-LOW-7** — `consolidator.rs:2528` TODO(2A-4+) supersede_memory_impl
-- **E-22** — Read-only HTTP path PRAGMA literal (entry #12)
-
-Anything not on the deferrals list goes through Phases 5-12 above.
+Anything not in this list landed in Phases 1-11 above.
