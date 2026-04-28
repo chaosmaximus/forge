@@ -59,7 +59,7 @@ prost = "0.13"
 tokio-stream = "0.1"
 
 # Prometheus metrics
-prometheus = "0.13"
+prometheus = "0.14"
 
 # Human-friendly duration parsing for /inspect window argument (Phase 2A-4d.2).
 humantime = "2"
