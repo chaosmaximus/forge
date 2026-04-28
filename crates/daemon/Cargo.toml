@@ -21,7 +21,7 @@ required-features = ["bench"]
 
 [dependencies]
 forge-core = { path = "../core" }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 sqlite-vec = "0.1.9"
 async-stream = "0.3"
 futures-core = "0.3"
