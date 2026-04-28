@@ -372,7 +372,7 @@ moves rows through a three-state lifecycle as their heartbeats arrive
 client that was quiet for ten minutes keeps its session ID instead of
 being forced to re-register on the next message.
 
-### Tunables (Phase 2A-4d.3.1 #7)
+### Tunables
 
 Both knobs live under `[workers]` in the daemon config and can be
 hot-reloaded by editing the file (no daemon restart required):

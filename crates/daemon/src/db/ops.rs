@@ -1475,7 +1475,14 @@ pub fn count_symbols(conn: &Connection) -> rusqlite::Result<usize> {
     conn.query_row("SELECT count(*) FROM code_symbol", [], |r| r.get(0))
 }
 
-/// List all code symbols (for call edge detection when symbols are cached and not in memory).
+/// List all code symbols (for call edge detection when symbols are cached
+/// and not in memory).
+///
+/// P3-4 Phase 10G (audit E-17): pre-fix, NULL `line_start` was coerced
+/// to `0` (illegal — lines are 1-indexed), masking data-quality issues.
+/// Schema migration now backfills NULL → 1; this read defensively
+/// preserves the same sentinel for any row that bypassed the canonical
+/// insert path (race / writer outside `db::ops`).
 pub fn list_symbols(conn: &Connection) -> rusqlite::Result<Vec<CodeSymbol>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, kind, file_path, line_start, line_end, signature FROM code_symbol",
@@ -1486,7 +1493,9 @@ pub fn list_symbols(conn: &Connection) -> rusqlite::Result<Vec<CodeSymbol>> {
             name: row.get(1)?,
             kind: row.get(2)?,
             file_path: row.get(3)?,
-            line_start: row.get::<_, Option<usize>>(4)?.unwrap_or(0),
+            // sentinel: 1 (smallest legal 1-indexed line) — matches the
+            // E-17 backfill in db::schema::create_schema.
+            line_start: row.get::<_, Option<usize>>(4)?.unwrap_or(1),
             line_end: row.get(5)?,
             signature: row.get(6)?,
         })

@@ -504,9 +504,21 @@ Supported keys include:
 | `recall.recency_24h_boost` | float | `1.5` | Boost factor for memories < 24h old |
 | `recall.recency_7d_boost` | float | `1.2` | Boost factor for memories < 7d old |
 | `recall.domain_dna_boost` | float | `1.3` | Boost factor for domain DNA matches |
-| `reality.auto_detect` | bool | `true` | Auto-detect project type |
-| `reality.code_embeddings` | bool | `false` | Enable code symbol embeddings |
-| `reality.max_index_files` | integer | `5000` | Max files to index per project |
+| `project.auto_detect` | bool | `true` | Auto-detect project type |
+| `project.code_embeddings` | bool | `false` | Enable code symbol embeddings |
+| `project.max_index_files` | integer | `5000` | Max files to index per project |
+
+> **Vocabulary (post-ZR, audit A-009 / Phase 10G):** the user-facing
+> config namespace is `project.*`. Both `forge-next config set
+> project.auto_detect …` and the legacy `forge-next config set
+> reality.auto_detect …` write to the same field; the alias is
+> implemented in `crates/daemon/src/config.rs::update_config_at`. The
+> on-disk TOML section is still `[reality]` for back-compat with
+> existing `~/.forge/config.toml` files (the internal Rust struct
+> name `RealityConfig` is retained per
+> `feedback_project_everywhere_vocabulary.md`); a future minor release
+> may add a `[project]` TOML alias. Use `project.*` in new tooling
+> and docs.
 
 ```bash
 forge-next config set extraction.backend ollama
@@ -766,7 +778,11 @@ forge-next context-trace --agent claude-code --project forge
 
 ### observe
 
-Phase 2A-4d.2 observability API. Queries `kpi_events` or the per-layer gauge snapshot through one shape-parameterized subcommand. Use for debugging slow phases, drift detection, and dashboard-free live checks.
+Observability API (originally landed under internal phase tag 2A-4d.2;
+that tag has been retired from user-facing docs per audit A-014).
+Queries `kpi_events` or the per-layer gauge snapshot through one
+shape-parameterized subcommand. Use for debugging slow phases, drift
+detection, and dashboard-free live checks.
 
 ```
 forge-next observe --shape SHAPE [--window WINDOW] [--layer LAYER] [--phase PHASE] [--event-type TYPE] [--project PROJECT] [--group-by GROUP] [--format FORMAT]

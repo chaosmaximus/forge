@@ -1176,6 +1176,20 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
 
+    // P3-4 pre-release Phase 10G (audit E-17): backfill NULL line_start
+    // to a sentinel of 1. Pre-fix, `db::ops::list_symbols` silently
+    // coerced NULL → 0 via `unwrap_or(0)`, hiding the data-quality
+    // issue and exposing the illegal value `0` (lines are 1-indexed)
+    // to LSP / blast-radius consumers. After this backfill,
+    // list_symbols still defends with `unwrap_or(1)` but the row
+    // values are now coherent. Idempotent — re-running on a DB with
+    // no NULLs is a safe no-op. `?` propagation per
+    // `feedback_sqlite_no_reverse_silent_migration_failure.md`.
+    conn.execute(
+        "UPDATE code_symbol SET line_start = 1 WHERE line_start IS NULL",
+        [],
+    )?;
+
     // v2.0: Composite indexes for scoped queries
     let _ = conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_reality ON memory(reality_id, memory_type, status)",

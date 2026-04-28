@@ -423,7 +423,18 @@ pub fn sync_import(
         )));
     }
 
-    // Wrap in transaction for atomicity — all-or-nothing (Codex fix: partial writes on failure)
+    // Wrap in a transaction for atomicity — all-or-nothing (Codex fix:
+    // partial writes on failure). P3-4 Phase 10G (audit E-14): the loop
+    // body continues to use `conn.execute` / `conn.query_row` /
+    // `remember_raw(conn, …)`. rusqlite's `Transaction<'_>` borrows the
+    // same `Connection`, and SQLite has only one active transaction per
+    // connection, so those calls run inside the active tx — they're
+    // not a second savepoint. Explicit `tx.commit()?` at the end closes
+    // the tx; any `?`-propagated error before then drops `tx` and
+    // SQLite implicitly rolls back. Switching to `tx.execute(...)`
+    // would be cosmetically clearer but functionally identical, and
+    // the `remember_raw` helper takes `&Connection` (which `Transaction`
+    // derefs into) so that path stays clean as-is.
     let tx = conn.unchecked_transaction()?;
 
     for line in lines {

@@ -2479,6 +2479,52 @@ Dismiss a notification (hide permanently).
 }
 ```
 
+### task_completion_check
+
+Verify task completion criteria when a task is marked done. Surfaces lessons,
+contradictions, and decisions whose triggers match the task subject so the
+agent can self-check before claiming the task is shipped (audit A-010 added
+this section in Phase 10G; the endpoint shipped earlier but was undocumented
+in this reference).
+
+**Role:** Editor
+
+**Request:**
+
+```json
+{
+  "method": "task_completion_check",
+  "params": {
+    "session_id": "01J9F8...",
+    "task_subject": "ship the Phase 10 fix-wave",
+    "task_description": "Land all CRITICAL + HIGH closures and run adversarial review."
+  }
+}
+```
+
+**Fields:**
+
+- `session_id` (string, required): the active agent session ID.
+- `task_subject` (string, required): one-line task summary.
+- `task_description` (string, optional): longer context to widen the recall window.
+
+**Response:**
+
+Returns the same shape as `completion_check` (notifications array, warnings,
+anti-pattern matches). Empty arrays mean no relevant memories matched — the
+agent is free to ship.
+
+**CLI:**
+
+```bash
+forge-next task-completion-check \
+    --session-id 01J9F8... \
+    --subject "ship the Phase 10 fix-wave" \
+    --description "Land all CRITICAL + HIGH closures and run adversarial review."
+```
+
+---
+
 ### act_on_notification
 
 Act on a confirmation notification (approve or reject).
@@ -2588,7 +2634,12 @@ Query which language servers are available.
 
 ### inspect
 
-Phase 2A-4d.2 observability API. Queries `kpi_events` or the per-layer `GaugeSnapshot` through one shape-parameterized RPC. `shape=row_count` is served from the atomic gauge snapshot; all other shapes aggregate `kpi_events` rows over the `window`.
+Observability API (originally landed under internal phase tag 2A-4d.2;
+that tag has been retired from user-facing docs per audit A-014).
+Queries `kpi_events` or the per-layer `GaugeSnapshot` through one
+shape-parameterized RPC. `shape=row_count` is served from the atomic
+gauge snapshot; all other shapes aggregate `kpi_events` rows over the
+`window`.
 
 **Role:** Viewer
 

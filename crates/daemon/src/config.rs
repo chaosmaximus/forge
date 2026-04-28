@@ -1714,20 +1714,25 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
             config.recall.activation_on_context =
                 value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
-        // Project Engine
-        ["reality", "auto_detect"] => {
+        // Project Engine. P3-4 Phase 10G (audit A-009): the user-facing
+        // namespace is `project.*`; `reality.*` is the legacy form
+        // (internal Rust struct + TOML section name retained per
+        // `feedback_project_everywhere_vocabulary.md`). Both routes
+        // mutate the same fields so back-compat with existing config
+        // files is preserved.
+        ["reality", "auto_detect"] | ["project", "auto_detect"] => {
             config.reality.auto_detect =
                 value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
-        ["reality", "code_embeddings"] => {
+        ["reality", "code_embeddings"] | ["project", "code_embeddings"] => {
             config.reality.code_embeddings =
                 value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
-        ["reality", "community_detection"] => {
+        ["reality", "community_detection"] | ["project", "community_detection"] => {
             config.reality.community_detection =
                 value.parse().map_err(|e| format!("invalid value: {e}"))?;
         }
-        ["reality", "max_index_files"] => {
+        ["reality", "max_index_files"] | ["project", "max_index_files"] => {
             let v: usize = value.parse().map_err(|e| format!("invalid value: {e}"))?;
             config.reality.max_index_files = v.clamp(100, 50000);
         }
